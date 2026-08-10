@@ -1,0 +1,13 @@
+# BMAD — do not store in repo
+bmad/
+.bmad/
+**/bmad/
+docs/bmad/
+
+# Paperclip — no issue references in repo
+.paperclip/
+paperclip/
+**/.paperclip/
+
+# General
+*.md.bmad
