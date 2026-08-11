@@ -1,0 +1,91 @@
+name: Security
+
+# Dependency + module vulns, filesystem/config CVEs, secrets, and SAST.
+# Runs on PRs and on a weekly schedule for drift.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write   # CodeQL SARIF upload
+
+jobs:
+  govulncheck:
+    name: govulncheck (Go modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: guard
+        run: |
+          if [ ! -f go.mod ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version: stable
+      - name: Run govulncheck
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  npm-audit:
+    name: npm audit (console)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: guard
+        run: |
+          if [ ! -f console/package.json ] && [ ! -f package.json ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+      - name: Audit
+        if: steps.guard.outputs.present == 'true'
+        run: npm audit --audit-level=high
+
+  trivy-fs:
+    name: Trivy (filesystem + config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Trivy fs scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  gitleaks:
+    name: Gitleaks (secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3

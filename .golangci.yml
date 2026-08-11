@@ -1,0 +1,36 @@
+# golangci-lint configuration for the KSquad Go control plane.
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - revive
+    - gosec
+    - misspell
+    - unconvert
+    - bodyclose
+
+linters-settings:
+  gosec:
+    excludes:
+      - G104   # handled by errcheck
+  revive:
+    rules:
+      - name: exported
+        disabled: false
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # Test files may use dot-imports and looser error handling in table setups.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec

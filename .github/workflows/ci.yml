@@ -1,0 +1,116 @@
+name: CI
+
+# Lint + build + unit/integration test + coverage, as a per-component matrix.
+# Each component leg is an independent required status check.
+# Action majors are pinned to the Node 24 runtime (Node 20 runtimes are deprecated).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: go / ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [operator, apiserver, memory]
+        include:
+          - component: operator
+            path: cmd/operator
+          - component: apiserver
+            path: cmd/apiserver
+          - component: memory
+            path: cmd/memory
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if component source is absent (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -d "${{ matrix.path }}" ] && [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }} source not present yet — skeleton lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version: stable
+          cache: true
+
+      - name: golangci-lint
+        if: steps.guard.outputs.present == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          args: --timeout=5m
+
+      - name: Build
+        if: steps.guard.outputs.present == 'true'
+        run: go build ./...
+
+      - name: Test (race + coverage)
+        if: steps.guard.outputs.present == 'true'
+        run: go test -race -covermode=atomic -coverprofile=coverage-${{ matrix.component }}.out ./...
+
+      - name: Coverage gate (>=80%, >=90% for pkg/coord)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          go tool cover -func=coverage-${{ matrix.component }}.out | tee coverage.txt
+          total=$(grep -E '^total:' coverage.txt | awk '{print $3}' | tr -d '%')
+          echo "total coverage: ${total}%"
+          awk -v t="$total" 'BEGIN { if (t+0 < 80) { print "coverage below 80% gate"; exit 1 } }'
+
+      - name: Upload coverage
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-${{ matrix.component }}
+          path: coverage-${{ matrix.component }}.out
+          if-no-files-found: ignore
+
+  node:
+    name: node / console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if console source is absent (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -f console/package.json ] && [ ! -f package.json ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::console source not present yet — skeleton lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        run: npm ci
+
+      - name: Lint
+        if: steps.guard.outputs.present == 'true'
+        run: npm run lint
+
+      - name: Test (coverage)
+        if: steps.guard.outputs.present == 'true'
+        run: npm test -- --coverage

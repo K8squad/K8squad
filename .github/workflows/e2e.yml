@@ -1,0 +1,102 @@
+name: E2E
+
+# Full-platform end-to-end squad scenario + console E2E.
+# The squad scenario uses a local Ollama runtime (small model, digest-pinned) so a full Run path
+# (claim -> dispatch -> shim -> agent -> artifact -> complete) runs with ZERO paid API credits.
+# Heavier than PR CI: runs nightly, on release, and on manual dispatch.
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # nightly
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  squad-smoke:
+    name: squad smoke (Ollama, credit-free)
+    runs-on: ubuntu-latest   # DevOps: self-hosted GPU runner optional for larger models
+    services:
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if platform source is absent (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::platform source not present yet — E2E squad smoke skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull pinned small model
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          curl -fsS http://localhost:11434/api/pull -d '{"name":"qwen2.5:0.5b"}'   # pin by digest once selected
+
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Create kind cluster
+        if: steps.guard.outputs.present == 'true'
+        uses: helm/kind-action@v1
+        with:
+          wait: 120s
+
+      - name: Run squad smoke scenario
+        if: steps.guard.outputs.present == 'true'
+        env:
+          OLLAMA_BASE_URL: http://localhost:11434
+        run: |
+          # Requires the Ollama shim + conformance harness (Phase 2). Skipped-with-reason until then.
+          go test -tags=e2e -run 'TestSquadSmoke' ./test/e2e/... -v
+
+  console-e2e:
+    name: console E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: guard
+        run: |
+          if [ ! -f console/package.json ] && [ ! -f package.json ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::console source not present yet — E2E skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install deps + browsers
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          npm ci
+          npx playwright install --with-deps
+
+      - name: Run Playwright E2E
+        if: steps.guard.outputs.present == 'true'
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: always() && steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
