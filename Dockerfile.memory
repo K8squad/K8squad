@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-memory — MCP server, pgvector-backed memory, provenance/trust model,
+# discussion indexing.
+# Multi-arch cross-compile → static non-root distroless.
+
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/memory ./cmd/memory
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-memory" \
+      org.opencontainers.image.description="KSquad memory service: MCP server, pgvector, provenance/trust model, discussion indexing" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/memory /usr/local/bin/memory
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/memory"]

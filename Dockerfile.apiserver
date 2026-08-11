@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-apiserver — coordination record, audit API, SSE progress bus, SCM webhook
+# ingress, outbox delivery workers.
+# Multi-arch cross-compile → static non-root distroless. See Dockerfile.operator for the
+# cache/cross-compile rationale (shared build shape across the Go components).
+
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/apiserver ./cmd/apiserver
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-apiserver" \
+      org.opencontainers.image.description="KSquad API server: coordination/claim-lease-fencing, audit API, SSE progress bus, SCM webhooks, outbox workers" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/apiserver /usr/local/bin/apiserver
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/apiserver"]

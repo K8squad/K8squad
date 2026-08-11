@@ -29,21 +29,31 @@ jobs:
         include:
           - component: operator
             dockerfile: Dockerfile.operator
+            srcprobe: go.mod
           - component: apiserver
             dockerfile: Dockerfile.apiserver
+            srcprobe: go.mod
           - component: memory
             dockerfile: Dockerfile.memory
+            srcprobe: go.mod
           - component: console
             dockerfile: Dockerfile.console
+            srcprobe: console/package.json
     steps:
       - uses: actions/checkout@v5
 
-      - name: Skip if Dockerfile is absent (skeleton phase)
+      - name: Skip until Dockerfile AND component source are present (skeleton phase)
         id: guard
         run: |
+          # Dockerfiles ship in the skeleton; the build lane must stay green until the
+          # component's source lands, else a present Dockerfile alone would trip a doomed
+          # build on main. Gate on both — skip-with-reason, never a silent drop.
           if [ ! -f "${{ matrix.dockerfile }}" ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice::${{ matrix.dockerfile }} not present yet — image lane skipped."
+          elif [ ! -e "${{ matrix.srcprobe }}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }} source (${{ matrix.srcprobe }}) not present yet — image lane skipped."
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
