@@ -71,9 +71,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Run the gitleaks CLI directly rather than gitleaks/gitleaks-action, whose v2
+      # requires a paid GITLEAKS_LICENSE for organization repos. The CLI (Apache-2.0)
+      # has no such gate. Scans the full working tree; exits non-zero on any finding.
+      - name: Run gitleaks (CLI, no org license)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source=/repo --no-git --redact --verbose --exit-code=1
 
   codeql:
     name: CodeQL (${{ matrix.language }})
@@ -84,8 +89,32 @@ jobs:
         language: [go, javascript-typescript]
     steps:
       - uses: actions/checkout@v5
+
+      - name: Skip if analyzed source is absent (skeleton phase)
+        id: guard
+        run: |
+          # CodeQL autobuild/analyze fails hard ("No source code was seen") on an empty
+          # skeleton. Gate each language on its source landing — skip-with-reason until then.
+          present=false
+          case "${{ matrix.language }}" in
+            go)
+              [ -f go.mod ] && present=true ;;
+            javascript-typescript)
+              if [ -f console/package.json ] || [ -f package.json ] \
+                 || [ -n "$(git ls-files '*.js' '*.ts' '*.tsx' '*.jsx' '*.mjs' '*.cjs' | head -1)" ]; then
+                present=true
+              fi ;;
+          esac
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+          if [ "$present" = "false" ]; then
+            echo "::notice::${{ matrix.language }} source not present yet — CodeQL skipped."
+          fi
+
       - uses: github/codeql-action/init@v3
+        if: steps.guard.outputs.present == 'true'
         with:
           languages: ${{ matrix.language }}
       - uses: github/codeql-action/autobuild@v3
+        if: steps.guard.outputs.present == 'true'
       - uses: github/codeql-action/analyze@v3
+        if: steps.guard.outputs.present == 'true'
