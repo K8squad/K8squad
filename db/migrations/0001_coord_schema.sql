@@ -8,7 +8,7 @@
 -- structure here — not application discipline alone — enforces the spine's invariants:
 --   * exactly one active claim row per work item        (F3: claim PK + auto-provision trigger)
 --   * monotonic, never-reused fence token                (§6.1/§6.2, bumped by the acquire UPDATE)
---   * append-only comment + run_event history            (§6.5, reject_mutation trigger)
+--   * append-only comment + audit_log history            (§6.5, reject_mutation trigger)
 --   * artifact idempotency under re-entry                (§6.4, UNIQUE upsert key)
 --   * orphans-as-roots for sub-tickets                   (§6.1, parent_id ON DELETE SET NULL)
 --   * NO agent-to-agent channel                          (I4/no-P2P: there is no `message` table)
@@ -17,8 +17,10 @@
 --   Story 2.1 lists the tables loosely as `work_items / comments / artifacts / checkouts /
 --   run_events|audit_log`. The AUTHORITATIVE names are §6.1's (singular, `coord` schema), and
 --   the executable mechanism SQL in §6.2/§6.4 targets them verbatim (`UPDATE claim … WHERE
---   work_item_id`). So the durable names are: work_item, comment, artifact, claim, run_event.
---   Mapping: checkouts ≡ claim ; run_events/audit_log ≡ run_event ; "lease_epoch" ≡ fence_token.
+--   work_item_id`). So the durable names are: work_item, comment, artifact, claim, audit_log.
+--   Mapping: checkouts ≡ claim ; audit_log ≡ the §6.5 coord audit ; "lease_epoch" ≡ fence_token.
+--   The Story's "run_events" (high-volume shim trace, §10.1) is a SEPARATE `run_trace` table added
+--   by Story 8.11's forward migration — see the audit_log block below (ISI-2339 F1 decision).
 
 CREATE SCHEMA IF NOT EXISTS coord;
 
@@ -87,7 +89,7 @@ CREATE TABLE coord.artifact (
 -- ---------------------------------------------------------------------------
 -- The row is rewritten IN PLACE on every (re)claim; fence_token is monotonically increasing across
 -- the item's lifetime (never reset, never reused). No append-only claim history in the custody path
--- (history lives in run_event / the outbox), so two live leases on one item are structurally
+-- (history lives in audit_log / the outbox), so two live leases on one item are structurally
 -- impossible. holder_principal IS NULL ⇒ unclaimed / reclaimable.
 CREATE TABLE coord.claim (
     work_item_id         uuid        PRIMARY KEY REFERENCES coord.work_item(id) ON DELETE CASCADE,
@@ -117,33 +119,43 @@ CREATE TRIGGER work_item_provision_claim
     FOR EACH ROW EXECUTE FUNCTION coord.provision_claim();
 
 -- ---------------------------------------------------------------------------
--- run_event (≡ Story "run_events / audit_log") — append-only audit + Run event stream (§6.5/§8.11)
+-- audit_log (≡ Story "run_events / audit_log") — immutable coordination audit (§6.5)
 -- ---------------------------------------------------------------------------
--- Unifies the coordination audit log (§6.5: every checkout/comment/artifact/completion, with
--- principal + timestamp) and the shim-streamed Run event stream (§8.11: tool-call/LLM/build/error
--- traces). bigserial id is the monotonic audit sequence. APPEND-ONLY: no UPDATE/DELETE path.
-CREATE TABLE coord.run_event (
-    id                   bigserial   PRIMARY KEY,
+-- ARCHITECT DECISION (ISI-2339 F1, resolving the run_event-unification concern):
+-- This table holds ONLY the low-volume, immutable COORDINATION audit — every checkout / comment /
+-- artifact / completion, with principal + timestamp (§6.5). It is append-only and its bigserial id
+-- is a clean monotonic audit sequence (no interleaving with trace noise). The HIGH-VOLUME shim Run
+-- trace firehose (tool_call | llm_call | build_output | error, §10.1) does NOT live here — it lands
+-- in a separate, TIME-PARTITIONED, retention-managed `coord.run_trace` table added by a forward
+-- migration owned by Story 8.11 (retention via `DROP PARTITION`, NOT the append-only trigger, so the
+-- firehose is prunable WITHOUT contradicting this table's structural immutability). Splitting the two
+-- keeps the audit immutable + monotonic and the trace prunable — the two have different volume and
+-- retention semantics and must not share a table. (The Story's slash-name "run_events/audit_log"
+-- foreshadowed exactly this split: audit_log = the audit half; run_trace = the run-events half.)
+CREATE TABLE coord.audit_log (
+    id                   bigserial   PRIMARY KEY,   -- monotonic audit sequence (coord events only)
     work_item_id         uuid        REFERENCES coord.work_item(id) ON DELETE RESTRICT,
     run_id               uuid,
-    event_type           text        NOT NULL,   -- claim_acquired|claim_renewed|claim_released|comment_added|
-                                                  -- artifact_registered|state_transition|completed|tool_call|llm_call|build_output|error
+    event_type           text        NOT NULL,   -- claim_acquired|claim_renewed|claim_released|
+                                                  -- comment_added|artifact_registered|state_transition|completed
     principal            text        NOT NULL,    -- who acted (§6.5)
     initiated_by_user_id uuid,                    -- on whose behalf (§12.4)
-    fence_token          bigint,                  -- fence under which a coord event occurred
+    fence_token          bigint,                  -- fence under which the coord event occurred
     from_state           text,                    -- state_transition provenance
     to_state             text,
-    payload              jsonb,                   -- structured detail (shim-streamed run events, §8.11)
+    payload              jsonb,                   -- structured detail for the coord event
     created_at           timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_run_event_work_item ON coord.run_event (work_item_id, id);
-CREATE INDEX idx_run_event_run       ON coord.run_event (run_id, id);
+CREATE INDEX idx_audit_log_work_item ON coord.audit_log (work_item_id, id);
+CREATE INDEX idx_audit_log_run       ON coord.audit_log (run_id, id);
 
 -- ---------------------------------------------------------------------------
--- Append-only enforcement (Story 2.1 AC: comments and run_events are append-only)
+-- Append-only enforcement (Story 2.1 AC: comments and the audit log are append-only)
 -- ---------------------------------------------------------------------------
--- The AC pins "no UPDATE/DELETE path in code". This trigger makes that STRUCTURAL — a stray or
--- compromised code path cannot mutate history; the write is rejected, never silently applied.
+-- The AC pins "no UPDATE/DELETE path in code". These triggers make that STRUCTURAL — a stray or
+-- compromised code path cannot mutate history; the write is rejected, never silently applied. Row
+-- triggers cover UPDATE/DELETE; a STATEMENT-level BEFORE TRUNCATE trigger closes the TRUNCATE evasion
+-- (ISI-2339 F2 — row triggers do NOT fire on TRUNCATE, so an un-guarded table could be wiped whole).
 CREATE FUNCTION coord.reject_mutation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -155,10 +167,16 @@ $$;
 CREATE TRIGGER comment_append_only
     BEFORE UPDATE OR DELETE ON coord.comment
     FOR EACH ROW EXECUTE FUNCTION coord.reject_mutation();
+CREATE TRIGGER comment_no_truncate
+    BEFORE TRUNCATE ON coord.comment
+    FOR EACH STATEMENT EXECUTE FUNCTION coord.reject_mutation();
 
-CREATE TRIGGER run_event_append_only
-    BEFORE UPDATE OR DELETE ON coord.run_event
+CREATE TRIGGER audit_log_append_only
+    BEFORE UPDATE OR DELETE ON coord.audit_log
     FOR EACH ROW EXECUTE FUNCTION coord.reject_mutation();
+CREATE TRIGGER audit_log_no_truncate
+    BEFORE TRUNCATE ON coord.audit_log
+    FOR EACH STATEMENT EXECUTE FUNCTION coord.reject_mutation();
 
 -- ---------------------------------------------------------------------------
 -- updated_at maintenance for work_item (List sort key trustworthiness, §13)
@@ -173,3 +191,35 @@ $$;
 CREATE TRIGGER work_item_touch_updated_at
     BEFORE UPDATE ON coord.work_item
     FOR EACH ROW EXECUTE FUNCTION coord.touch_updated_at();
+
+-- ---------------------------------------------------------------------------
+-- Tenancy inheritance for sub-tickets (§6.1(c) / §12.1; ISI-2339 F5)
+-- ---------------------------------------------------------------------------
+-- A child inherits its parent's project_id/team_id, and cross-Project re-parenting is rejected — so
+-- the §12.1 tenancy filter stays a single `project_id` predicate. The reconciler in pkg/coord also
+-- enforces this on write (with the depth-capped cycle walk); this trigger makes the tenancy boundary
+-- STRUCTURAL defense-in-depth so a bug or direct write cannot straddle Projects. team_id is inherited
+-- from the parent; a project_id that disagrees with the parent's is a hard error, not a silent rewrite.
+CREATE FUNCTION coord.enforce_parent_tenancy() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE parent_project uuid; parent_team uuid;
+BEGIN
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+    SELECT project_id, team_id INTO parent_project, parent_team
+      FROM coord.work_item WHERE id = NEW.parent_id;
+    IF NOT FOUND THEN
+        RETURN NEW;   -- nonexistent parent: let the FK constraint reject it
+    END IF;
+    IF NEW.project_id <> parent_project THEN
+        RAISE EXCEPTION 'cross-Project re-parenting rejected: child project_id % <> parent project_id % (§12.1)',
+            NEW.project_id, parent_project USING ERRCODE = 'restrict_violation';
+    END IF;
+    NEW.team_id := parent_team;   -- inherit
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER work_item_enforce_parent_tenancy
+    BEFORE INSERT OR UPDATE OF parent_id, project_id, team_id ON coord.work_item
+    FOR EACH ROW EXECUTE FUNCTION coord.enforce_parent_tenancy();

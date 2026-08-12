@@ -19,7 +19,7 @@ DECLARE n int;
 BEGIN
     SELECT count(*) INTO n FROM information_schema.tables
      WHERE table_schema = 'coord'
-       AND table_name IN ('work_item','comment','artifact','claim','run_event');
+       AND table_name IN ('work_item','comment','artifact','claim','audit_log');
     ASSERT n = 5, format('expected 5 coord tables, found %s', n);
 END $$;
 
@@ -62,26 +62,26 @@ BEGIN
     ASSERT blocked, 'DELETE on coord.comment must be rejected (append-only)';
 END $$;
 
--- (4) run_event is append-only: UPDATE and DELETE are both rejected.
+-- (4) audit_log is append-only: UPDATE and DELETE are both rejected.
 DO $$
 DECLARE eid bigint; blocked boolean;
 BEGIN
-    INSERT INTO coord.run_event (event_type, principal) VALUES ('completed', 'principal:test')
+    INSERT INTO coord.audit_log (event_type, principal) VALUES ('completed', 'principal:test')
       RETURNING id INTO eid;
 
     blocked := false;
     BEGIN
-        UPDATE coord.run_event SET event_type = 'tampered' WHERE id = eid;
+        UPDATE coord.audit_log SET event_type = 'tampered' WHERE id = eid;
     EXCEPTION WHEN others THEN blocked := true;
     END;
-    ASSERT blocked, 'UPDATE on coord.run_event must be rejected (append-only)';
+    ASSERT blocked, 'UPDATE on coord.audit_log must be rejected (append-only)';
 
     blocked := false;
     BEGIN
-        DELETE FROM coord.run_event WHERE id = eid;
+        DELETE FROM coord.audit_log WHERE id = eid;
     EXCEPTION WHEN others THEN blocked := true;
     END;
-    ASSERT blocked, 'DELETE on coord.run_event must be rejected (append-only)';
+    ASSERT blocked, 'DELETE on coord.audit_log must be rejected (append-only)';
 END $$;
 
 -- (5) artifact upsert key rejects a duplicate (work_item_id, run_id, kind) (§6.4 idempotency).
@@ -123,18 +123,77 @@ BEGIN
 END $$;
 
 -- (7) orphans are first-class: deleting a parent leaves the child as a root (parent_id → NULL).
+--     Child shares the parent's project_id (the tenancy rule in assertion 9 requires it).
 DO $$
-DECLARE pid uuid; cid uuid; p uuid;
+DECLARE proj uuid := gen_random_uuid(); pid uuid; cid uuid; p uuid;
 BEGIN
     INSERT INTO coord.work_item (project_id, title, created_by)
-         VALUES (gen_random_uuid(), 'parent', 'principal:test') RETURNING id INTO pid;
+         VALUES (proj, 'parent', 'principal:test') RETURNING id INTO pid;
     INSERT INTO coord.work_item (project_id, title, created_by, parent_id)
-         VALUES (gen_random_uuid(), 'child', 'principal:test', pid) RETURNING id INTO cid;
+         VALUES (proj, 'child', 'principal:test', pid) RETURNING id INTO cid;
     DELETE FROM coord.work_item WHERE id = pid;   -- allowed: parent has no comments/artifacts/events
     SELECT parent_id INTO p FROM coord.work_item WHERE id = cid;
     ASSERT p IS NULL, 'orphaned child must render as a root (parent_id set NULL on parent delete)';
 END $$;
 
+-- (8) the §6.2 acquire actually works: first acquire bumps fence 0→1 + sets holder + returns one
+--     row; a second acquire against the live lease returns zero rows (no double-claim). (F3)
+DO $$
+DECLARE wid uuid; got_fence bigint; rows int; holder text;
+BEGIN
+    INSERT INTO coord.work_item (project_id, title, created_by)
+         VALUES (gen_random_uuid(), 'acquire item', 'principal:test') RETURNING id INTO wid;
+
+    -- first acquire (row is unheld: holder NULL) — this is the exact §6.2 conditional UPDATE
+    UPDATE coord.claim
+       SET holder_principal = 'principal:A', run_id = gen_random_uuid(), fence_token = fence_token + 1,
+           lease_expires_at = now() + interval '180 seconds', acquired_at = now(), renewed_at = now()
+     WHERE work_item_id = wid
+       AND (holder_principal IS NULL OR lease_expires_at < now())
+    RETURNING fence_token INTO got_fence;
+    GET DIAGNOSTICS rows = ROW_COUNT;
+    ASSERT rows = 1,       format('first acquire should affect exactly 1 row, affected %s', rows);
+    ASSERT got_fence = 1,  format('first acquire should return fence_token 1, got %s', got_fence);
+    SELECT holder_principal INTO holder FROM coord.claim WHERE work_item_id = wid;
+    ASSERT holder = 'principal:A', 'holder must be set after acquire';
+
+    -- second acquire against the live lease — must match zero rows (someone holds it)
+    UPDATE coord.claim
+       SET holder_principal = 'principal:B', fence_token = fence_token + 1,
+           lease_expires_at = now() + interval '180 seconds'
+     WHERE work_item_id = wid
+       AND (holder_principal IS NULL OR lease_expires_at < now());
+    GET DIAGNOSTICS rows = ROW_COUNT;
+    ASSERT rows = 0, format('second acquire against a live lease must affect 0 rows, affected %s', rows);
+END $$;
+
+-- (9) cross-Project re-parenting is rejected structurally (§12.1 tenancy boundary). (F5)
+DO $$
+DECLARE pid uuid; blocked boolean;
+BEGIN
+    INSERT INTO coord.work_item (project_id, title, created_by)
+         VALUES (gen_random_uuid(), 'tenancy parent', 'principal:test') RETURNING id INTO pid;
+    blocked := false;
+    BEGIN
+        INSERT INTO coord.work_item (project_id, title, created_by, parent_id)
+             VALUES (gen_random_uuid(), 'foreign child', 'principal:test', pid);  -- different project_id
+    EXCEPTION WHEN others THEN blocked := true;
+    END;
+    ASSERT blocked, 'a child in a different project_id than its parent must be rejected (§12.1)';
+END $$;
+
+-- (10) TRUNCATE cannot silently wipe append-only history (F2).
+DO $$
+DECLARE blocked boolean;
+BEGIN
+    blocked := false;
+    BEGIN
+        TRUNCATE coord.audit_log;
+    EXCEPTION WHEN others THEN blocked := true;
+    END;
+    ASSERT blocked, 'TRUNCATE on coord.audit_log must be rejected (append-only)';
+END $$;
+
 ROLLBACK;
 
-\echo 'coord schema self-check PASSED (7 assertions)'
+\echo 'coord schema self-check PASSED (10 assertions)'

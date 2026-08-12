@@ -22,7 +22,7 @@ SQL migrations** applied in filename order.
 
 | Version | File | Schema | Story / Arch |
 |--------:|------|--------|--------------|
-| 0001 | `0001_coord_schema.sql` | `coord` — `work_item`, `comment`, `artifact`, `claim`, `run_event` | Story 2.1 (ISI-2191), Arch §6.1 |
+| 0001 | `0001_coord_schema.sql` | `coord` — `work_item`, `comment`, `artifact`, `claim`, `audit_log` | Story 2.1 (ISI-2191), Arch §6.1 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 
@@ -35,16 +35,29 @@ executable mechanism SQL in §6.2/§6.4:
 | `comments` | `coord.comment` | append-only, provenanced |
 | `artifacts` | `coord.artifact` | `UNIQUE(work_item_id, run_id, kind)` upsert key |
 | `checkouts` | `coord.claim` | one row per item (PK); `fence_token` ≡ "lease_epoch" |
-| `run_events` / `audit_log` | `coord.run_event` | append-only audit + shim Run-event stream (§6.5/§8.11) |
+| `audit_log` | `coord.audit_log` | immutable low-volume coordination audit (§6.5) |
+| `run_events` | *(deferred)* `coord.run_trace` | high-volume shim trace firehose (§10.1) — separate **time-partitioned, retention-managed** table added by **Story 8.11**'s forward migration (ISI-2339 F1) |
+
+**Why the `audit_log` / `run_trace` split (ISI-2339 F1):** the immutable coordination audit (§6.5:
+claim/comment/artifact/completion events) and the high-volume shim trace firehose (§10.1:
+`tool_call`/`llm_call`/`build_output`/`error`) have opposite retention semantics. Merging them made
+the firehose **unprunable** (the append-only DELETE trigger blocks retention) and interleaved the
+monotonic audit sequence with trace noise. So Story 2.1 lands only `audit_log` (immutable, monotonic);
+`run_trace` is a purpose-built time-partitioned table (retention via `DROP PARTITION`, **no** append-only
+trigger) that Story 8.11 adds forward when the shim stream is wired.
 
 ## Structural invariants enforced by 0001 (not by application discipline)
 
 - **Exactly one active claim row per work item** — `claim.work_item_id` PK + an `AFTER INSERT` trigger
   that auto-provisions one unheld claim row per work item.
-- **Append-only history** — a `BEFORE UPDATE OR DELETE` trigger rejects any mutation of `comment` and
-  `run_event` (backs the AC's "no UPDATE/DELETE path in code" with a DB-level guard).
+- **Append-only history** — `BEFORE UPDATE OR DELETE` (row) **and** `BEFORE TRUNCATE` (statement)
+  triggers reject any mutation *or* whole-table wipe of `comment` and `audit_log` (backs the AC's
+  "no UPDATE/DELETE path in code" with a DB-level guard that `TRUNCATE` can't evade).
 - **Artifact idempotency under re-entry** — the `UNIQUE(work_item_id, run_id, kind)` upsert key.
 - **Orphans-as-roots** — `work_item.parent_id … ON DELETE SET NULL`.
+- **Tenancy stays one predicate** — a `BEFORE INSERT/UPDATE` trigger rejects a child whose `project_id`
+  differs from its parent's and inherits the parent's `team_id` (§6.1(c)/§12.1); the reconciler
+  enforces the same, so cross-Project re-parenting is blocked at two layers.
 - **Board-state integrity** — `CHECK (state IN (backlog,todo,in_progress,in_review,done))`; `blocked`
   is an orthogonal condition (`blocked_reason`), never a board state.
 
