@@ -56,10 +56,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Trivy fs scan
-        uses: aquasecurity/trivy-action@v0.28.0
+        # v0.36.0 pins its setup-trivy dependency by commit SHA; older tags (e.g. v0.28.0)
+        # pin aquasecurity/setup-trivy@v0.2.1, which was deleted upstream and no longer
+        # resolves — breaking the job at "Set up job" before any step runs.
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
+          scanners: vuln,secret
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'

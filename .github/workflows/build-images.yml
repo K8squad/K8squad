@@ -117,7 +117,7 @@ jobs:
 
       - name: CVE scan (Trivy) — gate on CRITICAL/HIGH fixable
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0   # SHA-pinned setup-trivy; v0.28.0's tag ref is broken
         with:
           image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}:sha-${{ github.sha }}
           severity: CRITICAL,HIGH
