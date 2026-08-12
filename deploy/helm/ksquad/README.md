@@ -24,7 +24,7 @@ it. Pick one mode explicitly — there is no default guess.
 
 | `exposure.mode` | Renders | SSE guarantee | When |
 |---|---|---|---|
-| `gateway` | `Gateway` + `HTTPRoute`×2 (+ optional redirect) | **Portable** — apiserver route timeout disabled | Preferred production path |
+| `gateway` | `Gateway` + `HTTPRoute`×2 (+ optional redirect) | apiserver route timeout set to `0s` — honored only where the GatewayClass supports HTTPRoute timeouts (**verify per class**, see below) | Preferred production path |
 | `ingress` | plain `Ingress` with SSE-safe annotations | Controller-dependent, **not** portable | Cluster has an Ingress controller but no Gateway API |
 | `clusterip` | `Service` only | n/a (port-forward / your own LB) | Zero-dependency; always comes up on a bare cluster |
 
@@ -32,8 +32,21 @@ it. Pick one mode explicitly — there is no default guess.
   if unset. cilium/envoy/istio/traefik are all valid targets.
 - Listeners, TLS cert Secret, and http→https redirect are all values-driven, so
   you wire your own DNS/cert story without editing templates.
-- The apiserver `HTTPRoute` sets `timeouts.request: "0s"` so a long-lived SSE
-  progress stream (§13) is never cut — the reason Gateway API is the primitive.
+- The apiserver `HTTPRoute` sets `timeouts.request: "0s"` to keep a long-lived SSE
+  progress stream (§13) from being cut. **Caveat (verify per GatewayClass):**
+  `HTTPRoute.timeouts` is *Extended* conformance, not Core — implementations MAY
+  ignore it:
+  - **Envoy Gateway, Istio** — honor `timeouts`; `0s` disables the route timeout. ✓
+  - **Cilium** — historically ignores the `timeouts` field silently; Envoy's
+    default 15s route timeout then cuts the SSE stream. Confirm your Cilium
+    version honors HTTPRoute timeouts, or terminate SSE via a Cilium-native
+    `CiliumEnvoyConfig` / fall back to `ingress` mode. ⚠
+  - **Traefik** — has no default route timeout, so SSE survives regardless of
+    whether `0s` is honored. ✓ (by absence of a default, not by honoring the field)
+
+  Pre-flight this the same way you pre-flight the StorageClass capability matrix
+  below: verify your chosen `gatewayClassName` supports HTTPRoute timeouts before
+  relying on SSE in production.
 
 ## Storage — `storage.*` (§16.2 / §9.4)
 

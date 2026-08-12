@@ -30,14 +30,17 @@ apiserver:
 # ═════════════════════════════════════════════════════════════════════════════
 exposure:
   # REQUIRED, no default guess. One of:
-  #   gateway   — renders Gateway + HTTPRoutes; full portable SSE-timeout control
-  #               (preferred production path). Requires gateway.gatewayClassName.
+  #   gateway   — renders Gateway + HTTPRoutes; sets the apiserver route timeout
+  #               to 0s for SSE (preferred production path). Requires
+  #               gateway.gatewayClassName. NOTE: HTTPRoute.timeouts is Extended
+  #               conformance — Envoy Gateway/Istio honor 0s, Traefik survives via
+  #               no-default, Cilium may ignore it (verify per class; see README).
   #   ingress   — renders a plain Ingress with SSE-safe annotations. Graceful
   #               degrade for clusters with an Ingress controller but no Gateway API.
   #   clusterip — renders Services only (reach console via port-forward / your LB).
   #               Zero-dependency path; always brings the stack up on a bare cluster.
-  # ingress/clusterip do NOT give the same portable SSE-timeout guarantees as
-  # gateway — an honest trade, surfaced not hidden.
+  # No mode is a blanket SSE guarantee: gateway depends on GatewayClass timeout
+  # support, ingress on controller annotations — an honest trade, surfaced not hidden.
   mode: gateway
 
   # Hostnames route by host in gateway/ingress modes (REQUIRED there, ignored

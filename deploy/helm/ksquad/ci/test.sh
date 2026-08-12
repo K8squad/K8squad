@@ -75,5 +75,11 @@ render_fail "https listener without cert fails" "certSecretName is REQUIRED" \
   --set exposure.mode=gateway --set exposure.gateway.gatewayClassName=envoy \
   --set exposure.hostnames.console=a --set exposure.hostnames.apiserver=b \
   --set storage.storageClassName=std
+render_fail "gateway with both listeners disabled fails (ISI-2286 F2)" "at least one exposure.gateway.listeners" \
+  --set exposure.mode=gateway --set exposure.gateway.gatewayClassName=envoy \
+  --set exposure.gateway.listeners.http.enabled=false \
+  --set exposure.gateway.listeners.https.enabled=false \
+  --set exposure.hostnames.console=a --set exposure.hostnames.apiserver=b \
+  --set storage.storageClassName=std
 
 echo "ALL CHECKS PASSED"

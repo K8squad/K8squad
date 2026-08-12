@@ -81,6 +81,9 @@ message rather than a dangling route or a cluster-default PVC.
   {{- if and .Values.exposure.gateway.listeners.https.enabled (not .Values.exposure.gateway.listeners.https.certSecretName) -}}
   {{- fail "exposure.gateway.listeners.https.certSecretName is REQUIRED when the https listener is enabled (TLS terminates at the gateway)" -}}
   {{- end -}}
+  {{- if and (not .Values.exposure.gateway.listeners.http.enabled) (not .Values.exposure.gateway.listeners.https.enabled) -}}
+  {{- fail "at least one exposure.gateway.listeners.{http,https}.enabled must be true — a Gateway with zero listeners is invalid and leaves the HTTPRoutes' sectionName dangling (ISI-2286 F2)" -}}
+  {{- end -}}
 {{- end -}}
 {{- if eq $mode "ingress" -}}
   {{- if not .Values.exposure.ingress.className -}}
