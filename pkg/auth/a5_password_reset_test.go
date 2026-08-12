@@ -42,6 +42,13 @@ func TestA5_LocalCredPasswordReset(t *testing.T) {
 		require.Equal(t, 200, b.PerformReset(token, a5NewPass), "first use of a fresh token must succeed")
 		assert.NotEqual(t, 200, b.PerformReset(token, "another-Pass-9!"),
 			"a spent token must be rejected — single-use (no replay)")
+
+		// Single-use means the rejected replay also makes NO change: the password
+		// the replay tried to set must never authenticate (a non-200 that still
+		// rotated the credential would otherwise slip past the status check).
+		_, replayLogin := b.Login(a5User, "another-Pass-9!")
+		assert.Equal(t, 401, replayLogin,
+			"a rejected token replay must not have rotated the password")
 	})
 
 	t.Run("reset token is time-boxed", func(t *testing.T) {
@@ -120,7 +127,9 @@ func TestA5_LocalCredPasswordReset(t *testing.T) {
 		require.Equal(t, 200, b.PerformReset(token, a5NewPass))
 		_, _ = b.Login(a5User, a5NewPass)
 
-		secrets := []string{a5OldPass, a5NewPass}
+		// The reset token is a single-use bearer credential delivered out-of-band;
+		// like a password, it must never surface in a log/span (NFR-SEC3).
+		secrets := []string{a5OldPass, a5NewPass, token}
 		for _, line := range b.Logs() {
 			for _, secret := range secrets {
 				assert.NotContains(t, line, secret,
