@@ -19,8 +19,9 @@
 --   the executable mechanism SQL in §6.2/§6.4 targets them verbatim (`UPDATE claim … WHERE
 --   work_item_id`). So the durable names are: work_item, comment, artifact, claim, audit_log.
 --   Mapping: checkouts ≡ claim ; audit_log ≡ the §6.5 coord audit ; "lease_epoch" ≡ fence_token.
---   The Story's "run_events" (high-volume shim trace, §10.1) is a SEPARATE `run_trace` table added
---   by Story 8.11's forward migration — see the audit_log block below (ISI-2339 F1 decision).
+--   The Story's "run_events" (high-volume shim trace, §10.1) does NOT get a Postgres table at all —
+--   it rides SSE (live) + opt-in OTel export (§17.2). See the audit_log block below (ISI-2339 F1 /
+--   ISI-2340 ADR-040 decision).
 
 CREATE SCHEMA IF NOT EXISTS coord;
 
@@ -107,6 +108,11 @@ CREATE INDEX idx_claim_lease ON coord.claim (lease_expires_at);  -- reclaim scan
 -- Every work_item gets exactly one claim row at creation, unheld (holder NULL, fence 0). This makes
 -- the §6.2 acquire a plain conditional UPDATE (the row always pre-exists) and makes "exactly one
 -- claim row per item" a structural invariant, not an application obligation.
+-- Residual (ISI-2339 F7, note only): the row is (re)provisioned only on work_item INSERT, never
+-- re-created. A DIRECT `DELETE FROM coord.claim` (outside the work_item CASCADE) would leave the item
+-- permanently unclaimable — the §6.2 acquire matches 0 rows, reading as "held forever". The intended
+-- path never deletes claim rows (custody is rewritten in place); pkg/coord must never issue such a
+-- delete. Not enforced structurally (a claim DELETE trigger would fight the work_item CASCADE).
 CREATE FUNCTION coord.provision_claim() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
@@ -121,17 +127,22 @@ CREATE TRIGGER work_item_provision_claim
 -- ---------------------------------------------------------------------------
 -- audit_log (≡ Story "run_events / audit_log") — immutable coordination audit (§6.5)
 -- ---------------------------------------------------------------------------
--- ARCHITECT DECISION (ISI-2339 F1, resolving the run_event-unification concern):
+-- ARCHITECT DECISION (ISI-2339 F1 → ISI-2340, ADR-040; resolves the run_event-unification concern):
 -- This table holds ONLY the low-volume, immutable COORDINATION audit — every checkout / comment /
--- artifact / completion, with principal + timestamp (§6.5). It is append-only and its bigserial id
--- is a clean monotonic audit sequence (no interleaving with trace noise). The HIGH-VOLUME shim Run
--- trace firehose (tool_call | llm_call | build_output | error, §10.1) does NOT live here — it lands
--- in a separate, TIME-PARTITIONED, retention-managed `coord.run_trace` table added by a forward
--- migration owned by Story 8.11 (retention via `DROP PARTITION`, NOT the append-only trigger, so the
--- firehose is prunable WITHOUT contradicting this table's structural immutability). Splitting the two
--- keeps the audit immutable + monotonic and the trace prunable — the two have different volume and
--- retention semantics and must not share a table. (The Story's slash-name "run_events/audit_log"
--- foreshadowed exactly this split: audit_log = the audit half; run_trace = the run-events half.)
+-- artifact / state-transition / completion, with principal + initiated_by_user_id + timestamp (§6.5).
+-- It is append-only (UPDATE/DELETE/TRUNCATE all rejected) and its bigserial id is a clean monotonic
+-- audit sequence (no interleaving with trace noise) — so it is structurally immutable WITHOUT
+-- qualification. The HIGH-VOLUME shim Run-trace firehose (tool_call | llm_call | build_output | error,
+-- §10.1) does NOT live here — and does NOT get a Postgres table in v1 at all. It rides SSE live
+-- (§10.1, ephemeral) + opt-in OTel export (§17.2) — the "Run logs = coord audit (§6.5) + SSE, no new
+-- data path" model already pinned in Arch §13. Story 8.11 wires the shim trace to SSE + OTel emission,
+-- NOT to a coord table (so 8.11 needs no migration). Keeping the firehose out of Postgres is what lets
+-- THIS table stay both immutable and retention-free: coordination-event volume is bounded, so the
+-- audit is never pruned; the firehose stays prunable because OTel/its backend owns its retention, not
+-- a DROP-PARTITION on the source-of-truth store. (Rejected: a time-partitioned `coord.run_trace`
+-- firehose table — a new stateful surface re-storing telemetry OTel already owns; and single-table
+-- partitioning + DROP-PARTITION retention — partition-DROP would bypass this table's immutability
+-- claim and interleave trace noise into the monotonic sequence. Both are the F1 defect, not the fix.)
 CREATE TABLE coord.audit_log (
     id                   bigserial   PRIMARY KEY,   -- monotonic audit sequence (coord events only)
     work_item_id         uuid        REFERENCES coord.work_item(id) ON DELETE RESTRICT,

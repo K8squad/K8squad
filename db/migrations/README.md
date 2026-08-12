@@ -36,15 +36,21 @@ executable mechanism SQL in §6.2/§6.4:
 | `artifacts` | `coord.artifact` | `UNIQUE(work_item_id, run_id, kind)` upsert key |
 | `checkouts` | `coord.claim` | one row per item (PK); `fence_token` ≡ "lease_epoch" |
 | `audit_log` | `coord.audit_log` | immutable low-volume coordination audit (§6.5) |
-| `run_events` | *(deferred)* `coord.run_trace` | high-volume shim trace firehose (§10.1) — separate **time-partitioned, retention-managed** table added by **Story 8.11**'s forward migration (ISI-2339 F1) |
+| `run_events` | *(no table)* | high-volume shim trace firehose (§10.1) — rides **SSE live + opt-in OTel export (§17.2)**, not a coord table (ADR-040) |
 
-**Why the `audit_log` / `run_trace` split (ISI-2339 F1):** the immutable coordination audit (§6.5:
-claim/comment/artifact/completion events) and the high-volume shim trace firehose (§10.1:
-`tool_call`/`llm_call`/`build_output`/`error`) have opposite retention semantics. Merging them made
-the firehose **unprunable** (the append-only DELETE trigger blocks retention) and interleaved the
-monotonic audit sequence with trace noise. So Story 2.1 lands only `audit_log` (immutable, monotonic);
-`run_trace` is a purpose-built time-partitioned table (retention via `DROP PARTITION`, **no** append-only
-trigger) that Story 8.11 adds forward when the shim stream is wired.
+**Why the firehose gets no table (ISI-2339 F1 → ISI-2340, ADR-040):** the immutable coordination audit
+(§6.5: claim/comment/artifact/state-transition/completion events) and the high-volume shim trace
+firehose (§10.1: `tool_call`/`llm_call`/`build_output`/`error`) have opposite retention semantics.
+Merging them made the firehose **unprunable** (the append-only DELETE trigger blocks retention) and
+interleaved the monotonic audit sequence with trace noise. Resolution: Story 2.1 lands only
+`audit_log` (immutable, monotonic, retention-free — coordination-event volume is bounded), and the
+firehose **does not get a Postgres table in v1 at all** — it rides **SSE live** (ephemeral) plus
+**opt-in OTel export (§17.2)**, whose backend owns its retention. This keeps `audit_log` structurally
+immutable *without qualification* and avoids re-storing telemetry OTel already owns. Story 8.11 wires
+the shim trace to SSE + OTel emission, **not** to a coord table (so 8.11 needs no migration).
+*Rejected:* a time-partitioned `coord.run_trace` table (a new stateful surface re-storing OTel data;
+`DROP PARTITION` retention would bypass this table's immutability claim) — that was the F1 defect, not
+the fix.
 
 ## Structural invariants enforced by 0001 (not by application discipline)
 
