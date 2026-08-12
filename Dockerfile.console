@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-console — Next.js operator UI + BFF (SSE fan-out).
+# Multi-arch via buildx; Next.js `output: 'standalone'` trace → distroless nodejs runtime.
+# Build context is the repo root; console sources live under console/.
+
+FROM node:24-bookworm-slim AS deps
+WORKDIR /app
+COPY console/package.json console/package-lock.json* ./
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY --from=deps /app/node_modules ./node_modules
+COPY console/ ./
+RUN npm run build
+
+# Distroless nodejs runtime — no shell, non-root. Requires next.config `output: 'standalone'`.
+FROM gcr.io/distroless/nodejs24-debian12:nonroot AS run
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-console" \
+      org.opencontainers.image.description="KSquad console: Next.js operator UI + BFF with SSE fan-out" \
+      org.opencontainers.image.licenses="Apache-2.0"
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+EXPOSE 3000
+USER 65532:65532
+CMD ["server.js"]

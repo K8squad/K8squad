@@ -1,0 +1,20 @@
+# Keep build context lean and deterministic across the multi-arch image matrix.
+.git
+.github
+**/.git
+**/node_modules
+**/.next
+**/dist
+**/bin
+**/*.test
+**/testdata
+coverage*.out
+coverage.txt
+*.spdx.json
+docs
+*.md
+!README.md
+.golangci.yml
+.dockerignore
+Dockerfile*
+LICENSE

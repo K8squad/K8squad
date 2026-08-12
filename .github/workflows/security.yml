@@ -1,0 +1,124 @@
+name: Security
+
+# Dependency + module vulns, filesystem/config CVEs, secrets, and SAST.
+# Runs on PRs and on a weekly schedule for drift.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'   # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+  security-events: write   # CodeQL SARIF upload
+
+jobs:
+  govulncheck:
+    name: govulncheck (Go modules)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: guard
+        run: |
+          if [ ! -f go.mod ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version: stable
+      - name: Run govulncheck
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  npm-audit:
+    name: npm audit (console)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: guard
+        run: |
+          if [ ! -f console/package.json ] && [ ! -f package.json ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+      - name: Audit
+        if: steps.guard.outputs.present == 'true'
+        run: npm audit --audit-level=high
+
+  trivy-fs:
+    name: Trivy (filesystem + config)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Trivy fs scan
+        # v0.36.0 pins its setup-trivy dependency by commit SHA; older tags (e.g. v0.28.0)
+        # pin aquasecurity/setup-trivy@v0.2.1, which was deleted upstream and no longer
+        # resolves — breaking the job at "Set up job" before any step runs.
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+  gitleaks:
+    name: Gitleaks (secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # Run the gitleaks CLI directly rather than gitleaks/gitleaks-action, whose v2
+      # requires a paid GITLEAKS_LICENSE for organization repos. The CLI (Apache-2.0)
+      # has no such gate. Scans the full working tree; exits non-zero on any finding.
+      - name: Run gitleaks (CLI, no org license)
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source=/repo --no-git --redact --verbose --exit-code=1
+
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if analyzed source is absent (skeleton phase)
+        id: guard
+        run: |
+          # CodeQL autobuild/analyze fails hard ("No source code was seen") on an empty
+          # skeleton. Gate each language on its source landing — skip-with-reason until then.
+          present=false
+          case "${{ matrix.language }}" in
+            go)
+              [ -f go.mod ] && present=true ;;
+            javascript-typescript)
+              if [ -f console/package.json ] || [ -f package.json ] \
+                 || [ -n "$(git ls-files '*.js' '*.ts' '*.tsx' '*.jsx' '*.mjs' '*.cjs' | head -1)" ]; then
+                present=true
+              fi ;;
+          esac
+          echo "present=$present" >> "$GITHUB_OUTPUT"
+          if [ "$present" = "false" ]; then
+            echo "::notice::${{ matrix.language }} source not present yet — CodeQL skipped."
+          fi
+
+      - uses: github/codeql-action/init@v3
+        if: steps.guard.outputs.present == 'true'
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@v3
+        if: steps.guard.outputs.present == 'true'
+      - uses: github/codeql-action/analyze@v3
+        if: steps.guard.outputs.present == 'true'

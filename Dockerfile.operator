@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-operator — controller-runtime reconcilers.
+# Multi-arch: buildx injects TARGETOS/TARGETARCH; we cross-compile from the native
+# $BUILDPLATFORM (fast) into a static, non-root distroless runtime.
+
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+# Dependency layer first so it only re-resolves when go.{mod,sum} change.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/operator ./cmd/operator
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-operator" \
+      org.opencontainers.image.description="KSquad operator: Team/Agent/Project/Run/SandboxPool reconcilers + repo-sync + ImageUpdater" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/operator /usr/local/bin/operator
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/operator"]

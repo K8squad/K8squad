@@ -1,0 +1,138 @@
+name: Build Images
+
+# Per-component multi-arch image build → push to ghcr.io → SBOM (Syft) → CVE scan (Trivy) →
+# sign + attest (cosign, release only). Matrix runs component pipelines in parallel.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write        # cosign keyless (OIDC)
+  attestations: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    name: image / ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [operator, apiserver, memory, console]
+        include:
+          - component: operator
+            dockerfile: Dockerfile.operator
+            srcprobe: go.mod
+          - component: apiserver
+            dockerfile: Dockerfile.apiserver
+            srcprobe: go.mod
+          - component: memory
+            dockerfile: Dockerfile.memory
+            srcprobe: go.mod
+          - component: console
+            dockerfile: Dockerfile.console
+            srcprobe: console/package.json
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip until Dockerfile AND component source are present (skeleton phase)
+        id: guard
+        run: |
+          # Dockerfiles ship in the skeleton; the build lane must stay green until the
+          # component's source lands, else a present Dockerfile alone would trip a doomed
+          # build on main. Gate on both — skip-with-reason, never a silent drop.
+          if [ ! -f "${{ matrix.dockerfile }}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.dockerfile }} not present yet — image lane skipped."
+          elif [ ! -e "${{ matrix.srcprobe }}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }} source (${{ matrix.srcprobe }}) not present yet — image lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+        if: steps.guard.outputs.present == 'true'
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.guard.outputs.present == 'true'
+
+      - name: Log in to ghcr.io
+        if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        if: steps.guard.outputs.present == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=sha
+
+      - name: Build and push
+        if: steps.guard.outputs.present == 'true'
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: BUILDKIT_INLINE_CACHE=1
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate SBOM (Syft)
+        if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}:sha-${{ github.sha }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.component }}.spdx.json
+
+      - name: Upload SBOM artifact
+        if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v5
+        with:
+          name: sbom-${{ matrix.component }}
+          path: sbom-${{ matrix.component }}.spdx.json
+          if-no-files-found: ignore
+
+      - name: CVE scan (Trivy) — gate on CRITICAL/HIGH fixable
+        if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@v0.36.0   # SHA-pinned setup-trivy; v0.28.0's tag ref is broken
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}:sha-${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: cosign install
+        if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign + attest (release images)
+        if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          IMG=${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          cosign sign --yes "$IMG"
+          cosign attest --yes --predicate sbom-${{ matrix.component }}.spdx.json --type spdxjson "$IMG"
