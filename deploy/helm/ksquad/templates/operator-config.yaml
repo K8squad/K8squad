@@ -1,0 +1,23 @@
+{{- /* Per-Project workspace PVCs are created by the OPERATOR at Project
+       reconcile (§9.4), not by Helm. This ConfigMap hands the operator the
+       StorageClass + access mode + size to stamp onto every Project PVC, so
+       those PVCs also come from values and never the cluster default
+       (§16.2, FR-L2, ISI-2149). The NATS JetStream StorageClass is surfaced
+       here too for operability; it is wired into the NATS subchart values. */ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ksquad.fullname" . }}-storage
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+data:
+  # Consumed by the operator as the template for per-Project workspace PVCs.
+  workspace.storageClassName: {{ include "ksquad.storageClass.workspace" . | quote }}
+  # RWO default (worktree-per-Run). RWX only if the class supports it (§9.4).
+  workspace.accessMode: {{ .Values.storage.workspace.accessMode | quote }}
+  workspace.size: {{ .Values.storage.workspace.size | quote }}
+  # Reference values (Postgres CR + NATS subchart own the actual PVCs).
+  postgres.storageClassName: {{ include "ksquad.storageClass.postgres" . | quote }}
+  nats.storageClassName: {{ include "ksquad.storageClass.nats" . | quote }}
+  nats.size: {{ .Values.storage.nats.size | quote }}

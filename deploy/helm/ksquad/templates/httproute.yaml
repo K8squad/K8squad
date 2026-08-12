@@ -1,0 +1,80 @@
+{{- if eq .Values.exposure.mode "gateway" -}}
+{{- $g := .Values.exposure.gateway -}}
+{{- $hosts := .Values.exposure.hostnames -}}
+{{- $gwName := include "ksquad.fullname" . -}}
+{{- /* Serving listener: prefer https when enabled, else http. */ -}}
+{{- $serveSection := ternary "https" "http" $g.listeners.https.enabled -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "ksquad.console.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  parentRefs:
+    - name: {{ $gwName }}
+      sectionName: {{ $serveSection }}
+  hostnames:
+    - {{ $hosts.console | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "ksquad.console.fullname" . }}
+          port: {{ .Values.console.service.port }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+spec:
+  parentRefs:
+    - name: {{ $gwName }}
+      sectionName: {{ $serveSection }}
+  hostnames:
+    - {{ $hosts.apiserver | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # SSE PRESERVATION (§13, §16.1): request timeout 0s disables the route
+      # timeout so a long-lived progress stream is never cut. This portable
+      # HTTPRoute timeout semantics is *why* Gateway API is the primitive here.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - name: {{ include "ksquad.apiserver.fullname" . }}
+          port: {{ .Values.apiserver.service.port }}
+{{- if and $g.httpsRedirect $g.listeners.http.enabled $g.listeners.https.enabled }}
+---
+{{/* Edge http→https redirect on the http listener (values-driven, §16.1). */}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "ksquad.fullname" . }}-https-redirect
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: exposure
+spec:
+  parentRefs:
+    - name: {{ $gwName }}
+      sectionName: http
+  hostnames:
+    - {{ $hosts.console | quote }}
+    - {{ $hosts.apiserver | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+{{- end }}

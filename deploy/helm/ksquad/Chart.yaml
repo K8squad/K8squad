@@ -1,0 +1,31 @@
+apiVersion: v2
+name: ksquad
+description: >-
+  KSquad — Kubernetes-native, agent-agnostic AI agent orchestration platform.
+  This chart brings up the ksquad-system control plane and CREATES (never
+  assumes) its exposure and storage: Gateway API resources for console +
+  apiserver, and PVCs whose StorageClass is parameterized — never the cluster
+  default. See §16.1 (exposure), §16.2 (storage), §9.4 (workspace) of the
+  architecture, and ISI-2149.
+type: application
+# Chart version tracks the chart; appVersion tracks the KSquad control plane.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+keywords:
+  - ai-agents
+  - orchestration
+  - gateway-api
+  - operator
+home: https://github.com/K8squad/K8squad
+sources:
+  - https://github.com/K8squad/K8squad
+maintainers:
+  - name: KSquad
+# NOTE: the CloudNativePG operator and the NATS/JetStream operator are
+# cluster prerequisites (see README). This chart renders a CNPG `Cluster` CR
+# (whose PVC StorageClass it parameterizes) and passes StorageClass values
+# through to NATS; it does not vendor those operators as subcharts so the
+# chart renders and lints offline.
+annotations:
+  ksquad.io/issue: "ISI-2149"

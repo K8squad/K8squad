@@ -1,0 +1,23 @@
+KSquad {{ .Chart.AppVersion }} installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Exposure mode: {{ .Values.exposure.mode }}
+{{- if eq .Values.exposure.mode "gateway" }}
+  Gateway "{{ include "ksquad.fullname" . }}" references GatewayClass "{{ .Values.exposure.gateway.gatewayClassName }}".
+  Console   → https://{{ .Values.exposure.hostnames.console }}
+  API (SSE) → https://{{ .Values.exposure.hostnames.apiserver }}  (apiserver route timeout disabled — SSE-safe)
+  NOTE: the GatewayClass is provided by your controller; this chart never creates one.
+{{- else if eq .Values.exposure.mode "ingress" }}
+  Ingress via class "{{ .Values.exposure.ingress.className }}".
+  Console   → https://{{ .Values.exposure.hostnames.console }}
+  API (SSE) → https://{{ .Values.exposure.hostnames.apiserver }}
+  NOTE: Ingress mode does NOT give the portable SSE-timeout guarantee Gateway mode does.
+        Confirm your controller's read/send timeouts allow long-lived streams.
+{{- else }}
+  Services only (clusterip). Reach the console with:
+    kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ksquad.console.fullname" . }} 8080:{{ .Values.console.service.port }}
+{{- end }}
+
+Storage (never the cluster default):
+  Postgres  StorageClass: {{ include "ksquad.storageClass.postgres" . }}
+  Workspace StorageClass: {{ include "ksquad.storageClass.workspace" . }}  (accessMode {{ .Values.storage.workspace.accessMode }})
+  NATS      StorageClass: {{ include "ksquad.storageClass.nats" . }}

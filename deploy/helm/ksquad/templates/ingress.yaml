@@ -1,0 +1,48 @@
+{{- if eq .Values.exposure.mode "ingress" -}}
+{{- $ing := .Values.exposure.ingress -}}
+{{- $hosts := .Values.exposure.hostnames -}}
+{{- /* Graceful degrade (§16.1): plain Ingress with SSE-safe annotations for
+       clusters that have an Ingress controller but no Gateway API. Does NOT
+       give the portable SSE-timeout guarantee that Gateway mode does — honest
+       trade, surfaced in NOTES/README. */ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ksquad.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ $ing.className | quote }}
+  {{- if $ing.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ $hosts.console | quote }}
+        - {{ $hosts.apiserver | quote }}
+      secretName: {{ $ing.tls.secretName | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $hosts.console | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ksquad.console.fullname" . }}
+                port:
+                  number: {{ .Values.console.service.port }}
+    - host: {{ $hosts.apiserver | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ksquad.apiserver.fullname" . }}
+                port:
+                  number: {{ .Values.apiserver.service.port }}
+{{- end }}
