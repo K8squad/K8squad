@@ -1,0 +1,7 @@
+# This kustomization.yaml is the aggregate of every CRD in the ksquad.io group.
+# `kubectl apply -k config/crd` installs them all; the Helm chart (story 1.4)
+# consumes the same bases. Add new CRDs here as story 1.2 introduces them.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- bases/ksquad.io_teams.yaml

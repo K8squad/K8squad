@@ -11,3 +11,6 @@ paperclip/
 
 # General
 *.md.bmad
+
+# Go build output / vendored tool binaries
+bin/
