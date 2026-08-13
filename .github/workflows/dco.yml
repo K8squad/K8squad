@@ -1,0 +1,60 @@
+name: DCO
+
+# Developer Certificate of Origin check. Every non-merge commit in a pull
+# request must carry a `Signed-off-by:` trailer (see DCO.md). This is a
+# required status check for merge into main.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: Check sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Need the full PR history so we can walk base..head.
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by on every commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Non-merge commits introduced by this PR (base..head, first-parent).
+          commits=$(git rev-list --no-merges "${BASE_SHA}..${HEAD_SHA}")
+          if [ -z "${commits}" ]; then
+            echo "::notice::No non-merge commits to check."
+            exit 0
+          fi
+
+          fail=0
+          for sha in ${commits}; do
+            subject=$(git log -1 --format='%s' "${sha}")
+            # A valid sign-off trailer: "Signed-off-by: Name <email>"
+            if git log -1 --format='%B' "${sha}" \
+                 | grep -Eiq '^Signed-off-by: .+ <.+@.+>$'; then
+              echo "ok    ${sha:0:12}  ${subject}"
+            else
+              echo "::error::Commit ${sha} is missing a valid 'Signed-off-by' trailer: ${subject}"
+              fail=1
+            fi
+          done
+
+          if [ "${fail}" -ne 0 ]; then
+            echo ""
+            echo "One or more commits are not signed off. See DCO.md."
+            echo "Fix with:  git rebase --signoff ${BASE_SHA}  && git push --force-with-lease"
+            exit 1
+          fi
+          echo "All commits are signed off."

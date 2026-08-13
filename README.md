@@ -55,6 +55,15 @@ Contributions are welcome. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for how 
 build, test, and submit pull requests. Please open an issue to discuss substantial
 changes before submitting a pull request.
 
+All commits must be signed off under the
+**[Developer Certificate of Origin](./DCO.md)** (`git commit -s`), and all
+participation is governed by our **[Code of Conduct](./CODE_OF_CONDUCT.md)**.
+Project roles and decision-making are described in
+**[GOVERNANCE.md](./GOVERNANCE.md)**. To report a security vulnerability, follow
+**[SECURITY.md](./SECURITY.md)** — do not open a public issue.
+
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) and the
+[NOTICE](./NOTICE) file. Third-party dependency licenses are recorded in
+[LICENSES-third-party](./LICENSES-third-party).

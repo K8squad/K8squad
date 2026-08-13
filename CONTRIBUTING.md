@@ -452,8 +452,19 @@ _(Maintainers cut releases; this is here so contributors understand the mechanic
   contributions are accepted under that license.
 - **Third-party dependencies.** If you add one, make sure its license is compatible
   with Apache-2.0 and call it out clearly in your PR for maintainer review.
-- **Project governance.** The repository is still in its early-development phase, so
-  maintainer processes and community-health documents are evolving with the project.
+- **Notices & attribution.** Bundled third-party attributions live in [NOTICE](./NOTICE);
+  dependency licenses are inventoried in [LICENSES-third-party](./LICENSES-third-party).
+- **Developer Certificate of Origin.** Every commit is signed off under the
+  [DCO](./DCO.md); see the [DCO sign-off](#dco-sign-off) section above. The check is
+  enforced by `.github/workflows/dco.yml`.
+- **Code of Conduct.** All participation is governed by our
+  [Code of Conduct](./CODE_OF_CONDUCT.md), which adopts the CNCF Community Code of Conduct.
+- **Project governance.** Roles and decision-making are described in
+  [GOVERNANCE.md](./GOVERNANCE.md); current maintainers are listed in
+  [MAINTAINERS.md](./MAINTAINERS.md). The project is in its early-development phase, so
+  these processes will continue to evolve with the community.
+- **Security.** To report a vulnerability, follow [SECURITY.md](./SECURITY.md) — please do
+  not open a public issue for security problems.
 
 ---
 
