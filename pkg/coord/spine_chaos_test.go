@@ -322,6 +322,16 @@ func spineC4StaleHolder(t *testing.T, dsn string) {
 	if !sut.Complete(ctx, 0, "H2", f2) {
 		t.Fatal("current holder's fenced write was rejected (§6.3 false-negative)")
 	}
+
+	// Regression (Copilot review: renew-after-complete-keeps-lease). The item is now
+	// terminal (done), but H2's claim row still carries a live principal+fence. Force
+	// the lease live so the ONLY predicate that can reject the heartbeat is the §6.1
+	// terminal guard, then assert Renew rejects — a done item has no live lease to
+	// keep alive. Without the `state <> done` guard this renew lands (differential).
+	mustExec(t, db, `UPDATE claim SET lease_expires_at=now()+interval '1 hour' WHERE work_item_id=0`)
+	if sut.Renew(ctx, 0, "H2", f2) {
+		t.Fatal("renew accepted on a completed (done) item — §6.1 terminal lifecycle guard missing")
+	}
 }
 
 // --------------------------- C5 (Go-only, NEW) -----------------------------

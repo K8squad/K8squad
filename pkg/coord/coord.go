@@ -186,15 +186,20 @@ func (c *Coordinator) acquireTx(ctx context.Context, tx *sql.Tx, item int, princ
 }
 
 // Renew = §6.2 lease heartbeat: extend the lease only while we are still the
-// recorded holder at our fence AND the lease is still live. A stale fence, a
-// different holder, or an already-lapsed lease all reject. (C4)
+// recorded holder at our fence AND the lease is still live AND the work item is
+// not terminal. A stale fence, a different holder, an already-lapsed lease, or a
+// done item all reject. The terminal guard closes the §6.1 lifecycle gap where a
+// completed item's claim row still carries a live principal+fence+lease, which
+// would otherwise let a caller keep heartbeating a done item's lease forever.
+// (Copilot review: renew-after-complete-keeps-lease) (C4)
 func (c *Coordinator) Renew(ctx context.Context, item int, principal string, fence int64) bool {
 	q := fmt.Sprintf(
 		`UPDATE %s SET lease_expires_at=now()+interval '%s'
 		 WHERE work_item_id=$1 AND holder_principal=$2 AND fence_token=$3
-		   AND lease_expires_at > now()`,
-		c.cfg.Claim, c.cfg.LeaseInterval)
-	res, err := c.db.ExecContext(ctx, q, item, principal, fence)
+		   AND lease_expires_at > now()
+		   AND EXISTS (SELECT 1 FROM %s WHERE id=$1 AND state <> $4)`,
+		c.cfg.Claim, c.cfg.LeaseInterval, c.cfg.WorkItem)
+	res, err := c.db.ExecContext(ctx, q, item, principal, fence, c.cfg.DoneState)
 	if err != nil {
 		panic(fmt.Errorf("coord.Renew: %w", err))
 	}
