@@ -90,8 +90,11 @@ type SUT interface {
 	Complete(ctx context.Context, item int, principal string, fence int64) bool
 
 	// RedriveClaim = §6.4 reconcile-safe re-drive: re-read claim+fence; a no-op
-	// (returns the SAME fence, no bump) when we already hold it live. (C7)
-	RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64
+	// (returns the SAME fence, ok=true, no bump) when we still hold it LIVE (same
+	// run, un-lapsed lease). Re-acquires (bumping the fence, ok=true) when the
+	// fence advanced or the lease lapsed; ok=false — no fence returned — when a
+	// live FOREIGN lease blocks re-acquire. (C7)
+	RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) (fence2 int64, ok bool)
 
 	// DispatchOnce = §6.4 idempotent external-effect dispatch guarded by a
 	// durable marker: re-entry returns the SAME recorded task id. (C6)
@@ -332,6 +335,17 @@ func spineC4StaleHolder(t *testing.T, dsn string) {
 // Differential: release-before-fence (the inverted order) leaves a window in
 // which the surviving zombie writes with a still-valid fence; we prove that
 // window exists under the naive order, then prove the real order closes it.
+//
+// LIMITATION (Copilot review: c5-does-not-test-ordering). ReclaimFenced stamps
+// and releases in ONE transaction, so from outside we observe only the final
+// committed state (marker stamped + fence bumped); swapping the two statements
+// WITHIN the transaction would produce the same external observation and still
+// pass here. What this case actually proves is the COMMITTED post-condition and
+// that the guarded protocol closes the window the naive autocommit arm leaves
+// open. A test that proves statement ORDER is respected under a real cross-
+// process race — a survivor that observes the release before the resource-layer
+// fence completes — needs the live resource layer (pod-kill/cordon) and is
+// tracked as production-wiring follow-up (see the ReclaimFenced SCOPE note).
 
 func spineC5FenceBeforeRelease(t *testing.T, dsn string) {
 	ctx := context.Background()
@@ -430,8 +444,8 @@ func spineC7ReentrantNoop(t *testing.T, dsn string) {
 	// re-drive the claim K times: already held with a current fence → every pass
 	// is a no-op, fence STAYS 1 (AC5).
 	for i := 0; i < 5; i++ {
-		if got := sut.RedriveClaim(ctx, 0, "H1", "run-H1", f); got != f {
-			t.Fatalf("re-entrant re-drive bumped/changed fence: got %d want %d (AC5)", got, f)
+		if got, ok := sut.RedriveClaim(ctx, 0, "H1", "run-H1", f); !ok || got != f {
+			t.Fatalf("re-entrant re-drive lost custody or bumped/changed fence: got %d ok=%v want %d (AC5)", got, ok, f)
 		}
 	}
 	if cur := fenceOf(t, db, 0); cur != 1 {

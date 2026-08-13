@@ -31,14 +31,27 @@
 //
 // The custody invariants are pure SQL patterns over two tables — work_item (the
 // unit of coordination) and claim (exactly one row per item, holding the current
-// holder + monotonic fence_token; see db/migrations/0001_coord_schema.sql). The
-// statement bodies below are identical modulo a Config binding, so the same
-// guards can target either the production uuid-keyed coord.work_item /
-// coord.claim or the self-contained int-keyed harness schema the chaos suite
-// provisions (see NewForTest). Only the columns present in BOTH schemas are ever
-// touched (holder_principal, run_id, fence_token, lease_expires_at,
-// reclaim_fenced_at on claim; id, state on work_item), so the gate exercises the
-// real guards rather than a toy re-implementation.
+// holder + monotonic fence_token). The statement bodies below are parameterised
+// only by a Config binding (table names, lease interval, lifecycle values), so
+// the SAME guard SQL runs unchanged against any schema that supplies the columns
+// they read/write.
+//
+// In THIS story (ISI-2394) the only schema they are bound to and proved against
+// is the self-contained, int-keyed harness schema the chaos gate provisions (see
+// NewForTest and spine_chaos_test.go's freshSchema): work_item(id int, state) and
+// claim(work_item_id int, holder_principal, run_id, fence_token, lease_expires_at,
+// reclaim_fenced_at), plus a run-keyed dispatch marker. That schema is the
+// contract the C1..C7 guards are validated on.
+//
+// It is NOT yet the production coord schema (db/migrations/0001_coord_schema.sql):
+// production work_item/claim are uuid-keyed, coord.claim has no reclaim_fenced_at
+// column, and there is no dispatch-marker table. Binding this package to
+// production therefore requires a follow-up that (a) makes the item id type
+// generic / uuid, (b) adds reclaim_fenced_at + the §6.4 dispatch marker to the
+// migration, and (c) re-runs the guards against that checked-in schema. Until
+// then, treat this package as the chaos-gate-proven guard set, not the wired
+// production coordinator. (Copilot review: schema-compat; production-wiring
+// follow-up.)
 package coord
 
 import (
@@ -157,9 +170,17 @@ func (c *Coordinator) acquireTx(ctx context.Context, tx *sql.Tx, item int, princ
 	default:
 		panic(fmt.Errorf("coord.acquire: %w", err))
 	}
-	mark := fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2`, c.cfg.WorkItem)
-	if _, err := tx.ExecContext(ctx, mark, c.cfg.ClaimedState, item); err != nil {
+	// §6.1 lifecycle guard: only a non-terminal item may be (re)marked claimed. A
+	// done item must never be resurrected by a reclaim of its expired lease —
+	// reject via a zero-row update so the whole transaction rolls back and the
+	// fence bump above is undone. (Copilot review: acquire-reopens-done)
+	mark := fmt.Sprintf(`UPDATE %s SET state=$1 WHERE id=$2 AND state <> $3`, c.cfg.WorkItem)
+	res, err := tx.ExecContext(ctx, mark, c.cfg.ClaimedState, item, c.cfg.DoneState)
+	if err != nil {
 		panic(fmt.Errorf("coord.acquire: mark claimed: %w", err))
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return 0, false // terminal (done) item: do not reopen
 	}
 	return fence, true
 }
@@ -200,33 +221,56 @@ func (c *Coordinator) Complete(ctx context.Context, item int, principal string, 
 	return n == 1
 }
 
-// RedriveClaim = §6.4 reconcile-safe re-drive. If we are still the recorded
-// holder at this fence, re-driving is a no-op and returns the SAME fence (no
-// bump). Otherwise (someone else holds it / the fence advanced) it re-acquires
-// under the §6.2 guard, bumping the fence. (C7)
-func (c *Coordinator) RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64 {
+// RedriveClaim = §6.4 reconcile-safe re-drive. If we still hold the claim LIVE
+// (same principal AND same run AND our fence AND the lease has not lapsed),
+// re-driving is a no-op and returns the SAME fence with ok=true (no bump).
+// Otherwise (the fence advanced, the lease lapsed, or a different run) it
+// re-acquires under the §6.2 guard, bumping the fence (ok=true). ok=false — with
+// no fence returned — means a live FOREIGN lease blocks re-acquire: the caller
+// does NOT hold custody and must not proceed with the returned value. (C7)
+func (c *Coordinator) RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) (int64, bool) {
+	// Idempotent no-op ONLY when we still hold it LIVE. Checking run_id (not just
+	// principal) and the un-lapsed lease is load-bearing: a lapsed lease or a
+	// different run reusing the same principal must fall through to a real
+	// re-acquire, not silently return the stale fence.
+	// (Copilot review: redrive-fast-path-ignores-lease-and-run)
 	q := fmt.Sprintf(
 		`SELECT fence_token FROM %s
-		 WHERE work_item_id=$1 AND holder_principal=$2 AND fence_token=$3`,
+		 WHERE work_item_id=$1 AND holder_principal=$2 AND run_id=$3 AND fence_token=$4
+		   AND lease_expires_at > now()`,
 		c.cfg.Claim)
 	var cur int64
-	switch err := c.db.QueryRowContext(ctx, q, item, principal, fence).Scan(&cur); err {
+	switch err := c.db.QueryRowContext(ctx, q, item, principal, run, fence).Scan(&cur); err {
 	case nil:
-		return cur // still ours at this fence — idempotent no-op, no bump
+		return cur, true // still ours, live — idempotent no-op, no bump
 	case sql.ErrNoRows:
-		// fall through to re-acquire
+		// not live-ours → fall through to re-acquire
 	default:
 		panic(fmt.Errorf("coord.RedriveClaim: re-read: %w", err))
 	}
 	if f, ok := c.Acquire(ctx, item, principal, run); ok {
-		return f
+		return f, true
 	}
-	return c.fenceOf(ctx, item) // a live foreign lease blocks re-acquire
+	// A live foreign lease blocks re-acquire. Return an explicit blocked status
+	// rather than another holder's fence, so the caller cannot mistake rejection
+	// for custody. (Copilot review: redrive-returns-foreign-fence)
+	return 0, false
 }
 
-// DispatchOnce = §6.4 idempotent external-effect dispatch guarded by a durable
-// marker keyed on run_id. The first call records taskID; every re-entry (even
-// with a different candidate id) returns the SAME recorded task id. (C6)
+// DispatchOnce is the §6.4 durable idempotency MARKER for external-effect
+// dispatch — a get-or-create of the winning task id, keyed on run_id. The first
+// call records taskID; every re-entry (even with a different candidate id)
+// returns the SAME recorded id.
+//
+// It does NOT itself deliver the external effect. It provides the single stable
+// id that a downstream dispatcher/outbox keys on so delivery is at-most-once per
+// run: concurrent callers all observe the same winning id, so re-entry cannot
+// fan out to distinct recorded ids, but the ACTUAL external call must be made
+// idempotent on the returned id (or routed through such an outbox) by the caller.
+// The outbox/delivery state machine that enforces exactly-once delivery is
+// production-wiring follow-up, not part of this gate — hence the name reflects
+// the marker's role (record-once), not a delivery guarantee this method makes.
+// (Copilot review: dispatch-once-does-not-dispatch.) (C6)
 func (c *Coordinator) DispatchOnce(ctx context.Context, run, taskID string) string {
 	ins := fmt.Sprintf(
 		`INSERT INTO %s(run_id, task_id) VALUES ($1,$2) ON CONFLICT (run_id) DO NOTHING`,
@@ -249,6 +293,17 @@ func (c *Coordinator) DispatchOnce(ctx context.Context, run, taskID string) stri
 // before the claim is releasable, a holder that survived the kill is already
 // fenced and its late stale-fence write is rejected. Returns the bumped fence, or
 // an error if the item still holds a live lease. (C5)
+//
+// SCOPE (Copilot review: reclaim-does-not-fence-resource-layer): in THIS gate the
+// "fence the holder" step is the durable reclaim_fenced_at stamp + fence bump
+// only. That proves the §6.3 SQL ORDER — the marker is stamped strictly before
+// the release that bumps the fence — so a survivor is fenced against DB writes
+// (Complete/Renew reject its stale fence). It does NOT yet perform or CONFIRM a
+// resource-layer kill/cordon of the surviving process, so a zombie could still
+// issue direct PVC/resource writes outside the spine. Wiring a real pod-kill/
+// cordon whose success is confirmed (fail-closed) before the claim is released —
+// and a cross-process test that proves release cannot become visible before that
+// fencing succeeds — is production-wiring follow-up, not part of this gate.
 func (c *Coordinator) ReclaimFenced(ctx context.Context, item int, newPrincipal, newRun string) (int64, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -270,15 +325,6 @@ func (c *Coordinator) ReclaimFenced(ctx context.Context, item int, newPrincipal,
 		return 0, fmt.Errorf("coord.ReclaimFenced: commit: %w", err)
 	}
 	return fence, nil
-}
-
-func (c *Coordinator) fenceOf(ctx context.Context, item int) int64 {
-	q := fmt.Sprintf(`SELECT fence_token FROM %s WHERE work_item_id=$1`, c.cfg.Claim)
-	var f int64
-	if err := c.db.QueryRowContext(ctx, q, item).Scan(&f); err != nil {
-		panic(fmt.Errorf("coord.fenceOf: %w", err))
-	}
-	return f
 }
 
 // NewForTest binds the coordination statements to the self-contained int-keyed
