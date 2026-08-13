@@ -2,7 +2,7 @@
 <!-- One-line summary of the change -->
 
 ## Why
-<!-- Reference the story/issue: Fixes #ISI-XXXX -->
+<!-- Reference the story/issue: Related: ISI-XXXX / Fixes #123 -->
 <!-- Explain the motivation -->
 
 ## What changed

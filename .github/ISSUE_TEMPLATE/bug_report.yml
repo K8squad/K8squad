@@ -8,8 +8,8 @@ body:
       value: |
         Thanks for taking the time to file a bug report! Please search
         [existing issues](https://github.com/K8squad/K8squad/issues) first to avoid duplicates.
-        For security vulnerabilities, do **not** open a public issue — see
-        [SECURITY.md](https://github.com/K8squad/K8squad/blob/main/SECURITY.md).
+        For security vulnerabilities, do **not** open a public issue — coordinate
+        privately with the maintainers.
   - type: textarea
     id: summary
     attributes:
@@ -74,5 +74,5 @@ body:
       options:
         - label: I searched existing issues and did not find a duplicate.
           required: true
-        - label: This is not a security vulnerability (those go to SECURITY.md).
+        - label: This is not a security vulnerability (those should be reported privately to the maintainers).
           required: true
