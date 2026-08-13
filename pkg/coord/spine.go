@@ -14,10 +14,20 @@ import (
 // what keeps "no application-level lock" and "every write is fence-guarded" a
 // property of the code path rather than of caller discipline.
 //
-// The lease interval is always applied server-side as `now() + make_interval(secs
-// => $N)` with leaseSeconds bound as a query PARAMETER — never interpolated into
-// the SQL text — so every query below is a constant string with no injection
-// surface.
+// The lease interval is always applied server-side as `clock_timestamp() +
+// make_interval(secs => $N)` with leaseSeconds bound as a query PARAMETER — never
+// interpolated into the SQL text — so every query below is a constant string with
+// no injection surface.
+//
+// WALL-CLOCK (clock_timestamp, NOT now()): every lease boundary — both the expiry
+// ASSIGNMENT and the `lease_expires_at </> …` GUARD — uses clock_timestamp(),
+// which re-reads the real wall clock at each evaluation. `now()` (=
+// transaction_timestamp) is frozen at statement/transaction start, so a statement
+// that BLOCKS on a `FOR UPDATE` row lock past the lease window would still see the
+// pre-wait instant: it could commit a freshly-acquired lease that is already
+// expired (admitting an immediate second claimant), or let a holder whose lease
+// lapsed DURING the lock wait pass a guard it should fail. clock_timestamp()
+// closes both windows because it advances during the wait.
 type Spine struct {
 	db           *sql.DB
 	leaseSeconds float64
@@ -66,9 +76,9 @@ WITH picked AS (
         holder_principal = $1,
         run_id           = $2,
         fence_token      = fence_token + 1,
-        lease_expires_at = now() + make_interval(secs => $3::double precision)
+        lease_expires_at = clock_timestamp() + make_interval(secs => $3::double precision)
     WHERE work_item_id IN (SELECT id FROM picked)
-      AND (holder_principal IS NULL OR lease_expires_at < now())
+      AND (holder_principal IS NULL OR lease_expires_at < clock_timestamp())
     RETURNING work_item_id, fence_token
 ), done AS (
     UPDATE work_item SET state = 'claimed'
@@ -110,9 +120,9 @@ WITH locked AS (
         holder_principal = $1,
         run_id           = $2,
         fence_token      = fence_token + 1,
-        lease_expires_at = now() + make_interval(secs => $4::double precision)
+        lease_expires_at = clock_timestamp() + make_interval(secs => $4::double precision)
     WHERE work_item_id IN (SELECT id FROM locked)
-      AND (holder_principal IS NULL OR lease_expires_at < now())
+      AND (holder_principal IS NULL OR lease_expires_at < clock_timestamp())
     RETURNING work_item_id, fence_token
 ), done AS (
     UPDATE work_item SET state = 'claimed'
@@ -135,11 +145,11 @@ SELECT fence_token FROM acq`
 // longer match, so its renew is a no-op. Returns true iff the lease was extended.
 func (s *Spine) Renew(ctx context.Context, item int, principal string, fence int64) bool {
 	const q = `
-UPDATE claim SET lease_expires_at = now() + make_interval(secs => $4::double precision)
+UPDATE claim SET lease_expires_at = clock_timestamp() + make_interval(secs => $4::double precision)
 WHERE work_item_id     = $1
   AND holder_principal = $2
   AND fence_token      = $3
-  AND lease_expires_at > now()`
+  AND lease_expires_at > clock_timestamp()`
 	res, err := s.db.ExecContext(ctx, q, item, principal, fence, s.leaseSeconds)
 	if err != nil {
 		return false
@@ -151,7 +161,7 @@ WHERE work_item_id     = $1
 // Complete is the §6.3 fenced terminal write: advance the item to 'done' only if
 // the caller still holds it at its fence under a LIVE lease AND the item is still
 // 'claimed'. The fence term rejects a stale (zombie) writer; the
-// `lease_expires_at > now()` term (matching Renew) additionally rejects a holder
+// `lease_expires_at > clock_timestamp()` term (matching Renew) additionally rejects a holder
 // whose lease has lapsed but has not yet been reclaimed — so the post-expiry,
 // pre-reclaim window can no longer finalize work; and the `state = 'claimed'`
 // term makes the advance idempotent — a re-driven complete on an already-done
@@ -167,7 +177,7 @@ WHERE id = $1
       WHERE work_item_id     = $1
         AND holder_principal = $2
         AND fence_token      = $3
-        AND lease_expires_at > now()
+        AND lease_expires_at > clock_timestamp()
   )`
 	res, err := s.db.ExecContext(ctx, q, item, principal, fence)
 	if err != nil {
@@ -190,12 +200,12 @@ func (s *Spine) RedriveClaim(ctx context.Context, item int, principal, run strin
 	// falls through to a real conditional re-acquire (which bumps the fence) rather
 	// than silently refreshing a lease we no longer legitimately hold.
 	const q = `
-UPDATE claim SET lease_expires_at = now() + make_interval(secs => $4::double precision)
+UPDATE claim SET lease_expires_at = clock_timestamp() + make_interval(secs => $4::double precision)
 WHERE work_item_id     = $1
   AND holder_principal = $2
   AND fence_token      = $3
   AND run_id           = $5
-  AND lease_expires_at > now()
+  AND lease_expires_at > clock_timestamp()
 RETURNING fence_token`
 	var cur int64
 	err := s.db.QueryRowContext(ctx, q, item, principal, fence, s.leaseSeconds, run).Scan(&cur)
@@ -214,18 +224,41 @@ RETURNING fence_token`
 // outbox). The FIRST dispatch for a run durably records its task id; every
 // re-driven dispatch — even with a different candidate id — returns that same
 // recorded id, so the side effect fires at most once. Returns "" only on error.
-func (s *Spine) DispatchOnce(ctx context.Context, run, taskID string) string {
+//
+// FENCE-GUARDED CREATION: marker creation is tied ATOMICALLY to a matching live
+// claim. The insert only lands when (item, principal, run, fence) is the current
+// holder under an unexpired lease — the same custody predicate as Complete/Renew.
+// A stale run (its fence bumped by a reclaim, or its lease lapsed) matches no
+// claim row, so it can neither create the marker nor initiate the external
+// effect: the §6.4 dispatch is fence-guarded like every other state-mutating
+// write, not an unguarded side door. Reading back an ALREADY-recorded id is not
+// gated — once the legitimate live holder recorded it, the effect has fired
+// exactly once and a later re-drive (even by a since-lapsed holder) may learn the
+// id without re-firing anything.
+func (s *Spine) DispatchOnce(ctx context.Context, item int, principal, run string, fence int64, taskID string) string {
 	if err := s.ensureOutbox(ctx); err != nil {
 		return ""
 	}
+	// INSERT ... SELECT FROM claim WHERE <live custody>: no row unless this caller
+	// is the current fence-matching holder under a live lease. ON CONFLICT keeps
+	// the first-writer-wins idempotency (a concurrent re-drive is a no-op insert).
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO coord_dispatch (run_id, task_id) VALUES ($1, $2)
-ON CONFLICT (run_id) DO NOTHING`, run, taskID); err != nil {
+INSERT INTO coord_dispatch (run_id, task_id)
+SELECT $1, $2
+FROM claim
+WHERE work_item_id     = $3
+  AND holder_principal = $4
+  AND run_id           = $1
+  AND fence_token      = $5
+  AND lease_expires_at > clock_timestamp()
+ON CONFLICT (run_id) DO NOTHING`, run, taskID, item, principal, fence); err != nil {
 		return ""
 	}
 	var got string
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT task_id FROM coord_dispatch WHERE run_id = $1`, run).Scan(&got); err != nil {
+		// sql.ErrNoRows here == the caller was NOT a live fence-matching holder and
+		// no prior marker exists, i.e. a refused dispatch. Collapses to "".
 		return ""
 	}
 	return got
@@ -277,7 +310,7 @@ func (s *Spine) ReclaimFenced(ctx context.Context, item int, newPrincipal, newRu
 
 	// 1. FENCE FIRST — mark the surviving holder fenced at the resource layer.
 	if _, err = tx.ExecContext(ctx,
-		`UPDATE claim SET reclaim_fenced_at = now() WHERE work_item_id = $1`, item); err != nil {
+		`UPDATE claim SET reclaim_fenced_at = clock_timestamp() WHERE work_item_id = $1`, item); err != nil {
 		return 0, err
 	}
 
@@ -287,9 +320,9 @@ UPDATE claim SET
     holder_principal = $1,
     run_id           = $2,
     fence_token      = fence_token + 1,
-    lease_expires_at = now() + make_interval(secs => $4::double precision)
+    lease_expires_at = clock_timestamp() + make_interval(secs => $4::double precision)
 WHERE work_item_id = $3
-  AND (holder_principal IS NULL OR lease_expires_at < now())
+  AND (holder_principal IS NULL OR lease_expires_at < clock_timestamp())
 RETURNING fence_token`
 	err = tx.QueryRowContext(ctx, acq, newPrincipal, newRun, item, s.leaseSeconds).Scan(&fence)
 	if err == sql.ErrNoRows {

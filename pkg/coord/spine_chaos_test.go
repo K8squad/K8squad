@@ -94,8 +94,11 @@ type SUT interface {
 	RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64
 
 	// DispatchOnce = §6.4 idempotent external-effect dispatch guarded by a
-	// durable marker: re-entry returns the SAME recorded task id. (C6)
-	DispatchOnce(ctx context.Context, run, taskID string) string
+	// durable marker AND a live-custody predicate: marker creation is tied to a
+	// matching live claim (item, principal, run, fence under an unexpired lease),
+	// so a stale-fence / lease-lapsed run cannot initiate the effect; re-entry by
+	// the live holder returns the SAME recorded task id. (C6)
+	DispatchOnce(ctx context.Context, item int, principal, run string, fence int64, taskID string) string
 
 	// ReclaimFenced = §6.3 fence-BEFORE-release reclaim protocol (C5, live layer):
 	// pod-kill/cordon + stamp reclaim_fenced_at → confirm the holder is fenced at
@@ -413,17 +416,43 @@ func spineC6DispatchDedup(t *testing.T, dsn string) {
 	db := openDB(t, dsn)
 	freshSchema(t, db, 1)
 	sut := newSUT(t, db, dsn)
-	_, _ = sut.Acquire(ctx, 0, "H1", "run-H1")
+	f1, ok := sut.Acquire(ctx, 0, "H1", "run-H1")
+	if !ok {
+		t.Fatal("C6 setup acquire failed")
+	}
 
-	tid := sut.DispatchOnce(ctx, "run-H1", "task-abc")
+	// The live fence-matching holder records the marker once...
+	tid := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, "task-abc")
 	if tid == "" {
 		t.Fatal("first dispatch returned empty task id")
 	}
 	for i := 0; i < 5; i++ {
 		// re-entry with a DIFFERENT candidate id must still return the recorded one.
-		if got := sut.DispatchOnce(ctx, "run-H1", fmt.Sprintf("task-dup-%d", i)); got != tid {
+		if got := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, fmt.Sprintf("task-dup-%d", i)); got != tid {
 			t.Fatalf("re-dispatched an external effect: got %q want %q", got, tid)
 		}
+	}
+
+	// custody teeth (fence-guarded dispatch): a run that is NOT the current
+	// fence-matching live holder must not be able to CREATE a dispatch marker /
+	// initiate an external effect. Rebuild the fixture, let H1's lease lapse, and
+	// reclaim with H2 so H1's fence f1 is now stale; H1's dispatch for a run that
+	// never recorded a marker must be refused (returns ""), while the live holder
+	// H2 still dispatches. Differential to the guarded path above: without the
+	// custody predicate the stale H1 insert would land and fire a second effect.
+	freshSchema(t, db, 1)
+	sut = newSUT(t, db, dsn)
+	f1, _ = sut.Acquire(ctx, 0, "H1", "run-H1")
+	waitLeaseExpiry(t)
+	f2, err := sut.ReclaimFenced(ctx, 0, "H2", "run-H2")
+	if err != nil {
+		t.Fatalf("C6 custody setup reclaim: %v", err)
+	}
+	if got := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, "task-zombie"); got != "" {
+		t.Fatalf("C6 custody breach: stale-fence H1 created a dispatch marker: got %q", got)
+	}
+	if got := sut.DispatchOnce(ctx, 0, "H2", "run-H2", f2, "task-live"); got != "task-live" {
+		t.Fatalf("C6: live holder H2 dispatch refused or mis-recorded: got %q", got)
 	}
 }
 
