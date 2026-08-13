@@ -53,6 +53,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -187,6 +188,16 @@ func openDB(t *testing.T, dsn string) *sql.DB {
 func TestSpine(t *testing.T) {
 	dsn := dsnOrFatal(t)
 
+	// ISI-2200 fail-fast precondition (Story 14.2): the REQUIRED gate refuses to
+	// run — and goes RED — if the checked-in coord migration lacks the fence-token
+	// column or the one-active-claim (exactly one claim row per work item, F3)
+	// constraint. This runs BEFORE C1..C7 (not as a sibling subtest) so a missing
+	// invariant aborts the whole suite loud, never letting the fencing cases go
+	// silently green against a spine whose structural guards were never
+	// provisioned. It reads the SHIPPED db/migrations schema, not the inline
+	// freshSchema fabrication, so the teeth bite production DDL.
+	schemaPreflightFailFast(t, dsn)
+
 	t.Run("C1_no_double_claim", func(t *testing.T) { spineC1NoDoubleClaim(t, dsn) })
 	t.Run("C2_skip_locked_fanout_distinct", func(t *testing.T) { spineC2FanoutDistinct(t, dsn) })
 	t.Run("C3_crash_mid_claim_reclaim", func(t *testing.T) { spineC3CrashMidClaim(t, dsn) })
@@ -194,6 +205,113 @@ func TestSpine(t *testing.T) {
 	t.Run("C5_zombie_writer_vs_pvc_fence_before_release", func(t *testing.T) { spineC5FenceBeforeRelease(t, dsn) })
 	t.Run("C6_double_dispatch_dedup", func(t *testing.T) { spineC6DispatchDedup(t, dsn) })
 	t.Run("C7_reentrant_claim_complete_noop", func(t *testing.T) { spineC7ReentrantNoop(t, dsn) })
+}
+
+// ===========================================================================
+// ISI-2200 schema preflight (Story 14.2) — fail fast if the fence-token column
+// or the unique-active-claim constraint is absent from the SHIPPED migration.
+//
+// The C1..C7 cases below build their own inline `claim`/`work_item` (freshSchema)
+// so they can run the guards under -race without depending on the migration
+// runner. That isolation has a blind spot: it would go green even if the real
+// db/migrations schema had lost `fence_token` or the "one claim row per work
+// item" primary key — i.e. even against a spine whose fencing invariants were
+// never provisioned. This preflight closes that blind spot by applying the real
+// migration and asserting those two structural preconditions directly. Drop
+// `fence_token` (or the claim PK) from 0001_coord_schema.sql and this arm goes
+// RED, which is exactly the ISI-2200 acceptance ("fails fast if fence-token
+// column / unique-active-claim constraint is absent").
+// ===========================================================================
+
+// coordMigrationSQL returns the checked-in coord migration DDL, or FATALs if it
+// cannot be located/read — a required gate must fail loud, never skip its own
+// precondition (AC1/ISI-2200). Override the search dir with COORD_MIGRATIONS_DIR
+// (the CI checkout runs the test from ./pkg/coord, so the default is repo-root
+// relative).
+func coordMigrationSQL(t *testing.T) string {
+	t.Helper()
+	dir := os.Getenv("COORD_MIGRATIONS_DIR")
+	candidates := []string{}
+	if dir != "" {
+		candidates = append(candidates, filepath.Join(dir, "0001_coord_schema.sql"))
+	}
+	candidates = append(candidates,
+		filepath.Join("..", "..", "db", "migrations", "0001_coord_schema.sql"),
+		filepath.Join("db", "migrations", "0001_coord_schema.sql"),
+	)
+	for _, p := range candidates {
+		if b, err := os.ReadFile(p); err == nil {
+			return string(b)
+		}
+	}
+	t.Fatalf("ISI-2200 preflight: cannot locate 0001_coord_schema.sql (looked in %v). "+
+		"Refusing to pass without validating the shipped fence/claim schema (AC1). "+
+		"Set COORD_MIGRATIONS_DIR to the db/migrations path.", candidates)
+	return ""
+}
+
+func schemaPreflightFailFast(t *testing.T, dsn string) {
+	t.Helper()
+	ctx := context.Background()
+	db := openDB(t, dsn)
+
+	// Apply the real migration into a clean `coord` schema. pgx's simple-query
+	// path runs the whole multi-statement, dollar-quoted file in one Exec. This
+	// is throwaway: the C1..C7 cases use unqualified public-schema tables, so the
+	// migrated `coord.*` objects never collide with them.
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
+		t.Fatalf("ISI-2200 preflight: reset coord schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, coordMigrationSQL(t)); err != nil {
+		t.Fatalf("ISI-2200 preflight: the shipped coord migration failed to apply "+
+			"against real Postgres — the spine schema is broken at the source: %v", err)
+	}
+	t.Cleanup(func() { _, _ = db.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS coord CASCADE`) })
+
+	// (1) fence-token column — the monotonic lease epoch every fencing guard
+	// (§6.2 acquire / §6.3 reclaim / Complete) reads and CAS-bumps. Without it
+	// C3/C4/C5 could not fence at all.
+	var hasFence bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			 WHERE table_schema='coord' AND table_name='claim'
+			   AND column_name='fence_token')`).Scan(&hasFence); err != nil {
+		t.Fatalf("ISI-2200 preflight: fence-token probe failed: %v", err)
+	}
+	if !hasFence {
+		t.Fatal("ISI-2200 FAIL-FAST: coord.claim has no fence_token column — the " +
+			"spine cannot fence stale holders (F2/F3). The chaos gate refuses to run.")
+	}
+
+	// (2) unique-active-claim constraint — a PRIMARY KEY / UNIQUE on exactly
+	// coord.claim(work_item_id). This is the structural "exactly one claim row
+	// per work item" invariant (F3, §6.1): it is what makes two live leases on
+	// one item impossible, not application discipline. The guard checks the
+	// constraint's column set is precisely {work_item_id}.
+	var hasUniqueActiveClaim bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			  FROM pg_constraint c
+			  JOIN pg_class     t ON t.oid = c.conrelid
+			  JOIN pg_namespace n ON n.oid = t.relnamespace
+			 WHERE n.nspname = 'coord'
+			   AND t.relname = 'claim'
+			   AND c.contype IN ('p','u')
+			   AND (
+			     SELECT array_agg(a.attname::text ORDER BY a.attname::text)
+			       FROM pg_attribute a
+			      WHERE a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
+			   ) = ARRAY['work_item_id']
+		)`).Scan(&hasUniqueActiveClaim); err != nil {
+		t.Fatalf("ISI-2200 preflight: unique-active-claim probe failed: %v", err)
+	}
+	if !hasUniqueActiveClaim {
+		t.Fatal("ISI-2200 FAIL-FAST: coord.claim has no unique/primary-key constraint " +
+			"on (work_item_id) — 'exactly one active claim per work item' (F3) is not " +
+			"structurally enforced; two live leases become possible. The chaos gate refuses to run.")
+	}
 }
 
 // --------------------------- C1 / C2 ---------------------------------------
