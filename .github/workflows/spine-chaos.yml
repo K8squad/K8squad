@@ -85,7 +85,20 @@ jobs:
           DATABASE_URL: postgres://postgres@localhost:5432/coord_chaos?sslmode=disable
         run: |
           # Build tag `chaos` guards the fault-injection tests (real Postgres required).
-          go test -race -tags=chaos -run 'TestSpine' ./pkg/coord/... ./internal/coord/... -v
+          # Target only the coord package dir(s) that actually exist: `go test` errors
+          # ("no such file or directory") on a package pattern whose directory is absent,
+          # so hardcoding BOTH ./pkg/coord/... AND ./internal/coord/... fails the gate the
+          # moment the spine lives in only one of them — which it does (pkg/coord, no
+          # internal/coord). That turned a fully-green C1..C7 run RED on main (ISI-2347).
+          TARGETS=""
+          [ -d pkg/coord ] && TARGETS="$TARGETS ./pkg/coord/..."
+          [ -d internal/coord ] && TARGETS="$TARGETS ./internal/coord/..."
+          if [ -z "$TARGETS" ]; then
+            echo "::error::guard reported spine present but neither pkg/coord nor internal/coord exists"
+            exit 1
+          fi
+          echo "chaos targets:$TARGETS"
+          go test -race -tags=chaos -run 'TestSpine' $TARGETS -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
