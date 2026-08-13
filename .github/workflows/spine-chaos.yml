@@ -90,15 +90,17 @@ jobs:
           # so hardcoding BOTH ./pkg/coord/... AND ./internal/coord/... fails the gate the
           # moment the spine lives in only one of them — which it does (pkg/coord, no
           # internal/coord). That turned a fully-green C1..C7 run RED on main (ISI-2347).
-          TARGETS=""
-          [ -d pkg/coord ] && TARGETS="$TARGETS ./pkg/coord/..."
-          [ -d internal/coord ] && TARGETS="$TARGETS ./internal/coord/..."
-          if [ -z "$TARGETS" ]; then
+          # Collect targets in a bash array so the `go test` args stay correctly
+          # separated even if a path ever contained whitespace (Copilot review, PR #17).
+          targets=()
+          [ -d pkg/coord ] && targets+=("./pkg/coord/...")
+          [ -d internal/coord ] && targets+=("./internal/coord/...")
+          if [ ${#targets[@]} -eq 0 ]; then
             echo "::error::guard reported spine present but neither pkg/coord nor internal/coord exists"
             exit 1
           fi
-          echo "chaos targets:$TARGETS"
-          go test -race -tags=chaos -run 'TestSpine' $TARGETS -v
+          echo "chaos targets: ${targets[*]}"
+          go test -race -tags=chaos -run 'TestSpine' "${targets[@]}" -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
