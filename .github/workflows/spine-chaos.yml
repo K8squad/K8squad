@@ -85,7 +85,15 @@ jobs:
           DATABASE_URL: postgres://postgres@localhost:5432/coord_chaos?sslmode=disable
         run: |
           # Build tag `chaos` guards the fault-injection tests (real Postgres required).
-          go test -race -tags=chaos -run 'TestSpine' ./pkg/coord/... ./internal/coord/... -v
+          # Only test spine packages that actually exist. The coord spine lives in
+          # pkg/coord on main (ISI-2394); internal/coord is a historical location kept
+          # here for forward-compat. Naming an absent package path makes `go test`
+          # fail-fast with "no such file or directory" (ISI-2401) — the C1..C7 cases
+          # themselves pass, so select existing dirs instead of hard-coding both.
+          PKGS=""
+          [ -d pkg/coord ] && PKGS="$PKGS ./pkg/coord/..."
+          [ -d internal/coord ] && PKGS="$PKGS ./internal/coord/..."
+          go test -race -tags=chaos -run 'TestSpine' $PKGS -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
