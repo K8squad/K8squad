@@ -7,10 +7,9 @@ guesswork. It is meant to *lower* the barrier to contributing, not raise a wall 
 process — if something here is unclear or wrong, opening a PR to fix this file is a
 perfectly good first contribution.
 
-By participating you agree to abide by our [Code of Conduct](./CODE_OF_CONDUCT.md)
-(which adopts the CNCF Community Code of Conduct). Found a security issue? Please
-**don't** open a public PR or issue — follow [SECURITY.md](./SECURITY.md) to report
-it privately.
+Please keep contributions respectful and constructive. Found a security issue? Please
+**don't** open a public PR or issue — coordinate privately with the maintainers so the
+issue can be handled responsibly.
 
 > **Status: early development.** The repository is in its skeleton phase. Some
 > components have not landed yet, and CRDs/interfaces are **not** stable. CI lanes
@@ -331,9 +330,7 @@ git commit -s -m "feat(coord): add lease renewal"
 
 This appends a `Signed-off-by:` trailer certifying you have the right to submit the
 work under the project's Apache-2.0 license. Amend a missed sign-off with
-`git commit --amend -s`, or a whole branch with `git rebase --signoff main`. See
-[DCO.md](./DCO.md) for the full text — the DCO check (`.github/workflows/dco.yml`) is a
-**required status check**, so a PR with any unsigned commit won't merge.
+`git commit --amend -s`, or a whole branch with `git rebase --signoff main`.
 
 ### Opening the PR
 
@@ -345,7 +342,6 @@ work under the project's Apache-2.0 license. Amend a missed sign-off with
    - **`spine-chaos.yml`** — the C1–C7 chaos suite, **if** your PR touches
      `cmd/apiserver/**`, `pkg/coord/**`, or `internal/coord/**`.
    - **`security.yml`** — govulncheck · npm audit · Trivy fs/config · gitleaks · CodeQL.
-   - **`dco.yml`** — every commit carries a `Signed-off-by:` trailer.
 4. Address review. Keep the diff scoped to the ticket; sibling cleanups belong in their
    own PR.
 
@@ -452,17 +448,12 @@ _(Maintainers cut releases; this is here so contributors understand the mechanic
 
 ## 11. Licensing & governance
 
-- **License.** KSquad is licensed under the [Apache License 2.0](./LICENSE) (see also
-  the [NOTICE](./NOTICE) file). All contributions are accepted under that license.
-- **Third-party dependencies.** If you add one, record it in
-  [LICENSES-third-party](./LICENSES-third-party) and make sure its license is compatible
-  (Apache-2.0, MIT, BSD, and similar permissive licenses are fine; avoid copyleft
-  without maintainer discussion).
-- **Governance.** Project roles and decision-making are described in
-  [GOVERNANCE.md](./GOVERNANCE.md); current maintainers are listed in
-  [MAINTAINERS.md](./MAINTAINERS.md).
-- **Code of Conduct.** All participation is governed by the
-  [Code of Conduct](./CODE_OF_CONDUCT.md).
+- **License.** KSquad is licensed under the [Apache License 2.0](./LICENSE). All
+  contributions are accepted under that license.
+- **Third-party dependencies.** If you add one, make sure its license is compatible
+  with Apache-2.0 and call it out clearly in your PR for maintainer review.
+- **Project governance.** The repository is still in its early-development phase, so
+  maintainer processes and community-health documents are evolving with the project.
 
 ---
 
