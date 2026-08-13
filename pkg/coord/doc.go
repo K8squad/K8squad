@@ -1,6 +1,18 @@
 // Package coord is the K8squad coordination spine: the Go mechanism that turns
-// the coordination-record schema (db/migrations/0001_coord_schema.sql, Story 2.1
-// / ISI-2191) into safe claim / renew / reclaim / fence / outbox operations.
+// the coordination-record model of Story 2.1 / ISI-2191 into safe claim / renew /
+// reclaim / fence / outbox operations.
+//
+// SCHEMA BINDING (important): the guards here are currently proved ONLY against
+// the int-keyed HARNESS/FIXTURE schema the ISI-2347 chaos gate provisions —
+// unqualified `work_item` / `claim` tables with integer ids, plus the
+// `coord_dispatch` outbox this package creates on demand. They are NOT yet bound
+// to the production migration db/migrations/0001_coord_schema.sql, whose
+// `coord.work_item` / `coord.claim` use UUID ids, board states, and carry no
+// `reclaim_fenced_at` column or dispatch-marker table. A production Config
+// therefore cannot execute all of these statements as written. Binding to the
+// production schema — generic/uuid id type, add `reclaim_fenced_at` + the §6.4
+// dispatch marker to 0001_coord_schema.sql, then re-run the guards against the
+// checked-in schema — is production-wiring follow-up ISI-2399.
 //
 // It is the single most correctness-critical component of v1 (PRD R10 / Arch §6).
 // Every state-mutating write is fence-guarded so a zombie holder (a Run that lost

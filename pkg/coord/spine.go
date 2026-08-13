@@ -77,25 +77,41 @@ WITH picked AS (
 SELECT work_item_id, fence_token FROM acq`
 	err := s.db.QueryRowContext(ctx, q, principal, run, s.leaseSeconds).Scan(&item, &fence)
 	if err != nil {
-		return 0, 0, false // sql.ErrNoRows (nothing poppable) or a transient error
+		// sql.ErrNoRows == nothing poppable this pass. NOTE: a transient DB/context
+		// error also collapses to ok=false here because the SUT gate contract fixes
+		// this signature (no error return); the gate never passes silently on an
+		// outage (a failed post-condition query is a hard t.Fatal). Splitting a real
+		// `error` out from expected contention/exhaustion is production-wiring
+		// follow-up ISI-2399 (item 1), done at apiserver/operator wire-in.
+		return 0, 0, false
 	}
 	return item, fence, true
 }
 
 // Acquire is the §6.2 targeted acquire of a SPECIFIC item — the shared primitive
-// behind a queue-pull's acquire and a reclaim's re-acquire. The CAS guard
-// (`holder IS NULL OR lease expired`) is the whole story: it admits an unheld or
-// lease-lapsed item and rejects one under a live lease, and every admit bumps the
-// monotonic fence. Returns the fresh fence and ok=false when a live lease blocks.
+// behind a queue-pull's acquire and a reclaim's re-acquire. It first locks the
+// work item (`FOR UPDATE`, the SAME work-item-first lock order as ClaimNext, so
+// the two can never deadlock) and validates it is NOT terminal: a `done` item is
+// never re-openable, so a targeted acquire whose lease has since expired cannot
+// resurrect completed work (the "done item never double-advances" invariant).
+// Only then does the CAS guard (`holder IS NULL OR lease expired`) run: it admits
+// an unheld or lease-lapsed item and rejects one under a live lease, and every
+// admit bumps the monotonic fence. Returns the fresh fence and ok=false when the
+// item is terminal or a live lease blocks.
 func (s *Spine) Acquire(ctx context.Context, item int, principal, run string) (fence int64, ok bool) {
 	const q = `
-WITH acq AS (
+WITH locked AS (
+    SELECT id FROM work_item
+    WHERE id = $3
+      AND state <> 'done'
+    FOR UPDATE
+), acq AS (
     UPDATE claim SET
         holder_principal = $1,
         run_id           = $2,
         fence_token      = fence_token + 1,
         lease_expires_at = now() + make_interval(secs => $4::double precision)
-    WHERE work_item_id = $3
+    WHERE work_item_id IN (SELECT id FROM locked)
       AND (holder_principal IS NULL OR lease_expires_at < now())
     RETURNING work_item_id, fence_token
 ), done AS (
@@ -105,7 +121,10 @@ WITH acq AS (
 SELECT fence_token FROM acq`
 	err := s.db.QueryRowContext(ctx, q, principal, run, item, s.leaseSeconds).Scan(&fence)
 	if err != nil {
-		return 0, false // sql.ErrNoRows == a live lease blocked us
+		// sql.ErrNoRows == the item is terminal or a live lease blocked us. As with
+		// ClaimNext, a transient error also collapses to ok=false under the fixed
+		// SUT contract signature; splitting a real `error` out is follow-up ISI-2399.
+		return 0, false
 	}
 	return fence, true
 }
@@ -130,10 +149,14 @@ WHERE work_item_id     = $1
 }
 
 // Complete is the §6.3 fenced terminal write: advance the item to 'done' only if
-// the caller still holds it at its fence AND the item is still 'claimed'. The
-// fence term rejects a stale (zombie) writer; the `state = 'claimed'` term makes
-// the advance idempotent — a re-driven complete on an already-done item matches
-// zero rows, so it can never double-advance. Returns true iff it advanced.
+// the caller still holds it at its fence under a LIVE lease AND the item is still
+// 'claimed'. The fence term rejects a stale (zombie) writer; the
+// `lease_expires_at > now()` term (matching Renew) additionally rejects a holder
+// whose lease has lapsed but has not yet been reclaimed — so the post-expiry,
+// pre-reclaim window can no longer finalize work; and the `state = 'claimed'`
+// term makes the advance idempotent — a re-driven complete on an already-done
+// item matches zero rows, so it can never double-advance. Returns true iff it
+// advanced.
 func (s *Spine) Complete(ctx context.Context, item int, principal string, fence int64) bool {
 	const q = `
 UPDATE work_item SET state = 'done'
@@ -144,6 +167,7 @@ WHERE id = $1
       WHERE work_item_id     = $1
         AND holder_principal = $2
         AND fence_token      = $3
+        AND lease_expires_at > now()
   )`
 	res, err := s.db.ExecContext(ctx, q, item, principal, fence)
 	if err != nil {
@@ -160,16 +184,23 @@ WHERE id = $1
 // live holder does it fall through to a fresh conditional acquire. Returns the
 // resulting fence (unchanged on the no-op path).
 func (s *Spine) RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64 {
+	// The no-op fast path is taken ONLY when we still hold the claim live: same
+	// holder, same run, same fence, AND an unexpired lease. Dropping any of these —
+	// in particular a lapsed lease, or a DIFFERENT run reusing the same principal —
+	// falls through to a real conditional re-acquire (which bumps the fence) rather
+	// than silently refreshing a lease we no longer legitimately hold.
 	const q = `
 UPDATE claim SET lease_expires_at = now() + make_interval(secs => $4::double precision)
 WHERE work_item_id     = $1
   AND holder_principal = $2
   AND fence_token      = $3
+  AND run_id           = $5
+  AND lease_expires_at > now()
 RETURNING fence_token`
 	var cur int64
-	err := s.db.QueryRowContext(ctx, q, item, principal, fence, s.leaseSeconds).Scan(&cur)
+	err := s.db.QueryRowContext(ctx, q, item, principal, fence, s.leaseSeconds, run).Scan(&cur)
 	if err == nil {
-		return cur // we still hold it → no-op re-drive, fence stable
+		return cur // we still hold it live → no-op re-drive, fence stable
 	}
 	// Not the live holder at that fence: attempt a fresh conditional acquire.
 	if f, ok := s.Acquire(ctx, item, principal, run); ok {
@@ -210,13 +241,39 @@ ON CONFLICT (run_id) DO NOTHING`, run, taskID); err != nil {
 //
 // Both writes run in one transaction so a crash mid-protocol cannot leave the
 // item fenced-but-unreleased or released-but-unfenced. Returns the bumped fence,
-// or an error if a still-live lease made the item non-reclaimable.
+// or an error if the item is terminal or a still-live lease made it
+// non-reclaimable.
+//
+// SCOPE (chaos gate): in this package "fence the holder" is the DURABLE
+// reclaim_fenced_at stamp + fence bump, run strictly before the release, which
+// proves the §6.3 SQL fence-before-release ORDER — a survivor's stale-fence
+// write is rejected by Complete/Renew. It does NOT yet perform or confirm a
+// resource-layer pod-kill/cordon, so a zombie could still issue direct
+// PVC/resource writes. A confirmed, fail-closed resource-layer kill BEFORE
+// release is tracked as production-wiring follow-up ISI-2399.
 func (s *Spine) ReclaimFenced(ctx context.Context, item int, newPrincipal, newRun string) (fence int64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after a successful Commit
+
+	// 0. TERMINAL GUARD — lock the work item first (work-item-first order, same as
+	// ClaimNext/Acquire) and refuse to reclaim a 'done' item. Without this, a
+	// completed item whose retained lease has since expired could be reclaimed and
+	// flipped 'done' -> 'claimed' below, defeating "a done item never double-advances".
+	var state string
+	err = tx.QueryRowContext(ctx,
+		`SELECT state FROM work_item WHERE id = $1 FOR UPDATE`, item).Scan(&state)
+	if err == sql.ErrNoRows {
+		return 0, fmt.Errorf("coord: ReclaimFenced: work_item %d does not exist", item)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if state == "done" {
+		return 0, fmt.Errorf("coord: ReclaimFenced: work_item %d is terminal (done); refusing to reopen", item)
+	}
 
 	// 1. FENCE FIRST — mark the surviving holder fenced at the resource layer.
 	if _, err = tx.ExecContext(ctx,

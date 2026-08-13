@@ -139,6 +139,12 @@ func freshSchema(t *testing.T, db *sql.DB, n int) {
 	stmts := []string{
 		`DROP TABLE IF EXISTS claim`,
 		`DROP TABLE IF EXISTS work_item`,
+		// C6 (double-dispatch dedup) writes a durable per-run marker into
+		// coord_dispatch keyed on run_id. The suite reuses fixed run ids (e.g.
+		// "run-H1"), so a marker left behind by a PRIOR run would let a later C6
+		// pass on a stale row without ever recording THIS run's dispatch. Reset the
+		// outbox with the rest of the fixture; DispatchOnce re-provisions it on demand.
+		`DROP TABLE IF EXISTS coord_dispatch`,
 		`CREATE TABLE work_item(id int PRIMARY KEY, project_id int, state text NOT NULL)`,
 		`CREATE TABLE claim(
 			work_item_id int PRIMARY KEY REFERENCES work_item(id),
@@ -368,6 +374,16 @@ func spineC5FenceBeforeRelease(t *testing.T, dsn string) {
 		t.Fatalf("ReclaimFenced fence: got %d want %d", f2, f1+1)
 	}
 
+	// LIMITATION (see ReclaimFenced SCOPE): because ReclaimFenced stamps
+	// reclaim_fenced_at and releases in ONE transaction, the internal statement
+	// order is externally unobservable — reversing the two statements inside the
+	// txn would produce the same committed observations and still pass here. What
+	// C5 actually proves is (a) the committed post-condition (marker stamped, fence
+	// bumped) and (b) that the guarded protocol CLOSES the zombie window the naive
+	// autocommit arm above leaves open. A live cross-process ordering test — a
+	// survivor observing release before resource-layer fencing completes, which
+	// needs the real resource layer — is tracked as follow-up ISI-2399.
+	//
 	// ORDER assertion (the crux of C5): the fence marker was stamped, and the
 	// surviving zombie H1 — even though it "came back" — is rejected on its stale
 	// fence. If release had happened before fencing, this write would have landed.
