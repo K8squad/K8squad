@@ -81,6 +81,53 @@ jobs:
           path: coverage-${{ matrix.component }}.out
           if-no-files-found: ignore
 
+  migrations:
+    name: db / migrations self-check
+    runs-on: ubuntu-latest
+    # Applies every forward-only migration to a real Postgres and runs each *_test.sql self-check
+    # (e.g. the coord schema's 7+ structural assertions). Keeps the runnable checks from rotting.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ksquad
+          POSTGRES_PASSWORD: ksquad
+          POSTGRES_DB: ksquad_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ksquad" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if no migrations present (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -d db/migrations ] || [ -z "$(ls -A db/migrations/*.sql 2>/dev/null)" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::db/migrations not present yet — self-check lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply migrations + run self-checks
+        if: steps.guard.outputs.present == 'true'
+        env:
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
+        run: |
+          set -euo pipefail
+          # Apply migrations in version order (persisted), then run each companion *_test.sql against
+          # the applied schema. Each test wraps its assertions in BEGIN/ROLLBACK so it leaves no residue.
+          for f in $(ls db/migrations/*.sql | grep -v '_test\.sql$' | sort); do
+            echo "== applying $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+          for t in $(ls db/migrations/*_test.sql 2>/dev/null | sort); do
+            echo "== self-check $t"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$t"
+          done
+
   node:
     name: node / console
     runs-on: ubuntu-latest

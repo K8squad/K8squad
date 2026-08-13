@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><defs>
+  <linearGradient id="ringTop" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#93B7FF"/><stop offset="1" stop-color="#3D7DFF"/>
+  </linearGradient>
+  <linearGradient id="ringBot" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#3D7DFF"/><stop offset="1" stop-color="#2E4E8C"/>
+  </linearGradient>
+  <linearGradient id="wedge" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#2E4E8C"/><stop offset="1" stop-color="#93B7FF"/>
+  </linearGradient>
+</defs><rect width="64" height="64" rx="14" fill="#3D7DFF"/><g transform="scale(0.64) translate(0,0)"><g transform="scale(1)"><g><rect x="29.00" y="45.00" width="42.00" height="42.00" rx="13.00" fill="none" stroke="#E8EEF9" stroke-width="9"/><rect x="29.00" y="13.00" width="42.00" height="42.00" rx="13.00" fill="none" stroke="#E8EEF9" stroke-width="9"/><rect x="41.00" y="41.00" width="18.00" height="18.00" rx="5.00" fill="#E8EEF9" /></g></g></g></svg>
