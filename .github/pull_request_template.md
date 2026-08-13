@@ -2,7 +2,8 @@
 <!-- One-line description of what this PR does -->
 
 ## Related Issue
-<!-- Fixes #ISI-XXXX / Epic X / Story X.X -->
+<!-- GitHub issue (auto-closes on merge — # must be a numeric repo issue number): Fixes #123 -->
+<!-- External tracker ticket (no #, does not auto-close): ISI-XXXX / Epic X / Story X.X -->
 <!-- If no ticket, explain why -->
 
 ## Motivation / Why
