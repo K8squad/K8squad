@@ -1,29 +1,10 @@
 //go:build chaos
 
 // ISI-2347 — Go TestSpine chaos suite (C1–C7), the REQUIRED gate executed by
-// k8squad/.github/workflows/spine-chaos.yml.
-//
-// ┌───────────────────────────────────────────────────────────────────────────┐
-// │  STAGING COPY — DO NOT COMPILE HERE, DO NOT COPY YET.                        │
-// │                                                                             │
-// │  This file lives in the ksquad BMAD workspace (a non-Go-module docs repo)   │
-// │  as the turnkey drop-in for ISI-2347. It is a `.go.stage` file on purpose:  │
-// │  no Go tooling picks it up, and it stays out of spine-chaos.yml's guard.    │
-// │                                                                             │
-// │  spine-chaos.yml SKIPS itself while `pkg/coord` AND `internal/coord` are    │
-// │  both absent (skeleton phase). The MOMENT you create either directory the   │
-// │  guard flips to present=true and the gate compiles+runs `TestSpine`. So:    │
-// │                                                                             │
-// │  Drop-in procedure (only once the Epic 2/3 Go spine lands):                 │
-// │    1. Rename this file to `spine_chaos_test.go`.                             │
-// │    2. Place it in `internal/coord/` (or `pkg/coord/`) alongside the spine.  │
-// │    3. Implement `newSUT` (bottom of file) against the real coord API — the  │
-// │       `SUT` interface below is the CONTRACT the spine must satisfy for the  │
-// │       gate. Adapt the adapter, NOT the case logic.                          │
-// │    4. Ensure spine-chaos.yml exports DATABASE_URL pointing at the CNPG      │
-// │       cluster (see the "CI WIRING GAP" note near TestSpine). Under the      │
-// │       `chaos` tag a missing DATABASE_URL is a FATAL, never a silent skip.   │
-// └───────────────────────────────────────────────────────────────────────────┘
+// k8squad/.github/workflows/spine-chaos.yml. This is the LIVE gate (compiled +
+// run under `-tags=chaos` against a real Postgres); the `SUT` interface below is
+// the CONTRACT the coordination spine must satisfy, wired to the real coord pkg
+// by `newSUT` at the bottom of the file.
 //
 // Faithful 1:1 translation of the language-neutral falsification anchor
 // (docs/bmad/spikes/bench/chaos-harness.py + claim-nodouble-check.py, Story 2.7
@@ -42,8 +23,8 @@
 //   C6 double-dispatch dedup        chaos-harness.py (d)            §6.4 AC5
 //   C7 re-entrant claim/complete    chaos-harness.py (d)            §6.4 AC5
 //
-// The suite is run by CI as:
-//   go test -race -tags=chaos -run 'TestSpine' ./pkg/coord/... ./internal/coord/...
+// The suite is run by CI as (targets resolved to whichever coord dir exists):
+//   go test -race -tags=chaos -run 'TestSpine' ./pkg/coord/... [./internal/coord/...]
 // `-race` is load-bearing (AC1): a claim/lease data race must fail the gate too.
 
 package coord_test
@@ -252,7 +233,12 @@ func coordMigrationSQL(t *testing.T) string {
 
 func schemaPreflightFailFast(t *testing.T, dsn string) {
 	t.Helper()
-	ctx := context.Background()
+	// Bound the preflight DB calls so they honour the test deadline instead of
+	// blocking forever on a wedged connection (Copilot review, PR #17). t.Context()
+	// would be the idiomatic source, but it lands in Go 1.24 and this module targets
+	// go 1.23.0, so a WithTimeout derived from Background() is the portable equivalent.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	db := openDB(t, dsn)
 
 	// Apply the real migration into a clean `coord` schema. pgx's simple-query
@@ -266,7 +252,13 @@ func schemaPreflightFailFast(t *testing.T, dsn string) {
 		t.Fatalf("ISI-2200 preflight: the shipped coord migration failed to apply "+
 			"against real Postgres — the spine schema is broken at the source: %v", err)
 	}
-	t.Cleanup(func() { _, _ = db.ExecContext(context.Background(), `DROP SCHEMA IF EXISTS coord CASCADE`) })
+	t.Cleanup(func() {
+		// Fresh short-lived context: the preflight ctx above is already cancelled by
+		// the time cleanups run, so derive a bounded one so teardown can't hang (Copilot review, PR #17).
+		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer ccancel()
+		_, _ = db.ExecContext(cctx, `DROP SCHEMA IF EXISTS coord CASCADE`)
+	})
 
 	// (1) fence-token column — the monotonic lease epoch every fencing guard
 	// (§6.2 acquire / §6.3 reclaim / Complete) reads and CAS-bumps. Without it
