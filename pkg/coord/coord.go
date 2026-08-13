@@ -20,7 +20,14 @@
 //   - RedriveClaim         — §6.4 idempotent reconcile re-entry: re-driving a claim
 //     we still hold is a no-op (no fence bump).
 //   - DispatchOnce         — §6.4 idempotent external-effect dispatch guarded by a
-//     durable marker: re-entry returns the SAME recorded task id.
+//     durable marker AND a live-custody predicate (item+holder+run+fence under an
+//     unexpired lease): a fenced/lapsed run cannot record the marker; re-entry by
+//     the live holder returns the SAME recorded task id.
+//
+// All lease boundaries (assignment and guard) use clock_timestamp() — the live
+// wall clock — never now() (frozen at statement start), so a statement that
+// blocks on a row lock past the lease cannot commit an already-expired lease or
+// evaluate a guard against a stale timestamp.
 //
 // The required chaos gate proves each guard bites: spine-chaos.yml runs
 // TestSpine (C1..C7, ISI-2347) against a real Postgres with -race on, first
@@ -154,11 +161,19 @@ func (c *Coordinator) Acquire(ctx context.Context, item int, principal, run stri
 // only when the claim is free (unheld or lease-expired), then mark the item
 // claimed. Returns ok=false (no fence returned) when a live lease blocks it.
 func (c *Coordinator) acquireTx(ctx context.Context, tx *sql.Tx, item int, principal, run string) (int64, bool) {
+	// Lease boundaries use clock_timestamp() (the live wall clock), NOT now()
+	// (=transaction_timestamp, frozen at statement/transaction start). A statement
+	// that BLOCKS on the FOR UPDATE / row lock past the lease window would, under
+	// now(), still see the pre-wait instant — committing a lease that is already
+	// expired (admitting an immediate second claimant) or reading an expired lease
+	// as still-live in the guard. clock_timestamp() advances during the wait, so
+	// both the expiry ASSIGNMENT and the `< clock_timestamp()` guard reflect real
+	// time. (Copilot re-review: now-fixed-at-transaction-start)
 	acquire := fmt.Sprintf(
 		`UPDATE %s SET holder_principal=$1, run_id=$2,
-			fence_token=fence_token+1, lease_expires_at=now()+interval '%s'
+			fence_token=fence_token+1, lease_expires_at=clock_timestamp()+interval '%s'
 		 WHERE work_item_id=$3
-		   AND (holder_principal IS NULL OR lease_expires_at < now())
+		   AND (holder_principal IS NULL OR lease_expires_at < clock_timestamp())
 		 RETURNING fence_token`,
 		c.cfg.Claim, c.cfg.LeaseInterval)
 	var fence int64
@@ -194,9 +209,9 @@ func (c *Coordinator) acquireTx(ctx context.Context, tx *sql.Tx, item int, princ
 // (Copilot review: renew-after-complete-keeps-lease) (C4)
 func (c *Coordinator) Renew(ctx context.Context, item int, principal string, fence int64) bool {
 	q := fmt.Sprintf(
-		`UPDATE %s SET lease_expires_at=now()+interval '%s'
+		`UPDATE %s SET lease_expires_at=clock_timestamp()+interval '%s'
 		 WHERE work_item_id=$1 AND holder_principal=$2 AND fence_token=$3
-		   AND lease_expires_at > now()
+		   AND lease_expires_at > clock_timestamp()
 		   AND EXISTS (SELECT 1 FROM %s WHERE id=$1 AND state <> $4)`,
 		c.cfg.Claim, c.cfg.LeaseInterval, c.cfg.WorkItem)
 	res, err := c.db.ExecContext(ctx, q, item, principal, fence, c.cfg.DoneState)
@@ -208,15 +223,20 @@ func (c *Coordinator) Renew(ctx context.Context, item int, principal string, fen
 }
 
 // Complete = §6.3 fenced state-mutating write: the item advances to done only
-// from the claimed state AND only under the caller's CURRENT fence+holder.
-// Rejects a stale-fence (zombie) write and a re-advance of an already-done item.
-// (C4/C7)
+// from the claimed state AND only under the caller's CURRENT fence+holder AND a
+// still-LIVE lease. Rejects a stale-fence (zombie) write, a re-advance of an
+// already-done item, and a holder whose lease lapsed while it waited on the
+// work-item lock — the lease term is compared against clock_timestamp() (the
+// live wall clock, not the frozen now()) so a lock wait that outlasts the lease
+// cannot finalize on a stale timestamp. (Copilot re-review: complete-uses-
+// frozen-now / post-expiry finalize window) (C4/C7)
 func (c *Coordinator) Complete(ctx context.Context, item int, principal string, fence int64) bool {
 	q := fmt.Sprintf(
 		`UPDATE %s SET state=$1
 		 WHERE id=$2 AND state=$3
 		   AND EXISTS (SELECT 1 FROM %s
-		               WHERE work_item_id=$2 AND holder_principal=$4 AND fence_token=$5)`,
+		               WHERE work_item_id=$2 AND holder_principal=$4 AND fence_token=$5
+		                 AND lease_expires_at > clock_timestamp())`,
 		c.cfg.WorkItem, c.cfg.Claim)
 	res, err := c.db.ExecContext(ctx, q, c.cfg.DoneState, item, c.cfg.ClaimedState, principal, fence)
 	if err != nil {
@@ -242,7 +262,7 @@ func (c *Coordinator) RedriveClaim(ctx context.Context, item int, principal, run
 	q := fmt.Sprintf(
 		`SELECT fence_token FROM %s
 		 WHERE work_item_id=$1 AND holder_principal=$2 AND run_id=$3 AND fence_token=$4
-		   AND lease_expires_at > now()`,
+		   AND lease_expires_at > clock_timestamp()`,
 		c.cfg.Claim)
 	var cur int64
 	switch err := c.db.QueryRowContext(ctx, q, item, principal, run, fence).Scan(&cur); err {
@@ -276,19 +296,41 @@ func (c *Coordinator) RedriveClaim(ctx context.Context, item int, principal, run
 // production-wiring follow-up, not part of this gate — hence the name reflects
 // the marker's role (record-once), not a delivery guarantee this method makes.
 // (Copilot review: dispatch-once-does-not-dispatch.) (C6)
-func (c *Coordinator) DispatchOnce(ctx context.Context, run, taskID string) string {
+//
+// FENCE-GUARDED CREATION (Copilot re-review: dispatch-has-no-custody-predicate):
+// marker creation is tied ATOMICALLY to a matching LIVE claim. The insert lands
+// only when (item, principal, run, fence) is the current holder under an
+// unexpired lease — the same custody predicate Complete/Renew enforce — so a
+// fenced or lease-lapsed run can neither record the marker nor initiate the
+// external effect it gates. Reading back an ALREADY-recorded id is not gated:
+// once the legitimate live holder recorded it the effect is committed to fire
+// once, and a later re-drive (even by a since-lapsed holder) may learn the id
+// without re-firing. Returns "" when the caller holds no live fence-matching
+// claim and no marker exists yet (a refused dispatch).
+func (c *Coordinator) DispatchOnce(ctx context.Context, item int, principal, run string, fence int64, taskID string) string {
+	// INSERT ... SELECT FROM claim WHERE <live custody>: no source row (hence no
+	// insert) unless this caller is the current fence-matching holder under a live
+	// lease. ON CONFLICT keeps first-writer-wins idempotency for concurrent re-drive.
 	ins := fmt.Sprintf(
-		`INSERT INTO %s(run_id, task_id) VALUES ($1,$2) ON CONFLICT (run_id) DO NOTHING`,
-		c.cfg.Dispatch)
-	if _, err := c.db.ExecContext(ctx, ins, run, taskID); err != nil {
+		`INSERT INTO %s(run_id, task_id)
+		 SELECT $1, $2 FROM %s
+		 WHERE work_item_id=$3 AND holder_principal=$4 AND run_id=$1 AND fence_token=$5
+		   AND lease_expires_at > clock_timestamp()
+		 ON CONFLICT (run_id) DO NOTHING`,
+		c.cfg.Dispatch, c.cfg.Claim)
+	if _, err := c.db.ExecContext(ctx, ins, run, taskID, item, principal, fence); err != nil {
 		panic(fmt.Errorf("coord.DispatchOnce: insert: %w", err))
 	}
 	sel := fmt.Sprintf(`SELECT task_id FROM %s WHERE run_id=$1`, c.cfg.Dispatch)
 	var got string
-	if err := c.db.QueryRowContext(ctx, sel, run).Scan(&got); err != nil {
+	switch err := c.db.QueryRowContext(ctx, sel, run).Scan(&got); err {
+	case nil:
+		return got
+	case sql.ErrNoRows:
+		return "" // refused: no live fence-matching claim and no prior marker
+	default:
 		panic(fmt.Errorf("coord.DispatchOnce: read-back: %w", err))
 	}
-	return got
 }
 
 // ReclaimFenced = §6.3 fence-BEFORE-release reclaim protocol. The dying holder is
@@ -317,7 +359,7 @@ func (c *Coordinator) ReclaimFenced(ctx context.Context, item int, newPrincipal,
 	defer func() { _ = tx.Rollback() }()
 
 	// (1) fence the dying holder FIRST.
-	stamp := fmt.Sprintf(`UPDATE %s SET reclaim_fenced_at=now() WHERE work_item_id=$1`, c.cfg.Claim)
+	stamp := fmt.Sprintf(`UPDATE %s SET reclaim_fenced_at=clock_timestamp() WHERE work_item_id=$1`, c.cfg.Claim)
 	if _, err := tx.ExecContext(ctx, stamp, item); err != nil {
 		return 0, fmt.Errorf("coord.ReclaimFenced: stamp fence: %w", err)
 	}
