@@ -39,7 +39,8 @@ briefly rather than inventing nits.
   accompanied by regenerated `zz_generated.deepcopy.go` (`make generate`) and
   regenerated CRD manifests under `config/crd/bases` (`make manifests`). Flag a PR
   that edits API structs but does not update the generated DeepCopy methods or CRD
-  YAML — the two will drift and the build/`verify` will fail.
+  YAML — the two will drift and the generated artifacts will no longer match the
+  source types.
 - New or changed spec fields should carry **CEL validation** (`+kubebuilder:validation:XValidation`)
   and/or standard kubebuilder validation markers (`Required`, `Enum`, `Minimum`,
   `MaxLength`, immutability rules) rather than validating only in the controller.
@@ -77,8 +78,9 @@ be explicitly granted, never implicit. Flag any new endpoint or handler that:
 - reads/mutates state before the authorization check runs, or
 - introduces an "allow by default", unauthenticated, or `TODO: add auth` path.
 
-Also flag broadened Kubernetes RBAC (`+kubebuilder:rbac` markers / `config/rbac`)
-that grants more verbs or resources than the change needs — keep it least-privilege.
+Also flag broadened Kubernetes RBAC (`+kubebuilder:rbac` markers and any generated
+RBAC manifests) that grants more verbs or resources than the change needs — keep it
+least-privilege.
 
 ## 5. Tests are required for coordination, reclaim, and sandbox code
 
