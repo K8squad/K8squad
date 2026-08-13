@@ -62,13 +62,70 @@ jobs:
           kubectl apply --server-side -f \
             https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml
           kubectl -n cnpg-system rollout status deploy/cnpg-controller-manager --timeout=180s
-          # Cluster manifest is provided by the test harness once it lands.
+
+          # Single-instance CNPG cluster for the chaos gate. Superuser access is
+          # enabled so the suite's freshSchema (DROP/CREATE work_item + claim on
+          # each run) has the privileges it needs on a throwaway CI database.
+          kubectl apply -f - <<'EOF'
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: spine-pg
+          spec:
+            instances: 1
+            enableSuperuserAccess: true
+            storage:
+              size: 1Gi
+            bootstrap:
+              initdb:
+                database: app
+                owner: app
+          EOF
+
+          # Wait for the primary to report ready (the Cluster CR has no built-in
+          # kubectl-wait condition in 1.24, so poll readyInstances). readyInstances
+          # is the authoritative signal; fail loud if it never reaches 1.
+          ready=0
+          for i in $(seq 1 60); do
+            ready=$(kubectl get cluster spine-pg -o jsonpath='{.status.readyInstances}' 2>/dev/null || echo 0)
+            if [ "$ready" = "1" ]; then echo "spine-pg ready"; break; fi
+            echo "waiting for spine-pg ($i/60, readyInstances=${ready:-0})"; sleep 5
+          done
+          if [ "$ready" != "1" ]; then
+            echo "::error::spine-pg never reached readyInstances=1"; kubectl describe cluster spine-pg || true
+            exit 1
+          fi
 
       - name: Run chaos suite (C1..C7, race on, fail-fast on missing fence)
         if: steps.guard.outputs.present == 'true'
         run: |
+          # CI WIRING (closes the gap flagged in the stage README / ISI-2393):
+          # export DATABASE_URL so dsnOrFatal does not FATAL. Under -tags=chaos a
+          # missing DSN is a hard failure by design (no silent-skip false-green).
+          set -euo pipefail
+          PGPASS=$(kubectl get secret spine-pg-superuser -o jsonpath='{.data.password}' | base64 -d)
+
+          # The suite runs on the runner host; Postgres runs in kind. Bridge them
+          # with a background port-forward to the primary (-rw) service.
+          kubectl port-forward svc/spine-pg-rw 5432:5432 >/tmp/pf.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then exec 3>&- 3<&-; echo "port-forward up"; break; fi
+            echo "waiting for port-forward ($i/30)"; sleep 1
+          done
+
+          export DATABASE_URL="postgres://postgres:${PGPASS}@127.0.0.1:5432/app?sslmode=disable"
+
+          # Target whichever spine dir exists (mirrors the guard). `go test` treats
+          # a pattern matching a NON-EXISTENT dir as a fatal error, not a skip, so
+          # naming a missing ./internal/coord/... would fail the gate spuriously.
+          TARGETS=""
+          [ -d pkg/coord ] && TARGETS="$TARGETS ./pkg/coord/..."
+          [ -d internal/coord ] && TARGETS="$TARGETS ./internal/coord/..."
+
           # Build tag `chaos` guards the fault-injection tests (kind + Postgres required).
-          go test -race -tags=chaos -run 'TestSpine' ./pkg/coord/... ./internal/coord/... -v
+          go test -race -tags=chaos -run 'TestSpine' $TARGETS -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
