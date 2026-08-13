@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📚 Documentation
+    url: https://github.com/K8squad/K8squad/blob/main/CONTRIBUTING.md
+    about: Read the contributor guide, project structure, and coding standards.
+  - name: 💬 Discussions
+    url: https://github.com/K8squad/K8squad/discussions
+    about: Ask questions, share ideas, and talk with the community.
+  - name: 🌐 Website
+    url: https://isitobservable.io
+    about: Learn more about KSquad and IsItObservable.

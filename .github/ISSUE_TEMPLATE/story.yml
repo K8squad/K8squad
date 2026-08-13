@@ -1,0 +1,66 @@
+name: 📋 Story / Epic implementation
+description: Internal implementation story tracked against an ISI ticket.
+title: "[Story]: "
+labels: ["story"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For **internal** team members implementing a planned story or epic.
+        External contributors should use the Bug report or Feature request templates.
+  - type: input
+    id: story_id
+    attributes:
+      label: Story ID
+      description: The ISI ticket this story implements.
+      placeholder: ISI-XXXX
+    validations:
+      required: true
+  - type: input
+    id: epic
+    attributes:
+      label: Epic reference
+      description: Parent epic or story-map reference (ISI-XXXX / Epic N.M).
+      placeholder: ISI-XXXX
+    validations:
+      required: false
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is being built and why, in a sentence or two.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist of conditions that must all be true to close this story.
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: implementation
+    attributes:
+      label: Implementation notes
+      description: Design approach, affected packages/CRDs, ADR references.
+    validations:
+      required: false
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Blocking stories, upstream work, or external prerequisites.
+      placeholder: Blocked by ISI-XXXX; needs coord schema migration
+    validations:
+      required: false
+  - type: textarea
+    id: test_plan
+    attributes:
+      label: Test plan
+      description: Unit, integration, and e2e coverage that will prove this works.
+    validations:
+      required: true

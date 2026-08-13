@@ -1,0 +1,78 @@
+name: 🐞 Bug report
+description: Report a defect in KSquad so we can reproduce and fix it.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Please search
+        [existing issues](https://github.com/K8squad/K8squad/issues) first to avoid duplicates.
+        For security vulnerabilities, do **not** open a public issue — see
+        [SECURITY.md](https://github.com/K8squad/K8squad/blob/main/SECURITY.md).
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear and concise description of the bug.
+      placeholder: When I reconcile a Squad CR, the coordinator crash-loops...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, deterministic steps that trigger the bug.
+      placeholder: |
+        1. Apply the manifest below (`kubectl apply -f ...`)
+        2. Watch the coordinator logs
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Fill in the versions and platform where you hit this.
+      value: |
+        - KSquad version:
+        - Kubernetes version (`kubectl version`):
+        - Agent runtime (e.g. containerd, CRI-O):
+        - OS / arch:
+        - Install method (Helm chart version, manifests, etc.):
+      render: markdown
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: |
+        Relevant log output, stack traces, or screenshots. This is automatically
+        formatted into code, so no need for backticks.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md).
+          required: true
