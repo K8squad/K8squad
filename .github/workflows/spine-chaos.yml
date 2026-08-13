@@ -85,20 +85,20 @@ jobs:
           DATABASE_URL: postgres://postgres@localhost:5432/coord_chaos?sslmode=disable
         run: |
           # Build tag `chaos` guards the fault-injection tests (real Postgres required).
-          # Test ONLY the coord package(s) that actually exist. Naming a non-existent
-          # dir (e.g. ./internal/coord/... before it is added) makes `go test` abort
-          # with "lstat: no such file or directory" [setup failed] — a false RED that
-          # would keep the REQUIRED gate from ever going green (ISI-2200 C1..C7). The
-          # guard step already proved at least one of these is present. (ISI-2347.)
-          targets=""
-          for d in pkg/coord internal/coord; do
-            [ -d "$d" ] && targets="$targets ./$d/..."
-          done
-          if [ -z "$targets" ]; then
-            echo "::error::spine guard said present=true but no coord package dir exists"; exit 1
+          # Target only the coord package dir(s) that actually exist: `go test` errors
+          # ("no such file or directory") on a package pattern whose directory is absent,
+          # so hardcoding BOTH ./pkg/coord/... AND ./internal/coord/... fails the gate the
+          # moment the spine lives in only one of them — which it does (pkg/coord, no
+          # internal/coord). That turned a fully-green C1..C7 run RED on main (ISI-2347).
+          TARGETS=""
+          [ -d pkg/coord ] && TARGETS="$TARGETS ./pkg/coord/..."
+          [ -d internal/coord ] && TARGETS="$TARGETS ./internal/coord/..."
+          if [ -z "$TARGETS" ]; then
+            echo "::error::guard reported spine present but neither pkg/coord nor internal/coord exists"
+            exit 1
           fi
-          echo "chaos targets:$targets"
-          go test -race -tags=chaos -run 'TestSpine' $targets -v
+          echo "chaos targets:$TARGETS"
+          go test -race -tags=chaos -run 'TestSpine' $TARGETS -v
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
