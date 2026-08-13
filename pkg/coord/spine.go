@@ -13,11 +13,13 @@ import (
 // through the methods here; callers never issue the raw SQL themselves, which is
 // what keeps "no application-level lock" and "every write is fence-guarded" a
 // property of the code path rather than of caller discipline.
+//
+// The lease interval is always applied server-side as `now() + make_interval(secs
+// => $N)` with leaseSeconds bound as a query PARAMETER — never interpolated into
+// the SQL text — so every query below is a constant string with no injection
+// surface.
 type Spine struct {
-	db *sql.DB
-	// leaseSeconds is the lease duration stamped by acquire/renew. It is an
-	// internal, trusted constant (never caller input), so it is interpolated
-	// straight into the interval literal — mirroring the falsification anchors.
+	db           *sql.DB
 	leaseSeconds float64
 }
 
@@ -42,16 +44,9 @@ func NewForTest(db *sql.DB) *Spine {
 // Spine writes through.
 func (s *Spine) DB() *sql.DB { return s.db }
 
-// leaseClause renders the "now() + interval 'N seconds'" fragment. leaseSeconds
-// is a trusted internal constant, so interpolation is safe (and matches the
-// language-neutral anchor's `interval '{LEASE_SECONDS} seconds'`).
-func (s *Spine) leaseClause() string {
-	return fmt.Sprintf("now() + interval '%g seconds'", s.leaseSeconds)
-}
-
 // ClaimNext is the §6.2 queue-pull: in ONE statement, pop the lowest open work
 // item under a `FOR UPDATE SKIP LOCKED` row lock, run the conditional
-// fence-bumping acquire against its claim row, and flip the item to 'claimed'.
+// fence-bump acquire against its claim row, and flip the item to 'claimed'.
 // The row lock is held for the whole statement, so two concurrent poppers never
 // select the same row and no open row is ever lost (SKIP LOCKED skips a
 // contended row, it does not drop it).
@@ -59,7 +54,7 @@ func (s *Spine) leaseClause() string {
 // Returns the claimed item, its fresh fence, and ok=false when no open+unlocked
 // item was available on this pass.
 func (s *Spine) ClaimNext(ctx context.Context, principal, run string) (item int, fence int64, ok bool) {
-	q := `
+	const q = `
 WITH picked AS (
     SELECT id FROM work_item
     WHERE state = 'open'
@@ -71,7 +66,7 @@ WITH picked AS (
         holder_principal = $1,
         run_id           = $2,
         fence_token      = fence_token + 1,
-        lease_expires_at = ` + s.leaseClause() + `
+        lease_expires_at = now() + make_interval(secs => $3::double precision)
     WHERE work_item_id IN (SELECT id FROM picked)
       AND (holder_principal IS NULL OR lease_expires_at < now())
     RETURNING work_item_id, fence_token
@@ -80,7 +75,7 @@ WITH picked AS (
     WHERE id IN (SELECT work_item_id FROM acq)
 )
 SELECT work_item_id, fence_token FROM acq`
-	err := s.db.QueryRowContext(ctx, q, principal, run).Scan(&item, &fence)
+	err := s.db.QueryRowContext(ctx, q, principal, run, s.leaseSeconds).Scan(&item, &fence)
 	if err != nil {
 		return 0, 0, false // sql.ErrNoRows (nothing poppable) or a transient error
 	}
@@ -93,13 +88,13 @@ SELECT work_item_id, fence_token FROM acq`
 // lease-lapsed item and rejects one under a live lease, and every admit bumps the
 // monotonic fence. Returns the fresh fence and ok=false when a live lease blocks.
 func (s *Spine) Acquire(ctx context.Context, item int, principal, run string) (fence int64, ok bool) {
-	q := `
+	const q = `
 WITH acq AS (
     UPDATE claim SET
         holder_principal = $1,
         run_id           = $2,
         fence_token      = fence_token + 1,
-        lease_expires_at = ` + s.leaseClause() + `
+        lease_expires_at = now() + make_interval(secs => $4::double precision)
     WHERE work_item_id = $3
       AND (holder_principal IS NULL OR lease_expires_at < now())
     RETURNING work_item_id, fence_token
@@ -108,7 +103,7 @@ WITH acq AS (
     WHERE id IN (SELECT work_item_id FROM acq)
 )
 SELECT fence_token FROM acq`
-	err := s.db.QueryRowContext(ctx, q, principal, run, item).Scan(&fence)
+	err := s.db.QueryRowContext(ctx, q, principal, run, item, s.leaseSeconds).Scan(&fence)
 	if err != nil {
 		return 0, false // sql.ErrNoRows == a live lease blocked us
 	}
@@ -120,12 +115,13 @@ SELECT fence_token FROM acq`
 // discriminator — a holder that was reclaimed (its item's fence bumped) can no
 // longer match, so its renew is a no-op. Returns true iff the lease was extended.
 func (s *Spine) Renew(ctx context.Context, item int, principal string, fence int64) bool {
-	res, err := s.db.ExecContext(ctx, `
-UPDATE claim SET lease_expires_at = `+s.leaseClause()+`
+	const q = `
+UPDATE claim SET lease_expires_at = now() + make_interval(secs => $4::double precision)
 WHERE work_item_id     = $1
   AND holder_principal = $2
   AND fence_token      = $3
-  AND lease_expires_at > now()`, item, principal, fence)
+  AND lease_expires_at > now()`
+	res, err := s.db.ExecContext(ctx, q, item, principal, fence, s.leaseSeconds)
 	if err != nil {
 		return false
 	}
@@ -139,7 +135,7 @@ WHERE work_item_id     = $1
 // the advance idempotent — a re-driven complete on an already-done item matches
 // zero rows, so it can never double-advance. Returns true iff it advanced.
 func (s *Spine) Complete(ctx context.Context, item int, principal string, fence int64) bool {
-	res, err := s.db.ExecContext(ctx, `
+	const q = `
 UPDATE work_item SET state = 'done'
 WHERE id = $1
   AND state = 'claimed'
@@ -148,7 +144,8 @@ WHERE id = $1
       WHERE work_item_id     = $1
         AND holder_principal = $2
         AND fence_token      = $3
-  )`, item, principal, fence)
+  )`
+	res, err := s.db.ExecContext(ctx, q, item, principal, fence)
 	if err != nil {
 		return false
 	}
@@ -163,13 +160,14 @@ WHERE id = $1
 // live holder does it fall through to a fresh conditional acquire. Returns the
 // resulting fence (unchanged on the no-op path).
 func (s *Spine) RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64 {
-	var cur int64
-	err := s.db.QueryRowContext(ctx, `
-UPDATE claim SET lease_expires_at = `+s.leaseClause()+`
+	const q = `
+UPDATE claim SET lease_expires_at = now() + make_interval(secs => $4::double precision)
 WHERE work_item_id     = $1
   AND holder_principal = $2
   AND fence_token      = $3
-RETURNING fence_token`, item, principal, fence).Scan(&cur)
+RETURNING fence_token`
+	var cur int64
+	err := s.db.QueryRowContext(ctx, q, item, principal, fence, s.leaseSeconds).Scan(&cur)
 	if err == nil {
 		return cur // we still hold it → no-op re-drive, fence stable
 	}
@@ -227,15 +225,16 @@ func (s *Spine) ReclaimFenced(ctx context.Context, item int, newPrincipal, newRu
 	}
 
 	// 2. RELEASE SECOND — the §6.2 conditional, fence-bumping acquire.
-	err = tx.QueryRowContext(ctx, `
+	const acq = `
 UPDATE claim SET
     holder_principal = $1,
     run_id           = $2,
     fence_token      = fence_token + 1,
-    lease_expires_at = `+s.leaseClause()+`
+    lease_expires_at = now() + make_interval(secs => $4::double precision)
 WHERE work_item_id = $3
   AND (holder_principal IS NULL OR lease_expires_at < now())
-RETURNING fence_token`, newPrincipal, newRun, item).Scan(&fence)
+RETURNING fence_token`
+	err = tx.QueryRowContext(ctx, acq, newPrincipal, newRun, item, s.leaseSeconds).Scan(&fence)
 	if err == sql.ErrNoRows {
 		return 0, fmt.Errorf("coord: ReclaimFenced: work_item %d still holds a live lease", item)
 	}
