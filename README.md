@@ -51,8 +51,9 @@ CRD definitions, and deployment manifests).
 
 ## Contributing
 
-Contributions are welcome. Please open an issue to discuss substantial changes
-before submitting a pull request.
+Contributions are welcome. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for how to
+build, test, and submit pull requests. Please open an issue to discuss substantial
+changes before submitting a pull request.
 
 ## License
 
