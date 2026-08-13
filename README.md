@@ -1,69 +1,155 @@
-# KSquad
+<div align="center">
 
-**Kubernetes-native, agent-agnostic AI agent orchestration platform.**
+<img src="docs/media/banner-on-dark.png" alt="K8squad — Your agents, in formation" width="720">
 
-KSquad organizes AI agents into **squads** — virtual teams that coordinate on shared
-work items rather than ad-hoc peer-to-peer chat. It is an operator-based platform:
-agents, teams, roles, skills, projects, and runs are all first-class Kubernetes
-custom resources, reconciled by controllers.
+### Autonomous agent squads on Kubernetes — your agents, in formation.
 
-> Status: early development. Interfaces and CRDs are not yet stable.
+[![CI](https://github.com/K8squad/K8squad/actions/workflows/ci.yml/badge.svg)](https://github.com/K8squad/K8squad/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+[![Go 1.23](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Kubernetes 1.31](https://img.shields.io/badge/Kubernetes-1.31-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-## Highlights
+[Website](https://ksquad.io) · [Documentation](https://ksquad.io/docs) · [Quickstart](#-quickstart) · [Architecture](#-architecture) · [Contributing](./CONTRIBUTING.md)
 
-- **Squad coordination model.** Agents collaborate through shared work items
-  (issues, comments, checkout) instead of direct agent-to-agent messaging.
-- **Agent-agnostic runtimes.** Heterogeneous agent runtimes are supported through
-  thin shims, so squads can mix agent implementations.
-- **A2A southbound protocol.** Agent Cards for capability discovery, task lifecycle
-  for runs, artifacts for handoffs, and SSE for streaming progress.
-- **MCP for tools.** Agents reach tools through the Model Context Protocol.
-- **First-class memory server.** Shared memory is a built-in component of the
-  platform, not an external dependency.
-- **BYO-subscription credentials.** Per-user credential Secret references live on
-  the `Agent` custom resource.
+</div>
 
-## Architecture at a glance
+---
 
-| Layer | Technology |
-|-------|------------|
-| Backend / control plane | Go (Kubernetes operators + API) |
-| Frontend | Node.js |
-| Southbound protocol | A2A (Agent Cards, task lifecycle, artifacts, SSE) |
-| Tool protocol | MCP |
-| Memory | First-class memory server |
+**KSquad** organizes AI agents into **squads** — virtual teams that coordinate on shared
+work items instead of ad-hoc peer-to-peer chat. It is an operator-based platform: teams, agents,
+roles, skills, projects, and runs are all first-class Kubernetes custom resources, reconciled by
+controllers. Bring your own agent runtime, bring your own model, and let the cluster do the
+formation-keeping.
 
-### Custom resources
+> **Status:** early development. CRDs and interfaces are `v1alpha1` and not yet stable.
 
-The platform surface is expressed as Kubernetes CRDs:
+## ✨ Features
 
-- `Team` — a squad of agents working a shared backlog.
-- `Agent` — a single agent, its runtime shim, and its credential references.
-- `Role` — a set of responsibilities an agent can hold within a team.
-- `Skill` — a capability an agent exposes.
-- `Project` — a workspace (PVC + source repository).
-- `Run` — a unit of orchestrated work with a task lifecycle.
+- **🤖 Autonomous agent squads** — mix heterogeneous runtimes (Claude Code, Ollama, OpenClaw, Hermes) in one squad through thin A2A shims. Agents coordinate through shared work items, not brittle direct messaging.
+- **📋 Project-scoped work management** — a Kanban-style work-item tree with tickets, sub-tickets, checkout/claim/lease, comments, and artifacts — an append-only, provenanced coordination record.
+- **🔒 RBAC & per-project isolation** — every `Team` is a tenancy boundary with its own namespace, NetworkPolicy, and quota. Agent code runs untrusted in gVisor-sandboxed pods; the control plane stays trusted.
+- **📡 OTel-native observability** — traces, metrics, and logs are OpenTelemetry-first across the operator, API server, and every run, so squad activity is visible end to end.
+- **🧩 Plugin SDK** *(planned)* — an extension model where plugins subscribe to a NATS/JetStream event bus (`nats_sub(subject)`) and light up new console surfaces. Design is locked (ADR-023); implementation is on the roadmap.
+- **📱 Responsive console** — a polished operator console that adapts from desktop to tablet to mobile, with live SSE run streams and dual role/leadership org views.
 
-## Repository layout
+## 🖥️ Console
 
-Source scaffolding lands here as it is created (Go control plane, Node.js frontend,
-CRD definitions, and deployment manifests).
+<div align="center">
 
-## Contributing
+**Project dashboard** — everything scoped to one project, live activity over SSE
+<img src="docs/media/console-project-dashboard.png" alt="KSquad project dashboard" width="900">
 
-Contributions are welcome. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for how to
-build, test, and submit pull requests. Please open an issue to discuss substantial
-changes before submitting a pull request.
+**Work-item Kanban** — parent → sub-ticket tree, status, assignee, comments & artifacts
+<img src="docs/media/console-tickets-kanban.png" alt="KSquad tickets / Kanban board" width="900">
 
-All commits must be signed off under the
-**[Developer Certificate of Origin](./DCO.md)** (`git commit -s`), and all
-participation is governed by our **[Code of Conduct](./CODE_OF_CONDUCT.md)**.
-Project roles and decision-making are described in
+**Agents org** — the same squad, organized by role and by leadership, with live status
+<img src="docs/media/console-agents-org.png" alt="KSquad agents role org" width="900">
+
+</div>
+
+## 🚀 Quickstart
+
+Get a squad running on any Kubernetes 1.31+ cluster:
+
+```bash
+# 1. Add the Helm repo and install the operator + console
+helm repo add ksquad https://charts.ksquad.io
+helm install ksquad ksquad/ksquad --namespace ksquad-system --create-namespace
+
+# 2. Apply the quickstart squad (a Team, an Agent, and a Project)
+kubectl apply -f https://ksquad.io/quickstart.yaml
+
+# 3. Open the console
+kubectl port-forward -n ksquad-system svc/ksquad-console 8080:80
+# → http://localhost:8080
+```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) to build from source instead.
+
+## 🏗️ Architecture
+
+KSquad runs a trusted **control plane** (`ksquad-system`) and per-team, untrusted **data planes**.
+Kubernetes CRDs are the desired-state API; durable coordination and memory live in a single
+Postgres, split into two logically-separated schemas with distinct trust boundaries.
+
+```mermaid
+flowchart TB
+    author(["Operator / Author"]) -->|REST + SSE over HTTPS| console
+    kubectl(["kubectl / CRDs"]) --> api
+
+    subgraph cp["Control plane — ksquad-system (trusted, installed once)"]
+        console["ksquad-console<br/>Node / Next.js — UI + BFF, SSE fan-out"]
+        api["ksquad-apiserver — Go<br/>coordination record · pkg/auth JWT + RBAC<br/>audit query API · SSE progress bus"]
+        operator["ksquad-operator<br/>controller-runtime<br/>Team · Agent · Project · Run · SandboxPool"]
+        memory["ksquad-memory<br/>MCP + pgvector · diary + knowledge graph"]
+        pg[("Postgres — single stateful store<br/>coord · memory · auth schemas")]
+        console --> api
+        api --> operator
+        api --> memory
+        api --> pg
+        operator --> pg
+        memory --> pg
+    end
+
+    operator -->|creates / tears down| team
+
+    subgraph dp["Data plane — per Team (untrusted, least-privilege, blast-radius-bounded)"]
+        subgraph team["Team namespace — RBAC · NetworkPolicy · quota"]
+            sandbox["Sandbox Pod<br/>warm-pool · gVisor RuntimeClass"]
+            shim["shim sidecar<br/>A2A ⇄ native"]
+            runtime["agent runtime<br/>Claude Code / Ollama / OpenClaw / Hermes / …"]
+            pvc[("Project workspace PVC<br/>per-principal worktree")]
+            sandbox --> shim
+            shim <--> runtime
+            sandbox --> pvc
+        end
+    end
+```
+
+**Control plane** — operator, API server, memory service, console, and Postgres. Stateful,
+cluster-privileged (scoped), installed once. **Data plane** — sandbox pods, shims, agent runtimes,
+and workspace PVCs, per `Team`. Untrusted, least-privilege, blast-radius-bounded.
+
+### Custom resources (`ksquad.io/v1alpha1`)
+
+| CRD | Purpose |
+|-----|---------|
+| `Team` | A squad of agents and a tenancy boundary (namespace, RBAC, quota). |
+| `Agent` | One agent instance: its runtime, role, skills, model, and credential references. |
+| `AgentRuntime` | A pluggable coding-agent flavor and CLI version policy. |
+| `Role` | A set of responsibilities an agent holds within a team. |
+| `Skill` | A capability an agent exposes. |
+| `Project` | A workspace (PVC + source repository). |
+| `Run` | A unit of orchestrated work with an A2A task lifecycle. |
+
+## 🔗 Links
+
+- **Website** — https://ksquad.io
+- **Documentation** — https://ksquad.io/docs
+- **Contributing** — [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Code of Conduct** — [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
+- **Governance** — [GOVERNANCE.md](./GOVERNANCE.md) · [MAINTAINERS.md](./MAINTAINERS.md)
+- **Security** — [SECURITY.md](./SECURITY.md)
+- **License** — [Apache 2.0](./LICENSE) · [NOTICE](./NOTICE)
+
+## 🤝 Contributing
+
+Contributions are welcome. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for how to build, test, and
+submit pull requests. Please open an issue to discuss substantial changes first.
+
+All commits must be signed off under the **[Developer Certificate of Origin](./DCO.md)**
+(`git commit -s`), and all participation is governed by our
+**[Code of Conduct](./CODE_OF_CONDUCT.md)**. Project roles and decision-making are described in
 **[GOVERNANCE.md](./GOVERNANCE.md)**. To report a security vulnerability, follow
-**[SECURITY.md](./SECURITY.md)** — do not open a public issue.
+**[SECURITY.md](./SECURITY.md)** — please do not open a public issue.
 
-## License
+---
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](./LICENSE) and the
-[NOTICE](./NOTICE) file. Third-party dependency licenses are recorded in
-[LICENSES-third-party](./LICENSES-third-party).
+<div align="center">
+
+<img src="docs/media/banner-on-dark.png" alt="K8squad" width="280">
+
+**Apache 2.0 Licensed** · © K8squad contributors
+
+</div>

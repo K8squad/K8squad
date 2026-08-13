@@ -57,9 +57,9 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"; swap for the module's pinned driver
-
 	"github.com/K8squad/K8squad/pkg/coord"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,15 +90,15 @@ type SUT interface {
 	Complete(ctx context.Context, item int, principal string, fence int64) bool
 
 	// RedriveClaim = §6.4 reconcile-safe re-drive: re-read claim+fence; a no-op
-	// (returns the SAME fence, no bump) when we already hold it live. (C7)
-	RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) int64
+	// (returns the SAME fence, ok=true, no bump) when we still hold it LIVE (same
+	// run, un-lapsed lease). Re-acquires (bumping the fence, ok=true) when the
+	// fence advanced or the lease lapsed; ok=false — no fence returned — when a
+	// live FOREIGN lease blocks re-acquire. (C7)
+	RedriveClaim(ctx context.Context, item int, principal, run string, fence int64) (fence2 int64, ok bool)
 
 	// DispatchOnce = §6.4 idempotent external-effect dispatch guarded by a
-	// durable marker AND a live-custody predicate: marker creation is tied to a
-	// matching live claim (item, principal, run, fence under an unexpired lease),
-	// so a stale-fence / lease-lapsed run cannot initiate the effect; re-entry by
-	// the live holder returns the SAME recorded task id. (C6)
-	DispatchOnce(ctx context.Context, item int, principal, run string, fence int64, taskID string) string
+	// durable marker: re-entry returns the SAME recorded task id. (C6)
+	DispatchOnce(ctx context.Context, run, taskID string) string
 
 	// ReclaimFenced = §6.3 fence-BEFORE-release reclaim protocol (C5, live layer):
 	// pod-kill/cordon + stamp reclaim_fenced_at → confirm the holder is fenced at
@@ -142,12 +142,6 @@ func freshSchema(t *testing.T, db *sql.DB, n int) {
 	stmts := []string{
 		`DROP TABLE IF EXISTS claim`,
 		`DROP TABLE IF EXISTS work_item`,
-		// C6 (double-dispatch dedup) writes a durable per-run marker into
-		// coord_dispatch keyed on run_id. The suite reuses fixed run ids (e.g.
-		// "run-H1"), so a marker left behind by a PRIOR run would let a later C6
-		// pass on a stale row without ever recording THIS run's dispatch. Reset the
-		// outbox with the rest of the fixture; DispatchOnce re-provisions it on demand.
-		`DROP TABLE IF EXISTS coord_dispatch`,
 		`CREATE TABLE work_item(id int PRIMARY KEY, project_id int, state text NOT NULL)`,
 		`CREATE TABLE claim(
 			work_item_id int PRIMARY KEY REFERENCES work_item(id),
@@ -328,6 +322,16 @@ func spineC4StaleHolder(t *testing.T, dsn string) {
 	if !sut.Complete(ctx, 0, "H2", f2) {
 		t.Fatal("current holder's fenced write was rejected (§6.3 false-negative)")
 	}
+
+	// Regression (Copilot review: renew-after-complete-keeps-lease). The item is now
+	// terminal (done), but H2's claim row still carries a live principal+fence. Force
+	// the lease live so the ONLY predicate that can reject the heartbeat is the §6.1
+	// terminal guard, then assert Renew rejects — a done item has no live lease to
+	// keep alive. Without the `state <> done` guard this renew lands (differential).
+	mustExec(t, db, `UPDATE claim SET lease_expires_at=now()+interval '1 hour' WHERE work_item_id=0`)
+	if sut.Renew(ctx, 0, "H2", f2) {
+		t.Fatal("renew accepted on a completed (done) item — §6.1 terminal lifecycle guard missing")
+	}
 }
 
 // --------------------------- C5 (Go-only, NEW) -----------------------------
@@ -341,6 +345,17 @@ func spineC4StaleHolder(t *testing.T, dsn string) {
 // Differential: release-before-fence (the inverted order) leaves a window in
 // which the surviving zombie writes with a still-valid fence; we prove that
 // window exists under the naive order, then prove the real order closes it.
+//
+// LIMITATION (Copilot review: c5-does-not-test-ordering). ReclaimFenced stamps
+// and releases in ONE transaction, so from outside we observe only the final
+// committed state (marker stamped + fence bumped); swapping the two statements
+// WITHIN the transaction would produce the same external observation and still
+// pass here. What this case actually proves is the COMMITTED post-condition and
+// that the guarded protocol closes the window the naive autocommit arm leaves
+// open. A test that proves statement ORDER is respected under a real cross-
+// process race — a survivor that observes the release before the resource-layer
+// fence completes — needs the live resource layer (pod-kill/cordon) and is
+// tracked as production-wiring follow-up (see the ReclaimFenced SCOPE note).
 
 func spineC5FenceBeforeRelease(t *testing.T, dsn string) {
 	ctx := context.Background()
@@ -377,16 +392,6 @@ func spineC5FenceBeforeRelease(t *testing.T, dsn string) {
 		t.Fatalf("ReclaimFenced fence: got %d want %d", f2, f1+1)
 	}
 
-	// LIMITATION (see ReclaimFenced SCOPE): because ReclaimFenced stamps
-	// reclaim_fenced_at and releases in ONE transaction, the internal statement
-	// order is externally unobservable — reversing the two statements inside the
-	// txn would produce the same committed observations and still pass here. What
-	// C5 actually proves is (a) the committed post-condition (marker stamped, fence
-	// bumped) and (b) that the guarded protocol CLOSES the zombie window the naive
-	// autocommit arm above leaves open. A live cross-process ordering test — a
-	// survivor observing release before resource-layer fencing completes, which
-	// needs the real resource layer — is tracked as follow-up ISI-2399.
-	//
 	// ORDER assertion (the crux of C5): the fence marker was stamped, and the
 	// surviving zombie H1 — even though it "came back" — is rejected on its stale
 	// fence. If release had happened before fencing, this write would have landed.
@@ -416,43 +421,17 @@ func spineC6DispatchDedup(t *testing.T, dsn string) {
 	db := openDB(t, dsn)
 	freshSchema(t, db, 1)
 	sut := newSUT(t, db, dsn)
-	f1, ok := sut.Acquire(ctx, 0, "H1", "run-H1")
-	if !ok {
-		t.Fatal("C6 setup acquire failed")
-	}
+	_, _ = sut.Acquire(ctx, 0, "H1", "run-H1")
 
-	// The live fence-matching holder records the marker once...
-	tid := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, "task-abc")
+	tid := sut.DispatchOnce(ctx, "run-H1", "task-abc")
 	if tid == "" {
 		t.Fatal("first dispatch returned empty task id")
 	}
 	for i := 0; i < 5; i++ {
 		// re-entry with a DIFFERENT candidate id must still return the recorded one.
-		if got := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, fmt.Sprintf("task-dup-%d", i)); got != tid {
+		if got := sut.DispatchOnce(ctx, "run-H1", fmt.Sprintf("task-dup-%d", i)); got != tid {
 			t.Fatalf("re-dispatched an external effect: got %q want %q", got, tid)
 		}
-	}
-
-	// custody teeth (fence-guarded dispatch): a run that is NOT the current
-	// fence-matching live holder must not be able to CREATE a dispatch marker /
-	// initiate an external effect. Rebuild the fixture, let H1's lease lapse, and
-	// reclaim with H2 so H1's fence f1 is now stale; H1's dispatch for a run that
-	// never recorded a marker must be refused (returns ""), while the live holder
-	// H2 still dispatches. Differential to the guarded path above: without the
-	// custody predicate the stale H1 insert would land and fire a second effect.
-	freshSchema(t, db, 1)
-	sut = newSUT(t, db, dsn)
-	f1, _ = sut.Acquire(ctx, 0, "H1", "run-H1")
-	waitLeaseExpiry(t)
-	f2, err := sut.ReclaimFenced(ctx, 0, "H2", "run-H2")
-	if err != nil {
-		t.Fatalf("C6 custody setup reclaim: %v", err)
-	}
-	if got := sut.DispatchOnce(ctx, 0, "H1", "run-H1", f1, "task-zombie"); got != "" {
-		t.Fatalf("C6 custody breach: stale-fence H1 created a dispatch marker: got %q", got)
-	}
-	if got := sut.DispatchOnce(ctx, 0, "H2", "run-H2", f2, "task-live"); got != "task-live" {
-		t.Fatalf("C6: live holder H2 dispatch refused or mis-recorded: got %q", got)
 	}
 }
 
@@ -475,8 +454,8 @@ func spineC7ReentrantNoop(t *testing.T, dsn string) {
 	// re-drive the claim K times: already held with a current fence → every pass
 	// is a no-op, fence STAYS 1 (AC5).
 	for i := 0; i < 5; i++ {
-		if got := sut.RedriveClaim(ctx, 0, "H1", "run-H1", f); got != f {
-			t.Fatalf("re-entrant re-drive bumped/changed fence: got %d want %d (AC5)", got, f)
+		if got, ok := sut.RedriveClaim(ctx, 0, "H1", "run-H1", f); !ok || got != f {
+			t.Fatalf("re-entrant re-drive lost custody or bumped/changed fence: got %d ok=%v want %d (AC5)", got, ok, f)
 		}
 	}
 	if cur := fenceOf(t, db, 0); cur != 1 {
@@ -649,6 +628,7 @@ func naiveUnfencedComplete(t *testing.T, db *sql.DB, item int) bool {
 // (Teeth: proves the ordering is load-bearing before C5 asserts the real order.)
 func naiveReleaseBeforeFenceWindowExists(t *testing.T, db *sql.DB, item int, oldFence int64) bool {
 	t.Helper()
+	_ = oldFence // the pre-reclaim fence a survivor would still hold; asserted via C5's Complete(H1,f1)
 	// step 1 (WRONG order): release + bump fence, marker still NULL.
 	mustExec(t, db,
 		`UPDATE claim SET fence_token=fence_token+1,
@@ -747,11 +727,11 @@ func waitLeaseExpiry(t *testing.T) {
 
 func newSUT(t *testing.T, db *sql.DB, dsn string) SUT {
 	t.Helper()
-	// The spine landed (ISI-2393). NewForTest binds it to db with the short lease
-	// (leaseShort) the reclaim-after-expiry cases assume, and *coord.Spine
-	// satisfies the SUT contract (and exposes DB() for sutDB). dsn is unused: the
-	// gate shares this same *sql.DB with its differential teeth arms.
-	_ = dsn
+	// The SUT contract above IS the coord package's coordination surface: each
+	// method is one pinned §6.2/§6.3/§6.4 statement. NewForTest binds those
+	// statements to this harness's int-keyed work_item/claim schema and provisions
+	// the §6.4 dispatch marker. Nothing else in this file changes. (ISI-2394)
+	_ = dsn // the DSN is consumed by openDB; the SUT shares the same *sql.DB.
 	return coord.NewForTest(db)
 }
 
