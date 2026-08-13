@@ -5,7 +5,7 @@ changes, triage issues, and steward releases per [GOVERNANCE.md](GOVERNANCE.md).
 
 | Name | GitHub | Areas |
 |------|--------|-------|
-| _TBD_ | _TBD_ | Project lead / all areas |
+| Henrik Rexed | [@henrikrexed](https://github.com/henrikrexed) | Project lead / all areas |
 
 > This project is in early development. As the community grows, maintainers are
 > added by pull request following the process in
