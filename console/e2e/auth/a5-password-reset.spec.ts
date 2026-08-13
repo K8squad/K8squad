@@ -59,6 +59,7 @@ test.describe('§6.7.1 A5 · local-cred password reset (console login leg)', () 
     await expect(page.getByRole('button', { name: new RegExp(USER, 'i') })).toBeVisible();
 
     // Complete the reset out-of-band (token delivered via the fixture mailbox).
+    await requestPasswordReset(page, USER);
     const token = await consumeResetToken(USER);
     await page.goto(`/reset?token=${token}`);
     await page.getByLabel(/new password/i).fill(NEW_PASSWORD);
@@ -77,6 +78,7 @@ test.describe('§6.7.1 A5 · local-cred password reset (console login leg)', () 
   });
 
   test('next login (A1) succeeds with the new password as the same principal', async ({ page }) => {
+    await requestPasswordReset(page, USER);
     const token = await consumeResetToken(USER);
     await page.goto(`/reset?token=${token}`);
     await page.getByLabel(/new password/i).fill(NEW_PASSWORD);
@@ -96,6 +98,13 @@ async function login(page: import('@playwright/test').Page, username: string, pa
   await page.getByLabel(/username/i).fill(username);
   await page.getByLabel(/password/i).fill(password);
   await page.getByRole('button', { name: /log ?in|sign ?in/i }).click();
+}
+
+async function requestPasswordReset(page: import('@playwright/test').Page, username: string) {
+  await page.goto('/login');
+  await page.getByRole('link', { name: /forgot|reset|recover/i }).click();
+  await page.getByLabel(/username/i).fill(username);
+  await page.getByRole('button', { name: /reset|recover|send/i }).click();
 }
 
 // consumeResetToken retrieves the single-use token the fixture delivered out-of-band.
