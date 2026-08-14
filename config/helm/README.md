@@ -2,8 +2,9 @@
 
 Installs the K8squad control-plane API surface on a cluster:
 
-- the `ksquad.io` CRD group from `crds/` (Helm installs CRDs on first install;
-  it never upgrades or deletes them — see *CRD lifecycle* below), and
+- the `ksquad.io` CRD group from `crds/` (Team, Agent, Role, Skill, Project,
+  Run — plus AgentRuntime from Story 1.3; Helm installs CRDs on first install
+  and never upgrades or deletes them — see *CRD lifecycle* below), and
 - the control-plane namespace (`k8squad-system` by default).
 
 This is the Story 1.4 **skeleton**: services (apiserver, operator, console,

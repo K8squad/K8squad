@@ -14,8 +14,9 @@ Discover the API group:
 
   kubectl api-resources --api-group=ksquad.io
 
-The CRD set currently covers the kinds landed so far; Story 1.2 adds
-Agent, Role, Skill, Project and Run to the same group. After pulling changes:
+The CRD set covers the squad-composition kinds (Team, Agent, Role, Skill,
+Project, Run) plus AgentRuntime. After regenerating manifests, keep the chart
+in lockstep:
 
   make helm-sync-crds   # config/crd/bases/*.yaml -> config/helm/crds/
 
