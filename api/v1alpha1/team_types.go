@@ -20,13 +20,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TeamSpec defines the desired state of Team.
+// TeamSpec defines the desired state of Team (arch §5.1, story 1.2 AC2).
 //
-// Story 1.1 keeps this deliberately minimal — it exists so the ksquad.io group
-// builds and generation emits a real CRD + deepcopy. Story 1.2 fills in the
-// arch §5.1 spec fields (projects[], agents[], namespaceStrategy) for Team and
-// adds the remaining CRDs (Agent, Role, Skill, Project, Run, OTelConfig).
+// A Team is the squad tenancy boundary (§12.1 — "a squad is a namespace"):
+// its Projects, Runs, sandbox pods, workspace PVCs and per-user Secrets live
+// in the Team's namespace. This story defines only the type; the Team
+// reconciler (story 1.3) ensures the namespace, RBAC, NetworkPolicy and
+// quota.
 type TeamSpec struct {
+	// Projects lists the Project CRs this squad works on (refs).
+	// +optional
+	Projects []ObjectRef `json:"projects,omitempty"`
+
+	// Agents lists the Agent CRs composing this squad (refs).
+	// +optional
+	Agents []ObjectRef `json:"agents,omitempty"`
+
+	// NamespaceStrategy describes how the Team's namespace is provisioned and
+	// managed (arch §5.1, §12.1). The Team reconciler (story 1.3) owns the
+	// strategy semantics.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	NamespaceStrategy string `json:"namespaceStrategy"`
 }
 
 // TeamStatus defines the observed state of Team.
@@ -40,6 +55,7 @@ type TeamStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=team,categories=ksquad
 
 // Team is the Schema for the teams API. A Team is the squad tenancy boundary
 // (arch §5.1, §12.1). It is namespaced by default (no cluster-scope marker).

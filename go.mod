@@ -13,6 +13,7 @@ require (
 require (
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/stretchr/testify v1.9.0
+	sigs.k8s.io/yaml v1.4.0
 )
 
 require (
