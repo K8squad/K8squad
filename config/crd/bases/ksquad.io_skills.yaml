@@ -175,12 +175,12 @@ spec:
                     must be unset when source.type is inline; set source.type=inline
                     and provide source.inline
                   rule: self.type != 'inline' || (has(self.inline) && self.inline
-                    != ” && !has(self.git))
+                    != '' && !has(self.git))
                 - message: source.git must carry the body (repoRef and ref set) and
                     source.inline must be unset when source.type is git; set source.type=git
                     and provide source.git.repoRef/ref
                   rule: self.type != 'git' || (has(self.git) && self.git.repoRef !=
-                    ” && self.git.ref != ” && !has(self.inline))
+                    '' && self.git.ref != '' && !has(self.inline))
             required:
             - source
             type: object
