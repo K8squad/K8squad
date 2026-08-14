@@ -113,13 +113,14 @@ func SetCreatedBy(obj metav1.Object, principal PrincipalRef) {
 	obj.SetAnnotations(annotations)
 }
 
+// +kubebuilder:object:generate=false
+
 // OwnedByHolder is implemented by the CRD types that carry spec.ownedBy
 // (Team, Project, Agent, Run — story 1.6). Keeping the accessor pair behind
 // an interface lets the attribution webhook and the cache indexers stay
-// generic over client.Object instead of referencing concrete types.
+// generic over client.Object instead of referencing concrete types. The
+// concrete types satisfy client.Object independently (they are CRD structs).
 type OwnedByHolder interface {
-	client.Object
-
 	// GetOwnedBy returns the spec.ownedBy principal ref.
 	GetOwnedBy() PrincipalRef
 
