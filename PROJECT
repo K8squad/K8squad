@@ -64,4 +64,12 @@ resources:
   kind: Run
   path: github.com/K8squad/K8squad/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: false
+  domain: ksquad.io
+  group: ""
+  kind: OTelConfig
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
 version: "3"

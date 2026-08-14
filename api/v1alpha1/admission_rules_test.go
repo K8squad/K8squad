@@ -105,14 +105,14 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 	}
 }
 
-// The ValidatingWebhookConfiguration must exist for all three guarded kinds
-// with failurePolicy=fail (fail-closed: a broken webhook denies, never
-// admits).
+// The ValidatingWebhookConfiguration must exist for all guarded kinds
+// (Team, Agent, Run, OTelConfig) with failurePolicy=fail (fail-closed:
+// a broken webhook denies, never admits).
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
-	for _, name := range []string{"vteam.kb.io", "vagent.kb.io", "vrun.kb.io"} {
+	for _, name := range []string{"vteam.kb.io", "vagent.kb.io", "vrun.kb.io", "votelconfig-v1alpha1.ksquad.io"} {
 		assert.Contains(t, yaml, "name: "+name)
 	}
-	assert.Equal(t, 3, strings.Count(yaml, "failurePolicy: Fail"),
+	assert.Equal(t, 4, strings.Count(yaml, "failurePolicy: Fail"),
 		"every validating webhook must fail closed")
 }
