@@ -30,7 +30,7 @@ formation-keeping.
 - **📋 Project-scoped work management** — a Kanban-style work-item tree with tickets, sub-tickets, checkout/claim/lease, comments, and artifacts — an append-only, provenanced coordination record.
 - **🔒 RBAC & per-project isolation** — every `Team` is a tenancy boundary with its own namespace, NetworkPolicy, and quota. Agent code runs untrusted in gVisor-sandboxed pods; the control plane stays trusted.
 - **📡 OTel-native observability** — traces, metrics, and logs are OpenTelemetry-first across the operator, API server, and every run, so squad activity is visible end to end.
-- **🧩 Plugin SDK** *(planned)* — an extension model where plugins subscribe to a NATS/JetStream event bus (`nats_sub(subject)`) and light up new console surfaces. Design is locked (ADR-023); implementation is on the roadmap.
+- **🧩 Plugin SDK** *(planned)* — an extension model where plugins subscribe to a NATS/JetStream event bus (`nats_sub(subject)`) and light up new console surfaces. Design is locked (ADR-023); implementation is on the roadmap. See the [Plugin SDK guide](./docs/plugin-sdk-guide.md).
 - **📱 Responsive console** — a polished operator console that adapts from desktop to tablet to mobile, with live SSE run streams and dual role/leadership org views.
 
 ## 🖥️ Console
@@ -128,6 +128,7 @@ and workspace PVCs, per `Team`. Untrusted, least-privilege, blast-radius-bounded
 - **Website** — https://ksquad.io
 - **Documentation** — https://ksquad.io/docs
 - **Contributing** — [CONTRIBUTING.md](./CONTRIBUTING.md)
+- **Plugin SDK guide** — [docs/plugin-sdk-guide.md](./docs/plugin-sdk-guide.md)
 - **Code of Conduct** — [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
 - **Governance** — [GOVERNANCE.md](./GOVERNANCE.md) · [MAINTAINERS.md](./MAINTAINERS.md)
 - **Security** — [SECURITY.md](./SECURITY.md)
