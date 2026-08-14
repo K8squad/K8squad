@@ -1,0 +1,189 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: skills.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: Skill
+    listKind: SkillList
+    plural: skills
+    shortNames:
+    - skill
+    singular: skill
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Skill is the Schema for the skills API — a granted tool/capability
+          (arch §5.1). It is namespaced by default.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              SkillSpec defines the desired state of Skill (arch §5.1, §5.3.4, §5.3.6,
+              story 1.2 AC4).
+
+              A Skill is a granted tool/capability. Data-only and validated; it drives
+              the operator's pod assembly (§5.3.4) when the Run reconciler unions the
+              requirements of the Run's skills.
+            properties:
+              mcpToolRefs:
+                description: |-
+                  McpToolRefs list the MCP tool endpoints granted to this skill. Part of
+                  the CRD-authorized capability envelope.
+                items:
+                  description: ObjectRef is a light cross-CRD reference to another
+                    ksquad.io object.
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced object. Empty means the referring object's
+                        own namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              permissions:
+                description: |-
+                  Permissions is the CRD-authorized capability envelope. Trust boundary
+                  (D8, §5.3.6): a git-sourced body is UNTRUSTED input — it supplies
+                  behavior inside this envelope and never widens it. The envelope is
+                  authorized here by the operator/admin who registers the skill, never
+                  self-declared by the fetched repo content.
+                items:
+                  type: string
+                type: array
+              requires:
+                description: |-
+                  Requires declares toolchain packs and service sidecars the operator
+                  merges into the Run pod at assembly (§5.3.4).
+                properties:
+                  sidecars:
+                    description: |-
+                      Sidecars are stateful service sidecars (§5.3.3), e.g. "dockerd" —
+                      capability-gated against AgentRuntime.capabilities at assembly.
+                    items:
+                      type: string
+                    type: array
+                  toolchains:
+                    description: |-
+                      Toolchains are language/CLI packs staged as init containers (§5.3.2),
+                      expressed as name@version, e.g. "go@1.23", "node@22". Version
+                      conflicts across a Run's skills fail closed (§5.3.4).
+                    items:
+                      type: string
+                    type: array
+                type: object
+              source:
+                description: |-
+                  Source selects how the skill body is obtained: inline (body in the
+                  CRD) or git (fetched via pkg/scm pinned to a commit SHA, §5.3.6).
+                  The type discriminator is enum-validated so an unknown source fails
+                  admission (fail-closed, story 1.2 AC8); the deeper inline⇔git field
+                  consistency webhook lands with story 1.3.
+                properties:
+                  git:
+                    description: |-
+                      Git fetches the body from a git repository via the pkg/scm provider
+                      seam (§5.4, ADR-018). The fetched body is untrusted input (D8) and is
+                      scanned/validated before staging (§5.3.6).
+                    properties:
+                      credentialSecretRef:
+                        description: |-
+                          CredentialSecretRef is an optional BYO read-only token Secret for
+                          private repositories (§11 — never a shared KSquad token).
+                        properties:
+                          key:
+                            description: Key inside the Secret; empty means the consumer-defined
+                              default key.
+                            type: string
+                          name:
+                            description: Name of the referenced Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      path:
+                        description: Path to the skill inside the repository, e.g.
+                          "skills/pg-migrate".
+                        type: string
+                      ref:
+                        description: |-
+                          Ref is the immutable revision to fetch — PINNED to a commit SHA, never
+                          a floating branch (§5.3.6): a Run resolves a skill to an immutable
+                          revision so a repo force-push cannot silently alter in-flight
+                          behavior. Moving refs are admitted only behind an explicit
+                          experimental/dev posture, resolved-and-recorded per Run by the
+                          reconciler (story 1.3).
+                        minLength: 1
+                        type: string
+                      repoRef:
+                        description: |-
+                          RepoRef is the repository reference via the pkg/scm provider, e.g.
+                          "github.com/acme/squad-skills". GitHub is the v1 provider; GitLab and
+                          Gitea drop in behind the same seam (§5.4, ADR-018).
+                        minLength: 1
+                        type: string
+                    required:
+                    - ref
+                    - repoRef
+                    type: object
+                  inline:
+                    description: Inline is the literal skill body, used when type=inline.
+                    type: string
+                  type:
+                    description: 'Type discriminates the source: inline or git.'
+                    enum:
+                    - inline
+                    - git
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: source.inline must carry the body (non-empty) and source.git
+                    must be unset when source.type is inline; set source.type=inline
+                    and provide source.inline
+                  rule: self.type != 'inline' || (has(self.inline) && self.inline
+                    != '' && !has(self.git))
+                - message: source.git must carry the body (repoRef and ref set) and
+                    source.inline must be unset when source.type is git; set source.type=git
+                    and provide source.git.repoRef/ref
+                  rule: self.type != 'git' || (has(self.git) && self.git.repoRef !=
+                    '' && self.git.ref != '' && !has(self.inline))
+            required:
+            - source
+            type: object
+        type: object
+    served: true
+    storage: true

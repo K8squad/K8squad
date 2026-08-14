@@ -23,11 +23,27 @@ all: generate manifests
 
 .PHONY: manifests
 manifests: controller-gen ## Generate CRD manifests.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations (zz_generated.deepcopy.go).
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+
+HELM ?= $(shell command -v helm 2>/dev/null)
+CHART_DIR ?= config/helm
+
+.PHONY: helm-sync-crds
+helm-sync-crds: ## Sync generated CRDs (config/crd/bases) into the Helm chart's crds/ dir.
+	mkdir -p $(CHART_DIR)/crds
+	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
+
+.PHONY: helm-lint
+helm-lint: ## Lint the control-plane Helm chart.
+	$(HELM) lint $(CHART_DIR)
+
+.PHONY: helm-template
+helm-template: ## Render the control-plane Helm chart locally (CRDs included, no cluster needed).
+	$(HELM) template k8squad $(CHART_DIR) --include-crds
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

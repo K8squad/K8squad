@@ -1,0 +1,241 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: projects.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: Project
+    listKind: ProjectList
+    plural: projects
+    shortNames:
+    - proj
+    singular: project
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Project is the Schema for the projects API — a repo + workspace
+          (arch §5.1). It is namespaced by default.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ProjectSpec defines the desired state of Project (arch §5.1, §5.4, §8.5,
+              story 1.2 AC5).
+
+              A Project couples an upstream source repository (mirrored, not made the
+              source of truth — §5.4) with a workspace and a context budget.
+            properties:
+              contextBudget:
+                description: |-
+                  ContextBudget is the project-level default per-tier token allocation
+                  (§8.5) — raise it once for projects with large architecture docs and
+                  every agent on the project inherits it. Per-Agent overrides via
+                  Agent.spec.contextBudgetOverride; per-Run dynamic trim in the shim.
+                properties:
+                  artifacts:
+                    description: Artifacts tier allocation (build outputs, PR refs
+                      from the §5.4 mirror).
+                    format: int64
+                    type: integer
+                  memoryRecall:
+                    description: |-
+                      MemoryRecall tier allocation (scoped §7 semantic recall, untrusted
+                      provenance tier).
+                    format: int64
+                    type: integer
+                  projectDocs:
+                    description: ProjectDocs tier allocation (architecture docs, conventions).
+                    format: int64
+                    type: integer
+                  workItem:
+                    description: |-
+                      WorkItem tier allocation. Must-include content (work item + acceptance
+                      criteria + goals) is never truncated (§8.5).
+                    format: int64
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: context budget tiers must be >= 0 when set; remove or raise
+                    the negative tier
+                  rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
+                    || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
+                    >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+              egressPolicyRef:
+                description: |-
+                  EgressPolicyRef references the egress policy applied to this
+                  project's Runs (§12.2 — default-deny NetworkPolicy + allowlist).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              goals:
+                description: |-
+                  Goals are project-level goals injected into every Run's context
+                  envelope (§8.5). A goal change is a new Project revision; the next Run
+                  assembles against it while in-flight Runs keep their snapshot.
+                items:
+                  type: string
+                type: array
+              repo:
+                description: |-
+                  Repo is the upstream source repository mirrored by KSquad (§5.4:
+                  GitHub is the v1 provider behind the pkg/scm seam; the fenced
+                  coordination record stays authoritative).
+                properties:
+                  auth:
+                    description: Auth carries the per-Project BYO credential for the
+                      provider.
+                    properties:
+                      credentialSecretRef:
+                        description: CredentialSecretRef is the BYO provider credential
+                          Secret.
+                        properties:
+                          key:
+                            description: Key inside the Secret; empty means the consumer-defined
+                              default key.
+                            type: string
+                          name:
+                            description: Name of the referenced Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - credentialSecretRef
+                    type: object
+                  ref:
+                    description: |-
+                      Ref is the default ref to track (branch or tag); empty means the
+                      provider default branch.
+                    type: string
+                  sync:
+                    description: Sync configures the repo-sync reconciler (§5.4).
+                      Nil disables sync.
+                    properties:
+                      mirror:
+                        description: |-
+                          Mirror selects what the inbound reconciler mirrors into the scm
+                          schema. Nil means the default set: issues, pull requests, check runs
+                          and release/build artifacts (§5.4).
+                        properties:
+                          artifacts:
+                            description: Artifacts mirrors release/build artifacts
+                              by URI + sha (FR-H2).
+                            type: boolean
+                          checkRuns:
+                            description: CheckRuns mirrors CI check runs (FR-H2).
+                            type: boolean
+                          issues:
+                            description: Issues mirrors provider issues (FR-H1 issue⇄work-item
+                              mapping).
+                            type: boolean
+                          pullRequests:
+                            description: PullRequests mirrors PRs incl. review state
+                              (FR-H2).
+                            type: boolean
+                        type: object
+                      provider:
+                        description: |-
+                          Provider is the source-control provider. GitHub is v1; GitLab and
+                          Gitea drop in behind the same pkg/scm interface (§5.4, ADR-018).
+                        enum:
+                        - github
+                        - gitlab
+                        - gitea
+                        type: string
+                      reflectOutbound:
+                        description: |-
+                          ReflectOutbound opts in to posting KSquad Run status/comments back to
+                          the provider (§5.4): off by default, requires a status-write-scoped
+                          token, every write origin-marked for echo suppression.
+                        type: boolean
+                      webhookSecretRef:
+                        description: |-
+                          WebhookSecretRef references the per-Project HMAC Secret. The HMAC
+                          signature is verified before any webhook payload is parsed (§5.4,
+                          FR-H4, NFR-SEC8); webhooks are only a fast path on top of the
+                          level-triggered reconcile.
+                        properties:
+                          key:
+                            description: Key inside the Secret; empty means the consumer-defined
+                              default key.
+                            type: string
+                          name:
+                            description: Name of the referenced Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - provider
+                    type: object
+                  url:
+                    description: |-
+                      URL of the upstream repository, e.g.
+                      "https://github.com/acme/widget".
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+              workspacePVC:
+                description: |-
+                  WorkspacePVC sizes and classes the Project workspace PVC (§9.4 —
+                  Runs work in their own git-worktree on this volume).
+                properties:
+                  class:
+                    description: Class is the storageClass name; empty means the cluster
+                      default.
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size of the PVC, e.g. "50Gi".
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - size
+                type: object
+            required:
+            - repo
+            type: object
+        type: object
+    served: true
+    storage: true

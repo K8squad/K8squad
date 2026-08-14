@@ -1,0 +1,23 @@
+apiVersion: v2
+name: k8squad
+description: |
+  K8squad control plane — Kubernetes-native AI agent squad orchestration.
+  Story 1.4 skeleton: installs the ksquad.io CRD group and the control-plane
+  namespace. Services (apiserver, operator, console, memory, shim) are wired
+  in later epics.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://ksquad.io
+sources:
+  - https://github.com/K8squad/K8squad
+icon: https://ksquad.io/img/banner-on-dark.png
+keywords:
+  - agents
+  - orchestration
+  - kubernetes
+  - operators
+maintainers:
+  - name: K8squad Authors
+    url: https://ksquad.io
