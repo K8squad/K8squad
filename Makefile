@@ -21,9 +21,13 @@ CONTROLLER_TOOLS_VERSION ?= v0.16.5
 .PHONY: all
 all: generate manifests
 
+# crd:allowDangerousTypes=true is required for OTelConfig SamplingConfig.Ratio
+# (*float64, story 1.5). Without it controller-gen refuses floats and writes a
+# partial CRD with an empty ratio schema. The generated schema is `type: number`
+# with minimum/maximum bounds — acceptable for this Go-only control plane.
 .PHONY: manifests
 manifests: controller-gen ## Generate CRD manifests.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations (zz_generated.deepcopy.go).
