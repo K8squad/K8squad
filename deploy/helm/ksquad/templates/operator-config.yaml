@@ -3,7 +3,8 @@
        StorageClass + access mode + size to stamp onto every Project PVC, so
        those PVCs also come from values and never the cluster default
        (§16.2, FR-L2, ISI-2149). The NATS JetStream StorageClass is surfaced
-       here too for operability; it is wired into the NATS subchart values. */ -}}
+       here too for operability; the parent-rendered NATS StatefulSet
+       (templates/nats.yaml, ISI-2253) stamps the actual PVC. */ -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

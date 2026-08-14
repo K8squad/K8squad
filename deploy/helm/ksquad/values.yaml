@@ -121,8 +121,62 @@ storage:
     accessMode: ReadWriteOnce
     size: 20Gi
 
-  # NATS/JetStream file store PVC (dependency #2, §16). StorageClass passed to
-  # the NATS subchart/values; never left to cluster-default.
+  # NATS/JetStream file store PVC (dependency #2, §16). StorageClass drives the
+  # parent-rendered JetStream StatefulSet's volumeClaimTemplate (see `nats:`
+  # below); never left to cluster-default. Fail-fast when unset AND nats.enabled.
   nats:
     storageClassName: "" # falls back to storage.storageClassName
     size: 5Gi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NATS / JetStream — the plugin event bus (stateful dependency #2)
+#   §16 / §17.4 / ADR-023 — "data in Postgres, events on NATS" (CEO 2026-08-11).
+#   The chart brings NATS up itself as a parent-rendered JetStream StatefulSet
+#   (same packaging pattern as the CNPG `Cluster` CR) so the JetStream file-store
+#   PVC's StorageClass stays the first-class `storage.nats.storageClassName` knob
+#   (§16.2) — never the cluster default. JetStream is ENABLED (the plugin
+#   replay/catch-up substrate). NATS holds NO state of record (Postgres is the
+#   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
+# ═════════════════════════════════════════════════════════════════════════════
+nats:
+  # The event bus is ON by default (one `helm install` yields the whole stack,
+  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
+  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+  enabled: true
+  image: nats:2.10-alpine
+  port: 4222
+  jetstream:
+    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
+    # Max on-disk JetStream file store. Keep ≤ storage.nats.size.
+    maxFileStore: 4Gi
+  # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
+  # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
+  # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.
+  ha:
+    enabled: false
+    replicas: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Event relay — apiserver outbox → NATS (Epic 12.1 / §17.4 / ADR-023)
+#   The apiserver's relay worker tails the transactional Postgres outbox and
+#   publishes each event to a JetStream subject
+#   `ksquad.{entity}.{project}.{squad}.{event_type}`, stamping `published_at` and
+#   republishing unflushed rows (at-least-once). DECOUPLED from the write path by
+#   construction: the relay runs OUTSIDE the reconcile/coordination transaction,
+#   is best-effort, and is NEVER wired into an apiserver liveness/readiness probe.
+#   NATS-down (or nats.enabled=false) delays fan-out only — it NEVER blocks a
+#   Run/claim/memory write. The chart hands the apiserver this config.
+# ═════════════════════════════════════════════════════════════════════════════
+events:
+  relay:
+    enabled: true
+    # Subject taxonomy prefix ksquad.{entity}.{project}.{squad}.{event_type}.
+    subjectPrefix: ksquad
+    # NATS client URL. Empty → derived from the release-local bus (nats.enabled).
+    natsUrl: ""

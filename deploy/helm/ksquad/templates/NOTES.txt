@@ -20,4 +20,14 @@ Exposure mode: {{ .Values.exposure.mode }}
 Storage (never the cluster default):
   Postgres  StorageClass: {{ include "ksquad.storageClass.postgres" . }}
   Workspace StorageClass: {{ include "ksquad.storageClass.workspace" . }}  (accessMode {{ .Values.storage.workspace.accessMode }})
+{{- if .Values.nats.enabled }}
   NATS      StorageClass: {{ include "ksquad.storageClass.nats" . }}
+
+Event bus (plugin seam, §17.4 / ADR-023 — data in Postgres, events on NATS):
+  NATS/JetStream: {{ include "ksquad.nats.fullname" . }} ({{ include "ksquad.nats.replicas" . }} replica(s){{ if not .Values.nats.ha.enabled }}, single-replica default{{ else }}, HA JetStream quorum{{ end }})
+  Relay → {{ include "ksquad.nats.url" . }}  (outbox→NATS, best-effort — NATS-down never blocks a Run/claim/write)
+{{- else }}
+
+Event bus: DISABLED (nats.enabled=false). The apiserver outbox relay still runs
+and buffers events durably in Postgres — the core is unaffected (§17.4).
+{{- end }}

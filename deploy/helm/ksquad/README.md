@@ -78,6 +78,46 @@ storage-class-capability dependent:
 RWO is the safe default and works everywhere; RWX is opt-in and gated on your
 class supporting it.
 
+## Event bus — NATS / JetStream (the plugin seam)
+
+CEO decision (2026-08-11, ADR-023): **data in Postgres, events on NATS**. The
+chart brings up **NATS with JetStream enabled** as stateful dependency #2 — the
+substrate plugins subscribe to (Epic 12). Postgres stays the sole source of
+truth; NATS holds only in-flight/replayable event copies.
+
+- **Bundled, JetStream on.** `nats.enabled: true` (default) renders a NATS
+  StatefulSet with JetStream and a file-store PVC. It is **parent-rendered**
+  (like the CNPG `Cluster` CR) rather than an upstream subchart, specifically so
+  the JetStream PVC's `storageClassName` stays the single `storage.nats.storageClassName`
+  knob (§16.2) — never the cluster default. `helm template`/`install` fails fast
+  if that class is unset while `nats.enabled`.
+- **Single-replica default; HA via a values toggle** (same shape as CNPG's
+  `storage.postgres.instances`). `nats.ha.enabled: true` with an odd
+  `nats.ha.replicas` (≥3) renders a clustered JetStream RAFT quorum. The default
+  single replica keeps the ≤4h install (S1) light.
+- **The apiserver outbox relay publishes to it** (Epic 12.1). The chart renders
+  an `*-event-relay` ConfigMap telling the apiserver where the bus is
+  (`ksquad.nats.url`, release-derived unless `events.relay.natsUrl` overrides)
+  and the subject taxonomy `ksquad.{entity}.{project}.{squad}.{event_type}`.
+- **NATS-down never blocks a Run/claim/write.** The relay is **decoupled** from
+  the write path — it tails the transactional Postgres outbox out-of-band,
+  republishing unflushed rows at-least-once, and is **never** wired into an
+  apiserver liveness/readiness probe (`relay.blocksWritePath: "false"`,
+  `relay.natsHealthGatesApiserver: "false"`). Setting `nats.enabled: false` turns
+  the bus off entirely and the core still installs — the relay just buffers in
+  the outbox.
+
+```sh
+# HA event bus (clustered JetStream) + explicit NATS StorageClass
+helm install ksquad ./deploy/helm/ksquad \
+  ... \
+  --set storage.nats.storageClassName=fast-ssd \
+  --set nats.ha.enabled=true --set nats.ha.replicas=3
+
+# Core-only, no bus (relay buffers in the outbox)
+helm install ksquad ./deploy/helm/ksquad ... --set nats.enabled=false
+```
+
 ## Quick start
 
 ```sh

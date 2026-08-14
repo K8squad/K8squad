@@ -82,4 +82,37 @@ render_fail "gateway with both listeners disabled fails (ISI-2286 F2)" "at least
   --set exposure.hostnames.console=a --set exposure.hostnames.apiserver=b \
   --set storage.storageClassName=std
 
+# Reusable minimal-core value set (clusterip so exposure is out of the way).
+CORE=(--set exposure.mode=clusterip --set storage.storageClassName=std)
+
+echo "== NATS / JetStream event bus (ISI-2253) =="
+render_ok "nats: JetStream enabled StatefulSet renders by default" 'jetstream {' "${CORE[@]}"
+render_ok "nats: single-replica default" 'replicas: 1' "${CORE[@]}"
+render_ok "nats: JetStream PVC uses values StorageClass (never cluster-default)" 'storageClassName: "std"' "${CORE[@]}"
+render_ok "nats: JetStream PVC uses per-family StorageClass override" 'storageClassName: "nats-class"' \
+  "${CORE[@]}" --set storage.nats.storageClassName=nats-class
+render_ok "relay: apiserver outbox→NATS relay ConfigMap renders" 'event-relay' "${CORE[@]}"
+render_ok "relay: NATS URL is release-derived" 'relay.natsUrl: "nats://t-ksquad-nats' "${CORE[@]}"
+render_ok "relay: subject taxonomy prefix present" 'relay.subjectPrefix: "ksquad"' "${CORE[@]}"
+render_ok "relay: decoupled from write path (NATS-down never blocks)" 'relay.blocksWritePath: "false"' "${CORE[@]}"
+render_ok "relay: NATS never gates apiserver health" 'relay.natsHealthGatesApiserver: "false"' "${CORE[@]}"
+# HA toggle — same pattern as CNPG storage.postgres.instances.
+render_ok "nats HA: clustered JetStream renders routes" 'cluster {' \
+  "${CORE[@]}" --set nats.ha.enabled=true --set nats.ha.replicas=3
+render_ok "nats HA: replicas honored" 'replicas: 3' \
+  "${CORE[@]}" --set nats.ha.enabled=true --set nats.ha.replicas=3
+# Core still installs with the bus off — NATS-down never blocks (§17.4).
+render_ok "nats disabled: core still renders (no StatefulSet)" 'kind: Service' \
+  "${CORE[@]}" --set nats.enabled=false
+render_ok "nats disabled: relay still renders + buffers in outbox" 'relay.busBundled: "false"' \
+  "${CORE[@]}" --set nats.enabled=false
+
+echo "== NATS fail-fast guards =="
+render_fail "nats.enabled + missing NATS StorageClass fails (no cluster default)" "never relies on the cluster-default" \
+  --set exposure.mode=clusterip
+render_fail "nats HA with even replicas fails (RAFT quorum)" "must be ODD" \
+  "${CORE[@]}" --set nats.ha.enabled=true --set nats.ha.replicas=4
+render_fail "nats HA with <3 replicas fails (RAFT quorum)" "must be >= 3" \
+  "${CORE[@]}" --set nats.ha.enabled=true --set nats.ha.replicas=1
+
 echo "ALL CHECKS PASSED"

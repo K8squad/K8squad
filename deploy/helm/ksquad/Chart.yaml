@@ -22,10 +22,16 @@ sources:
   - https://github.com/K8squad/K8squad
 maintainers:
   - name: KSquad
-# NOTE: the CloudNativePG operator and the NATS/JetStream operator are
-# cluster prerequisites (see README). This chart renders a CNPG `Cluster` CR
-# (whose PVC StorageClass it parameterizes) and passes StorageClass values
-# through to NATS; it does not vendor those operators as subcharts so the
-# chart renders and lints offline.
+# NOTE: the CloudNativePG operator is a cluster prerequisite (see README); this
+# chart renders a CNPG `Cluster` CR whose PVC StorageClass it parameterizes.
+# NATS/JetStream (dependency #2 — the plugin event bus, §16/§17.4/ADR-023) is
+# brought up by the chart itself as a parent-rendered JetStream StatefulSet
+# (ISI-2253) — same packaging pattern as the CNPG Cluster CR, so the JetStream
+# file-store PVC's StorageClass stays a first-class values knob
+# (`storage.nats.storageClassName`, §16.2) and never the cluster default; an
+# upstream NATS subchart cannot template its PVC StorageClass from a parent
+# value, which would break that guarantee. No operator is vendored, so the chart
+# renders and lints offline.
 annotations:
   ksquad.io/issue: "ISI-2149"
+  ksquad.io/event-bus: "ISI-2253"

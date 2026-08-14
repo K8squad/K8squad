@@ -39,6 +39,27 @@ Component service names.
 {{- end -}}
 
 {{/*
+NATS/JetStream event-bus names + resolution (ISI-2253, §16/§17.4).
+*/}}
+{{- define "ksquad.nats.fullname" -}}
+{{- printf "%s-nats" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/* Replicas: single-replica default; nats.ha.enabled → clustered JetStream. */}}
+{{- define "ksquad.nats.replicas" -}}
+{{- if .Values.nats.ha.enabled -}}{{ .Values.nats.ha.replicas }}{{- else -}}1{{- end -}}
+{{- end -}}
+
+{{/* NATS client URL for the relay — release-derived unless overridden. */}}
+{{- define "ksquad.nats.url" -}}
+{{- if .Values.events.relay.natsUrl -}}
+{{- .Values.events.relay.natsUrl -}}
+{{- else -}}
+{{- printf "nats://%s.%s.svc:%v" (include "ksquad.nats.fullname" .) .Release.Namespace .Values.nats.port -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 StorageClass resolution — per-family override, else the global value.
 Emits empty string when neither is set; ksquad.validate turns that into a
 fail-fast (we NEVER fall back to the cluster default). ISI-2149 / §16.2.
@@ -99,7 +120,18 @@ message rather than a dangling route or a cluster-default PVC.
 {{- if not (include "ksquad.storageClass.workspace" .) -}}
 {{- fail "storage.storageClassName (or storage.workspace.storageClassName) is REQUIRED — KSquad never relies on the cluster-default StorageClass (§16.2)" -}}
 {{- end -}}
-{{- if not (include "ksquad.storageClass.nats" .) -}}
-{{- fail "storage.storageClassName (or storage.nats.storageClassName) is REQUIRED — KSquad never relies on the cluster-default StorageClass (§16.2)" -}}
+{{- if .Values.nats.enabled -}}
+  {{- if not (include "ksquad.storageClass.nats" .) -}}
+  {{- fail "storage.storageClassName (or storage.nats.storageClassName) is REQUIRED when nats.enabled — the JetStream PVC never relies on the cluster-default StorageClass (§16.2)" -}}
+  {{- end -}}
+  {{- if .Values.nats.ha.enabled -}}
+    {{- $r := int .Values.nats.ha.replicas -}}
+    {{- if lt $r 3 -}}
+    {{- fail "nats.ha.replicas must be >= 3 for a clustered JetStream RAFT quorum (single-replica is the non-HA default)" -}}
+    {{- end -}}
+    {{- if eq (mod $r 2) 0 -}}
+    {{- fail "nats.ha.replicas must be ODD for a JetStream RAFT quorum (3, 5, …)" -}}
+    {{- end -}}
+  {{- end -}}
 {{- end -}}
 {{- end -}}
