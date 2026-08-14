@@ -112,20 +112,27 @@ type RunSpec struct {
 type SandboxPolicy struct {
 	// RuntimeClass selects the isolation runtime (§9.1): gVisor is the
 	// default, Kata the high-assurance opt-in, runc only for
-	// explicitly-trusted dev. Unset means the platform default (gvisor).
+	// explicitly-trusted dev. Unset defaults to gvisor at admission
+	// (story 1.3 structural defaulting).
 	// +kubebuilder:validation:Enum=gvisor;kata;runc
+	// +kubebuilder:default=gvisor
 	// +optional
 	RuntimeClass string `json:"runtimeClass,omitempty"`
 
 	// Class routes the warm-pool regime (§9.2 hybrid): interactive Runs
 	// draw from the warm pool; batch/non-interactive Runs may cold-start.
-	// Unset defaults to interactive (reconciler, story 1.3).
+	// Unset defaults to interactive at admission (story 1.3 structural
+	// defaulting).
 	// +kubebuilder:validation:Enum=interactive;batch
+	// +kubebuilder:default=interactive
 	// +optional
 	Class string `json:"class,omitempty"`
 }
 
 // RetryPolicy bounds the §8 failure/resume retry loop (FR-A5, NFR-REL1/2).
+//
+// +kubebuilder:validation:XValidation:message="retryPolicy.maxRetries must be >= 0 (0 means no automatic retry)",rule="!has(self.maxRetries) || self.maxRetries >= 0"
+// +kubebuilder:validation:XValidation:message="retryPolicy.backoffSeconds must be >= 1; set a positive base delay for the exponential backoff",rule="!has(self.backoffSeconds) || self.backoffSeconds >= 1"
 type RetryPolicy struct {
 	// MaxRetries bounds automatic retries; 0 means no automatic retry.
 	// +optional

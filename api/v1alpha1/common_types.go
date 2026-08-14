@@ -55,6 +55,10 @@ type SecretRef struct {
 // above the model window is a fail-closed validation error enforced by the
 // reconciler (story 1.3). Pointer fields mean "inherit from the next level up
 // in the resolution order" when unset.
+//
+// Admission-level sanity (story 1.3): a tier set to a negative allocation is
+// rejected fail-closed via CEL.
+// +kubebuilder:validation:XValidation:message="context budget tiers must be >= 0 when set; remove or raise the negative tier",rule="(!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs) || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall >= 0) && (!has(self.artifacts) || self.artifacts >= 0)"
 type ContextBudget struct {
 	// WorkItem tier allocation. Must-include content (work item + acceptance
 	// criteria + goals) is never truncated (§8.5).
