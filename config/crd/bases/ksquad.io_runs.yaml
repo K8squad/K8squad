@@ -115,6 +115,13 @@ spec:
                     format: int32
                     type: integer
                 type: object
+                x-kubernetes-validations:
+                - message: retryPolicy.maxRetries must be >= 0 (0 means no automatic
+                    retry)
+                  rule: '!has(self.maxRetries) || self.maxRetries >= 0'
+                - message: retryPolicy.backoffSeconds must be >= 1; set a positive
+                    base delay for the exponential backoff
+                  rule: '!has(self.backoffSeconds) || self.backoffSeconds >= 1'
               sandboxPolicy:
                 description: |-
                   SandboxPolicy is the RuntimeClass/isolation selection input to §9.1
@@ -122,19 +129,23 @@ spec:
                   the Run reconciler, story 1.3).
                 properties:
                   class:
+                    default: interactive
                     description: |-
                       Class routes the warm-pool regime (§9.2 hybrid): interactive Runs
                       draw from the warm pool; batch/non-interactive Runs may cold-start.
-                      Unset defaults to interactive (reconciler, story 1.3).
+                      Unset defaults to interactive at admission (story 1.3 structural
+                      defaulting).
                     enum:
                     - interactive
                     - batch
                     type: string
                   runtimeClass:
+                    default: gvisor
                     description: |-
                       RuntimeClass selects the isolation runtime (§9.1): gVisor is the
                       default, Kata the high-assurance opt-in, runc only for
-                      explicitly-trusted dev. Unset means the platform default (gvisor).
+                      explicitly-trusted dev. Unset defaults to gvisor at admission
+                      (story 1.3 structural defaulting).
                     enum:
                     - gvisor
                     - kata

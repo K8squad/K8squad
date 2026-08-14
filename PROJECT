@@ -12,7 +12,15 @@ resources:
     crdVersion: v1
     namespaced: true
   domain: ksquad.io
-  group: ""
+  group: ksquad
+  kind: AgentRuntime
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ksquad
   kind: Team
   path: github.com/K8squad/K8squad/api/v1alpha1
   version: v1alpha1

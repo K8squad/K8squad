@@ -103,6 +103,12 @@ spec:
                     format: int64
                     type: integer
                 type: object
+                x-kubernetes-validations:
+                - message: context budget tiers must be >= 0 when set; remove or raise
+                    the negative tier
+                  rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
+                    || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
+                    >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
               credentialSecretRef:
                 description: |-
                   CredentialSecretRef is the per-user BYO credential Secret (arch §11,
