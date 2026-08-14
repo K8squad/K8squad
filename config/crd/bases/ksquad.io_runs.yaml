@@ -1,0 +1,312 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: runs.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: Run
+    listKind: RunList
+    plural: runs
+    shortNames:
+    - run
+    singular: run
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Run is the Schema for the runs API — the unit of squad work (arch §5.1,
+          §8), reconciled by the Run state machine. It is namespaced by default.
+          Run.spec.workItemRef is an opaque coordination-DB pointer (ADR-001): the
+          Run references the work item, it never owns or embeds it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              RunSpec defines the desired state of Run (arch §5.1, §8, story 1.2 AC6).
+
+              The Run is the unit of squad work and the ONLY CRD that touches
+              coordination data — strictly through the opaque spec.workItemRef and
+              status.artifactRefs references (ADR-001/ADR-002).
+            properties:
+              agents:
+                description: |-
+                  Agents selects the Agent CRs to dispatch; empty lets the reconciler
+                  default from the Team's composition (story 1.3).
+                items:
+                  description: ObjectRef is a light cross-CRD reference to another
+                    ksquad.io object.
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced object. Empty means the referring object's
+                        own namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              inputs:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Inputs are free-form run parameters folded into the §8.5 context
+                  envelope by the Context Assembler. Modeled as an opaque structured
+                  field in story 1.2 (open question OQ1); refined in story 1.3.
+                type: object
+              projectRef:
+                description: |-
+                  ProjectRef references the Project supplying the repo, workspace PVC
+                  and context budget for this Run.
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              retryPolicy:
+                description: |-
+                  RetryPolicy bounds automatic retries with backoff for sandbox/agent
+                  failures (§8, FR-A5).
+                properties:
+                  backoffSeconds:
+                    description: |-
+                      BackoffSeconds is the base delay for the exponential backoff with
+                      jitter applied between retries (§8).
+                    format: int32
+                    type: integer
+                  maxRetries:
+                    description: MaxRetries bounds automatic retries; 0 means no automatic
+                      retry.
+                    format: int32
+                    type: integer
+                type: object
+              sandboxPolicy:
+                description: |-
+                  SandboxPolicy is the RuntimeClass/isolation selection input to §9.1
+                  sandbox assembly (also opaque-structured per OQ1; semantics land with
+                  the Run reconciler, story 1.3).
+                properties:
+                  class:
+                    description: |-
+                      Class routes the warm-pool regime (§9.2 hybrid): interactive Runs
+                      draw from the warm pool; batch/non-interactive Runs may cold-start.
+                      Unset defaults to interactive (reconciler, story 1.3).
+                    enum:
+                    - interactive
+                    - batch
+                    type: string
+                  runtimeClass:
+                    description: |-
+                      RuntimeClass selects the isolation runtime (§9.1): gVisor is the
+                      default, Kata the high-assurance opt-in, runc only for
+                      explicitly-trusted dev. Unset means the platform default (gvisor).
+                    enum:
+                    - gvisor
+                    - kata
+                    - runc
+                    type: string
+                type: object
+              teamRef:
+                description: |-
+                  TeamRef references the Team under whose tenancy this Run executes
+                  (namespace, RBAC, NetworkPolicy, quota — §12.1).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              workItemRef:
+                description: |-
+                  WorkItemRef is an opaque id into the apiserver/coordination Postgres
+                  (§4/§6); the Run references the work item, it does not own or embed it
+                  (ADR-001). Work items, comments, claims, artifacts and memory records
+                  are Postgres rows, NOT CRDs — embedding the work item here, or making
+                  this an owned etcd object, would reintroduce the dual-write
+                  split-brain ADR-001 exists to prevent (story 1.2 AC6/AC7).
+                minLength: 1
+                type: string
+            required:
+            - projectRef
+            - teamRef
+            - workItemRef
+            type: object
+          status:
+            description: |-
+              RunStatus defines the observed state of Run (arch §5.1 status subresource,
+              §8; story 1.2 AC6). Written only by the Run reconciler via the status
+              subresource.
+            properties:
+              artifactRefs:
+                description: |-
+                  ArtifactRefs are refs to artifact rows in the coordination Postgres
+                  (§6.1) — the artifacts themselves are NOT embedded in the CRD
+                  (story 1.2 AC7). Name carries the opaque artifact id.
+                items:
+                  description: ObjectRef is a light cross-CRD reference to another
+                    ksquad.io object.
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced object. Empty means the referring object's
+                        own namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              claimedAt:
+                description: |-
+                  ClaimedAt records when the Run's fenced claim was acquired (§6.2/§6.3,
+                  §8).
+                format: date-time
+                type: string
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of a Run's
+                  state (§5.2 — e.g. Paused(auth_failure), Paused(rate_limited)).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation most recently observed by the
+                  Run reconciler (§5.2).
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase is the §8 state machine value. Enum-validated so an unknown
+                  phase fails admission (fail-closed).
+                enum:
+                - Pending
+                - Claiming
+                - Running
+                - Paused
+                - Succeeded
+                - Failed
+                - Cancelled
+                type: string
+              sandboxRef:
+                description: SandboxRef references the sandbox pod serving the Run
+                  (§9 warm pool).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

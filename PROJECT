@@ -16,4 +16,44 @@ resources:
   kind: Team
   path: github.com/K8squad/K8squad/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ""
+  kind: Agent
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ""
+  kind: Role
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ""
+  kind: Skill
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ""
+  kind: Project
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: ksquad.io
+  group: ""
+  kind: Run
+  path: github.com/K8squad/K8squad/api/v1alpha1
+  version: v1alpha1
 version: "3"

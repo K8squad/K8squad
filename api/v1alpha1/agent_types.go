@@ -1,0 +1,115 @@
+/*
+Copyright 2026 The K8squad Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// AgentSpec defines the desired state of Agent (arch §5.1, story 1.2 AC3).
+//
+// An Agent is one agent instance in a squad. The arch §5.1 table does not
+// list a status subresource for Agent; the Agent reconciler (story 1.3)
+// validates the credential Secret + runtime and publishes the Agent Card
+// (§10.1).
+type AgentSpec struct {
+	// RuntimeRef references the AgentRuntime CRD (arch §5.3) that defines
+	// this agent's coding-agent flavor and CLI version policy. The
+	// AgentRuntime type is authored in story 1.3; this ref is the seam.
+	// +kubebuilder:validation:Required
+	RuntimeRef ObjectRef `json:"runtimeRef"`
+
+	// RoleRef references the Role CRD supplying the reusable behavior
+	// profile (prompt ref, default skills, runtime class hint).
+	// +kubebuilder:validation:Required
+	RoleRef ObjectRef `json:"roleRef"`
+
+	// SkillRefs reference the Skill CRDs granted to this agent.
+	// +optional
+	SkillRefs []ObjectRef `json:"skillRefs,omitempty"`
+
+	// CredentialSecretRef is the per-user BYO credential Secret (arch §11,
+	// ADR-010 BYO-lock). Admission-time resolution ("an Agent must resolve
+	// its credential Secret before it is admitted") is the reconciler's
+	// fail-closed job (story 1.3).
+	// +kubebuilder:validation:Required
+	CredentialSecretRef SecretRef `json:"credentialSecretRef"`
+
+	// CapabilityOverrides are applied to the generated Agent Card
+	// capabilities (arch §10.1) — the ticket's agentCardOverrides.
+	// +optional
+	CapabilityOverrides *CapabilityOverrides `json:"capabilityOverrides,omitempty"`
+
+	// Model is the resolved model name (e.g. a Claude model id, or an
+	// Ollama-served model name when a BYO endpoint is configured).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Model string `json:"model"`
+
+	// ModelEndpointRef optionally references a per-user Secret holding a
+	// BYO / Ollama / OpenAI-compatible model endpoint (arch §10.3, ADR-026,
+	// `byoModelEndpoint` capability). Epic 5.7 flagged this field as
+	// required at Gate 2 before 5.7 builds (CEO 2026-08-11) — the field
+	// itself is mandatory on the type, while remaining optional at runtime:
+	// an Agent on a paid provider with the default endpoint sets none of
+	// the optional fields. It is a model-provider seam — NOT an
+	// AgentRuntime.type and NOT a new image (that category error is
+	// recorded in ADR-026).
+	// +optional
+	ModelEndpointRef *SecretRef `json:"modelEndpointRef,omitempty"`
+
+	// ContextBudgetOverride optionally overrides the Project-level context
+	// budget (arch §8.5) for this agent — e.g. a ~200K allocation for a
+	// Claude-backed agent while a BYO-Ollama agent takes ~8K on the same
+	// project. Resolution order: Project default → Agent override → Run
+	// dynamic trim, clamped by the resolved model contextWindow; a value
+	// above the window is a fail-closed validation error (reconciler,
+	// story 1.3).
+	// +optional
+	ContextBudgetOverride *ContextBudget `json:"contextBudgetOverride,omitempty"`
+
+	// FallbackModel optionally names a secondary model for mid-Run model
+	// switches on rate_limited signals (arch §8 tier-1 recovery, §10.3,
+	// ADR-030/ADR-031), optionally with its own endpoint/credential.
+	// +optional
+	FallbackModel *FallbackModel `json:"fallbackModel,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:shortName=ag,categories=ksquad
+
+// Agent is the Schema for the agents API — one agent instance in a squad
+// (arch §5.1). It is namespaced by default.
+type Agent struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec AgentSpec `json:"spec,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+
+// AgentList contains a list of Agent.
+type AgentList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []Agent `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&Agent{}, &AgentList{})
+}
