@@ -1,0 +1,8 @@
+# Patterns to ignore when building packages of the k8squad chart.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.tmp
+*.orig
+README.md
