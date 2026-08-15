@@ -11,8 +11,8 @@ require (
 )
 
 require (
-	github.com/jackc/pgx/v5 v5.7.2
-	github.com/stretchr/testify v1.9.0
+	github.com/jackc/pgx/v5 v5.9.0
+	github.com/stretchr/testify v1.11.1
 	k8s.io/api v0.31.3
 	k8s.io/client-go v0.31.3
 	sigs.k8s.io/yaml v1.4.0
@@ -57,13 +57,12 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20230515195305-f3d0a9c9a5cc // indirect
-	golang.org/x/net v0.55.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/term v0.43.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/term v0.44.0 // indirect
 	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/time v0.3.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.4.0 // indirect
