@@ -1,0 +1,24 @@
+K8squad control plane (skeleton) is installed.
+
+Release: {{ .Release.Name }} in namespace {{ .Release.Namespace }}
+
+Installed:
+{{- if .Values.namespace.create }}
+  - Control-plane namespace: {{ .Values.namespace.name }}
+{{- end }}
+  - CRDs: {{ range $path, $_ := .Files.Glob "crds/*.yaml" }}{{ base $path }} {{ end }}
+    (cluster-scoped, installed from the chart's crds/ directory by Helm on
+    first install; Helm does not upgrade or delete them on subsequent runs)
+
+Discover the API group:
+
+  kubectl api-resources --api-group=ksquad.io
+
+The CRD set covers the squad-composition kinds (Team, Agent, Role, Skill,
+Project, Run) plus AgentRuntime. After regenerating manifests, keep the chart
+in lockstep:
+
+  make helm-sync-crds   # config/crd/bases/*.yaml -> config/helm/crds/
+
+Services (apiserver, operator, console, memory, shim) are wired by later
+epics; this release intentionally ships only the CRD group + namespace.

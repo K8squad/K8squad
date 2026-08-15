@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
+	crossrefs "github.com/K8squad/K8squad/internal/webhook/v1alpha1"
 )
 
 // Sentinel errors carrying the machine-readable rejection reasons from
@@ -185,6 +186,36 @@ func (w *AttributionWebhook) ValidateDelete(_ context.Context, _ runtime.Object)
 	return nil, nil
 }
 
+// chainValidator runs attribution validation first and then an optional
+// secondary validator (the story 1.3 cross-ref guards) on the same
+// validating path — first failure wins, so admission stays fail-closed
+// under either contract.
+type chainValidator struct {
+	attribution admission.CustomValidator
+	secondary   admission.CustomValidator
+}
+
+func (c chainValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	if w, err := c.attribution.ValidateCreate(ctx, obj); err != nil {
+		return w, err
+	}
+	return c.secondary.ValidateCreate(ctx, obj)
+}
+
+func (c chainValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	if w, err := c.attribution.ValidateUpdate(ctx, oldObj, newObj); err != nil {
+		return w, err
+	}
+	return c.secondary.ValidateUpdate(ctx, oldObj, newObj)
+}
+
+func (c chainValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	if w, err := c.attribution.ValidateDelete(ctx, obj); err != nil {
+		return w, err
+	}
+	return c.secondary.ValidateDelete(ctx, obj)
+}
+
 // SetupAttributionWebhookWithManager registers the attribution defaulter and
 // validator for each provided object type on the manager's webhook server.
 // Pass the attributed CRD types (story 1.6: Team, Project, Agent, Run):
@@ -192,17 +223,23 @@ func (w *AttributionWebhook) ValidateDelete(_ context.Context, _ runtime.Object)
 //	err := webhook.SetupAttributionWebhookWithManager(mgr,
 //		&ksquadv1.Team{}, &ksquadv1.Project{}, &ksquadv1.Agent{}, &ksquadv1.Run{})
 //
-// Per-type +kubebuilder:webhook markers land on the type files together
-// with the spec.ownedBy fields (follow-up once story 1.2's types merge), so
-// controller-gen emits matching webhook manifests when the manager wiring
-// (story 1.3) turns the webhook server on.
+// Types that carry story 1.3 cross-object guards (Team, Agent, Run) get
+// those validators chained after the attribution checks on the same
+// validating path, so the webhook server registers each path exactly once.
+// Per-type +kubebuilder:webhook markers on the type files drive the
+// emitted manifests.
 func SetupAttributionWebhookWithManager(mgr manager.Manager, objs ...client.Object) error {
 	w := &AttributionWebhook{}
+	cross := crossrefs.NewCrossRefValidators(mgr.GetClient())
 	for _, obj := range objs {
+		validator := admission.CustomValidator(w)
+		if secondary := cross.For(obj); secondary != nil {
+			validator = chainValidator{attribution: w, secondary: secondary}
+		}
 		if err := ctrl.WebhookManagedBy(mgr).
 			For(obj).
 			WithDefaulter(w).
-			WithValidator(w).
+			WithValidator(validator).
 			Complete(); err != nil {
 			return fmt.Errorf("registering attribution webhook for %T: %w", obj, err)
 		}

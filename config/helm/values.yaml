@@ -1,0 +1,18 @@
+# Default values for the k8squad control-plane chart (Story 1.4 skeleton).
+# Full service wiring (apiserver, operator, console, memory, shim) lands in
+# later epics; this skeleton owns the CRD group + control-plane namespace.
+
+namespace:
+  # Create the control-plane namespace as a chart resource.
+  create: true
+  # Control-plane namespace name. CRs are namespaced into it by later stories;
+  # the CRDs themselves are cluster-scoped objects installed by Helm on first
+  # install (see crds/).
+  name: k8squad-system
+  labels: {}
+  #  team: platform
+  annotations: {}
+
+# Standard `app.kubernetes.io/*` label roots applied to chart-owned resources.
+nameOverride: ""
+fullnameOverride: ""

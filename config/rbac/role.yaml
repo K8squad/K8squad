@@ -1,0 +1,27 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - agentruntimes
+  - agents
+  - projects
+  - roles
+  - skills
+  - teams
+  verbs:
+  - get
+  - list
+  - watch

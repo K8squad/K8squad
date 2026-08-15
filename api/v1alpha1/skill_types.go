@@ -69,6 +69,11 @@ type SkillSpec struct {
 
 // SkillSource is the discriminated inline|git source of a skill body
 // (arch §5.3.6).
+//
+// The inline⇔git field consistency rule (story 1.3): exactly one body
+// carrier matches the discriminator, fail-closed at admission via CEL.
+// +kubebuilder:validation:XValidation:message="source.inline must carry the body (non-empty) and source.git must be unset when source.type is inline; set source.type=inline and provide source.inline",rule="self.type != 'inline' || (has(self.inline) && self.inline != '' && !has(self.git))"
+// +kubebuilder:validation:XValidation:message="source.git must carry the body (repoRef and ref set) and source.inline must be unset when source.type is git; set source.type=git and provide source.git.repoRef/ref",rule="self.type != 'git' || (has(self.git) && self.git.repoRef != '' && self.git.ref != '' && !has(self.inline))"
 type SkillSource struct {
 	// Type discriminates the source: inline or git.
 	// +kubebuilder:validation:Required
