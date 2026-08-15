@@ -186,6 +186,17 @@ spec:
                 required:
                 - name
                 type: object
+              ownedBy:
+                description: |-
+                  OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+                  authoritative ownership signal for resource-scoped permission checks
+                  (Epic 15.3) — not a display field. Mutable: ownership may be
+                  transferred after creation. Defaults to the created-by principal at
+                  admission (internal/webhook AttributionWebhook) and is indexed for
+                  RBAC scope queries (internal/index).
+                maxLength: 253
+                minLength: 1
+                type: string
               roleRef:
                 description: |-
                   RoleRef references the Role CRD supplying the reusable behavior

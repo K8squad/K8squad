@@ -42,7 +42,24 @@ type TeamSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	NamespaceStrategy string `json:"namespaceStrategy"`
+
+	// OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+	// authoritative ownership signal for resource-scoped permission checks
+	// (Epic 15.3) — not a display field. Mutable: ownership may be
+	// transferred after creation. Defaults to the created-by principal at
+	// admission (internal/webhook AttributionWebhook) and is indexed for
+	// RBAC scope queries (internal/index).
+	// +optional
+	OwnedBy PrincipalRef `json:"ownedBy,omitempty"`
 }
+
+var _ OwnedByHolder = &Team{}
+
+// GetOwnedBy returns the spec.ownedBy owner principal (story 1.6).
+func (t *Team) GetOwnedBy() PrincipalRef { return t.Spec.OwnedBy }
+
+// SetOwnedBy sets the spec.ownedBy owner principal (story 1.6).
+func (t *Team) SetOwnedBy(p PrincipalRef) { t.Spec.OwnedBy = p }
 
 // TeamStatus defines the observed state of Team.
 type TeamStatus struct {
@@ -56,6 +73,8 @@ type TeamStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=team,categories=ksquad
+// +kubebuilder:webhook:path=/mutate-ksquad-io-v1alpha1-team,mutating=true,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=teams,verbs=create;update,versions=v1alpha1,name=mteam-attribution.ksquad.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-team,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=teams,verbs=create;update,versions=v1alpha1,name=vteam-attribution.ksquad.io,admissionReviewVersions=v1
 
 // Team is the Schema for the teams API. A Team is the squad tenancy boundary
 // (arch §5.1, §12.1). It is namespaced by default (no cluster-scope marker).

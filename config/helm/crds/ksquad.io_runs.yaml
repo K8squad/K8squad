@@ -81,6 +81,19 @@ spec:
                   envelope by the Context Assembler. Modeled as an opaque structured
                   field in story 1.2 (open question OQ1); refined in story 1.3.
                 type: object
+              ownedBy:
+                description: |-
+                  OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+                  authoritative ownership signal for resource-scoped permission checks
+                  (Epic 15.3) — not a display field. Mutable: ownership may be
+                  transferred after creation (e.g. "kill own Runs" contributor checks
+                  resolve against it, Epic 15.3 role matrix). Defaults to the
+                  created-by principal at admission (internal/webhook
+                  AttributionWebhook) and is indexed for RBAC scope queries
+                  (internal/index).
+                maxLength: 253
+                minLength: 1
+                type: string
               projectRef:
                 description: |-
                   ProjectRef references the Project supplying the repo, workspace PVC
