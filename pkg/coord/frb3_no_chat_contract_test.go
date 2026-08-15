@@ -78,6 +78,15 @@ var allowedSurface = map[string]string{
 	"Coordinator.RedriveClaim":  "§6.4 idempotent reconcile re-entry",
 	"Coordinator.DispatchOnce":  "§6.4 custody-gated dispatch idempotency marker",
 	"Coordinator.ReclaimFenced": "§6.3 fence-BEFORE-release reclaim",
+
+	// §6.2 production SKIP LOCKED claim surface (ISI-2523, story 2.2 —
+	// merged to main via PR #27 while this branch was in review).
+	"ProdConfig":                 "§6.2 prod claimer config (DSN/backoff), code-supplied",
+	"DefaultProdConfig":          "§6.2 sane default prod claimer config",
+	"ProdClaimer":                "§6.2 production single-claim SKIP LOCKED claimer type",
+	"NewProdClaimer":             "§6.2 constructor",
+	"ProdClaimer.ClaimNext":      "§6.2 single-claim under contention (SKIP LOCKED + fence)",
+	"ProdClaimer.ClaimableCount": "§6.2 claimable backlog introspection for tests/ops",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
