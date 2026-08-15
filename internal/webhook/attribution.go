@@ -172,6 +172,8 @@ func (w *AttributionWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj 
 		return nil, fmt.Errorf("%w (was %q, now %q)", ErrCreatedByImmutable, oldPrincipal, newPrincipal)
 	case !oldOK && newOK:
 		return nil, fmt.Errorf("%w (introduced after creation: %q)", ErrCreatedByImmutable, newPrincipal)
+	case oldOK && !newOK:
+		return nil, fmt.Errorf("%w (removed after creation: was %q)", ErrCreatedByImmutable, oldPrincipal)
 	}
 
 	return nil, nil

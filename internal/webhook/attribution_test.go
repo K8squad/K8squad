@@ -214,6 +214,12 @@ func TestAttributionValidateUpdate(t *testing.T) {
 			wantErr:    ErrCreatedByImmutable,
 		},
 		{
+			name:       "removing created-by after it was set is rejected",
+			oldCreated: "henrik",
+			newCreated: "",
+			wantErr:    ErrCreatedByImmutable,
+		},
+		{
 			name:       "removing created-by is allowed only when it was never set",
 			oldCreated: "",
 			newCreated: "",
