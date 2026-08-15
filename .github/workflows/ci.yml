@@ -61,6 +61,9 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         uses: golangci/golangci-lint-action@v6
         with:
+          # v2 line: built with go >= 1.25, required since the module targets go 1.25.
+          # v1.64.x is built with go1.24 and refuses to load a go 1.25 module.
+          version: v2.12.2
           args: --timeout=5m
 
       - name: Build

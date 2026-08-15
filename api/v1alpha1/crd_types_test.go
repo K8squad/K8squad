@@ -214,7 +214,7 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {
 			ft := structType.Field(i).Type
-			for ft.Kind() == reflect.Ptr || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map {
+			for ft.Kind() == reflect.Pointer || ft.Kind() == reflect.Slice || ft.Kind() == reflect.Map {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct && !allowed[ft] {
