@@ -13,7 +13,8 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # CodeQL SARIF upload
+  actions: read          # codeql-action status/telemetry reads the workflow run
+  security-events: write # CodeQL SARIF upload (when GHAS is enabled)
 
 jobs:
   govulncheck:
