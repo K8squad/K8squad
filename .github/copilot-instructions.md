@@ -60,7 +60,12 @@ plane (apiserver / coordination store / dispatch + reclaim path). Flag as a
   exchange work, claims, or memory instead of going through the apiserver;
 - service discovery or addressing that lets Runs talk to each other directly;
 - bypassing the claim / fence-token / dispatch-marker flow to hand work between
-  workers out-of-band.
+  workers out-of-band;
+- an agent-to-agent chat, DM, inbox, or "message" table/endpoint/channel (FR-B3):
+  agents hand off ONLY via work-item comments and state changes (§6.1) — memory is
+  not a handoff channel either (Epic 6). `pkg/coord/frb3_no_chat_contract_test.go`
+  pins the pkg/coord surface, scans every migration for chat-shaped tables, and
+  bans listeners/dialers in the spine; extend it when the apiserver routes land.
 
 Coordination correctness also depends on the claim/reclaim safety rules: a single
 active claim per item, monotonic **fence tokens** (stale holders must be rejected,
