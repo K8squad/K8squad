@@ -56,9 +56,9 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           # go directive is 1.25.0 (forced by x/net v0.55); the action's
-          # default binary is built with go1.24 and refuses to load the config.
-          # latest is built with a newer toolchain.
-          version: latest
+          # default binary (v1.64.8, built with go1.24) refuses to load the
+          # config. v2.12+ is built with a newer toolchain.
+          version: v2.12.2
           args: --timeout=5m
 
       - name: Build

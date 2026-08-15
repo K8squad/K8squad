@@ -38,7 +38,7 @@ const (
 	GuardAgentRuntime = "agent/runtimeRef"
 	GuardAgentRole    = "agent/roleRef"
 	GuardAgentSkills  = "agent/skillRefs"
-	GuardAgentSecret  = "agent/credentialSecretRef"
+	GuardAgentSecret  = "agent/credentialSecretRef" // #nosec G101 -- guard rule id, not a credential
 	GuardRunTeam      = "run/teamRef"
 	GuardRunProject   = "run/projectRef"
 	GuardRunAgents    = "run/agents"
