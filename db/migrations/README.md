@@ -23,6 +23,7 @@ SQL migrations** applied in filename order.
 | Version | File | Schema | Story / Arch |
 |--------:|------|--------|--------------|
 | 0001 | `0001_coord_schema.sql` | `coord` — `work_item`, `comment`, `artifact`, `claim`, `audit_log` | Story 2.1 (ISI-2191), Arch §6.1 |
+| 0002 | `0002_coord_dispatch.sql` | `coord` — `dispatch` (§6.4 idempotent-dispatch marker for the coordinator loop) | Story 2.9 (ISI-2526), Arch §6.4/FR-B3 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 

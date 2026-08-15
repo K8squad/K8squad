@@ -9,13 +9,13 @@
 // Story 2.2 contract: N open items, M concurrent claimers → every item ends up
 // held by EXACTLY ONE Run. One ClaimNext call is ONE transaction:
 //
-//	SELECT … FOR UPDATE OF <work_item> SKIP LOCKED LIMIT 1   — pop, skipping
-//	                                                            rows other Runs hold
-//	UPDATE claim … WHERE <free-or-expired guard>              — rewrite the
-//	                                                            pre-provisioned
-//                                                            checkout row in place
-//	UPDATE work_item SET state=<claimed lane>                 — board advance
-//	INSERT INTO audit_log (…, 'claim_acquired', …)            — §6.5 provenance
+//		SELECT … FOR UPDATE OF <work_item> SKIP LOCKED LIMIT 1   — pop, skipping
+//		                                                            rows other Runs hold
+//		UPDATE claim … WHERE <free-or-expired guard>              — rewrite the
+//		                                                            pre-provisioned
+//	                                                           checkout row in place
+//		UPDATE work_item SET state=<claimed lane>                 — board advance
+//		INSERT INTO audit_log (…, 'claim_acquired', …)            — §6.5 provenance
 //
 // The four statements commit atomically: there is no observable moment where an
 // item is half-claimed (checkout row rewritten but lane unchanged, or vice
@@ -244,4 +244,57 @@ func (p *ProdClaimer) ClaimableCount(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("coord.ProdClaimer.ClaimableCount: %w", err)
 	}
 	return n, nil
+}
+
+// AcquireSpecific = §6.2 guarded acquire of a SPECIFIC item (the counterpart
+// of the harness Coordinator.Acquire on the production schema). The Story 2.9
+// coordinator dispatch (proddispatch.go) needs exactly this shape: the next
+// worker claims the item the coordinator dispatched BY ID, not by popping the
+// lane — and a zombie (a fenced or lapsed former holder, e.g. the completing
+// run B trying to re-take an item worker C now holds) must be rejected by the
+// same free-or-expired guard that makes ClaimNext single-claim.
+//
+// One transaction, same discipline as ClaimNext: guarded in-place checkout-row
+// acquire (fence bump + lease) → board advance from the claimable lane → §6.5
+// claim_acquired audit row. ok=false, err=nil means the guard rejected us (a
+// live foreign lease, or the item left the claimable lane) — nothing changed.
+func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, itemID, initiatedByUserID string) (string, int64, bool, error) {
+	if principal == "" || runID == "" || itemID == "" {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: principal, runID and itemID are required (got principal=%q runID=%q itemID=%q)", principal, runID, itemID)
+	}
+
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	var initiator any
+	if initiatedByUserID != "" {
+		initiator = initiatedByUserID
+	}
+	var fence int64
+	switch err := tx.QueryRowContext(ctx, p.acq, principal, runID, initiator, itemID).Scan(&fence); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", 0, false, nil // live foreign lease (or no such item): guard rejected
+	case err != nil:
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: acquire: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx, p.mark, p.cfg.ClaimedState, itemID, p.cfg.ClaimableState)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: mark claimed: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return "", 0, false, nil // left the claimable lane concurrently: roll back whole claim
+	}
+
+	if _, err := tx.ExecContext(ctx, p.audit, itemID, runID, principal, initiator, fence, p.cfg.ClaimableState, p.cfg.ClaimedState); err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: audit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: commit: %w", err)
+	}
+	return itemID, fence, true, nil
 }

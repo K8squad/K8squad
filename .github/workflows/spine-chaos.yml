@@ -14,6 +14,12 @@ name: Spine Concurrency / Chaos
 #   P2 production-schema claim atomicity: interrupted claim never half-claims (Story 2.2 / ISI-2523)
 #   (P1/P2 run the claim against the SHIPPED db/migrations coord schema; C1..C7
 #   prove the full guard set on the int-keyed harness tables.)
+#   D1 coordinator dispatch learns the completing run ONLY from the record — no B→A channel (Story 2.9 / ISI-2526)
+#   D2 coordinator defines/overrides the next item; recommendations are advisory (Story 2.9 / ISI-2526)
+#   D3 no custody transfer: fresh F3-provisioned claim, zombie re-acquire rejected (Story 2.9 / ISI-2526)
+#   D4 idempotent dispatch: concurrent coordinators converge on one item via the §6.4 marker (Story 2.9 / ISI-2526)
+#   (D1..D4 run the delegation-with-feedback loop against the SHIPPED 0001+0002
+#   coord schema; proddispatch.go + prod_claim.go's AcquireSpecific.)
 
 on:
   pull_request:
