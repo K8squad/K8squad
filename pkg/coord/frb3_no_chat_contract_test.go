@@ -87,6 +87,13 @@ var allowedSurface = map[string]string{
 	"NewProdClaimer":             "§6.2 constructor",
 	"ProdClaimer.ClaimNext":      "§6.2 single-claim under contention (SKIP LOCKED + fence)",
 	"ProdClaimer.ClaimableCount": "§6.2 claimable backlog introspection for tests/ops",
+
+	// §17.4 domain-event capture wiring (Story 12.1 / ISI-2260). Emit-only: the
+	// option co-commits ONE append-only coord.outbox event in the claim txn. NOT
+	// an agent-to-agent channel — events are one-way non-custodial projections
+	// (§17.4 no-P2P guard, 12.4), nothing published re-enters coordination.
+	"ProdClaimerOption": "§17.4 functional option for the prod claimer (event capture opt-in)",
+	"WithOutboxCapture": "§17.4 co-commit a work_item/claimed outbox event in the claim txn (emit-only)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
