@@ -1,0 +1,182 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# KSquad chart values — scoped view (ISI-2149)
+#
+# This file focuses on the two concerns the chart must CREATE, never assume:
+#   • exposure.*  — Gateway API (or graceful fallbacks) for console + apiserver
+#   • storage.*   — every PVC's StorageClass, never the cluster default
+#
+# Other control-plane knobs (operator/apiserver/console images, replicas, NATS
+# tuning, RBAC) are layered by their own tickets; the seams below are what
+# ISI-2149 pins.
+# ─────────────────────────────────────────────────────────────────────────────
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Services the exposure layer routes to. Ports/targetPorts only — the
+# Deployments themselves are owned by other tickets. Services always render
+# (they are the backends for every exposure.mode, including clusterip).
+console:
+  service:
+    port: 80
+    targetPort: 3000
+apiserver:
+  service:
+    port: 80
+    targetPort: 8080
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Exposure — the chart CREATES exposure, it does not assume it (§16.1, FR-L1…L3)
+# ═════════════════════════════════════════════════════════════════════════════
+exposure:
+  # REQUIRED, no default guess. One of:
+  #   gateway   — renders Gateway + HTTPRoutes; sets the apiserver route timeout
+  #               to 0s for SSE (preferred production path). Requires
+  #               gateway.gatewayClassName. NOTE: HTTPRoute.timeouts is Extended
+  #               conformance — Envoy Gateway/Istio honor 0s, Traefik survives via
+  #               no-default, Cilium may ignore it (verify per class; see README).
+  #   ingress   — renders a plain Ingress with SSE-safe annotations. Graceful
+  #               degrade for clusters with an Ingress controller but no Gateway API.
+  #   clusterip — renders Services only (reach console via port-forward / your LB).
+  #               Zero-dependency path; always brings the stack up on a bare cluster.
+  # No mode is a blanket SSE guarantee: gateway depends on GatewayClass timeout
+  # support, ingress on controller annotations — an honest trade, surfaced not hidden.
+  mode: gateway
+
+  # Hostnames route by host in gateway/ingress modes (REQUIRED there, ignored
+  # for clusterip).
+  hostnames:
+    console: "" # e.g. ksquad.example.com
+    apiserver: "" # e.g. api.ksquad.example.com   (the SSE endpoint, §13)
+
+  gateway:
+    # REQUIRED when mode=gateway. The chart REFERENCES an operator-provided
+    # GatewayClass and NEVER creates one. cilium | envoy | istio | traefik are
+    # all valid — the install pre-flights that the class exists (helm will fail
+    # fast if this is empty).
+    gatewayClassName: ""
+    listeners:
+      http:
+        enabled: true
+        port: 80
+      https:
+        enabled: true
+        port: 443
+        # REQUIRED when https.enabled: the TLS cert Secret (terminate at gateway).
+        certSecretName: ""
+    # Redirect http→https at the gateway edge (renders a RequestRedirect route
+    # on the http listener). Ignored unless both listeners are enabled.
+    httpsRedirect: true
+    # Extra annotations/labels for the Gateway object (controller-specific tuning).
+    annotations: {}
+    labels: {}
+
+  ingress:
+    className: "" # REQUIRED when mode=ingress
+    # SSE-safe defaults for the nginx ingress controller. Override for others.
+    # These keep the apiserver progress stream (§13) from being buffered/timed out.
+    annotations:
+      nginx.ingress.kubernetes.io/proxy-buffering: "off"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    tls:
+      enabled: true
+      secretName: "" # REQUIRED when tls.enabled
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Storage — every PVC's StorageClass comes from values, NEVER the cluster
+# default (§16.2 / §9.4, FR-L2). An unset class fails the install fast.
+# ═════════════════════════════════════════════════════════════════════════════
+storage:
+  # Global fallback StorageClass for every PVC family below. REQUIRED unless
+  # each family sets its own. There is no silent cluster-default fallback.
+  #
+  # StorageClass CAPABILITY MATRIX — pre-flight your class against what you need:
+  #   ReadWriteOnce (RWO)  — every class. The default; pairs with worktree-per-Run.
+  #   ReadWriteMany (RWX)  — only some classes (CephFS, NFS, Azure Files, EFS…).
+  #                          Required only if you set workspace.accessMode=RWX for
+  #                          true parallel-Run write access (§9.4).
+  #   volume expansion     — needs allowVolumeExpansion=true on the class.
+  #   snapshots            — needs a CSI driver + VolumeSnapshotClass.
+  storageClassName: ""
+
+  # CNPG Postgres — the chart renders a CloudNativePG `Cluster` CR whose PVC
+  # StorageClass is set here (never omitted → never cluster-default).
+  postgres:
+    storageClassName: "" # falls back to storage.storageClassName
+    size: 10Gi
+    instances: 1 # single-instance default profile; raise for HA (§16)
+    # Optional dedicated WAL volume (recommended in prod). Same class rules.
+    walStorage:
+      enabled: false
+      size: 2Gi
+
+  # Per-Project workspace PVCs are created by the OPERATOR at Project reconcile,
+  # not by Helm. The chart hands the operator the StorageClass + access mode to
+  # stamp onto each Project PVC via its config (see operator-config ConfigMap).
+  workspace:
+    storageClassName: "" # falls back to storage.storageClassName
+    # RWO default (worktree-per-Run, §9.4). Set ReadWriteMany ONLY if your class
+    # supports RWX — that enables true parallel-Run writes.
+    accessMode: ReadWriteOnce
+    size: 20Gi
+
+  # NATS/JetStream file store PVC (dependency #2, §16). StorageClass drives the
+  # parent-rendered JetStream StatefulSet's volumeClaimTemplate (see `nats:`
+  # below); never left to cluster-default. Fail-fast when unset AND nats.enabled.
+  nats:
+    storageClassName: "" # falls back to storage.storageClassName
+    size: 5Gi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NATS / JetStream — the plugin event bus (stateful dependency #2)
+#   §16 / §17.4 / ADR-023 — "data in Postgres, events on NATS" (CEO 2026-08-11).
+#   The chart brings NATS up itself as a parent-rendered JetStream StatefulSet
+#   (same packaging pattern as the CNPG `Cluster` CR) so the JetStream file-store
+#   PVC's StorageClass stays the first-class `storage.nats.storageClassName` knob
+#   (§16.2) — never the cluster default. JetStream is ENABLED (the plugin
+#   replay/catch-up substrate). NATS holds NO state of record (Postgres is the
+#   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
+# ═════════════════════════════════════════════════════════════════════════════
+nats:
+  # The event bus is ON by default (one `helm install` yields the whole stack,
+  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
+  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+  enabled: true
+  image: nats:2.10-alpine
+  port: 4222
+  jetstream:
+    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
+    # Max on-disk JetStream file store. Keep ≤ storage.nats.size.
+    maxFileStore: 4Gi
+  # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
+  # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
+  # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.
+  ha:
+    enabled: false
+    replicas: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Event relay — apiserver outbox → NATS (Epic 12.1 / §17.4 / ADR-023)
+#   The apiserver's relay worker tails the transactional Postgres outbox and
+#   publishes each event to a JetStream subject
+#   `ksquad.{entity}.{project}.{squad}.{event_type}`, stamping `published_at` and
+#   republishing unflushed rows (at-least-once). DECOUPLED from the write path by
+#   construction: the relay runs OUTSIDE the reconcile/coordination transaction,
+#   is best-effort, and is NEVER wired into an apiserver liveness/readiness probe.
+#   NATS-down (or nats.enabled=false) delays fan-out only — it NEVER blocks a
+#   Run/claim/memory write. The chart hands the apiserver this config.
+# ═════════════════════════════════════════════════════════════════════════════
+events:
+  relay:
+    enabled: true
+    # Subject taxonomy prefix ksquad.{entity}.{project}.{squad}.{event_type}.
+    subjectPrefix: ksquad
+    # NATS client URL. Empty → derived from the release-local bus (nats.enabled).
+    natsUrl: ""

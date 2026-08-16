@@ -1,0 +1,22 @@
+{{- /* CloudNativePG `Cluster` CR — the sole store of record (ADR-001, §4).
+       Its PVC StorageClass is parameterized from values and never omitted, so
+       CNPG never falls back to the cluster-default StorageClass (§16.2,
+       FR-L2, ISI-2149). The CNPG operator is a cluster prerequisite. */ -}}
+{{- $sc := include "ksquad.storageClass.postgres" . -}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ include "ksquad.fullname" . }}-pg
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  instances: {{ .Values.storage.postgres.instances }}
+  storage:
+    size: {{ .Values.storage.postgres.size | quote }}
+    storageClass: {{ $sc | quote }}
+  {{- if .Values.storage.postgres.walStorage.enabled }}
+  walStorage:
+    size: {{ .Values.storage.postgres.walStorage.size | quote }}
+    storageClass: {{ $sc | quote }}
+  {{- end }}

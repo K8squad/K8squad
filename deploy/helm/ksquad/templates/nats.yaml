@@ -1,0 +1,143 @@
+{{- /* NATS / JetStream — the plugin event bus (stateful dependency #2, §16 /
+       §17.4 / ADR-023; ISI-2253). Parent-rendered (same packaging pattern as the
+       CNPG `Cluster` CR) so the JetStream file-store PVC's StorageClass stays a
+       first-class KSquad knob (`storage.nats.storageClassName`, §16.2) and never
+       the cluster default — an upstream subchart cannot template its PVC class
+       from a parent value, which would break that guarantee. JetStream is
+       ENABLED (the plugin replay/catch-up substrate). Single-replica by default;
+       nats.ha.enabled flips to a clustered JetStream RAFT quorum. NATS holds NO
+       state of record (Postgres is the sole source-of-truth, ADR-001) — only
+       in-flight/replayable event copies — and NATS-down never blocks the core. */ -}}
+{{- if .Values.nats.enabled -}}
+{{- $sc := include "ksquad.storageClass.nats" . -}}
+{{- $replicas := int (include "ksquad.nats.replicas" .) -}}
+{{- $fullname := include "ksquad.nats.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-config
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+data:
+  nats.conf: |
+    port: {{ .Values.nats.port }}
+    http: 8222
+    jetstream {
+      store_dir: "/data/jetstream"
+      max_file_store: {{ .Values.nats.jetstream.maxFileStore | quote }}
+    }
+    {{- if .Values.nats.ha.enabled }}
+    cluster {
+      name: "ksquad-js"
+      port: 6222
+      routes: [
+        {{- range $i := until $replicas }}
+        "nats://{{ $fullname }}-{{ $i }}.{{ $fullname }}-headless:6222",
+        {{- end }}
+      ]
+    }
+    {{- end }}
+---
+{{- /* Headless Service: stable per-pod DNS for the JetStream cluster routes. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-headless
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: {{ .Values.nats.port }}
+    - name: cluster
+      port: 6222
+    - name: monitor
+      port: 8222
+---
+{{- /* Client Service: what the relay + plugins connect to (ksquad.nats.url). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: nats
+  ports:
+    - name: client
+      port: {{ .Values.nats.port }}
+      targetPort: {{ .Values.nats.port }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nats
+spec:
+  replicas: {{ $replicas }}
+  serviceName: {{ $fullname }}-headless
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: nats
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: nats
+    spec:
+      containers:
+        - name: nats
+          image: {{ .Values.nats.image | quote }}
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - name: client
+              containerPort: {{ .Values.nats.port }}
+            - name: cluster
+              containerPort: 6222
+            - name: monitor
+              containerPort: 8222
+          {{- /* Probes are LOCAL to NATS (its own monitoring port). They never
+                 gate the apiserver/core — NATS-down never blocks (§17.4). */}}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+          resources:
+            {{- toYaml .Values.nats.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: jetstream
+              mountPath: /data/jetstream
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-config
+  volumeClaimTemplates:
+    - metadata:
+        name: jetstream
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $sc | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.nats.size | quote }}
+{{- end }}
