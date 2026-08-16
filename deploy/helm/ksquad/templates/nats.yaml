@@ -25,7 +25,10 @@ data:
     http: 8222
     jetstream {
       store_dir: "/data/jetstream"
-      max_file_store: {{ .Values.nats.jetstream.maxFileStore | quote }}
+      {{- /* NO quote: nats' size lexer only handles multi-char suffixes (GB/Gi/MB)
+             on a bare token; a quoted "4GB"/"4Gi" fails to parse and JetStream
+             refuses to boot (ISI-2624 C1). A bare 4GB/4Gi == 4*1024^3 bytes. */}}
+      max_file_store: {{ .Values.nats.jetstream.maxFileStore }}
     }
     {{- if .Values.nats.ha.enabled }}
     cluster {
