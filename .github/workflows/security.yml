@@ -13,8 +13,8 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # CodeQL SARIF upload
-  actions: read            # codeql-action fetches the workflow run for PR context
+  actions: read          # codeql-action status/telemetry reads the workflow run
+  security-events: write # CodeQL SARIF upload (when GHAS is enabled)
 
 jobs:
   govulncheck:
@@ -123,5 +123,22 @@ jobs:
           languages: ${{ matrix.language }}
       - uses: github/codeql-action/autobuild@v3
         if: steps.guard.outputs.present == 'true'
+      # upload:false — SARIF upload to code scanning requires GitHub Advanced
+      # Security, which is not enabled on this private repo (and cannot be
+      # enabled via token: billing-level setting). The analyze step hard-fails
+      # with "Resource not accessible by integration" otherwise. Analysis still
+      # runs; results are attached as workflow artifacts. To restore native
+      # code-scanning alerts: enable Advanced Security under repo Settings →
+      # Code security, then remove `upload: false` and the artifact step.
       - uses: github/codeql-action/analyze@v3
         if: steps.guard.outputs.present == 'true'
+        with:
+          upload: false
+          output: ${{ runner.temp }}/sarif/${{ matrix.language }}.sarif
+      - name: Attach SARIF artifact (GHAS unavailable)
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: codeql-sarif-${{ matrix.language }}
+          path: ${{ runner.temp }}/sarif/${{ matrix.language }}.sarif
+          if-no-files-found: ignore

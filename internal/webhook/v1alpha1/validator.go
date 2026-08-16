@@ -38,10 +38,11 @@ const (
 	GuardAgentRuntime = "agent/runtimeRef"
 	GuardAgentRole    = "agent/roleRef"
 	GuardAgentSkills  = "agent/skillRefs"
-	GuardAgentSecret  = "agent/credentialSecretRef" // #nosec G101 -- guard rule id, not a credential
-	GuardRunTeam      = "run/teamRef"
-	GuardRunProject   = "run/projectRef"
-	GuardRunAgents    = "run/agents"
+	// #nosec G101 -- guard path key naming the field it guards, not a credential
+	GuardAgentSecret = "agent/credentialSecretRef"
+	GuardRunTeam     = "run/teamRef"
+	GuardRunProject  = "run/projectRef"
+	GuardRunAgents   = "run/agents"
 )
 
 // CrossRefValidator enforces the cross-object existence invariants the CRD

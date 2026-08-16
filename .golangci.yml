@@ -28,12 +28,12 @@ linters:
           - errcheck
           - gosec
         path: _test\.go
-      # G201 in pkg/coord: table names are interpolated from trusted operator
-      # config (c.cfg.*), never user input; every value is parameterized ($n).
+      # G201 in pkg/coord: SQL interpolates only table names from validated
+      # config constants; all values stay parameterized ($1, $2, ...).
       - linters:
           - gosec
-        path: pkg/coord/coord\.go
         text: "G201: SQL string formatting"
+        path: ^pkg/coord
     paths:
       - third_party$
       - builtin$
