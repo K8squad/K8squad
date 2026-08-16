@@ -1,0 +1,14 @@
+# kind cluster config for the S4 blast-radius suite (Story 14.4 / ISI-2245).
+#
+# disableDefaultCNI: the suite bootstraps Calico itself (run-s4.sh) —
+# NetworkPolicy enforcement is the primitive under test and kind's default
+# CNI is not trustworthy for egress policy.
+# podSubnet matches Calico's default IPPool (192.168.0.0/16) so no manifest
+# patching is needed.
+# Single control-plane node: every fixture pod co-schedules on one node, so
+# the RWO run-scratch PVC can be mounted sequentially by the S4-4 Runs.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true
+  podSubnet: 192.168.0.0/16

@@ -1,0 +1,110 @@
+# Allowlisted upstream stubs in ksquad-infra (plain HTTP on :443 — TLS
+# termination is out of scope for the fixture; the port matches the §12.2
+# allowlist so the NetworkPolicy semantics under test are identical).
+# model.internal and control-plane.ksquad are the names the anchor's ALLOWLIST
+# carries; only egress-proxy pods may reach them (02-egress-allow.yaml).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-stub-config
+  namespace: ksquad-infra
+data:
+  default.conf: |
+    server {
+      listen 443;
+      location /model { return 200 "model-stub-ok\n"; }
+      location / { return 404; }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-internal
+  namespace: ksquad-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ksquad.io/component: model-stub
+  template:
+    metadata:
+      labels:
+        ksquad.io/component: model-stub
+    spec:
+      containers:
+        - name: stub
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 443
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: config
+          configMap:
+            name: model-stub-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model.internal
+  namespace: ksquad-infra
+spec:
+  selector:
+    ksquad.io/component: model-stub
+  ports:
+    - port: 443
+      targetPort: 443
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: control-plane-stub-config
+  namespace: ksquad-infra
+data:
+  default.conf: |
+    server {
+      listen 443;
+      location / { return 200 "control-plane-stub-ok\n"; }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  namespace: ksquad-infra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ksquad.io/component: control-plane-stub
+  template:
+    metadata:
+      labels:
+        ksquad.io/component: control-plane-stub
+    spec:
+      containers:
+        - name: stub
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 443
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: config
+          configMap:
+            name: control-plane-stub-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane.ksquad
+  namespace: ksquad-infra
+spec:
+  selector:
+    ksquad.io/component: control-plane-stub
+  ports:
+    - port: 443
+      targetPort: 443

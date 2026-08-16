@@ -1,7 +1,16 @@
 name: Security
 
-# Dependency + module vulns, filesystem/config CVEs, secrets, and SAST.
-# Runs on PRs and on a weekly schedule for drift.
+# Story 14.4 — Half A: the supply-chain gate (§6.1–§6.4, §10.4). Fails the build on:
+#   A1 govulncheck   — call-graph-reachable (known-exploitable) Go module vulns
+#   A2 npm audit     — high/critical console advisories
+#   A3 Trivy         — CRITICAL/HIGH-with-fix fs/config findings (+secret scanner)
+#   A4 gitleaks      — any committed secret (working tree on PR, FULL git history on schedule)
+#   A5 CodeQL        — SAST alerts (Go + JS/TS)
+# The ONLY CVE escape hatch is a checked-in .trivyignore whose entries carry an expiry
+# date + written justification, enforced by the trivyignore-lint job below. An expired
+# entry is itself a gate failure. The no-softening-lint job asserts nobody reintroduced
+# failure-swallowing constructs into either L4 workflow — a green run of this workflow
+# means clean, not "ran".
 
 on:
   pull_request:
@@ -16,6 +25,86 @@ permissions:
   security-events: write   # CodeQL SARIF upload
 
 jobs:
+  trivyignore-lint:
+    name: trivyignore (expiry lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Lint .trivyignore (expiry + justification on every entry)
+        run: |
+          python3 - <<'PY'
+          import datetime as dt
+          import re
+          import sys
+
+          path = ".trivyignore"
+          try:
+              lines = open(path, encoding="utf-8").read().splitlines()
+          except FileNotFoundError:
+              print(f"::error::{path} is missing — the curated CVE escape hatch must exist "
+                    "(seeded empty is fine; absent is not).")
+              sys.exit(1)
+
+          today = dt.date.today()
+          errors = []
+          expires_re = re.compile(r"expires:(\d{4}-\d{2}-\d{2})")
+          date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+          prev_comment = None
+          for i, raw in enumerate(lines, 1):
+              line = raw.strip()
+              if line.startswith("#"):
+                  prev_comment = line
+                  # Even a comment-only expiry marker must not be stale — an expired
+                  # suppression is a gate failure no matter how it is formatted.
+                  for m in expires_re.finditer(line):
+                      d = m.group(1)
+                      if not date_re.match(d):
+                          errors.append(f"line {i}: malformed expiry date '{d}'")
+                      elif dt.date.fromisoformat(d) < today:
+                          errors.append(f"line {i}: entry expired on {d} — remove, renew, or re-justify")
+                  continue
+              if not line:
+                  continue
+              # A live suppression entry (CVE/misconf id). It is only valid when the
+              # comment line directly above it carries BOTH an expiry date and a
+              # written justification (reviewed-like-code discipline, §6.2).
+              if prev_comment is None or "justification:" not in prev_comment:
+                  errors.append(f"line {i}: '{line}' lacks a preceding justification: comment")
+              if prev_comment is None or not expires_re.search(prev_comment):
+                  errors.append(f"line {i}: '{line}' lacks a preceding expires:YYYY-MM-DD date")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::trivyignore: {e}")
+              sys.exit(1)
+          print("trivyignore lint: no entries past expiry, every entry justified and dated.")
+          PY
+
+  no-softening-lint:
+    name: no-softening (L4 teeth)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Assert no failure-swallowing softening in the L4 workflows
+        run: |
+          # Patterns are assembled by concatenation so this lint's own source text
+          # never contains the literals it greps for (a naive self-match would make
+          # the check worthless). `if grep` uses the exit status directly — the
+          # lint itself must not be softened either.
+          files=(.github/workflows/security.yml .github/workflows/blast-radius.yml)
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || { echo "::error::expected L4 workflow $f not found"; exit 1; }
+          done
+          p1='continue''-on-''error'
+          p2='|''| true'
+          p3='set ''+e'
+          if grep -n -F -e "$p1" -e "$p2" -e "$p3" "${files[@]}"; then
+            echo "::error::softening found in an L4 workflow — a green Security run must mean clean, not 'ran'. Remove it."
+            exit 1
+          fi
+          echo "no-softening lint: both L4 workflows fail loud."
+
   govulncheck:
     name: govulncheck (Go modules)
     runs-on: ubuntu-latest
@@ -67,6 +156,9 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+          # The ONLY suppression path: the curated, expiry-dated .trivyignore
+          # (validated by the trivyignore-lint job above).
+          trivyignores: .trivyignore
 
   gitleaks:
     name: Gitleaks (secrets)
@@ -74,15 +166,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # full history for the scheduled git-history scan
       # Run the gitleaks CLI directly rather than gitleaks/gitleaks-action, whose v2
       # requires a paid GITLEAKS_LICENSE for organization repos. The CLI (Apache-2.0)
-      # has no such gate. Scans the full working tree; exits non-zero on any finding.
+      # has no such gate. Exits non-zero on any finding.
+      #
+      # Scan scope (§6.4): working tree on PR/push; the FULL git history on the
+      # weekly schedule — a secret deleted in a later commit still leaked and must
+      # fail the scheduled gate.
       - name: Run gitleaks (CLI, no org license)
         run: |
-          docker run --rm -v "${{ github.workspace }}:/repo" \
-            ghcr.io/gitleaks/gitleaks:v8.21.2 \
-            detect --source=/repo --no-git --redact --verbose --exit-code=1
+          args=(detect --source=/repo --redact --verbose --exit-code=1)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "schedule trigger: scanning FULL git history"
+            docker run --rm -v "${{ github.workspace }}:/repo" \
+              ghcr.io/gitleaks/gitleaks:v8.21.2 "${args[@]}"
+          else
+            echo "${{ github.event_name }} trigger: scanning working tree"
+            docker run --rm -v "${{ github.workspace }}:/repo" \
+              ghcr.io/gitleaks/gitleaks:v8.21.2 "${args[@]}" --no-git
+          fi
 
   codeql:
     name: CodeQL (${{ matrix.language }})
