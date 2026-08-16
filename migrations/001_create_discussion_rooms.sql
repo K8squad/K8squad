@@ -34,15 +34,13 @@ CREATE TABLE IF NOT EXISTS discussion_messages (
     kind        TEXT NOT NULL DEFAULT 'message' CHECK (kind IN ('message', 'announcement', 'decision', 'question')),
     metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    edited_at   TIMESTAMPTZ,
+    edited_at   TIMESTAMPTZ
 
-    CONSTRAINT chk_parent_same_room CHECK (
-        parent_id IS NULL
-        OR EXISTS (
-            SELECT 1 FROM discussion_messages pm
-            WHERE pm.id = parent_id AND pm.room_id = room_id
-        )
-    )
+    -- NOTE: the "parent message belongs to the same room" invariant is enforced
+    -- in application code (Store.PostMessage validates parent_id's room_id before
+    -- insert). It cannot be a CHECK constraint — PostgreSQL forbids subqueries in
+    -- CHECK expressions ("cannot use subquery in check constraint"). A DB-level
+    -- guard would require a trigger; deferred as out of scope for ISI-2147.
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_room_created ON discussion_messages (room_id, created_at);

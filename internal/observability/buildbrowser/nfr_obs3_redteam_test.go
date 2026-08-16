@@ -49,6 +49,11 @@ func writeTempAllowlist(t *testing.T, series []string) string {
 func runFirewallGate(t *testing.T, allowlistPath string) int {
 	t.Helper()
 	cmd := exec.Command("bash", firewallScript, "--allowlist", allowlistPath)
+	// firewallScript is repo-root-relative, but `go test` runs with the working
+	// directory set to this package (internal/observability/buildbrowser). Run
+	// from the repo root so the script path resolves. allowlistPath is absolute
+	// (t.TempDir), so the --allowlist arg is unaffected.
+	cmd.Dir = filepath.Join("..", "..", "..")
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode()

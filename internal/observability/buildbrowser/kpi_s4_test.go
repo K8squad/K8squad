@@ -77,6 +77,7 @@ func TestCrossPrincipalReadEmitsScopeDenied(t *testing.T) {
 
 	// A run owned by principalA.
 	var runID uuid.UUID // = fixtures.RunOwnedBy(t, principalA)
+	_ = principalA      // used by fixtures.RunOwnedBy once ISI-2168 lands
 
 	for _, ep := range bffEndpoints {
 		t.Run(ep, func(t *testing.T) {
@@ -141,6 +142,7 @@ func TestCrossPrincipalReadDoesNotLeakExistenceInResponse(t *testing.T) {
 	principalA := Principal{ID: uuid.New()}
 	principalB := Principal{ID: uuid.New()}
 	var runID uuid.UUID // = fixtures.RunOwnedBy(t, principalA)
+	_ = principalA      // used by fixtures.RunOwnedBy once ISI-2168 lands
 	nonExistentRunID := uuid.New()
 
 	metrics.Reset()
