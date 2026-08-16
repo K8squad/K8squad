@@ -57,25 +57,10 @@ import (
 	"fmt"
 )
 
-// HandoffKind is the pinned artifact kind of the structured handoff (Story 2.8
-// contract). The artifact row lives in coord.artifact; its uri addresses the
-// HandoffDoc JSON payload resolved via ArtifactContent.
-const HandoffKind = "handoff"
-
-// DraftWorkItem is a proposed work item — content only, never a dispatch. B's
-// recommended_next items and the coordinator's candidate list both use it; the
-// distinction is WHO dispatches (P2), not the shape.
-type DraftWorkItem struct {
-	Title string `json:"title"`
-	Body  string `json:"body,omitempty"`
-}
-
-// ArtifactRef mirrors the coord.artifact columns the record yields (§6.1/§6.4).
-type ArtifactRef struct {
-	Kind   string `json:"kind"`
-	URI    string `json:"uri"`
-	SHA256 string `json:"sha256"`
-}
+// HandoffKind, DraftWorkItem, and ArtifactRef are the Story 2.8 handoff
+// contract types — declared canonically in prodhandoff.go (same package) and
+// consumed here by 2.9's dispatch path. They are intentionally NOT redeclared
+// in this file (§2.9 consumes the 2.8 contract, it does not restate it).
 
 // RecordComment is one append-only §6.1/§6.5 comment row.
 type RecordComment struct {
@@ -84,15 +69,10 @@ type RecordComment struct {
 	CreatedAt string `json:"created_at"`
 }
 
-// HandoffDoc is the structured, ADVISORY-ONLY handoff payload Story 2.8 pins:
-// what the completing Run learned (findings), what it would do next
-// (recommended_next — a draft list the coordinator may adopt, reorder or
-// discard), and which artifacts downstream work should consume.
-type HandoffDoc struct {
-	Findings               string          `json:"findings"`
-	RecommendedNext        []DraftWorkItem `json:"recommended_next"`
-	ArtifactsForDownstream []ArtifactRef   `json:"artifacts_for_downstream"`
-}
+// HandoffDoc is the structured, ADVISORY-ONLY handoff payload Story 2.8 pins
+// (7 fields) — declared canonically in prodhandoff.go. 2.9 reads Findings,
+// RecommendedNext and ArtifactsForDownstream from it; the remaining fields are
+// carried through unread. It is intentionally NOT redeclared here.
 
 // HandoffView is everything the coordination record yields about a completed
 // item — the ONLY input, besides the coordinator's own judgement, that feeds a
