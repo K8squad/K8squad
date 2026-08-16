@@ -60,8 +60,21 @@ jobs:
       - name: golangci-lint
         if: steps.guard.outputs.present == 'true'
         uses: golangci/golangci-lint-action@v6
+        # Memory cap for the self-hosted gitrunner (7.8 GB VM). Unbounded, golangci-lint
+        # peaked ~7.7 GB RSS / 16-18 GB vm and triggered a global OOM-kill of the runner
+        # (ISI-2614, parent ISI-2612). Host-side GOMEMLIMIT alone is a soft limit and can't
+        # cap a >6 GiB live working set, so we constrain the job itself:
+        #   - --concurrency=1 serialises the per-package analysis passes (the dominant
+        #     memory driver) so peak live set stays ~1 package instead of NPROC packages.
+        #   - GOMAXPROCS=1 keeps the Go runtime from spawning per-CPU worker heaps.
+        #   - GOGC=30 / GOMEMLIMIT=3800MiB make GC aggressive well under the 6.8 G cgroup cap.
+        #   - --timeout bumped 5m->10m because serial analysis is slower.
+        env:
+          GOMAXPROCS: "1"
+          GOGC: "30"
+          GOMEMLIMIT: "3800MiB"
         with:
-          args: --timeout=5m
+          args: --timeout=10m --concurrency=1
 
       - name: Build
         if: steps.guard.outputs.present == 'true'
