@@ -18,7 +18,7 @@ permissions:
 jobs:
   govulncheck:
     name: govulncheck (Go modules)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - id: guard
@@ -36,7 +36,7 @@ jobs:
 
   npm-audit:
     name: npm audit (console)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - id: guard
@@ -52,7 +52,7 @@ jobs:
 
   trivy-fs:
     name: Trivy (filesystem + config)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - name: Trivy fs scan
@@ -70,7 +70,7 @@ jobs:
 
   gitleaks:
     name: Gitleaks (secrets)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -86,7 +86,7 @@ jobs:
 
   codeql:
     name: CodeQL (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:

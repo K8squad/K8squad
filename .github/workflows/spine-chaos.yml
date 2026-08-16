@@ -34,7 +34,7 @@ permissions:
 jobs:
   chaos:
     name: coordination-spine chaos suite
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     # Real Postgres for the claim/lease/fence guards, exposed to the Go test as a
     # stable localhost DSN (see DATABASE_URL on the run step). The staged C1..C7
     # suite (ISI-2347) exercises the spine against this real PG with -race on.

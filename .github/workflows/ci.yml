@@ -20,7 +20,7 @@ concurrency:
 jobs:
   go:
     name: go / ${{ matrix.component }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +83,7 @@ jobs:
 
   migrations:
     name: db / migrations self-check
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     # Applies every forward-only migration to a real Postgres and runs each *_test.sql self-check
     # (e.g. the coord schema's 7+ structural assertions). Keeps the runnable checks from rotting.
     services:
@@ -130,7 +130,7 @@ jobs:
 
   node:
     name: node / console
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
 
