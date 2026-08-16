@@ -23,7 +23,8 @@ required status check.
   `::notice::` skip when the source has not landed yet — no lane silently disappears, and the matrix
   becomes fully active as components are implemented.
 - **Coverage gates:** ≥ 80% per Go package; the coordination-spine package is held to ≥ 90%.
-- **Required checks / branch protection** are configured at the repo level (see the DevOps runbook).
+- **Required checks / branch protection** are configured at the repo level, and the self-hosted
+  runner (`gitrunner`) is documented in [`../SELF_HOSTED_RUNNER.md`](../SELF_HOSTED_RUNNER.md).
 
 The coordination-spine chaos suite (`spine-chaos.yml`) is the most correctness-critical gate: it
 proves at-most-one-holder claims, crash-reclaim, fence-token rejection of zombie writers, and
