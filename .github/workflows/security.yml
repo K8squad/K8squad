@@ -138,12 +138,14 @@ jobs:
             echo "::notice::${{ matrix.language }} source not present yet — CodeQL skipped."
           fi
 
+      # build-mode: none — CodeQL extracts source without compiling. autobuild broke on the
+      # ISI-2253 NATS/helm stack (build failure => job red); none-mode sidesteps the build
+      # entirely and is supported for both Go and JS/TS. Removes the autobuild step. (ISI-2644)
       - uses: github/codeql-action/init@v3
         if: steps.guard.outputs.present == 'true'
         with:
           languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@v3
-        if: steps.guard.outputs.present == 'true'
+          build-mode: none
       # upload:false — SARIF upload to code scanning requires GitHub Advanced
       # Security, which is not enabled on this private repo (and cannot be
       # enabled via token: billing-level setting). The analyze step hard-fails

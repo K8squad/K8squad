@@ -119,7 +119,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ksquad" --health-interval 5s
+          --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
@@ -133,6 +133,18 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # The self-hosted runner image does not ship the postgresql client (ubuntu-latest
+      # did — this lane broke with exit 127 "psql: command not found" after the ISI-2602
+      # runner migration). Install it on demand; no-op once the runner is warmed. (ISI-2644)
+      - name: Ensure psql client is present
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client
+          fi
+          psql --version
 
       - name: Apply migrations + run self-checks
         if: steps.guard.outputs.present == 'true'
