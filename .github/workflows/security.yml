@@ -16,6 +16,21 @@ permissions:
   security-events: write   # CodeQL SARIF upload
 
 jobs:
+  blast-radius:
+    name: L4 blast-radius model gate (S4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Hostile-Run blast-radius falsification (S4, NFR-SEC1/SEC4/SEC5)
+        # Design-level model gate (ISI-2240): a hostile Team-A Run is evaluated on
+        # network/secret/workspace/reuse-residue. A porous control posture must breach every axis
+        # (teeth) or the check fails; the arch posture must contain every attempt. stdlib-only,
+        # deterministic, no cluster. config-anchoring + kind e2e are follow-up (ISI-2245).
+        run: python3 test/security/hostile-run-blast-radius-check.py
+
   govulncheck:
     name: govulncheck (Go modules)
     runs-on: ubuntu-latest
