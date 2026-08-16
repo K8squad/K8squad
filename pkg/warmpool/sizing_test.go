@@ -92,7 +92,7 @@ func TestP1SafetyStock(t *testing.T) {
 	naive := meanOnly(0.5, replenishTable()[gvisorKey])
 
 	// Differential teeth: the naive twin violates the invariant.
-	if !(base > naive) {
+	if base <= naive {
 		t.Fatalf("P1 vacuous: mean-only twin (%d) already >= base-stock (%d) — the differential has no teeth", naive, base)
 	}
 	if base != 3 || naive != 1 {
@@ -136,7 +136,7 @@ func TestP3IdleCostBounded(t *testing.T) {
 
 	// Differential teeth: with the max cap dropped the target runs past max.
 	uncapped := rawAtSpike // noCap twin = raw base-stock
-	if !(uncapped > warmpool.DefaultMaxReady) {
+	if uncapped <= warmpool.DefaultMaxReady {
 		t.Fatalf("P3 vacuous: no-cap twin (%d) did not exceed max (%d) — the differential has no teeth", uncapped, warmpool.DefaultMaxReady)
 	}
 	if spike != warmpool.DefaultMaxReady || trickle != warmpool.DefaultMinReady {
@@ -162,7 +162,7 @@ func TestP4PerKeyReplenish(t *testing.T) {
 	ka := mustBaseStock(t, p, kataKey, 0.2)   // R=15.0  → 6 (the 2–2.6×+ multiplier)
 
 	// Differential teeth: a shared-R policy collapses the split to equal values.
-	if !(ka > gv) {
+	if ka <= gv {
 		t.Fatalf("P4 vacuous: shared-R twin already agrees with per-key sizing — the differential has no teeth")
 	}
 	if gv != 2 || ka != 6 || ka < 2*gv {

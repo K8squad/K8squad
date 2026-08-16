@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lib/pq"
 )
 
 // ============================================================================
@@ -103,7 +102,7 @@ func (s *Store) EnsureRoom(ctx context.Context, projectID uuid.UUID, name string
 		RETURNING id, project_id, name, created_at, updated_at, archived_at
 	`
 	var r Room
-	var archivedAt pq.NullTime
+	var archivedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, q, projectID, name).Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.CreatedAt, &r.UpdatedAt, &archivedAt,
 	)
@@ -123,7 +122,7 @@ func (s *Store) GetRoom(ctx context.Context, roomID uuid.UUID) (*Room, error) {
 		FROM discussion_rooms WHERE id = $1
 	`
 	var r Room
-	var archivedAt pq.NullTime
+	var archivedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, q, roomID).Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.CreatedAt, &r.UpdatedAt, &archivedAt,
 	)
@@ -149,7 +148,7 @@ func (s *Store) GetProjectRoom(ctx context.Context, projectID uuid.UUID, name st
 		FROM discussion_rooms WHERE project_id = $1 AND name = $2 AND archived_at IS NULL
 	`
 	var r Room
-	var archivedAt pq.NullTime
+	var archivedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, q, projectID, name).Scan(
 		&r.ID, &r.ProjectID, &r.Name, &r.CreatedAt, &r.UpdatedAt, &archivedAt,
 	)
@@ -182,7 +181,7 @@ func (s *Store) ListProjectRooms(ctx context.Context, projectID uuid.UUID) ([]Ro
 	var rooms []Room
 	for rows.Next() {
 		var r Room
-		var archivedAt pq.NullTime
+		var archivedAt sql.NullTime
 		if err := rows.Scan(&r.ID, &r.ProjectID, &r.Name, &r.CreatedAt, &r.UpdatedAt, &archivedAt); err != nil {
 			return nil, err
 		}
@@ -287,7 +286,7 @@ func (s *Store) GetMessages(ctx context.Context, roomID uuid.UUID, limit, offset
 	for rows.Next() {
 		var m Message
 		var parentID uuid.NullUUID
-		var editedAt pq.NullTime
+		var editedAt sql.NullTime
 		var metaBytes []byte
 		if err := rows.Scan(
 			&m.ID, &m.RoomID, &parentID, &m.AuthorID, &m.AuthorType, &m.AuthorName,
@@ -303,7 +302,7 @@ func (s *Store) GetMessages(ctx context.Context, roomID uuid.UUID, limit, offset
 			m.EditedAt = &editedAt.Time
 		}
 		if len(metaBytes) > 0 {
-			json.Unmarshal(metaBytes, &m.Metadata)
+			_ = json.Unmarshal(metaBytes, &m.Metadata)
 		}
 		all = append(all, m)
 	}
@@ -345,7 +344,7 @@ func (s *Store) SearchMessages(ctx context.Context, projectID uuid.UUID, query s
 	for rows.Next() {
 		var m Message
 		var parentID uuid.NullUUID
-		var editedAt pq.NullTime
+		var editedAt sql.NullTime
 		var metaBytes []byte
 		var rank float64
 		if err := rows.Scan(
@@ -362,7 +361,7 @@ func (s *Store) SearchMessages(ctx context.Context, projectID uuid.UUID, query s
 			m.EditedAt = &editedAt.Time
 		}
 		if len(metaBytes) > 0 {
-			json.Unmarshal(metaBytes, &m.Metadata)
+			_ = json.Unmarshal(metaBytes, &m.Metadata)
 		}
 		results = append(results, m)
 	}
@@ -401,7 +400,7 @@ func (s *Store) EditMessage(ctx context.Context, messageID uuid.UUID, body strin
 	`
 	var m Message
 	var parentID uuid.NullUUID
-	var editedAt pq.NullTime
+	var editedAt sql.NullTime
 	var metaBytes []byte
 	err := s.db.QueryRowContext(ctx, q, messageID, body).Scan(
 		&m.ID, &m.RoomID, &parentID, &m.AuthorID, &m.AuthorType, &m.AuthorName,
@@ -421,7 +420,7 @@ func (s *Store) EditMessage(ctx context.Context, messageID uuid.UUID, body strin
 		m.EditedAt = &editedAt.Time
 	}
 	if len(metaBytes) > 0 {
-		json.Unmarshal(metaBytes, &m.Metadata)
+		_ = json.Unmarshal(metaBytes, &m.Metadata)
 	}
 	return &m, nil
 }
@@ -491,7 +490,7 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID uuid.UUID, since t
 			return nil, err
 		}
 		if len(metaBytes) > 0 {
-			json.Unmarshal(metaBytes, &mi.Metadata)
+			_ = json.Unmarshal(metaBytes, &mi.Metadata)
 		}
 		results = append(results, mi)
 	}
@@ -533,7 +532,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		var parentID uuid.NullUUID
-		var editedAt pq.NullTime
+		var editedAt sql.NullTime
 		var metaBytes []byte
 		if err := rows.Scan(
 			&m.ID, &m.RoomID, &parentID, &m.AuthorID, &m.AuthorType, &m.AuthorName,
@@ -549,7 +548,7 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 			m.EditedAt = &editedAt.Time
 		}
 		if len(metaBytes) > 0 {
-			json.Unmarshal(metaBytes, &m.Metadata)
+			_ = json.Unmarshal(metaBytes, &m.Metadata)
 		}
 		results = append(results, m)
 	}

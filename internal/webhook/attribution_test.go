@@ -59,7 +59,7 @@ func (f *fakeAttributed) DeepCopyObject() runtime.Object {
 func (f *fakeAttributed) DeepCopyOf() *fakeAttributed {
 	c := &fakeAttributed{OwnedBy: f.OwnedBy}
 	c.TypeMeta = f.TypeMeta
-	c.ObjectMeta = *f.ObjectMeta.DeepCopy()
+	c.ObjectMeta = *f.DeepCopy()
 	return c
 }
 

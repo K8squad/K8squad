@@ -50,7 +50,7 @@ func (f *fakeAttributed) SetOwnedBy(p ksquadv1.PrincipalRef) { f.OwnedBy = p }
 func (f *fakeAttributed) DeepCopyObject() runtime.Object {
 	c := &fakeAttributed{OwnedBy: f.OwnedBy}
 	c.TypeMeta = f.TypeMeta
-	c.ObjectMeta = *f.ObjectMeta.DeepCopy()
+	c.ObjectMeta = *f.DeepCopy()
 	return c
 }
 
@@ -61,7 +61,7 @@ type fakeAttributedList struct {
 }
 
 func (l *fakeAttributedList) DeepCopyObject() runtime.Object {
-	c := &fakeAttributedList{ListMeta: *l.ListMeta.DeepCopy()}
+	c := &fakeAttributedList{ListMeta: *l.DeepCopy()}
 	for _, item := range l.Items {
 		c.Items = append(c.Items, *(item.DeepCopyObject().(*fakeAttributed)))
 	}
