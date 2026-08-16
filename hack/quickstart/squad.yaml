@@ -1,0 +1,98 @@
+# K8squad quickstart squad (ISI-2632).
+#
+# The self-contained "hello squad" the README's step 2 applies after the Helm
+# install brings up the operator:
+#
+#   kubectl apply -f https://charts.k8squad.io/quickstart.yaml
+#
+# It creates a demo namespace and one of every core CR — a Role (behavior), an
+# AgentRuntime (agent flavor), an Agent (bound to a model + credential), a
+# Project (repo to work on), and a Team that composes them. Every cross-CR
+# reference resolves inside this file, so `kubectl apply` leaves nothing
+# dangling. Replace the placeholder model token before pointing it at anything
+# real.
+#
+# CRDs are installed by the Helm chart (step 1), not by this file.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8squad-demo
+  labels:
+    app.kubernetes.io/part-of: k8squad
+    app.kubernetes.io/managed-by: quickstart
+---
+# Model credential the Agent authenticates with. Swap the token before use.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: model-credentials
+  namespace: k8squad-demo
+type: Opaque
+stringData:
+  token: "REPLACE_ME"
+---
+# Prompt / behavior definition referenced by the Role.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coder-prompt
+  namespace: k8squad-demo
+data:
+  system.md: |
+    You are a coding agent on the K8squad demo squad.
+    Keep changes small, tested, and reviewable.
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: coder
+  namespace: k8squad-demo
+spec:
+  promptRef:
+    name: coder-prompt
+---
+apiVersion: ksquad.io/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: claude-code
+  namespace: k8squad-demo
+spec:
+  type: claude-code
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: ada
+  namespace: k8squad-demo
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: coder
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Project
+metadata:
+  name: hello-k8squad
+  namespace: k8squad-demo
+spec:
+  repo:
+    url: https://github.com/K8squad/hello-k8squad
+    ref: main
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Team
+metadata:
+  name: quickstart-squad
+  namespace: k8squad-demo
+spec:
+  namespaceStrategy: dedicated
+  agents:
+    - name: ada
+  projects:
+    - name: hello-k8squad
