@@ -246,12 +246,27 @@ jobs:
             echo "::notice::${{ matrix.language }} source not present yet — CodeQL skipped."
           fi
 
+      # The self-hosted runner ships no language runtimes on PATH (ubuntu-latest did), so the
+      # CodeQL extractors fail: Go with "Unable to locate executable file: go" and TS with
+      # "Could not start Node.js. It is required for TypeScript extraction." Provide each
+      # language's runtime before extraction. Go uses build-mode autobuild (the tree compiles —
+      # govulncheck's `go build ./...` is green); Go does NOT support build-mode none. JS/TS uses
+      # build-mode none but still needs `node` on PATH for TS type extraction. (ISI-2644)
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true' && matrix.language == 'go'
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true' && matrix.language == 'javascript-typescript'
+        with:
+          node-version: 24
       - uses: github/codeql-action/init@v3
         if: steps.guard.outputs.present == 'true'
         with:
           languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
       - uses: github/codeql-action/autobuild@v3
-        if: steps.guard.outputs.present == 'true'
+        if: steps.guard.outputs.present == 'true' && matrix.language == 'go'
       # upload:false — SARIF upload to code scanning requires GitHub Advanced
       # Security, which is not enabled on this private repo (and cannot be
       # enabled via token: billing-level setting). The analyze step hard-fails

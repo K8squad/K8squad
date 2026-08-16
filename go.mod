@@ -2,6 +2,12 @@ module github.com/K8squad/K8squad
 
 go 1.25.0
 
+// Pin the build toolchain to the latest Go 1.25 patch so CI (setup-go via
+// go-version-file: go.mod) picks up stdlib security fixes. 1.25.13 (2026-08-13)
+// clears the govulncheck stdlib findings (GO-2025-4007 et al. in crypto/x509,
+// crypto/tls, net/http) surfaced on main by the ISI-2253 stack. See ISI-2644.
+toolchain go1.25.13
+
 // K8s library versions are pinned here (OQ12, story 1.1). Bump these together —
 // api/apimachinery/client-go share a release train; controller-runtime v0.19.x
 // pairs with k8s.io/* v0.31.x and controller-tools (controller-gen) v0.16.x.

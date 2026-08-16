@@ -27,15 +27,19 @@ jobs:
       matrix:
         component: [operator, apiserver, memory, console]
         include:
+          # srcprobe must be the component's actual entrypoint dir, not the shared go.mod:
+          # go.mod is always present, so the skeleton guard never skipped and the lane ran a
+          # doomed multi-arch build ("stat /src/cmd/<c>: directory not found") while these
+          # cmd/ entrypoints are still landing on feature branches. (ISI-2644)
           - component: operator
             dockerfile: Dockerfile.operator
-            srcprobe: go.mod
+            srcprobe: cmd/operator
           - component: apiserver
             dockerfile: Dockerfile.apiserver
-            srcprobe: go.mod
+            srcprobe: cmd/apiserver
           - component: memory
             dockerfile: Dockerfile.memory
-            srcprobe: go.mod
+            srcprobe: cmd/memory
           - component: console
             dockerfile: Dockerfile.console
             srcprobe: console/package.json
