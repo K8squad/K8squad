@@ -1,0 +1,52 @@
+# The team-b tenant (§12.1): a sibling Team whose Service and Secret the
+# team-a hostile Run must be unable to reach or read (S4-3).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: victim-workload
+  namespace: team-b
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: team-b-secret
+  namespace: team-b
+type: Opaque
+stringData:
+  token: "fixture-not-a-real-credential-s4"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victim-api
+  namespace: team-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ksquad.io/component: victim-api
+  template:
+    metadata:
+      labels:
+        ksquad.io/component: victim-api
+    spec:
+      serviceAccountName: victim-workload
+      containers:
+        - name: web
+          image: busybox:1.37
+          command: ["sh", "-c", "mkdir -p /www && echo team-b-victim-ok > /www/index.html && httpd -f -p 80 -h /www"]
+          ports:
+            - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victim-api
+  namespace: team-b
+spec:
+  selector:
+    ksquad.io/component: victim-api
+  ports:
+    - port: 80
+      targetPort: 80

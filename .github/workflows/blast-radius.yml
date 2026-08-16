@@ -1,0 +1,61 @@
+name: Blast Radius (S4)
+
+# Story 14.4 — Half B: the S4 blast-radius suite in kind against a hostile-Run
+# fixture (§6.5 / §4.3 / §17.1). Proves a Run executing arbitrary code is
+# CONTAINED: no egress past the allowlist, no cross-namespace reach, no
+# reuse-residue, no cross-principal read (existence-hiding), no memory
+# poisoning / covert coordination channel.
+#
+# Two arms in one job:
+#   conformance — guard ON, every attack must be contained
+#   mutation    — each guard deleted/widened (AC4), every case must flip RED;
+#                a mutation that does not flip means no teeth and FAILS.
+# Dependency-gated cases (S4-5/S4-6, Epic 9 install) self-skip-with-reason
+# into the visible skip ledger (AC8) — never a silent drop.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'config/**'                      # NetworkPolicy / RBAC manifests
+      - 'deploy/**'                      # egress proxy, teardown, install path
+      - 'pkg/**'                         # BFF read gate, teardown controller
+      - 'test/blast-radius/**'
+      - '.github/workflows/blast-radius.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * *'   # nightly (after the 03:00 spine-chaos run)
+
+permissions:
+  contents: read
+
+jobs:
+  s4:
+    name: blast-radius (S4 suite in kind)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      # kind with the default CNI disabled; run-s4.sh bootstraps Calico so
+      # NetworkPolicy enforcement is the real primitive under test.
+      - uses: helm/kind-action@v1.12.0
+        with:
+          cluster_name: blast-radius
+          config: test/blast-radius/kind-config.yaml
+
+      # Set BLAST_RADIUS_APISERVER_URL / BLAST_RADIUS_MEMORY_URL here when the
+      # Epic 9 install makes those components deployable in kind — S4-5/S4-6
+      # activate automatically (until then they self-skip-with-reason, AC8).
+
+      - name: Run S4 suite (conformance + mutation arms)
+        run: test/blast-radius/run-s4.sh all
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: blast-radius-report
+          path: blast-radius-report.txt
+          if-no-files-found: warn

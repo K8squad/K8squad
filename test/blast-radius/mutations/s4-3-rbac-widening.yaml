@@ -1,0 +1,28 @@
+# S4-3 RBAC mutation (AC4): widen team-b with a RoleBinding that grants the
+# team-a hostile-run ServiceAccount secret-read. Under the guard (no such
+# binding) `kubectl auth can-i` must answer "no"; with this mutation it must
+# answer "yes" — if it does not, S4-3 has no teeth.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-reader-widened
+  namespace: team-b
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hostile-run-reads-team-b-widened
+  namespace: team-b
+subjects:
+  - kind: ServiceAccount
+    name: hostile-run
+    namespace: team-a
+roleRef:
+  kind: Role
+  name: secret-reader-widened
+  apiGroup: rbac.authorization.k8s.io

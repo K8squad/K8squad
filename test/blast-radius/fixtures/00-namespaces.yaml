@@ -1,0 +1,24 @@
+# Fixture namespaces — the §12.1 namespace-per-Team tenancy primitive (Story 4.1).
+# team-a hosts the hostile-Run fixture; team-b is the sibling tenant it must not
+# reach; ksquad-infra hosts the allowlisted upstreams (model / control-plane stubs).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-a
+  labels:
+    ksquad.io/tenant: team-a
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: team-b
+  labels:
+    ksquad.io/tenant: team-b
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ksquad-infra
+  labels:
+    ksquad.io/tenant: infra
