@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "KSquad chart values",
+  "description": "Schema teeth for the values this chart must never silently accept. Scoped (ISI-2252, §9.4): it validates the workspace access-mode enum so a typo fails `helm install` up front instead of producing a PVC that never binds. RWX is a VALID enum member — the schema cannot verify a StorageClass supports it offline, so RWX is not rejected here; the chart WARNS on it at render (NOTES.txt) instead. Unconstrained keys are intentionally permissive so this schema never blocks unrelated values.",
+  "type": "object",
+  "properties": {
+    "storage": {
+      "type": "object",
+      "properties": {
+        "workspace": {
+          "type": "object",
+          "properties": {
+            "accessMode": {
+              "description": "PVC access mode the operator stamps on every per-Project workspace PVC (§9.4). ReadWriteOnce (RWO) is the default and works on every class (worktree-per-Run). ReadWriteMany (RWX) enables true parallel-Run writes but only where the StorageClass supports it (CephFS/NFS/Azure Files/EFS) — pre-flight it; the chart warns on RWX at render. ReadWriteOncePod restricts the PVC to a single pod (K8s >= 1.29).",
+              "type": "string",
+              "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadWriteOncePod"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

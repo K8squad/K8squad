@@ -115,4 +115,14 @@ render_fail "nats HA with even replicas fails (RAFT quorum)" "must be ODD" \
 render_fail "nats HA with <3 replicas fails (RAFT quorum)" "must be >= 3" \
   "${CORE[@]}" --set nats.ha.enabled=true --set nats.ha.replicas=1
 
+echo "== access-mode schema (ISI-2252, §9.4) =="
+render_ok "accessMode RWO (default) passes schema" 'workspace.accessMode: "ReadWriteOnce"' \
+  "${CORE[@]}"
+render_ok "accessMode RWX passes schema (valid enum, warned not rejected)" 'workspace.accessMode: "ReadWriteMany"' \
+  "${CORE[@]}" --set storage.workspace.accessMode=ReadWriteMany
+render_ok "accessMode RWOncePod passes schema" 'workspace.accessMode: "ReadWriteOncePod"' \
+  "${CORE[@]}" --set storage.workspace.accessMode=ReadWriteOncePod
+render_fail "invalid accessMode fails schema enum (no silent bad PVC)" "must be one of the following" \
+  "${CORE[@]}" --set storage.workspace.accessMode=ReadWriteMnay
+
 echo "ALL CHECKS PASSED"
