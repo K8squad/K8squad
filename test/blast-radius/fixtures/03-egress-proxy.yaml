@@ -13,11 +13,15 @@ data:
     server {
       listen 8080;
       # Upstreams resolve via cluster DNS at request time (not at nginx start,
-      # so the stubs may come up later than the proxy).
-      resolver kube-dns.kube-system.svc.cluster.local valid=5s ipv6=off;
+      # so the stubs may come up later than the proxy). nginx's resolver needs
+      # a nameserver IP — it cannot bootstrap-resolve its own resolver hostname.
+      # ponytail: 10.96.0.10 is kube-dns's ClusterIP under kind's default
+      # service CIDR (10.96.0.0/16, pinned by kind-config.yaml). Upgrade path if
+      # the CIDR ever changes: inject the discovered ClusterIP at fixture apply.
+      resolver 10.96.0.10 valid=5s ipv6=off;
 
       location /model {
-        set $upstream http://model.internal.ksquad-infra.svc.cluster.local:443;
+        set $upstream http://model-internal.ksquad-infra.svc.cluster.local:443;
         proxy_pass $upstream;
       }
       location /control-plane {

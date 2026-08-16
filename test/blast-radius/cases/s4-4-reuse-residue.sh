@@ -66,7 +66,10 @@ spec:
       containers:
         - name: wipe
           image: busybox:1.37
-          command: ["sh", "-c", "rm -rf /vol/principal-a/* /vol/principal-a/.[!.]* 2>/dev/null; echo wiped"]
+          # subPath principal-a is mounted AT /vol, so /vol already IS the
+          # principal's directory — wipe its contents (incl. dotfiles), not a
+          # non-existent nested /vol/principal-a.
+          command: ["sh", "-c", "rm -rf /vol/* /vol/.[!.]* 2>/dev/null; echo wiped"]
           volumeMounts:
             - name: vol
               mountPath: /vol

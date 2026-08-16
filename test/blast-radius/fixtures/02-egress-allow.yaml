@@ -3,8 +3,9 @@
 #   - a sandbox Run may reach ONLY its team's egress proxy on :8080 — the
 #     allowlisted upstreams are never directly reachable from a sandbox, so
 #     every allowlisted call rides the audited proxy (S4-2);
-#   - an egress proxy may reach ONLY ksquad-infra on :443 (model.internal,
-#     control-plane.ksquad);
+#   - an egress proxy may reach ONLY ksquad-infra on :443 (the model-internal
+#     and control-plane Services — the allowlist's model.internal /
+#     control-plane.ksquad upstreams as DNS-1035-valid Service labels);
 #   - ksquad-infra accepts ingress ONLY from pods labelled as egress proxies.
 ---
 apiVersion: networking.k8s.io/v1

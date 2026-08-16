@@ -1,8 +1,10 @@
 # Allowlisted upstream stubs in ksquad-infra (plain HTTP on :443 — TLS
 # termination is out of scope for the fixture; the port matches the §12.2
 # allowlist so the NetworkPolicy semantics under test are identical).
-# model.internal and control-plane.ksquad are the names the anchor's ALLOWLIST
-# carries; only egress-proxy pods may reach them (02-egress-allow.yaml).
+# The anchor's ALLOWLIST carries the abstract upstream hostnames model.internal
+# and control-plane.ksquad. A Kubernetes Service name must be a DNS-1035 label
+# (no dots), so those upstreams are realized in-cluster as Services model-internal
+# and control-plane; only egress-proxy pods may reach them (02-egress-allow.yaml).
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -48,7 +50,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: model.internal
+  name: model-internal
   namespace: ksquad-infra
 spec:
   selector:
@@ -100,7 +102,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: control-plane.ksquad
+  name: control-plane
   namespace: ksquad-infra
 spec:
   selector:
