@@ -37,8 +37,11 @@ package coord
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/K8squad/K8squad/pkg/events"
 )
 
 // ProdConfig parameterises the production §6.2 claim. The table names are
@@ -78,19 +81,37 @@ func DefaultProdConfig() ProdConfig {
 // its pinned statements, so it is safe for concurrent use by many goroutines
 // (each claim opens its own transaction).
 type ProdClaimer struct {
-	db    *sql.DB
-	cfg   ProdConfig
-	pick  string
-	acq   string
-	mark  string
-	audit string
+	db         *sql.DB
+	cfg        ProdConfig
+	pick       string
+	acq        string
+	mark       string
+	audit      string
+	emitOutbox bool // Story 12.1 / ISI-2260: co-commit a coord.outbox event in the claim txn
+}
+
+// ProdClaimerOption customises a ProdClaimer at construction. Options are the
+// stable way to opt into behaviour that changes the transaction shape without
+// breaking the existing NewProdClaimer(db, cfg) callers or the chaos gate.
+type ProdClaimerOption func(*ProdClaimer)
+
+// WithOutboxCapture co-commits ONE coord.outbox domain event
+// (entity=work_item, event_type=claimed) in the SAME transaction as every
+// successful claim (Story 12.1 / ISI-2260, AC-a / C1). It is OFF by default:
+// the outbox table is a forward migration (0003) that the base spine chaos gate
+// (0001-only) does not provision, so leaving it opt-in keeps that gate green,
+// while the apiserver run-loop — which applies all migrations — turns it on so
+// the event seam actually captures. The append is atomic with the claim: if the
+// claim rolls back, no event exists; if it commits, exactly one event does.
+func WithOutboxCapture() ProdClaimerOption {
+	return func(p *ProdClaimer) { p.emitOutbox = true }
 }
 
 // NewProdClaimer binds the production claim statements. It rejects an
 // incomplete config up front (empty lease or lane values would otherwise
 // surface as confusing SQL errors — or worse, silently unguarded statements —
 // at claim time).
-func NewProdClaimer(db *sql.DB, cfg ProdConfig) (*ProdClaimer, error) {
+func NewProdClaimer(db *sql.DB, cfg ProdConfig, opts ...ProdClaimerOption) (*ProdClaimer, error) {
 	if db == nil {
 		return nil, errors.New("coord.NewProdClaimer: nil db")
 	}
@@ -98,7 +119,7 @@ func NewProdClaimer(db *sql.DB, cfg ProdConfig) (*ProdClaimer, error) {
 		return nil, fmt.Errorf("coord.NewProdClaimer: incomplete config %+v "+
 			"(LeaseInterval, ClaimableState and ClaimedState are all required)", cfg)
 	}
-	return &ProdClaimer{
+	p := &ProdClaimer{
 		db:  db,
 		cfg: cfg,
 		// (1) POP — the §6.2 fan-out statement. FOR UPDATE OF w takes the
@@ -154,7 +175,35 @@ func NewProdClaimer(db *sql.DB, cfg ProdConfig) (*ProdClaimer, error) {
 			        initiated_by_user_id, fence_token, from_state, to_state)
 			VALUES ($1::uuid, $2::uuid, 'claim_acquired', $3,
 			        $4::uuid, $5, $6, $7)`,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p, nil
+}
+
+// claimEventPayload is the versioned coord.outbox body for a claim event
+// (pkg/events@rev, §10.2). It carries only correlation the subscriber can't
+// derive from the subject; the authoritative custody record stays coord.claim.
+func claimEventPayload(principal string, fence int64) []byte {
+	b, _ := json.Marshal(struct {
+		V         int    `json:"v"`
+		Principal string `json:"principal"`
+		Fence     int64  `json:"fence"`
+	}{V: 1, Principal: principal, Fence: fence})
+	return b
+}
+
+// captureClaim co-commits the work_item/claimed event in the claim txn when the
+// emitter is enabled. It is a no-op otherwise. Any error aborts the claim (the
+// deferred Rollback fires) so a claim and its event are one atomic fact — never
+// a committed claim with a lost event, nor an event without the claim.
+func (p *ProdClaimer) captureClaim(ctx context.Context, tx *sql.Tx, itemID, runID, principal string, fence int64) error {
+	if !p.emitOutbox {
+		return nil
+	}
+	return events.CaptureForWorkItem(ctx, tx, itemID, runID, "claimed",
+		claimEventPayload(principal, fence))
 }
 
 // ClaimNext pops and claims ONE claimable item in a single transaction:
@@ -227,6 +276,11 @@ func (p *ProdClaimer) ClaimNext(ctx context.Context, principal, runID, initiated
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.ClaimNext: audit: %w", err)
 	}
 
+	// (5) Story 12.1 domain-event capture, same transaction (no-op unless enabled).
+	if err := p.captureClaim(ctx, tx, id, runID, principal, fence); err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.ClaimNext: outbox: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.ClaimNext: commit: %w", err)
 	}
@@ -291,6 +345,11 @@ func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, ite
 
 	if _, err := tx.ExecContext(ctx, p.audit, itemID, runID, principal, initiator, fence, p.cfg.ClaimableState, p.cfg.ClaimedState); err != nil {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: audit: %w", err)
+	}
+
+	// Story 12.1 domain-event capture, same transaction (no-op unless enabled).
+	if err := p.captureClaim(ctx, tx, itemID, runID, principal, fence); err != nil {
+		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: outbox: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
