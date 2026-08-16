@@ -78,6 +78,35 @@ storage-class-capability dependent:
 RWO is the safe default and works everywhere; RWX is opt-in and gated on your
 class supporting it.
 
+### Upgrading / changing storage classes
+
+**Changing a `storage.*` class on `helm upgrade` does not rebind existing
+PVCs.** Kubernetes treats a bound PVC's `StorageClass` as immutable, so every
+family below only applies a new class to volumes created *after* the change —
+existing data stays on its original class. Plan class changes at install time,
+not as an upgrade.
+
+- **Postgres (CNPG):** editing `storage.postgres.storageClassName` (via
+  `spec.storage.storageClass` on the `Cluster` CR) does **not** move existing
+  PG volumes. Only newly created PVCs — scale-up replicas, or a newly enabled
+  WAL volume — pick up the new class, leaving a **mixed-class cluster**.
+  Genuinely moving Postgres to a different class means a dump/restore into a
+  fresh cluster (or a new `Cluster` with a base backup), not an in-place upgrade.
+- **NATS/JetStream:** the file-store PVC is templated from the StatefulSet's
+  `volumeClaimTemplates`, which Kubernetes treats as **immutable** after
+  creation. `storage.nats.storageClassName` changes are ignored for the
+  existing PVC; only a recreated StatefulSet with fresh volumes would use the
+  new class.
+- **Workspaces:** `storage.workspace.storageClassName` propagates through the
+  `*-storage` ConfigMap, and the operator applies it to **new** Project PVCs
+  only. PVCs for existing workspaces are never rebound; they keep the class they
+  were created with until the Project/PVC is recreated.
+- **Fail-fast when upgrading from a pre-`storage.*` release:** a release whose
+  values predate the `storage.*` keys will **hard-fail** on `helm upgrade` until
+  `storage.storageClassName` (or the per-family `storage.<family>.storageClassName`
+  values) is provided. This is by design (§16.2) — the chart never falls back to
+  the cluster default — so budget for setting these values as part of the upgrade.
+
 ## Quick start
 
 ```sh
