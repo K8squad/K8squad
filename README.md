@@ -10,7 +10,7 @@
 [![Kubernetes 1.31](https://img.shields.io/badge/Kubernetes-1.31-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
-[Website](https://ksquad.io) · [Documentation](https://ksquad.io/docs) · [Quickstart](#-quickstart) · [Architecture](#-architecture) · [Contributing](./CONTRIBUTING.md)
+[Website](https://k8squad.io) · [Documentation](https://k8squad.io/docs) · [Quickstart](#-quickstart) · [Architecture](#-architecture) · [Contributing](./CONTRIBUTING.md)
 
 </div>
 
@@ -125,8 +125,8 @@ and workspace PVCs, per `Team`. Untrusted, least-privilege, blast-radius-bounded
 
 ## 🔗 Links
 
-- **Website** — https://ksquad.io
-- **Documentation** — https://ksquad.io/docs
+- **Website** — https://k8squad.io
+- **Documentation** — https://k8squad.io/docs
 - **Contributing** — [CONTRIBUTING.md](./CONTRIBUTING.md)
 - **Plugin SDK guide** — [docs/plugin-sdk-guide.md](./docs/plugin-sdk-guide.md)
 - **Code of Conduct** — [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)
