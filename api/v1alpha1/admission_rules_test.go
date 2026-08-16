@@ -106,11 +106,10 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 }
 
 // The admission manifests must fail closed (a broken webhook denies,
-// never admits) for every guarded kind. Since story 1.6 unified the
-// wiring, the per-type attribution webhooks serve both contracts —
-// attribution defaulting/validation plus the story 1.3 cross-ref guards
-// chained on the same validating paths — so each of the four attributed
-// kinds has exactly one mutating and one validating entry.
+// never admits) for every guarded kind. Story 1.6 unified the attribution
+// wiring — each of the four attributed kinds (Team, Project, Agent, Run)
+// has exactly one mutating and one validating entry — and story 1.5 adds
+// the OTelConfig validating webhook on top.
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
 	for _, name := range []string{
@@ -118,6 +117,7 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 		"mproject-attribution.ksquad.io", "vproject-attribution.ksquad.io",
 		"magent-attribution.ksquad.io", "vagent-attribution.ksquad.io",
 		"mrun-attribution.ksquad.io", "vrun-attribution.ksquad.io",
+		"votelconfig-v1alpha1.ksquad.io",
 	} {
 		assert.Contains(t, yaml, "name: "+name)
 	}
@@ -126,6 +126,6 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 	assert.NotContains(t, yaml, "name: vteam.kb.io")
 	assert.NotContains(t, yaml, "name: vagent.kb.io")
 	assert.NotContains(t, yaml, "name: vrun.kb.io")
-	assert.Equal(t, 8, strings.Count(yaml, "failurePolicy: Fail"),
+	assert.Equal(t, 9, strings.Count(yaml, "failurePolicy: Fail"),
 		"every mutating and validating webhook must fail closed")
 }

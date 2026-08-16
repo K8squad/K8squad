@@ -89,8 +89,12 @@ func main() {
 		ctrl.Log.Error(err, "unable to set up webhooks")
 		os.Exit(1)
 	}
+	if err := ksquadv1alpha1.SetupOTelConfigWebhookWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up OTelConfig webhook")
+		os.Exit(1)
+	}
 
-	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs"})
+	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "webhook server exited with error")
 		os.Exit(1)

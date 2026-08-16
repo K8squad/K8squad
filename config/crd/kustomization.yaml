@@ -11,3 +11,4 @@ resources:
 - bases/ksquad.io_skills.yaml
 - bases/ksquad.io_projects.yaml
 - bases/ksquad.io_runs.yaml
+- bases/ksquad.io_otelconfigs.yaml
