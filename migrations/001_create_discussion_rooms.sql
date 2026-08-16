@@ -60,6 +60,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Guarded so re-applying this migration is idempotent (CREATE TRIGGER is not
+-- IF-NOT-EXISTS-able before PG14; DROP+CREATE works on all supported versions).
+DROP TRIGGER IF EXISTS trg_discussion_message_touch ON discussion_messages;
 CREATE TRIGGER trg_discussion_message_touch
     AFTER INSERT ON discussion_messages
     FOR EACH ROW

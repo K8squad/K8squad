@@ -147,8 +147,11 @@ nats:
   port: 4222
   jetstream:
     enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
-    # Max on-disk JetStream file store. Keep ≤ storage.nats.size.
-    maxFileStore: 4Gi
+    # Max on-disk JetStream file store. Keep ≤ storage.nats.size (5Gi).
+    # This is a nats-server config size, emitted UNQUOTED into nats.conf (see
+    # templates/nats.yaml): 4GB == 4Gi == 4*1024^3 bytes to nats. Do NOT quote
+    # a multi-char suffix in the template — nats fails to parse "4GB"/"4Gi".
+    maxFileStore: 4GB
   # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
   # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
   # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.

@@ -25,14 +25,17 @@ func NewHandler(store *Store) *Handler {
 func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/rooms", h.listRooms).Methods("GET")
 	r.HandleFunc("/rooms", h.createRoom).Methods("POST")
+	// Literal /rooms/* routes MUST register before the /rooms/{roomId} var route:
+	// gorilla/mux matches in registration order, so {roomId} would otherwise
+	// capture "search"/"memory-index" and their handlers would be unreachable.
+	r.HandleFunc("/rooms/search", h.searchMessages).Methods("GET")
+	r.HandleFunc("/rooms/memory-index", h.memoryIndex).Methods("GET")
 	r.HandleFunc("/rooms/{roomId}", h.getRoom).Methods("GET")
 	r.HandleFunc("/rooms/{roomId}", h.archiveRoom).Methods("DELETE")
 	r.HandleFunc("/rooms/{roomId}/messages", h.getMessages).Methods("GET")
 	r.HandleFunc("/rooms/{roomId}/messages", h.postMessage).Methods("POST")
 	r.HandleFunc("/rooms/{roomId}/messages/{messageId}", h.editMessage).Methods("PATCH")
 	r.HandleFunc("/rooms/{roomId}/messages/{messageId}", h.deleteMessage).Methods("DELETE")
-	r.HandleFunc("/rooms/search", h.searchMessages).Methods("GET")
-	r.HandleFunc("/rooms/memory-index", h.memoryIndex).Methods("GET")
 }
 
 // ============================================================================
@@ -164,12 +167,24 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid roomId")
 		return
 	}
+	// Author provenance is server-stamped from the authenticated principal —
+	// never from the request body — so a caller cannot impersonate another
+	// agent/human. Fail closed if the request is unauthenticated.
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		writeError(w, 401, "unauthenticated")
+		return
+	}
 	var msg Message
 	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
 		writeError(w, 400, "invalid JSON body")
 		return
 	}
 	msg.RoomID = roomID
+	// Overwrite any client-supplied author fields with the trusted principal.
+	msg.AuthorID = principal.ID
+	msg.AuthorType = principal.Type
+	msg.AuthorName = principal.Name
 	posted, err := h.store.PostMessage(r.Context(), roomID, msg)
 	if err != nil {
 		switch err {
