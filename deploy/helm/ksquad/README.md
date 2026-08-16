@@ -78,6 +78,36 @@ storage-class-capability dependent:
 RWO is the safe default and works everywhere; RWX is opt-in and gated on your
 class supporting it.
 
+### Access-mode behavior per StorageClass (§9.4)
+
+`storage.workspace.accessMode` sets the access mode the operator stamps on **every**
+per-Project workspace PVC. Its behavior is deliberately class-dependent — the chart
+surfaces the trade-off rather than guessing:
+
+- **`ReadWriteOnce` (RWO) — the default.** Every StorageClass supports RWO. It pairs
+  with the worktree-per-Run isolation model (§9.4): each Run gets its own git worktree
+  on a single-node-mounted volume, so RWO is sufficient and portable. **Leave it here
+  unless you have a specific reason not to.**
+- **`ReadWriteMany` (RWX) — optional, only where the class supports it.** RWX lets
+  multiple pods mount the same workspace volume for true parallel-Run writes, but only
+  a subset of classes provide it (CephFS, NFS, Azure Files, EFS, …). Setting RWX on a
+  class that lacks it makes every workspace PVC hang `Pending` — a silent install
+  stall. The chart **cannot verify class capabilities offline**, so it does not reject
+  RWX; instead it **warns** at render (`helm install` NOTES) that you must pre-flight
+  the class. This is the honest seam: RWX is a valid choice you own the pre-flight for.
+- **`ReadWriteOncePod` (RWOP)** — a valid enum member (K8s ≥ 1.29) for restricting a
+  PVC to a single pod; same class-support caveat applies.
+- **Volume expansion and snapshots are class-dependent too**, independent of access
+  mode: growing a PVC needs `allowVolumeExpansion: true` on the class; snapshot/restore
+  needs a CSI driver plus a `VolumeSnapshotClass`. Neither is something the chart can
+  turn on — they are capabilities of the class you point it at.
+
+**Schema teeth (`values.schema.json`):** the chart validates `storage.workspace.accessMode`
+against the enum `ReadWriteOnce | ReadWriteMany | ReadWriteOncePod`, so a typo
+(`ReadWriteMnay`, `rwx`, `ReadOnlyMany`) fails `helm install`/`template` up front with a
+clear schema error — never a PVC that silently never binds. RWX passes the enum (it is
+valid) and triggers the render-time warning above.
+
 ## Event bus — NATS / JetStream (the plugin seam)
 
 CEO decision (2026-08-11, ADR-023): **data in Postgres, events on NATS**. The

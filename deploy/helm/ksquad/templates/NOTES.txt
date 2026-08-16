@@ -20,6 +20,13 @@ Exposure mode: {{ .Values.exposure.mode }}
 Storage (never the cluster default):
   Postgres  StorageClass: {{ include "ksquad.storageClass.postgres" . }}
   Workspace StorageClass: {{ include "ksquad.storageClass.workspace" . }}  (accessMode {{ .Values.storage.workspace.accessMode }})
+{{- if eq .Values.storage.workspace.accessMode "ReadWriteMany" }}
+  ⚠ WARNING: storage.workspace.accessMode=ReadWriteMany (RWX). RWX is optional and
+    is honored ONLY on a StorageClass that supports it (CephFS/NFS/Azure Files/EFS).
+    The chart cannot verify class capabilities offline — if "{{ include "ksquad.storageClass.workspace" . }}"
+    does not support RWX, every per-Project workspace PVC will hang Pending. Pre-flight
+    the class or use the RWO default (worktree-per-Run, §9.4).
+{{- end }}
 {{- if .Values.nats.enabled }}
   NATS      StorageClass: {{ include "ksquad.storageClass.nats" . }}
 
