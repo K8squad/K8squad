@@ -67,10 +67,15 @@ spec:
         - name: wipe
           image: busybox:1.37
           command: ["sh", "-c", "rm -rf /vol/principal-a/* /vol/principal-a/.[!.]* 2>/dev/null; echo wiped"]
+          # Mount the WHOLE PVC (no subPath) so the wipe addresses the
+          # principal-a subdir explicitly by path — /vol/principal-a/* is the
+          # residue run-a wrote via `subPath: principal-a`. Mounting this job
+          # with `subPath: principal-a` would make /vol already BE that dir,
+          # so /vol/principal-a/* is a non-existent nested path, the wipe
+          # deletes nothing, residue survives, and conformance S4-4 false-REDs.
           volumeMounts:
             - name: vol
               mountPath: /vol
-              subPath: principal-a
       volumes:
         - name: vol
           persistentVolumeClaim:
