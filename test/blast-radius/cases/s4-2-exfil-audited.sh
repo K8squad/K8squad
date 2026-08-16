@@ -59,9 +59,7 @@ metadata:
   name: s4-2-bypass-direct-to-infra
   namespace: ${NS_INFRA}
 spec:
-  podSelector:
-    matchLabels:
-      ksquad.io/component: run-sandbox
+  podSelector: {}
   policyTypes: [Ingress]
   ingress:
     - from:
