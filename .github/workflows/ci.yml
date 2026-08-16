@@ -48,7 +48,13 @@ jobs:
       - uses: actions/setup-go@v6
         if: steps.guard.outputs.present == 'true'
         with:
-          go-version: stable
+          # Pin the toolchain to the module's declared Go version (go.mod) instead of
+          # `stable`. `stable` resolves to the newest runner Go (1.26.x), whose stdlib
+          # ships go1.26-guarded files that the golangci-lint binary (built with an older
+          # Go) cannot typecheck — producing false "file requires newer Go version" and
+          # apimachinery deepcopy typecheck errors in dependency code (ISI-2543). Reading
+          # the version from go.mod keeps the lint typechecker and toolchain in lockstep.
+          go-version-file: go.mod
           cache: true
 
       - name: golangci-lint

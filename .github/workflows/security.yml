@@ -27,7 +27,9 @@ jobs:
       - uses: actions/setup-go@v6
         if: steps.guard.outputs.present == 'true'
         with:
-          go-version: stable
+          # Match the module's declared Go version (go.mod) rather than `stable`, so the
+          # toolchain govulncheck builds against is consistent with the rest of CI (ISI-2543).
+          go-version-file: go.mod
       - name: Run govulncheck
         if: steps.guard.outputs.present == 'true'
         run: |
