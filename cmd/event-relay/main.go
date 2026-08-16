@@ -97,7 +97,11 @@ func main() {
 	// never gates apiserver health; NATS-down only grows the backlog gauges).
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
-	srv := &http.Server{Addr: metricsAddr, Handler: mux}
+	srv := &http.Server{
+		Addr:              metricsAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second, // bound header read to avoid Slowloris (gosec G112)
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("event-relay: metrics server", "err", err)

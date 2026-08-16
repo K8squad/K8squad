@@ -14,6 +14,7 @@ package jetstream
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -140,6 +141,11 @@ func (p *Publisher) ConsumerLag(ctx context.Context) (int64, error) {
 	var pending int64
 	lister := s.ListConsumers(ctx)
 	for ci := range lister.Info() {
+		// NumPending is uint64; clamp before the int64 conversion so an
+		// implausibly huge queue depth can't wrap negative (gosec G115).
+		if ci.NumPending > math.MaxInt64 {
+			return math.MaxInt64, nil
+		}
 		pending += int64(ci.NumPending)
 	}
 	if err := lister.Err(); err != nil {

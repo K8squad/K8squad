@@ -54,7 +54,7 @@ jobs:
 
   trivyignore-lint:
     name: trivyignore (expiry lint)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - name: Lint .trivyignore (expiry + justification on every entry)
@@ -110,7 +110,7 @@ jobs:
 
   no-softening-lint:
     name: no-softening (L4 teeth)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - name: Assert no failure-swallowing softening in the L4 workflows
