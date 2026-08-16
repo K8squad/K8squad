@@ -1,0 +1,15 @@
+# .trivyignore — the ONLY CVE escape hatch for the L4 security gate (Story 14.4 / ISI-2245, §6.2).
+#
+# This file is reviewed like code. Every suppression MUST carry, on the comment line directly
+# above the CVE id:
+#     <CVE-ID>   expires:YYYY-MM-DD   justification:<one line why this is accepted>
+#
+# The security.yml "trivyignore expiry lint" step FAILS the build when an entry is past its
+# `expires:` date — a suppression is never a silent, perpetual mute. Remove or re-justify it
+# before it expires. An unfixable finding still needs an entry (Trivy runs --ignore-unfixed, but
+# a fix landing upstream turns a previously-unfixable HIGH into a gating one, so track it here).
+#
+# Format reference: https://trivy.dev/latest/docs/configuration/filtering/#trivyignore
+#
+# --- active suppressions (none) ---
+# (add entries below, newest first, each preceded by its expires:/justification: comment line)

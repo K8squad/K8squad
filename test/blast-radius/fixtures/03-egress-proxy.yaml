@@ -1,0 +1,73 @@
+# The egress proxy (§12.2, Story 4.6): the ONLY route from a sandbox to an
+# allowlisted upstream, and its access log is the AUDIT RECORD S4-2 asserts —
+# the allowlisted hole is named and attributable (F11), never silent.
+# nginx logs to stdout (combined format): client IP + URI per request.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: egress-proxy-config
+  namespace: team-a
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      # Upstreams resolve via cluster DNS at request time (not at nginx start,
+      # so the stubs may come up later than the proxy).
+      resolver kube-dns.kube-system.svc.cluster.local valid=5s ipv6=off;
+
+      location /model {
+        set $upstream http://model.internal.ksquad-infra.svc.cluster.local:443;
+        proxy_pass $upstream;
+      }
+      location /control-plane {
+        set $upstream http://control-plane.ksquad-infra.svc.cluster.local:443;
+        proxy_pass $upstream;
+      }
+      # Anything else on the proxy path is refused — the allowlist is explicit.
+      location / {
+        return 403;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: egress-proxy
+  namespace: team-a
+  labels:
+    ksquad.io/component: egress-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      ksquad.io/component: egress-proxy
+  template:
+    metadata:
+      labels:
+        ksquad.io/component: egress-proxy
+    spec:
+      containers:
+        - name: proxy
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        - name: config
+          configMap:
+            name: egress-proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-proxy
+  namespace: team-a
+spec:
+  selector:
+    ksquad.io/component: egress-proxy
+  ports:
+    - port: 8080
+      targetPort: 8080

@@ -1,0 +1,31 @@
+# Default-deny baseline for every fixture namespace (§12.2 / Story 4.6): no
+# ingress, no egress, unless a companion allow-policy (02-egress-allow.yaml)
+# carves the minimum: DNS + the team's egress proxy for sandboxes; DNS + the
+# allowlisted infra:443 for the proxies themselves. S4-1 and S4-3 mutate these.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: team-a
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: team-b
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: ksquad-infra
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

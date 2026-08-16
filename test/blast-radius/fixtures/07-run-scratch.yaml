@@ -1,0 +1,15 @@
+# The per-Run scratch substrate for S4-4 (§9.3 teardown-and-replace, Story
+# 4.5): one PVC per team, addressed via per-principal subPaths. The teardown
+# wipe job (invoked by the S4-4 driver between Runs) is the guard; skipping
+# it is the S4-4 mutation that must flip the case RED.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: run-scratch
+  namespace: team-a
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi

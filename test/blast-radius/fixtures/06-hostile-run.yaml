@@ -1,0 +1,29 @@
+# The hostile-Run fixture (Epic X.1 / Arch §4.3): a Run sandbox pod that
+# actively probes for escape. The S4 case drivers kubectl-exec the probes
+# from inside this pod so every attack observation is made from the sandbox.
+# The RBAC guard: hostile-run's ServiceAccount has NO bindings at all —
+# cross-namespace reads must be impossible (S4-3 RBAC arm; §12.1 scoped RBAC).
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hostile-run
+  namespace: team-a
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostile-run
+  namespace: team-a
+  labels:
+    ksquad.io/component: run-sandbox
+    ksquad.io/run-id: fixture-hostile-run
+spec:
+  serviceAccountName: hostile-run
+  # Automounting credentials into a sandbox widens blast radius if the SA ever
+  # gains rights (§17.1). The probes need no API credentials.
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: busybox:1.37
+      command: ["sh", "-c", "sleep 3600"]
