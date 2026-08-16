@@ -33,7 +33,12 @@ permissions:
 jobs:
   s4:
     name: blast-radius (S4 suite in kind)
-    runs-on: ubuntu-latest
+    # Self-hosted gitrunner (ISI-2602/ISI-2612): GitHub-hosted `ubuntu-latest`
+    # is not serviceable on this repo, so a hosted target startup-fails in ~2s
+    # with zero steps (no runner) — the S4 suite never dispatches. Every other
+    # kind/heavy job here (e2e, spine-chaos, ci, build-images) uses this label;
+    # e2e runs helm/kind-action on it successfully. See ISI-2671.
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5

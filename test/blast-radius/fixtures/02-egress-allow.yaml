@@ -3,8 +3,9 @@
 #   - a sandbox Run may reach ONLY its team's egress proxy on :8080 — the
 #     allowlisted upstreams are never directly reachable from a sandbox, so
 #     every allowlisted call rides the audited proxy (S4-2);
-#   - an egress proxy may reach ONLY ksquad-infra on :443 (model.internal,
-#     control-plane.ksquad);
+#   - an egress proxy may reach ONLY ksquad-infra on :443 (the model-internal
+#     and control-plane Services — the allowlist's model.internal /
+#     control-plane.ksquad upstreams as DNS-1035-valid Service labels);
 #   - ksquad-infra accepts ingress ONLY from pods labelled as egress proxies.
 ---
 apiVersion: networking.k8s.io/v1
@@ -39,6 +40,29 @@ spec:
         - podSelector:
             matchLabels:
               ksquad.io/component: egress-proxy
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# The ingress companion: allow-to-egress-proxy opens the sandbox's EGRESS to the
+# proxy, but the proxy pod still sits under default-deny-all INGRESS — so without
+# this rule the sandbox→proxy:8080 SYN is dropped at the proxy, the allowlisted
+# call times out (S4-1 allowlisted probe), and nothing is ever logged (S4-2
+# audit 0→0). Grant the proxy ingress from run-sandbox pods on :8080 only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: proxy-ingress-from-sandbox
+  namespace: team-a
+spec:
+  podSelector:
+    matchLabels:
+      ksquad.io/component: egress-proxy
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              ksquad.io/component: run-sandbox
       ports:
         - { protocol: TCP, port: 8080 }
 ---

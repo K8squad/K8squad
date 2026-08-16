@@ -20,7 +20,7 @@ NS_A="team-a${S4_SUFFIX:-}"
 NS_INFRA="ksquad-infra${S4_SUFFIX:-}"
 ARM="${S4_ARM:-conformance}"
 HOSTILE=hostile-run
-MODEL_DIRECT="http://model.internal.${NS_INFRA}.svc.cluster.local:443/model"
+MODEL_DIRECT="http://model-internal.${NS_INFRA}.svc.cluster.local:443/model"
 MODEL_VIA_PROXY="http://egress-proxy.${NS_A}.svc.cluster.local:8080/model"
 
 audit_lines() { # lines in the proxy access log attributing the hostile pod
@@ -59,9 +59,7 @@ metadata:
   name: s4-2-bypass-direct-to-infra
   namespace: ${NS_INFRA}
 spec:
-  podSelector:
-    matchLabels:
-      ksquad.io/component: run-sandbox
+  podSelector: {}
   policyTypes: [Ingress]
   ingress:
     - from:

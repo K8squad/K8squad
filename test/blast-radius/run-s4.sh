@@ -64,10 +64,20 @@ run_arm() { # run_arm <arm-name> <suffix>
   wait_deploy "$ns_b" victim-api
   wait_pod_ready "$ns_a" hostile-run
 
-  local case_script log_file
+  local case_script log_file base_np
   for case_script in "$BASE"/cases/*.sh; do
     log_file="$LOG_DIR/$(basename "$case_script" .sh).${arm}.log"
     log "---- $(basename "$case_script") [$arm]"
+    # Cases run sequentially in the SAME per-arm namespaces. A mutation case
+    # deletes shared guards that a LATER case still needs — S4-1's mutation
+    # deletes allow-dns + default-deny-all in team-a, so S4-2/S4-3 mutations
+    # then re-isolate egress WITHOUT DNS and fail at name resolution
+    # ("wget: bad address …") for the wrong reason (F-C). Re-assert the netpol
+    # baseline before every case so each starts from a pristine guard state;
+    # apply is idempotent, so this is a no-op in the conformance arm.
+    for base_np in 01-default-deny 02-egress-allow; do
+      apply_fixture "$BASE/fixtures/$base_np.yaml" >/dev/null
+    done
     set +e
     bash "$case_script" 2>&1 | tee "$log_file"
     set -e
