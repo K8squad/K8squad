@@ -87,10 +87,29 @@ type AgentSpec struct {
 	// ADR-030/ADR-031), optionally with its own endpoint/credential.
 	// +optional
 	FallbackModel *FallbackModel `json:"fallbackModel,omitempty"`
+
+	// OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+	// authoritative ownership signal for resource-scoped permission checks
+	// (Epic 15.3) — not a display field. Mutable: ownership may be
+	// transferred after creation. Defaults to the created-by principal at
+	// admission (internal/webhook AttributionWebhook) and is indexed for
+	// RBAC scope queries (internal/index).
+	// +optional
+	OwnedBy PrincipalRef `json:"ownedBy,omitempty"`
 }
+
+var _ OwnedByHolder = &Agent{}
+
+// GetOwnedBy returns the spec.ownedBy owner principal (story 1.6).
+func (a *Agent) GetOwnedBy() PrincipalRef { return a.Spec.OwnedBy }
+
+// SetOwnedBy sets the spec.ownedBy owner principal (story 1.6).
+func (a *Agent) SetOwnedBy(principal PrincipalRef) { a.Spec.OwnedBy = principal }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=ag,categories=ksquad
+// +kubebuilder:webhook:path=/mutate-ksquad-io-v1alpha1-agent,mutating=true,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=agents,verbs=create;update,versions=v1alpha1,name=magent-attribution.ksquad.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-agent,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=agents,verbs=create;update,versions=v1alpha1,name=vagent-attribution.ksquad.io,admissionReviewVersions=v1
 
 // Agent is the Schema for the agents API — one agent instance in a squad
 // (arch §5.1). It is namespaced by default.

@@ -7,9 +7,13 @@ name: Spine Concurrency / Chaos
 #
 # Named acceptance cases (see docs testing strategy):
 #   C1 parallel claimers (no double-claim)          C5 zombie-writer-vs-PVC (fence-before-release)
-#   C2 work-pull fan-out (SKIP LOCKED, distinct)     C6 double-dispatch (deterministic task id, dedup)
-#   C3 crash-mid-claim reclaim (fence_token bump)    C7 idempotent reconcile re-entry
+#   C2 work-pull fan-out (SKIP LOCKED, distinct)    C6 double-dispatch (deterministic task id, dedup)
+#   C3 crash-mid-claim reclaim (fence_token bump)   C7 idempotent reconcile re-entry
 #   C4 stale-holder write rejection / renew no-op
+#   P1 production-schema SKIP LOCKED claim: no double-claim, no lost work (Story 2.2 / ISI-2523)
+#   P2 production-schema claim atomicity: interrupted claim never half-claims (Story 2.2 / ISI-2523)
+#   (P1/P2 run the claim against the SHIPPED db/migrations coord schema; C1..C7
+#   prove the full guard set on the int-keyed harness tables.)
 
 on:
   pull_request:
@@ -30,7 +34,7 @@ permissions:
 jobs:
   chaos:
     name: coordination-spine chaos suite
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     # Real Postgres for the claim/lease/fence guards, exposed to the Go test as a
     # stable localhost DSN (see DATABASE_URL on the run step). The staged C1..C7
     # suite (ISI-2347) exercises the spine against this real PG with -race on.

@@ -27,15 +27,16 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 )
 
-// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-team,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=teams,versions=v1alpha1,verbs=create;update,admissionReviewVersions=v1,name=vteam.kb.io
+// Webhook manifests for these validators are emitted from the per-type
+// +kubebuilder:webhook markers on api/v1alpha1/*_types.go (story 1.6),
+// which register attribution defaulting/validation and chain these
+// cross-ref guards on the same validating paths.
 
 // TeamCustomValidator validates Team admission (story 1.3).
 type TeamCustomValidator struct{ Validator *CrossRefValidator }
@@ -61,8 +62,6 @@ func (v *TeamCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object
 	return nil, nil
 }
 
-// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-agent,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=agents,versions=v1alpha1,verbs=create;update,admissionReviewVersions=v1,name=vagent.kb.io
-
 // AgentCustomValidator validates Agent admission (story 1.3).
 type AgentCustomValidator struct{ Validator *CrossRefValidator }
 
@@ -86,8 +85,6 @@ func (v *AgentCustomValidator) ValidateUpdate(ctx context.Context, _, newObj run
 func (v *AgentCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
-
-// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-run,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=runs,versions=v1alpha1,verbs=create;update,admissionReviewVersions=v1,name=vrun.kb.io
 
 // RunCustomValidator validates Run admission (story 1.3).
 type RunCustomValidator struct{ Validator *CrossRefValidator }
@@ -129,26 +126,39 @@ func toInvalid(kind, name string, errs field.ErrorList) error {
 
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 
-// SetupWithManager registers the three validating webhooks on mgr's webhook
-// server. Guards run with failurePolicy=fail: a broken webhook denies
-// rather than admits (fail-closed, story 1.3).
-func SetupWithManager(mgr manager.Manager) error {
-	v := &CrossRefValidator{Reader: mgr.GetClient()}
-	webhooks := []struct {
-		obj       client.Object
-		validator admission.CustomValidator
-	}{
-		{&ksquadv1alpha1.Team{}, &TeamCustomValidator{Validator: v}},
-		{&ksquadv1alpha1.Agent{}, &AgentCustomValidator{Validator: v}},
-		{&ksquadv1alpha1.Run{}, &RunCustomValidator{Validator: v}},
+// CrossRefValidators bundles the story 1.3 cross-object validators so the
+// wiring layer (internal/webhook attribution setup, story 1.6) can chain
+// them onto the shared validating paths instead of registering duplicate
+// webhook entries for the same resources.
+type CrossRefValidators struct {
+	Team  admission.CustomValidator
+	Agent admission.CustomValidator
+	Run   admission.CustomValidator
+}
+
+// NewCrossRefValidators builds the three story 1.3 validators over reader.
+// Guards run with failurePolicy=fail: a broken webhook denies rather than
+// admits (fail-closed, story 1.3).
+func NewCrossRefValidators(reader client.Reader) *CrossRefValidators {
+	v := &CrossRefValidator{Reader: reader}
+	return &CrossRefValidators{
+		Team:  &TeamCustomValidator{Validator: v},
+		Agent: &AgentCustomValidator{Validator: v},
+		Run:   &RunCustomValidator{Validator: v},
 	}
-	for _, w := range webhooks {
-		if err := builder.WebhookManagedBy(mgr).
-			For(w.obj).
-			WithValidator(w.validator).
-			Complete(); err != nil {
-			return err
-		}
+}
+
+// For returns the cross-ref validator for obj's concrete type, or nil when
+// the type carries no story 1.3 guards (e.g. Project).
+func (c *CrossRefValidators) For(obj runtime.Object) admission.CustomValidator {
+	switch obj.(type) {
+	case *ksquadv1alpha1.Team:
+		return c.Team
+	case *ksquadv1alpha1.Agent:
+		return c.Agent
+	case *ksquadv1alpha1.Run:
+		return c.Run
+	default:
+		return nil
 	}
-	return nil
 }

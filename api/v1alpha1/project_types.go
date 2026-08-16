@@ -55,7 +55,24 @@ type ProjectSpec struct {
 	// Agent.spec.contextBudgetOverride; per-Run dynamic trim in the shim.
 	// +optional
 	ContextBudget *ContextBudget `json:"contextBudget,omitempty"`
+
+	// OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+	// authoritative ownership signal for resource-scoped permission checks
+	// (Epic 15.3) — not a display field. Mutable: ownership may be
+	// transferred after creation. Defaults to the created-by principal at
+	// admission (internal/webhook AttributionWebhook) and is indexed for
+	// RBAC scope queries (internal/index).
+	// +optional
+	OwnedBy PrincipalRef `json:"ownedBy,omitempty"`
 }
+
+var _ OwnedByHolder = &Project{}
+
+// GetOwnedBy returns the spec.ownedBy owner principal (story 1.6).
+func (p *Project) GetOwnedBy() PrincipalRef { return p.Spec.OwnedBy }
+
+// SetOwnedBy sets the spec.ownedBy owner principal (story 1.6).
+func (p *Project) SetOwnedBy(principal PrincipalRef) { p.Spec.OwnedBy = principal }
 
 // RepoSpec is the upstream source repository of a Project, plus its sync
 // configuration (arch §5.4).
@@ -153,6 +170,8 @@ type PVCSpec struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=proj,categories=ksquad
+// +kubebuilder:webhook:path=/mutate-ksquad-io-v1alpha1-project,mutating=true,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=projects,verbs=create;update,versions=v1alpha1,name=mproject-attribution.ksquad.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-project,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=projects,verbs=create;update,versions=v1alpha1,name=vproject-attribution.ksquad.io,admissionReviewVersions=v1
 
 // Project is the Schema for the projects API — a repo + workspace
 // (arch §5.1). It is namespaced by default.

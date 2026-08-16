@@ -105,14 +105,27 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 	}
 }
 
-// The ValidatingWebhookConfiguration must exist for all guarded kinds
-// (Team, Agent, Run, OTelConfig) with failurePolicy=fail (fail-closed:
-// a broken webhook denies, never admits).
+// The admission manifests must fail closed (a broken webhook denies,
+// never admits) for every guarded kind. Story 1.6 unified the attribution
+// wiring — each of the four attributed kinds (Team, Project, Agent, Run)
+// has exactly one mutating and one validating entry — and story 1.5 adds
+// the OTelConfig validating webhook on top.
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
-	for _, name := range []string{"vteam.kb.io", "vagent.kb.io", "vrun.kb.io", "votelconfig-v1alpha1.ksquad.io"} {
+	for _, name := range []string{
+		"mteam-attribution.ksquad.io", "vteam-attribution.ksquad.io",
+		"mproject-attribution.ksquad.io", "vproject-attribution.ksquad.io",
+		"magent-attribution.ksquad.io", "vagent-attribution.ksquad.io",
+		"mrun-attribution.ksquad.io", "vrun-attribution.ksquad.io",
+		"votelconfig-v1alpha1.ksquad.io",
+	} {
 		assert.Contains(t, yaml, "name: "+name)
 	}
-	assert.Equal(t, 4, strings.Count(yaml, "failurePolicy: Fail"),
-		"every validating webhook must fail closed")
+	// Legacy duplicate-name registration is gone: the story 1.3 paths are
+	// served by the chained attribution webhooks, not separate .kb.io ones.
+	assert.NotContains(t, yaml, "name: vteam.kb.io")
+	assert.NotContains(t, yaml, "name: vagent.kb.io")
+	assert.NotContains(t, yaml, "name: vrun.kb.io")
+	assert.Equal(t, 9, strings.Count(yaml, "failurePolicy: Fail"),
+		"every mutating and validating webhook must fail closed")
 }

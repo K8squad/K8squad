@@ -14,16 +14,23 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// ksquad-webhook serves the story 1.3 validating admission webhooks: the
-// cross-object existence guards (Team→Project/Agent, Agent→AgentRuntime/
-// Role/Skill/Secret, Run→Team/Project/Agent) that CEL structural schemas
-// cannot express. Same-object rules (FR-D3 runtime discipline, Skill
-// source one-of, sandbox defaults) are compiled into the CRD schemas
-// themselves and enforced by the API server without this binary.
+// ksquad-webhook serves the squad-composition admission webhooks:
+//
+//   - story 1.6 attribution (Team, Project, Agent, Run): createdBy stamped
+//     and enforced immutable at admission, spec.ownedBy defaulted from the
+//     authenticated principal;
+//   - story 1.3 cross-object reference guards (Team→Project/Agent,
+//     Agent→AgentRuntime/Role/Skill/Secret, Run→Team/Project/Agent),
+//     chained after the attribution checks on the same validating paths.
+//
+// Same-object rules (FR-D3 runtime discipline, Skill source one-of,
+// sandbox defaults) are compiled into the CRD schemas themselves and
+// enforced by the API server without this binary.
 //
 // It is deliberately webhook-only: no controllers, no metrics, no leader
 // election. The operator binary (epic 2) may host these same webhooks via
-// webhook.SetupWithManager when the manager grows controllers.
+// webhook.SetupAttributionWebhookWithManager when the manager grows
+// controllers.
 package main
 
 import (
@@ -39,7 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
-	kwebhook "github.com/K8squad/K8squad/internal/webhook/v1alpha1"
+	attrwebhook "github.com/K8squad/K8squad/internal/webhook"
 )
 
 var scheme = runtime.NewScheme()
@@ -77,7 +84,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := kwebhook.SetupWithManager(mgr); err != nil {
+	if err := attrwebhook.SetupAttributionWebhookWithManager(mgr,
+		&ksquadv1alpha1.Team{}, &ksquadv1alpha1.Project{}, &ksquadv1alpha1.Agent{}, &ksquadv1alpha1.Run{}); err != nil {
 		ctrl.Log.Error(err, "unable to set up webhooks")
 		os.Exit(1)
 	}
@@ -86,7 +94,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "agents", "runs", "otelconfigs"})
+	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "webhook server exited with error")
 		os.Exit(1)

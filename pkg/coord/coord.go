@@ -50,15 +50,19 @@
 // reclaim_fenced_at), plus a run-keyed dispatch marker. That schema is the
 // contract the C1..C7 guards are validated on.
 //
-// It is NOT yet the production coord schema (db/migrations/0001_coord_schema.sql):
-// production work_item/claim are uuid-keyed, coord.claim has no reclaim_fenced_at
-// column, and there is no dispatch-marker table. Binding this package to
-// production therefore requires a follow-up that (a) makes the item id type
-// generic / uuid, (b) adds reclaim_fenced_at + the §6.4 dispatch marker to the
-// migration, and (c) re-runs the guards against that checked-in schema. Until
-// then, treat this package as the chaos-gate-proven guard set, not the wired
-// production coordinator. (Copilot review: schema-compat; production-wiring
-// follow-up.)
+// Production binding status: the §6.2 CLAIM path is bound to the checked-in
+// production schema (db/migrations/0001_coord_schema.sql) by ProdClaimer
+// (prodclaim.go, Story 2.2 / ISI-2523): uuid-keyed items, board lanes, the F3
+// pre-provisioned claim rows, and the §6.5 audit row — proved on the shipped
+// DDL by TestSpineProdClaim (P1/P2) in the same chaos gate. The remaining
+// statements (Renew / Complete / ReclaimFenced / RedriveClaim / DispatchOnce)
+// are still proved only on the int-keyed harness schema above: binding them to
+// production additionally requires (b) adding reclaim_fenced_at + the §6.4
+// dispatch marker to a forward migration, and (c) re-running the C3..C7 guards
+// against that checked-in schema — the follow-up stories for reclaim/dispatch.
+// Until then, treat everything except ProdClaimer as the chaos-gate-proven
+// guard set, not the wired production coordinator. (Copilot review:
+// schema-compat; production-wiring follow-up.)
 package coord
 
 import (

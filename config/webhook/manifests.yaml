@@ -1,9 +1,115 @@
 ---
 apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-ksquad-io-v1alpha1-agent
+  failurePolicy: Fail
+  name: magent-attribution.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agents
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-ksquad-io-v1alpha1-project
+  failurePolicy: Fail
+  name: mproject-attribution.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - projects
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-ksquad-io-v1alpha1-run
+  failurePolicy: Fail
+  name: mrun-attribution.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - runs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-ksquad-io-v1alpha1-team
+  failurePolicy: Fail
+  name: mteam-attribution.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - teams
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: validating-webhook-configuration
 webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-ksquad-io-v1alpha1-agent
+  failurePolicy: Fail
+  name: vagent-attribution.ksquad.io
+  rules:
+  - apiGroups:
+    - ksquad.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - agents
+  sideEffects: None
 - admissionReviewVersions:
   - v1
   clientConfig:
@@ -30,9 +136,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-ksquad-io-v1alpha1-agent
+      path: /validate-ksquad-io-v1alpha1-project
   failurePolicy: Fail
-  name: vagent.kb.io
+  name: vproject-attribution.ksquad.io
   rules:
   - apiGroups:
     - ksquad.io
@@ -42,7 +148,7 @@ webhooks:
     - CREATE
     - UPDATE
     resources:
-    - agents
+    - projects
   sideEffects: None
 - admissionReviewVersions:
   - v1
@@ -52,7 +158,7 @@ webhooks:
       namespace: system
       path: /validate-ksquad-io-v1alpha1-run
   failurePolicy: Fail
-  name: vrun.kb.io
+  name: vrun-attribution.ksquad.io
   rules:
   - apiGroups:
     - ksquad.io
@@ -72,7 +178,7 @@ webhooks:
       namespace: system
       path: /validate-ksquad-io-v1alpha1-team
   failurePolicy: Fail
-  name: vteam.kb.io
+  name: vteam-attribution.ksquad.io
   rules:
   - apiGroups:
     - ksquad.io
