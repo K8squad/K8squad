@@ -18,7 +18,7 @@ permissions:
 jobs:
   squad-smoke:
     name: squad smoke (Ollama, credit-free)
-    runs-on: ubuntu-latest   # DevOps: self-hosted GPU runner optional for larger models
+    runs-on: [self-hosted, linux, x64]   # DevOps: self-hosted GPU runner optional for larger models
     services:
       ollama:
         image: ollama/ollama:latest
@@ -64,7 +64,7 @@ jobs:
 
   console-e2e:
     name: console E2E (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
 
