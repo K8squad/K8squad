@@ -1,0 +1,38 @@
+{{- /* apiserver outbox → NATS relay config (Epic 12.1 / §17.4 / ADR-023;
+       ISI-2253). The apiserver's relay worker tails the transactional Postgres
+       outbox and publishes each event to a JetStream subject
+       ksquad.{entity}.{project}.{squad}.{event_type}, stamping published_at and
+       republishing unflushed rows (at-least-once). DECOUPLED from the write path:
+       the relay runs OUTSIDE the reconcile/coordination transaction, is
+       best-effort, and is NEVER wired into an apiserver liveness/readiness probe.
+       NATS-down (or nats.enabled=false) delays fan-out only — it NEVER blocks a
+       Run/claim/memory write. Postgres stays source-of-truth (ADR-001). The chart
+       hands the apiserver this config; the apiserver Deployment is owned elsewhere. */ -}}
+{{- if .Values.events.relay.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ksquad.fullname" . }}-event-relay
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+data:
+  # Transport: the JetStream bus the relay publishes to (release-derived unless
+  # events.relay.natsUrl overrides). Consumed by the apiserver relay worker.
+  relay.natsUrl: {{ include "ksquad.nats.url" . | quote }}
+  relay.jetstream: "true"
+  # Subject taxonomy ksquad.{entity}.{project}.{squad}.{event_type} (§17.4, §10.2).
+  relay.subjectPrefix: {{ .Values.events.relay.subjectPrefix | quote }}
+  # ── ISOLATION CONTRACT (§17.4) — the relay is decoupled from the write path ──
+  # The Postgres outbox is the durable at-least-once buffer; NATS-down never
+  # blocks a Run/claim/write. These MUST stay as set — flipping blocksWritePath
+  # to "true", or gating apiserver health on NATS, is a regression (S1, CEO
+  # isolation requirement).
+  relay.decoupled: "true"
+  relay.blocksWritePath: "false"
+  relay.natsHealthGatesApiserver: "false"
+  # Whether a release-local bus is bundled this install (nats.enabled). When
+  # "false" the relay still runs and buffers in the outbox — it just has no
+  # local bus to flush to (external NATS via events.relay.natsUrl, or offline).
+  relay.busBundled: {{ .Values.nats.enabled | quote }}
+{{- end }}

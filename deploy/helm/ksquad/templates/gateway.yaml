@@ -1,0 +1,41 @@
+{{- if eq .Values.exposure.mode "gateway" -}}
+{{- $g := .Values.exposure.gateway -}}
+{{- $hosts := .Values.exposure.hostnames -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "ksquad.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    {{- with $g.labels }}{{ toYaml . | nindent 4 }}{{- end }}
+  {{- with $g.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # REFERENCE only — the operator's controller owns the GatewayClass; we never
+  # create one (§16.1, ISI-2149). Validated non-empty by ksquad.validate.
+  gatewayClassName: {{ $g.gatewayClassName | quote }}
+  listeners:
+    {{- if $g.listeners.http.enabled }}
+    - name: http
+      protocol: HTTP
+      port: {{ $g.listeners.http.port }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+    {{- if $g.listeners.https.enabled }}
+    - name: https
+      protocol: HTTPS
+      port: {{ $g.listeners.https.port }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ $g.listeners.https.certSecretName | quote }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}
