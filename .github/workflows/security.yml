@@ -16,6 +16,27 @@ permissions:
   security-events: write   # CodeQL SARIF upload
 
 jobs:
+  s4-blast-radius-model-gate:
+    # Story X.1 / ISI-2240 (arch §4.3, §17.1, S4, NFR-SEC1). DESIGN-LEVEL model gate: falsifies the
+    # isolation *model* (hand-authored contained vs porous postures), not the live cluster. Pure
+    # stdlib, deterministic, no cluster needed. exit 0 = hostile Run contained + differential teeth
+    # intact. Anchoring to parsed config/ manifests + the runtime kind e2e are tracked on ISI-2245.
+    name: S4 blast-radius model gate (Story X.1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - id: guard
+        run: |
+          f=hack/security/hostile-run-blast-radius-check.py
+          if [ -f "$f" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          python-version: '3.x'
+      - name: Run hostile-Run blast-radius falsification harness
+        if: steps.guard.outputs.present == 'true'
+        run: python3 hack/security/hostile-run-blast-radius-check.py
+
   govulncheck:
     name: govulncheck (Go modules)
     runs-on: [self-hosted, linux, x64]
