@@ -19,11 +19,17 @@ ARM="${S4_ARM:-conformance}"
 REASON="8.7d BFF read gate not deployable in kind yet (needs the Epic 9 apiserver install); semantics pinned by blast-radius-check.py meanwhile"
 
 discover_url() {
-  if [ -n "${BLAST_RADIUS_APISERVER_URL:-}" ]; then
-    echo "$BLAST_RADIUS_APISERVER_URL"
-    return 0
-  fi
-  deployable 'apiserver|ksquad' | head -1 | awk '{print "http://"$2}' 2>/dev/null
+  # ONLY an explicitly-wired real apiserver activates S4-5. Auto-discovery is
+  # deliberately NOT attempted: the fixture ships stub Services in ksquad-infra
+  # (model-internal, control-plane) that are NOT the 8.7d BFF apiserver. The old
+  # `deployable 'apiserver|ksquad'` false-matched those stubs — 'ksquad' hits the
+  # ksquad-infra namespace column, and `kubectl get deploy,sts,svc` renders the
+  # NAME column as `deployment.apps/<x>`, so awk built the bogus target
+  # `http://deployment.apps/control-plane`. That defeated the AC8 skip gate: the
+  # case ran against a stub and its positive control (owner 200) always failed.
+  # Until the Epic 9 install path makes a real apiserver kind-deployable, this
+  # stays empty → the case self-skips; the Epic 9 wiring sets BLAST_RADIUS_APISERVER_URL.
+  echo "${BLAST_RADIUS_APISERVER_URL:-}"
 }
 
 URL=$(discover_url || true)
