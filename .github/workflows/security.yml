@@ -32,7 +32,12 @@ jobs:
     # stdlib, deterministic, no cluster needed. exit 0 = hostile Run contained + differential teeth
     # intact. Anchoring to parsed config/ manifests + the runtime kind e2e are tracked on ISI-2245.
     name: S4 blast-radius model gate (Story X.1)
-    runs-on: ubuntu-latest
+    # Self-hosted, like every other Security job: GitHub-hosted `ubuntu-latest` runners are not
+    # available to this private repo (CI migrated to the gitrunner fleet, ISI-2602/2644), so a job
+    # left on ubuntu-latest never provisions — it fails in ~2s with zero steps (looks like a red
+    # assertion but the harness never ran). setup-python below supplies python3 on the runner.
+    # (ISI-2656; do not revert to ubuntu-latest.)
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v5
       - id: guard
