@@ -54,14 +54,14 @@ Get a squad running on any Kubernetes 1.31+ cluster:
 
 ```bash
 # 1. Add the Helm repo and install the operator + console
-helm repo add ksquad https://charts.ksquad.io
-helm install ksquad ksquad/ksquad --namespace ksquad-system --create-namespace
+helm repo add ksquad https://charts.k8squad.io
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
 
 # 2. Apply the quickstart squad (a Team, an Agent, and a Project)
-kubectl apply -f https://ksquad.io/quickstart.yaml
+kubectl apply -f https://charts.k8squad.io/quickstart.yaml
 
 # 3. Open the console
-kubectl port-forward -n ksquad-system svc/ksquad-console 8080:80
+kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 # → http://localhost:8080
 ```
 
