@@ -1,0 +1,66 @@
+name: Helm Release
+
+# Publish the control-plane Helm chart to the gh-pages Helm repo served at
+# https://charts.k8squad.io, and publish the single-file quickstart squad to
+# https://charts.k8squad.io/quickstart.yaml (ISI-2632).
+#
+# The endpoints go live once GitHub Pages is enabled (source: gh-pages branch)
+# and DNS CNAME charts.k8squad.io -> <owner>.github.io is created — both are
+# repo-admin / DNS-owner tasks. This workflow produces and pushes the content
+# to gh-pages; enabling Pages + DNS is the one-time human unblock.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'config/helm/**'
+      - 'config/crd/bases/**'
+      - 'hack/quickstart/**'
+      - 'hack/gen-quickstart.sh'
+      - 'hack/publish-helm-repo.sh'
+      - '.github/workflows/helm-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write        # push to gh-pages
+
+concurrency:
+  group: helm-release
+  cancel-in-progress: false
+
+env:
+  CHART_DIR: config/helm
+  PAGES_DOMAIN: charts.k8squad.io
+
+jobs:
+  release:
+    name: package + publish helm repo
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Sync generated CRDs into the chart
+        run: make helm-sync-crds
+
+      - name: Lint chart
+        run: helm lint "$CHART_DIR"
+
+      - name: Package chart
+        run: |
+          mkdir -p .cr-release-packages
+          helm package "$CHART_DIR" -d .cr-release-packages
+
+      - name: Build quickstart.yaml
+        run: make quickstart
+
+      - name: Publish chart index + quickstart to gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash hack/publish-helm-repo.sh

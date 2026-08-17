@@ -45,6 +45,15 @@ helm-lint: ## Lint the control-plane Helm chart.
 helm-template: ## Render the control-plane Helm chart locally (CRDs included, no cluster needed).
 	$(HELM) template k8squad $(CHART_DIR) --include-crds
 
+.PHONY: helm-package
+helm-package: helm-sync-crds ## Package the chart into .cr-release-packages/ (what CI publishes to charts.k8squad.io).
+	mkdir -p .cr-release-packages
+	$(HELM) package $(CHART_DIR) -d .cr-release-packages
+
+.PHONY: quickstart
+quickstart: ## Assemble dist/quickstart.yaml (the quickstart squad published to charts.k8squad.io/quickstart.yaml).
+	CHART_DIR=$(CHART_DIR) bash hack/gen-quickstart.sh
+
 .PHONY: fmt
 fmt: ## Run go fmt against code.
 	go fmt ./...

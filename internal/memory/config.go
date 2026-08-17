@@ -25,6 +25,7 @@ type Config struct {
 // DefaultConfig returns the zero-config defaults; env/flags/file override these.
 func DefaultConfig() Config {
 	return Config{
+		// #nosec G101 -- localhost dev/default DSN with the stock Postgres password, not a real credential; env/flags/file override it in any real deployment.
 		DatabaseURL:   "postgres://postgres:password@localhost:5432/ksquad?sslmode=disable",
 		EmbedderModel: "local-default",
 		HTTPPort:      8080,

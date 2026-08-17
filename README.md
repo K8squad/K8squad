@@ -37,11 +37,17 @@ formation-keeping.
 
 <div align="center">
 
+**Fleet dashboard** — operator overview: fleet health + live agent assignments across every namespace
+<img src="docs/media/console-fleet-dashboard.png" alt="KSquad fleet dashboard — operator overview" width="900">
+
 **Project dashboard** — everything scoped to one project, live activity over SSE
 <img src="docs/media/console-project-dashboard.png" alt="KSquad project dashboard" width="900">
 
-**Work-item Kanban** — parent → sub-ticket tree, status, assignee, comments & artifacts
-<img src="docs/media/console-tickets-kanban.png" alt="KSquad tickets / Kanban board" width="900">
+**Work-item tree** — parent → sub-ticket tree, status, assignee, comments & artifacts
+<img src="docs/media/console-tickets-kanban.png" alt="KSquad work-item tree / tickets board" width="900">
+
+**Live run stream** — the coordination record streaming over SSE: checkout → comment → handoff → artifact
+<img src="docs/media/console-run-stream.png" alt="KSquad live run stream over SSE" width="900">
 
 **Agents org** — the same squad, organized by role and by leadership, with live status
 <img src="docs/media/console-agents-org.png" alt="KSquad agents role org" width="900">
@@ -54,14 +60,14 @@ Get a squad running on any Kubernetes 1.31+ cluster:
 
 ```bash
 # 1. Add the Helm repo and install the operator + console
-helm repo add ksquad https://charts.ksquad.io
-helm install ksquad ksquad/ksquad --namespace ksquad-system --create-namespace
+helm repo add ksquad https://charts.k8squad.io
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
 
 # 2. Apply the quickstart squad (a Team, an Agent, and a Project)
-kubectl apply -f https://ksquad.io/quickstart.yaml
+kubectl apply -f https://charts.k8squad.io/quickstart.yaml
 
 # 3. Open the console
-kubectl port-forward -n ksquad-system svc/ksquad-console 8080:80
+kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 # → http://localhost:8080
 ```
 

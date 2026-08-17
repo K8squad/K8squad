@@ -9,10 +9,10 @@ type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.29.0-0"
-home: https://ksquad.io
+home: https://k8squad.io
 sources:
   - https://github.com/K8squad/K8squad
-icon: https://ksquad.io/img/banner-on-dark.png
+icon: https://k8squad.io/img/banner-on-dark.png
 keywords:
   - agents
   - orchestration
@@ -20,4 +20,4 @@ keywords:
   - operators
 maintainers:
   - name: K8squad Authors
-    url: https://ksquad.io
+    url: https://k8squad.io

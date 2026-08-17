@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PgVectorStore is the v1 MemoryBackend: it integrates pgvector as the source-of-truth store (AC5).
+// PgVectorStore is the v1 Backend: it integrates pgvector as the source-of-truth store (AC5).
 // Semantic search is pushed into Postgres via the `<=>` cosine operator over the hnsw ANN index — the
 // service never pulls rows and cosines them in-process (OQ10/ADR-004). Compile-time seam check below.
 type PgVectorStore struct {
@@ -18,7 +18,7 @@ type PgVectorStore struct {
 	dim  int
 }
 
-var _ MemoryBackend = (*PgVectorStore)(nil)
+var _ Backend = (*PgVectorStore)(nil)
 
 // Open connects to Postgres, applies the embedded migrations, and fails closed unless pgvector is
 // present and the schema is at the expected version (AC1). It never degrades to an app-side store.
@@ -183,7 +183,7 @@ func (s *PgVectorStore) Close() {
 }
 
 // Pool exposes the underlying pool for integration tests and future co-located schemas (discussion,
-// §7.5). Not part of the MemoryBackend seam.
+// §7.5). Not part of the Backend seam.
 func (s *PgVectorStore) Pool() *pgxpool.Pool { return s.pool }
 
 // encodeVector renders a float32 slice as a pgvector text literal ("[0.1,0.2,...]"). Bound as a text
