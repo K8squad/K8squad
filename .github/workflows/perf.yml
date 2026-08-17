@@ -1,0 +1,221 @@
+name: Perf Regression Gates (L3)
+
+# Story 14.3 (ISI-2700 / ISI-2706). L3 performance regression gates on the four
+# headline SLIs, asserting RELATIVE thresholds vs `main` — never brittle absolute
+# numbers (absolute curves land later under ISI-2113, additive):
+#
+#   P1  claim latency (S9 / NFR-PERF1)      — pkg/coord §6.2 SKIP LOCKED claim, real PG
+#   P2  warm-pool ready-count convergence    — pkg/warmpool sizing hot-path, pure compute
+#   P3  SSE throughput, zero dropped events  — skip-with-reason: apiserver bus not landed
+#   P4  outbox delivery-lag isolation (§17.4)— write p95 sick/healthy ratio, branch-internal
+#
+# This is a NIGHTLY + release + manual lane, NOT a blocking PR check: perf noise
+# belongs off the PR path (matches e2e.yml / build-images.yml). The gate LOGIC
+# teeth (pkg/perfgate — the 1:1 Go mirror of perf-regression-gate-check.py, whose
+# M1-M4 mutations each re-RED it) run every time and need no baseline or Postgres.
+# The relative-regression comparison rides a cached `main` baseline; tolerances in
+# .github/perf/gate.py are kept byte-for-byte equal to pkg/perfgate's constants.
+# Every leg that cannot measure its SLI SKIPS WITH A PRINTED REASON — never a
+# silent drop (Epic-14 convention, AC7).
+
+on:
+  schedule:
+    - cron: '0 4 * * *'      # nightly — offset one hour from spine-chaos (03:00)
+  push:
+    tags: ['v*']             # release tags
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  # Self-hosted-runner memory caps (ISI-2614, parent ISI-2612) — same as ci.yml.
+  GOMAXPROCS: "1"
+  GOGC: "30"
+  GOMEMLIMIT: "3800MiB"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Gate teeth — provable EVERY run, no baseline, no Postgres. If a tooth is
+  # filed off in pkg/perfgate/gate.go, the matching TestPerfGate subtest goes RED.
+  # ---------------------------------------------------------------------------
+  gate-logic:
+    name: gate teeth (pkg/perfgate)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if perfgate source absent
+        id: guard
+        run: |
+          if [ ! -d pkg/perfgate ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pkg/perfgate not present yet — gate-logic skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: P1-P4 verdict table (mutations M1-M4 re-RED)
+        if: steps.guard.outputs.present == 'true'
+        run: go test -v ./pkg/perfgate/
+
+  # ---------------------------------------------------------------------------
+  # P1 (claim latency) + P4 (outbox write-path isolation) — need a REAL Postgres.
+  # Mirrors the spine-chaos.yml service + DATABASE_URL wiring exactly (closes the
+  # DATABASE_URL-export gap flagged for P1/P4). Benchmarks carry the `chaos` tag.
+  # ---------------------------------------------------------------------------
+  bench-p1-p4:
+    name: P1 claim + P4 outbox (real Postgres)
+    runs-on: [self-hosted, linux, x64]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: perf
+          # trust auth: ephemeral, localhost-bound, throwaway perf data, no secret
+          # to leak — same rationale as spine-chaos.yml.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if coord source absent
+        id: guard
+        run: |
+          if [ ! -d pkg/coord ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pkg/coord absent — P1/P4 skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run P1/P4 benchmarks (chaos tag, real PG, DATABASE_URL exported)
+        if: steps.guard.outputs.present == 'true'
+        env:
+          # Under -tags=chaos the benchmark FATALs on a missing DSN via dsnOrFatal
+          # for the correctness tests; the P1/P4 benches use perfDSNOrSkip (an AC7
+          # skip-with-reason). The service DSN is always present here — no password,
+          # trust auth (see service comment).
+          DATABASE_URL: postgres://postgres@localhost:5432/perf?sslmode=disable
+        run: |
+          go test -tags=chaos -run '^$' \
+            -bench 'BenchmarkP1ClaimLatency|BenchmarkP4OutboxDeliveryLag' \
+            -benchtime=200x -count=6 ./pkg/coord/ | tee new-p1p4.txt
+      - name: Restore cached main baseline (P1)
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: base-p1p4.txt
+          # Exact key never pre-exists (run_id is unique) → always falls back to the
+          # most recent prefix match, i.e. the last nightly's baseline. A plain
+          # immutable key would freeze the baseline at its first-ever value.
+          key: perf-baseline-p1p4-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-baseline-p1p4-v1-
+      - name: Relative gate — P1 p95 drift <= +20%, P4 iso-ratio <= 1.5x
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          args="--new new-p1p4.txt --kind p1p4"
+          [ -f base-p1p4.txt ] && args="$args --baseline base-p1p4.txt"
+          python3 .github/perf/gate.py $args
+      - name: Refresh cached main baseline (nightly on main only)
+        if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
+        run: cp new-p1p4.txt base-p1p4.txt
+      - name: Save baseline cache
+        if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
+        uses: actions/cache/save@v4
+        with:
+          path: base-p1p4.txt
+          key: perf-baseline-p1p4-v1-${{ github.run_id }}
+      - name: Upload P1/P4 bench report
+        if: always() && steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: perf-p1p4-report
+          path: new-p1p4.txt
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # P2 (warm-pool convergence) — pure compute, no Postgres, no build tag. Kept in
+  # its own job so a warm-pool regression is not masked by a DB-job skip.
+  # ---------------------------------------------------------------------------
+  bench-p2:
+    name: P2 warm-pool convergence (pure)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if warmpool source absent
+        id: guard
+        run: |
+          if [ ! -d pkg/warmpool ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pkg/warmpool absent — P2 skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run P2 benchmark
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          go test -run '^$' -bench 'BenchmarkP2WarmPoolConvergence' \
+            -benchtime=2000x -count=6 ./pkg/warmpool/ | tee new-p2.txt
+      - name: Restore cached main baseline (P2)
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: base-p2.txt
+          key: perf-baseline-p2-v1-${{ github.run_id }}
+          restore-keys: |
+            perf-baseline-p2-v1-
+      - name: Relative gate — P2 sizing hot-path drift <= +50%
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          args="--new new-p2.txt --kind p2"
+          [ -f base-p2.txt ] && args="$args --baseline base-p2.txt"
+          python3 .github/perf/gate.py $args
+      - name: Refresh cached main baseline (nightly on main only)
+        if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
+        run: cp new-p2.txt base-p2.txt
+      - name: Save baseline cache
+        if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
+        uses: actions/cache/save@v4
+        with:
+          path: base-p2.txt
+          key: perf-baseline-p2-v1-${{ github.run_id }}
+
+  # ---------------------------------------------------------------------------
+  # P3 (SSE throughput / zero dropped events) — skip-with-reason. The emit->deliver
+  # progress bus lives behind the apiserver (cmd/apiserver, Epic 8.2), not yet in
+  # code. BenchmarkP3SSEThroughput self-skips; pkg/perfgate.P3Gate already holds
+  # the zero-drop + latency-drift teeth against fixed vectors (TestPerfGate). This
+  # job makes the skip VISIBLE in the lane rather than silently absent.
+  # ---------------------------------------------------------------------------
+  bench-p3:
+    name: P3 SSE throughput (skip-with-reason)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: P3 status
+        run: |
+          if grep -rq 'text/event-stream' --include='*.go' . 2>/dev/null; then
+            echo "::notice::P3: SSE progress bus source detected — wire BenchmarkP3SSEThroughput to it (remove the self-skip)."
+          else
+            echo "::notice::P3 skip-with-reason: SSE progress bus (apiserver emit->deliver, Epic 8.2) not in code yet — no publish/subscribe surface to measure. Gate teeth held by pkg/perfgate.P3Gate / TestPerfGate."
+          fi

@@ -103,7 +103,7 @@ const (
 // Fixture: real Postgres (CNPG in kind, provided by spine-chaos.yml), the
 // Story 2.1 coord schema, and a fresh SUT bound to it.
 // ---------------------------------------------------------------------------
-func dsnOrFatal(t *testing.T) string {
+func dsnOrFatal(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -152,7 +152,7 @@ func freshSchema(t *testing.T, db *sql.DB, n int) {
 	}
 }
 
-func openDB(t *testing.T, dsn string) *sql.DB {
+func openDB(t testing.TB, dsn string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -209,7 +209,7 @@ func TestSpine(t *testing.T) {
 // precondition (AC1/ISI-2200). Override the search dir with COORD_MIGRATIONS_DIR
 // (the CI checkout runs the test from ./pkg/coord, so the default is repo-root
 // relative).
-func coordMigrationSQL(t *testing.T) string {
+func coordMigrationSQL(t testing.TB) string {
 	t.Helper()
 	dir := os.Getenv("COORD_MIGRATIONS_DIR")
 	candidates := []string{}
@@ -836,7 +836,7 @@ func fenceOf(t *testing.T, db *sql.DB, item int) int64 {
 	return f
 }
 
-func mustExec(t *testing.T, db *sql.DB, q string, args ...any) {
+func mustExec(t testing.TB, db *sql.DB, q string, args ...any) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(), q, args...); err != nil {
 		t.Fatalf("exec %q: %v", q, err)

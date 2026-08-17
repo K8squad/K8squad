@@ -53,7 +53,7 @@ func prodRunUUID(w int) string {
 // resetProdSchema re-applies the SHIPPED migration into a clean coord schema —
 // the teeth bite the real DDL (triggers, PKs, append-only audit) exactly as
 // production provisions them.
-func resetProdSchema(t *testing.T, db *sql.DB) {
+func resetProdSchema(t testing.TB, db *sql.DB) {
 	t.Helper()
 	mustExec(t, db, `DROP SCHEMA IF EXISTS coord CASCADE`)
 	mustExec(t, db, coordMigrationSQL(t))
@@ -63,7 +63,7 @@ func resetProdSchema(t *testing.T, db *sql.DB) {
 // provision trigger gave every one of them exactly one unheld checkout row —
 // the structural "exactly one active claim per item" invariant this story
 // relies on instead of seeding claim rows by hand.
-func seedProdItems(t *testing.T, db *sql.DB, n int) {
+func seedProdItems(t testing.TB, db *sql.DB, n int) {
 	t.Helper()
 	mustExec(t, db, `
 		INSERT INTO coord.work_item (project_id, title, state, created_by)
