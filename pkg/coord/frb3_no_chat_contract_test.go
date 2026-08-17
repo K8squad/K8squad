@@ -307,9 +307,23 @@ func TestFRB3_NoChatTableInAnyMigration(t *testing.T) {
 	require.NotEmpty(t, matches, "no CREATE TABLE found — scanner misconfigured")
 	for _, m := range matches {
 		table := strings.Trim(m[1], `"`)
-		bare := table
+		schema, bare := "", table
 		if i := strings.LastIndex(bare, "."); i >= 0 {
-			bare = bare[i+1:]
+			schema, bare = bare[:i], bare[i+1:]
+		}
+		// FR-B3 forbids an agent-to-agent COORDINATION channel, not every table
+		// whose name reads as conversational. The `discussion` schema is the
+		// sanctioned Per-Project Discussion Room (Arch §7.5, Story 10.1 / ISI-2709)
+		// — "conversation, not custody": it is structurally coordination-free
+		// (0004_discussion_schema.sql carries NO claim/lease/fence_token/state/
+		// holder/assignee/status column and no custody-transfer expression, proven
+		// by AC4), so custody CANNOT move through it. Handoff still happens only via
+		// coord.comment + a work_item state change (§6.1, §8.4). We allowlist the
+		// whole `discussion` schema (not just today's tables) so the guard keeps its
+		// teeth for any un-namespaced or `coord.`-schema chat-shaped table while
+		// permitting this architecturally-blessed human/agent room surface.
+		if schema == "discussion" {
+			continue
 		}
 		require.NotRegexp(t, chatShapeRe, bare,
 			"FR-B3 violation: table %s is chat-shaped (migration set). There is NO agent-to-agent message store: handoff = comment + state change on coord.work_item (§6.1). If this table is a HUMAN-facing channel (console notifications etc.), rename it so it cannot read as agent chat (e.g. notification, announcement).", table)

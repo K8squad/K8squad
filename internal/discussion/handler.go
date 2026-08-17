@@ -1,7 +1,9 @@
 package discussion
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,32 +12,87 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// Handler provides REST endpoints for discussion rooms.
+// ============================================================================
+// Auth seam — provenance comes from the authenticated context, NEVER the body
+// ============================================================================
+
+type ctxKey struct{}
+
+// WithAuth attaches the caller's server-derived AuthorContext to a request context. In production the
+// §13 BFF authz middleware (BFFAuthz below — the same deny-by-default choke point every console read
+// model passes) populates this from the session/token/Run; tests inject it directly. The HTTP handlers
+// below read the writer's identity from HERE and ignore any author_* in the request body (AC3).
+func WithAuth(ctx context.Context, a AuthorContext) context.Context {
+	return context.WithValue(ctx, ctxKey{}, a)
+}
+
+// AuthFromContext returns the AuthorContext placed by the authz middleware, if any.
+func AuthFromContext(ctx context.Context) (AuthorContext, bool) {
+	a, ok := ctx.Value(ctxKey{}).(AuthorContext)
+	return a, ok
+}
+
+// Authenticator is the seam the §13 BFF supplies: it turns an inbound request (session cookie, bearer
+// token, or Run identity) into the server-derived AuthorContext (principal + Team scope). It is the
+// ONLY place a caller's identity/tenancy enters the discussion surface — the handlers never read it
+// from the body. `ok=false` ⇒ unauthenticated (the middleware answers 401 and the request never
+// reaches a handler, so provenance-stamping fails closed).
+type Authenticator interface {
+	Authenticate(r *http.Request) (AuthorContext, bool)
+}
+
+// BFFAuthz is the §13 authz choke point as mux middleware. Every discussion route is mounted behind it
+// (see Mount); a request with no valid AuthorContext is rejected with 401 BEFORE any handler or store
+// call runs (deny-by-default). On success the AuthorContext is stamped onto the request context, which
+// is the SOLE identity source the write path trusts (AC3).
+func BFFAuthz(auth Authenticator) mux.MiddlewareFunc {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			a, ok := auth.Authenticate(r)
+			if !ok || a.Principal == "" {
+				writeError(w, http.StatusUnauthorized, "unauthenticated")
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(WithAuth(r.Context(), a)))
+		})
+	}
+}
+
+// ============================================================================
+// Handler
+// ============================================================================
+
+// Handler serves the discussion REST surface (§7.5 API). Mounted behind the §13 BFF authz choke point,
+// which supplies the AuthorContext (principal + Team scope) — this handler never trusts the body for
+// identity or tenancy.
 type Handler struct {
 	store *Store
 }
 
-// NewHandler creates an HTTP handler group for discussion rooms.
-func NewHandler(store *Store) *Handler {
-	return &Handler{store: store}
+// NewHandler creates the discussion HTTP handler group.
+func NewHandler(store *Store) *Handler { return &Handler{store: store} }
+
+// Mount wires the discussion surface onto a parent router at the canonical §7.5 prefix
+// /api/projects/{projectId}/discussion, behind the §13 BFF authz choke point. This is the one call the
+// apiserver makes; `auth` is the BFF's Authenticator. The returned subrouter is the gated group.
+func (h *Handler) Mount(parent *mux.Router, auth Authenticator) *mux.Router {
+	sub := parent.PathPrefix("/api/projects/{projectId}/discussion").Subrouter()
+	sub.Use(BFFAuthz(auth))
+	h.Register(sub)
+	return sub
 }
 
-// Register wires routes onto a mux subrouter.
-// All routes are prefixed with /api/projects/{projectId}/rooms.
+// Register wires the five §7.5 routes (plus the 10.2 memory-index bridge) onto a subrouter already
+// scoped to /api/projects/{projectId}/discussion. Use Mount to also install the authz choke point; a
+// bare Register is for tests that inject AuthorContext directly.
 func (h *Handler) Register(r *mux.Router) {
-	r.HandleFunc("/rooms", h.listRooms).Methods("GET")
-	r.HandleFunc("/rooms", h.createRoom).Methods("POST")
-	// Literal /rooms/* routes MUST register before the /rooms/{roomId} var route:
-	// gorilla/mux matches in registration order, so {roomId} would otherwise
-	// capture "search"/"memory-index" and their handlers would be unreachable.
-	r.HandleFunc("/rooms/search", h.searchMessages).Methods("GET")
-	r.HandleFunc("/rooms/memory-index", h.memoryIndex).Methods("GET")
-	r.HandleFunc("/rooms/{roomId}", h.getRoom).Methods("GET")
-	r.HandleFunc("/rooms/{roomId}", h.archiveRoom).Methods("DELETE")
-	r.HandleFunc("/rooms/{roomId}/messages", h.getMessages).Methods("GET")
-	r.HandleFunc("/rooms/{roomId}/messages", h.postMessage).Methods("POST")
-	r.HandleFunc("/rooms/{roomId}/messages/{messageId}", h.editMessage).Methods("PATCH")
-	r.HandleFunc("/rooms/{roomId}/messages/{messageId}", h.deleteMessage).Methods("DELETE")
+	r.HandleFunc("/threads", h.listThreads).Methods(http.MethodGet)                                      // 1. list threads
+	r.HandleFunc("/threads", h.openThread).Methods(http.MethodPost)                                      // 2. open thread
+	r.HandleFunc("/threads/{threadId}", h.getThread).Methods(http.MethodGet)                             // 3. get thread + messages
+	r.HandleFunc("/threads/{threadId}/messages", h.postMessage).Methods(http.MethodPost)                 // 4. post / reply
+	r.HandleFunc("/threads/{threadId}/messages/{messageId}", h.retractMessage).Methods(http.MethodPatch) // 5. soft-retract
+	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
+	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 }
 
 // ============================================================================
@@ -52,9 +109,8 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-func parseUUID(r *http.Request, key string) (uuid.UUID, bool) {
-	v := mux.Vars(r)[key]
-	id, err := uuid.Parse(v)
+func pathUUID(r *http.Request, key string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(mux.Vars(r)[key])
 	if err != nil {
 		return uuid.Nil, false
 	}
@@ -62,224 +118,228 @@ func parseUUID(r *http.Request, key string) (uuid.UUID, bool) {
 }
 
 func queryInt(r *http.Request, key string, def int) int {
-	s := r.URL.Query().Get(key)
-	if s == "" {
-		return def
+	if s := r.URL.Query().Get(key); s != "" {
+		if n, err := strconv.Atoi(s); err == nil {
+			return n
+		}
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return def
+	return def
+}
+
+// requireAuth extracts the server-stamped AuthorContext; without it the request is unauthenticated.
+// (Under Mount the BFFAuthz middleware already guarantees this — requireAuth is defence-in-depth for a
+// handler invoked via a bare Register in tests.)
+func requireAuth(w http.ResponseWriter, r *http.Request) (AuthorContext, bool) {
+	auth, ok := AuthFromContext(r.Context())
+	if !ok || auth.Principal == "" {
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return AuthorContext{}, false
 	}
-	return n
+	return auth, true
+}
+
+// writeStoreErr maps store errors to status codes. Tenancy misses are 404-not-403 (AC5).
+func writeStoreErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrNotAuthor):
+		writeError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, ErrAlreadyRetracted):
+		writeError(w, http.StatusConflict, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 // ============================================================================
-// Room endpoints
+// Thread endpoints
 // ============================================================================
 
-func (h *Handler) listRooms(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseUUID(r, "projectId")
+func (h *Handler) listThreads(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid projectId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	rooms, err := h.store.ListProjectRooms(r.Context(), projectID)
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	threads, err := h.store.ListThreads(r.Context(), projectID, auth.TeamID,
+		queryInt(r, "limit", 50), queryInt(r, "offset", 0))
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeStoreErr(w, err)
 		return
 	}
-	writeJSON(w, 200, rooms)
+	if threads == nil {
+		threads = []Thread{} // an addressable, empty room the instant the Project exists (R1)
+	}
+	writeJSON(w, http.StatusOK, threads)
 }
 
-func (h *Handler) createRoom(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseUUID(r, "projectId")
-	if !ok {
-		writeError(w, 400, "invalid projectId")
-		return
-	}
-	var body struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, 400, "invalid JSON body")
-		return
-	}
-	room, err := h.store.EnsureRoom(r.Context(), projectID, body.Name)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 201, room)
+// openThreadReq deliberately carries NO author_* fields — the writer's identity is server-stamped from
+// the authenticated context, so an author supplied in the body is structurally un-representable (AC3).
+type openThreadReq struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 
-func (h *Handler) getRoom(w http.ResponseWriter, r *http.Request) {
-	roomID, ok := parseUUID(r, "roomId")
+func (h *Handler) openThread(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid roomId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	room, err := h.store.GetRoom(r.Context(), roomID)
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	// The request struct carries NO author_* field, so any author/provenance value in the body is
+	// silently ignored by the decoder — it has no path to the stored row. Provenance is stamped from
+	// `auth` alone, which is what makes impersonation un-representable (AC3).
+	var req openThreadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	thread, err := h.store.OpenThread(r.Context(), projectID, auth, req.Title, req.Body)
 	if err != nil {
-		writeError(w, 404, err.Error())
+		writeStoreErr(w, err)
 		return
 	}
-	writeJSON(w, 200, room)
+	writeJSON(w, http.StatusCreated, thread)
 }
 
-func (h *Handler) archiveRoom(w http.ResponseWriter, r *http.Request) {
-	roomID, ok := parseUUID(r, "roomId")
+func (h *Handler) getThread(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid roomId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	if err := h.store.ArchiveRoom(r.Context(), roomID); err != nil {
-		writeError(w, 404, err.Error())
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "archived"})
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	thread, err := h.store.GetThread(r.Context(), projectID, auth.TeamID, threadID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, thread)
 }
 
 // ============================================================================
 // Message endpoints
 // ============================================================================
 
-func (h *Handler) getMessages(w http.ResponseWriter, r *http.Request) {
-	roomID, ok := parseUUID(r, "roomId")
-	if !ok {
-		writeError(w, 400, "invalid roomId")
-		return
-	}
-	limit := queryInt(r, "limit", 50)
-	offset := queryInt(r, "offset", 0)
-	depth := queryInt(r, "threadDepth", 1)
-
-	messages, err := h.store.GetMessages(r.Context(), roomID, limit, offset, depth)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, messages)
+// postMessageReq — again, no author_* fields: provenance is server-stamped (AC3).
+type postMessageReq struct {
+	Body     string  `json:"body"`
+	ParentID *string `json:"parentId,omitempty"`
 }
 
 func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
-	roomID, ok := parseUUID(r, "roomId")
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid roomId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	// Author provenance is server-stamped from the authenticated principal —
-	// never from the request body — so a caller cannot impersonate another
-	// agent/human. Fail closed if the request is unauthenticated.
-	principal, ok := PrincipalFromContext(r.Context())
+	threadID, ok := pathUUID(r, "threadId")
 	if !ok {
-		writeError(w, 401, "unauthenticated")
+		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	var msg Message
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		writeError(w, 400, "invalid JSON body")
+	auth, ok := requireAuth(w, r)
+	if !ok {
 		return
 	}
-	msg.RoomID = roomID
-	// Overwrite any client-supplied author fields with the trusted principal.
-	msg.AuthorID = principal.ID
-	msg.AuthorType = principal.Type
-	msg.AuthorName = principal.Name
-	posted, err := h.store.PostMessage(r.Context(), roomID, msg)
-	if err != nil {
-		switch err {
-		case ErrRoomArchived:
-			writeError(w, 409, err.Error())
-		case ErrParentMismatch, ErrMessageNotFound:
-			writeError(w, 400, err.Error())
-		default:
-			writeError(w, 500, err.Error())
+	// No author_* field on the struct — a body-supplied author is ignored (AC3); provenance is stamped
+	// from `auth`.
+	var req postMessageReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var parentID *uuid.UUID
+	if req.ParentID != nil && *req.ParentID != "" {
+		pid, err := uuid.Parse(*req.ParentID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid parentId")
+			return
 		}
-		return
+		parentID = &pid
 	}
-	writeJSON(w, 201, posted)
-}
-
-func (h *Handler) editMessage(w http.ResponseWriter, r *http.Request) {
-	messageID, ok := parseUUID(r, "messageId")
-	if !ok {
-		writeError(w, 400, "invalid messageId")
-		return
-	}
-	var body struct {
-		Body string `json:"body"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, 400, "invalid JSON body")
-		return
-	}
-	edited, err := h.store.EditMessage(r.Context(), messageID, body.Body)
+	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID)
 	if err != nil {
-		writeError(w, 404, err.Error())
+		writeStoreErr(w, err)
 		return
 	}
-	writeJSON(w, 200, edited)
+	writeJSON(w, http.StatusCreated, msg)
 }
 
-func (h *Handler) deleteMessage(w http.ResponseWriter, r *http.Request) {
-	messageID, ok := parseUUID(r, "messageId")
+// retractMessage soft-retracts a message (§7.4). Author-or-admin only; there is no hard-delete route.
+func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid messageId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	if err := h.store.DeleteMessage(r.Context(), messageID); err != nil {
-		writeError(w, 404, err.Error())
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "deleted"})
+	messageID, ok := pathUUID(r, "messageId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid messageId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	if err := h.store.Retract(r.Context(), projectID, auth.TeamID, threadID, messageID, auth); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "retracted"})
 }
 
 // ============================================================================
-// Search + Memory Index
+// Memory-index bridge (10.2 consumer)
 // ============================================================================
-
-func (h *Handler) searchMessages(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseUUID(r, "projectId")
-	if !ok {
-		writeError(w, 400, "invalid projectId")
-		return
-	}
-	q := r.URL.Query().Get("q")
-	if q == "" {
-		writeError(w, 400, "missing 'q' query parameter")
-		return
-	}
-	limit := queryInt(r, "limit", 20)
-	results, err := h.store.SearchMessages(r.Context(), projectID, q, limit)
-	if err != nil {
-		writeError(w, 500, err.Error())
-		return
-	}
-	writeJSON(w, 200, results)
-}
 
 func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseUUID(r, "projectId")
+	projectID, ok := pathUUID(r, "projectId")
 	if !ok {
-		writeError(w, 400, "invalid projectId")
+		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	limit := queryInt(r, "limit", 200)
-	since := r.URL.Query().Get("since")
-	var sinceTime time.Time
-	if since != "" {
-		t, err := time.Parse(time.RFC3339, since)
-		if err == nil {
-			sinceTime = t
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	since := time.Unix(0, 0)
+	if s := r.URL.Query().Get("since"); s != "" {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			since = t
 		}
 	}
-	if sinceTime.IsZero() {
-		sinceTime = time.Unix(0, 0)
-	}
-	records, err := h.store.ForMemoryIndex(r.Context(), projectID, sinceTime, limit)
+	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200))
 	if err != nil {
-		writeError(w, 500, err.Error())
+		writeStoreErr(w, err)
 		return
 	}
-	writeJSON(w, 200, records)
+	if records == nil {
+		records = []MemoryIndexable{}
+	}
+	writeJSON(w, http.StatusOK, records)
 }

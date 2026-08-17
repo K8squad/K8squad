@@ -24,6 +24,8 @@ SQL migrations** applied in filename order.
 |--------:|------|--------|--------------|
 | 0001 | `0001_coord_schema.sql` | `coord` — `work_item`, `comment`, `artifact`, `claim`, `audit_log` | Story 2.1 (ISI-2191), Arch §6.1 |
 | 0002 | `0002_coord_dispatch.sql` | `coord` — `dispatch` (§6.4 idempotent-dispatch marker for the coordinator loop) | Story 2.9 (ISI-2526), Arch §6.4/FR-B3 |
+| 0003 | `0003_coord_outbox.sql` | `coord` — `outbox` (§12.1 transactional domain-event relay) | Story 12.1 (ISI-2260), Arch §12.1 |
+| 0004 | `0004_discussion_schema.sql` | `discussion` — `thread`, `message` (per-Project room; append-only, server-stamped provenance, NO room table) | Story 10.1 (ISI-2702/ISI-2709), Arch §7.5/ADR-019 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 
