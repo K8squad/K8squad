@@ -1,0 +1,172 @@
+/* globals.css — token-driven shell styling (story 8.9).
+ *
+ * Every color is a CSS var keyed off [data-theme]; the toggle flips the attribute and the whole
+ * shell re-tints from the SAME token roles (dark ⇄ light). The accent and reserved status hues
+ * are theme-invariant (defined once, referenced by both themes). This mirrors lib/theme.ts and
+ * docs/bmad/ux/console_kit.py. */
+
+:root {
+  /* Theme-invariant brand + status channel (identical in both themes). */
+  --accent: #3d7dff;
+  --status-running: #34d399;
+  --status-paused: #fbbf24;
+  --status-blocked: #fb7185;
+  --status-idle: #64748b;
+
+  --radius: 10px;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+/* Dark: navy canvas, light text (default). */
+[data-theme='dark'] {
+  --canvas: #0b1220;
+  --surface: #111a2e;
+  --border: #22304d;
+  --text-1: #e6edf7;
+  --text-2: #9fb0c9;
+}
+
+/* Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns here in
+ * the primary TEXT role (story 8.9 AC6). Accent + status hues unchanged. */
+[data-theme='light'] {
+  --canvas: #f6f8fc;
+  --surface: #ffffff;
+  --border: #d6deec;
+  --text-1: #0b1220;
+  --text-2: #4b5b76;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--text-1);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+.shell__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.brand-wordmark {
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.shell__main {
+  padding: 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.theme-toggle {
+  background: var(--surface);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.theme-toggle:hover {
+  border-color: var(--accent);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.muted {
+  color: var(--text-2);
+}
+
+/* ---- Run stream (story 8.2) ---- */
+.run-stream__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.run-stream__source {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.stream-status {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.stream-status--open {
+  color: var(--status-running);
+  border-color: var(--status-running);
+}
+.stream-status--error {
+  color: var(--status-blocked);
+  border-color: var(--status-blocked);
+}
+.run-stream__empty {
+  color: var(--text-2);
+}
+.run-stream__timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.run-event {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.run-event__actor {
+  font-weight: 600;
+}
+.run-event__summary {
+  color: var(--text-2);
+}
+.run-event__ts {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.kind-badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}

@@ -166,7 +166,11 @@ jobs:
           node-version: 24
       - name: Audit
         if: steps.guard.outputs.present == 'true'
-        run: npm audit --audit-level=high
+        # The console package lives in console/; audit reads its lockfile there.
+        # Fall back to repo root if a top-level package.json is ever added.
+        run: |
+          if [ -f console/package.json ]; then cd console; fi
+          npm audit --audit-level=high
 
   trivy-fs:
     name: Trivy (filesystem + config)
