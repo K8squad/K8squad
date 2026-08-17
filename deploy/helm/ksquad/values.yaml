@@ -21,9 +21,33 @@ console:
     port: 80
     targetPort: 3000
 apiserver:
+  # The ksquad-apiserver HTTP host (ISI-2750, §17.3) — the binary the console BFF
+  # proxies to. Mounts the §7.5 discussion surface behind the §13 authz choke
+  # point, hosts the §4.4 SSE run-progress hub, and serves health/readiness.
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/k8squad/ksquad-apiserver
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
   service:
     port: 80
     targetPort: 8080
+  # DATABASE_URL source. By default the chart reads the CNPG-generated app secret
+  # (`<release>-pg-app`, key `uri`) — the same store of record the operator uses.
+  # Override existingSecret/existingSecretKey to point at your own secret.
+  database:
+    existingSecret: "" # empty → derived CNPG app secret <fullname>-pg-app
+    existingSecretKey: uri
+  # Name of the HttpOnly session cookie the BFF forwards (arch §12.3/ADR-033).
+  # MUST match the console's KSQUAD_SESSION_COOKIE.
+  sessionCookie: ksquad_session
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Exposure — the chart CREATES exposure, it does not assume it (§16.1, FR-L1…L3)

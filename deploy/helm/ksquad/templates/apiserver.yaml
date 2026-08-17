@@ -1,0 +1,83 @@
+{{- /* ksquad-apiserver Deployment (ISI-2750, §17.3). The HTTP host the console BFF
+       (ISI-2180) proxies to at ksquad-apiserver:8080 — it mounts the §7.5 discussion
+       surface behind the §13 authz choke point and hosts the §4.4 SSE run-progress hub.
+
+       The matching Service is rendered unconditionally in service.yaml (it is a backend
+       for every exposure.mode). This Deployment is gated on apiserver.enabled so an
+       operator can supply their own workload manifest.
+
+       DATABASE_URL comes from the CNPG-generated app secret (`<fullname>-pg-app`, key
+       `uri`) by default — the same Postgres store of record (ADR-001) the operator uses;
+       override via apiserver.database.existingSecret.
+
+       The event-relay ConfigMap (event-relay.yaml) hands the apiserver the outbox→NATS
+       relay config; per the §17.4 isolation contract it is DECOUPLED from the write path
+       and is NEVER wired into the readiness/liveness probes below — NATS-down must never
+       flap this pod. */ -}}
+{{- if .Values.apiserver.enabled -}}
+{{- $dbSecret := .Values.apiserver.database.existingSecret | default (printf "%s-pg-app" (include "ksquad.fullname" .)) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+spec:
+  replicas: {{ .Values.apiserver.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: apiserver
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: apiserver
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apiserver
+          image: "{{ .Values.apiserver.image.repository }}:{{ .Values.apiserver.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.apiserver.image.pullPolicy }}
+          args:
+            - --http-port=8080
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ .Values.apiserver.database.existingSecretKey | quote }}
+            - name: KSQUAD_SESSION_COOKIE
+              value: {{ .Values.apiserver.sessionCookie | quote }}
+          # Liveness = process up (never gated on the DB/NATS: a dependency blip must not
+          # trigger a restart loop). Readiness = the store of record is reachable (§17.3).
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.apiserver.resources | nindent 12 }}
+{{- end }}
