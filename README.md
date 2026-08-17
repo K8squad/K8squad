@@ -37,11 +37,17 @@ formation-keeping.
 
 <div align="center">
 
+**Fleet dashboard** — operator overview: fleet health + live agent assignments across every namespace
+<img src="docs/media/console-fleet-dashboard.png" alt="KSquad fleet dashboard — operator overview" width="900">
+
 **Project dashboard** — everything scoped to one project, live activity over SSE
 <img src="docs/media/console-project-dashboard.png" alt="KSquad project dashboard" width="900">
 
-**Work-item Kanban** — parent → sub-ticket tree, status, assignee, comments & artifacts
-<img src="docs/media/console-tickets-kanban.png" alt="KSquad tickets / Kanban board" width="900">
+**Work-item tree** — parent → sub-ticket tree, status, assignee, comments & artifacts
+<img src="docs/media/console-tickets-kanban.png" alt="KSquad work-item tree / tickets board" width="900">
+
+**Live run stream** — the coordination record streaming over SSE: checkout → comment → handoff → artifact
+<img src="docs/media/console-run-stream.png" alt="KSquad live run stream over SSE" width="900">
 
 **Agents org** — the same squad, organized by role and by leadership, with live status
 <img src="docs/media/console-agents-org.png" alt="KSquad agents role org" width="900">
