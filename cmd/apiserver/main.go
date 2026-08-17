@@ -103,10 +103,25 @@ func main() {
 	authn := apiserver.NewCookieAuthenticator(resolver)
 	authn.CookieName = cfg.SessionCookie
 
+	// 8.1 squad-overview read model (ISI-2760). Its backing is the controller-runtime informer
+	// cache over Team/Project/Run — available only where the host has cluster access (in-cluster
+	// ServiceAccount or a KUBECONFIG). When it cannot be built (e.g. a cluster-less local run) we
+	// log and leave it nil: GET /api/squad/overview then keeps its documented 501, an honest
+	// contract rather than a hard start failure.
+	var overview apiserver.SquadOverviewReader
+	if reader, stopCache, oerr := apiserver.NewCacheOverviewReader(ctx, 30*time.Second); oerr != nil {
+		log.Printf("ksquad-apiserver: squad-overview read model disabled (GET /api/squad/overview → 501): %v", oerr)
+	} else {
+		overview = reader
+		defer stopCache()
+		log.Printf("ksquad-apiserver: squad-overview read model ready (informer cache synced)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
 		Ready:         dbReady{db},
+		Overview:      overview,
 	})
 
 	httpSrv := &http.Server{
