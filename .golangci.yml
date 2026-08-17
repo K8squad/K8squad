@@ -34,6 +34,19 @@ linters:
           - gosec
         text: "G201: SQL string formatting"
         path: ^pkg/coord
+      # G101 in internal/memory/config.go: the flagged string is the zero-config
+      # DEV default DSN, overridden by env/flags/file in every real deployment
+      # (LoadConfig/DefaultConfig). It is a placeholder, not a real secret.
+      - linters:
+          - gosec
+        text: "G101"
+        path: internal/memory/config\.go
+      # G706 in cmd/memory/main.go: the logged value is a parsed time.Duration
+      # (time.ParseDuration validates it), not raw env text — no injection surface.
+      - linters:
+          - gosec
+        text: "G706"
+        path: cmd/memory/main\.go
     paths:
       - third_party$
       - builtin$
