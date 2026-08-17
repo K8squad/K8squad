@@ -3,6 +3,10 @@ name: CI
 # Lint + build + unit/integration test + coverage, as a per-component matrix.
 # Each component leg is an independent required status check.
 # Action majors are pinned to the Node 24 runtime (Node 20 runtimes are deprecated).
+#
+# Story 14.7 (ISI-2742): the per-component fan-out is derived from the REUSABLE
+# `component-matrix.yml` workflow so the component list is declared in exactly one place
+# and shared with every downstream lane (L5 e2e, supply-chain, Ollama — 14.5/14.6/14.8).
 
 on:
   pull_request:
@@ -15,23 +19,28 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # R2 (ISI-2748 epic-14-ci-runner-constraints): cancel superseded PR pushes to free the two
+  # self-hosted slots, but NEVER cancel a `main` run — cancelling a merge-train run drops its
+  # required-check signal. Only two executors exist, so unbounded PR stacking must self-cancel.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Single source of truth for the component fan-out. Emits typed JSON matrices that the
+  # legs below consume via fromJSON(). The reusable workflow's emit job runs on a self-hosted
+  # runner (R1 — K8squad/K8squad has NO hosted-runner minutes; a hosted job queue-hangs and
+  # would wedge every downstream lane). The leg is trivial (echoes JSON) so it does not
+  # meaningfully contend for the two slots.
+  components:
+    uses: ./.github/workflows/component-matrix.yml
+
   go:
     name: go / ${{ matrix.component }}
+    needs: components
     runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:
-        component: [operator, apiserver, memory]
-        include:
-          - component: operator
-            path: cmd/operator
-          - component: apiserver
-            path: cmd/apiserver
-          - component: memory
-            path: cmd/memory
+        include: ${{ fromJSON(needs.components.outputs.go) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -186,18 +195,130 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$t"
           done
 
-  node:
-    name: node / console
+  shim:
+    name: shim / ${{ matrix.runtime }}
+    needs: components
     runs-on: [self-hosted, linux, x64]
+    # Per-runtime A2A shim matrix (Story 14.7 "+ shim matrix"). Every shim speaks the same
+    # A2A wire spine (Epic 5), so each runtime adapter is lint+build+test'd independently and
+    # is its own required check. Guarded on the specific shim source path (NOT go.mod) so the
+    # leg genuinely skip-with-reasons until a given runtime's shim lands — no false green.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.components.outputs.shims) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if shim source is absent (skeleton phase)
+        id: guard
+        run: |
+          # Probe the runtime's own entrypoint dir; fall back to a pkg/shim/<runtime> layout.
+          if [ ! -d "${{ matrix.path }}" ] && [ ! -d "pkg/shim/${{ matrix.runtime }}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::shim '${{ matrix.runtime }}' source not present yet — skeleton lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        if: steps.guard.outputs.present == 'true'
+        uses: golangci/golangci-lint-action@v7
+        # Same OOM containment as the go leg (ISI-2614/ISI-2612): serial analysis under the
+        # self-hosted gitrunner's cgroup cap.
+        env:
+          GOMAXPROCS: "1"
+          GOGC: "30"
+          GOMEMLIMIT: "3800MiB"
+        with:
+          version: v2.12.2
+          args: --timeout=10m --concurrency=1
+
+      - name: Build
+        if: steps.guard.outputs.present == 'true'
+        run: go build ./...
+
+      - name: Test (race)
+        if: steps.guard.outputs.present == 'true'
+        run: go test -race ./...
+
+  helm:
+    name: helm / ${{ matrix.chart }}
+    needs: components
+    runs-on: [self-hosted, linux, x64]
+    # Helm chart lint + render gate. `helm lint` catches schema/values regressions and
+    # `helm template` proves the chart renders to valid manifests (fail-closed on template
+    # errors). Helm is installed as a pinned binary rather than via a marketplace action so
+    # there is no Node-runtime action to age out of the Node 24 requirement.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.components.outputs.helm) }}
+    env:
+      HELM_VERSION: v3.16.4
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if chart is absent (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -f "${{ matrix.path }}/Chart.yaml" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::chart '${{ matrix.chart }}' (${{ matrix.path }}) not present yet — skeleton lane skipped."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install helm (pinned)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          if helm version --short 2>/dev/null | grep -q "${HELM_VERSION}"; then
+            echo "helm ${HELM_VERSION} already present"; exit 0
+          fi
+          tmp="$(mktemp -d)"
+          curl -sSfL "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" -o "$tmp/helm.tgz"
+          tar -xzf "$tmp/helm.tgz" -C "$tmp"
+          sudo install -m 0755 "$tmp/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      - name: helm lint
+        if: steps.guard.outputs.present == 'true'
+        run: helm lint "${{ matrix.path }}"
+
+      - name: helm template (render self-check)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          # Render with defaults; fail closed on any template/schema error. CRDs live under
+          # crds/ and are installed by Helm out-of-band, so --include-crds keeps the render
+          # representative of an install.
+          helm template ksquad-ci "${{ matrix.path }}" --include-crds > /dev/null
+          echo "chart '${{ matrix.chart }}' renders clean"
+
+  node:
+    name: node / ${{ matrix.component }}
+    needs: components
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.components.outputs.node) }}
     steps:
       - uses: actions/checkout@v5
 
       - name: Skip if console source is absent (skeleton phase)
         id: guard
         run: |
-          if [ ! -f console/package.json ] && [ ! -f package.json ]; then
+          if [ ! -f "${{ matrix.path }}/package.json" ] && [ ! -f package.json ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::console source not present yet — skeleton lane skipped."
+            echo "::notice::${{ matrix.component }} source not present yet — skeleton lane skipped."
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
