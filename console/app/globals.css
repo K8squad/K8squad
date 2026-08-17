@@ -12,6 +12,9 @@
   --status-paused: #fbbf24;
   --status-blocked: #fb7185;
   --status-idle: #64748b;
+  /* Run-provenance chip hue (story 10.3) — a distinct, theme-invariant violet so
+   * a Run deep-link chip never collapses onto the azure accent in either theme. */
+  --ksq-run: #a855f7;
 
   --radius: 10px;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
