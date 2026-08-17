@@ -55,11 +55,11 @@ type SearchHit struct {
 	Distance float64
 }
 
-// MemoryBackend is the §7.1/§7.6 storage/retrieval seam. pgvector is the default and only v1 backend
+// Backend is the §7.1/§7.6 storage/retrieval seam. pgvector is the default and only v1 backend
 // (AC5); the seam exists so GRAIL/alt backends can plug in later without touching the service. It is
 // NOT a place to hide an app-side vector scan — every implementation MUST push semantic search into
 // its store (OQ10/ADR-004).
-type MemoryBackend interface {
+type Backend interface {
 	// Ready reports the store is usable: pgvector present, schema applied at the expected version.
 	// It fails closed — an absent extension or unexpected schema version is an error, never a
 	// silent fallback to a bespoke store (AC1).
