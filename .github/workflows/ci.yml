@@ -116,7 +116,12 @@ jobs:
           # Floor is the current honest hand-written baseline. Ratcheting up to 80%
           # (adding unit tests + a DB-backed coverage lane) is tracked in ISI-2714.
           # Do NOT lower this number; raise it as coverage improves.
-          COVERAGE_FLOOR: "30"
+          # Ratchet log (ISI-2714): 30 (baseline) -> 35. The 30->35 step is backed by
+          # DB-free error-branch tests for the internal/discussion §7.5 handlers
+          # (handler_errorpaths_test.go), which lift that package 23.6% -> 46.2% and the
+          # module-wide authored total 31.0% -> 35.4%. Next steps: 50 -> 65 -> 80 as the
+          # DB-backed lane and pkg/coord|pkg/events unit tests land.
+          COVERAGE_FLOOR: "35"
         run: |
           # Exclude generated files from the profile before scoring (the `mode:` header
           # line has no path and is preserved).
