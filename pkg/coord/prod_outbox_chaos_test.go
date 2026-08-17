@@ -30,7 +30,7 @@ import (
 
 // outboxMigrationSQL locates the shipped 0003 migration, mirroring the candidate
 // paths coordMigrationSQL / dispatchMigrationSQL use.
-func outboxMigrationSQL(t *testing.T) string {
+func outboxMigrationSQL(t testing.TB) string {
 	t.Helper()
 	candidates := []string{
 		"../../db/migrations/0003_coord_outbox.sql",
