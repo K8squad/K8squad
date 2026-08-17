@@ -1,0 +1,196 @@
+name: L1 Feature Tests
+
+# Story 14.1 (ISI-2743) — the L1 FEATURE / FUNCTIONAL lane.
+#
+# Testing-strategy §3.1 defines L1 as "each component's units + INTEGRATION"
+# (reconciler units + envtest + a Postgres/NATS container for coord/memory/event
+# schema behaviour under real transactions). `ci.yml` already runs the fast unit
+# half (`go test -race ./...`, untagged) and lint/build/coverage. This lane runs
+# the OTHER half the definition demands: the build-tag-gated, service-backed
+# integration suites that exercise the shipped stories' GWT acceptance criteria
+# against a REAL engine —
+#
+#   -tags=integration            memory pgvector round-trip (6.1), event outbox
+#                                same-txn/set-once/immutability (12.x C1/C2/C4),
+#                                JetStream relay at-least-once (12.x)
+#   -tags=discussion_integration discussion schema + memory-projection (10.1)
+#
+# Together the two lanes are the complete §3.1 L1 layer. This one is kept
+# separate (not folded into every ci.yml `go` matrix leg) so the heavy Postgres+
+# NATS services spin up ONCE, not once per component leg, on the 2-runner
+# homelab fleet (ISI-2602).
+#
+# Wiring: it consumes the REUSABLE component-matrix (ISI-2742) as its single
+# source of truth for the component list, exactly like ci.yml / the L5 / supply-
+# chain lanes, so "which components does L1 cover" can never drift lane-to-lane.
+# Unlanded components (operator, apiserver, shims, console) are skip-with-reason,
+# never silently omitted (§3.3, §10.4). Epic → case mapping: test/l1/README.md.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # R2 (ISI-2748 epic-14-ci-runner-constraints): self-cancel superseded PR pushes
+  # to free the two self-hosted slots, but NEVER cancel a `main` run.
+  group: l1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # Single source of truth for the component fan-out (ISI-2742). We read its `go`
+  # and `node` outputs below to audit coverage and skip-with-reason per component.
+  components:
+    uses: ./.github/workflows/component-matrix.yml
+
+  go-integration:
+    name: L1 / go integration (feature suites)
+    needs: components
+    # R1 (ISI-2748): K8squad/K8squad has NO hosted-runner minutes — a hosted job
+    # queue-hangs forever. This is a heavy leg (real Postgres+NATS) so it takes a
+    # full self-hosted slot; R2 concurrency above keeps PR stacking bounded.
+    runs-on: [self-hosted, linux, x64]
+    services:
+      # pgvector image so the memory suite's `CREATE EXTENSION vector` succeeds;
+      # the POSTGRES_USER is a superuser, which the extension + schema apply need.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: ksquad
+          POSTGRES_PASSWORD: ksquad
+          POSTGRES_DB: ksquad_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if the Go module is absent (skeleton phase)
+        id: guard
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::go.mod not present yet — L1 go-integration lane skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Audit which matrix components this lane covers
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # The integration suites live in the single Go module, so `go test ./...`
+          # covers every LANDED Go component in one pass. Unlanded Go components
+          # (operator, apiserver, shims — no source dir yet) contribute no packages
+          # and are visibly skip-with-reason rather than silently omitted.
+          echo "component-matrix go   = ${{ needs.components.outputs.go }}"
+          echo "component-matrix shims= ${{ needs.components.outputs.shims }}"
+          echo "::notice::L1 integration covers all landed Go packages via one module test pass; unlanded operator/apiserver/shim entrypoints contribute no packages (skip-with-reason)."
+
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # NATS/JetStream cannot be a `services:` container — service containers
+      # cannot override the image CMD, and the JetStream engine only turns on with
+      # the `-js` flag. Start it as a best-effort step: if it fails to come up,
+      # NATS_URL stays unset and the JetStream suite SKIPs with reason rather than
+      # failing the lane (its Postgres siblings still run).
+      - name: Start NATS with JetStream
+        if: steps.guard.outputs.present == 'true'
+        id: nats
+        run: |
+          if docker run -d --name l1-nats -p 4222:4222 nats:2.10 -js >/dev/null 2>&1; then
+            for i in $(seq 1 20); do
+              if (exec 3<>/dev/tcp/127.0.0.1/4222) 2>/dev/null; then
+                echo "url=nats://localhost:4222" >> "$GITHUB_OUTPUT"; echo "NATS up"; exit 0
+              fi
+              sleep 1
+            done
+            echo "::notice::NATS did not become ready in time — JetStream L1 suite will skip-with-reason."
+          else
+            echo "::notice::could not start NATS (no docker?) — JetStream L1 suite will skip-with-reason."
+          fi
+
+      - name: Provision the second (memory-isolated) database
+        if: steps.guard.outputs.present == 'true'
+        env:
+          PGPASSWORD: ksquad
+        run: |
+          # Keep the memory pgvector schema in its own DB so the event suite's
+          # schema drop/apply can never collide with an in-flight memory run.
+          for i in $(seq 1 20); do
+            if pg_isready -h localhost -U ksquad -d ksquad_test >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client
+          fi
+          psql "postgres://ksquad:ksquad@localhost:5432/ksquad_test" -v ON_ERROR_STOP=1 \
+            -c "SELECT 'CREATE DATABASE ksquad_memory' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='ksquad_memory')\gexec"
+
+      - name: L1 integration suites (feature/functional, real Postgres + NATS)
+        if: steps.guard.outputs.present == 'true'
+        # -p 1: the Postgres-backed suites share one server; run packages serially
+        # so the event suite's schema drop/apply never races a sibling suite.
+        # OOM caps mirror the ci.yml go leg (ISI-2614/ISI-2612): the gitrunner VM
+        # is small and the race detector + real drivers are memory-hungry.
+        env:
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
+          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_memory
+          NATS_URL: ${{ steps.nats.outputs.url }}
+          GOMAXPROCS: "2"
+          GOGC: "40"
+          GOMEMLIMIT: "3800MiB"
+        run: |
+          go test -p 1 -tags=integration,discussion_integration ./...
+
+      - name: Stop NATS
+        if: always()
+        run: docker rm -f l1-nats >/dev/null 2>&1 || true
+
+  node:
+    name: L1 / node / ${{ matrix.component }}
+    needs: components
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.components.outputs.node) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Skip if console source is absent (skeleton phase)
+        id: guard
+        run: |
+          # §3.2/§3.3 Epic 8: Vitest unit/component units. The console has landed
+          # only a Playwright e2e scaffold (no package.json yet), so the Vitest L1
+          # units are skip-with-reason until the console app package lands.
+          if [ ! -f "${{ matrix.path }}/package.json" ] && [ ! -f package.json ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }}: no package.json yet — L1 Vitest units skipped (skip-with-reason, §3.3 Epic 8)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        run: npm ci
+
+      - name: L1 Vitest units
+        if: steps.guard.outputs.present == 'true'
+        run: npm test -- --run
