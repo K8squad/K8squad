@@ -1,111 +1,87 @@
 package discussion
 
 import (
-	"database/sql"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// TestMessageKind validates the kind constraints.
-func TestMessageKind(t *testing.T) {
-	cases := []struct {
-		kind MessageKind
-		ok   bool
-	}{
-		{KindMessage, true},
-		{KindAnnouncement, true},
-		{KindDecision, true},
-		{KindQuestion, true},
-		{MessageKind("invalid"), false},
+// TestAuthorKindDerived confirms agent-vs-human is DERIVED from author_agent_id, never a stored flag
+// (§7.5 / 10.3 badge). author_agent_id present ⇒ agent; absent ⇒ human.
+func TestAuthorKindDerived(t *testing.T) {
+	agentID := "agent:coordinator"
+	if got := (Message{AuthorAgentID: &agentID}).AuthorKind(); got != "agent" {
+		t.Errorf("author_agent_id set: got %q, want agent", got)
 	}
-	for _, c := range cases {
-		valid := c.kind == KindMessage || c.kind == KindAnnouncement ||
-			c.kind == KindDecision || c.kind == KindQuestion
-		if valid != c.ok {
-			t.Errorf("kind %s: expected ok=%v, got %v", c.kind, c.ok, valid)
-		}
+	if got := (Message{AuthorAgentID: nil}).AuthorKind(); got != "human" {
+		t.Errorf("author_agent_id nil: got %q, want human", got)
 	}
 }
 
-func TestAuthorType(t *testing.T) {
-	cases := []struct {
-		at  AuthorType
-		ok  bool
-	}{
-		{AuthorTypeAgent, true},
-		{AuthorTypeHuman, true},
-		{AuthorTypeSystem, true},
-		{AuthorType("alien"), false},
+// TestRetracted confirms the soft-retract predicate (§7.4).
+func TestRetracted(t *testing.T) {
+	if (Message{}).Retracted() {
+		t.Error("a message with nil invalidated_at must not be Retracted")
 	}
-	for _, c := range cases {
-		valid := c.at == AuthorTypeAgent || c.at == AuthorTypeHuman || c.at == AuthorTypeSystem
-		if valid != c.ok {
-			t.Errorf("authorType %s: expected ok=%v, got %v", c.at, c.ok, valid)
-		}
+	now := time.Now()
+	if !(Message{InvalidatedAt: &now}).Retracted() {
+		t.Error("a message with invalidated_at set must be Retracted")
 	}
 }
 
+// TestBuildThreadTree nests replies under parents via parent_id adjacency, preserving created_at order.
 func TestBuildThreadTree(t *testing.T) {
-	roomID := uuid.New()
 	parentID := uuid.New()
 	childID := uuid.New()
-
+	grandID := uuid.New()
 	msgs := []Message{
-		{ID: parentID, RoomID: roomID, Body: "parent", AuthorID: uuid.New()},
-		{ID: childID, RoomID: roomID, ParentID: &parentID, Body: "child", AuthorID: uuid.New()},
+		{ID: parentID, Body: "root"},
+		{ID: childID, ParentID: &parentID, Body: "reply"},
+		{ID: grandID, ParentID: &childID, Body: "reply-to-reply"},
 	}
-
-	tree := buildThreadTree(msgs, 100)
+	tree := buildThreadTree(msgs)
 	if len(tree) != 1 {
 		t.Fatalf("expected 1 root, got %d", len(tree))
 	}
 	if tree[0].ID != parentID {
-		t.Fatalf("expected root to be parent, got %s", tree[0].ID)
+		t.Fatalf("root should be parent, got %s", tree[0].ID)
 	}
-	if len(tree[0].Replies) != 1 {
-		t.Fatalf("expected 1 reply, got %d", len(tree[0].Replies))
+	if len(tree[0].Replies) != 1 || tree[0].Replies[0].ID != childID {
+		t.Fatalf("expected child under root")
 	}
-	if tree[0].Replies[0].ID != childID {
-		t.Fatalf("expected reply to be child, got %s", tree[0].Replies[0].ID)
-	}
-}
-
-func TestBuildThreadTreeLimit(t *testing.T) {
-	roomID := uuid.New()
-	var msgs []Message
-	for i := 0; i < 10; i++ {
-		msgs = append(msgs, Message{
-			ID:        uuid.New(),
-			RoomID:    roomID,
-			Body:      "msg",
-			AuthorID:  uuid.New(),
-			CreatedAt: time.Now(),
-		})
-	}
-	tree := buildThreadTree(msgs, 3)
-	if len(tree) != 3 {
-		t.Fatalf("expected 3 roots after limit, got %d", len(tree))
+	if len(tree[0].Replies[0].Replies) != 1 || tree[0].Replies[0].Replies[0].ID != grandID {
+		t.Fatalf("expected grandchild nested arbitrary-depth")
 	}
 }
 
-func TestMin(t *testing.T) {
-	if min(3, 5) != 3 {
-		t.Fatal("min(3,5) should be 3")
+// TestBuildThreadTreeOrphanSurfacesAsRoot — a reply whose parent is absent (e.g. the parent was
+// retracted and filtered out) must surface as a root, never be silently dropped.
+func TestBuildThreadTreeOrphanSurfacesAsRoot(t *testing.T) {
+	missingParent := uuid.New()
+	orphanID := uuid.New()
+	msgs := []Message{
+		{ID: orphanID, ParentID: &missingParent, Body: "orphaned reply"},
 	}
-	if min(5, 3) != 3 {
-		t.Fatal("min(5,3) should be 3")
-	}
-	if min(3, 3) != 3 {
-		t.Fatal("min(3,3) should be 3")
+	tree := buildThreadTree(msgs)
+	if len(tree) != 1 || tree[0].ID != orphanID {
+		t.Fatalf("orphaned reply must surface as a root, got %+v", tree)
 	}
 }
 
-// TestStoreNilDB verifies graceful behavior patterns (compile-time interface check).
-func TestStoreNilDB(t *testing.T) {
-	s := NewStore((*sql.DB)(nil))
-	if s == nil {
-		t.Fatal("NewStore returned nil")
+// TestAuthorContextNullMapping confirms the optional provenance fields map to SQL NULL when unset and
+// to a valid value when set — the seam that keeps author_agent_id / author_run_id nullable (R2).
+func TestAuthorContextNullMapping(t *testing.T) {
+	var a AuthorContext
+	if a.agentID().Valid || a.runID().Valid {
+		t.Error("unset AgentID/RunID must map to SQL NULL")
+	}
+	agent, run := "agent:x", "run:y"
+	a = AuthorContext{AgentID: &agent, RunID: &run}
+	if !a.agentID().Valid || a.agentID().String != agent {
+		t.Error("set AgentID must map to a valid NullString")
+	}
+	if !a.runID().Valid || a.runID().String != run {
+		t.Error("set RunID must map to a valid NullString")
 	}
 }
