@@ -175,17 +175,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Skip if console source is absent (skeleton phase)
+      - name: Skip until the console app exposes runnable Vitest units
         id: guard
         run: |
-          # §3.2/§3.3 Epic 8: Vitest unit/component units. The console has landed
-          # only a Playwright e2e scaffold (no package.json yet), so the Vitest L1
-          # units are skip-with-reason until the console app package lands.
-          if [ ! -f "${{ matrix.path }}/package.json" ] && [ ! -f package.json ]; then
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ matrix.component }}: no package.json yet — L1 Vitest units skipped (skip-with-reason, §3.3 Epic 8)."
-          else
+          # §3.2/§3.3 Epic 8: Vitest unit/component units. Key the gate on a real,
+          # runnable `test` script + a lockfile in the component dir — NOT on bare
+          # package.json existence. The console SHELL (ISI-2180) already landed
+          # console/package.json + console/package-lock.json but with no `test`
+          # script and no vitest (only a Playwright e2e spec); the runnable Vitest
+          # units arrive with the console app (ISI-2704). Gating on package.json
+          # alone made `actions/setup-node --cache npm` hard-fail hunting a root
+          # lockfile. Skip-with-reason (green) until a `test` script lands; run the
+          # real units automatically the moment it does — no dependency on any PR
+          # landing order.
+          P="${{ matrix.path }}"
+          if [ -f "$P/package.json" ] && [ -f "$P/package-lock.json" ] && grep -qE '"test"[[:space:]]*:' "$P/package.json"; then
             echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }}: no runnable Vitest 'test' script yet — L1 units skip-with-reason (§3.3 Epic 8)."
           fi
 
       - uses: actions/setup-node@v5
@@ -193,11 +201,16 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          # Point npm-cache at the component lockfile; it is under console/,
+          # not the repo root, so the default root lookup would hard-fail.
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
 
       - name: Install
         if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
         run: npm ci
 
       - name: L1 Vitest units
         if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
         run: npm test -- --run
