@@ -95,17 +95,19 @@ jobs:
           # never actually enforced on real code: CI was red at the *lint* step from the
           # skeleton-era green (CI #5, 2026-08-12) through ISI-2692, so this coverage step
           # never once ran on the merged event-seam/coord code. Fixing lint (ISI-2692)
-          # exposed a genuine 35.9% module baseline. Two structural reasons the flat 80%
-          # is not currently satisfiable in THIS job:
+          # exposed the true baseline: 30.1% over hand-written code (35.9% if generated
+          # code is counted — see below). The flat 80% is not currently satisfiable here:
           #   1. This unit lane runs `go test ./...` with NO Postgres, so DB-backed code
-          #      (pkg/coord resume/store, pkg/events store/listen/publisher) cannot be
-          #      covered here — it belongs to the integration/e2e lane.
-          #   2. Generated code (api/v1alpha1/zz_generated.deepcopy.go — ~1.2k LOC of
-          #      0%-covered DeepCopy methods) was padding the denominator; now excluded.
-          # Floor is the current honest baseline. Ratcheting up to 80% (adding unit tests
-          # + a DB-backed coverage lane) is tracked in ISI-2714. Do NOT lower this number;
-          # raise it as coverage improves.
-          COVERAGE_FLOOR: "35"
+          #      (pkg/coord resume/store 12.9%, pkg/events store/listen/publisher) cannot
+          #      be covered here — it belongs to the integration/e2e lane (ISI-2714).
+          #   2. We exclude generated code (api/v1alpha1/zz_generated.deepcopy.go) from the
+          #      metric so the gate measures *authored* code, not codegen. That file is
+          #      52.3% covered incidentally, so excluding it LOWERS the number from 35.9%
+          #      to the honest 30.1% — the metric now reflects real test debt, not codegen.
+          # Floor is the current honest hand-written baseline. Ratcheting up to 80%
+          # (adding unit tests + a DB-backed coverage lane) is tracked in ISI-2714.
+          # Do NOT lower this number; raise it as coverage improves.
+          COVERAGE_FLOOR: "30"
         run: |
           # Exclude generated files from the profile before scoring (the `mode:` header
           # line has no path and is preserved).
