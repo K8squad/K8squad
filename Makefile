@@ -62,6 +62,11 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+.PHONY: cover
+cover: ## Story 14.5 (L5): run tests with -race + coverage and score per-package (>=80%, >=90% pkg/coord).
+	go test -race -covermode=atomic -coverprofile=coverage.out ./...
+	go run ./cmd/covgate coverage.out
+
 .PHONY: controller-gen
 controller-gen: $(LOCALBIN) ## Download controller-gen locally if necessary.
 	test -s $(CONTROLLER_GEN) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)

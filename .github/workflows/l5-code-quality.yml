@@ -1,0 +1,226 @@
+name: Code Quality & Coverage Gates (L5)
+
+# Story 14.5 (ISI-2744) — the L5 code-quality & coverage lane, wired onto the
+# reusable component fan-out (component-matrix.yml, Story 14.7). It enforces, at
+# the AC's TARGET strength:
+#
+#   Q1  golangci-lint (gosec/staticcheck/revive/…) reports ZERO findings — Go.
+#   Q2  ESLint + Prettier report ZERO findings — console (Next.js).
+#   Q3  per-package coverage: >=80% every Go package, >=90% pkg/coord (the
+#       coordination spine), >=70% console. PER-PACKAGE so the spine cannot hide
+#       behind trivial packages inflating a whole-module average. Scored by the
+#       pkg/covgate evaluator (its teeth run in Q0 below).
+#   Q4  `-race` is REQUIRED on every Go test invocation here (spine + concurrency
+#       lanes cannot dodge the race detector).
+#
+# Fail-closed: an unscoreable/empty coverage profile fails the build (covgate
+# ErrNoProfile), never silent-green.
+#
+# ── Lane posture (why not a required PR check yet) ────────────────────────────
+# This lane runs NIGHTLY + release-tag + manual, NOT on the PR path — the SAME
+# posture as perf.yml (L3). The per-package 80/90 target is not yet satisfiable
+# on the merged tree (authored baseline ~30%, tracked by the ISI-2714 coverage
+# ratchet; the PR path enforces the interim whole-module floor in ci.yml). Making
+# the target a required PR check today would red-wall every PR. Instead:
+#   • the GATE LOGIC teeth (pkg/covgate, Q0) run on EVERY PR via ci.yml's
+#     `go test ./...`, so the mechanism can never be filed off unnoticed;
+#   • this lane enforces the TARGET nightly, catching regressions within a day;
+#   • promotion to a required PR check is gated on ISI-2714 landing the coverage.
+# (Q1 zero-findings golangci-lint is ALSO enforced PR-blocking in ci.yml; the Q1
+# job here is the L5 lane re-asserting it at target with the full linter set.)
+#
+# Runner constraints (epic-14-ci-runner-constraints, ISI-2748): every job is
+# self-hosted (R1 — K8squad/K8squad has NO hosted minutes; ubuntu-latest never
+# provisions), heavy Go legs carry the ISI-2614 OOM caps (R3), and every leg that
+# cannot measure its target SKIPS WITH A PRINTED REASON (R5), never a silent drop.
+
+on:
+  schedule:
+    - cron: '0 5 * * *'      # nightly, 05:00 UTC (offset from perf 04:00 / chaos 03:00)
+  push:
+    tags: ['v*']             # release tags
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  # Self-hosted-runner memory caps (ISI-2614, parent ISI-2612) — identical to ci.yml/perf.yml.
+  GOMAXPROCS: "1"
+  GOGC: "30"
+  GOMEMLIMIT: "3800MiB"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Q0 — gate teeth. The pkg/covgate evaluator's own tests, provable EVERY run
+  # with NO Postgres and NO baseline: fixed profile fixtures pin GREEN/RED per
+  # scenario (spine<90 → RED, empty profile → build-FAIL, generated excluded, …).
+  # If a tooth is filed off in gate.go the matching subtest goes RED — exactly as
+  # pkg/perfgate is the L3 lane's teeth. These same tests also run on every PR via
+  # ci.yml's `go test ./...`, so the mechanism cannot be dodged off the PR path.
+  # ---------------------------------------------------------------------------
+  gate-logic:
+    name: gate teeth (pkg/covgate)
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if covgate source absent
+        id: guard
+        run: |
+          if [ ! -d pkg/covgate ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pkg/covgate not present yet — gate-logic skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: covgate teeth (-race)
+        if: steps.guard.outputs.present == 'true'
+        run: go test -race ./pkg/covgate/...
+
+  # Single source of truth for the component fan-out (Story 14.7). The Go coverage
+  # job scores the whole module in one profile (coverage is inherently per-Go-package,
+  # so a per-binary fan-out would only re-run the same tests); the console lane fans
+  # out over the node family below.
+  components:
+    uses: ./.github/workflows/component-matrix.yml
+
+  # ---------------------------------------------------------------------------
+  # Q1 — golangci-lint ZERO findings (gosec/staticcheck/revive/… via .golangci.yml).
+  # ---------------------------------------------------------------------------
+  go-lint:
+    name: L5 go lint (zero findings)
+    needs: components
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if no Go module
+        id: guard
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::go.mod not present yet — L5 go lint skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go vet
+        if: steps.guard.outputs.present == 'true'
+        run: go vet ./...
+      - name: golangci-lint (zero findings)
+        if: steps.guard.outputs.present == 'true'
+        uses: golangci/golangci-lint-action@v7
+        # ISI-2614/ISI-2612 OOM containment (serial analysis under the gitrunner cap).
+        env:
+          GOMAXPROCS: "1"
+          GOGC: "30"
+          GOMEMLIMIT: "3800MiB"
+        with:
+          version: v2.12.2
+          # No --issues-exit-code override: any finding is a non-zero exit = build FAIL.
+          # .golangci.yml already enables gosec + the v2 default set (staticcheck, …)
+          # with max-issues-per-linter: 0 / max-same-issues: 0 → nothing is truncated.
+          args: --timeout=10m --concurrency=1
+
+  # ---------------------------------------------------------------------------
+  # Q3+Q4 — per-package Go coverage at target (>=80% / >=90% pkg/coord), -race
+  # REQUIRED, scored by pkg/covgate. Fail-closed on an unscoreable profile.
+  # ---------------------------------------------------------------------------
+  go-coverage:
+    name: L5 go coverage (per-package target)
+    needs: [components, gate-logic]
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if no Go module
+        id: guard
+        run: |
+          if [ ! -f go.mod ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::go.mod not present yet — L5 go coverage skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with race + coverage (whole module)
+        if: steps.guard.outputs.present == 'true'
+        # -race is REQUIRED (Q4). Atomic covermode is mandatory under -race and is
+        # what pkg/covgate's per-block parser expects.
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Per-package coverage gate (covgate, fail-closed)
+        if: steps.guard.outputs.present == 'true'
+        # covgate excludes generated files, aggregates per-package statement coverage,
+        # and exits non-zero if ANY package is below its floor (80% / 90% pkg/coord)
+        # or the profile is unscoreable (ErrNoProfile). No interim floor here — this
+        # lane is the TARGET; the interim ratchet lives in ci.yml (ISI-2714).
+        run: go run ./cmd/covgate coverage.out
+      - name: Upload coverage profile
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: l5-coverage
+          path: coverage.out
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Q2+Q3 — console ESLint + Prettier ZERO findings, coverage >=70%. Skip-with-
+  # reason until the console package lands its package.json (console/ is currently
+  # e2e-only scaffolding). Fans out over the node family from component-matrix.
+  # ---------------------------------------------------------------------------
+  console-quality:
+    name: L5 console / ${{ matrix.component }}
+    needs: components
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.components.outputs.node) }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Skip-with-reason if console package absent
+        id: guard
+        run: |
+          if [ ! -f "${{ matrix.path }}/package.json" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ matrix.component }} (${{ matrix.path }}) has no package.json yet — L5 console lane skipped (skip-with-reason)."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v5
+        if: steps.guard.outputs.present == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+      - name: Install
+        if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
+        run: npm ci
+      - name: ESLint (zero findings)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
+        # --max-warnings=0 makes a warning a build FAILURE, not advisory.
+        run: npm run lint -- --max-warnings=0
+      - name: Prettier (format check)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
+        # `prettier --check` fails closed on any unformatted file.
+        run: npx --no-install prettier --check .
+      - name: Test with coverage (>=70%)
+        if: steps.guard.outputs.present == 'true'
+        working-directory: ${{ matrix.path }}
+        # The console reporter enforces the >=70% ConsoleFloor via its own config
+        # (jest coverageThreshold / vitest thresholds). Wired to fail closed here.
+        run: npm test -- --coverage
