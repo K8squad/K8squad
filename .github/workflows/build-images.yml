@@ -1,7 +1,14 @@
 name: Build Images
 
-# Per-component multi-arch image build → push to ghcr.io → SBOM (Syft) → CVE scan (Trivy) →
-# sign + attest (cosign, release only). Matrix runs component pipelines in parallel.
+# Supply-chain provenance lane (Story 14.6 / ISI-2745).
+#
+# Per-component multi-arch image build → push to ghcr.io → SBOM (Syft) → CVE scan (Trivy,
+# gated on the curated .trivyignore) → Grype cross-check + cosign sign/attest + SLSA build
+# provenance (release tags only). The component fan-out is NOT declared here: this lane is a
+# consumer of the reusable component-matrix (Story 14.7 / ISI-2742), so "what components does
+# KSquad ship" lives in exactly ONE place (component-matrix.yml) and can never drift lane to
+# lane. We union its `go` (deployable Go binaries) and `node` (Node/TS surfaces) families into
+# the image build set — shims (14.x) and helm are not container-image lanes here.
 
 on:
   push:
@@ -12,37 +19,63 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write        # cosign keyless (OIDC)
+  id-token: write        # cosign keyless (OIDC) + SLSA provenance attestation
   attestations: write
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
+  # Single source of truth for the component list (ISI-2742). Emits typed JSON per toolchain
+  # family; we consume `go` + `node` (the two that produce container images).
+  components:
+    uses: ./.github/workflows/component-matrix.yml
+
+  # Fold the two image-producing families into one build matrix, deriving each component's
+  # Dockerfile and a source-presence srcprobe from the authoritative path. Keeping this here
+  # (rather than in the shared primitive) leaves component-matrix.yml generic for every lane.
+  plan:
+    name: plan image matrix
+    needs: components
+    # R1 (ISI-2748 epic-14-ci-runner-constraints): K8squad has no hosted-runner minutes, so a
+    # `ubuntu-latest` job queues forever and wedges downstream. This is a trivial JSON-shaping
+    # leg — rides either self-hosted box as a light leg.
+    runs-on: [self-hosted, linux, x64]
+    outputs:
+      images: ${{ steps.union.outputs.images }}
+    steps:
+      - name: Union go + node into the image build matrix
+        id: union
+        env:
+          GO: ${{ needs.components.outputs.go }}
+          NODE: ${{ needs.components.outputs.node }}
+        run: |
+          set -euo pipefail
+          # go path is the entrypoint dir (cmd/<c>); node path is the surface dir (console).
+          # Both double as the srcprobe: the guard skips-with-reason until that path lands, so
+          # shipping a Dockerfile ahead of source can't trip a doomed build on main (ISI-2644).
+          # GO/NODE come from the step env (the reusable component-matrix outputs).
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          items = json.loads(os.environ["GO"]) + json.loads(os.environ["NODE"])
+          out = [
+              {"component": i["component"],
+               "dockerfile": "Dockerfile." + i["component"],
+               "srcprobe": i["path"]}
+              for i in items
+          ]
+          print("images=" + json.dumps(out, separators=(",", ":")))
+          PY
+          echo "::notice::image build matrix planned from component-matrix outputs"
+
   build:
     name: image / ${{ matrix.component }}
+    needs: plan
     runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:
-        component: [operator, apiserver, memory, console]
-        include:
-          # srcprobe must be the component's actual entrypoint dir, not the shared go.mod:
-          # go.mod is always present, so the skeleton guard never skipped and the lane ran a
-          # doomed multi-arch build ("stat /src/cmd/<c>: directory not found") while these
-          # cmd/ entrypoints are still landing on feature branches. (ISI-2644)
-          - component: operator
-            dockerfile: Dockerfile.operator
-            srcprobe: cmd/operator
-          - component: apiserver
-            dockerfile: Dockerfile.apiserver
-            srcprobe: cmd/apiserver
-          - component: memory
-            dockerfile: Dockerfile.memory
-            srcprobe: cmd/memory
-          - component: console
-            dockerfile: Dockerfile.console
-            srcprobe: console/package.json
+        include: ${{ fromJSON(needs.plan.outputs.images) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -116,7 +149,9 @@ jobs:
           # reference. They also pinned a full-sha *tag* (sha-<40 hex>) metadata-action never
           # pushes (type=sha emits a short tag), so even lowercased the tag would 404.
           # Pin to the immutable pushed digest under a lowercased repo path instead.
-          echo "ref=${REGISTRY}/${OWNER,,}/ksquad-${{ matrix.component }}@${DIGEST}" >> "$GITHUB_OUTPUT"
+          NAME="${REGISTRY}/${OWNER,,}/ksquad-${{ matrix.component }}"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "ref=${NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
       - name: Generate SBOM (Syft)
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
@@ -142,12 +177,30 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
+          # The ONLY CVE escape hatch (14.6 AC): the curated, expiry-dated .trivyignore, which
+          # the security.yml `trivyignore (expiry lint)` job validates and fails on expiry.
+          # A suppression added there governs BOTH the filesystem scan (security.yml) and this
+          # image scan — one reviewed-like-code list, no per-lane drift.
+          trivyignores: .trivyignore
+
+      - name: Grype cross-check (release images)
+        if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        # §6.1/§6.6: Trivy is the primary gate on every image; Grype is an independent
+        # second-scanner cross-check on release images so a single scanner's DB gap doesn't
+        # silently ship a known-vulnerable release. Same fixable-only posture as Trivy.
+        uses: anchore/scan-action@v6
+        with:
+          image: ${{ steps.imgref.outputs.ref }}
+          severity-cutoff: high
+          only-fixed: true
+          fail-build: true
+          output-format: table
 
       - name: cosign install
         if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
         uses: sigstore/cosign-installer@v3
 
-      - name: Sign + attest (release images)
+      - name: Sign + attest SBOM (release images)
         if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
         env:
           COSIGN_EXPERIMENTAL: '1'
@@ -155,3 +208,14 @@ jobs:
           IMG=${{ steps.imgref.outputs.ref }}
           cosign sign --yes "$IMG"
           cosign attest --yes --predicate sbom-${{ matrix.component }}.spdx.json --type spdxjson "$IMG"
+
+      - name: Attest build provenance (SLSA, release images)
+        if: steps.guard.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/v')
+        # SLSA build-provenance attestation on the released digest — keyless (OIDC), pushed to
+        # the registry alongside the cosign SBOM attestation. Uses the id-token/attestations
+        # permissions already declared; no stored key (§11.5).
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.imgref.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
