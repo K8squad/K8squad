@@ -1,0 +1,38 @@
+/* Discussion-room theming (Story 10.3 AC6 / Story 8.9 whole-shell T1–T7).
+ *
+ * The room inherits the 8.9 dark+light palette via CSS variables — it hardcodes
+ * no colours. A chip's border is derived from its BASE (`--chip-base`, set per
+ * badge kind by AuthorBadge) using color-mix — the CSS analogue of the 8.9
+ * theme-invariant `#{BASE}55` rule, so the border is identical in dark & light.
+ *
+ * These base tokens are expected to be defined by the 8.9 theme layer; the
+ * fallbacks below keep the room legible before the shell wires them. */
+:root {
+  --ksq-badge-agent: var(--ksq-accent, #3b82f6);
+  --ksq-badge-human: var(--ksq-human, #10b981);
+  --ksq-badge-system: var(--ksq-muted, #6b7280);
+  --ksq-badge-unknown: var(--ksq-danger, #ef4444);
+  --ksq-badge-run: var(--ksq-run, #a855f7);
+}
+
+.ksq-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  /* Theme-invariant border derived from the chip base (the #{BASE}55 rule). */
+  border-color: color-mix(in srgb, var(--chip-base) 33%, transparent);
+  color: var(--chip-base);
+}
+
+.ksq-chip--run {
+  text-decoration: none;
+}
+
+.ksq-message__tombstone {
+  color: var(--ksq-muted, #6b7280);
+  font-style: italic;
+}

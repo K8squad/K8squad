@@ -1,0 +1,28 @@
+{
+  "name": "ksquad-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KSquad console — Next.js operator UI + BFF (SSE fan-out). This package currently ships the Story 10.3 Discussion-room slice and its test harness; the broader Epic 8 shell (nav, auth, BFF middleware, other routes) is filled in by Epic 8 stories.",
+  "type": "module",
+  "scripts": {
+    "test": "NODE_ENV=test vitest run",
+    "test:watch": "NODE_ENV=test vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.0",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
+    "@types/node": "22.10.5",
+    "@types/react": "19.1.0",
+    "@types/react-dom": "19.1.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "jsdom": "25.0.1",
+    "typescript": "5.6.3",
+    "vitest": "2.1.9"
+  }
+}
