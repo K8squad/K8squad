@@ -19,7 +19,10 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # R2 (ISI-2748 epic-14-ci-runner-constraints): cancel superseded PR pushes to free the two
+  # self-hosted slots, but NEVER cancel a `main` run — cancelling a merge-train run drops its
+  # required-check signal. Only two executors exist, so unbounded PR stacking must self-cancel.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Single source of truth for the component fan-out. Emits typed JSON matrices that the

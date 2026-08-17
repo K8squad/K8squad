@@ -51,9 +51,11 @@ permissions:
 jobs:
   emit:
     name: emit component matrix
-    # Deliberately GitHub-hosted: emitting a few JSON strings must not consume one of the
-    # two self-hosted runner slots (ISI-2602/ISI-2612) that the real per-component legs need.
-    runs-on: ubuntu-latest
+    # R1 (ISI-2748 epic-14-ci-runner-constraints): the K8squad/K8squad repo has NO hosted-runner
+    # minutes — a `runs-on: ubuntu-latest` job sits queued forever and would wedge every downstream
+    # lane that consumes this job's outputs. This leg is trivial (echoes JSON) so it rides either
+    # self-hosted box as a light leg; it does not meaningfully contend for the two slots.
+    runs-on: [self-hosted, linux, x64]
     outputs:
       go: ${{ steps.set.outputs.go }}
       shims: ${{ steps.set.outputs.shims }}
