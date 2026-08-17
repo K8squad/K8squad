@@ -30,9 +30,14 @@ jobs:
       - name: Skip if platform source is absent (skeleton phase)
         id: guard
         run: |
-          if [ ! -f go.mod ]; then
+          # Gate on BOTH go.mod and the E2E harness directory. The Ollama shim +
+          # conformance scenario live under test/e2e (Phase 2); until that lands,
+          # `go test ./test/e2e/...` fails with "[setup failed]" on the missing
+          # path rather than skipping. Skip-with-reason keeps the nightly green
+          # until the harness exists (same pattern as the CodeQL/console guards).
+          if [ ! -f go.mod ] || [ ! -d test/e2e ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::platform source not present yet — E2E squad smoke skipped."
+            echo "::notice::E2E squad-smoke harness not present yet (test/e2e absent) — skipped."
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
