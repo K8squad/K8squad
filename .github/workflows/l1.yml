@@ -134,8 +134,15 @@ jobs:
             sudo apt-get update -qq
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends postgresql-client
           fi
-          psql "postgres://ksquad:ksquad@localhost:5432/ksquad_test" -v ON_ERROR_STOP=1 \
-            -c "SELECT 'CREATE DATABASE ksquad_memory' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='ksquad_memory')\gexec"
+          # CREATE DATABASE cannot run inside a transaction nor take IF NOT EXISTS,
+          # and `psql -c` sends its whole argument to the server verbatim — it does
+          # NOT process backslash meta-commands, so a `SELECT ... \gexec` in `-c`
+          # reaches the backend literally and dies with `syntax error at or near "\"`.
+          # Guard existence in the shell instead, then issue a plain CREATE DATABASE.
+          DSN="postgres://ksquad:ksquad@localhost:5432/ksquad_test"
+          if ! psql "$DSN" -tAc "SELECT 1 FROM pg_database WHERE datname='ksquad_memory'" | grep -q 1; then
+            psql "$DSN" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ksquad_memory"
+          fi
 
       - name: L1 integration suites (feature/functional, real Postgres + NATS)
         if: steps.guard.outputs.present == 'true'
