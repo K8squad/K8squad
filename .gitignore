@@ -14,3 +14,7 @@ paperclip/
 
 # Go build output / vendored tool binaries
 bin/
+
+# Helm release build output (ISI-2632)
+dist/
+.cr-release-packages/
