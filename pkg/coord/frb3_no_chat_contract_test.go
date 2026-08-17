@@ -94,6 +94,64 @@ var allowedSurface = map[string]string{
 	// (§17.4 no-P2P guard, 12.4), nothing published re-enters coordination.
 	"ProdClaimerOption": "§17.4 functional option for the prod claimer (event capture opt-in)",
 	"WithOutboxCapture": "§17.4 co-commit a work_item/claimed outbox event in the claim txn (emit-only)",
+
+	// §6.2 acquire-a-named-item surface (Story 2.2 / ISI-2523), the specific-item
+	// sibling of ClaimNext — used by the dispatch loop to re-acquire a work item
+	// of record. Fenced like every other acquire; carries no worker content.
+	"ProdClaimer.AcquireSpecific": "§6.2 conditional fence-bump acquire of a specific prod work item",
+
+	// §2.9/§6.1 dispatch-of-record (Story 2.9 / ISI-2526). The coordinator reads
+	// a completed dependency's handoff VIA THE COORDINATION RECORD and defines the
+	// next fenced work item. No parameter carries worker-authored content — the
+	// surface is custody-only, never an agent-to-agent channel.
+	"ProdDispatcher":                      "§2.9 dispatch-of-record coordinator bound to the prod schema",
+	"NewProdDispatcher":                   "§2.9 constructor",
+	"ProdDispatcher.DispatchNextOfRecord": "§2.9 decide+prioritize → create the next fenced work item",
+	"ProdDispatcher.ReadHandoff":          "§6.1 read a completed dependency's handoff from the record",
+	"DispatchDecision":                    "§2.9 coordinator's decide+prioritize input (code-supplied)",
+	"DispatchResult":                      "§2.9 outcome of one dispatch-of-record cycle",
+	"HandoffDoc":                          "§6.1 the handoff surfaced to the coordinator (read-of-record)",
+	"HandoffView":                         "§6.1 read-only projection of a handoff over the record",
+	"ArtifactContent":                     "§6.5 content of a coordination artifact surfaced to the coordinator",
+	"AdoptRecommendation":                 "§2.9 coordinator adopts a handoff's recommended_next as new work",
+	"RecordComment":                       "§6.1 append a provenanced coord.comment (sanctioned handoff half)",
+
+	// §2.8/§6.5 structured handoff artifact writer (Story 2.8 / ISI-2525). On Run
+	// complete/pause the agent publishes what the next actor needs as ONE
+	// provenance-tagged artifact row + state change — the sanctioned handoff, not
+	// a chat channel.
+	"ProdHandoffWriter":              "§2.8 structured handoff artifact writer bound to the prod schema",
+	"NewProdHandoffWriter":           "§2.8 constructor",
+	"ProdHandoffWriter.WriteHandoff": "§2.8 write the handoff artifact + state change (comment+state, §6.1)",
+	"HandoffWriteResult":             "§2.8 outcome of a handoff write (artifact id + state)",
+	"HandoffKind":                    "§2.8 handoff variant (complete vs pause) discriminator",
+	"DraftWorkItem":                  "§2.8 downstream work item drafted from the handoff (custody-only)",
+	"ArtifactRef":                    "§6.5 content-addressed reference to a coordination artifact",
+	"AuditHandoffContent":            "§6.5 audit projection of handoff content (read-only)",
+	"AuditHandoffURI":                "§6.5 audit projection of a handoff artifact URI (read-only)",
+	"ErrCompletingRunMismatch":       "§2.8 guard: only the completing Run may write its handoff",
+	"ErrNotHandoffCustodian":         "§2.8 guard: only the item's custodian may write the handoff",
+	"ErrSourceNotComplete":           "§2.8 guard: handoff requires the source Run to be complete",
+
+	// §8 tier-2 scheduled resume for Paused(rate_limited) (Story 2.11 / ISI-2527).
+	// A single durable wake fires at resume_at; no polling, no agent-to-agent path.
+	"ResumeStore":           "§8 durable pause/resume store (single-wake, no polling)",
+	"NewResumeStore":        "§8 constructor",
+	"NewResumeForTest":      "§8 chaos-harness constructor (int-keyed schema)",
+	"ResumeConfig":          "§8 resume store config (backoff/jitter), code-supplied",
+	"DefaultResumeConfig":   "§8 sane default resume config",
+	"ResumeStore.DB":        "§8 harness handle accessor",
+	"ResumeStore.NextWake":  "§8 re-derive the next durable wake from resume_at",
+	"ResumeStore.Pause":     "§8 persist resume_at once at pause time",
+	"ResumeStore.ResumeDue": "§8 pop pauses whose resume_at has elapsed",
+	"ResumeStore.Stats":     "§8 query-counter introspection proving the idle timer does zero reads",
+	"PauseInfo":             "§8 a persisted pause (item + resume_at)",
+	"DuePause":              "§8 a pause whose resume_at has elapsed and is due to wake",
+	"Timer":                 "§8 single-durable-wake timer over the resume store",
+	"NewTimer":              "§8 constructor",
+	"Timer.Run":             "§8 sleep-until-resume_at loop (zero reads while idle)",
+	"Timer.Notify":          "§8 out-of-band kick when an earlier-deadline pause lands",
+	"EqualJitter":           "§8 equal-jitter backoff helper for resume_at derivation",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

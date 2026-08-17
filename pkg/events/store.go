@@ -50,10 +50,14 @@ func (s *SQLStore) Unpublished(ctx context.Context, limit int) ([]OutboxRow, err
 	        FROM coord.outbox
 	       WHERE published_at IS NULL
 	       ORDER BY id`
+	// LIMIT rides as a bind parameter (not string-concatenated) so the query text
+	// stays a constant — avoids gosec G202 and keeps limit non-injectable.
+	var args []any
 	if limit > 0 {
-		q += fmt.Sprintf(" LIMIT %d", limit)
+		q += " LIMIT $1"
+		args = append(args, limit)
 	}
-	rows, err := s.db.QueryContext(ctx, q)
+	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("events.SQLStore.Unpublished: %w", err)
 	}

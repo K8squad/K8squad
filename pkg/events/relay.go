@@ -72,7 +72,7 @@ func NewRelay(cfg RelayConfig) (*Relay, error) {
 	if poll <= 0 {
 		poll = 2 * time.Second
 	}
-	var m Metrics = cfg.Metrics
+	m := cfg.Metrics
 	if m == nil {
 		m = nopMetrics{}
 	}
