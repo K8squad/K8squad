@@ -26,8 +26,10 @@ concurrency:
 
 jobs:
   # Single source of truth for the component fan-out. Emits typed JSON matrices that the
-  # legs below consume via fromJSON(). Runs on a GitHub-hosted runner so it never eats a
-  # self-hosted slot.
+  # legs below consume via fromJSON(). The reusable workflow's emit job runs on a self-hosted
+  # runner (R1 — K8squad/K8squad has NO hosted-runner minutes; a hosted job queue-hangs and
+  # would wedge every downstream lane). The leg is trivial (echoes JSON) so it does not
+  # meaningfully contend for the two slots.
   components:
     uses: ./.github/workflows/component-matrix.yml
 
