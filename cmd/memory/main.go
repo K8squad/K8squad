@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"log"
@@ -20,6 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the discussion projection source
+
+	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/discussionindex"
 	"github.com/K8squad/K8squad/internal/memory"
 )
 
@@ -62,7 +67,23 @@ func main() {
 	defer store.Close()
 	log.Printf("ksquad-memory: store ready (pgvector, dim=%d)", memory.EmbeddingDim)
 
+	// The §7.1 embedder seam: the deterministic local default (a live endpoint client is a fast-follow
+	// behind Config.Embedder*). Shared by the read tools (embed the query) and the indexer (embed bodies).
+	embedder := memory.NewHashingEmbedder()
+
+	// Untrusted read tools (§7.3.2): memory_search + the scoped discussion_search(project). Until the
+	// shared MCP transport (6.2) lands, they are reachable over a thin JSON/HTTP surface.
+	readSvc := memory.NewReadService(store, embedder)
+	tools := memory.NewToolHTTP(readSvc)
+
+	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
+	// messages into the memory index out of band; it NEVER blocks a room write or Run (AC5). If the
+	// discussion schema is absent or the DB handle can't open, indexing is simply disabled — it must
+	// never prevent the memory service (and its reads) from starting.
+	startDiscussionIndexer(ctx, cfg.DatabaseURL, store, embedder)
+
 	mux := http.NewServeMux()
+	tools.Mount(mux)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -94,4 +115,29 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is
+// deliberately fail-open: any setup problem (can't open the DB handle) disables indexing with a log
+// line rather than taking down the memory service — recall is a fast-follow property, never a gate on
+// the room or the service (AC5, §7.6). The sweep itself tolerates a missing discussion schema (its
+// query error is logged and retried), so the indexer can start before 10.1 is provisioned.
+func startDiscussionIndexer(ctx context.Context, dsn string, store *memory.PgVectorStore, embedder memory.Embedder) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: discussion indexer disabled (open db: %v)", err)
+		return
+	}
+	ix := discussionindex.NewIndexer(discussion.NewStore(db), store, embedder, 0)
+	interval := 15 * time.Second
+	if v := os.Getenv("DISCUSSION_INDEX_INTERVAL"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil {
+			interval = d
+		}
+	}
+	log.Printf("ksquad-memory: discussion indexer running (interval=%s)", interval)
+	go func() {
+		ix.Run(ctx, interval)
+		_ = db.Close()
+	}()
 }

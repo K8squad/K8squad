@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PgVectorStore is the v1 MemoryBackend: it integrates pgvector as the source-of-truth store (AC5).
+// PgVectorStore is the v1 Backend: it integrates pgvector as the source-of-truth store (AC5).
 // Semantic search is pushed into Postgres via the `<=>` cosine operator over the hnsw ANN index — the
 // service never pulls rows and cosines them in-process (OQ10/ADR-004). Compile-time seam check below.
 type PgVectorStore struct {
@@ -18,7 +18,7 @@ type PgVectorStore struct {
 	dim  int
 }
 
-var _ MemoryBackend = (*PgVectorStore)(nil)
+var _ Backend = (*PgVectorStore)(nil)
 
 // Open connects to Postgres, applies the embedded migrations, and fails closed unless pgvector is
 // present and the schema is at the expected version (AC1). It never degrades to an app-side store.
@@ -130,16 +130,22 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 	}
 
 	// $2 is bound as a text pgvector literal and cast `::vector`; the `<=>` cosine distance is then
-	// computed by pgvector over the hnsw index. Both references cast the same param.
+	// computed by pgvector over the hnsw index. Both references cast the same param. The optional
+	// project/kind narrowing predicates ($4/$5) are pushed INTO the query — a NULL param means "don't
+	// narrow", so a discussion read (project + kind="discussion") and a plain memory read share this one
+	// index-backed plan. The scope and retraction filters are never app-side afterthoughts (AC1/AC3/AC4).
 	const q = `
 		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
 		       created_at, invalidated_at, provenance,
 		       embedding <=> $2::vector AS distance
 		FROM memory.memory_records
 		WHERE squad_id = $1 AND invalidated_at IS NULL
+		  AND ($4::uuid IS NULL OR project_id = $4::uuid)
+		  AND ($5::text IS NULL OR kind = $5::text)
 		ORDER BY embedding <=> $2::vector
 		LIMIT $3`
-	rows, err := s.pool.Query(ctx, q, query.SquadID, encodeVector(query.Embedding), limit)
+	rows, err := s.pool.Query(ctx, q, query.SquadID, encodeVector(query.Embedding), limit,
+		query.ProjectID, query.Kind)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search: %w", err)
 	}
@@ -183,7 +189,7 @@ func (s *PgVectorStore) Close() {
 }
 
 // Pool exposes the underlying pool for integration tests and future co-located schemas (discussion,
-// §7.5). Not part of the MemoryBackend seam.
+// §7.5). Not part of the Backend seam.
 func (s *PgVectorStore) Pool() *pgxpool.Pool { return s.pool }
 
 // encodeVector renders a float32 slice as a pgvector text literal ("[0.1,0.2,...]"). Bound as a text

@@ -351,6 +351,38 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID,
 		return nil, err
 	}
 	defer rows.Close()
+	return scanIndexables(rows)
+}
+
+// AllForMemoryIndex returns live messages across EVERY room created at/after `since`, oldest-first,
+// for the memory service's global background indexer (10.2, §7.6). It is deliberately NOT scoped to a
+// single (project, team): each row carries its own project_id/team_id, so the indexer projects every
+// message into its OWN tenant scope and tenancy is preserved by construction on the read side (the
+// scoped search — §7.3.3). This is the outbox-relay posture (§17.4): a trusted server-internal sweep
+// that never blocks a room write or Run, and can only ever mirror the server-stamped provenance. It is
+// NOT a read path for agents — those go through the Team-scoped search only.
+func (s *Store) AllForMemoryIndex(ctx context.Context, since time.Time, limit int) ([]MemoryIndexable, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	const q = `
+		SELECT m.id, m.thread_id, t.project_id, t.team_id, m.author_principal,
+		       m.author_agent_id, m.author_run_id, m.body, m.created_at
+		FROM discussion.message m
+		JOIN discussion.thread t ON t.id = m.thread_id
+		WHERE m.invalidated_at IS NULL AND m.created_at >= $1
+		ORDER BY m.created_at ASC
+		LIMIT $2`
+	rows, err := s.db.QueryContext(ctx, q, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanIndexables(rows)
+}
+
+// scanIndexables reads MemoryIndexable projection rows carrying the server-stamped provenance triple.
+func scanIndexables(rows *sql.Rows) ([]MemoryIndexable, error) {
 	var out []MemoryIndexable
 	for rows.Next() {
 		var mi MemoryIndexable

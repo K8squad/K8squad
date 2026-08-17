@@ -43,8 +43,13 @@ type WriteRequest struct {
 
 // SearchQuery is a scoped semantic search. It is ALWAYS scoped by SquadID (the tenancy root, AC3);
 // the enforcement predicate against the caller's principal is 6.5 — here scope is a required input.
+// ProjectID and Kind are OPTIONAL narrowing predicates (§7.3.3) pushed INTO the store query — the
+// discussion read tool (10.2) narrows to one Project's room + kind="discussion" without ever widening
+// past SquadID. They only ever tighten the tenancy scope; they can never widen it.
 type SearchQuery struct {
 	SquadID   string
+	ProjectID *string // narrow to one Project (nil ⇒ all projects in the squad)
+	Kind      *string // narrow to one record kind, e.g. "discussion" (nil ⇒ all kinds)
 	Embedding []float32
 	Limit     int
 }
@@ -55,11 +60,11 @@ type SearchHit struct {
 	Distance float64
 }
 
-// MemoryBackend is the §7.1/§7.6 storage/retrieval seam. pgvector is the default and only v1 backend
+// Backend is the §7.1/§7.6 storage/retrieval seam. pgvector is the default and only v1 backend
 // (AC5); the seam exists so GRAIL/alt backends can plug in later without touching the service. It is
 // NOT a place to hide an app-side vector scan — every implementation MUST push semantic search into
 // its store (OQ10/ADR-004).
-type MemoryBackend interface {
+type Backend interface {
 	// Ready reports the store is usable: pgvector present, schema applied at the expected version.
 	// It fails closed — an absent extension or unexpected schema version is an error, never a
 	// silent fallback to a bespoke store (AC1).
