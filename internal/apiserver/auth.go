@@ -25,11 +25,11 @@ import (
 // resolution is the "internal JWT mint": the session token → server-derived AuthorContext
 // (principal + Team scope) that every §7.5 write stamps its provenance from.
 //
-// The resolution BACKING (the auth/session store) is owned by the auth/console track and
-// does not yet exist in the Go tree (no auth schema, no session table). So this file ships
-// the seam — the SessionResolver interface + the CookieAuthenticator that plugs it into the
-// §13 discussion.BFFAuthz choke point — plus an in-memory resolver for dev/test. A Postgres
-// resolver over the real session table lands with that backing (see the ISI-2750 child issue).
+// The resolution BACKING (the auth/session store) is the auth `user` + `session` schema in
+// db/migrations/0006_auth_schema.sql. This file ships the seam — the SessionResolver interface
+// + the CookieAuthenticator that plugs it into the §13 discussion.BFFAuthz choke point — plus an
+// in-memory resolver for dev/test. The production PostgresSessionResolver over that schema lives in
+// session_resolver.go and is wired as the default in cmd/apiserver/main.go (ISI-2758).
 
 // SessionCookieName is the HttpOnly session cookie the BFF forwards upstream (arch §12.3 /
 // ADR-033). It mirrors console/lib/bff.ts `sessionCookieName()` default; a deployment that
@@ -89,7 +89,7 @@ func (a *CookieAuthenticator) Authenticate(r *http.Request) (discussion.AuthorCo
 // StaticSessionResolver is an in-memory SessionResolver keyed by opaque token. It backs local
 // runs and tests so the host is exercisable end-to-end without the (not-yet-built) auth store.
 // It is NOT for production: tokens are compared in plaintext and never expire. Production wires
-// a Postgres resolver over the real session table (ISI-2750 child issue).
+// PostgresSessionResolver over the real auth.session table (session_resolver.go, ISI-2758).
 type StaticSessionResolver struct {
 	Sessions map[string]discussion.AuthorContext
 }
@@ -150,9 +150,9 @@ func LoadStaticSessions(path string) (*StaticSessionResolver, error) {
 	return &StaticSessionResolver{Sessions: m}, nil
 }
 
-// deniedResolver fails every resolution closed. It is the production default until the real
-// session store lands: with it wired, the §13 choke point answers 401 for every gated request
-// (deny-by-default) rather than trusting an unauthenticated caller.
+// deniedResolver fails every resolution closed. Production now defaults to PostgresSessionResolver
+// (session_resolver.go); this remains the explicit deny-all fallback — wire it to make the §13 choke
+// point answer 401 for every gated request (deny-by-default) rather than trust an unauthenticated caller.
 type deniedResolver struct{}
 
 // Resolve always denies.

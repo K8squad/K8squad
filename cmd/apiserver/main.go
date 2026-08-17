@@ -83,9 +83,10 @@ func main() {
 	cancel()
 	log.Printf("ksquad-apiserver: store ready")
 
-	// §13 identity resolver. Production wires the Postgres session store (ISI-2750 child); until
-	// then we deny-by-default, or use a dev sessions file when explicitly opted in.
-	resolver := apiserver.DeniedResolver()
+	// §13 identity resolver. Production resolves the forwarded ksquad_session cookie through the
+	// Postgres auth.session store (ISI-2758, db/migrations/0006_auth_schema.sql); a dev sessions file
+	// overrides it for a local end-to-end run only. Both are fail-closed — an unresolvable cookie is 401.
+	var resolver apiserver.SessionResolver
 	if devPath := os.Getenv("KSQUAD_DEV_SESSIONS"); devPath != "" {
 		r, derr := apiserver.LoadStaticSessions(devPath)
 		if derr != nil {
@@ -97,7 +98,8 @@ func main() {
 		// #nosec G706 -- operator-supplied env path in a startup warning, not request-tainted input.
 		log.Printf("ksquad-apiserver: WARNING — using static dev sessions from %s; NOT for production", devPath)
 	} else {
-		log.Printf("ksquad-apiserver: no session store configured — gated routes fail closed (401) until the auth backing lands (ISI-2750 child)")
+		resolver = apiserver.NewPostgresSessionResolver(db)
+		log.Printf("ksquad-apiserver: resolving ksquad_session via the Postgres auth.session store (fail-closed)")
 	}
 
 	authn := apiserver.NewCookieAuthenticator(resolver)
