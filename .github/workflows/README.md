@@ -12,7 +12,7 @@ required status check.
 | `spine-chaos.yml` | coordination-spine concurrency/chaos suite (claim/lease/fencing) against real Postgres in kind, race-on | PR touching spine paths · push · nightly |
 | `build-images.yml` | multi-arch build → push `ghcr.io` → SBOM (Syft) → CVE scan (Trivy) → sign+attest (cosign, release) | push to `main` · tags `v*` |
 | `security.yml` | govulncheck · npm audit · Trivy fs/config · gitleaks · CodeQL | PR + weekly |
-| `e2e.yml` | full squad smoke via local Ollama (credit-free) + console E2E (Playwright) | nightly · release · manual |
+| `e2e.yml` | **`e2e-ollama` lane** (Story 14.8) — full squad smoke via local, digest-pinned Ollama (credit-free, $0) + console E2E (Playwright); consumes `component-matrix.yml` to single-source the opencode shim it drives; scaffolded/skipped-with-reason until the opencode shim (5.8) + conformance harness (ISI-2114) land | nightly · release · manual |
 
 ## Conventions
 

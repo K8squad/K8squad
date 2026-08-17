@@ -1,8 +1,21 @@
 name: E2E
 
-# Full-platform end-to-end squad scenario + console E2E.
-# The squad scenario uses a local Ollama runtime (small model, digest-pinned) so a full Run path
-# (claim -> dispatch -> shim -> agent -> artifact -> complete) runs with ZERO paid API credits.
+# Story 14.8 (ISI-2746) — the $0 Ollama E2E free-testing lane.
+#
+# Full-platform end-to-end squad scenario + console E2E, driven by a LOCAL Ollama runtime
+# (small model, digest-pinned) so a full Run path (claim -> dispatch -> shim -> agent ->
+# artifact -> complete) runs with ZERO paid API credits on the self-hosted fleet.
+#
+# WIRING (14.8 core requirement): this is the `e2e-ollama` lane of the component-matrix
+# pipeline (Story 14.7 / ISI-2742). It consumes the REUSABLE `component-matrix.yml` and
+# derives the runtime shim it drives from that single source of truth, so the shim list
+# never drifts lane-to-lane (same pattern as ci.yml).
+#
+# SKELETON GATE (14.8): the squad path is opencode-driven (Story 5.8) and gated by the
+# shim conformance harness (ISI-2114). Until BOTH the opencode shim source and the
+# `test/e2e` conformance harness land, the lane is scaffolded and SKIPPED-WITH-REASON —
+# never silently dropped (same convention as every other lane).
+#
 # Heavier than PR CI: runs nightly, on release, and on manual dispatch.
 
 on:
@@ -15,10 +28,28 @@ on:
 permissions:
   contents: read
 
+env:
+  # Small model driving the credit-free squad. `OLLAMA_MODEL_DIGEST` pins the exact manifest
+  # so a re-tag upstream (Ollama tags are mutable) cannot silently swap the model under the
+  # nightly — the pull step fails closed on a digest mismatch (see "Pull + verify" below).
+  # The digest is a placeholder until the model is finalized alongside the opencode shim +
+  # conformance harness; the verify MECHANISM is what 14.8 requires to be real, not the hash.
+  OLLAMA_MODEL: 'qwen2.5:0.5b'
+  OLLAMA_MODEL_DIGEST: ''   # e.g. sha256:<64-hex>; empty = pin not yet finalized (see verify step)
+
 jobs:
-  squad-smoke:
-    name: squad smoke (Ollama, credit-free)
+  # Single source of truth for the component fan-out (Story 14.7 / ISI-2742). The e2e-ollama
+  # lane derives the runtime shim it drives from this reusable workflow's `shims` output so
+  # the shim list is declared in exactly one place and cannot drift from ci.yml.
+  components:
+    uses: ./.github/workflows/component-matrix.yml
+
+  e2e-ollama:
+    name: e2e-ollama (squad smoke, credit-free)
+    needs: components
     runs-on: [self-hosted, linux, x64]   # gitrunner (ISI-2602); a GPU-labelled runner is still optional for larger models
+    # R6 (ISI-2748 epic-14-ci-runner-constraints): Ollama rides as a CPU service container on the
+    # self-hosted box — no GPU required for the 0.5B smoke model, no hosted-runner minutes consumed.
     services:
       ollama:
         image: ollama/ollama:latest
@@ -27,30 +58,65 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Skip if platform source is absent (skeleton phase)
+      - name: Resolve opencode shim path from the component matrix
+        id: shim
+        # The squad path is opencode-driven (Story 5.8). Derive its source path from the
+        # reusable component-matrix `shims` output rather than hardcoding it here, so the
+        # shim list stays single-sourced (14.8 wiring requirement).
+        run: |
+          set -euo pipefail
+          path="$(jq -rn --argjson s '${{ needs.components.outputs.shims }}' \
+            '$s[] | select(.runtime=="opencode") | .path')"
+          if [ -z "$path" ] || [ "$path" = "null" ]; then
+            echo "::error::opencode runtime absent from the component matrix — shim list drift (ISI-2742)."
+            exit 1
+          fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "opencode shim path (from component-matrix): $path"
+
+      - name: Skip-with-reason until opencode shim (5.8) + conformance (ISI-2114) land
         id: guard
         run: |
-          # Gate on BOTH go.mod and the E2E harness directory. The Ollama shim +
-          # conformance scenario live under test/e2e (Phase 2); until that lands,
-          # `go test ./test/e2e/...` fails with "[setup failed]" on the missing
-          # path rather than skipping. Skip-with-reason keeps the nightly green
-          # until the harness exists (same pattern as the CodeQL/console guards).
-          if [ ! -f go.mod ] || [ ! -d test/e2e ]; then
+          # Gate on go.mod, the opencode shim source (Story 5.8), AND the E2E conformance
+          # harness (ISI-2114) under test/e2e. Until all three exist, `go test ./test/e2e/...`
+          # fails with "[setup failed]" on the missing path rather than skipping — so we
+          # skip-with-reason to keep the nightly green (same pattern as the go/shim/console
+          # skeleton guards). No lane is ever silently dropped.
+          missing=""
+          [ -f go.mod ] || missing="$missing go.mod"
+          [ -d "${{ steps.shim.outputs.path }}" ] || [ -d "pkg/shim/opencode" ] || missing="$missing opencode-shim(5.8)"
+          [ -d test/e2e ] || missing="$missing test/e2e-conformance(ISI-2114)"
+          if [ -n "$missing" ]; then
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::E2E squad-smoke harness not present yet (test/e2e absent) — skipped."
+            echo "::notice::e2e-ollama harness not present yet — skipped-with-reason. Missing:$missing"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Pull pinned small model
+      - name: Pull + verify pinned small model (digest fail-closed)
         if: steps.guard.outputs.present == 'true'
         run: |
-          curl -fsS http://localhost:11434/api/pull -d '{"name":"qwen2.5:0.5b"}'   # pin by digest once selected
+          set -euo pipefail
+          # Pull by tag, then verify the resolved manifest digest against the pinned value so
+          # an upstream re-tag cannot swap the model under the nightly. $0: a local pull, no
+          # API keys, no paid credits.
+          curl -fsS http://localhost:11434/api/pull -d "{\"name\":\"${OLLAMA_MODEL}\"}"
+          got="$(curl -fsS http://localhost:11434/api/tags \
+            | jq -r --arg m "$OLLAMA_MODEL" '.models[] | select(.name==$m) | .digest')"
+          echo "resolved digest for ${OLLAMA_MODEL}: ${got:-<none>}"
+          if [ -z "${OLLAMA_MODEL_DIGEST}" ]; then
+            echo "::warning::OLLAMA_MODEL_DIGEST is not pinned yet — recording resolved digest ${got}. Pin this before the lane goes required."
+          elif [ "sha256:${got#sha256:}" != "sha256:${OLLAMA_MODEL_DIGEST#sha256:}" ]; then
+            echo "::error::Ollama model digest drift: got ${got}, pinned ${OLLAMA_MODEL_DIGEST}."
+            exit 1
+          else
+            echo "digest matches pin: ${OLLAMA_MODEL_DIGEST}"
+          fi
 
       - uses: actions/setup-go@v6
         if: steps.guard.outputs.present == 'true'
         with:
-          go-version: stable
+          go-version-file: go.mod
           cache: true
 
       - name: Create kind cluster
@@ -59,12 +125,14 @@ jobs:
         with:
           wait: 120s
 
-      - name: Run squad smoke scenario
+      - name: Run squad smoke scenario (claim -> dispatch -> shim -> agent -> artifact -> complete)
         if: steps.guard.outputs.present == 'true'
         env:
+          # BYO Ollama model-endpoint (Story 5.7 / ISI-2219): the shim negotiates against the
+          # local Ollama base URL — no ANTHROPIC/OPENAI keys are set anywhere in this lane.
           OLLAMA_BASE_URL: http://localhost:11434
+          OLLAMA_MODEL: ${{ env.OLLAMA_MODEL }}
         run: |
-          # Requires the Ollama shim + conformance harness (Phase 2). Skipped-with-reason until then.
           go test -tags=e2e -run 'TestSquadSmoke' ./test/e2e/... -v
 
   console-e2e:
