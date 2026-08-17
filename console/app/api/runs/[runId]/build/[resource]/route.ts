@@ -19,14 +19,14 @@ const RESOURCES = new Set(['tree', 'diff', 'file', 'meta']);
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { runId: string; resource: string } },
+  { params }: { params: Promise<{ runId: string; resource: string }> },
 ): Promise<Response> {
-  const { resource } = params;
+  const { runId: rawRunId, resource } = await params;
   // Unknown resource → 404 (indistinguishable from a denied/missing Run — existence-hiding).
   if (!RESOURCES.has(resource)) {
     return new Response(null, { status: 404 });
   }
-  const runId = encodeURIComponent(params.runId);
+  const runId = encodeURIComponent(rawRunId);
   // Forward the caller's query (?path=, ?ref=run|base) verbatim; the apiserver's read-model
   // resolves paths structurally through git (never raw FS) and applies the caps (8.7a).
   const search = req.nextUrl.search; // includes leading '?' or ''

@@ -6,8 +6,8 @@
 
 import { RunStream } from '@/components/RunStream';
 
-export default function RunPage({ params }: { params: { runId: string } }) {
-  const { runId } = params;
+export default async function RunPage({ params }: { params: Promise<{ runId: string }> }) {
+  const { runId } = await params;
   return (
     <div>
       <header className="card">

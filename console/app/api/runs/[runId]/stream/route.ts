@@ -18,8 +18,8 @@ export const fetchCache = 'force-no-store';
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { runId: string } },
+  { params }: { params: Promise<{ runId: string }> },
 ): Promise<Response> {
-  const runId = encodeURIComponent(params.runId);
+  const runId = encodeURIComponent((await params).runId);
   return proxyEventStream(req, `/api/runs/${runId}/stream`);
 }
