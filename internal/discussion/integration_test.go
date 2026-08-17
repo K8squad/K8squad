@@ -112,11 +112,11 @@ func newServer(db *sql.DB) *httptest.Server {
 }
 
 type postResp struct {
-	ID              uuid.UUID `json:"id"`
-	AuthorPrincipal string    `json:"authorPrincipal"`
-	Messages        []struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedBy string    `json:"createdBy"` // thread creator is "created by" (maps to created_by column)
+	Messages  []struct {
 		ID              uuid.UUID `json:"id"`
-		AuthorPrincipal string    `json:"authorPrincipal"`
+		AuthorPrincipal string    `json:"authorPrincipal"` // messages carry the provenance triple
 	} `json:"messages"`
 }
 
@@ -144,8 +144,8 @@ func TestServerStampsAuthorIgnoringForgedBody(t *testing.T) {
 	}
 	var opened postResp
 	decode(t, res, &opened)
-	if opened.AuthorPrincipal != "principal:real" {
-		t.Errorf("thread created_by: got %q, want principal:real (forged body author must be ignored)", opened.AuthorPrincipal)
+	if opened.CreatedBy != "principal:real" {
+		t.Errorf("thread created_by: got %q, want principal:real (forged body author must be ignored)", opened.CreatedBy)
 	}
 	if len(opened.Messages) != 1 || opened.Messages[0].AuthorPrincipal != "principal:real" {
 		t.Errorf("first message author: got %+v, want principal:real", opened.Messages)
