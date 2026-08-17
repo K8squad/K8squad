@@ -103,11 +103,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Resolve pushed image ref (lowercased, by digest)
+        if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
+        id: imgref
+        env:
+          OWNER: ${{ github.repository_owner }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          # OCI refs must be lowercase. metadata-action lowercases the repo path for the
+          # push, but the SBOM/scan/sign steps below re-derived the ref straight from the
+          # raw (mixed-case) owner — 'K8squad' — which syft/trivy reject as an unparseable
+          # reference. They also pinned a full-sha *tag* (sha-<40 hex>) metadata-action never
+          # pushes (type=sha emits a short tag), so even lowercased the tag would 404.
+          # Pin to the immutable pushed digest under a lowercased repo path instead.
+          echo "ref=${REGISTRY}/${OWNER,,}/ksquad-${{ matrix.component }}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
       - name: Generate SBOM (Syft)
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}:sha-${{ github.sha }}
+          image: ${{ steps.imgref.outputs.ref }}
           format: spdx-json
           output-file: sbom-${{ matrix.component }}.spdx.json
 
@@ -123,7 +138,7 @@ jobs:
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@v0.36.0   # SHA-pinned setup-trivy; v0.28.0's tag ref is broken
         with:
-          image-ref: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}:sha-${{ github.sha }}
+          image-ref: ${{ steps.imgref.outputs.ref }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
@@ -137,6 +152,6 @@ jobs:
         env:
           COSIGN_EXPERIMENTAL: '1'
         run: |
-          IMG=${{ env.REGISTRY }}/${{ github.repository_owner }}/ksquad-${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          IMG=${{ steps.imgref.outputs.ref }}
           cosign sign --yes "$IMG"
           cosign attest --yes --predicate sbom-${{ matrix.component }}.spdx.json --type spdxjson "$IMG"
