@@ -51,19 +51,28 @@ jobs:
           NODE: ${{ needs.components.outputs.node }}
         run: |
           set -euo pipefail
-          # go path is the entrypoint dir (cmd/<c>); node path is the surface dir (console).
-          # Both double as the srcprobe: the guard skips-with-reason until that path lands, so
-          # shipping a Dockerfile ahead of source can't trip a doomed build on main (ISI-2644).
+          # The srcprobe must resolve to a marker whose PRESENCE means the image is actually
+          # buildable — the guard skips-with-reason until it lands, so shipping a Dockerfile
+          # ahead of source can't trip a doomed build on main (ISI-2644). The right marker
+          # differs per family:
+          #   go   — the component-matrix path IS the entrypoint dir (cmd/<c>); its presence
+          #          implies main.go, so probe the dir directly.
+          #   node — the path is the surface dir (console/), which exists as soon as ANY file
+          #          lands under it (e.g. e2e specs). But Dockerfile.<c> `COPY console/package.json`
+          #          hard-fails without the build manifest, so probe <path>/package.json — the
+          #          same marker the removed inline matrix used. Probing the bare dir would run a
+          #          doomed console build the moment a test file appeared (exactly ISI-2644's trap).
           # GO/NODE come from the step env (the reusable component-matrix outputs).
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os
-          items = json.loads(os.environ["GO"]) + json.loads(os.environ["NODE"])
-          out = [
-              {"component": i["component"],
-               "dockerfile": "Dockerfile." + i["component"],
-               "srcprobe": i["path"]}
-              for i in items
-          ]
+          go = json.loads(os.environ["GO"])
+          node = json.loads(os.environ["NODE"])
+          def row(i, srcprobe):
+              return {"component": i["component"],
+                      "dockerfile": "Dockerfile." + i["component"],
+                      "srcprobe": srcprobe}
+          out = ([row(i, i["path"]) for i in go]
+                 + [row(i, i["path"] + "/package.json") for i in node])
           print("images=" + json.dumps(out, separators=(",", ":")))
           PY
           echo "::notice::image build matrix planned from component-matrix outputs"
