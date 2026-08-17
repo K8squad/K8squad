@@ -115,3 +115,42 @@ export async function proxyJson(
     },
   });
 }
+
+/**
+ * Proxy a JSON *mutation* (POST/PUT/PATCH/DELETE) to the apiserver, surfacing status VERBATIM.
+ *
+ * Used by write surfaces that must still traverse the ONE authz choke point (arch §13 / ADR-013):
+ * e.g. posting a discussion message (story 10.3 AC3/AC4). The BFF forwards the caller's session
+ * identity and the request body UNCHANGED — it adds no BFF-asserted principal and stamps no
+ * provenance. Provenance (author_*) is stamped SERVER-SIDE from the authenticated principal, so a
+ * client body of `{ body, parentId? }` is relayed as-is and the apiserver is the sole author of
+ * attribution. As with reads, a deny is existence-hiding: a 404 (or 401/403) is relayed verbatim
+ * and never re-mapped, so a foreign-Project write cannot distinguish deny from not-found.
+ */
+export async function proxyJsonWrite(
+  req: NextRequest,
+  upstreamPath: string,
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+): Promise<Response> {
+  const url = apiserverBaseUrl() + upstreamPath;
+  // Forward the caller's raw body unchanged; the apiserver validates + server-stamps provenance.
+  const inboundBody = await req.text();
+  const contentType = req.headers.get('content-type') ?? 'application/json';
+  const upstream = await fetch(url, {
+    method,
+    headers: upstreamHeaders(req, { accept: 'application/json', 'content-type': contentType }),
+    body: inboundBody.length > 0 ? inboundBody : undefined,
+    cache: 'no-store',
+    signal: req.signal,
+  });
+
+  const body = await upstream.arrayBuffer();
+  return new Response(body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: {
+      'content-type': upstream.headers.get('content-type') ?? 'application/json',
+      'cache-control': 'no-store',
+    },
+  });
+}

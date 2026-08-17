@@ -1,0 +1,142 @@
+/* Discussion-room theming (Story 10.3 AC6 / Story 8.9 whole-shell T1–T7).
+ *
+ * The room hardcodes NO colours: every value derives from the 8.9 shell tokens
+ * defined in app/globals.css ([data-theme] CSS vars). The provenance-chip bases
+ * below map each badge kind onto a shell token, so the room re-tints with the
+ * whole shell on dark ⇄ light toggle. A chip's BORDER is derived from its BASE
+ * (`--chip-base`, set per badge kind by AuthorBadge) via color-mix — the CSS
+ * analogue of the 8.9 theme-invariant `#{BASE}55` rule, so the border is
+ * identical in dark and light. The accent (agent) and the reserved status hues
+ * (human/system/unknown) are themselves theme-invariant in globals.css, so the
+ * chip palette is theme-invariant by construction. */
+:root {
+  /* Badge bases → 8.9 shell tokens (never literal hex). Run gets its own
+   * theme-invariant hue defined alongside the accent in globals.css. */
+  --ksq-badge-agent: var(--accent);
+  --ksq-badge-human: var(--status-running);
+  --ksq-badge-system: var(--status-idle);
+  --ksq-badge-unknown: var(--status-blocked);
+  --ksq-badge-run: var(--ksq-run);
+}
+
+.ksq-discussion-page__head {
+  margin-bottom: 16px;
+}
+.ksq-discussion-page__head h1 {
+  margin: 0 0 4px;
+}
+
+.ksq-room {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ksq-thread {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ksq-thread--roots > .ksq-message {
+  border-bottom: 1px solid var(--border);
+}
+/* Nested replies indent and hang off a rail, so thread depth is legible. */
+.ksq-thread .ksq-thread {
+  margin-left: 18px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.ksq-message {
+  padding: 10px 0;
+}
+.ksq-message__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.ksq-message__ts {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ksq-message__edited {
+  font-size: 11px;
+  color: var(--text-2);
+  font-style: italic;
+}
+.ksq-message__body {
+  margin: 0;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+.ksq-message__tombstone {
+  color: var(--text-2);
+  font-style: italic;
+  margin: 0;
+}
+
+.ksq-author {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.ksq-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  line-height: 1.3;
+  /* Theme-invariant border derived from the chip base (the #{BASE}55 rule). */
+  border-color: color-mix(in srgb, var(--chip-base) 33%, transparent);
+  color: var(--chip-base);
+}
+.ksq-chip--run {
+  text-decoration: none;
+}
+.ksq-chip--run:hover {
+  border-color: var(--chip-base);
+  text-decoration: none;
+}
+
+.ksq-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.ksq-composer__body {
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  min-height: 64px;
+  resize: vertical;
+}
+.ksq-composer__body:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ksq-composer__submit {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #ffffff;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 6px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ksq-composer__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
