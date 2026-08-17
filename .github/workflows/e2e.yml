@@ -87,15 +87,20 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          # App lives in console/, not the repo root (setup-node resolves from root).
+          cache-dependency-path: console/package-lock.json
 
+      # The guard above is root-relative (probes console/package.json); the npm steps run in console/.
       - name: Install deps + browsers
         if: steps.guard.outputs.present == 'true'
+        working-directory: console
         run: |
           npm ci
           npx playwright install --with-deps
 
       - name: Run Playwright E2E
         if: steps.guard.outputs.present == 'true'
+        working-directory: console
         run: npx playwright test
 
       - name: Upload Playwright report

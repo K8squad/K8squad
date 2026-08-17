@@ -207,15 +207,31 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          # The app lives in console/, not the repo root — point npm caching at its lockfile
+          # (setup-node resolves this from the repo root, ignoring per-step working-directory).
+          cache-dependency-path: console/package-lock.json
 
+      # The guard above is root-relative (it probes console/package.json), so it must NOT run
+      # inside console/. Every npm step below does — the package.json + lockfile live there.
       - name: Install
         if: steps.guard.outputs.present == 'true'
+        working-directory: console
         run: npm ci
 
       - name: Lint
         if: steps.guard.outputs.present == 'true'
+        working-directory: console
         run: npm run lint
 
-      - name: Test (coverage)
+      - name: Typecheck
         if: steps.guard.outputs.present == 'true'
-        run: npm test -- --coverage
+        working-directory: console
+        run: npm run typecheck
+
+      # `next build` compiles every route + lib module and re-runs ESLint — the strongest
+      # signal we have for a BFF/SSR scaffold. Coverage-gated unit tests are deferred until a
+      # test framework is wired (mirrors the Go coverage-ratchet deferral in ISI-2714).
+      - name: Build
+        if: steps.guard.outputs.present == 'true'
+        working-directory: console
+        run: npm run build
