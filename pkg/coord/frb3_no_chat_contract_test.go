@@ -152,6 +152,24 @@ var allowedSurface = map[string]string{
 	"Timer.Run":             "§8 sleep-until-resume_at loop (zero reads while idle)",
 	"Timer.Notify":          "§8 out-of-band kick when an earlier-deadline pause lands",
 	"EqualJitter":           "§8 equal-jitter backoff helper for resume_at derivation",
+
+	// §6.4 Run reconcile machine's durable Store binding (Story 3.1 / ISI-2655,
+	// physical integration of pkg/reconcile / ISI-2535). Custody-only: every method
+	// is a fenced/step-CAS read or a co-committed advance over the coord.claim +
+	// §6.5 audit + canonical §6.6 outbox record. No parameter carries worker-authored
+	// content and nothing published re-enters coordination (§6.4/§17.4 no-P2P) —
+	// from_step/to_step ride in a one-way outbox projection, not an agent-to-agent
+	// channel.
+	"ProdReconcileStore":            "§6.4 durable reconcile Store bound to the prod coord schema",
+	"NewProdReconcileStore":         "§6.4 constructor (binds one Run's claim row)",
+	"ProdReconcileStore.Step":       "§6.4 read the durable reconcile_step (source of truth, AC2)",
+	"ProdReconcileStore.Fence":      "§6.3 read the monotonic fence token",
+	"ProdReconcileStore.Advance":    "§6.4 conditional step-CAS advance co-committing audit+outbox (AC3/AC6)",
+	"ProdReconcileStore.Reclaim":    "§6.3 monotonic fence-first reclaim (bump + stamp reclaim_fenced_at)",
+	"ProdReconcileStore.SetStep":    "§8 unguarded re-point for the Failed→Claiming retry re-entry",
+	"ProdReconcileStore.AuditRows":  "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
+	"ProdReconcileStore.OutboxRows": "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
+	"ProdReconcileStore.Err":        "§6.4 sticky infrastructure-error accessor (requeue signal)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

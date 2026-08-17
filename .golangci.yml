@@ -47,6 +47,13 @@ linters:
           - gosec
         text: "G706"
         path: cmd/memory/main\.go
+      # revive exported-stutter on memory.MemoryBackend: the seam name is a
+      # deliberate public API (§7.1/§7.6); any rename is an ISI-2222 concern,
+      # not a trunk-green blocker.
+      - linters:
+          - revive
+        text: stutters
+        path: ^internal/memory/backend\.go
     paths:
       - third_party$
       - builtin$
