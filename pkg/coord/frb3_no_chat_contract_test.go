@@ -78,6 +78,8 @@ var allowedSurface = map[string]string{
 	"Coordinator.RedriveClaim":  "§6.4 idempotent reconcile re-entry",
 	"Coordinator.DispatchOnce":  "§6.4 custody-gated dispatch idempotency marker",
 	"Coordinator.ReclaimFenced": "§6.3 fence-BEFORE-release reclaim",
+	"Coordinator.WithFencer":    "§6.3 wire the resource-layer fence that gates reclaim release (fail-closed)",
+	"ResourceFencer":            "§6.3 resource-layer kill/cordon confirm seam — custody gate, not an A2A channel",
 
 	// §6.2 production SKIP LOCKED claim surface (ISI-2523, story 2.2 —
 	// merged to main via PR #27 while this branch was in review).

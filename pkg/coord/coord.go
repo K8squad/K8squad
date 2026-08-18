@@ -95,12 +95,38 @@ type Config struct {
 // no mutable Go state beyond the *sql.DB and its Config, so its methods are safe
 // for concurrent use by many goroutines (each opens its own transaction).
 type Coordinator struct {
-	db  *sql.DB
-	cfg Config
+	db     *sql.DB
+	cfg    Config
+	fencer ResourceFencer
+}
+
+// ResourceFencer confirms a resource-layer fence of a dying claim holder BEFORE
+// the coordinator releases that holder's claim to a new principal (§6.3). A
+// production implementation cordons/kills the surviving process's pod (or revokes
+// its resource-layer credential) and returns nil ONLY once that fence is
+// CONFIRMED — so a zombie that outlived its lease can no longer issue direct
+// PVC/resource writes outside the spine. A non-nil error means the fence could
+// not be confirmed: ReclaimFenced then fails CLOSED (aborts the reclaim, leaves
+// the claim with its original holder) rather than releasing to a new holder while
+// the zombie may still be live. (Copilot review: reclaim-does-not-fence-resource-layer)
+//
+// Holder identifies the dying holder as recorded on the claim row at reclaim
+// time: item is the work-item id, principal/run its holder_principal/run_id (both
+// empty if the claim row carries no holder).
+type ResourceFencer interface {
+	Fence(ctx context.Context, item int, principal, run string) error
 }
 
 // New returns a Coordinator bound to cfg.
 func New(db *sql.DB, cfg Config) *Coordinator { return &Coordinator{db: db, cfg: cfg} }
+
+// WithFencer returns c wired to a resource-layer fencer whose confirmed success
+// gates ReclaimFenced's release step (fail-closed). Passing nil (the default,
+// unwired state) preserves the SQL-order-only reclaim the chaos gate proves: the
+// durable reclaim_fenced_at stamp + fence bump, with no resource-layer kill. The
+// Coordinator holds no other mutable state, so this returns the same *Coordinator
+// for call chaining; wire it once at construction before concurrent use.
+func (c *Coordinator) WithFencer(f ResourceFencer) *Coordinator { c.fencer = f; return c }
 
 // DB exposes the backing handle (used by the chaos harness for open-item polling
 // and its differential teeth arms).
@@ -345,16 +371,20 @@ func (c *Coordinator) DispatchOnce(ctx context.Context, item int, principal, run
 // fenced and its late stale-fence write is rejected. Returns the bumped fence, or
 // an error if the item still holds a live lease. (C5)
 //
-// SCOPE (Copilot review: reclaim-does-not-fence-resource-layer): in THIS gate the
-// "fence the holder" step is the durable reclaim_fenced_at stamp + fence bump
-// only. That proves the §6.3 SQL ORDER — the marker is stamped strictly before
-// the release that bumps the fence — so a survivor is fenced against DB writes
-// (Complete/Renew reject its stale fence). It does NOT yet perform or CONFIRM a
-// resource-layer kill/cordon of the surviving process, so a zombie could still
-// issue direct PVC/resource writes outside the spine. Wiring a real pod-kill/
-// cordon whose success is confirmed (fail-closed) before the claim is released —
-// and a cross-process test that proves release cannot become visible before that
-// fencing succeeds — is production-wiring follow-up, not part of this gate.
+// RESOURCE-LAYER FENCE (Copilot review: reclaim-does-not-fence-resource-layer):
+// when a ResourceFencer is wired (WithFencer), the "fence the holder" step is no
+// longer the DB stamp alone: between the reclaim_fenced_at stamp and the release,
+// the fencer must CONFIRM a resource-layer kill/cordon of the surviving process.
+// If it cannot (Fence returns error), ReclaimFenced fails CLOSED — the whole
+// transaction rolls back, so the release never becomes visible and the item keeps
+// its original holder — rather than handing the claim to a new principal while a
+// zombie may still issue direct PVC/resource writes. Because the fencer call sits
+// strictly before the commit, an observer can never see the release ordered ahead
+// of a confirmed fence. With no fencer wired (the default), behavior is unchanged:
+// the SQL-order-only reclaim the chaos gate proves (durable stamp + fence bump),
+// which fences a survivor against DB writes but not against out-of-band resource
+// writes. The concrete K8s pod-kill/cordon fencer is supplied by the operator
+// wiring that owns the live resource layer.
 func (c *Coordinator) ReclaimFenced(ctx context.Context, item int, newPrincipal, newRun string) (int64, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -362,10 +392,27 @@ func (c *Coordinator) ReclaimFenced(ctx context.Context, item int, newPrincipal,
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	// (1) fence the dying holder FIRST.
+	// (1) fence the dying holder FIRST — durable DB marker.
 	stamp := fmt.Sprintf(`UPDATE %s SET reclaim_fenced_at=clock_timestamp() WHERE work_item_id=$1`, c.cfg.Claim)
 	if _, err := tx.ExecContext(ctx, stamp, item); err != nil {
 		return 0, fmt.Errorf("coord.ReclaimFenced: stamp fence: %w", err)
+	}
+	// (1b) CONFIRM the resource-layer fence of the dying holder BEFORE any release.
+	// The claim row still carries the outgoing holder here (the acquire below has
+	// not run yet), so it names the exact process to fence. A confirm failure aborts
+	// via the deferred rollback — fail-closed, no release, holder unchanged.
+	if c.fencer != nil {
+		var holder, holderRun sql.NullString
+		who := fmt.Sprintf(`SELECT holder_principal, run_id FROM %s WHERE work_item_id=$1`, c.cfg.Claim)
+		switch err := tx.QueryRowContext(ctx, who, item).Scan(&holder, &holderRun); err {
+		case nil, sql.ErrNoRows:
+			// proceed: empty holder → fence a no-op holder (fencer decides)
+		default:
+			return 0, fmt.Errorf("coord.ReclaimFenced: read holder: %w", err)
+		}
+		if err := c.fencer.Fence(ctx, item, holder.String, holderRun.String); err != nil {
+			return 0, fmt.Errorf("coord.ReclaimFenced: resource-layer fence unconfirmed, refusing release: %w", err)
+		}
 	}
 	// (2) THEN the §6.2 release+acquire that bumps the fence.
 	fence, ok := c.acquireTx(ctx, tx, item, newPrincipal, newRun)
