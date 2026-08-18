@@ -65,3 +65,41 @@ vet: ## Run go vet against code.
 .PHONY: controller-gen
 controller-gen: $(LOCALBIN) ## Download controller-gen locally if necessary.
 	test -s $(CONTROLLER_GEN) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+# ---------------------------------------------------------------------------
+# Story 14.1 (ISI-2743) — L1 feature / functional test lane.
+# The L1 layer (testing-strategy §3) is "each component's units + integration".
+# These targets are the single named entrypoint the component-matrix pipeline
+# (.github/workflows/l1.yml, ISI-2742 primitive) invokes per component, so the
+# lane the humans read in CI and the command a developer runs locally are the
+# same. Skeleton/unlanded components (operator, apiserver, shims, console) are
+# skip-with-reason here and in the workflow — never silently omitted (§3.3, §10.4).
+# ---------------------------------------------------------------------------
+
+ENVTEST ?= $(LOCALBIN)/setup-envtest
+# Pairs with controller-runtime v0.19.x (go.mod); bump alongside the K8s libs.
+ENVTEST_VERSION ?= release-0.19
+ENVTEST_K8S_VERSION ?= 1.31.0
+
+.PHONY: l1
+l1: l1-unit l1-integration l1-node ## Run the whole L1 feature/functional suite (unit + integration + console).
+
+.PHONY: l1-unit
+l1-unit: ## L1 unit half: race-enabled untagged feature/functional tests over every Go package.
+	go test -race -covermode=atomic ./...
+
+.PHONY: l1-integration
+l1-integration: ## L1 integration half: service-backed feature tests. Each suite SKIPs when its DSN/URL is unset, so this is safe to run without services.
+	go test -p 1 -tags=integration,discussion_integration ./...
+
+.PHONY: setup-envtest
+setup-envtest: $(LOCALBIN) ## Install setup-envtest (provisions the envtest kube-apiserver+etcd binaries for controller integration).
+	test -s $(ENVTEST) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+
+.PHONY: l1-node
+l1-node: ## L1 console half: Vitest units (skip-with-reason until console/package.json lands — §3.3 Epic 8).
+	@if [ -f console/package.json ]; then \
+	  cd console && npm ci && npm test -- --run ; \
+	else \
+	  echo ">> console/package.json absent — L1 node lane skipped (skip-with-reason, §3.3 Epic 8 / ISI-2743)"; \
+	fi
