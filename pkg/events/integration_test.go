@@ -187,6 +187,98 @@ func TestOutbox_SQLStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestOutbox_RunEventReadSide proves the §4.4 SSE projection read side against the
+// real DDL: entity='run' rows are the only ones the tail returns, LatestRunEventID
+// tracks the high-water mark, RunEventsForRun filters by run_id and afterID, and a
+// non-uuid runID is a caught cast error (best-effort empty replay upstream).
+func TestOutbox_RunEventReadSide(t *testing.T) {
+	db := integrationDB(t)
+	ctx := context.Background()
+	store := NewSQLStore(db)
+
+	const runA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const runB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+	// A non-run event and a run event with NULL run_id must both be excluded from the tail.
+	captureRunEvent(t, db, "work_item", "", "claimed", `{}`)
+	captureRunEvent(t, db, "run", "", "created", `{}`) // entity=run but no run_id → not fan-outable
+
+	a1 := lastOutboxID(t, db, func() { captureRunEvent(t, db, "run", runA, "reconcile_advanced", `{"to_step":"x"}`) })
+	a2 := lastOutboxID(t, db, func() { captureRunEvent(t, db, "run", runA, "reconcile_advanced", `{"to_step":"y"}`) })
+	b1 := lastOutboxID(t, db, func() { captureRunEvent(t, db, "run", runB, "completed", `{"ok":true}`) })
+
+	latest, err := store.LatestRunEventID(ctx)
+	if err != nil || latest != b1 {
+		t.Fatalf("LatestRunEventID = %d err=%v, want %d", latest, err, b1)
+	}
+
+	// Tail from 0 returns exactly the three run_id-bearing rows in id order (excludes the
+	// work_item row and the NULL-run_id run row).
+	tail, err := store.RunEventsAfter(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("RunEventsAfter: %v", err)
+	}
+	if len(tail) != 3 || tail[0].ID != a1 || tail[1].ID != a2 || tail[2].ID != b1 {
+		t.Fatalf("RunEventsAfter tail wrong: %+v", tail)
+	}
+	if tail[0].RunID != runA || tail[0].EventType != "reconcile_advanced" || string(tail[0].Payload) != `{"to_step":"x"}` {
+		t.Fatalf("RunEventsAfter row 0 fields wrong: %+v", tail[0])
+	}
+
+	// afterID excludes already-seen ids (live-tail watermark advance).
+	if after, _ := store.RunEventsAfter(ctx, a2, 0); len(after) != 1 || after[0].ID != b1 {
+		t.Fatalf("RunEventsAfter(afterID=%d) = %+v, want just b1", a2, after)
+	}
+
+	// Per-run replay: only runA, only ids > a1.
+	replay, err := store.RunEventsForRun(ctx, runA, a1, 0)
+	if err != nil {
+		t.Fatalf("RunEventsForRun: %v", err)
+	}
+	if len(replay) != 1 || replay[0].ID != a2 {
+		t.Fatalf("RunEventsForRun(runA, after a1) = %+v, want just a2", replay)
+	}
+
+	// A non-uuid runID surfaces as a caught cast error (streamRun degrades to live).
+	if _, err := store.RunEventsForRun(ctx, "not-a-uuid", 0, 0); err == nil {
+		t.Fatal("RunEventsForRun with non-uuid runID: want cast error, got nil")
+	}
+}
+
+// captureRunEvent commits one outbox event (any entity) in its own txn.
+func captureRunEvent(t *testing.T, db *sql.DB, entity, runID, eventType, payload string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := Capture(ctx, tx, Event{
+		Entity:    entity,
+		ProjectID: testProject,
+		EventType: eventType,
+		RunID:     runID,
+		Payload:   []byte(payload),
+	}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("capture %s/%s: %v", entity, eventType, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// lastOutboxID runs fn (which inserts exactly one outbox row) and returns that row's id.
+func lastOutboxID(t *testing.T, db *sql.DB, fn func()) int64 {
+	t.Helper()
+	fn()
+	var id int64
+	if err := db.QueryRow(`SELECT id FROM coord.outbox ORDER BY id DESC LIMIT 1`).Scan(&id); err != nil {
+		t.Fatalf("read outbox id: %v", err)
+	}
+	return id
+}
+
 // captureOne commits one work_item + claimed event and returns the outbox id.
 func captureOne(t *testing.T, db *sql.DB) int64 {
 	t.Helper()

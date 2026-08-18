@@ -1,9 +1,11 @@
 package apiserver
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
 
@@ -50,18 +52,33 @@ type subscriber struct {
 	ch chan Event
 }
 
+// runReplayer supplies the durable per-run event tail so a reconnecting client can resume from
+// its Last-Event-ID. It is the read side of coord.outbox (events.RunEventReader, adapted in
+// runevents.go); nil ⇒ the Hub live-tails only (no replay), the original behavior. Replay is
+// best-effort: an error is logged and the stream continues live, never failing the connection.
+type runReplayer interface {
+	// replayRun returns this run's events with SSE id > afterID, ascending. The returned Events
+	// carry the outbox row id as Event.ID so the client can resume again from the last one.
+	replayRun(ctx context.Context, runID string, afterID int64) ([]Event, error)
+}
+
 // Hub fans run events out to subscribed SSE connections. The zero value is not usable; use
 // NewHub. It is safe for concurrent Publish/Subscribe/Unsubscribe.
 type Hub struct {
 	mu        sync.RWMutex
 	subs      map[string]map[*subscriber]struct{} // runID → set of live subscribers
 	keepAlive time.Duration
+	replay    runReplayer // optional; nil ⇒ live-tail only (no Last-Event-ID replay)
 }
 
 // NewHub builds an empty Hub with the default keep-alive interval.
 func NewHub() *Hub {
 	return &Hub{subs: make(map[string]map[*subscriber]struct{}), keepAlive: defaultKeepAlive}
 }
+
+// SetReplayer wires the durable per-run tail used for Last-Event-ID replay. Called once at
+// wiring time (main.go / NewServer) before the Hub serves; nil leaves the Hub live-tail only.
+func (h *Hub) SetReplayer(r runReplayer) { h.replay = r }
 
 // Subscribe registers a new subscriber for runID and returns it. Callers MUST Unsubscribe when
 // done (the stream handler defers it).
@@ -153,6 +170,9 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 		return // streaming unsupported by this writer; status already sent
 	}
 
+	// Subscribe BEFORE replay so any event committed during the replay query is buffered on the
+	// live channel rather than lost in the gap between the replay snapshot and the tail. The two
+	// feeds then overlap by at most a bounded suffix, which the id-dedup below collapses exactly.
 	sub := h.Subscribe(runID)
 	defer h.Unsubscribe(runID, sub)
 
@@ -164,6 +184,40 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": subscribed run=%s\n\n", runID)
 	_ = rc.Flush()
 
+	ctx := r.Context()
+
+	// Last-Event-ID replay (§4.4 reconnect). On reconnect EventSource resends the last `id:` it saw
+	// via the Last-Event-ID header (a `?lastEventId=` query overrides it for non-EventSource clients
+	// and tests). We replay the durable outbox tail for this run STRICTLY AFTER that id, then dedup
+	// the live channel against the highest id replayed so an event carried by both feeds is written
+	// once. A fresh connection (no/blank/invalid id) replays nothing and live-tails, as before.
+	replayedThrough := int64(-1)
+	if h.replay != nil {
+		if afterID, ok := parseLastEventID(r); ok {
+			evs, err := h.replay.replayRun(ctx, runID, afterID)
+			if err != nil {
+				// Best-effort: a replay failure (e.g. a non-uuid runID, a DB blip) must not fail the
+				// stream. Fall through to a live tail; the client simply misses backfill this connect.
+				fmt.Fprintf(w, ": replay unavailable\n\n")
+				_ = rc.Flush()
+			} else {
+				for _, ev := range evs {
+					if err := writeEvent(w, ev); err != nil {
+						return
+					}
+					if id, perr := strconv.ParseInt(ev.ID, 10, 64); perr == nil && id > replayedThrough {
+						replayedThrough = id
+					}
+				}
+				if len(evs) > 0 {
+					if err := rc.Flush(); err != nil {
+						return
+					}
+				}
+			}
+		}
+	}
+
 	ka := h.keepAlive
 	if ka <= 0 {
 		ka = defaultKeepAlive
@@ -171,7 +225,6 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 	ticker := time.NewTicker(ka)
 	defer ticker.Stop()
 
-	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
@@ -187,6 +240,11 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return // unsubscribed
 			}
+			// Dedup: drop a live event already delivered by replay (id <= replayedThrough). Events
+			// with an unparseable/empty id are never deduped — they are passed through unchanged.
+			if id, perr := strconv.ParseInt(ev.ID, 10, 64); perr == nil && id <= replayedThrough {
+				continue
+			}
 			if err := writeEvent(w, ev); err != nil {
 				return
 			}
@@ -195,6 +253,24 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// parseLastEventID reads the reconnect cursor from the Last-Event-ID header, or a ?lastEventId=
+// query override (non-EventSource clients / tests). It returns (afterID, true) only for a
+// non-negative integer; a missing, blank, or malformed value yields (0, false) ⇒ no replay.
+func parseLastEventID(r *http.Request) (int64, bool) {
+	raw := r.Header.Get("Last-Event-ID")
+	if q := r.URL.Query().Get("lastEventId"); q != "" {
+		raw = q
+	}
+	if raw == "" {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id < 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // writeEvent serializes one Event in SSE wire format. Multi-line data is split into successive

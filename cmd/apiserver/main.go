@@ -31,7 +31,9 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
+	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/events"
 )
 
 func main() {
@@ -119,11 +121,45 @@ func main() {
 		log.Printf("ksquad-apiserver: squad-overview read model ready (informer cache synced)")
 	}
 
+	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
+	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
+	// git read-model serve a local repo. Nil ⇒ the routes keep the documented 501 (fail visible).
+	var builds *buildbrowser.Service
+	if runsPath := os.Getenv("KSQUAD_DEV_RUNS"); runsPath != "" {
+		runs, rerr := buildbrowser.LoadStaticRuns(runsPath)
+		if rerr != nil {
+			log.Fatalf("ksquad-apiserver: load dev runs: %v", rerr)
+		}
+		builds = buildbrowser.NewService(runs, buildbrowser.NewGitReader())
+		// #nosec G706 -- operator-supplied env path in a startup warning, not request-tainted input.
+		log.Printf("ksquad-apiserver: WARNING — using static dev runs from %s; NOT for production", runsPath)
+	} else {
+		log.Printf("ksquad-apiserver: no Run source configured — build-browser routes answer 501 until the read-model backing lands (ISI-2759)")
+	}
+
+	// §4.4 SSE run-progress publish source (ISI-2756). The run-entity rows on coord.outbox — the
+	// same durable journal the NATS relay flushes — are read DIRECTLY as both the live fan-out
+	// feed and the Last-Event-ID replay tail, so the console transport carries no NATS client and
+	// the outbox stays the single source of truth for stream + resume. This is a read-only
+	// downstream projection (§17.4): it never writes the outbox and is never on a write path or the
+	// readiness probe, so a lagging projection delays console progress but never blocks a Run.
+	runEvents := events.NewSQLStore(db)
+	hub := apiserver.NewHub()
+	hub.SetReplayer(apiserver.NewRunReplayer(runEvents))
+	projector := apiserver.NewRunEventSource(runEvents, hub)
+	go func() {
+		if err := projector.Run(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("ksquad-apiserver: run-event projector stopped: %v", err)
+		}
+	}()
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
 		Ready:         dbReady{db},
 		Overview:      overview,
+		Builds:        builds,
+		Hub:           hub,
 	})
 
 	httpSrv := &http.Server{

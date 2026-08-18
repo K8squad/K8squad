@@ -30,17 +30,19 @@ import (
 )
 
 // StepSource reads the committed durable reconcile_step for a Run out of the
-// coordination store. The production implementation wraps
-// pkg/coord.ProdReconcileStore (keyed by the Run's work_item_id); this interface
-// is the ONLY seam through which the controller learns Run state, which keeps the
-// reconciler unit-testable against a fake and defers the Postgres wiring (and its
-// real-DB integration gate, Story 2.7) to its own slice.
+// coordination store. The production implementation is
+// pkg/coord.ReconcileStepReader (the read-only side of the §6.4 durable step,
+// keyed by work_item_id); this interface is the ONLY seam through which the
+// controller learns Run state, which keeps the reconciler unit-testable against a
+// fake and confines the Postgres dependency to the operator wiring + its real-DB
+// integration gate (Story 2.7).
 type StepSource interface {
-	// StepForRun returns the committed reconcile_step for the Run identified by
-	// its stable metadata.uid. found=false means no coord claim row exists yet
-	// (the Run has not been admitted into the coordination DB); the reconciler
+	// StepForWorkItem returns the committed reconcile_step for the coord.claim row
+	// keyed by workItemID — the Run's spec.workItemRef, the opaque coordination-DB
+	// pointer (ADR-001), NOT the Run's k8s uid. found=false means no claim row
+	// exists yet (the Run is admitted but not enrolled in coord); the reconciler
 	// treats that as the initial Pending step rather than an error.
-	StepForRun(ctx context.Context, runUID string) (step reconcile.Step, found bool, err error)
+	StepForWorkItem(ctx context.Context, workItemID string) (step reconcile.Step, found bool, err error)
 }
 
 // Clock returns the timestamp stamped onto condition transitions. It is a field
@@ -69,7 +71,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	step, found, err := r.Source.StepForRun(ctx, string(runObj.UID))
+	step, found, err := r.Source.StepForWorkItem(ctx, runObj.Spec.WorkItemRef)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("read durable step for run %s: %w", req.NamespacedName, err)
 	}
