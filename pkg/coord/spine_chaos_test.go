@@ -465,10 +465,12 @@ func spineC4StaleHolder(t *testing.T, dsn string) {
 // WITHIN the transaction would produce the same external observation and still
 // pass here. What this case actually proves is the COMMITTED post-condition and
 // that the guarded protocol closes the window the naive autocommit arm leaves
-// open. A test that proves statement ORDER is respected under a real cross-
-// process race — a survivor that observes the release before the resource-layer
-// fence completes — needs the live resource layer (pod-kill/cordon) and is
-// tracked as production-wiring follow-up (see the ReclaimFenced SCOPE note).
+// open. The ORDER proof — that the release cannot become visible before a
+// resource-layer fence is CONFIRMED — is now delivered by
+// TestReclaimResourceFenceOrdering (reclaim_fence_ordering_test.go, ISI-2399
+// items 3 & 4) via the ResourceFencer seam: the fencer, reading a separate
+// connection between the stamp and the release, observes the old holder every
+// time, and a fence it cannot confirm aborts the reclaim fail-closed.
 
 func spineC5FenceBeforeRelease(t *testing.T, dsn string) {
 	ctx := context.Background()
