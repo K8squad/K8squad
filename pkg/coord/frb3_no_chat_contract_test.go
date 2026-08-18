@@ -170,6 +170,13 @@ var allowedSurface = map[string]string{
 	"ProdReconcileStore.AuditRows":  "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
 	"ProdReconcileStore.OutboxRows": "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
 	"ProdReconcileStore.Err":        "§6.4 sticky infrastructure-error accessor (requeue signal)",
+
+	// §6.4 READ side of the durable step (ISI-2655 slice-3): the Run status
+	// controller projects reconcile_step → Run.status. Read-only — no advance, no
+	// audit/outbox, no agent-to-agent channel; it only reports the committed step.
+	"ReconcileStepReader":                 "§6.4 read-only reader of the committed reconcile_step (status projection, AC2)",
+	"NewReconcileStepReader":              "§6.4 constructor (binds the read-only step reader to the coord pool)",
+	"ReconcileStepReader.StepForWorkItem": "§6.4 read the committed reconcile_step by work_item_id (status projection, AC2)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
