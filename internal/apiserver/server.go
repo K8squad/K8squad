@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 )
 
@@ -51,6 +52,9 @@ type Options struct {
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
 	Hub           *Hub                // optional; NewServer allocates one when nil
+	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
+	// build routes keep answering the documented 501 (dev run without a Run source wired).
+	Builds *buildbrowser.Service
 }
 
 // NewServer assembles the root router from opts.
@@ -103,13 +107,17 @@ func (s *Server) routes(opts Options) {
 		stream.Use(authz)
 		stream.HandleFunc("", s.hub.streamRun).Methods(http.MethodGet)
 
-		// 8.7d build-browser: route exists and authorizes, but its backing read model is
-		// not yet built. It answers a documented 501 so the BFF receives an honest,
-		// distinguishable response (see notImplemented).
+		// 8.7a/8.7d build-browser (ISI-2759): the git read-model behind the per-principal +
+		// Team-scope gate. When a Run source is wired (opts.Builds != nil) the routes serve real
+		// tree/diff/file/meta reads; otherwise they keep the documented 501 for a DB-less dev run.
 		build := s.router.Path("/api/runs/{runId}/build/{resource}").Subrouter()
 		build.Use(authz)
-		build.HandleFunc("", notImplemented("build-browser read model", "ISI-2750 child: build-browser read endpoints (8.7a/8.7d)")).
-			Methods(http.MethodGet)
+		if opts.Builds != nil {
+			build.HandleFunc("", buildHandler(opts.Builds)).Methods(http.MethodGet)
+		} else {
+			build.HandleFunc("", notImplemented("build-browser read model", "ISI-2759: wire a buildbrowser.Service (RunSource) to enable")).
+				Methods(http.MethodGet)
+		}
 
 		// 8.1 squad-overview: served by the Team→Project→Run-status read model (overview.go,
 		// ISI-2760) when the informer cache is wired. Absent a reader (cluster-less dev run)

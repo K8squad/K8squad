@@ -31,6 +31,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
+	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 )
 
@@ -119,11 +120,28 @@ func main() {
 		log.Printf("ksquad-apiserver: squad-overview read model ready (informer cache synced)")
 	}
 
+	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
+	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
+	// git read-model serve a local repo. Nil ⇒ the routes keep the documented 501 (fail visible).
+	var builds *buildbrowser.Service
+	if runsPath := os.Getenv("KSQUAD_DEV_RUNS"); runsPath != "" {
+		runs, rerr := buildbrowser.LoadStaticRuns(runsPath)
+		if rerr != nil {
+			log.Fatalf("ksquad-apiserver: load dev runs: %v", rerr)
+		}
+		builds = buildbrowser.NewService(runs, buildbrowser.NewGitReader())
+		// #nosec G706 -- operator-supplied env path in a startup warning, not request-tainted input.
+		log.Printf("ksquad-apiserver: WARNING — using static dev runs from %s; NOT for production", runsPath)
+	} else {
+		log.Printf("ksquad-apiserver: no Run source configured — build-browser routes answer 501 until the read-model backing lands (ISI-2759)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
 		Ready:         dbReady{db},
 		Overview:      overview,
+		Builds:        builds,
 	})
 
 	httpSrv := &http.Server{
