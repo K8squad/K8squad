@@ -100,3 +100,120 @@ func (s *SQLStore) Depth(ctx context.Context) (total, unflushed int64, err error
 	}
 	return total, unflushed, nil
 }
+
+// ---------------------------------------------------------------------------
+// Run-event read side — the §4.4 SSE projection (ISI-2756).
+//
+// The apiserver SSE hub fans run progress to every live console surface. Its
+// source is this read-only view of the run-entity rows on coord.outbox: the SAME
+// durable journal the relay publishes to NATS, read directly so the console
+// transport needs no NATS client. This is a downstream projection (§17.4): it
+// only SELECTs, never writes the outbox, and never re-enters coordination.
+//
+// The row id — a bigserial, monotonic in commit order — is the SSE event id, so
+// a reconnecting client's Last-Event-ID resumes exactly from the last row it saw
+// (RunEventsForRun), while the live tail advances a single watermark over all
+// runs (RunEventsAfter). run_id keys the hub fan-out.
+// ---------------------------------------------------------------------------
+
+// defaultRunEventLimit bounds a single run-event scan (live tail or replay) so a
+// large backlog can neither block the poll loop nor flood a reconnecting stream
+// in one shot; the remainder is taken on the next id-ordered scan.
+const defaultRunEventLimit = 1000
+
+// RunEvent is one run-entity outbox row projected to the SSE hub. ID (the
+// bigserial row id) is the SSE event id / Last-Event-ID resume key; RunID keys
+// the hub fan-out; EventType is the SSE event name; Payload is the jsonb body.
+type RunEvent struct {
+	ID        int64
+	RunID     string
+	EventType string
+	Payload   []byte
+}
+
+// RunEventReader reads run-entity events from coord.outbox for the apiserver SSE
+// projector. Both scans are ascending by id (the monotonic SSE event id) so a
+// caller resumes exactly from the last id it saw. Read-only (§17.4): it never
+// writes the outbox and nothing it returns re-enters coordination.
+type RunEventReader interface {
+	// LatestRunEventID returns the highest run-entity outbox id (0 when none).
+	// The live-tail projector seeds its watermark with this at startup so it fans
+	// only NEW events forward, leaving history to per-run Last-Event-ID replay.
+	LatestRunEventID(ctx context.Context) (int64, error)
+	// RunEventsAfter returns run-entity rows with id > afterID, ascending, up to
+	// limit (<=0 ⇒ defaultRunEventLimit). The live-tail feed: the projector fans
+	// each row to the hub keyed by run_id.
+	RunEventsAfter(ctx context.Context, afterID int64, limit int) ([]RunEvent, error)
+	// RunEventsForRun returns one run's rows with id > afterID, ascending, up to
+	// limit. The replay feed for a reconnecting client's Last-Event-ID. A runID
+	// that is not a uuid matches nothing (empty, no error) — replay is best-effort.
+	RunEventsForRun(ctx context.Context, runID string, afterID int64, limit int) ([]RunEvent, error)
+}
+
+// LatestRunEventID reports the high-water mark of run-entity outbox ids.
+func (s *SQLStore) LatestRunEventID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(id), 0) FROM coord.outbox WHERE entity = 'run'`).
+		Scan(&id); err != nil {
+		return 0, fmt.Errorf("events.SQLStore.LatestRunEventID: %w", err)
+	}
+	return id, nil
+}
+
+// RunEventsAfter scans the run-entity tail (id > afterID) in id order. Rows with
+// a NULL run_id are skipped — they cannot key a hub fan-out.
+func (s *SQLStore) RunEventsAfter(ctx context.Context, afterID int64, limit int) ([]RunEvent, error) {
+	if limit <= 0 {
+		limit = defaultRunEventLimit
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id::text, event_type, payload
+		  FROM coord.outbox
+		 WHERE entity = 'run' AND run_id IS NOT NULL AND id > $1
+		 ORDER BY id
+		 LIMIT $2`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("events.SQLStore.RunEventsAfter: %w", err)
+	}
+	return scanRunEvents(rows, "RunEventsAfter")
+}
+
+// RunEventsForRun scans one run's tail (id > afterID) in id order. runID must be
+// a uuid (the outbox column type); a non-uuid raises a cast error the caller
+// treats as an empty best-effort replay rather than a stream failure.
+func (s *SQLStore) RunEventsForRun(ctx context.Context, runID string, afterID int64, limit int) ([]RunEvent, error) {
+	if limit <= 0 {
+		limit = defaultRunEventLimit
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, run_id::text, event_type, payload
+		  FROM coord.outbox
+		 WHERE entity = 'run' AND run_id = $1::uuid AND id > $2
+		 ORDER BY id
+		 LIMIT $3`, runID, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("events.SQLStore.RunEventsForRun(%s): %w", runID, err)
+	}
+	return scanRunEvents(rows, "RunEventsForRun")
+}
+
+// scanRunEvents drains a run-event result set, copying each payload so it does
+// not alias the driver's row buffer after the next Scan.
+func scanRunEvents(rows *sql.Rows, where string) ([]RunEvent, error) {
+	defer func() { _ = rows.Close() }()
+	var out []RunEvent
+	for rows.Next() {
+		var r RunEvent
+		var payload []byte
+		if err := rows.Scan(&r.ID, &r.RunID, &r.EventType, &payload); err != nil {
+			return nil, fmt.Errorf("events.SQLStore.%s: scan: %w", where, err)
+		}
+		r.Payload = append([]byte(nil), payload...)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("events.SQLStore.%s: rows: %w", where, err)
+	}
+	return out, nil
+}
