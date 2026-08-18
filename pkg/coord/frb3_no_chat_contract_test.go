@@ -177,6 +177,24 @@ var allowedSurface = map[string]string{
 	"ReconcileStepReader":                 "§6.4 read-only reader of the committed reconcile_step (status projection, AC2)",
 	"NewReconcileStepReader":              "§6.4 constructor (binds the read-only step reader to the coord pool)",
 	"ReconcileStepReader.StepForWorkItem": "§6.4 read the committed reconcile_step by work_item_id (status projection, AC2)",
+
+	// §6.4 Run reconcile machine's side-effect seam (reconcile.Effects) bound to the
+	// prod coord schema (Story 3.1 / ISI-2655, child ISI-2802). Custody/execution-only:
+	// each effect is an at-most-once durable marker (coord.sandbox_bind / a2a_dispatch /
+	// artifact) plus a §6.5 audit row, keyed by the Run's deterministic id so a §6.4
+	// crash-window re-drive reattaches rather than re-applying. No parameter carries
+	// worker-authored content, and nothing recorded re-enters coordination (no-P2P). The
+	// physical warm-pool/A2A mechanisms are the SandboxBinder/TaskDispatcher execution
+	// ports (§10.1 run-execution dispatch), NOT an agent-to-agent chat channel.
+	"ProdEffects":             "§6.4 durable reconcile.Effects bound to the prod coord schema",
+	"NewProdEffects":          "§6.4 constructor (binds one Run's effect markers + physical ports)",
+	"ProdEffects.BindSandbox": "§6.2/§9 warm-pool bind, run_id-keyed (reattach, never re-provision)",
+	"ProdEffects.Dispatch":    "§6.4/§10.1 A2A shim submit, a2a_task_id-keyed (reattach, never re-execute)",
+	"ProdEffects.Collect":     "§6.1 content-addressed artifact upsert (republish, never dupe)",
+	"ProdEffects.Terminal":    "§6.5 record the terminal transition (at-most-once per committed advance)",
+	"ProdEffects.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
+	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
+	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
