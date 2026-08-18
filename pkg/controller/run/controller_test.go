@@ -39,8 +39,21 @@ type fakeSource struct {
 	err   error
 }
 
-func (f fakeSource) StepForRun(context.Context, string) (reconcile.Step, bool, error) {
+func (f fakeSource) StepForWorkItem(context.Context, string) (reconcile.Step, bool, error) {
 	return f.step, f.found, f.err
+}
+
+// capturingSource records the workItemID it was asked for, so a test can assert
+// the reconciler keys on spec.workItemRef (not the k8s uid).
+type capturingSource struct {
+	step  reconcile.Step
+	found bool
+	gotID string
+}
+
+func (c *capturingSource) StepForWorkItem(_ context.Context, workItemID string) (reconcile.Step, bool, error) {
+	c.gotID = workItemID
+	return c.step, c.found, nil
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -60,6 +73,7 @@ func newRun() *api.Run {
 			UID:        types.UID("uid-run-1"),
 			Generation: 4,
 		},
+		Spec: api.RunSpec{WorkItemRef: "wi-abc-123"},
 	}
 }
 
@@ -92,6 +106,23 @@ func TestReconcileProjectsDurableStep(t *testing.T) {
 	}
 	if meta.FindStatusCondition(got.Status.Conditions, ConditionReady) == nil {
 		t.Errorf("Ready condition not written")
+	}
+}
+
+func TestReconcileKeysOnWorkItemRef(t *testing.T) {
+	run := newRun() // spec.workItemRef = "wi-abc-123", uid = "uid-run-1"
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	src := &capturingSource{step: reconcile.StepRunning, found: true}
+
+	r := &Reconciler{Client: c, Source: src, Now: func() metav1.Time { return fixedNow }}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
+	}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if src.gotID != "wi-abc-123" {
+		t.Errorf("StepSource keyed on %q, want the spec.workItemRef %q (not the uid)", src.gotID, "wi-abc-123")
 	}
 }
 

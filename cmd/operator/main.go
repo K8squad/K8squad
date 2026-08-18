@@ -31,8 +31,11 @@ limitations under the License.
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"os"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the coord pool
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -44,6 +47,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
+	"github.com/K8squad/K8squad/pkg/coord"
 )
 
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
@@ -58,12 +62,14 @@ func init() {
 }
 
 func main() {
-	var metricsAddr, probeAddr string
+	var metricsAddr, probeAddr, coordDSN string
 	var enableLeaderElection bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "Address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address the health/readiness probes bind to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. Ensures a single active reconciler (AC4).")
+	flag.StringVar(&coordDSN, "coord-dsn", os.Getenv("DATABASE_URL"),
+		"Coordination Postgres DSN (defaults to $DATABASE_URL). When empty, the Run reconciler is not registered.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -82,19 +88,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TODO(ISI-2655 effects slice): construct the coord Postgres-backed
-	// StepSource once the pool wiring + real-DB integration gate land, then set
-	// it here. Registration is gated on a non-nil source: a reconciler with no
-	// source would panic on the first Run event, so until the wiring lands the
-	// operator elects and serves probes without registering the controller.
-	var stepSource runctrl.StepSource // nil until the coord pool wiring lands
-	if stepSource != nil {
-		if err := (&runctrl.Reconciler{Source: stepSource}).SetupWithManager(mgr); err != nil {
+	// The Run reconciler projects the durable coord reconcile_step onto Run.status
+	// (ISI-2655 slice-3). Its StepSource is the read-only coord.ReconcileStepReader
+	// over the coordination Postgres. Registration is gated on a DSN: without one
+	// the reconciler has no source and would panic on the first Run event, so the
+	// operator still elects and serves probes but does not register the controller
+	// (e.g. a probe-only smoke deploy before the DB is provisioned).
+	if coordDSN == "" {
+		ctrl.Log.Info("Run reconciler not registered: no coord DSN (set --coord-dsn or $DATABASE_URL)")
+	} else {
+		db, err := sql.Open("pgx", coordDSN)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to open coord Postgres pool")
+			os.Exit(1)
+		}
+		// sql.Open is lazy; per-reconcile read failures surface through the
+		// StepSource error and requeue rather than crashing the manager.
+		if err := (&runctrl.Reconciler{Source: coord.NewReconcileStepReader(db)}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
 		}
-	} else {
-		ctrl.Log.Info("Run reconciler not registered: no StepSource wired yet (ISI-2655 effects slice)")
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
