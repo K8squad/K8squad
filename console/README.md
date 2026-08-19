@@ -4,7 +4,7 @@ The KSquad **operator console** — Next.js (App Router) UI + **BFF** (SSE fan-o
 Epic 8 shell: the route/build tooling every 8.x feature screen mounts into, the one authorization
 choke point (arch §13 / ADR-013), the one SSE bus (story 8.2), and whole-shell theming (story 8.9).
 
-> **Scope of this scaffold (ISI-2180).** The *shell*, not the 11 feature screens. It lands the
+> **Scope of this scaffold (ISI-2180).** The _shell_, not the 11 feature screens. It lands the
 > load-bearing infrastructure the feature stories were blocked on: build tooling, the App Router,
 > the BFF proxy, the shared EventSource client, and the dark/light theme. Feature screens (8.1
 > squad overview, 8.3–8.11, 10.3 discussion room) build on top of it.

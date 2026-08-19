@@ -10,17 +10,17 @@
 //
 // This module is SERVER-ONLY. It must never be imported into a client component.
 
-import 'server-only';
-import type { NextRequest } from 'next/server';
+import "server-only";
+import type { NextRequest } from "next/server";
 
 /** Base URL of the Go apiserver. Server-only — never exposed to the browser (no NEXT_PUBLIC_*). */
 export function apiserverBaseUrl(): string {
-  return process.env.KSQUAD_APISERVER_URL ?? 'http://ksquad-apiserver:8080';
+  return process.env.KSQUAD_APISERVER_URL ?? "http://ksquad-apiserver:8080";
 }
 
 /** Name of the HttpOnly session cookie the BFF forwards upstream (arch §12.3 / ADR-033). */
 export function sessionCookieName(): string {
-  return process.env.KSQUAD_SESSION_COOKIE ?? 'ksquad_session';
+  return process.env.KSQUAD_SESSION_COOKIE ?? "ksquad_session";
 }
 
 /**
@@ -29,16 +29,19 @@ export function sessionCookieName(): string {
  * identity ONLY — no BFF-asserted principal, so the apiserver never trusts a BFF-fabricated
  * caller for the owning-principal check (story 8.7d Dev Notes).
  */
-function upstreamHeaders(req: NextRequest, extra?: Record<string, string>): Headers {
+function upstreamHeaders(
+  req: NextRequest,
+  extra?: Record<string, string>,
+): Headers {
   const h = new Headers();
-  const cookie = req.headers.get('cookie');
-  if (cookie) h.set('cookie', cookie);
+  const cookie = req.headers.get("cookie");
+  if (cookie) h.set("cookie", cookie);
   // SSE reconnect: carry Last-Event-ID so the apiserver resumes the durable coord-record tail
   // (story 8.2 AC5 — no loss, no gap).
-  const lastEventId = req.headers.get('last-event-id');
-  if (lastEventId) h.set('last-event-id', lastEventId);
-  const accept = req.headers.get('accept');
-  if (accept) h.set('accept', accept);
+  const lastEventId = req.headers.get("last-event-id");
+  if (lastEventId) h.set("last-event-id", lastEventId);
+  const accept = req.headers.get("accept");
+  if (accept) h.set("accept", accept);
   if (extra) for (const [k, v] of Object.entries(extra)) h.set(k, v);
   return h;
 }
@@ -57,10 +60,10 @@ export async function proxyEventStream(
 ): Promise<Response> {
   const url = apiserverBaseUrl() + upstreamPath;
   const upstream = await fetch(url, {
-    method: 'GET',
-    headers: upstreamHeaders(req, { accept: 'text/event-stream' }),
+    method: "GET",
+    headers: upstreamHeaders(req, { accept: "text/event-stream" }),
     // Do not let fetch/undici buffer or cache; stream the body through.
-    cache: 'no-store',
+    cache: "no-store",
     signal: req.signal,
   });
 
@@ -69,18 +72,18 @@ export async function proxyEventStream(
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
-      headers: { 'cache-control': 'no-store' },
+      headers: { "cache-control": "no-store" },
     });
   }
 
   return new Response(upstream.body, {
     status: 200,
     headers: {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
-      connection: 'keep-alive',
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
       // Defeat proxy buffering (nginx/ingress) so "live" stays incremental (AC3 / arch §16.1).
-      'x-accel-buffering': 'no',
+      "x-accel-buffering": "no",
     },
   });
 }
@@ -99,9 +102,9 @@ export async function proxyJson(
 ): Promise<Response> {
   const url = apiserverBaseUrl() + upstreamPath;
   const upstream = await fetch(url, {
-    method: 'GET',
-    headers: upstreamHeaders(req, { accept: 'application/json' }),
-    cache: 'no-store',
+    method: "GET",
+    headers: upstreamHeaders(req, { accept: "application/json" }),
+    cache: "no-store",
     signal: req.signal,
   });
 
@@ -110,8 +113,9 @@ export async function proxyJson(
     status: upstream.status,
     statusText: upstream.statusText,
     headers: {
-      'content-type': upstream.headers.get('content-type') ?? 'application/json',
-      'cache-control': 'no-store',
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
     },
   });
 }
@@ -130,17 +134,20 @@ export async function proxyJson(
 export async function proxyJsonWrite(
   req: NextRequest,
   upstreamPath: string,
-  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
 ): Promise<Response> {
   const url = apiserverBaseUrl() + upstreamPath;
   // Forward the caller's raw body unchanged; the apiserver validates + server-stamps provenance.
   const inboundBody = await req.text();
-  const contentType = req.headers.get('content-type') ?? 'application/json';
+  const contentType = req.headers.get("content-type") ?? "application/json";
   const upstream = await fetch(url, {
     method,
-    headers: upstreamHeaders(req, { accept: 'application/json', 'content-type': contentType }),
+    headers: upstreamHeaders(req, {
+      accept: "application/json",
+      "content-type": contentType,
+    }),
     body: inboundBody.length > 0 ? inboundBody : undefined,
-    cache: 'no-store',
+    cache: "no-store",
     signal: req.signal,
   });
 
@@ -149,8 +156,9 @@ export async function proxyJsonWrite(
     status: upstream.status,
     statusText: upstream.statusText,
     headers: {
-      'content-type': upstream.headers.get('content-type') ?? 'application/json',
-      'cache-control': 'no-store',
+      "content-type":
+        upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
     },
   });
 }

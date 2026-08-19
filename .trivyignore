@@ -11,5 +11,21 @@
 #
 # Format reference: https://trivy.dev/latest/docs/configuration/filtering/#trivyignore
 #
-# --- active suppressions (none) ---
-# (add entries below, newest first, each preceded by its expires:/justification: comment line)
+# --- active suppressions ---
+# openssl CVE batch in the ksquad-console RUNTIME base (gcr.io/distroless/nodejs24-debian12:nonroot,
+# libssl3 3.0.18-1~deb12u2, debian 12.13). Fixes exist upstream (libssl3 3.0.19/3.0.20-1~deb12u2 in
+# bookworm security) and ride the next distroless tag rebuild; distroless has no package manager so
+# the image cannot be patched in-repo. Tracked by ISI-2852; remove these entries once the rebuilt
+# base carries libssl3 >= 3.0.20.
+# CVE-2026-31789   expires:2026-09-18   justification:CRITICAL openssl heap overflow (32-bit X.509); runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-31789
+# CVE-2026-28387   expires:2026-09-18   justification:HIGH openssl DANE TLSA use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-28387
+# CVE-2026-28388   expires:2026-09-18   justification:HIGH openssl delta-CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-28388
+# CVE-2026-28389   expires:2026-09-18   justification:HIGH openssl CMS processing DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-28389
+# CVE-2026-28390   expires:2026-09-18   justification:HIGH openssl CMS NULL deref DoS; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-28390
+# CVE-2026-45447   expires:2026-09-18   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
+CVE-2026-45447

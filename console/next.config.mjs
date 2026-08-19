@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Distroless runtime image (Dockerfile.console) copies .next/standalone + server.js.
-  output: 'standalone',
+  output: "standalone",
   reactStrictMode: true,
   poweredByHeader: false,
   // The console is a BFF: it proxies the Go apiserver (REST + SSE) server-side and is the

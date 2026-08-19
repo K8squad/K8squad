@@ -5,11 +5,20 @@
 // signature; the accent stop is the theme-invariant azure. This is the placeholder-free mark the
 // theming contract requires on every screen — no flat-stroke ring rect (AC2).
 
-import { ACCENT } from '@/lib/theme';
+import { ACCENT } from "@/lib/theme";
 
-export function Logo({ size = 28, withWordmark = true }: { size?: number; withWordmark?: boolean }) {
+export function Logo({
+  size = 28,
+  withWordmark = true,
+}: {
+  size?: number;
+  withWordmark?: boolean;
+}) {
   return (
-    <span className="brand-lockup" style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+    <span
+      className="brand-lockup"
+      style={{ display: "inline-flex", alignItems: "center", gap: 10 }}
+    >
       <svg
         width={size}
         height={size}
@@ -28,8 +37,24 @@ export function Logo({ size = 28, withWordmark = true }: { size?: number; withWo
             <stop offset="1" stopColor="#2A5BD7" />
           </linearGradient>
         </defs>
-        <circle cx="16" cy="16" r="11" stroke="url(#ringTop)" strokeWidth="3" strokeDasharray="34 18" />
-        <circle cx="16" cy="16" r="11" stroke="url(#ringBot)" strokeWidth="3" strokeDasharray="34 18" strokeDashoffset="34" opacity="0.85" />
+        <circle
+          cx="16"
+          cy="16"
+          r="11"
+          stroke="url(#ringTop)"
+          strokeWidth="3"
+          strokeDasharray="34 18"
+        />
+        <circle
+          cx="16"
+          cy="16"
+          r="11"
+          stroke="url(#ringBot)"
+          strokeWidth="3"
+          strokeDasharray="34 18"
+          strokeDashoffset="34"
+          opacity="0.85"
+        />
         <circle cx="16" cy="16" r="3.2" fill={ACCENT} />
       </svg>
       {withWordmark && <strong className="brand-wordmark">KSquad</strong>}

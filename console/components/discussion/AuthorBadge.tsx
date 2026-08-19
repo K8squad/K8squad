@@ -12,24 +12,24 @@
 // the `#{BASE}55` interpolation. `chipBorder()` models the same transform for
 // hex bases (see lib/discussion/theme.ts / test/discussion/theme.test.ts).
 
-import type { CSSProperties } from 'react';
-import type { AuthorBadge as Badge } from '@/lib/discussion/provenance';
-import { badgeBaseColor, runChipBaseColor } from '@/lib/discussion/theme';
+import type { CSSProperties } from "react";
+import type { AuthorBadge as Badge } from "@/lib/discussion/provenance";
+import { badgeBaseColor, runChipBaseColor } from "@/lib/discussion/theme";
 
 function chipStyle(base: string): CSSProperties {
   // Custom properties are not part of the CSSProperties type; cast narrowly.
-  return { ['--chip-base']: base } as CSSProperties;
+  return { ["--chip-base"]: base } as CSSProperties;
 }
 
 export function AuthorBadge({ badge }: { badge: Badge }) {
-  const label = badge.defect ? 'unattributed' : badge.label;
+  const label = badge.defect ? "unattributed" : badge.label;
   return (
     <span className="ksq-author" data-testid="author-badge">
       <span
         className="ksq-chip"
         data-testid="author-chip"
         data-kind={badge.kind}
-        data-defect={badge.defect ? 'true' : 'false'}
+        data-defect={badge.defect ? "true" : "false"}
         style={chipStyle(badgeBaseColor(badge.kind))}
       >
         {label}

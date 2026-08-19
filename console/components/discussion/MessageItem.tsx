@@ -6,16 +6,16 @@
 // forward-compatibly via `metadata.retracted` (or a future `invalidatedAt`),
 // so this renderer already honours the tombstone contract the story specifies.
 
-import type { Message } from '@/lib/discussion/types';
-import { deriveAuthorBadge } from '@/lib/discussion/provenance';
-import { AuthorBadge } from './AuthorBadge';
+import type { Message } from "@/lib/discussion/types";
+import { deriveAuthorBadge } from "@/lib/discussion/provenance";
+import { AuthorBadge } from "./AuthorBadge";
 
 export function isRetracted(m: Message): boolean {
   const meta = m.metadata ?? {};
   return (
-    meta['retracted'] === true ||
-    typeof meta['invalidatedAt'] === 'string' ||
-    typeof meta['invalidated_at'] === 'string'
+    meta["retracted"] === true ||
+    typeof meta["invalidatedAt"] === "string" ||
+    typeof meta["invalidated_at"] === "string"
   );
 }
 
@@ -24,7 +24,11 @@ export function MessageItem({ message }: { message: Message }) {
   const badge = deriveAuthorBadge(message);
 
   return (
-    <li className="ksq-message" data-testid="message" data-message-id={message.id}>
+    <li
+      className="ksq-message"
+      data-testid="message"
+      data-message-id={message.id}
+    >
       <div className="ksq-message__head">
         <AuthorBadge badge={badge} />
         <time className="ksq-message__ts" dateTime={message.createdAt}>

@@ -16,8 +16,10 @@ package events
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
@@ -221,7 +223,7 @@ func TestOutbox_RunEventReadSide(t *testing.T) {
 	if len(tail) != 3 || tail[0].ID != a1 || tail[1].ID != a2 || tail[2].ID != b1 {
 		t.Fatalf("RunEventsAfter tail wrong: %+v", tail)
 	}
-	if tail[0].RunID != runA || tail[0].EventType != "reconcile_advanced" || string(tail[0].Payload) != `{"to_step":"x"}` {
+	if tail[0].RunID != runA || tail[0].EventType != "reconcile_advanced" || !jsonEqual(tail[0].Payload, `{"to_step":"x"}`) {
 		t.Fatalf("RunEventsAfter row 0 fields wrong: %+v", tail[0])
 	}
 
@@ -243,6 +245,21 @@ func TestOutbox_RunEventReadSide(t *testing.T) {
 	if _, err := store.RunEventsForRun(ctx, "not-a-uuid", 0, 0); err == nil {
 		t.Fatal("RunEventsForRun with non-uuid runID: want cast error, got nil")
 	}
+}
+
+// jsonEqual compares two JSON documents semantically. coord.outbox.payload is
+// jsonb, so Postgres rewrites the stored text to its canonical form (e.g.
+// `{"to_step": "x"}` — a space after each colon) on the way back out; raw-byte
+// comparison against the INSERT-time spelling would false-RED.
+func jsonEqual(got []byte, want string) bool {
+	var g, w any
+	if err := json.Unmarshal(got, &g); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(want), &w); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(g, w)
 }
 
 // captureRunEvent commits one outbox event (any entity) in its own txn.

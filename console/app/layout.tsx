@@ -5,17 +5,18 @@
 // mounts inside this shell (nav rail + 8-Crest lockup + theme toggle), so theming is shell-wide,
 // never a per-screen paint job.
 
-import type { Metadata } from 'next';
-import type { ReactNode } from 'react';
-import './globals.css';
-import { ThemeProvider } from '@/components/ThemeProvider';
-import { ThemeToggle } from '@/components/ThemeToggle';
-import { Logo } from '@/components/Logo';
-import { DEFAULT_THEME } from '@/lib/theme';
+import type { Metadata } from "next";
+import type { ReactNode } from "react";
+import "./globals.css";
+import { ThemeProvider } from "@/components/ThemeProvider";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { Logo } from "@/components/Logo";
+import { DEFAULT_THEME } from "@/lib/theme";
 
 export const metadata: Metadata = {
-  title: 'KSquad Console',
-  description: 'Operator console — legibility + composition surface for KSquad squads.',
+  title: "KSquad Console",
+  description:
+    "Operator console — legibility + composition surface for KSquad squads.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

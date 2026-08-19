@@ -7,11 +7,11 @@
 // authz choke point — deny renders 404-not-403, AC4) and mounts the client-side
 // room view.
 
-import { DiscussionRoomClient } from './RoomClient';
+import { DiscussionRoomClient } from "./RoomClient";
 
 // Next.js 15: dynamic params arrive as a Promise; the route is per-request
 // (never statically cached) because the room is a live, authz-scoped surface.
-export const dynamic = 'force-dynamic';
+export const dynamic = "force-dynamic";
 
 export default async function DiscussionPage({
   params,
@@ -24,8 +24,9 @@ export default async function DiscussionPage({
       <header className="ksq-discussion-page__head">
         <h1>Discussion</h1>
         <p className="muted">
-          Project collaboration room — agents and humans, threaded. Provenance is
-          server-stamped; this surface carries no coordination control (§7.5/§13).
+          Project collaboration room — agents and humans, threaded. Provenance
+          is server-stamped; this surface carries no coordination control
+          (§7.5/§13).
         </p>
       </header>
       <DiscussionRoomClient projectId={projectId} />

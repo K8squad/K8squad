@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 // components/ThemeProvider.tsx — whole-shell theming (story 8.9).
 //
@@ -7,9 +7,9 @@
 // reserved status hues invariant. Runtime persistence (localStorage / prefers-color-scheme) is
 // explicitly out of scope for v1 (story 8.9 "Out of scope"); the mechanism is the token swap.
 
-import { createContext, useCallback, useContext, useState } from 'react';
-import type { ReactNode } from 'react';
-import { DEFAULT_THEME, type ThemeName } from '@/lib/theme';
+import { createContext, useCallback, useContext, useState } from "react";
+import type { ReactNode } from "react";
+import { DEFAULT_THEME, type ThemeName } from "@/lib/theme";
 
 type ThemeContextValue = {
   theme: ThemeName;
@@ -24,13 +24,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const apply = useCallback((t: ThemeName) => {
     setThemeState(t);
-    if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', t);
+    if (typeof document !== "undefined") {
+      document.documentElement.setAttribute("data-theme", t);
     }
   }, []);
 
   const toggle = useCallback(() => {
-    apply(theme === 'dark' ? 'light' : 'dark');
+    apply(theme === "dark" ? "light" : "dark");
   }, [apply, theme]);
 
   return (
@@ -42,6 +42,6 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
 export function useTheme(): ThemeContextValue {
   const ctx = useContext(ThemeContext);
-  if (!ctx) throw new Error('useTheme must be used within <ThemeProvider>');
+  if (!ctx) throw new Error("useTheme must be used within <ThemeProvider>");
   return ctx;
 }

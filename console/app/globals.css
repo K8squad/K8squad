@@ -22,7 +22,7 @@
 }
 
 /* Dark: navy canvas, light text (default). */
-[data-theme='dark'] {
+[data-theme="dark"] {
   --canvas: #0b1220;
   --surface: #111a2e;
   --border: #22304d;
@@ -32,7 +32,7 @@
 
 /* Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns here in
  * the primary TEXT role (story 8.9 AC6). Accent + status hues unchanged. */
-[data-theme='light'] {
+[data-theme="light"] {
   --canvas: #f6f8fc;
   --surface: #ffffff;
   --border: #d6deec;
