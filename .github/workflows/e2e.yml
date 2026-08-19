@@ -164,7 +164,16 @@ jobs:
         working-directory: console
         run: |
           npm ci
-          npx playwright install --with-deps
+          # Chromium only — console/playwright.config.ts declares no firefox/webkit
+          # projects. And NO --with-deps: that flag drives apt against
+          # archive.ubuntu.com, which mid-sync offers an unresolvable version skew
+          # (gir1.2-glib-2.0 needing libglib2.0-0t64 =...3.4 while the index serves
+          # ...3.8) that out-lasted every retry (ISI-2852 runs 11–12). The
+          # self-hosted runner already satisfies chromium's OS deps — verified in
+          # the run-12 log where every real chromium dep reported "already the
+          # newest version". Download the browser binary only; if a dep ever does
+          # go missing, the test step fails loudly naming the library instead.
+          npx playwright install chromium
 
       - name: Run Playwright E2E
         if: steps.guard.outputs.present == 'true'
