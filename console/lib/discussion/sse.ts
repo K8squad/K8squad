@@ -33,8 +33,7 @@ export function subscribeRoom(
   const handler = (e: { data: string }) => {
     const evt = parseRoomEvent(e.data);
     if (!evt) return;
-    const mid =
-      evt.type === "message.deleted" ? undefined : evt.message.roomId;
+    const mid = evt.type === "message.deleted" ? undefined : evt.message.roomId;
     // Deleted events lack a room id in this minimal envelope; created/updated
     // carry roomId and are filtered to this room. (A richer envelope can carry
     // roomId on delete too; then filter it the same way.)

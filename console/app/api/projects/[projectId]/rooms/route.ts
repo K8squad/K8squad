@@ -8,12 +8,12 @@
 // stays as-is and is NEVER re-mapped to 403, so a Team-B caller cannot tell a Team-A Project's
 // room from a missing one. No mutating verb is routed here (POST/PUT/PATCH/DELETE → 405).
 
-import type { NextRequest } from 'next/server';
-import { proxyJson } from '@/lib/bff';
+import type { NextRequest } from "next/server";
+import { proxyJson } from "@/lib/bff";
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const fetchCache = 'force-no-store';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const fetchCache = "force-no-store";
 
 export async function GET(
   req: NextRequest,

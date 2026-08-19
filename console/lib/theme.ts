@@ -8,17 +8,17 @@
 //     surface tint changes on toggle) and never collapse onto the accent.
 // AC6 role-inversion: the dark canvas navy #0B1220 reappears in light mode in a TEXT role.
 
-export type ThemeName = 'dark' | 'light';
+export type ThemeName = "dark" | "light";
 
 /** Brand accent — a single azure, invariant across themes (AC3). */
-export const ACCENT = '#3D7DFF';
+export const ACCENT = "#3D7DFF";
 
 /** Reserved status dot hues — vivid and identical in both themes (AC7). */
 export const STATUS = {
-  running: '#34D399', // green
-  paused: '#FBBF24', // amber
-  blocked: '#FB7185', // rose (also failed)
-  idle: '#64748B', // slate
+  running: "#34D399", // green
+  paused: "#FBBF24", // amber
+  blocked: "#FB7185", // rose (also failed)
+  idle: "#64748B", // slate
 } as const;
 
 export type ThemeTokens = {
@@ -32,25 +32,28 @@ export type ThemeTokens = {
 
 // Dark: navy canvas, light text.
 export const DARK: ThemeTokens = {
-  canvas: '#0B1220',
-  surface: '#111A2E',
-  border: '#22304D',
-  text1: '#E6EDF7',
-  text2: '#9FB0C9',
+  canvas: "#0B1220",
+  surface: "#111A2E",
+  border: "#22304D",
+  text1: "#E6EDF7",
+  text2: "#9FB0C9",
   accent: ACCENT,
 };
 
 // Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns as the
 // primary TEXT role (AC6); the accent and status hues are unchanged (AC3/AC7).
 export const LIGHT: ThemeTokens = {
-  canvas: '#F6F8FC',
-  surface: '#FFFFFF',
-  border: '#D6DEEC',
-  text1: '#0B1220',
-  text2: '#4B5B76',
+  canvas: "#F6F8FC",
+  surface: "#FFFFFF",
+  border: "#D6DEEC",
+  text1: "#0B1220",
+  text2: "#4B5B76",
   accent: ACCENT,
 };
 
-export const THEMES: Record<ThemeName, ThemeTokens> = { dark: DARK, light: LIGHT };
+export const THEMES: Record<ThemeName, ThemeTokens> = {
+  dark: DARK,
+  light: LIGHT,
+};
 
-export const DEFAULT_THEME: ThemeName = 'dark';
+export const DEFAULT_THEME: ThemeName = "dark";

@@ -12,12 +12,12 @@
 // deny-by-default gate and this route surfaces its status VERBATIM — a deny is existence-hiding
 // (404 never re-mapped to 403, AC4). PUT/PATCH/DELETE are structurally absent → 405.
 
-import type { NextRequest } from 'next/server';
-import { proxyJson, proxyJsonWrite } from '@/lib/bff';
+import type { NextRequest } from "next/server";
+import { proxyJson, proxyJsonWrite } from "@/lib/bff";
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const fetchCache = 'force-no-store';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const fetchCache = "force-no-store";
 
 export async function GET(
   req: NextRequest,
@@ -28,7 +28,10 @@ export async function GET(
   const roomId = encodeURIComponent(r);
   // Forward the caller's query (?limit=, ?offset=, ?threadDepth=) verbatim.
   const search = req.nextUrl.search; // includes leading '?' or ''
-  return proxyJson(req, `/api/projects/${projectId}/rooms/${roomId}/messages${search}`);
+  return proxyJson(
+    req,
+    `/api/projects/${projectId}/rooms/${roomId}/messages${search}`,
+  );
 }
 
 export async function POST(
@@ -38,5 +41,9 @@ export async function POST(
   const { projectId: p, roomId: r } = await params;
   const projectId = encodeURIComponent(p);
   const roomId = encodeURIComponent(r);
-  return proxyJsonWrite(req, `/api/projects/${projectId}/rooms/${roomId}/messages`, 'POST');
+  return proxyJsonWrite(
+    req,
+    `/api/projects/${projectId}/rooms/${roomId}/messages`,
+    "POST",
+  );
 }

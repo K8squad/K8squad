@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 // Composer — post a new message or reply-in-thread (AC3). It collects ONLY a
 // body (and, for a reply, the parent id it was opened against). On submit it
@@ -10,13 +10,13 @@
 // claim / checkout / assign / transition / complete affordance. Posting a
 // message moves no work item and changes no coordination state.
 
-import { useState } from 'react';
+import { useState } from "react";
 import {
   buildPostBody,
   canSubmit,
   type ComposerInput,
   type PostMessageBody,
-} from '@/lib/discussion/compose';
+} from "@/lib/discussion/compose";
 
 export interface ComposerProps {
   /** When set, this composer replies in-thread to the given parent message. */
@@ -27,21 +27,21 @@ export interface ComposerProps {
 }
 
 export function Composer({ parentId, onPost, placeholder }: ComposerProps) {
-  const [body, setBody] = useState('');
+  const [body, setBody] = useState("");
   const input: ComposerInput = { body, parentId: parentId ?? null };
   const disabled = !canSubmit(input);
 
   const submit = async () => {
     if (!canSubmit(input)) return;
     await onPost(buildPostBody(input));
-    setBody('');
+    setBody("");
   };
 
   return (
     <form
       className="ksq-composer"
       data-testid="composer"
-      data-reply-to={parentId ?? ''}
+      data-reply-to={parentId ?? ""}
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
@@ -50,8 +50,8 @@ export function Composer({ parentId, onPost, placeholder }: ComposerProps) {
       <textarea
         className="ksq-composer__body"
         data-testid="composer-body"
-        aria-label={parentId ? 'Reply in thread' : 'Post a message'}
-        placeholder={placeholder ?? (parentId ? 'Reply…' : 'Post to the room…')}
+        aria-label={parentId ? "Reply in thread" : "Post a message"}
+        placeholder={placeholder ?? (parentId ? "Reply…" : "Post to the room…")}
         value={body}
         onChange={(e) => setBody(e.target.value)}
       />
@@ -61,7 +61,7 @@ export function Composer({ parentId, onPost, placeholder }: ComposerProps) {
         data-testid="composer-submit"
         disabled={disabled}
       >
-        {parentId ? 'Reply' : 'Post'}
+        {parentId ? "Reply" : "Post"}
       </button>
     </form>
   );

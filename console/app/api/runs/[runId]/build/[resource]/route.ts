@@ -8,14 +8,14 @@
 // re-mapped to 403. No mutating verb is routed here (POST/PUT/PATCH/DELETE are structurally
 // absent → 405), matching AC1.
 
-import type { NextRequest } from 'next/server';
-import { proxyJson } from '@/lib/bff';
+import type { NextRequest } from "next/server";
+import { proxyJson } from "@/lib/bff";
 
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const fetchCache = 'force-no-store';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const fetchCache = "force-no-store";
 
-const RESOURCES = new Set(['tree', 'diff', 'file', 'meta']);
+const RESOURCES = new Set(["tree", "diff", "file", "meta"]);
 
 export async function GET(
   req: NextRequest,

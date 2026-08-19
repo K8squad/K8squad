@@ -8,13 +8,13 @@
 // resume header and never adds a second authz path. This is a READ-ONLY projection: no mutate,
 // claim, or kill verb rides the stream (AC6 — Kill Run is a separate control-plane POST).
 
-import type { NextRequest } from 'next/server';
-import { proxyEventStream } from '@/lib/bff';
+import type { NextRequest } from "next/server";
+import { proxyEventStream } from "@/lib/bff";
 
 // Never statically cache; this is a live stream.
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const fetchCache = 'force-no-store';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const fetchCache = "force-no-store";
 
 export async function GET(
   req: NextRequest,

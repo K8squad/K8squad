@@ -9,26 +9,28 @@ export default function HomePage() {
     <div>
       <h1>KSquad Console</h1>
       <p className="muted">
-        Operator console shell — the BFF choke point (arch §13), the one SSE bus (story 8.2), and
-        whole-shell theming (story 8.9) are wired. Feature screens (8.1 squad overview, 8.3–8.11,
-        10.3 discussion room) mount into this shell.
+        Operator console shell — the BFF choke point (arch §13), the one SSE bus
+        (story 8.2), and whole-shell theming (story 8.9) are wired. Feature
+        screens (8.1 squad overview, 8.3–8.11, 10.3 discussion room) mount into
+        this shell.
       </p>
 
       <div className="card">
         <h2>Shell status</h2>
         <ul>
           <li>
-            <strong>BFF SSE proxy</strong> —{' '}
-            <code>GET /api/runs/[runId]/stream</code> (unbuffered, hides the Go apiserver)
+            <strong>BFF SSE proxy</strong> —{" "}
+            <code>GET /api/runs/[runId]/stream</code> (unbuffered, hides the Go
+            apiserver)
           </li>
           <li>
-            <strong>BFF build-browser proxy</strong> —{' '}
-            <code>GET /api/runs/[runId]/build/[tree|diff|file|meta]</code> (404-verbatim
-            existence-hiding)
+            <strong>BFF build-browser proxy</strong> —{" "}
+            <code>GET /api/runs/[runId]/build/[tree|diff|file|meta]</code>{" "}
+            (404-verbatim existence-hiding)
           </li>
           <li>
-            <strong>Shared EventSource</strong> — one client (<code>lib/useRunStream</code>), no
-            polling
+            <strong>Shared EventSource</strong> — one client (
+            <code>lib/useRunStream</code>), no polling
           </li>
           <li>
             <strong>Theme</strong> — dark/light token swap + v2 8-Crest logo
@@ -39,8 +41,8 @@ export default function HomePage() {
       <div className="card">
         <h2>Live Run stream</h2>
         <p className="muted">
-          Open a run at <code>/runs/&lt;runId&gt;</code> to watch its coordination events stream
-          live through the BFF.
+          Open a run at <code>/runs/&lt;runId&gt;</code> to watch its
+          coordination events stream live through the BFF.
         </p>
       </div>
     </div>

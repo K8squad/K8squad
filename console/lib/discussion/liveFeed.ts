@@ -17,10 +17,7 @@ export type RoomEvent =
  * then `id`. Idempotent: applying the same message twice is a no-op beyond the
  * single upsert. Input list is not mutated.
  */
-export function upsertMessage(
-  list: readonly Message[],
-  m: Message,
-): Message[] {
+export function upsertMessage(list: readonly Message[], m: Message): Message[] {
   const next = list.filter((x) => x.id !== m.id);
   next.push(m);
   next.sort((a, b) =>

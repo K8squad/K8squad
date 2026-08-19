@@ -1,14 +1,14 @@
-'use client';
+"use client";
 
 // Client wrapper for the Discussion route: resolves the Project's default room
 // and mounts <DiscussionRoom> with a BFF-backed client and the shared 8.2 SSE
 // subscription. Kept separate from page.tsx so the server component stays thin.
 
-import { useEffect, useMemo, useState } from 'react';
-import { createDiscussionClient } from '@/lib/discussion/api';
-import { subscribeRoom, type EventSourceFactory } from '@/lib/discussion/sse';
-import type { RoomEvent } from '@/lib/discussion/liveFeed';
-import { DiscussionRoom } from '@/components/discussion/DiscussionRoom';
+import { useEffect, useMemo, useState } from "react";
+import { createDiscussionClient } from "@/lib/discussion/api";
+import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
+import type { RoomEvent } from "@/lib/discussion/liveFeed";
+import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
 
 export function DiscussionRoomClient({ projectId }: { projectId: string }) {
   const client = useMemo(() => createDiscussionClient(), []);
@@ -25,7 +25,7 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
   }, [client, projectId]);
 
   const subscribe = useMemo(() => {
-    if (typeof EventSource === 'undefined' || roomId == null) return undefined;
+    if (typeof EventSource === "undefined" || roomId == null) return undefined;
     const factory: EventSourceFactory = (url) =>
       new EventSource(url) as unknown as ReturnType<EventSourceFactory>;
     return (onEvent: (evt: RoomEvent) => void) =>

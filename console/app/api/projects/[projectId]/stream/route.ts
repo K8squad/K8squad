@@ -9,13 +9,13 @@
 // the resume header and adds no second authz path. READ-ONLY projection — no mutate/coordination
 // verb rides the stream (AC5).
 
-import type { NextRequest } from 'next/server';
-import { proxyEventStream } from '@/lib/bff';
+import type { NextRequest } from "next/server";
+import { proxyEventStream } from "@/lib/bff";
 
 // Never statically cache; this is a live stream.
-export const dynamic = 'force-dynamic';
-export const runtime = 'nodejs';
-export const fetchCache = 'force-no-store';
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const fetchCache = "force-no-store";
 
 export async function GET(
   req: NextRequest,
