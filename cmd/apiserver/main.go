@@ -121,6 +121,17 @@ func main() {
 		log.Printf("ksquad-apiserver: squad-overview read model ready (informer cache synced)")
 	}
 
+	// 8.6 credential/auth-state read model (ISI-2902) — same informer-cache discipline over
+	// Team/Agent/Run. Nil on a cluster-less run keeps GET /api/credentials at its documented 501.
+	var credentials apiserver.CredentialOverviewReader
+	if reader, stopCache, cerr := apiserver.NewCacheCredentialReader(ctx, 30*time.Second); cerr != nil {
+		log.Printf("ksquad-apiserver: credential read model disabled (GET /api/credentials → 501): %v", cerr)
+	} else {
+		credentials = reader
+		defer stopCache()
+		log.Printf("ksquad-apiserver: credential read model ready (informer cache synced)")
+	}
+
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
 	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
 	// git read-model serve a local repo. Nil ⇒ the routes keep the documented 501 (fail visible).
@@ -158,6 +169,7 @@ func main() {
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
 		Ready:         dbReady{db},
 		Overview:      overview,
+		Credentials:   credentials,
 		Builds:        builds,
 		Hub:           hub,
 	})

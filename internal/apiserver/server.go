@@ -51,7 +51,10 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
-	Hub           *Hub                // optional; NewServer allocates one when nil
+	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
+	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
+	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
+	Hub         *Hub                     // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -130,6 +133,24 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
 				Methods(http.MethodGet)
 		}
+
+		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
+		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
+		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
+		// Connect-Claude seam and answers its own documented 501 until ISI-2899 lands the
+		// OAuth flow — the route exists so the console has one honest endpoint, never a
+		// fabricated login.
+		creds := s.router.Path("/api/credentials").Subrouter()
+		creds.Use(authz)
+		if opts.Credentials != nil {
+			creds.HandleFunc("", s.credentials(opts.Credentials)).Methods(http.MethodGet)
+		} else {
+			creds.HandleFunc("", notImplemented("credential read model", "ISI-2902: wire a CredentialOverviewReader (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+		connect := s.router.Path("/api/credentials/connect").Subrouter()
+		connect.Use(authz)
+		connect.HandleFunc("", s.connectClaude()).Methods(http.MethodPost)
 	}
 }
 

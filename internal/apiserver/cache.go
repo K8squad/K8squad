@@ -60,3 +60,37 @@ func NewCacheOverviewReader(ctx context.Context, syncTimeout time.Duration) (rea
 
 	return NewClientOverviewReader(c), cancel, nil
 }
+
+// NewCacheCredentialReader builds the 8.6 credential/auth-state read model (ISI-2902) over a live
+// controller-runtime cache — same discipline as NewCacheOverviewReader, informers over
+// Team/Agent/Run. Fails (rather than degrading silently) when the cluster is unreachable; the
+// caller decides fatal-vs-501.
+func NewCacheCredentialReader(ctx context.Context, syncTimeout time.Duration) (reader *ClientCredentialReader, stop func(), err error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+
+	scheme := runtime.NewScheme()
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+
+	c, err := cache.New(cfg, cache.Options{Scheme: scheme})
+	if err != nil {
+		return nil, nil, fmt.Errorf("build informer cache: %w", err)
+	}
+
+	cacheCtx, cancel := context.WithCancel(ctx)
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.Start(cacheCtx) }()
+
+	syncCtx, syncCancel := context.WithTimeout(cacheCtx, syncTimeout)
+	defer syncCancel()
+	if !c.WaitForCacheSync(syncCtx) {
+		cancel()
+		return nil, nil, fmt.Errorf("informer cache did not sync within %s", syncTimeout)
+	}
+
+	return NewClientCredentialReader(c), cancel, nil
+}
