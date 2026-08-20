@@ -128,10 +128,18 @@ func ValidatePartition(partition string) error {
 // across principals is the exfil hole this closes — there is no code path
 // that produces one.
 //
+// An EMPTY principal fails closed (F6): PrincipalPartition would normalize
+// it into the literal shared "principal" partition, silently commingling
+// every identity-less caller's files. Callers that cannot name a principal
+// must not get mounts at all.
+//
 //	pvcName: the Project workspace PVC (story 4.3)
 //	pvcKey:  the subPath parent on the volume the platform allocated (may be
 //	         empty when the PVC is dedicated per Project)
 func WorkspaceVolumeMounts(pvcName, pvcKey string, principal api.PrincipalRef) ([]corev1.VolumeMount, error) {
+	if principal == "" {
+		return nil, &PolicyError{Reason: "workspace mounts require a non-empty principal; refusing to emit mounts into the shared fallback partition (cross-principal commingling)"}
+	}
 	partition := PrincipalPartition(principal)
 	if err := ValidatePartition(partition); err != nil {
 		return nil, err

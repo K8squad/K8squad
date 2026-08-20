@@ -323,3 +323,71 @@ func containsSubPath(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (haystack == needle || len(haystack) > len(needle) &&
 		(haystack[:len(needle)] == needle))
 }
+
+// TestWorkspaceMountsFailClosedOnEmptyPrincipal (PR #89 follow-up F6): an
+// empty principal must not fall back to the literal shared "principal"
+// partition — every identity-less caller would commingle files there once
+// story 4.3 wires callers. Fail closed instead.
+func TestWorkspaceMountsFailClosedOnEmptyPrincipal(t *testing.T) {
+	mounts, err := WorkspaceVolumeMounts("workspace-pvc", "", "")
+	if err == nil {
+		t.Fatalf("empty principal admitted into the shared fallback partition: %+v", mounts)
+	}
+	if !IsPolicyError(err) {
+		t.Errorf("error is not a PolicyError: %v", err)
+	}
+	// A non-empty principal still passes (and never shares the fallback).
+	if _, err := WorkspaceVolumeMounts("workspace-pvc", "", "alice@corp.com"); err != nil {
+		t.Fatalf("non-empty principal rejected: %v", err)
+	}
+}
+
+// TestSandboxScratchVolumeNameGuard (PR #89 follow-up F9): caller-supplied
+// mounts or volumes already named "tmp" fail closed — appending the scratch
+// /tmp onto them would emit duplicate volume names, an invalid pod spec
+// that only blows up at admission.
+func TestSandboxScratchVolumeNameGuard(t *testing.T) {
+	run := testRun("r-1", "uid-r-1")
+
+	collideMount := PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+		Mounts: []corev1.VolumeMount{{Name: "tmp", MountPath: "/scratch"}},
+	}
+	if _, err := BuildSandboxPod(run, collideMount); err == nil {
+		t.Errorf("mount named %q admitted (duplicate volume names)", "tmp")
+	} else if !IsPolicyError(err) {
+		t.Errorf("mount collision error is not a PolicyError: %v", err)
+	}
+
+	collideVolume := PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+		Volumes: []corev1.Volume{{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+	}
+	if _, err := BuildSandboxPod(run, collideVolume); err == nil {
+		t.Errorf("volume named %q admitted (duplicate volume names)", "tmp")
+	} else if !IsPolicyError(err) {
+		t.Errorf("volume collision error is not a PolicyError: %v", err)
+	}
+
+	// Distinct names still assemble fine (and the scratch /tmp is added).
+	pod, err := BuildSandboxPod(run, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+		Mounts:  []corev1.VolumeMount{{Name: "workspace-cache", MountPath: "/workspace/cache"}},
+		Volumes: []corev1.Volume{{Name: "workspace-cache", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}},
+	})
+	if err != nil {
+		t.Fatalf("benign spec rejected: %v", err)
+	}
+	seen := map[string]int{}
+	for _, v := range pod.Spec.Volumes {
+		seen[v.Name]++
+	}
+	for name, n := range seen {
+		if n > 1 {
+			t.Errorf("duplicate volume name %q in emitted pod spec: %+v", name, pod.Spec.Volumes)
+		}
+	}
+	if seen["tmp"] != 1 {
+		t.Errorf("scratch /tmp volume missing from emitted pod spec: %+v", pod.Spec.Volumes)
+	}
+}

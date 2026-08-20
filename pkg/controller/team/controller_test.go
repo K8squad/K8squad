@@ -20,6 +20,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -179,10 +180,22 @@ func TestProvisionScaffold(t *testing.T) {
 		t.Fatalf("get allow-control-plane NetworkPolicy (AC4): %v", err)
 	}
 
-	// Nothing was provisioned into ksquad-system (AC7).
+	// Nothing was provisioned into ksquad-system (AC7) — assert on the
+	// listed items, not just the list call (F9: the assertion used to be
+	// decorative — the list result was never inspected).
 	var sysPods corev1.PodList
 	if err := c.List(context.Background(), &sysPods, client.InNamespace(SystemNamespace)); err != nil {
 		t.Fatalf("list ksquad-system: %v", err)
+	}
+	if len(sysPods.Items) != 0 {
+		t.Errorf("pods provisioned into %s (AC7 violation): %v", SystemNamespace, sysPods.Items)
+	}
+	var sysSAs corev1.ServiceAccountList
+	if err := c.List(context.Background(), &sysSAs, client.InNamespace(SystemNamespace)); err != nil {
+		t.Fatalf("list ksquad-system SAs: %v", err)
+	}
+	if len(sysSAs.Items) != 0 {
+		t.Errorf("service accounts provisioned into %s (AC7 violation): %v", SystemNamespace, sysSAs.Items)
 	}
 
 	// Readiness is legible (AC5).
@@ -507,4 +520,258 @@ func mustList[L any, PL interface {
 		t.Fatalf("list %T: %v", l, err)
 	}
 	return &l
+}
+
+// TestTeardownTenancyLabelAsymmetry (PR #89 follow-up F1): provision refuses
+// to adopt a namespace whose team label matches but whose TENANCY label
+// does not — teardown must refuse symmetrically. The pre-F1 check looked
+// only at ksquad.io/team, so exactly that namespace (adoption refused,
+// then Team deleted) would have been DELETED on teardown.
+func TestTeardownTenancyLabelAsymmetry(t *testing.T) {
+	team := newTeam("alpha", "uid-alpha")
+	nsName := NamespaceNameFor(team)
+	// Team label right, tenancy label wrong/missing: adoption is refused
+	// (AC7 discipline) — and by symmetry, so must deletion be.
+	foreignish := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   nsName,
+		Labels: map[string]string{LabelTeam: "alpha"},
+	}}
+	r, c := newReconciler(t, team, foreignish)
+
+	if err := reconcileTeam(t, r, "alpha"); err == nil {
+		t.Fatalf("provision over a wrong-tenancy namespace must fail closed")
+	}
+
+	// Delete the Team and run teardown.
+	var teamObj api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &teamObj)
+	if err := c.Delete(context.Background(), &teamObj); err != nil {
+		t.Fatalf("delete team: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("teardown reconcile: %v", err)
+	}
+
+	// The namespace must still exist (only its tenancy label was wrong —
+	// it was never ours to delete), and the Team must be released.
+	var ns corev1.Namespace
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nsName}, &ns); err != nil {
+		t.Fatalf("wrong-tenancy namespace deleted on teardown (F1 asymmetry): %v", err)
+	}
+	var cleared api.Team
+	err := c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &cleared)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("team not released after teardown: err=%v finalizers=%v", err, cleared.Finalizers)
+	}
+}
+
+// TestHealedConflictClearsCondition (PR #89 follow-up F3): a NamespaceConflict
+// persisted next to NamespaceReady=True must be REMOVED once the conflict
+// heals, even when the ready condition itself does not change — condition
+// removal has to count as a status change, or the fail-closed condition
+// lingers forever (the pre-F3 write gate skipped the Update).
+func TestHealedConflictClearsCondition(t *testing.T) {
+	team := newTeam("alpha", "uid-alpha")
+	nsName := NamespaceNameFor(team)
+	r, c := newReconciler(t, team)
+
+	// (a) Provision cleanly: NamespaceReady=True, ObservedGeneration stamped.
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("initial reconcile: %v", err)
+	}
+
+	// (b) Replace the namespace with a foreign squatter: the next reconcile
+	// fails closed and persists NamespaceConflict (Ready stays True).
+	var ns corev1.Namespace
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nsName}, &ns); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	if err := c.Delete(context.Background(), &ns); err != nil {
+		t.Fatalf("delete managed namespace: %v", err)
+	}
+	squatter := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
+	if err := c.Create(context.Background(), squatter); err != nil {
+		t.Fatalf("create squatter namespace: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err == nil {
+		t.Fatalf("reconcile over squatter must fail closed")
+	}
+	var conflicted api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &conflicted)
+	if !hasConditionTrue(conflicted.Status.Conditions, condNamespaceConflict) {
+		t.Fatalf("NamespaceConflict not recorded: %v", conflicted.Status.Conditions)
+	}
+
+	// (c) Heal: remove the squatter; the next reconcile succeeds with an
+	// UNCHANGED ready condition and equal generations — exactly the shape
+	// where the pre-F3 gate issued no status write.
+	if err := c.Delete(context.Background(), squatter); err != nil {
+		t.Fatalf("delete squatter: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("healed reconcile: %v", err)
+	}
+
+	var healed api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &healed)
+	for _, cond := range healed.Status.Conditions {
+		if cond.Type == condNamespaceConflict {
+			t.Errorf("NamespaceConflict lingered after heal: %+v", healed.Status.Conditions)
+		}
+	}
+	if !hasConditionTrue(healed.Status.Conditions, condNamespaceReady) {
+		t.Errorf("NamespaceReady not true after heal: %v", healed.Status.Conditions)
+	}
+}
+
+// TestProvisionIntoTerminatingNamespaceWaits (PR #89 follow-up F8):
+// provisioning into a managed namespace that is Terminating surfaces a
+// dedicated condition (reason WaitForGone) and requeues — never the opaque
+// "unable to create new content in namespace … terminating" API-error
+// loop. Once the namespace is fully gone, the next reconcile provisions
+// cleanly and the condition clears.
+func TestProvisionIntoTerminatingNamespaceWaits(t *testing.T) {
+	team := newTeam("alpha", "uid-alpha")
+	nsName := NamespaceNameFor(team)
+	// A managed namespace wedged in Terminating (its own finalizer keeps it
+	// from disappearing).
+	terminating := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:       nsName,
+		Labels:     map[string]string{LabelTeam: "alpha", LabelTenancy: TenancySquad},
+		Finalizers: []string{"example.com/wedge"},
+	}}
+	r, c := newReconciler(t, team, terminating)
+	if err := c.Delete(context.Background(), terminating); err != nil {
+		t.Fatalf("start namespace deletion: %v", err)
+	}
+
+	// First reconcile: no error, a wait-for-gone requeue, the condition set
+	// and NamespaceReady absent.
+	res, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "alpha", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile over terminating namespace errored (want wait-for-gone requeue): %v", err)
+	}
+	if res.RequeueAfter != terminatingRequeue {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, terminatingRequeue)
+	}
+	var waiting api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &waiting)
+	sawTerminating, sawReady := false, false
+	for _, cond := range waiting.Status.Conditions {
+		if cond.Type == condNamespaceTerminating && cond.Status == metav1.ConditionTrue && cond.Reason == "WaitForGone" {
+			sawTerminating = true
+		}
+		if cond.Type == condNamespaceReady {
+			sawReady = true
+		}
+	}
+	if !sawTerminating {
+		t.Errorf("NamespaceTerminating/WaitForGone condition not recorded: %v", waiting.Status.Conditions)
+	}
+	if sawReady {
+		t.Errorf("NamespaceReady=True persisted next to a terminating namespace: %v", waiting.Status.Conditions)
+	}
+
+	// Nothing was provisioned into the draining namespace.
+	var sas corev1.ServiceAccountList
+	if err := c.List(context.Background(), &sas, client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list SAs: %v", err)
+	}
+	if len(sas.Items) != 0 {
+		t.Errorf("scaffold provisioned into a Terminating namespace: %v", sas.Items)
+	}
+
+	// Unwedge and fully remove the namespace; the next reconcile
+	// provisions fresh and clears the terminating condition.
+	var wedged corev1.Namespace
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nsName}, &wedged); err != nil {
+		t.Fatalf("get wedged namespace: %v", err)
+	}
+	wedged.Finalizers = nil
+	if err := c.Update(context.Background(), &wedged); err != nil {
+		t.Fatalf("clear wedge finalizer: %v", err)
+	}
+	if err := c.Delete(context.Background(), &wedged); err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("finish namespace deletion: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("post-gone reconcile: %v", err)
+	}
+	var fresh api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &fresh)
+	for _, cond := range fresh.Status.Conditions {
+		if cond.Type == condNamespaceTerminating {
+			t.Errorf("NamespaceTerminating lingered after clean provision: %+v", fresh.Status.Conditions)
+		}
+	}
+	if !hasConditionTrue(fresh.Status.Conditions, condNamespaceReady) {
+		t.Errorf("NamespaceReady not true after clean provision: %v", fresh.Status.Conditions)
+	}
+}
+
+// TestControlPlaneEgressPortScoped (PR #89 follow-up F4): the
+// allow-control-plane companion must be port-scoped like the DNS companion
+// — TCP 443/8080 only — so a squad cannot reach Postgres (or anything
+// else) that happens to live in the control-plane namespace.
+func TestControlPlaneEgressPortScoped(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var allowCP networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-control-plane", Namespace: team.Status.Namespace}, &allowCP); err != nil {
+		t.Fatalf("get allow-control-plane NetworkPolicy: %v", err)
+	}
+	if len(allowCP.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1", len(allowCP.Spec.Egress))
+	}
+	rule := allowCP.Spec.Egress[0]
+	if len(rule.Ports) == 0 {
+		t.Fatalf("control-plane egress is not port-scoped (any port/protocol to the whole namespace, F4)")
+	}
+	saw443, saw8080 := false, false
+	for _, p := range rule.Ports {
+		if p.Protocol == nil || *p.Protocol != tcpProtocol || p.Port == nil {
+			t.Errorf("non-TCP or portless egress entry: %+v", p)
+			continue
+		}
+		switch p.Port.IntValue() {
+		case 443:
+			saw443 = true
+		case 8080:
+			saw8080 = true
+		default:
+			t.Errorf("unexpected control-plane egress port %v (F4 allowlist is 443/8080)", p.Port)
+		}
+	}
+	if !saw443 || !saw8080 {
+		t.Errorf("control-plane egress ports missing 443/8080: %+v", rule.Ports)
+	}
+}
+
+// TestConditionTransitionTimePinnedByClock (PR #89 follow-up F9): the
+// Reconciler.Now clock is actually wired into condition transitions — a
+// frozen clock produces a frozen LastTransitionTime instead of the wall
+// clock (meta.SetStatusCondition honors a pre-set LastTransitionTime).
+func TestConditionTransitionTimePinnedByClock(t *testing.T) {
+	frozen := metav1.Time{Time: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(newTeam("alpha", "uid-alpha")).WithStatusSubresource(&api.Team{}).Build()
+	r := &Reconciler{Client: c, Now: func() metav1.Time { return frozen }}
+
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+	for _, cond := range team.Status.Conditions {
+		if cond.Type == condNamespaceReady && !cond.LastTransitionTime.Equal(&frozen) {
+			t.Errorf("NamespaceReady LastTransitionTime = %v, want the frozen clock %v (Now field not wired)", cond.LastTransitionTime, frozen)
+		}
+	}
 }

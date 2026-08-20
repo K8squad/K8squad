@@ -76,8 +76,12 @@ func BuildSandboxPod(run *api.Run, spec PodSpec) (*corev1.Pod, error) {
 				LabelSquad: spec.TeamName,
 			},
 		},
-		Spec: hardenedPodSpec(spec),
 	}
+	podSpec, err := hardenedPodSpec(spec)
+	if err != nil {
+		return nil, err
+	}
+	pod.Spec = podSpec
 	return pod, nil
 }
 
@@ -89,8 +93,21 @@ func BuildSandboxPod(run *api.Run, spec PodSpec) (*corev1.Pod, error) {
 // admissible under the squad namespace's enforced restricted Pod Security
 // Standard. A writable /tmp emptyDir is provided because the container root
 // filesystem is read-only (agent runtimes must not be trusted with a
-// writable rootfs, but /tmp scratch is legitimate).
-func hardenedPodSpec(spec PodSpec) corev1.PodSpec {
+// writable rootfs, but /tmp scratch is legitimate). Caller-supplied mounts
+// or volumes already named "tmp" fail closed: appending the scratch /tmp
+// onto them would emit duplicate volume names — an invalid pod spec that
+// only fails at admission (F9).
+func hardenedPodSpec(spec PodSpec) (corev1.PodSpec, error) {
+	for _, m := range spec.Mounts {
+		if m.Name == tmpVolumeName {
+			return corev1.PodSpec{}, &PolicyError{Reason: fmt.Sprintf("caller-supplied volume mount %q collides with the sandbox scratch volume; refusing to emit duplicate volume names", m.Name)}
+		}
+	}
+	for _, v := range spec.Volumes {
+		if v.Name == tmpVolumeName {
+			return corev1.PodSpec{}, &PolicyError{Reason: fmt.Sprintf("caller-supplied volume %q collides with the sandbox scratch volume; refusing to emit duplicate volume names", v.Name)}
+		}
+	}
 	agentContainer := corev1.Container{
 		Name:         "agent",
 		Image:        spec.Image,
@@ -104,7 +121,7 @@ func hardenedPodSpec(spec PodSpec) corev1.PodSpec {
 		},
 	}
 	agentContainer.VolumeMounts = append(agentContainer.VolumeMounts,
-		corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+		corev1.VolumeMount{Name: tmpVolumeName, MountPath: "/tmp"})
 	podSpec := corev1.PodSpec{
 		RuntimeClassName:             &spec.RuntimeClass,
 		ServiceAccountName:           agentSA,
@@ -116,10 +133,13 @@ func hardenedPodSpec(spec PodSpec) corev1.PodSpec {
 		},
 		Containers: []corev1.Container{agentContainer},
 		Volumes: append(spec.Volumes,
-			corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}),
+			corev1.Volume{Name: tmpVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}),
 	}
-	return podSpec
+	return podSpec, nil
 }
+
+// tmpVolumeName is the scratch /tmp emptyDir every sandbox pod gets.
+const tmpVolumeName = "tmp"
 
 // agentSA mirrors pkg/controller/team.AgentServiceAccount without an import
 // cycle. The reconciler-side constant stays authoritative; this one exists so
@@ -178,8 +198,12 @@ func Replenish(ctx context.Context, c client.Client, spec PodSpec) error {
 				// 3.4) stamps LabelRun at bind time after BindingGuard.
 			},
 		},
-		Spec: hardenedPodSpec(spec),
 	}
+	podSpec, err := hardenedPodSpec(spec)
+	if err != nil {
+		return err
+	}
+	pod.Spec = podSpec
 	if err := c.Create(ctx, pod); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("replenish warm pod: %w", err)
 	}

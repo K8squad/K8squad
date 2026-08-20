@@ -19,7 +19,6 @@ package webhook
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -58,6 +57,17 @@ const (
 // mirrors pkg/controller/team.SystemNamespace locally (sandbox.go keeps the
 // same class of local mirror to avoid dragging controller deps in).
 const controlPlaneNamespace = "ksquad-system"
+
+// trustedDevSetterServiceAccounts is the explicit allowlist of identities
+// that may set the trusted-dev escape annotation (F5). The pre-F5 prefix
+// check ("any system:serviceaccount:ksquad-system:*") treated EVERY
+// workload in the control-plane namespace — any current or future one — as
+// a privileged setter; a single compromised or over-permissioned
+// control-plane pod would have been enough to hand out the shared-kernel
+// escape. Adding a setter means adding a name here, deliberately, in review.
+var trustedDevSetterServiceAccounts = map[string]bool{
+	"system:serviceaccount:" + controlPlaneNamespace + ":operator": true,
+}
 
 // CrossRefValidator enforces the cross-object existence invariants the CRD
 // schemas cannot express: CEL in structural schemas evaluates against
@@ -268,10 +278,13 @@ func (v *CrossRefValidator) ValidateRunTrustedDev(run, old *ksquadv1alpha1.Run, 
 	return errs
 }
 
-// isPrivilegedRequester reports whether the admission requester is a
-// platform operator: a control-plane service account or system:masters.
+// isPrivilegedRequester reports whether the admission requester may set
+// the trusted-dev escape: a service account on the explicit
+// trustedDevSetterServiceAccounts allowlist (F5) or system:masters.
+// Anything else in the control-plane namespace is NOT privileged — the
+// namespace is not the grant.
 func isPrivilegedRequester(userInfo authenticationv1.UserInfo) bool {
-	if strings.HasPrefix(userInfo.Username, "system:serviceaccount:"+controlPlaneNamespace+":") {
+	if trustedDevSetterServiceAccounts[userInfo.Username] {
 		return true
 	}
 	for _, group := range userInfo.Groups {

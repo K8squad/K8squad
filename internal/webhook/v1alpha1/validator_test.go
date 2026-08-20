@@ -301,10 +301,12 @@ func TestCrossNamespaceRefResolution(t *testing.T) {
 }
 
 // TestTrustedDevAnnotationGatedByPrivilegedRequester (Cursor review on the
-// story 4.2 escape): setting ksquad.io/trusted-dev must be a privileged,
-// deliberate act. Plain users are denied; control-plane service accounts
-// and system:masters pass; a missing admission identity fails closed; an
-// unchanged carry-over on update is not a new act.
+// story 4.2 escape, F5-narrowed): setting ksquad.io/trusted-dev must be a
+// privileged, deliberate act. Plain users are denied; the ALLOWLISTED
+// control-plane service account and system:masters pass; a control-plane
+// service account NOT on the allowlist is denied (F5: the namespace is not
+// the grant); a missing admission identity fails closed; an unchanged
+// carry-over on update is not a new act.
 func TestTrustedDevAnnotationGatedByPrivilegedRequester(t *testing.T) {
 	v := newValidator(t, validWorld())
 	annotated := validRun()
@@ -313,12 +315,19 @@ func TestTrustedDevAnnotationGatedByPrivilegedRequester(t *testing.T) {
 	plain := authenticationv1.UserInfo{Username: "alice@corp.com", Groups: []string{"system:authenticated"}}
 	operator := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:operator", Groups: []string{"system:serviceaccounts"}}
 	breakGlass := authenticationv1.UserInfo{Username: "root-human", Groups: []string{"system:masters"}}
+	// A DIFFERENT service account in the control-plane namespace: pre-F5
+	// the prefix check admitted every ksquad-system SA; only the explicit
+	// allowlist may pass now.
+	otherCPSA := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:memory", Groups: []string{"system:serviceaccounts"}}
 
 	if errs := v.ValidateRunTrustedDev(annotated, nil, plain); len(errs) == 0 {
 		t.Errorf("plain user admitted setting the trusted-dev escape (shared-kernel escape handed to untrusted users)")
 	}
 	if errs := v.ValidateRunTrustedDev(annotated, nil, operator); len(errs) != 0 {
-		t.Errorf("control-plane SA denied: %v", errs)
+		t.Errorf("allowlisted operator SA denied: %v", errs)
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, otherCPSA); len(errs) == 0 {
+		t.Errorf("non-allowlisted control-plane SA admitted (F5: the namespace prefix must not be the grant)")
 	}
 	if errs := v.ValidateRunTrustedDev(annotated, nil, breakGlass); len(errs) != 0 {
 		t.Errorf("system:masters denied: %v", errs)

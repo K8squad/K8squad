@@ -8,9 +8,19 @@ rules:
   - ""
   resources:
   - limitranges
-  - namespaces
   - resourcequotas
   - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
   verbs:
   - create
   - delete
@@ -70,7 +80,6 @@ rules:
   - networkpolicies
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
@@ -83,7 +92,6 @@ rules:
   - roles
   verbs:
   - create
-  - delete
   - get
   - list
   - patch

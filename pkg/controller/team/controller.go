@@ -25,7 +25,9 @@ package team
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -109,6 +111,17 @@ const (
 // field so tests pin it and a no-op requeue produces byte-identical status.
 type Clock func() metav1.Time
 
+// errNamespaceTerminating signals provision found the squad namespace in
+// Terminating state: the reconcile requeues (terminatingRequeue) and waits
+// for the namespace to be fully removed before re-provisioning (F8).
+var errNamespaceTerminating = errors.New("squad namespace is terminating")
+
+// terminatingRequeue is how long a provision blocked on a Terminating
+// namespace waits before re-checking (F8). Namespace deletion is eventually
+// driven by the apiserver, so a coarse backoff is enough — but it must be
+// short enough that a delete/recreate Team converges promptly.
+const terminatingRequeue = 30 * time.Second
+
 // Reconciler provisions the §12.1 squad tenancy scaffold for each Team.
 type Reconciler struct {
 	client.Client
@@ -127,10 +140,10 @@ type Reconciler struct {
 //+kubebuilder:rbac:groups=ksquad.io,resources=teams/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=ksquad.io,resources=teams/finalizers,verbs=update;patch
 //+kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=resourcequotas;limitranges,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups="",resources=resourcequotas;limitranges,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch
 
 // Reconcile drives a Team to its provisioned squad namespace (or through
 // finalizer teardown on deletion). It is idempotent: a steady-state requeue
@@ -165,13 +178,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	if err := r.provision(ctx, &teamObj, nsName); err != nil {
+		if errors.Is(err, errNamespaceTerminating) {
+			// The squad namespace exists but is draining (F8): requeue and
+			// wait for it to be fully gone instead of hammering the API
+			// with opaque "unable to create new content in namespace …
+			// terminating" errors from every scaffold ensure.
+			return ctrl.Result{RequeueAfter: terminatingRequeue}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
-	// Readiness is legible, never assumed (AC5).
-	changed := setCondition(&teamObj, condNamespaceReady, metav1.ConditionTrue,
+	// Readiness is legible, never assumed (AC5). Condition REMOVAL counts
+	// as a change too: a healed conflict/reserved/terminating state must
+	// not leave its fail-closed condition persisted next to
+	// NamespaceReady=True (PR #89 follow-up F3).
+	changed := r.setCondition(&teamObj, condNamespaceReady, metav1.ConditionTrue,
 		"TenancyProvisioned", fmt.Sprintf("namespace %s provisioned with SA/RBAC/quota/LimitRange/NetworkPolicy baseline", nsName))
-	clearConditions(&teamObj, condNamespaceReserved, condNamespaceConflict)
+	if clearConditions(&teamObj, condNamespaceReserved, condNamespaceConflict, condNamespaceTerminating) {
+		changed = true
+	}
 	if changed || teamObj.Status.ObservedGeneration != teamObj.Generation {
 		teamObj.Status.ObservedGeneration = teamObj.Generation
 		if err := r.Status().Update(ctx, &teamObj); err != nil {
@@ -266,6 +291,20 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, teamObj *api.Team, nsN
 			fmt.Sprintf("namespace %s exists but is not managed by this Team (missing %s/%s labels); refusing to adopt", nsName, LabelTeam, LabelTenancy))
 		return nil, fmt.Errorf("team %s: namespace %s is not squad-managed", teamObj.Name, nsName)
 	}
+	// A managed namespace that is Terminating (deleted out-of-band, or the
+	// old namespace of a delete/recreate cycle) cannot take new content:
+	// every scaffold ensure would fail with the opaque "unable to create
+	// new content in namespace … terminating" API error. Surface the real
+	// state as a condition and let Reconcile wait for it to be gone (F8).
+	if !ns.DeletionTimestamp.IsZero() {
+		clearConditions(teamObj, condNamespaceReady)
+		r.setCondition(teamObj, condNamespaceTerminating, metav1.ConditionTrue, "WaitForGone",
+			fmt.Sprintf("namespace %s is Terminating; holding provision until it is fully removed (the recorded name will be re-provisioned cleanly once it is gone)", nsName))
+		if err := r.Status().Update(ctx, teamObj); err != nil {
+			log.FromContext(ctx).Error(err, "record terminating condition", "condition", condNamespaceTerminating)
+		}
+		return nil, errNamespaceTerminating
+	}
 	// Restore drifted managed labels (PSA enforce set, team-namespace
 	// routing label) without touching foreign labels.
 	if mergeLabels(&ns, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Labels: namespaceLabels(teamObj)}}) {
@@ -303,8 +342,13 @@ func (r *Reconciler) teardown(ctx context.Context, teamObj *api.Team) (ctrl.Resu
 	}
 
 	// Never touch a namespace we do not manage (foreign label check again —
-	// the name was recorded by us, but verify at delete time too).
-	if ns.Labels[LabelTeam] != teamObj.Name {
+	// the name was recorded by us, but verify at delete time too). The
+	// check mirrors ensureNamespace exactly: BOTH the team label and the
+	// tenancy label must match. Checking only ksquad.io/team here would be
+	// asymmetric with provision — a namespace provision refused to adopt
+	// (tenancy label wrong, team label coincidentally right) could still be
+	// deleted on Team delete (PR #89 follow-up F1).
+	if ns.Labels[LabelTeam] != teamObj.Name || ns.Labels[LabelTenancy] != TenancySquad {
 		return ctrl.Result{}, r.removeFinalizer(ctx, teamObj)
 	}
 
@@ -316,7 +360,7 @@ func (r *Reconciler) teardown(ctx context.Context, teamObj *api.Team) (ctrl.Resu
 
 	// Still present (deleting or about to): surface the stuck state and keep
 	// requeueing — the finalizer must not clear while Terminating (AC6).
-	setCondition(teamObj, condNamespaceTerminating, metav1.ConditionTrue,
+	r.setCondition(teamObj, condNamespaceTerminating, metav1.ConditionTrue,
 		"NamespaceTerminating", fmt.Sprintf("namespace %s is terminating; tenancy finalizer held until it is gone", nsName))
 	if err := r.Status().Update(ctx, teamObj); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update team status during teardown: %w", err)
@@ -574,6 +618,15 @@ var (
 	udpProtocol = corev1.ProtocolUDP
 	tcpProtocol = corev1.ProtocolTCP
 	dnsPort     = intstr.FromInt32(53)
+	// Control-plane egress ports (F4): the squad needs the apiserver/shim
+	// and the memory service, NOT the rest of the control-plane namespace
+	// (Postgres included). httpsPort covers TLS-fronted Services (and the
+	// apiserver's 443 convention); httpPort covers the in-cluster HTTP
+	// services' default listen port (apiserver/memory HTTPPort=8080).
+	// Egress to the control-plane namespace on ANY other port — Postgres
+	// 5432 among them — stays denied by ksquad-default-deny.
+	httpsPort = intstr.FromInt32(443)
+	httpPort  = intstr.FromInt32(8080)
 )
 
 // allowDNSNetworkPolicy re-opens cluster DNS (§12.2 companion, AC4).
@@ -604,7 +657,11 @@ func allowDNSNetworkPolicy(ns string, teamObj *api.Team, dnsNamespace string) *n
 
 // allowControlPlaneNetworkPolicy re-opens egress to the control-plane
 // namespace (§12.2 companion, AC4) — the Run must reach the
-// apiserver/shim/memory service that live in ksquad-system.
+// apiserver/shim/memory service that live in ksquad-system. Unlike the
+// pre-F4 shape (whole namespace, any port/protocol), egress is scoped to
+// the ports those services actually serve, mirroring the DNS companion's
+// discipline: a compromised Run cannot reach Postgres or anything else
+// that happens to live in the control-plane namespace.
 func allowControlPlaneNetworkPolicy(ns string, teamObj *api.Team, controlPlaneNamespace string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -621,6 +678,10 @@ func allowControlPlaneNetworkPolicy(ns string, teamObj *api.Team, controlPlaneNa
 						MatchLabels: map[string]string{"kubernetes.io/metadata.name": controlPlaneNamespace},
 					},
 				}},
+				Ports: []networkingv1.NetworkPolicyPort{
+					{Protocol: &tcpProtocol, Port: &httpsPort},
+					{Protocol: &tcpProtocol, Port: &httpPort},
+				},
 			}},
 		},
 	}
@@ -758,27 +819,49 @@ func mergePayload(existing, desired client.Object) bool {
 	return drifted
 }
 
-func setCondition(obj *api.Team, condType string, status metav1.ConditionStatus, reason, message string) bool {
+// setCondition records a condition transition, stamping LastTransitionTime
+// from the Reconciler clock. meta.SetStatusCondition honors a pre-set
+// LastTransitionTime, so the injected clock (tests pin it) survives the
+// transition bookkeeping instead of being silently overwritten with
+// time.Now() — a nil clock falls back to metav1.Now (F9).
+func (r *Reconciler) setCondition(obj *api.Team, condType string, status metav1.ConditionStatus, reason, message string) bool {
+	if r == nil || r.Now == nil {
+		return setConditionAt(metav1.Now, obj, condType, status, reason, message)
+	}
+	return setConditionAt(r.Now, obj, condType, status, reason, message)
+}
+
+func setConditionAt(now Clock, obj *api.Team, condType string, status metav1.ConditionStatus, reason, message string) bool {
 	return meta.SetStatusCondition(&obj.Status.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: obj.Generation,
+		LastTransitionTime: now(),
 	})
 }
 
-func clearConditions(obj *api.Team, condTypes ...string) {
+// clearConditions removes the given condition types and reports whether any
+// was actually present. The return value is folded into the status-write
+// gate by Reconcile — a removed fail-closed condition is a status change
+// that must be persisted, or a healed conflict leaves its condition
+// persisted next to NamespaceReady=True (F3).
+func clearConditions(obj *api.Team, condTypes ...string) bool {
+	removed := false
 	for _, t := range condTypes {
-		meta.RemoveStatusCondition(&obj.Status.Conditions, t)
+		if meta.RemoveStatusCondition(&obj.Status.Conditions, t) {
+			removed = true
+		}
 	}
+	return removed
 }
 
 // setErrorCondition records a fail-closed condition on the Team status. A
 // status-update failure is logged, not fatal — the reconcile error already
 // requeues, and a wedged status write must not mask the original cause.
 func setErrorCondition(ctx context.Context, r *Reconciler, obj *api.Team, condType, message string) {
-	setCondition(obj, condType, metav1.ConditionTrue, "FailClosed", message)
+	r.setCondition(obj, condType, metav1.ConditionTrue, "FailClosed", message)
 	if err := r.Status().Update(ctx, obj); err != nil {
 		log.FromContext(ctx).Error(err, "record fail-closed condition", "condition", condType)
 	}
