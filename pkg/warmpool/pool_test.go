@@ -19,6 +19,7 @@ package warmpool_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -39,11 +40,34 @@ type fakeProvisioner struct {
 	teardowns   map[string]int
 	bootErr     error
 	tearDownErr error
-	blockOnBoot chan struct{}
+	// tearDownErrFor fails teardown for SPECIFIC ids only (a wedged pod:
+	// undeletable while every other delete lands) — the fake for the
+	// draining/recovery lifecycle cases.
+	tearDownErrFor map[string]error
+	// tearDownFailNth fails only the Nth teardown call for an id (1-based)
+	// — e.g. the release call lands but the post-boot orphan cleanup
+	// fails.
+	tearDownFailNth map[string]int
+	// blockOnTeardown parks the Nth teardown for an id (teardownAttempts
+	// counts entries) — the in-flight-teardown window the rebind race
+	// needs. A parked call returns after teardownGate closes, re-checking
+	// tearDownErrFor so the test can make the parked delete fail.
+	blockOnTeardown  map[string]int
+	teardownAttempts map[string]int
+	teardownGate     chan struct{}
+	blockOnBoot      chan struct{}
 }
 
 func newFakeProvisioner() *fakeProvisioner {
-	return &fakeProvisioner{boots: map[string]warmpool.PoolKey{}, teardowns: map[string]int{}}
+	return &fakeProvisioner{
+		boots:            map[string]warmpool.PoolKey{},
+		teardowns:        map[string]int{},
+		tearDownErrFor:   map[string]error{},
+		tearDownFailNth:  map[string]int{},
+		blockOnTeardown:  map[string]int{},
+		teardownAttempts: map[string]int{},
+		teardownGate:     make(chan struct{}),
+	}
 }
 
 func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id string) error {
@@ -64,11 +88,39 @@ func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id strin
 
 func (f *fakeProvisioner) TearDown(_ context.Context, id string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.teardownAttempts[id]++
+	attempt := f.teardownAttempts[id]
+	if n, ok := f.tearDownFailNth[id]; ok && n == attempt {
+		f.mu.Unlock()
+		return errors.New("pod delete: 503 (nth)")
+	}
+	if err, ok := f.tearDownErrFor[id]; ok {
+		f.mu.Unlock()
+		return err
+	}
 	if f.tearDownErr != nil {
+		f.mu.Unlock()
 		return f.tearDownErr
 	}
+	park := false
+	if n := f.blockOnTeardown[id]; n == attempt {
+		park = true
+	}
+	if !park {
+		f.teardowns[id]++
+		f.mu.Unlock()
+		return nil
+	}
+	f.mu.Unlock()
+	// Parked teardown: the delete is in flight. The test releases (and
+	// optionally re-arms failure via tearDownErrFor) through teardownGate.
+	<-f.teardownGate
+	f.mu.Lock()
 	f.teardowns[id]++
+	f.mu.Unlock()
+	if err, ok := f.tearDownErrFor[id]; ok {
+		return err
+	}
 	return nil
 }
 
@@ -88,6 +140,14 @@ func (f *fakeProvisioner) teardownCount(id string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.teardowns[id]
+}
+
+// teardownAttemptFor reports how many teardown calls for id have STARTED
+// (parked or not) — the sync primitive for the in-flight-teardown window.
+func (f *fakeProvisioner) teardownAttemptFor(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teardownAttempts[id]
 }
 
 // bootedCopy is a test helper snapshot of f.boots.
@@ -438,8 +498,8 @@ func TestPoolReleaseTearDownFailureStaysTracked(t *testing.T) {
 	if pool.Ref("run-1") != ref {
 		t.Fatal("failed teardown untracked the sandbox — a retry cannot re-attempt it")
 	}
-	if inv := pool.Inventory()[key]; inv.Bound != 1 {
-		t.Fatalf("inventory after failed teardown = %+v, want bound=1 (the pod is alive — stay truthful)", inv)
+	if inv := pool.Inventory()[key]; inv.Bound != 0 || inv.Draining != 1 {
+		t.Fatalf("inventory after failed teardown = %+v, want draining=1 (tracked, not claimable — the pod may be alive)", inv)
 	}
 
 	// The API recovers: the retry tears the SAME sandbox down.
@@ -453,15 +513,15 @@ func TestPoolReleaseTearDownFailureStaysTracked(t *testing.T) {
 	if pool.Ref("run-1") != "" {
 		t.Fatal("successful retry left the ref bound")
 	}
-	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved != 0 {
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved+inv.Draining != 0 {
 		t.Fatalf("post-retry inventory = %+v, want empty", inv)
 	}
 }
 
-// Review blocker (PR #91), ScaleDown arm: a failed teardown during
-// scale-down must not orphan the pod. The delete-first twin returns 0
-// destroyed but has already forgotten the victims; the fixed pool
-// re-tracks the failed entry so the next pass retries it.
+// Review blocker (PR #91), ScaleDown arm: a failed teardown must not
+// orphan the pod. The delete-first twin returns 0 destroyed but has
+// already forgotten the victims; the fixed pool parks them in Draining —
+// tracked, NEVER claimable — and the next pass retries and reclaims.
 func TestPoolScaleDownTearDownFailureRequeues(t *testing.T) {
 	key := gvisorKey
 	pool, fp := newTestPool()
@@ -471,16 +531,17 @@ func TestPoolScaleDownTearDownFailureRequeues(t *testing.T) {
 	if n := pool.ScaleDown(context.Background(), key, 2); n != 0 {
 		t.Fatalf("scale-down destroyed %d against a failing provisioner, want 0 confirmed", n)
 	}
-	if inv := pool.Inventory()[key]; inv.Ready != 2 {
-		t.Fatalf("failed teardown dropped live entries: %+v, want ready=2 (still tracked)", inv)
+	inv := pool.Inventory()[key]
+	if inv.Ready != 0 || inv.Draining != 2 {
+		t.Fatalf("failed teardown inventory = %+v, want ready=0 draining=2 (tracked, not claimable)", inv)
 	}
 
 	fp.tearDownErr = nil
 	if n := pool.ScaleDown(context.Background(), key, 2); n != 2 {
 		t.Fatalf("retry scale-down destroyed %d, want 2", n)
 	}
-	if inv := pool.Inventory()[key]; inv.Ready != 0 {
-		t.Fatalf("post-retry inventory = %+v, want ready=0", inv)
+	if inv := pool.Inventory()[key]; inv.Ready != 0 || inv.Draining != 0 {
+		t.Fatalf("post-retry inventory = %+v, want empty", inv)
 	}
 }
 
@@ -513,7 +574,7 @@ func TestPoolReleaseDuringInFlightColdBootDestroysOrphan(t *testing.T) {
 	if got := fp.teardownCount(id); got != 2 {
 		t.Fatalf("sandbox %s torn down %d times, want 2 (release + the orphan cleanup once Boot completed)", id, got)
 	}
-	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved != 0 {
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved+inv.Draining != 0 {
 		t.Fatalf("post-race inventory = %+v, want empty", inv)
 	}
 	if pool.Ref("run-1") != "" {
@@ -562,4 +623,256 @@ func TestPoolSetClockAndIDUniqueness(t *testing.T) {
 	if inv := pool.Inventory()[key]; inv.Ready != 1 || inv.Warming != 1 {
 		t.Fatalf("inventory = %+v, want ready=1 warming=1", inv)
 	}
+}
+
+// Cursor review (PR #93) finding 1: a ScaleDown teardown failure parked
+// its victim back in the CLAIMABLE Ready FIFO — a delete-attempted sandbox
+// re-armed as warmth is the cross-run reuse §9.3 exists to prevent (a
+// timeout is not proof the delete did not land). The draining design never
+// re-arms: a wedged victim is unclaimable, and the next claim cold-boots
+// its OWN sandbox.
+func TestPoolScaleDownFailedTeardownNeverReArmsWarmth(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 1)
+	wedged := pool.Inventory()[key]
+	_ = wedged
+	ids := make([]string, 0, 1)
+	for id := range fp.bootsCopy() {
+		ids = append(ids, id)
+	}
+	wedgedID := ids[0]
+
+	fp.tearDownErrFor[wedgedID] = errors.New("pod stuck Terminating (finalizer)")
+	if n := pool.ScaleDown(context.Background(), key, 1); n != 0 {
+		t.Fatalf("scale-down confirmed %d teardowns against a wedged pod, want 0", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Ready != 0 || inv.Draining != 1 {
+		t.Fatalf("post-failure inventory = %+v, want ready=0 draining=1 (delete-attempted warmth is NEVER claimable)", inv)
+	}
+
+	// The claim must NOT receive the delete-attempted sandbox: it
+	// cold-boots its own (the re-arm twin hands out wedgedID here).
+	ref, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("bind after wedged scale-down: %v", err)
+	}
+	if ref == wedgedID {
+		t.Fatalf("claim received the delete-attempted sandbox %q — §9.3 reuse through the recovery path", ref)
+	}
+	if inv := pool.Inventory()[key]; inv.Bound != 1 || inv.Draining != 1 {
+		t.Fatalf("post-claim inventory = %+v, want bound=1 draining=1", inv)
+	}
+}
+
+// Cursor review (PR #93) finding 2: front-of-FIFO requeue meant one
+// wedged pod blocked the destruction of healthy surplus FOREVER (and
+// every pass re-issued the same doomed delete). The draining queue keeps
+// wedged retries separate from healthy victim selection: healthy surplus
+// still comes down to target.
+func TestPoolScaleDownWedgedPodDoesNotBlockHealthySurplus(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 3)
+	all := fp.bootsCopy()
+	wedged := make([]string, 0, 1)
+	for id := range all {
+		wedged = append(wedged, id)
+	}
+	// FIFO order: prewarm boots in order, so wedged[0] is the oldest and
+	// is selected first.
+	fp.tearDownErrFor[wedged[0]] = errors.New("undeletable")
+
+	if n := pool.ScaleDown(context.Background(), key, 2); n != 1 {
+		t.Fatalf("scale-down pass 1 destroyed %d, want 1 (healthy victim lands; wedged one does not)", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Draining != 1 {
+		t.Fatalf("pass 1 inventory = %+v, want draining=1", inv)
+	}
+	// Pass 2: the wedged retry fails again but MUST NOT consume the
+	// healthy victim budget — the remaining surplus still comes down.
+	if n := pool.ScaleDown(context.Background(), key, 2); n != 1 {
+		t.Fatalf("scale-down pass 2 destroyed %d, want 1 (wedged pod must not block healthy surplus)", n)
+	}
+	inv := pool.Inventory()[key]
+	if inv.Ready != 0 || inv.Draining != 1 {
+		t.Fatalf("final inventory = %+v, want ready=0 draining=1 — pool reached target; only the wedged pod remains as debt", inv)
+	}
+}
+
+// Cursor review (PR #93) finding 3: the orphan cleanup swallowed its
+// TearDown error while the message claimed the pod "was destroyed" — a
+// live pod tracked by nothing, caller told it was clean. The fixed path
+// runs cleanup on a DETACHED context, reports the failure, and parks the
+// orphan as Draining so a later pass retries it.
+func TestPoolBindOrphanCleanupFailureStaysTracked(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	fp.blockOnBoot = make(chan struct{})
+
+	bindDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+		bindDone <- err
+	}()
+	id := waitBooted(t, fp)
+
+	// The release teardown (call #1) succeeds; the post-boot orphan
+	// cleanup (call #2) fails.
+	fp.tearDownFailNth[id] = 2
+	if err := pool.Release(context.Background(), "run-1"); err != nil {
+		t.Fatalf("release during in-flight boot: %v", err)
+	}
+	close(fp.blockOnBoot)
+
+	err := <-bindDone
+	if err == nil {
+		t.Fatal("bind succeeded although the run was released mid-boot")
+	}
+	if strings.Contains(err.Error(), "was destroyed") {
+		t.Fatalf("bind reported the orphan destroyed while its cleanup failed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "FAILED") {
+		t.Fatalf("bind error does not surface the cleanup failure: %v", err)
+	}
+	if inv := pool.Inventory()[key]; inv.Draining != 1 {
+		t.Fatalf("failed orphan cleanup inventory = %+v, want draining=1 (the pod stays tracked for retry)", inv)
+	}
+	if pool.Ref("run-1") != "" {
+		t.Fatal("the run must not own the orphaned pod")
+	}
+
+	// The tracked debt is reclaimable once the delete lands.
+	delete(fp.tearDownFailNth, id)
+	if n := pool.ScaleDown(context.Background(), key, 1); n != 1 {
+		t.Fatalf("draining retry reclaimed %d, want 1", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved+inv.Draining != 0 {
+		t.Fatalf("post-reclaim inventory = %+v, want empty", inv)
+	}
+}
+
+// Cursor review (PR #93) finding 4: Release's unconditional
+// restore-on-failure clobbered a NEWER binding made during the teardown
+// window — the run's live sandbox became unreachable through every index
+// (two pods alive, Ref pointing at the wrong one). The fixed restore is
+// conditional on the run's slot still being vacant.
+func TestPoolReleaseTeardownFailureDoesNotClobberRebind(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 2)
+	ref1, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("warm bind: %v", err)
+	}
+
+	// Park run-1's release teardown in flight; while it hangs, run-1
+	// re-binds to the other warm sandbox.
+	fp.blockOnTeardown[ref1] = 1
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- pool.Release(context.Background(), "run-1") }()
+	for fp.teardownAttemptFor(ref1) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	ref2, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("rebind during release window: %v", err)
+	}
+	if ref2 == ref1 {
+		t.Fatal("rebind received the sandbox being torn down")
+	}
+
+	// The parked delete fails when released.
+	fp.tearDownErrFor[ref1] = errors.New("pod delete: 503")
+	close(fp.teardownGate)
+	if err := <-releaseDone; err == nil {
+		t.Fatal("release reported success despite the teardown failure")
+	}
+
+	// The newer binding MUST survive the failed release's restore.
+	if got := pool.Ref("run-1"); got != ref2 {
+		t.Fatalf("Ref(run-1) = %q after failed release, want the newer binding %q — restore clobbered it", got, ref2)
+	}
+	inv := pool.Inventory()[key]
+	if inv.Bound != 1 || inv.Draining != 1 {
+		t.Fatalf("inventory = %+v, want bound=1 (newer binding) draining=1 (failed teardown, tracked)", inv)
+	}
+
+	// Full recovery: the run releases its live sandbox; the wedged pod is
+	// reclaimed by the draining retry.
+	delete(fp.tearDownErrFor, ref1)
+	if err := pool.Release(context.Background(), "run-1"); err != nil {
+		t.Fatalf("release of the live binding: %v", err)
+	}
+	if n := pool.ScaleDown(context.Background(), key, 1); n != 1 {
+		t.Fatalf("draining retry reclaimed %d, want 1", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved+inv.Draining != 0 {
+		t.Fatalf("final inventory = %+v, want empty", inv)
+	}
+}
+
+// Cursor review (PR #93), lower severity: the unknown-class guard sat
+// AHEAD of the reattach arm — a run that already owns a sandbox could not
+// recover its ref when handed an unrecognised class, stranding the pod.
+// The guard now gates only NEW binds.
+func TestPoolUnknownClassReattachRecoversRef(t *testing.T) {
+	key := gvisorKey
+	pool, _ := newTestPool()
+	ref, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("cold bind: %v", err)
+	}
+	got, err := pool.Bind(context.Background(), "run-1", key, warmpool.RunClass("serverless"))
+	if err != nil {
+		t.Fatalf("reattach with unknown class must still recover the bound ref — validation must never strand a bound run: %v", err)
+	}
+	if got != ref {
+		t.Fatalf("reattach returned %q, want the bound ref %q", got, ref)
+	}
+}
+
+// Cursor review (PR #93), lower severity: SetClock/SetBindMiss wrote fields
+// their locked readers touch — -race pins the now-mutexed setters.
+func TestPoolSettersRaceWithBind(t *testing.T) {
+	key := gvisorKey
+	pool, _ := newTestPool()
+	prewarm(t, pool, key, 1)
+
+	deadline := time.Now().Add(50 * time.Millisecond)
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		for time.Now().Before(deadline) {
+			ref, err := pool.Bind(context.Background(), "run-r", key, warmpool.ClassInteractive)
+			if err != nil {
+				t.Errorf("bind: %v", err)
+				return
+			}
+			if err := pool.Release(context.Background(), "run-r"); err != nil {
+				t.Errorf("release: %v", err)
+				return
+			}
+			_ = ref
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		base := time.Unix(1_750_000_000, 0)
+		for i := 0; time.Now().Before(deadline); i++ {
+			// Each closure is stateless (no shared mutable capture) —
+			// the race under test is the p.now FIELD swap, not the
+			// closure body.
+			b := base.Add(time.Duration(i) * time.Second)
+			pool.SetClock(func() time.Time { return b })
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for time.Now().Before(deadline) {
+			pool.SetBindMiss(func(warmpool.PoolKey, warmpool.RunClass) {})
+		}
+	}()
+	wg.Wait()
 }
