@@ -110,9 +110,14 @@ func TrustedDev(obj metav1.Object) bool {
 // AdmitRuntimeClass enforces the AD-3 crux (story 4.2 AC2, fail-closed): a
 // resolved class of runc, the empty/node-default runtime, or any
 // non-approved class is rejected for untrusted code. The ONLY escape is the
-// explicit trustedDev flag. "No runtimeClassName set" is a rejection, not a
+// explicit trustedDev flag, and that escape admits runc ONLY — a
+// "trusted first-party dev sandbox on the shared kernel" is by definition
+// the node-default runtime; an operator-added weak isolation runtime is
+// rejected exactly like it would be without the flag, so the allowlist
+// keeps meaning something. "No runtimeClassName set" is a rejection, not a
 // pass — an empty field silently runs on the node default runtime, which is
-// the exact hole this closes.
+// the exact hole this closes. Who may SET the escape is gated upstream in
+// the Run admission webhook (GuardRunTrustedDev), not here.
 func AdmitRuntimeClass(class string, trustedDev bool) error {
 	effective := class
 	if effective == "" {
@@ -122,14 +127,14 @@ func AdmitRuntimeClass(class string, trustedDev bool) error {
 	if IsApprovedClass(effective) {
 		return nil
 	}
-	if trustedDev {
+	if trustedDev && effective == ClassRunc {
 		return nil
 	}
 	return &PolicyError{
-		Class:     class,
+		Class:      class,
 		TrustedDev: trustedDev,
 		Reason: fmt.Sprintf("runtime class %q is not an approved isolation runtime for untrusted code (approved: gvisor, kata); "+
-			"set the explicit %s=true escape only for trusted first-party dev sandboxes", effective, TrustedDevAnnotation),
+			"the explicit %s=true escape admits runc only, and only for trusted first-party dev sandboxes", effective, TrustedDevAnnotation),
 	}
 }
 

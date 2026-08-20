@@ -58,10 +58,10 @@ func testRun(name, uid string) *api.Run {
 func TestBuildSandboxPod(t *testing.T) {
 	run := testRun("r-1", "uid-r-1")
 	pod, err := BuildSandboxPod(run, PodSpec{
-		Namespace:   run.Namespace,
-		TeamName:    "alpha",
+		Namespace:    run.Namespace,
+		TeamName:     "alpha",
 		RuntimeClass: ClassGVisor,
-		Image:       "ghcr.io/k8squad/opencode:1.0",
+		Image:        "ghcr.io/k8squad/opencode:1.0",
 	})
 	if err != nil {
 		t.Fatalf("build pod: %v", err)
@@ -156,6 +156,73 @@ func TestTeardownAndReplace(t *testing.T) {
 	}
 }
 
+// TestBuildSandboxPodHardened (Cursor review): the pod carries the
+// restricted-PSS hardening set EXPLICITLY — pod-level
+// runAsNonRoot+RuntimeDefault seccomp, no SA token automount, no service
+// env injection, and a container with no privilege escalation, a read-only
+// rootfs (with a writable /tmp emptyDir for legitimate scratch) and all
+// capabilities dropped. gVisor covers the kernel boundary; this is what
+// keeps the guarantee if the class ever resolves to runc via the
+// trusted-dev escape.
+func TestBuildSandboxPodHardened(t *testing.T) {
+	run := testRun("r-1", "uid-r-1")
+	pod, err := BuildSandboxPod(run, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+	})
+	if err != nil {
+		t.Fatalf("build pod: %v", err)
+	}
+	sc := pod.Spec.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+		t.Errorf("pod securityContext.runAsNonRoot must be explicitly true, got %+v", sc)
+	}
+	if sc == nil || sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod seccompProfile must be RuntimeDefault, got %+v", sc)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Errorf("pod automountServiceAccountToken must be explicitly false")
+	}
+	if pod.Spec.EnableServiceLinks == nil || *pod.Spec.EnableServiceLinks {
+		t.Errorf("pod enableServiceLinks must be explicitly false")
+	}
+	csc := pod.Spec.Containers[0].SecurityContext
+	if csc == nil || csc.AllowPrivilegeEscalation == nil || *csc.AllowPrivilegeEscalation {
+		t.Errorf("container allowPrivilegeEscalation must be false, got %+v", csc)
+	}
+	if csc == nil || csc.ReadOnlyRootFilesystem == nil || !*csc.ReadOnlyRootFilesystem {
+		t.Errorf("container readOnlyRootFilesystem must be true, got %+v", csc)
+	}
+	if csc == nil || csc.Capabilities == nil || len(csc.Capabilities.Drop) != 1 || csc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("container capabilities must drop ALL, got %+v", csc)
+	}
+	var sawTmp bool
+	for _, m := range pod.Spec.Containers[0].VolumeMounts {
+		if m.Name == "tmp" && m.MountPath == "/tmp" {
+			sawTmp = true
+		}
+	}
+	if !sawTmp {
+		t.Errorf("read-only rootfs without a writable /tmp mount breaks agent runtimes needing scratch")
+	}
+}
+
+// TestBuildSandboxPodRequiresRunUID (Cursor review): a Run without a UID
+// fails closed — the UID is what the §9.3 binding and the collision-safe
+// pod name derive from, and an empty one would emit an unbound-looking pod
+// whose name collides with every other empty-UID Run of the same name.
+func TestBuildSandboxPodRequiresRunUID(t *testing.T) {
+	run := testRun("r-1", "")
+	_, err := BuildSandboxPod(run, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+	})
+	if err == nil {
+		t.Fatalf("pod assembled for a UID-less Run (fail-open shape)")
+	}
+	if !IsPolicyError(err) {
+		t.Errorf("error is not a PolicyError: %v", err)
+	}
+}
+
 // TestBindingGuard (4.5 AC2 — the §9.3 absolute): a pod bound to one Run is
 // never handed to another.
 func TestBindingGuard(t *testing.T) {
@@ -170,6 +237,35 @@ func TestBindingGuard(t *testing.T) {
 	}
 	if err := BindingGuard(bound, other); err == nil {
 		t.Errorf("pod bound to %s handed to %s (a sandbox is never reused across Runs)", run.UID, other.UID)
+	}
+
+	// A UID-less Run must not be handed any pod — including unbound-looking
+	// ones (Cursor review: the empty-UID fail-open shape).
+	if err := BindingGuard(bound, testRun("r-3", "")); err == nil {
+		t.Errorf("UID-less Run admitted to claim a sandbox (binding identity is UID-scoped)")
+	}
+}
+
+// TestWorkspaceMountsRejectHostilePVCKey (Cursor review): the
+// caller-supplied pvcKey is the one component that can traverse — the
+// JOINED subPaths are validated, so a hostile key fails closed instead of
+// flowing straight into the emitted subPath.
+func TestWorkspaceMountsRejectHostilePVCKey(t *testing.T) {
+	alice := api.PrincipalRef("alice@corp.com")
+	for _, key := range []string{"../../other-principal", "/etc", "a/../../..", ".."} {
+		mounts, err := WorkspaceVolumeMounts("workspace-pvc", key, alice)
+		if err == nil {
+			t.Errorf("hostile pvcKey %q admitted: %+v", key, mounts)
+		} else if !IsPolicyError(err) {
+			t.Errorf("pvcKey %q: error is not a PolicyError: %v", key, err)
+		}
+	}
+	// The benign shapes still pass: empty (dedicated PVC) and a plain
+	// relative fragment.
+	for _, key := range []string{"", "projects/widget"} {
+		if _, err := WorkspaceVolumeMounts("workspace-pvc", key, alice); err != nil {
+			t.Errorf("benign pvcKey %q rejected: %v", key, err)
+		}
 	}
 }
 

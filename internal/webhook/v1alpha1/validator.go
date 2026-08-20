@@ -19,13 +19,16 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/sandbox"
 )
 
 // Guard ids for the cross-object existence checks. Each id names one
@@ -43,7 +46,18 @@ const (
 	GuardRunTeam     = "run/teamRef"
 	GuardRunProject  = "run/projectRef"
 	GuardRunAgents   = "run/agents"
+	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
+	// annotation: platform operators only. Without this guard the
+	// annotation is a plain metadata write any Run author can set,
+	// which would hand the shared-kernel escape to untrusted users.
+	GuardRunTrustedDev = "run/trusted-dev-annotation"
 )
+
+// controlPlaneNamespace is the ksquad control-plane namespace whose service
+// accounts count as platform operators for the trusted-dev escape. It
+// mirrors pkg/controller/team.SystemNamespace locally (sandbox.go keeps the
+// same class of local mirror to avoid dragging controller deps in).
+const controlPlaneNamespace = "ksquad-system"
 
 // CrossRefValidator enforces the cross-object existence invariants the CRD
 // schemas cannot express: CEL in structural schemas evaluates against
@@ -223,4 +237,47 @@ func (v *CrossRefValidator) ValidateRun(ctx context.Context, run *ksquadv1alpha1
 // every denial renders as path + observed value + fix.
 func invalidf(path string, observed any, format string, args ...any) *field.Error {
 	return field.Invalid(field.NewPath(path), observed, fmt.Sprintf(format, args...))
+}
+
+// ValidateRunTrustedDev gates the ksquad.io/trusted-dev escape (story 4.2
+// §2: "explicit, audited, non-default"). Setting it must be a privileged,
+// deliberate act: only platform operators (service accounts in the
+// control-plane namespace or system:masters) may set or change it. On
+// update, an unchanged carry-over from an already-annotated Run is not a
+// new act and passes — the gate stops ESCALATION, not ordinary edits.
+// Absent request user info (non-admission callers, tests) fails closed:
+// anonymous is unprivileged.
+func (v *CrossRefValidator) ValidateRunTrustedDev(run, old *ksquadv1alpha1.Run, userInfo authenticationv1.UserInfo) field.ErrorList {
+	if !v.on(GuardRunTrustedDev) {
+		return nil
+	}
+	value, set := run.Annotations[sandbox.TrustedDevAnnotation]
+	if !set {
+		return nil
+	}
+	if old != nil && old.Annotations[sandbox.TrustedDevAnnotation] == value {
+		return nil
+	}
+	if isPrivilegedRequester(userInfo) {
+		return nil
+	}
+	var errs field.ErrorList
+	errs = append(errs, invalidf(
+		"metadata.annotations["+sandbox.TrustedDevAnnotation+"]", value,
+		"the trusted-dev escape admits the shared-kernel runtime and may only be set by platform operators (service accounts in %s, or system:masters); ask an operator to set it on your behalf", controlPlaneNamespace))
+	return errs
+}
+
+// isPrivilegedRequester reports whether the admission requester is a
+// platform operator: a control-plane service account or system:masters.
+func isPrivilegedRequester(userInfo authenticationv1.UserInfo) bool {
+	if strings.HasPrefix(userInfo.Username, "system:serviceaccount:"+controlPlaneNamespace+":") {
+		return true
+	}
+	for _, group := range userInfo.Groups {
+		if group == "system:masters" {
+			return true
+		}
+	}
+	return false
 }

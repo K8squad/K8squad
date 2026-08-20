@@ -18,7 +18,6 @@ package team
 
 import (
 	"fmt"
-	"hash"
 	"hash/fnv"
 	"strings"
 
@@ -94,7 +93,7 @@ func NormalizeName(name string) string {
 // (only possible pre-persist, never on a reconciled object) falls back to the
 // empty string so the function stays total and deterministic in unit tests.
 func shortHash(s string) string {
-	var h hash.Hash32 = fnv.New32a()
+	h := fnv.New32a()
 	_, _ = h.Write([]byte(s))
 	return fmt.Sprintf("%08x", h.Sum32())[:hashLen]
 }

@@ -139,6 +139,15 @@ func WorkspaceVolumeMounts(pvcName, pvcKey string, principal api.PrincipalRef) (
 	base := pvcKey
 	cacheSub := path.Join(base, partition)
 	worktreeSub := path.Join(base, WorkspaceWorktreeDir, path.Base(partition))
+	// The caller-supplied pvcKey is the ONE component that can traverse —
+	// validating the partition alone checks the component that cannot.
+	// Fail-close on the JOINED subPaths: this covers both components and
+	// rejects any absolute or escaping result before it reaches a mount.
+	for _, sub := range []string{cacheSub, worktreeSub} {
+		if path.IsAbs(sub) || sub != path.Clean(sub) || sub == "." || sub == ".." || strings.HasPrefix(sub, "../") {
+			return nil, &PolicyError{Reason: fmt.Sprintf("workspace subPath %q escapes the volume root (pvcKey %q); refusing to emit the mount", sub, base)}
+		}
+	}
 	return []corev1.VolumeMount{
 		{Name: "workspace-source", ReadOnly: false, MountPath: "/workspace/source", SubPath: worktreeSub},
 		{Name: "workspace-cache", ReadOnly: false, MountPath: "/workspace/cache", SubPath: cacheSub},

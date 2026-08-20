@@ -361,3 +361,150 @@ func TestForeignNamespaceFailClosed(t *testing.T) {
 		t.Errorf("foreign namespace was adopted (SAs provisioned): %v", sas.Items)
 	}
 }
+
+// TestScaffoldSelfHealing (Cursor review): with a namespace carrying a real
+// UID, owner references are actually stamped on scaffold objects; a
+// steady-state reconcile writes NOTHING (resourceVersion stable — the AC5
+// claim, proven on writes rather than object counts); a deleted
+// default-deny NetworkPolicy is recreated; a stripped team label is
+// restored; and the namespace carries the restricted PSA labels.
+func TestScaffoldSelfHealing(t *testing.T) {
+	team := newTeam("alpha", "uid-alpha")
+	nsName := NamespaceNameFor(team)
+	// Pre-create the squad namespace WITH a UID (the fake client never
+	// mints one), so the owner-reference path is actually exercised.
+	managed := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: nsName,
+		UID:  types.UID("ns-uid-real"),
+		Labels: map[string]string{
+			LabelTeam:    "alpha",
+			LabelTenancy: TenancySquad,
+		},
+	}}
+	r, c := newReconciler(t, team, managed)
+
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	// Namespace carries the restricted Pod Security Standard labels.
+	var namespace corev1.Namespace
+	if err := c.Get(context.Background(), types.NamespacedName{Name: nsName}, &namespace); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	if namespace.Labels[psaEnforceLabel] != "restricted" {
+		t.Errorf("namespace %s label = %q, want restricted (untrusted code runs here)", psaEnforceLabel, namespace.Labels[psaEnforceLabel])
+	}
+
+	// Scaffold objects carry the namespace owner reference (cascade-delete
+	// basis of the teardown design — dead code until this test gave the
+	// namespace a UID).
+	var sa corev1.ServiceAccount
+	if err := c.Get(context.Background(), types.NamespacedName{Name: AgentServiceAccount, Namespace: nsName}, &sa); err != nil {
+		t.Fatalf("get SA: %v", err)
+	}
+	if !hasNamespaceOwner(&sa, types.UID("ns-uid-real")) {
+		t.Errorf("SA lacks owner reference to the squad namespace UID: %+v", sa.OwnerReferences)
+	}
+
+	// The agent Role grants NOTHING (Cursor review: namespace-wide pod and
+	// pod-log reads on the shared squad SA were latent cross-principal
+	// disclosure with zero functional benefit — the SA mounts no token).
+	var role rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: AgentServiceAccount, Namespace: nsName}, &role); err != nil {
+		t.Fatalf("get Role: %v", err)
+	}
+	if len(role.Rules) != 0 {
+		t.Errorf("agent Role rules = %+v, want the empty least-privilege floor", role.Rules)
+	}
+
+	// Steady state writes nothing: resourceVersion of every scaffold
+	// object is byte-stable across further reconciles.
+	snapshot := func() map[string]string {
+		out := map[string]string{}
+		for _, sa := range mustList[corev1.ServiceAccountList](t, c, nsName).Items {
+			out["sa/"+sa.Name] = sa.ResourceVersion
+		}
+		for _, ro := range mustList[rbacv1.RoleList](t, c, nsName).Items {
+			out["role/"+ro.Name] = ro.ResourceVersion
+		}
+		for _, rb := range mustList[rbacv1.RoleBindingList](t, c, nsName).Items {
+			out["rbac/"+rb.Name] = rb.ResourceVersion
+		}
+		for _, q := range mustList[corev1.ResourceQuotaList](t, c, nsName).Items {
+			out["quota/"+q.Name] = q.ResourceVersion
+		}
+		for _, lr := range mustList[corev1.LimitRangeList](t, c, nsName).Items {
+			out["lr/"+lr.Name] = lr.ResourceVersion
+		}
+		for _, np := range mustList[networkingv1.NetworkPolicyList](t, c, nsName).Items {
+			out["np/"+np.Name] = np.ResourceVersion
+		}
+		return out
+	}
+	before := snapshot()
+	for i := 0; i < 2; i++ {
+		if err := reconcileTeam(t, r, "alpha"); err != nil {
+			t.Fatalf("steady-state reconcile %d: %v", i, err)
+		}
+	}
+	after := snapshot()
+	if len(before) == 0 {
+		t.Fatalf("no scaffold objects found in %s", nsName)
+	}
+	for k, v := range before {
+		if after[k] != v {
+			t.Errorf("steady-state reconcile wrote %s (resourceVersion %s -> %s) — AC5 claims zero writes", k, v, after[k])
+		}
+	}
+
+	// Self-heal: delete the default-deny NetworkPolicy; the next reconcile
+	// must bring it back (the namespace must not run wide open until the
+	// next Team write).
+	deny := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "ksquad-default-deny", Namespace: nsName}}
+	if err := c.Delete(context.Background(), deny); err != nil {
+		t.Fatalf("delete default-deny: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile after scaffold delete: %v", err)
+	}
+	var restored networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-default-deny", Namespace: nsName}, &restored); err != nil {
+		t.Fatalf("default-deny NetworkPolicy not self-healed: %v", err)
+	}
+	if len(restored.Spec.PolicyTypes) != 2 {
+		t.Errorf("restored default-deny policyTypes = %v, want both Ingress and Egress", restored.Spec.PolicyTypes)
+	}
+
+	// Label drift restores: a stripped team label must not stay stripped
+	// (it is the tenancy filter the Watches mapper keys on).
+	role.Labels = map[string]string{"someone-else": "yes"}
+	if err := c.Update(context.Background(), &role); err != nil {
+		t.Fatalf("strip role labels: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile after label strip: %v", err)
+	}
+	var healed rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: AgentServiceAccount, Namespace: nsName}, &healed); err != nil {
+		t.Fatalf("get role: %v", err)
+	}
+	if healed.Labels[LabelTeam] != "alpha" || healed.Labels[LabelTeamNamespace] != "default" {
+		t.Errorf("stripped team labels not restored: %+v", healed.Labels)
+	}
+	if healed.Labels["someone-else"] != "yes" {
+		t.Errorf("foreign label wiped by label restore: %+v", healed.Labels)
+	}
+}
+
+func mustList[L any, PL interface {
+	client.ObjectList
+	*L
+}](t *testing.T, c client.Client, nsName string) *L {
+	t.Helper()
+	var l L
+	if err := c.List(context.Background(), PL(&l), client.InNamespace(nsName)); err != nil {
+		t.Fatalf("list %T: %v", l, err)
+	}
+	return &l
+}

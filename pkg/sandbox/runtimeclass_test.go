@@ -74,6 +74,21 @@ func TestAdmitRuntimeClassRejectsUntrusted(t *testing.T) {
 	if err := AdmitRuntimeClass(ClassRunc, true); err != nil {
 		t.Errorf("trustedDev escape rejected runc: %v", err)
 	}
+	// trustedDev + empty selection = node default = runc-equivalent: still
+	// admitted on the escape.
+	if err := AdmitRuntimeClass("", true); err != nil {
+		t.Errorf("trustedDev escape rejected the node-default runtime: %v", err)
+	}
+	// The escape admits runc ONLY (Cursor review): an operator-added weak
+	// isolation runtime is rejected exactly like it would be without the
+	// flag, so the allowlist keeps meaning something.
+	for _, class := range []string{"sysbox", "runsc-weak", "some-weak-runtime"} {
+		if err := AdmitRuntimeClass(class, true); err == nil {
+			t.Errorf("trustedDev escape admitted non-runc class %q — the allowlist must stay meaningful", class)
+		} else if !IsPolicyError(err) {
+			t.Errorf("class %q with trustedDev: error is not a PolicyError", class)
+		}
+	}
 }
 
 func trustedRun() *api.Run {

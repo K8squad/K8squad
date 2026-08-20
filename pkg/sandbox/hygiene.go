@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -55,10 +56,16 @@ type PodSpec struct {
 // non-empty runtimeClassName, in the squad namespace, running as the
 // namespaced ksquad-agent ServiceAccount, one pod per Run. It fail-closes
 // on an empty runtime class — a pod without runtimeClassName runs on the
-// node default runtime (runc), which is the exact hole §9.1 closes.
+// node default runtime (runc), which is the exact hole §9.1 closes — and on
+// a Run without a UID: the UID is the identity the §9.3 binding and the
+// collision-safe pod name are built from, so an unbound-looking,
+// name-colliding pod must never be emitted.
 func BuildSandboxPod(run *api.Run, spec PodSpec) (*corev1.Pod, error) {
 	if spec.RuntimeClass == "" {
 		return nil, &PolicyError{Reason: "sandbox pod assembly requires an admitted RuntimeClass; refusing to emit a pod on the node default runtime"}
+	}
+	if run.UID == "" {
+		return nil, &PolicyError{Reason: "run has no UID; refusing to assemble a sandbox pod without a stable run identity (the §9.3 binding and the pod name both derive from it)"}
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -69,20 +76,49 @@ func BuildSandboxPod(run *api.Run, spec PodSpec) (*corev1.Pod, error) {
 				LabelSquad: spec.TeamName,
 			},
 		},
-		Spec: corev1.PodSpec{
-			RuntimeClassName: &spec.RuntimeClass,
-			ServiceAccountName: agentSA,
-			Containers: []corev1.Container{{
-				Name:         "agent",
-				Image:        spec.Image,
-				Command:      spec.Command,
-				Args:         spec.Args,
-				VolumeMounts: spec.Mounts,
-			}},
-			Volumes: spec.Volumes,
-		},
+		Spec: hardenedPodSpec(spec),
 	}
 	return pod, nil
+}
+
+// hardenedPodSpec stamps the sandbox pod shape shared by the per-Run and
+// warm-pool builders: the admitted runtime class, the no-credentials
+// ServiceAccount, and the restricted-PSS hardening set. gVisor covers the
+// kernel boundary; these fields are what keeps the guarantee if the class
+// ever resolves to runc via the trusted-dev escape, and what makes the pod
+// admissible under the squad namespace's enforced restricted Pod Security
+// Standard. A writable /tmp emptyDir is provided because the container root
+// filesystem is read-only (agent runtimes must not be trusted with a
+// writable rootfs, but /tmp scratch is legitimate).
+func hardenedPodSpec(spec PodSpec) corev1.PodSpec {
+	agentContainer := corev1.Container{
+		Name:         "agent",
+		Image:        spec.Image,
+		Command:      spec.Command,
+		Args:         spec.Args,
+		VolumeMounts: spec.Mounts,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			ReadOnlyRootFilesystem:   ptr.To(true),
+			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+		},
+	}
+	agentContainer.VolumeMounts = append(agentContainer.VolumeMounts,
+		corev1.VolumeMount{Name: "tmp", MountPath: "/tmp"})
+	podSpec := corev1.PodSpec{
+		RuntimeClassName:             &spec.RuntimeClass,
+		ServiceAccountName:           agentSA,
+		AutomountServiceAccountToken: ptr.To(false),
+		EnableServiceLinks:           ptr.To(false),
+		SecurityContext: &corev1.PodSecurityContext{
+			RunAsNonRoot:   ptr.To(true),
+			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+		},
+		Containers: []corev1.Container{agentContainer},
+		Volumes: append(spec.Volumes,
+			corev1.Volume{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}),
+	}
+	return podSpec
 }
 
 // agentSA mirrors pkg/controller/team.AgentServiceAccount without an import
@@ -109,7 +145,14 @@ func runNamespace(run *api.Run) string { return run.Namespace }
 // BindingGuard enforces the §9.3 absolute (story 4.5 AC2): a sandbox pod is
 // bound to exactly one Run over its lifetime. Handing a pod whose run-label
 // names a DIFFERENT Run to this Run is a construction failure — fail closed.
+// A Run with no UID fails closed too: the UID is the identity that makes
+// rebinding impossible, and an unidentifiable claimant must never be handed
+// a pod (an empty-UID Run would otherwise pass the label check against any
+// unbound-looking pod).
 func BindingGuard(pod *corev1.Pod, run *api.Run) error {
+	if run.UID == "" {
+		return &PolicyError{Reason: "run has no UID; refusing to bind a sandbox without a stable run identity (the §9.3 binding is UID-scoped)"}
+	}
 	if bound := pod.Labels[LabelRun]; bound != "" && bound != string(run.UID) {
 		return &PolicyError{Reason: fmt.Sprintf("sandbox pod %s/%s is bound to run uid %s; refusing to rebind to %s (a sandbox is never reused across Runs or principals)", pod.Namespace, pod.Name, bound, run.UID)}
 	}
@@ -122,6 +165,9 @@ func BindingGuard(pod *corev1.Pod, run *api.Run) error {
 // collision-safe via a fresh hash input, so a replenished pod can never
 // resurrect a torn-down pod's identity.
 func Replenish(ctx context.Context, c client.Client, spec PodSpec) error {
+	if spec.RuntimeClass == "" {
+		return &PolicyError{Reason: "replenishment requires an admitted RuntimeClass; refusing to mint a pod on the node default runtime"}
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: SandboxPodPrefix + "warm-",
@@ -132,20 +178,7 @@ func Replenish(ctx context.Context, c client.Client, spec PodSpec) error {
 				// 3.4) stamps LabelRun at bind time after BindingGuard.
 			},
 		},
-		Spec: corev1.PodSpec{
-			RuntimeClassName:   &spec.RuntimeClass,
-			ServiceAccountName: agentSA,
-			Containers: []corev1.Container{{
-				Name:    "agent",
-				Image:   spec.Image,
-				Command: spec.Command,
-				Args:    spec.Args,
-			}},
-			Volumes: spec.Volumes,
-		},
-	}
-	if spec.RuntimeClass == "" {
-		return &PolicyError{Reason: "replenishment requires an admitted RuntimeClass; refusing to mint a pod on the node default runtime"}
+		Spec: hardenedPodSpec(spec),
 	}
 	if err := c.Create(ctx, pod); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("replenish warm pod: %w", err)

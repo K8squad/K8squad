@@ -39,7 +39,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -57,11 +59,27 @@ const (
 	// NetworkPolicy selectors key on.
 	LabelTeam = "ksquad.io/team"
 
+	// LabelTeamNamespace carries the Team object's own namespace on every
+	// scaffold object. The owner of the scaffold is the (cluster-scoped)
+	// squad Namespace, so owner references cannot route events back to the
+	// namespaced Team; this label lets the self-healing Watches map a
+	// scaffold-object event to the exact Team reconcile request.
+	LabelTeamNamespace = "ksquad.io/team-namespace"
+
 	// LabelTenancy marks the tenancy kind of a namespace (squad vs system).
 	LabelTenancy = "ksquad.io/tenancy"
 
 	// TenancySquad is the LabelTenancy value of a squad (Team) namespace.
 	TenancySquad = "squad"
+
+	// Pod Security Standard labels stamped on every squad namespace: the
+	// namespace runs untrusted agent code, so it enforces the restricted
+	// profile — the cheapest single hardening available (admission-level,
+	// before any pod is even created). The sandbox pods emitted by
+	// pkg/sandbox comply (runAsNonRoot, seccomp, no privilege escalation,
+	// all capabilities dropped).
+	psaEnforceLabel        = "pod-security.kubernetes.io/enforce"
+	psaEnforceVersionLabel = "pod-security.kubernetes.io/enforce-version"
 
 	// AgentServiceAccount is the single namespaced ServiceAccount the squad's
 	// agent workloads (sandbox pods, Story 4.2) run as. It carries no
@@ -201,14 +219,14 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 	}
 
 	objects := []client.Object{
-		agentServiceAccount(nsName, teamObj.Name),
-		agentRole(nsName, teamObj.Name),
-		agentRoleBinding(nsName, teamObj.Name),
-		squadResourceQuota(nsName, teamObj.Name),
-		squadLimitRange(nsName, teamObj.Name),
-		defaultDenyNetworkPolicy(nsName, teamObj.Name),
-		allowDNSNetworkPolicy(nsName, teamObj.Name, r.dnsNamespace()),
-		allowControlPlaneNetworkPolicy(nsName, teamObj.Name, r.controlPlaneNamespace()),
+		agentServiceAccount(nsName, teamObj),
+		agentRole(nsName, teamObj),
+		agentRoleBinding(nsName, teamObj),
+		squadResourceQuota(nsName, teamObj),
+		squadLimitRange(nsName, teamObj),
+		defaultDenyNetworkPolicy(nsName, teamObj),
+		allowDNSNetworkPolicy(nsName, teamObj, r.dnsNamespace()),
+		allowControlPlaneNetworkPolicy(nsName, teamObj, r.controlPlaneNamespace()),
 	}
 	for _, obj := range objects {
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
@@ -220,18 +238,16 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 
 // ensureNamespace creates the squad namespace if absent and returns it. A
 // namespace that exists without the tenancy labels is foreign — the reconciler
-// never adopts it (fail-closed condition, AC7 discipline).
+// never adopts it (fail-closed condition, AC7 discipline). A managed
+// namespace whose Pod Security labels drifted has them restored.
 func (r *Reconciler) ensureNamespace(ctx context.Context, teamObj *api.Team, nsName string) (*corev1.Namespace, error) {
 	var ns corev1.Namespace
 	err := r.Get(ctx, types.NamespacedName{Name: nsName}, &ns)
 	if apierrors.IsNotFound(err) {
 		created := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: nsName,
-				Labels: map[string]string{
-					LabelTeam:    teamObj.Name,
-					LabelTenancy: TenancySquad,
-				},
+				Name:   nsName,
+				Labels: namespaceLabels(teamObj),
 			},
 		}
 		if err := r.Create(ctx, created); err != nil {
@@ -249,6 +265,13 @@ func (r *Reconciler) ensureNamespace(ctx context.Context, teamObj *api.Team, nsN
 		setErrorCondition(ctx, r, teamObj, condNamespaceConflict,
 			fmt.Sprintf("namespace %s exists but is not managed by this Team (missing %s/%s labels); refusing to adopt", nsName, LabelTeam, LabelTenancy))
 		return nil, fmt.Errorf("team %s: namespace %s is not squad-managed", teamObj.Name, nsName)
+	}
+	// Restore drifted managed labels (PSA enforce set, team-namespace
+	// routing label) without touching foreign labels.
+	if mergeLabels(&ns, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Labels: namespaceLabels(teamObj)}}) {
+		if err := r.Update(ctx, &ns); err != nil {
+			return nil, fmt.Errorf("restore squad namespace labels: %w", err)
+		}
 	}
 	return &ns, nil
 }
@@ -319,14 +342,46 @@ func (r *Reconciler) controlPlaneNamespace() string {
 
 // SetupWithManager registers the Team reconciler. The manager-managed client
 // is adopted when one was not injected (tests inject a fake).
+//
+// Besides the Team itself, the controller WATCHES the scaffold kinds (and
+// the namespace): deleting e.g. ksquad-default-deny must self-heal on the
+// next event, not wait for the next Team write or the manager's 10h resync
+// while the namespace runs wide open. Owns() cannot be used — it maps
+// events via owner reference, and the scaffold's owner is the squad
+// Namespace, not the Team — so each watch maps via the
+// ksquad.io/team + ksquad.io/team-namespace labels instead.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
 		r.Client = mgr.GetClient()
 	}
+	scaffoldEvents := handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+		return requestsForScaffoldObject(obj)
+	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&api.Team{}).
+		Watches(&corev1.Namespace{}, scaffoldEvents).
+		Watches(&corev1.ServiceAccount{}, scaffoldEvents).
+		Watches(&rbacv1.Role{}, scaffoldEvents).
+		Watches(&rbacv1.RoleBinding{}, scaffoldEvents).
+		Watches(&corev1.ResourceQuota{}, scaffoldEvents).
+		Watches(&corev1.LimitRange{}, scaffoldEvents).
+		Watches(&networkingv1.NetworkPolicy{}, scaffoldEvents).
 		Named("team").
 		Complete(r)
+}
+
+// requestsForScaffoldObject maps a scaffold/namespace object event back to
+// the reconcile request of the Team that owns it, via the routing labels.
+// Objects without both labels (anything not provisioned by this
+// controller) map to nothing.
+func requestsForScaffoldObject(obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	team, okTeam := labels[LabelTeam]
+	teamNS, okNS := labels[LabelTeamNamespace]
+	if !okTeam || !okNS || team == "" || teamNS == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: team, Namespace: teamNS}}}
 }
 
 func (r *Reconciler) dnsNamespace() string {
@@ -338,11 +393,23 @@ func (r *Reconciler) dnsNamespace() string {
 
 // --- desired objects -------------------------------------------------------
 
-// managedLabels are stamped on every object the reconciler owns.
-func managedLabels(teamName string) map[string]string {
+// namespaceLabels is the desired label set of a squad namespace.
+func namespaceLabels(teamObj *api.Team) map[string]string {
 	return map[string]string{
-		LabelTeam:                       teamName,
-		LabelTenancy:                    TenancySquad,
+		LabelTeam:              teamObj.Name,
+		LabelTeamNamespace:     teamObj.Namespace,
+		LabelTenancy:           TenancySquad,
+		psaEnforceLabel:        "restricted",
+		psaEnforceVersionLabel: "latest",
+	}
+}
+
+// managedLabels are stamped on every object the reconciler owns.
+func managedLabels(teamObj *api.Team) map[string]string {
+	return map[string]string{
+		LabelTeam:                      teamObj.Name,
+		LabelTeamNamespace:             teamObj.Namespace,
+		LabelTenancy:                   TenancySquad,
 		"app.kubernetes.io/managed-by": "ksquad-operator",
 	}
 }
@@ -350,13 +417,13 @@ func managedLabels(teamName string) map[string]string {
 // agentServiceAccount is the least-privilege SA sandbox pods run as (story
 // 4.2 AC3). API-token automounting is off: a sandbox never talks to the
 // Kubernetes API, so it gets no credentials to.
-func agentServiceAccount(ns, teamName string) *corev1.ServiceAccount {
+func agentServiceAccount(ns string, teamObj *api.Team) *corev1.ServiceAccount {
 	automount := false
 	return &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      AgentServiceAccount,
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		AutomountServiceAccountToken: &automount,
 	}
@@ -372,32 +439,37 @@ func agentServiceAccount(ns, teamName string) *corev1.ServiceAccount {
 //     injected as env/volumes at pod assembly (§7.3), never read via API. When
 //     a future story needs enumerated get-by-name Secret reads, it escalates to
 //     per-principal ServiceAccounts — not a namespace-wide grant here.
+//   - NO pod or pod-log reads either: all Runs in the squad share this one
+//     ServiceAccount, so a namespace-wide pods get/list/watch + pods/log get
+//     would let any Run read every other Run's pod spec and log output —
+//     cross-principal disclosure via a different object, and once
+//     per-principal credentials land as env in pod specs (§7.3) it would leak
+//     those too. The sandbox never talks to the Kubernetes API at all
+//     (automountServiceAccountToken=false, no token to spend), so these
+//     grants were latent risk with zero functional benefit.
 //
-// ConfigMaps (non-secret) and read-only pod/pod-log access are the functional
-// floor for a workload that reports its own state.
-func agentRole(ns, teamName string) *rbacv1.Role {
+// The floor is therefore EMPTY: the scaffold (Role + binding to the squad SA)
+// exists so future grants are deliberate additions, but a sandbox pod needs
+// no API permissions to run.
+func agentRole(ns string, teamObj *api.Team) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      AgentServiceAccount,
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch"}},
-			{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get"}},
-		},
+		Rules: []rbacv1.PolicyRule{},
 	}
 }
 
 // agentRoleBinding binds the Role to the squad SA only (never
 // system:authenticated, never a group).
-func agentRoleBinding(ns, teamName string) *rbacv1.RoleBinding {
+func agentRoleBinding(ns string, teamObj *api.Team) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      AgentServiceAccount,
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Subjects: []rbacv1.Subject{{
 			Kind:      rbacv1.ServiceAccountKind,
@@ -416,12 +488,12 @@ func agentRoleBinding(ns, teamName string) *rbacv1.RoleBinding {
 // never starve the cluster or another squad (story 4.1 AC3). Values are the
 // documented platform defaults; the namespaceStrategy/Helm refinement layers
 // on top of this floor.
-func squadResourceQuota(ns, teamName string) *corev1.ResourceQuota {
+func squadResourceQuota(ns string, teamObj *api.Team) *corev1.ResourceQuota {
 	return &corev1.ResourceQuota{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-squad",
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Spec: corev1.ResourceQuotaSpec{
 			Hard: corev1.ResourceList{
@@ -441,12 +513,12 @@ func squadResourceQuota(ns, teamName string) *corev1.ResourceQuota {
 // AC3): a pod omitting requests/limits still lands bounded, and a PVC cannot
 // be sized outside the squad's allowed range (the PVC type supports min/max
 // only — no default request).
-func squadLimitRange(ns, teamName string) *corev1.LimitRange {
+func squadLimitRange(ns string, teamObj *api.Team) *corev1.LimitRange {
 	return &corev1.LimitRange{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-squad",
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Spec: corev1.LimitRangeSpec{
 			Limits: []corev1.LimitRangeItem{
@@ -484,12 +556,12 @@ func squadLimitRange(ns, teamName string) *corev1.LimitRange {
 // re-open exactly what a Run needs to function — a bare deny-all without them
 // is a construction error, and further egress is added as explicit allowlists
 // (story 4.6 / egressPolicyRef), never by removing this.
-func defaultDenyNetworkPolicy(ns, teamName string) *networkingv1.NetworkPolicy {
+func defaultDenyNetworkPolicy(ns string, teamObj *api.Team) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-default-deny",
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
@@ -505,12 +577,12 @@ var (
 )
 
 // allowDNSNetworkPolicy re-opens cluster DNS (§12.2 companion, AC4).
-func allowDNSNetworkPolicy(ns, teamName, dnsNamespace string) *networkingv1.NetworkPolicy {
+func allowDNSNetworkPolicy(ns string, teamObj *api.Team, dnsNamespace string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-allow-dns",
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
@@ -533,12 +605,12 @@ func allowDNSNetworkPolicy(ns, teamName, dnsNamespace string) *networkingv1.Netw
 // allowControlPlaneNetworkPolicy re-opens egress to the control-plane
 // namespace (§12.2 companion, AC4) — the Run must reach the
 // apiserver/shim/memory service that live in ksquad-system.
-func allowControlPlaneNetworkPolicy(ns, teamName, controlPlaneNamespace string) *networkingv1.NetworkPolicy {
+func allowControlPlaneNetworkPolicy(ns string, teamObj *api.Team, controlPlaneNamespace string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-allow-control-plane",
-			Labels:    managedLabels(teamName),
+			Labels:    managedLabels(teamObj),
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
@@ -559,7 +631,11 @@ func allowControlPlaneNetworkPolicy(ns, teamName, controlPlaneNamespace string) 
 // ensureOwned create-or-updates obj with an ownerReference to the squad
 // namespace (namespace-scoped children cascade on namespace delete; the
 // namespaced Team cannot own them directly — AC6 rationale). Updates fire
-// only on drift, so steady-state reconciles write nothing (AC5).
+// only on drift, so steady-state reconciles write nothing (AC5). An empty
+// nsUID (only possible pre-persist / in fixtures without a namespace UID)
+// skips the owner-reference drift branch entirely: setNamespaceOwner is a
+// no-op for it, and without the guard the reconcile would loop issuing
+// no-op Updates forever.
 func ensureOwned(ctx context.Context, c client.Client, desired client.Object, nsUID types.UID) error {
 	existing := desired.DeepCopyObject().(client.Object)
 	if err := c.Get(ctx, client.ObjectKeyFromObject(desired), existing); err != nil {
@@ -571,8 +647,11 @@ func ensureOwned(ctx context.Context, c client.Client, desired client.Object, ns
 	}
 
 	changed := false
-	if !hasNamespaceOwner(existing, nsUID) {
+	if nsUID != "" && !hasNamespaceOwner(existing, nsUID) {
 		setNamespaceOwner(existing, nsUID)
+		changed = true
+	}
+	if mergeLabels(existing, desired) {
 		changed = true
 	}
 	if mergePayload(existing, desired) {
@@ -582,6 +661,33 @@ func ensureOwned(ctx context.Context, c client.Client, desired client.Object, ns
 		return nil
 	}
 	return c.Update(ctx, existing)
+}
+
+// mergeLabels restores drifted managed labels (e.g. a stripped
+// ksquad.io/team label) without wiping foreign labels on the object, and
+// reports whether anything drifted. The team labels are the tenancy filter
+// the self-healing Watches key on — a stripped label must not stay
+// stripped.
+func mergeLabels(existing, desired client.Object) bool {
+	desiredLabels := desired.GetLabels()
+	if len(desiredLabels) == 0 {
+		return false
+	}
+	existingLabels := existing.GetLabels()
+	drifted := false
+	for k, v := range desiredLabels {
+		if existingLabels[k] != v {
+			if existingLabels == nil {
+				existingLabels = map[string]string{}
+			}
+			existingLabels[k] = v
+			drifted = true
+		}
+	}
+	if drifted {
+		existing.SetLabels(existingLabels)
+	}
+	return drifted
 }
 
 // setNamespaceOwner stamps (replacing) the ownerReference to the namespace.
