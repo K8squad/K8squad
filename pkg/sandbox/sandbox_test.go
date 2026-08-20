@@ -1,0 +1,229 @@
+/*
+Copyright 2026 The K8squad Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package sandbox
+
+import (
+	"context"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	api "github.com/K8squad/K8squad/api/v1alpha1"
+)
+
+func newScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("add core scheme: %v", err)
+	}
+	if err := api.AddToScheme(s); err != nil {
+		t.Fatalf("add ksquad scheme: %v", err)
+	}
+	return s
+}
+
+func testRun(name, uid string) *api.Run {
+	return &api.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: "ksquad-team-alpha-38152234",
+			UID:       types.UID(uid),
+		},
+	}
+}
+
+// TestBuildSandboxPod (4.2 AC1/AC3): the pod carries a non-empty
+// runtimeClassName, lands in the squad namespace as the ksquad-agent SA, is
+// named per-Run, and an empty class is a construction failure.
+func TestBuildSandboxPod(t *testing.T) {
+	run := testRun("r-1", "uid-r-1")
+	pod, err := BuildSandboxPod(run, PodSpec{
+		Namespace:   run.Namespace,
+		TeamName:    "alpha",
+		RuntimeClass: ClassGVisor,
+		Image:       "ghcr.io/k8squad/opencode:1.0",
+	})
+	if err != nil {
+		t.Fatalf("build pod: %v", err)
+	}
+	if pod.Spec.RuntimeClassName == nil || *pod.Spec.RuntimeClassName != ClassGVisor {
+		t.Errorf("runtimeClassName = %v, want gvisor (a pod without it runs on the node default)", pod.Spec.RuntimeClassName)
+	}
+	if pod.Spec.ServiceAccountName != "ksquad-agent" {
+		t.Errorf("serviceAccountName = %q, want ksquad-agent", pod.Spec.ServiceAccountName)
+	}
+	if pod.Namespace != run.Namespace {
+		t.Errorf("namespace = %q, want the squad namespace %q", pod.Namespace, run.Namespace)
+	}
+	if pod.Labels[LabelRun] != string(run.UID) {
+		t.Errorf("run label = %q, want the Run UID", pod.Labels[LabelRun])
+	}
+	if pod.Name != PodNameFor(run) {
+		t.Errorf("pod name %q is not the per-Run derivation %q", pod.Name, PodNameFor(run))
+	}
+
+	// Two Runs -> two distinct pods (AC3).
+	other, _ := BuildSandboxPod(testRun("r-2", "uid-r-2"), PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+	})
+	if pod.Name == other.Name {
+		t.Errorf("two Runs share one pod %q (AC3 violation)", pod.Name)
+	}
+
+	// Empty class fails closed.
+	if _, err := BuildSandboxPod(run, PodSpec{Namespace: run.Namespace, TeamName: "alpha", Image: "img"}); err == nil {
+		t.Errorf("pod assembled without a RuntimeClass (node-default hole)")
+	}
+}
+
+// TestTeardownAndReplace (4.5 AC1/AC2/AC3): a completed Run's pod is deleted
+// (not reset), deletion of an already-gone pod is a no-op (crash-safe), and
+// replenishment mints a FRESH unbound pod.
+func TestTeardownAndReplace(t *testing.T) {
+	run := testRun("r-1", "uid-r-1")
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
+
+	pod, err := BuildSandboxPod(run, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if err := c.Create(context.Background(), pod); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Teardown deletes the pod.
+	if err := Teardown(context.Background(), c, run); err != nil {
+		t.Fatalf("teardown: %v", err)
+	}
+	var after corev1.Pod
+	err = c.Get(context.Background(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, &after)
+	if err == nil {
+		t.Fatalf("sandbox pod survived teardown (reset-and-reuse path, ADR-006 violation)")
+	}
+
+	// Teardown is idempotent / crash-safe on the already-gone path (AC6).
+	if err := Teardown(context.Background(), c, run); err != nil {
+		t.Fatalf("second teardown must be a no-op: %v", err)
+	}
+
+	// Replenish mints a fresh, UNBOUND warm pod (no run label — the claim
+	// path stamps it after BindingGuard).
+	if err := Replenish(context.Background(), c, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassKata, Image: "img",
+	}); err != nil {
+		t.Fatalf("replenish: %v", err)
+	}
+	var pods corev1.PodList
+	if err := c.List(context.Background(), &pods, client.InNamespace(run.Namespace)); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(pods.Items) != 1 {
+		t.Fatalf("warm pods = %d, want 1", len(pods.Items))
+	}
+	warm := pods.Items[0]
+	if warm.Labels[LabelRun] != "" {
+		t.Errorf("warm pod must be unbound (no %s label)", LabelRun)
+	}
+	if warm.Spec.RuntimeClassName == nil || *warm.Spec.RuntimeClassName != ClassKata {
+		t.Errorf("warm pod runtimeClassName = %v, want kata (pool keyed by class)", warm.Spec.RuntimeClassName)
+	}
+
+	// Replenish without a class fails closed.
+	if err := Replenish(context.Background(), c, PodSpec{Namespace: run.Namespace, TeamName: "alpha", Image: "img"}); err == nil {
+		t.Errorf("replenished a pod without a RuntimeClass")
+	}
+}
+
+// TestBindingGuard (4.5 AC2 — the §9.3 absolute): a pod bound to one Run is
+// never handed to another.
+func TestBindingGuard(t *testing.T) {
+	run := testRun("r-1", "uid-r-1")
+	other := testRun("r-2", "uid-r-2")
+
+	bound, _ := BuildSandboxPod(run, PodSpec{
+		Namespace: run.Namespace, TeamName: "alpha", RuntimeClass: ClassGVisor, Image: "img",
+	})
+	if err := BindingGuard(bound, run); err != nil {
+		t.Errorf("own pod rejected: %v", err)
+	}
+	if err := BindingGuard(bound, other); err == nil {
+		t.Errorf("pod bound to %s handed to %s (a sandbox is never reused across Runs)", run.UID, other.UID)
+	}
+}
+
+// TestPrincipalPartitionScoping (4.5 AC4/AC5): partitions are deterministic
+// and collision-safe per principal; mounts only ever carry the Run's own
+// principal's subpath; traversal-shaped partitions fail closed.
+func TestPrincipalPartitionScoping(t *testing.T) {
+	alice := api.PrincipalRef("alice@corp.com")
+	bob := api.PrincipalRef("bob@corp.com")
+
+	pa, pb := PrincipalPartition(alice), PrincipalPartition(bob)
+	if pa == pb {
+		t.Fatalf("distinct principals share partition %q (D7 exfil hole)", pa)
+	}
+	if PrincipalPartition(alice) != pa {
+		t.Errorf("partition not deterministic")
+	}
+	for _, p := range []string{pa, pb} {
+		if err := ValidatePartition(p); err != nil {
+			t.Errorf("derived partition %q invalid: %v", p, err)
+		}
+	}
+
+	// Mounts are scoped to the Run's own principal (AC4): every subPath
+	// sits under alice's partition only.
+	mounts, err := WorkspaceVolumeMounts("workspace-pvc", "", alice)
+	if err != nil {
+		t.Fatalf("mounts: %v", err)
+	}
+	for _, m := range mounts {
+		if !containsSubPath(m.SubPath, pa) && m.Name == "workspace-cache" {
+			t.Errorf("cache mount subPath %q not scoped to the principal partition %q", m.SubPath, pa)
+		}
+		if m.Name == "workspace-cache" && m.SubPath != pa {
+			t.Errorf("cache subPath = %q, want exactly %q", m.SubPath, pa)
+		}
+	}
+
+	// Traversal-shaped partitions fail closed (defense in depth).
+	for _, bad := range []string{"../escape", "/abs", "cache/../x", "other-root/x", "cache/.."} {
+		if err := ValidatePartition(bad); err == nil {
+			t.Errorf("partition %q admitted (traversal)", bad)
+		}
+	}
+
+	// Hostile principal ids are normalized safely.
+	weird := api.PrincipalRef("../../etc/passwd")
+	pw := PrincipalPartition(weird)
+	if err := ValidatePartition(pw); err != nil {
+		t.Errorf("hostile principal partition %q invalid: %v", pw, err)
+	}
+}
+
+func containsSubPath(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && (haystack == needle || len(haystack) > len(needle) &&
+		(haystack[:len(needle)] == needle))
+}
