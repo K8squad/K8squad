@@ -21,6 +21,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/K8squad/K8squad/pkg/warmpool"
 )
@@ -28,12 +29,17 @@ import (
 // fakeProvisioner records every physical call — the L1 stand-in for the kube
 // pod adapter. boots/teardowns are keyed by sandbox id so tests can assert
 // the WARM path made ZERO cluster calls (the S9/NFR-PERF1 claim-latency
-// pin) and the cold path booted exactly once.
+// pin) and the cold path booted exactly once. blockOnBoot (when non-nil)
+// parks every Boot until the channel closes — the in-flight-boot window
+// the readiness/release races need; tearDownErr makes teardown fail (a
+// failed teardown records nothing — it did not succeed).
 type fakeProvisioner struct {
-	mu        sync.Mutex
-	boots     map[string]warmpool.PoolKey
-	teardowns map[string]int
-	bootErr   error
+	mu          sync.Mutex
+	boots       map[string]warmpool.PoolKey
+	teardowns   map[string]int
+	bootErr     error
+	tearDownErr error
+	blockOnBoot chan struct{}
 }
 
 func newFakeProvisioner() *fakeProvisioner {
@@ -42,17 +48,26 @@ func newFakeProvisioner() *fakeProvisioner {
 
 func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.bootErr != nil {
-		return f.bootErr
+		err := f.bootErr
+		f.mu.Unlock()
+		return err
 	}
 	f.boots[id] = key
+	block := f.blockOnBoot
+	f.mu.Unlock()
+	if block != nil {
+		<-block // the physical boot is slow / in flight
+	}
 	return nil
 }
 
 func (f *fakeProvisioner) TearDown(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.tearDownErr != nil {
+		return f.tearDownErr
+	}
 	f.teardowns[id]++
 	return nil
 }
@@ -67,6 +82,40 @@ func (f *fakeProvisioner) tornDown(id string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.teardowns[id] > 0
+}
+
+func (f *fakeProvisioner) teardownCount(id string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.teardowns[id]
+}
+
+// bootedCopy is a test helper snapshot of f.boots.
+func (f *fakeProvisioner) bootsCopy() map[string]warmpool.PoolKey {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]warmpool.PoolKey, len(f.boots))
+	for id, k := range f.boots {
+		out[id] = k
+	}
+	return out
+}
+
+// waitBooted blocks until exactly one Boot call is in flight and returns
+// its sandbox id (the cold-boot reservation's id).
+func waitBooted(t *testing.T, fp *fakeProvisioner) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if boots := fp.bootsCopy(); len(boots) == 1 {
+			for id := range boots {
+				return id
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("cold boot never started")
+	return ""
 }
 
 // newTestPool wires a Pool over a fake provisioner with a static key.
@@ -319,5 +368,198 @@ func TestBinderAdaptsPoolToCoordSeam(t *testing.T) {
 	}
 	if ref1 != ref2 {
 		t.Fatalf("binder re-drive returned %q, want %q", ref2, ref1)
+	}
+}
+
+// Review blocker (PR #91): a readiness event for a Run's DEDICATED cold
+// sandbox — the kube pod-watch fires it while the cold boot is still in
+// flight — must NEVER promote that sandbox into the Ready FIFO. The
+// state-only-guard twin promotes it, and the next interactive claim hands
+// the SAME sandbox to a second Run: the cross-run double hand-out §9.3
+// (reuse-contamination) exists to make impossible.
+func TestPoolNotifyReadyNeverPromotesRunReservedSandbox(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	fp.blockOnBoot = make(chan struct{})
+
+	bindDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+		bindDone <- err
+	}()
+
+	// Fire the readiness event for run-1's reserved sandbox DURING the
+	// in-flight boot — the exact production (pod-watch) window.
+	id := waitBooted(t, fp)
+	pool.NotifyReady(id)
+	if inv := pool.Inventory()[key]; inv.Ready != 0 || inv.Reserved != 1 {
+		t.Fatalf("in-flight NotifyReady inventory = %+v, want reserved=1 ready=0 (a run-owned sandbox is never claimable warmth)", inv)
+	}
+
+	close(fp.blockOnBoot)
+	if err := <-bindDone; err != nil {
+		t.Fatalf("cold bind: %v", err)
+	}
+	if pool.Ref("run-1") != id {
+		t.Fatal("run-1 lost the sandbox it reserved")
+	}
+
+	// The next claim must receive its OWN sandbox — never run-1's.
+	ref2, err := pool.Bind(context.Background(), "run-2", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("second bind: %v", err)
+	}
+	if ref2 == id {
+		t.Fatalf("double hand-out: run-2 received run-1's sandbox %q", ref2)
+	}
+	if inv := pool.Inventory()[key]; inv.Bound != 2 {
+		t.Fatalf("post-claim inventory = %+v, want bound=2 (each run its own sandbox)", inv)
+	}
+}
+
+// Review blocker (PR #91): a FAILED teardown must not orphan the pod.
+// Release returns the error AND keeps the entry tracked so a retry
+// re-attempts the teardown. The delete-first twin untracks the sandbox
+// anyway — a retry then reports false success while the workspace pod
+// keeps running untracked.
+func TestPoolReleaseTearDownFailureStaysTracked(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 1)
+	ref, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+
+	fp.tearDownErr = errors.New("pod delete: 503")
+	if err := pool.Release(context.Background(), "run-1"); err == nil {
+		t.Fatal("release reported success despite the teardown failure")
+	}
+	if pool.Ref("run-1") != ref {
+		t.Fatal("failed teardown untracked the sandbox — a retry cannot re-attempt it")
+	}
+	if inv := pool.Inventory()[key]; inv.Bound != 1 {
+		t.Fatalf("inventory after failed teardown = %+v, want bound=1 (the pod is alive — stay truthful)", inv)
+	}
+
+	// The API recovers: the retry tears the SAME sandbox down.
+	fp.tearDownErr = nil
+	if err := pool.Release(context.Background(), "run-1"); err != nil {
+		t.Fatalf("retry release: %v", err)
+	}
+	if !fp.tornDown(ref) {
+		t.Fatal("retry did not tear the sandbox down")
+	}
+	if pool.Ref("run-1") != "" {
+		t.Fatal("successful retry left the ref bound")
+	}
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved != 0 {
+		t.Fatalf("post-retry inventory = %+v, want empty", inv)
+	}
+}
+
+// Review blocker (PR #91), ScaleDown arm: a failed teardown during
+// scale-down must not orphan the pod. The delete-first twin returns 0
+// destroyed but has already forgotten the victims; the fixed pool
+// re-tracks the failed entry so the next pass retries it.
+func TestPoolScaleDownTearDownFailureRequeues(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 2)
+
+	fp.tearDownErr = errors.New("pod delete: 503")
+	if n := pool.ScaleDown(context.Background(), key, 2); n != 0 {
+		t.Fatalf("scale-down destroyed %d against a failing provisioner, want 0 confirmed", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Ready != 2 {
+		t.Fatalf("failed teardown dropped live entries: %+v, want ready=2 (still tracked)", inv)
+	}
+
+	fp.tearDownErr = nil
+	if n := pool.ScaleDown(context.Background(), key, 2); n != 2 {
+		t.Fatalf("retry scale-down destroyed %d, want 2", n)
+	}
+	if inv := pool.Inventory()[key]; inv.Ready != 0 {
+		t.Fatalf("post-retry inventory = %+v, want ready=0", inv)
+	}
+}
+
+// Review blocker (PR #91), release-during-in-flight-cold-boot race:
+// Release's teardown can land BEFORE the concurrent cold Boot creates the
+// pod — the Boot then completes with its reservation already gone and
+// would return success for a live pod nobody tracks. The fixed Bind
+// re-checks the reservation after Boot, destroys the orphan, and fails.
+func TestPoolReleaseDuringInFlightColdBootDestroysOrphan(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	fp.blockOnBoot = make(chan struct{})
+
+	bindDone := make(chan error, 1)
+	go func() {
+		_, err := pool.Bind(context.Background(), "run-1", key, warmpool.ClassInteractive)
+		bindDone <- err
+	}()
+	id := waitBooted(t, fp)
+
+	// The run is released while its dedicated boot is still in flight.
+	if err := pool.Release(context.Background(), "run-1"); err != nil {
+		t.Fatalf("release during in-flight boot: %v", err)
+	}
+	close(fp.blockOnBoot)
+
+	if err := <-bindDone; err == nil {
+		t.Fatal("bind succeeded although the run was released mid-boot — untracked live pod")
+	}
+	if got := fp.teardownCount(id); got != 2 {
+		t.Fatalf("sandbox %s torn down %d times, want 2 (release + the orphan cleanup once Boot completed)", id, got)
+	}
+	if inv := pool.Inventory()[key]; inv.Warming+inv.Ready+inv.Bound+inv.Reserved != 0 {
+		t.Fatalf("post-race inventory = %+v, want empty", inv)
+	}
+	if pool.Ref("run-1") != "" {
+		t.Fatal("released run still holds a ref after the race")
+	}
+}
+
+// Unknown run classes fail CLOSED (matching Policy.Target) — an unknown
+// class must never be silently routed into a warm/cold regime.
+func TestPoolBindFailsClosedOnUnknownRunClass(t *testing.T) {
+	key := gvisorKey
+	pool, fp := newTestPool()
+	prewarm(t, pool, key, 1)
+
+	if _, err := pool.Bind(context.Background(), "run-x", key, warmpool.RunClass("serverless")); err == nil {
+		t.Fatal("bind accepted an unknown run class — fail-open violates the policy contract")
+	}
+	if got := fp.bootCount(); got != 1 { // the prewarm boot only
+		t.Fatalf("unknown-class bind touched the provisioner %d times, want the 1 prewarm boot only", got)
+	}
+	if inv := pool.Inventory()[key]; inv.Ready != 1 {
+		t.Fatalf("unknown-class bind consumed warmth: %+v", inv)
+	}
+}
+
+// Surface reads the review's coverage list called out (PR #91): the
+// SetClock injection and per-boot id uniqueness.
+func TestPoolSetClockAndIDUniqueness(t *testing.T) {
+	key := gvisorKey
+	pool, _ := newTestPool()
+	now := time.Unix(1_750_000_000, 0)
+	pool.SetClock(func() time.Time { return now })
+
+	id1, err := pool.Boot(context.Background(), key)
+	if err != nil {
+		t.Fatalf("boot 1: %v", err)
+	}
+	pool.NotifyReady(id1)
+	id2, err := pool.Boot(context.Background(), key)
+	if err != nil {
+		t.Fatalf("boot 2: %v", err)
+	}
+	if id1 == id2 {
+		t.Fatalf("two boots minted the same id %q", id1)
+	}
+	if inv := pool.Inventory()[key]; inv.Ready != 1 || inv.Warming != 1 {
+		t.Fatalf("inventory = %+v, want ready=1 warming=1", inv)
 	}
 }
