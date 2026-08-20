@@ -25,3 +25,11 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects/status
+  verbs:
+  - get
+  - patch
+  - update
