@@ -59,7 +59,6 @@ type fakeSources struct {
 	metaHist map[string]ProjectMeta
 
 	wiCalls, metaCalls, recallCalls []string
-	pinnedRecallIDs                 []string
 }
 
 // bumpWorkItem advances the work item to rev, keeping the previous revision
