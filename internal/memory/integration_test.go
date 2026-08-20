@@ -161,3 +161,83 @@ func TestPgVector_RejectsDimMismatch(t *testing.T) {
 		t.Fatal("expected dimension-mismatch error, got nil")
 	}
 }
+
+// TestPgVector_SupersedeHandoffMirrors is the Story 6.6 republish discipline against real PG: a
+// REPUBLISHED handoff (new audit row ⇒ new mirror write) soft-retracts every EARLIER live
+// handoff-mirror of the same (squad, work item, run) except the just-written one, so scoped recall
+// surfaces exactly the newest publication — and the superseded mirrors stay in the table (audit),
+// never DELETEd.
+func TestPgVector_SupersedeHandoffMirrors(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	squad, principal := uuid.NewString(), uuid.NewString()
+	wi, run := uuid.NewString(), uuid.NewString()
+	writeMirror := func(content string, embedding []float32) Record {
+		t.Helper()
+		runID := deriveUUIDForTest("run", run)
+		rec, err := store.Write(ctx, WriteRequest{
+			SquadID: squad, PrincipalID: principal, RunID: &runID,
+			Kind: KindHandoffMirror, Content: content, Embedding: embedding,
+			Provenance: NewHandoffProvenance("coord+audit://1", "sha", wi, run, 1, nil, "agent-a", nil, time.Now()),
+		})
+		if err != nil {
+			t.Fatalf("write mirror: %v", err)
+		}
+		return rec
+	}
+
+	old1 := writeMirror(`{"did":["first"]}`, oneHot(21))
+	old2 := writeMirror(`{"did":["second"]}`, oneHot(22))
+	// A DIFFERENT run's mirror on the same work item — must NEVER be retracted by this pair's supersede.
+	otherRec, err := store.Write(ctx, WriteRequest{
+		SquadID: squad, PrincipalID: principal,
+		Kind: KindHandoffMirror, Content: `{"did":["different run"]}`, Embedding: oneHot(24),
+		Provenance: NewHandoffProvenance("coord+audit://2", "sha2", wi, uuid.NewString(), 2, nil, "agent-a", nil, time.Now()),
+	})
+	if err != nil {
+		t.Fatalf("write other-run mirror: %v", err)
+	}
+
+	newest := writeMirror(`{"did":["republished"]}`, oneHot(25))
+	n, err := store.SupersedeHandoffMirrors(ctx, squad, wi, run, newest.ID)
+	if err != nil {
+		t.Fatalf("SupersedeHandoffMirrors: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("superseded %d, want 2 (old1 + old2 of the same pair)", n)
+	}
+
+	// Scoped recall over the pair's squad surfaces ONLY the newest publication.
+	hits, err := store.Search(ctx, SearchQuery{
+		SquadID: squad, Kind: strPtr(KindHandoffMirror), Embedding: oneHot(21), Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	live := map[string]bool{}
+	for _, h := range hits {
+		live[h.ID] = true
+	}
+	if live[old1.ID] || live[old2.ID] {
+		t.Fatal("stale mirrors of the republished pair still live in search")
+	}
+	if !live[newest.ID] {
+		t.Fatal("newest mirror missing from search")
+	}
+	if !live[otherRec.ID] {
+		t.Fatal("a DIFFERENT run's mirror must never be retracted by this pair's supersede")
+	}
+
+	// Idempotent: re-running with the same keepID retracts nothing more.
+	if n, _ := store.SupersedeHandoffMirrors(ctx, squad, wi, run, newest.ID); n != 0 {
+		t.Fatalf("re-supersede retracted %d, want 0 (idempotent)", n)
+	}
+}
+
+// deriveUUIDForTest mirrors the bridges' deterministic text→uuid derivation so integration rows look
+// exactly like the handoffmirror package's writes.
+func deriveUUIDForTest(prefix, text string) string {
+	return uuid.NewSHA1(uuid.MustParse("6b1e5b1e-2c9a-5e7d-9f3a-10b2c3d4e5f6"), []byte(prefix+":"+text)).String()
+}
+
+func strPtr(s string) *string { return &s }

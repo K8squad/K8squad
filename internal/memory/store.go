@@ -181,6 +181,36 @@ func (s *PgVectorStore) Invalidate(ctx context.Context, id string) (bool, error)
 	return tag.RowsAffected() == 1, nil
 }
 
+// SupersedeHandoffMirrors is the §6.6 republish discipline: when a Run re-publishes its
+// structured handoff (the coord artifact upserts in place — ONE live artifact per
+// (work_item, run, kind)), the mirror soft-retracts every EARLIER live handoff-mirror record
+// for the same (squad, work item, run) so recall surfaces exactly the newest mirror, never a
+// stale duplicate. keepID (the just-written mirror of the new publication) is excluded; the
+// retract is a §7.4 invalidated_at stamp, never a DELETE — the superseded mirrors stay
+// queryable for audit. The (work_item, run) pair lives in the mirror's provenance jsonb
+// (stamped by the handoffmirror writer), so the predicate is a jsonb filter — no schema
+// change, and a handoff-mirror written without that provenance is simply never superseded.
+// Not part of the Backend seam: this is the §6.6 writer-side store companion, like Pool().
+func (s *PgVectorStore) SupersedeHandoffMirrors(ctx context.Context, squadID, workItemID, runID, keepID string) (int64, error) {
+	if squadID == "" || workItemID == "" || runID == "" {
+		return 0, fmt.Errorf("supersede handoff mirrors: squadID, workItemID and runID are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE memory.memory_records SET invalidated_at = now()
+		 WHERE squad_id = $1
+		   AND kind = $2
+		   AND invalidated_at IS NULL
+		   AND id <> $3
+		   AND provenance->>'source' = $4
+		   AND provenance->>'work_item_id' = $5
+		   AND provenance->>'run_id' = $6`,
+		squadID, KindHandoffMirror, keepID, ProvenanceSourceHandoff, workItemID, runID)
+	if err != nil {
+		return 0, fmt.Errorf("supersede handoff mirrors: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Close releases the connection pool.
 func (s *PgVectorStore) Close() {
 	if s.pool != nil {
