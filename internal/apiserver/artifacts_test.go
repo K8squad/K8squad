@@ -152,6 +152,15 @@ func (f *fakeStore) ListByRun(_ context.Context, runID string) ([]artifactbrowse
 	return f.rows[runID], nil
 }
 
+func (f *fakeStore) GetByRunAndID(_ context.Context, runID, artifactID string) (artifactbrowser.Artifact, bool, error) {
+	for _, a := range f.rows[runID] {
+		if a.ID == artifactID {
+			return a, true, nil
+		}
+	}
+	return artifactbrowser.Artifact{}, false, nil
+}
+
 func (f *fakeStore) Content(_ context.Context, a artifactbrowser.Artifact) ([]byte, error) {
 	raw, ok := f.content[a.URI]
 	if !ok {

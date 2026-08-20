@@ -10,6 +10,9 @@ afterEach(() => {
 
 const overviewPayload = {
   team: { name: "alpha", namespace: "squad-alpha", uid: "u1" },
+  // Wire shape: Go marshals a nil slice as `null` — a Team with no Projects sends
+  // projects: null, and a Project with no Runs sends runs: null (overview.go builds
+  // both with append/map-lookup and no omitempty). Fixtures pin that shape.
   projects: [
     {
       name: "webapp",
@@ -21,7 +24,7 @@ const overviewPayload = {
       ],
       phaseCounts: { Running: 1, Succeeded: 1 },
     },
-    { name: "infra", namespace: "squad-alpha", runs: [], phaseCounts: {} },
+    { name: "infra", namespace: "squad-alpha", runs: null, phaseCounts: {} },
   ],
 };
 
@@ -59,10 +62,22 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
     expect(chips[0].getAttribute("data-tone")).toBe("running");
   });
 
-  it("renders the empty-Projects card when the Team has none", async () => {
-    stubFetch(200, { team: overviewPayload.team, projects: [] });
+  it("renders the empty-Projects card when the Team has none (wire sends null)", async () => {
+    stubFetch(200, { team: overviewPayload.team, projects: null });
     render(<SquadOverview />);
     await waitFor(() => expect(screen.getByTestId("overview-empty")).toBeTruthy());
+  });
+
+  it("renders a Project's no-Runs row without crashing when the wire sends runs: null", async () => {
+    stubFetch(200, overviewPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    // The "infra" project arrives with runs: null — it must render its card with the
+    // "No Runs." row, not crash the console root (cursor review: nil-slice → null).
+    const projects = screen.getAllByTestId("overview-project");
+    expect(projects.length).toBe(2);
+    expect(projects[1].textContent).toContain("No Runs.");
+    expect(screen.getAllByTestId("overview-run-row").length).toBe(2);
   });
 
   it("renders the no-team card on 404 (session Team has no projection)", async () => {

@@ -117,6 +117,76 @@ describe("<ArtifactBrowser> — story 8.3 wiring (ISI-2900)", () => {
     render(<ArtifactBrowser runId="run-1" />);
     await waitFor(() => expect(screen.getByTestId("artifacts-unauthenticated")).toBeTruthy());
   });
+
+  it("surfaces the truncation flag in the viewer (512 KiB server cap)", async () => {
+    stubFetch([
+      { ok: true, status: 200, json: () => Promise.resolve(listing) },
+      {
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            artifact: listing.artifacts[0],
+            content: btoa("partial-bytes"),
+            size: 524289, // MaxArtifactBytes + 1 — full size, content capped server-side
+            truncated: true,
+          }),
+      },
+    ]);
+    render(<ArtifactBrowser runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId("artifact-row")).toBeTruthy());
+    (screen.getByTestId("artifact-open") as HTMLButtonElement).click();
+    await waitFor(() => expect(screen.getByTestId("artifact-viewer")).toBeTruthy());
+    expect(screen.getByTestId("artifact-viewer").textContent).toContain("truncated at 512 KiB cap");
+    expect(screen.getByTestId("artifact-viewer").textContent).toContain("524289 bytes");
+  });
+
+  it("discards a stale inspect response when a newer request supersedes it", async () => {
+    // Two rows; the FIRST click's fetch resolves LAST. The viewer must show the second
+    // row's content, not the slower first response (cursor review: staleness race).
+    const twoRows = {
+      runId: "run-1",
+      artifacts: [
+        listing.artifacts[0],
+        { ...listing.artifacts[0], id: "art-2", kind: "report", uri: "coord+audit://8" },
+      ],
+    };
+    let resolveFirst: (v: { ok: boolean; status: number; json: () => Promise<unknown> }) => void = () => {};
+    const firstClick = new Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>((res) => {
+      resolveFirst = res;
+    });
+    const secondPayload = JSON.stringify({ row: 2 });
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(() => {
+        call++;
+        if (call === 1) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(twoRows) });
+        if (call === 2) return firstClick; // art-1 inspect — deliberately stalled
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ artifact: twoRows.artifacts[1], content: btoa(secondPayload), size: 12, truncated: false }),
+        });
+      }),
+    );
+    render(<ArtifactBrowser runId="run-1" />);
+    await waitFor(() => expect(screen.getAllByTestId("artifact-open").length).toBe(2));
+    const buttons = screen.getAllByTestId("artifact-open") as HTMLButtonElement[];
+    buttons[0].click(); // art-1 (stalled)
+    await waitFor(() => expect(buttons[1].disabled).toBe(false));
+    buttons[1].click(); // art-2 (completes first)
+    await waitFor(() => expect(screen.getByTestId("artifact-viewer").textContent).toContain('"row":2'));
+    // Now the stale art-1 response lands — it must NOT overwrite the viewer.
+    resolveFirst({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ artifact: twoRows.artifacts[0], content: btoa('{"row":1}'), size: 10, truncated: false }),
+    });
+    await new Promise((r) => setTimeout(r, 25));
+    expect(screen.getByTestId("artifact-viewer").textContent).toContain('"row":2');
+    expect(screen.getByTestId("artifact-viewer").textContent).not.toContain('"row":1');
+  });
 });
 
 describe("classifyArtifactsStatus / decodeContent — unit contract", () => {

@@ -15,7 +15,12 @@
 
 import { useEffect, useState } from "react";
 
-/** GET /api/squad/overview response (apiserver SquadOverview, overview.go). */
+/** GET /api/squad/overview response (apiserver SquadOverview, overview.go).
+ *
+ * `projects` and `runs` arrive NULLABLE on the wire: Go marshals a nil slice as `null`, and
+ * overview.go builds both with `append`/map-lookup (nil for "none"), with no `omitempty` and no
+ * `[]` normalization. Treat them as `| null` everywhere — the normal empty state must render the
+ * empty card, not crash the console root. */
 export interface SquadOverviewData {
   team: { name: string; namespace: string; uid: string };
   projects: {
@@ -27,9 +32,9 @@ export interface SquadOverviewData {
       workItem?: string;
       phase: string;
       claimedAt?: string | null;
-    }[];
+    }[] | null;
     phaseCounts: Record<string, number>;
-  }[];
+  }[] | null;
 }
 
 type LoadState =
@@ -139,7 +144,9 @@ export function SquadOverview() {
     );
   }
 
-  const { team, projects } = state.data;
+  const { team, projects: teamProjects } = state.data;
+  // Normalize the wire's null-for-empty to the arrays the render below assumes.
+  const projects = teamProjects ?? [];
   return (
     <div data-testid="overview-ready">
       <header className="card">
@@ -179,7 +186,7 @@ export function SquadOverview() {
                 </span>
               ))}
             </div>
-            {p.runs.length === 0 ? (
+            {(p.runs ?? []).length === 0 ? (
               <p className="muted" style={{ margin: 0 }}>
                 No Runs.
               </p>
@@ -194,7 +201,7 @@ export function SquadOverview() {
                   </tr>
                 </thead>
                 <tbody>
-                  {p.runs.map((r) => (
+                  {(p.runs ?? []).map((r) => (
                     <tr key={r.name} data-testid="overview-run-row">
                       <td style={{ padding: "4px 8px 4px 0" }}>
                         <a href={`/runs/${encodeURIComponent(r.name)}`}>{r.name}</a>

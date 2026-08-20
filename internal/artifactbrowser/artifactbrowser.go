@@ -66,8 +66,12 @@ type Artifact struct {
 type Store interface {
 	// ListByRun returns the run's artifact rows ordered deterministically (created_at, id).
 	ListByRun(ctx context.Context, runID string) ([]Artifact, error)
-	// Content resolves an artifact's canonical bytes from its uri. Unresolvable schemes are an
-	// error the caller surfaces as a 404-shaped answer, never a fallback read.
+	// GetByRunAndID returns exactly the row the caller named, scoped to the run — a targeted
+	// single-row read so Content never pulls the run's whole list to find one id.
+	GetByRunAndID(ctx context.Context, runID, artifactID string) (Artifact, bool, error)
+	// Content resolves an artifact's canonical bytes from its uri, verified against THAT row's
+	// sha256. Unresolvable schemes or a digest mismatch are errors the caller surfaces as a
+	// 404-shaped answer, never a fallback read.
 	Content(ctx context.Context, a Artifact) ([]byte, error)
 }
 
@@ -164,27 +168,30 @@ func (s *Service) Content(ctx context.Context, c buildbrowser.Caller, runID, art
 	if err != nil {
 		return nil, err
 	}
-	arts, err := s.Store.ListByRun(ctx, m.RunID)
+	if !validUUID(m.RunID) || !validUUID(artifactID) {
+		// Same short-circuit Listing applies: coord keys by uuid, so a non-uuid id can never
+		// match a row — answer ErrNotFound BEFORE touching Postgres (which would otherwise
+		// 500 on the uuid cast instead of 404-ing like the list route does).
+		return nil, ErrNotFound
+	}
+	a, found, gerr := s.Store.GetByRunAndID(ctx, m.RunID, artifactID)
+	if gerr != nil {
+		return nil, gerr
+	}
+	if !found {
+		return nil, ErrNotFound
+	}
+	raw, err := s.Store.Content(ctx, a)
 	if err != nil {
-		return nil, err
+		return nil, ErrNotFound // unresolvable uri: same answer as absent bytes (existence-hiding)
 	}
-	for _, a := range arts {
-		if a.ID != artifactID {
-			continue
-		}
-		raw, err := s.Store.Content(ctx, a)
-		if err != nil {
-			return nil, ErrNotFound // unresolvable uri: same answer as absent bytes (existence-hiding)
-		}
-		res := &ContentResult{Artifact: a, Size: len(raw)}
-		if len(raw) > MaxArtifactBytes {
-			raw = raw[:MaxArtifactBytes]
-			res.Truncated = true
-		}
-		res.Content = raw
-		return res, nil
+	res := &ContentResult{Artifact: a, Size: len(raw)}
+	if len(raw) > MaxArtifactBytes {
+		raw = raw[:MaxArtifactBytes]
+		res.Truncated = true
 	}
-	return nil, ErrNotFound
+	res.Content = raw
+	return res, nil
 }
 
 // validUUID reports whether s parses as a uuid — the coord store keys everything by uuid, so a

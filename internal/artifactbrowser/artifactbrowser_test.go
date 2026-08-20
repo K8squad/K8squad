@@ -20,10 +20,22 @@ type fakeStore struct {
 	content map[string][]byte
 	// failContent, when set, makes every Content call fail (unresolvable uri).
 	failContent bool
+	// listCalls counts ListByRun invocations (targeted-read discipline check).
+	listCalls int
 }
 
 func (f *fakeStore) ListByRun(_ context.Context, runID string) ([]Artifact, error) {
+	f.listCalls++
 	return f.rows[runID], nil
+}
+
+func (f *fakeStore) GetByRunAndID(_ context.Context, runID, artifactID string) (Artifact, bool, error) {
+	for _, a := range f.rows[runID] {
+		if a.ID == artifactID {
+			return a, true, nil
+		}
+	}
+	return Artifact{}, false, nil
 }
 
 func (f *fakeStore) Content(_ context.Context, a Artifact) ([]byte, error) {
@@ -186,5 +198,42 @@ func TestListing_NonUUIDRunHasNoRows(t *testing.T) {
 	svc.Runs = src
 	if _, err := svc.Listing(context.Background(), owner, "dev-run"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestContent_NonUUIDIdsMatchListingAnswer — cursor review: Content must apply the SAME
+// non-uuid short-circuit Listing does, so a dev/static Run (or a non-uuid artifact id) gets
+// ErrNotFound→404 on BOTH routes instead of a uuid-cast 500 on the content route.
+func TestContent_NonUUIDIdsMatchListingAnswer(t *testing.T) {
+	svc, owner, _, _, _ := newFixture(t)
+	teamA := owner.TeamID
+	src := buildbrowser.NewStaticRunSource(map[string]buildbrowser.RunMeta{
+		"dev-run": {RunID: "dev-run", TeamID: teamA, Principal: owner.Principal},
+	})
+	svc.Runs = src
+	if _, err := svc.Content(context.Background(), owner, "dev-run", uuid.New().String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-uuid run: err = %v, want ErrNotFound", err)
+	}
+	if _, err := svc.Content(context.Background(), owner, "dev-run", "not-a-uuid"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-uuid artifact id: err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestContent_TargetedReadNotListScan — cursor review: Content must locate the row through
+// GetByRunAndID (a single targeted read), not by pulling the run's whole list. The fake counts
+// ListByRun calls; a Content hit must leave it at zero.
+func TestContent_TargetedReadNotListScan(t *testing.T) {
+	svc, owner, _, _, rid := newFixture(t)
+	h := handoffRow(rid, handoffArtifact(rid))
+	store := svc.Store.(*fakeStore)
+	store.rows[rid] = []Artifact{h}
+	store.content[h.URI] = []byte(`{"did":["x"]}`)
+	store.listCalls = 0
+
+	if _, err := svc.Content(context.Background(), owner, rid, h.ID); err != nil {
+		t.Fatalf("Content: %v", err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("Content used ListByRun (%d calls) instead of a targeted GetByRunAndID", store.listCalls)
 	}
 }

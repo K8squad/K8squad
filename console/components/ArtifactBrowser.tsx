@@ -14,7 +14,7 @@
 // canonical bytes (capped at 512 KiB server-side; base64 JSON envelope) into a read-only
 // viewer. Strictly read-only — inspection, not mutation (R6 scope guard).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /** One coord.artifact row as the apiserver lists it. */
 export interface ArtifactRow {
@@ -104,6 +104,10 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
     null,
   );
   const [loadingRow, setLoadingRow] = useState<string | null>(null);
+  // Latest in-flight inspect request: a response is applied only if it is still the newest
+  // request. Two rapid Inspect clicks must not let the slower response overwrite the newer
+  // row's content, and a late response after navigation must not set state at all.
+  const latestRequest = useRef<number>(0);
 
   useEffect(() => {
     let alive = true;
@@ -127,17 +131,21 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
   }, [runId]);
 
   const openArtifact = async (row: ArtifactRow) => {
+    const request = ++latestRequest.current;
     setLoadingRow(row.id);
+    const stale = () => request !== latestRequest.current;
     try {
       const res = await fetch(
         `/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(row.id)}`,
         { headers: { accept: "application/json" } },
       );
+      if (stale()) return;
       if (!res.ok) {
         setSelected({ row, text: `(content unavailable — HTTP ${res.status})`, truncated: false, size: 0 });
         return;
       }
       const body = (await res.json()) as ContentResult;
+      if (stale()) return;
       setSelected({
         row,
         text: decodeContent(body.content),
@@ -145,9 +153,9 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
         size: body.size,
       });
     } catch {
-      setSelected({ row, text: "(content fetch failed)", truncated: false, size: 0 });
+      if (!stale()) setSelected({ row, text: "(content fetch failed)", truncated: false, size: 0 });
     } finally {
-      setLoadingRow(null);
+      if (!stale()) setLoadingRow(null);
     }
   };
 

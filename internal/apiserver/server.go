@@ -136,7 +136,7 @@ func (s *Server) routes(opts Options) {
 		if opts.Artifacts != nil {
 			arts.HandleFunc("", artifactsHandler(opts.Artifacts)).Methods(http.MethodGet)
 		} else {
-			arts.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire an artifactbrowser.Service (coord store) to enable")).
+			arts.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
 				Methods(http.MethodGet)
 		}
 		art := s.router.Path("/api/runs/{runId}/artifacts/{artifactId}").Subrouter()
@@ -144,7 +144,7 @@ func (s *Server) routes(opts Options) {
 		if opts.Artifacts != nil {
 			art.HandleFunc("", artifactContentHandler(opts.Artifacts)).Methods(http.MethodGet)
 		} else {
-			art.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire an artifactbrowser.Service (coord store) to enable")).
+			art.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
 				Methods(http.MethodGet)
 		}
 
