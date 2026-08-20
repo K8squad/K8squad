@@ -1,0 +1,203 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: devops-skills
+  annotations:
+    description: "Comprehensive DevOps skills repository for backup operations"
+    created-by: "ISI-2677 Emergency Restoration"
+    restored-date: "2026-08-16"
+data:
+  code-review-skills.yaml: |
+    skills:
+      - name: "code-review"
+        description: "Comprehensive code review and quality assurance"
+        capabilities:
+          - "security-review"
+          - "performance-analysis"
+          - "best-practice-validation"
+          - "edge-case-testing"
+        commands:
+          - "golangci-lint run --enable-all"
+          - "go test -v ./..."
+          - "trivy config ./..."
+          - "go vet ./..."
+      
+      - name: "backup-review-coverage"
+        description: "Backup review capabilities when primary reviewers are unavailable"
+        capabilities:
+          - "secondary-review"
+          - "review-gap-coverage"
+          - "emergency-review"
+          - "cross-functional-review"
+        commands:
+          - "review-pr --secondary"
+          - "review-queue --priority=security,critical"
+          - "review-emergency --critical-issues-only"
+          - "review-cross-functional --languages=go,python,yaml"
+      
+      - name: "review-quality-metrics"
+        description: "Review quality tracking and metrics monitoring"
+        capabilities:
+          - "review-coverage"
+          - "quality-benchmarks"
+          - "improvement-tracking"
+          - "performance-monitoring"
+        commands:
+          - "review-metrics --track=coverage,response-time"
+          - "quality-benchmark --compare=baseline"
+          - "improvement-track --trends=monthly"
+          - "performance-monitor --review-system"
+      
+      - name: "automated-validation"
+        description: "Automated review validation and verification"
+        capabilities:
+          - "automated-testing"
+          - "integration-verification"
+          - "security-scanning"
+          - "compliance-check"
+        commands:
+          - "test-automated --coverage=80%"
+          - "integration-verify --environments=staging,production"
+          - "security-scan --vulnerabilities=high,critical"
+          - "compliance-check --framework=cis,nist"
+
+  backup-skills.yaml: |
+    skills:
+      - name: "backup-operations"
+        description: "Comprehensive backup operations and management"
+        capabilities:
+          - "system-backup"
+          - "data-backup" 
+          - "configuration-backup"
+          - "backup-verification"
+        commands:
+          - "velero backup create system-backup --include-namespaces '*'"
+          - "rsync -avz /data/ /backup/"
+          - "kubectl get all -A -o yaml > full-cluster-backup.yaml"
+      
+      - name: "backup-infrastructure"
+        description: "Complete infrastructure backup operations"
+        capabilities:
+          - "full-system-backup"
+          - "incremental-backup"
+          - "application-backup"
+          - "configuration-backup"
+        commands:
+          - "kubectl get all --all-namespaces -o yaml > full-backup.yaml"
+          - "velero backup create infrastructure-backup --include-namespaces '*'"
+          - "rsync -avz /data/backup/ /storage/backup/"
+        
+      - name: "restore-disaster"
+        description: "Disaster recovery and restoration operations"
+        capabilities:
+          - "emergency-restore"
+          - "multi-site-recovery"
+          - "application-migration"
+          - "data-synchronization"
+        commands:
+          - "velero restore create infrastructure-restore --from-backup infrastructure-backup"
+          - "kubectl apply -f restored-manifests/"
+          - "helm upgrade --install restored-app ./chart/"
+        
+      - name: "sync-configuration"
+        description: "Configuration synchronization across environments"
+        capabilities:
+          - "config-sync"
+          - "manifest-sync"
+          - "secret-sync"
+        commands:
+          - "kubectl config sync source-cluster target-cluster"
+          - "helm diff upgrade app-name chart/ --namespace production"
+          - "sops decrypt secrets.yaml | kubectl apply -f -"
+        
+      - name: "monitoring-health"
+        description: "Infrastructure health monitoring and alerting"
+        capabilities:
+          - "health-checks"
+          - "performance-monitoring"
+          - "alert-management"
+        commands:
+          - "kubectl get pods --all-namespaces --selector=app=backup"
+          - "curl -f http://backup-service/health"
+          - "promql 'up{job=\"backup\"}'"
+        
+      - name: "security-compliance"
+        description: "Security scanning and compliance validation"
+        capabilities:
+          - "vulnerability-scanning"
+          - "compliance-check"
+          - "security-audit"
+        commands:
+          - "trivy image backup-agent:latest"
+          - "openshift-compliance scan backup-system"
+          - "kube-bench master --target node"
+
+  disaster-recovery-skills.yaml: |
+    skills:
+      - name: "emergency-response"
+        description: "Immediate incident response and triage"
+        capabilities:
+          - "incident-triage"
+          - "critical-service-isolation"
+          - "impact-assessment"
+        commands:
+          - "kubectl cordon affected-node"
+          - "kubectl drain affected-node --ignore-daemonsets"
+          - "crashctl analyze-incident"
+        
+      - name: "data-recovery"
+        description: "Data restoration and recovery operations"
+        capabilities:
+          - "database-restore"
+          - "file-system-recovery"
+          - "application-state-restore"
+        commands:
+          - "pg_restore -d target-db backup.dump"
+          - "rsync -avz /backup/data/ /restore/data/"
+          - "kubectl rollout restart deployment target-app"
+        
+      - name: "business-continuity"
+        description: "Business continuity and service continuity"
+        capabilities:
+          - "failover-execution"
+          - "load-balancer-reconfiguration"
+          - "dns-failover"
+        commands:
+          - "lb reconfig active-backup"
+          - "dns update record service -> backup-service"
+          - "haproxy cfg reload"
+
+  automation-skills.yaml: |
+    skills:
+      - name: "proactive-monitoring"
+        description: "Automated monitoring and alerting"
+        capabilities:
+          - "automated-health-checks"
+          - "predictive-alerting"
+          - "auto-healing"
+        commands:
+          - "monitor agent start --continuous"
+          - "alert configure --auto-heal"
+          - "predictive-analysis run"
+        
+      - name: "automated-scaling"
+        description: "Intelligent resource scaling"
+        capabilities:
+          - "horizontal-pod-autoscaling"
+          - "vertical-pod-autoscaling"
+          - "cluster-scaling"
+        commands:
+          - "kubectl autoscale deployment app --cpu-percent=80 --min=2 --max=10"
+          - "vpa update app --max-memory=4Gi"
+          - "cluster auto-scale --nodes-min=3 --nodes-max=10"
+        
+      - name: "backup-automation"
+        description: "Automated backup scheduling and management"
+        capabilities:
+          - "scheduled-backups"
+          - "backup-rotation"
+          - "retention-management"
+        commands:
+          - "cron add '0 2 * * *' velero backup daily"
+          - "backup rotate --keep-last=30 --keep-daily=7"
+          - "storage cleanup --older-than=90d"

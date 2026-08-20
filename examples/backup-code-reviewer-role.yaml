@@ -1,0 +1,114 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: backup-code-reviewer
+  annotations:
+    description: "Backup Code Reviewer role with comprehensive code review capabilities"
+    created-by: "ISI-2713 Silent Active Run Review"
+    review-date: "2026-08-17"
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Access to review configuration and credentials
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create"]
+  # For running review analysis containers
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get", "stream"]
+  # Access to review execution logs
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "create"]
+  # For review analysis services
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "create"]
+  # For review web interfaces
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "create", "update", "patch"]
+  # For review system deployments
+- apiGroups: ["argoproj.io"]
+  resources: ["applications"]
+  verbs: ["get", "list", "create", "update", "patch"]
+  # For GitOps-based review systems
+- apiGroups: ["source.toolkit.fluxcd.io"]
+  resources: ["gitrepositories"]
+  verbs: ["get", "list", "update"]
+  # For source code repositories review
+- apiGroups: ["policy"]
+  resources: ["podsecuritypolicies"]
+  verbs: ["get", "list"]
+  # For security policy review
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-code-reviewer-cluster
+  annotations:
+    description: "Cluster-wide Code Reviewer role for comprehensive code analysis"
+    created-by: "ISI-2713 Silent Active Run Review"
+    review-date: "2026-08-17"
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "nodes/proxy"]
+  verbs: ["get", "list", "watch"]
+  # For infrastructure review
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+  # For cross-namespace review
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "watch"]
+  # For RBAC review
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
+  # For network security review
+- apiGroups: ["apps"]
+  resources: ["daemonsets"]
+  verbs: ["get", "list", "watch"]
+  # For daemonset review
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+  # For job and cronjob review
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: backup-code-reviewer-binding
+  namespace: default
+  annotations:
+    description: "Bind backup-code-reviewer role to service account"
+    created-by: "ISI-2713 Silent Active Run Review"
+    review-date: "2026-08-17"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: backup-code-reviewer
+subjects:
+- kind: ServiceAccount
+  name: backup-code-reviewer
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-code-reviewer-cluster-binding
+  annotations:
+    description: "Bind backup-code-reviewer-cluster role to service account"
+    created-by: "ISI-2713 Silent Active Run Review"
+    review-date: "2026-08-17"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backup-code-reviewer-cluster
+subjects:
+- kind: ServiceAccount
+  name: backup-code-reviewer
+  namespace: default
