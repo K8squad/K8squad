@@ -62,17 +62,23 @@ var credentialHoldReasons = map[string]bool{
 	"endpointunreachable": true,
 }
 
+// isCredentialHold matches the reason against the hold vocabulary on a normalization of it —
+// lowercased, separator-stripped — so a casing or separator change upstream needs no console
+// change. Runes outside ASCII alphanumerics are DROPPED, never narrowed: rune is int32 and
+// byte(r) is a lossy G115 overflow conversion, while k8s condition reasons are ASCII-validated
+// so wide runes can only be noise around the vocabulary, never part of it.
 func isCredentialHold(reason string) bool {
-	var b []byte
+	var b strings.Builder
 	for _, r := range strings.ToLower(strings.TrimSpace(reason)) {
 		switch r {
 		case '_', '-', ' ', '.':
 			continue
-		default:
-			b = append(b, byte(r))
+		}
+		if r >= '0' && r <= '9' || r >= 'a' && r <= 'z' {
+			b.WriteRune(r)
 		}
 	}
-	return credentialHoldReasons[string(b)]
+	return credentialHoldReasons[b.String()]
 }
 
 // PausedRunRef is one Run paused on a credential hold, for the row's RUNS cell and the banner's

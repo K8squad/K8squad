@@ -268,13 +268,15 @@ func TestCredentialsTeamNotFound(t *testing.T) {
 
 // TestCredentialHoldReasonFamily — the closed reason vocabulary the projection treats as a
 // credential hold (case/whitespace tolerant), and the negatives that must NOT hold.
+// The "…™" case pins the G115-safe normalization: non-ASCII runes are dropped, never
+// narrowed rune→byte, so noise around the vocabulary still matches the vocabulary.
 func TestCredentialHoldReasonFamily(t *testing.T) {
-	for _, reason := range []string{"auth_failure", "CredentialExpired", " cred_expired ", "credential_rotated"} {
+	for _, reason := range []string{"auth_failure", "CredentialExpired", " cred_expired ", "credential_rotated", "cred_expired™"} {
 		if !isCredentialHold(reason) {
 			t.Fatalf("reason %q must classify as a credential hold", reason)
 		}
 	}
-	for _, reason := range []string{"rate_limited", "sandbox_missing", "", "pending"} {
+	for _, reason := range []string{"rate_limited", "sandbox_missing", "", "pending", "Инvalid"} {
 		if isCredentialHold(reason) {
 			t.Fatalf("reason %q must NOT classify as a credential hold", reason)
 		}
