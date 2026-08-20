@@ -50,6 +50,12 @@ func NewProdStore(db *sql.DB) (*ProdStore, error) {
 
 // ListByRun returns the run's coord.artifact rows in record order.
 func (s *ProdStore) ListByRun(ctx context.Context, runID string) ([]Artifact, error) {
+	if !validUUID(runID) {
+		// coord keys every row by uuid, so a non-uuid run id can never match —
+		// answer empty BEFORE touching Postgres, whose $1::uuid cast would turn
+		// the caller's junk id into a 500 instead of the 404 the route owes.
+		return nil, nil
+	}
 	rows, err := s.db.QueryContext(ctx, s.list, runID)
 	if err != nil {
 		return nil, fmt.Errorf("artifactbrowser.ProdStore.ListByRun: %w", err)
@@ -72,6 +78,11 @@ func (s *ProdStore) ListByRun(ctx context.Context, runID string) ([]Artifact, er
 // GetByRunAndID returns exactly the named row scoped to the run — a single-row read on the
 // (run_id, id) pair rather than filtering the run's whole list in Go.
 func (s *ProdStore) GetByRunAndID(ctx context.Context, runID, artifactID string) (Artifact, bool, error) {
+	if !validUUID(runID) || !validUUID(artifactID) {
+		// Same short-circuit as ListByRun: neither id can ever name a row, so
+		// the answer is not-found with no round-trip and no uuid-cast 500.
+		return Artifact{}, false, nil
+	}
 	var a Artifact
 	err := s.db.QueryRowContext(ctx, s.get, runID, artifactID).Scan(
 		&a.ID, &a.WorkItemID, &a.RunID, &a.Kind, &a.URI, &a.SHA256, &a.CreatedAt)

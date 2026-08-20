@@ -102,19 +102,25 @@ func seedWorkItem(t *testing.T, db *sql.DB) string {
 }
 
 // seedArtifact registers a coord.artifact row (and its backing audit_log payload
-// when uri is a coord+audit:// pointer) with sha256 set to hex(sha256(payload))
-// — or to a deliberately wrong digest when corrupt=true.
+// when uri is a coord+audit:// pointer) with sha256 set to the digest OF RECORD —
+// the jsonb-canonical payload::text bytes Postgres returns, exactly what
+// ProdHandoffWriter.WriteHandoff hashes at registration — or to a deliberately
+// wrong digest when corrupt=true.
 func seedArtifact(t *testing.T, db *sql.DB, wi, run, kind, payload string, corrupt bool) Artifact {
 	t.Helper()
+	// jsonb canonicalizes whitespace/key order, so hashing the raw Go string
+	// would register a digest nothing at the uri can ever hash to; read the
+	// canonical bytes back from Postgres itself, like the real writer does.
 	var auditID int64
+	var canonical []byte
 	err := db.QueryRow(`
 		INSERT INTO coord.audit_log (work_item_id, run_id, event_type, principal, payload)
 		VALUES ($1::uuid, $2::uuid, 'artifact_registered', 'user:it', $3::jsonb)
-		RETURNING id`, wi, run, payload).Scan(&auditID)
+		RETURNING id, payload::text`, wi, run, payload).Scan(&auditID, &canonical)
 	if err != nil {
 		t.Fatalf("seed audit_log: %v", err)
 	}
-	sum := sha256.Sum256([]byte(payload))
+	sum := sha256.Sum256(canonical)
 	digest := hex.EncodeToString(sum[:])
 	if corrupt {
 		bad := sha256.Sum256([]byte("tampered-bytes"))
