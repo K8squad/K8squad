@@ -214,6 +214,10 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		// Secret NAME ref — never Secret contents or a Postgres row), so
 		// it is a legal RunStatus embed.
 		reflect.TypeOf(ModelSegment{}): true,
+		// ContextSnapshot (stories 3.6/5.9) is a Run status sub-struct of
+		// opaque revision tokens and ids — refs to coordination/memory rows,
+		// never embedded row content (ADR-001/AC7).
+		reflect.TypeOf(ContextSnapshot{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {

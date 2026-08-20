@@ -207,6 +207,14 @@ type RunStatus struct {
 	// +kubebuilder:validation:MaxItems=32
 	ModelSegments []ModelSegment `json:"modelSegments,omitempty"`
 
+	// ContextSnapshot pins the resolved §8.5 context envelope inputs
+	// (work-item rev, goal rev, memory doc-ids, resolved budget, model
+	// window) for audit + re-entrant reuse (stories 3.6/5.9). Written by
+	// the Run reconciler at the Claiming → Running transition; a resumed
+	// Run re-assembles from it instead of re-querying latest.
+	// +optional
+	ContextSnapshot *ContextSnapshot `json:"contextSnapshot,omitempty"`
+
 	// ObservedGeneration is the generation most recently observed by the
 	// Run reconciler (§5.2).
 	// +optional
