@@ -37,6 +37,7 @@ import (
 type fakeProvisioner struct {
 	mu          sync.Mutex
 	boots       map[string]warmpool.PoolKey
+	bootOrder   []string // boot call order (maps iterate randomly — FIFO tests need this)
 	teardowns   map[string]int
 	bootErr     error
 	tearDownErr error
@@ -78,6 +79,7 @@ func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id strin
 		return err
 	}
 	f.boots[id] = key
+	f.bootOrder = append(f.bootOrder, id) // insertion order — map iteration is randomized
 	block := f.blockOnBoot
 	f.mu.Unlock()
 	if block != nil {
@@ -148,6 +150,18 @@ func (f *fakeProvisioner) teardownAttemptFor(id string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.teardownAttempts[id]
+}
+
+// oldestBoot returns the FIRST-booted sandbox id (FIFO front) — the
+// deterministic victim-selection read; bootsCopy is a map and must never
+// be used where order matters.
+func (f *fakeProvisioner) oldestBoot() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.bootOrder) == 0 {
+		return ""
+	}
+	return f.bootOrder[0]
 }
 
 // bootedCopy is a test helper snapshot of f.boots.
@@ -635,13 +649,7 @@ func TestPoolScaleDownFailedTeardownNeverReArmsWarmth(t *testing.T) {
 	key := gvisorKey
 	pool, fp := newTestPool()
 	prewarm(t, pool, key, 1)
-	wedged := pool.Inventory()[key]
-	_ = wedged
-	ids := make([]string, 0, 1)
-	for id := range fp.bootsCopy() {
-		ids = append(ids, id)
-	}
-	wedgedID := ids[0]
+	wedgedID := fp.oldestBoot() // single boot; deterministic read
 
 	fp.tearDownErrFor[wedgedID] = errors.New("pod stuck Terminating (finalizer)")
 	if n := pool.ScaleDown(context.Background(), key, 1); n != 0 {
@@ -674,14 +682,12 @@ func TestPoolScaleDownWedgedPodDoesNotBlockHealthySurplus(t *testing.T) {
 	key := gvisorKey
 	pool, fp := newTestPool()
 	prewarm(t, pool, key, 3)
-	all := fp.bootsCopy()
-	wedged := make([]string, 0, 1)
-	for id := range all {
-		wedged = append(wedged, id)
-	}
-	// FIFO order: prewarm boots in order, so wedged[0] is the oldest and
-	// is selected first.
-	fp.tearDownErrFor[wedged[0]] = errors.New("undeletable")
+	// FIFO order is deterministic ONLY through the recorded boot order —
+	// fp.bootsCopy() returns a map and map iteration is randomized, so
+	// picking the victim from it wedges a RANDOM pod (when it wedges the
+	// newest, both victims are healthy and the pass-1 assertion flakes).
+	wedged := fp.oldestBoot()
+	fp.tearDownErrFor[wedged] = errors.New("undeletable")
 
 	if n := pool.ScaleDown(context.Background(), key, 2); n != 1 {
 		t.Fatalf("scale-down pass 1 destroyed %d, want 1 (healthy victim lands; wedged one does not)", n)
