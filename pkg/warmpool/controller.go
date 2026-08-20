@@ -230,6 +230,8 @@ func (c *Controller) Run(ctx context.Context, interval time.Duration) error {
 // post-stabilization view) — the controller's desired state, for status
 // surfaces and tests.
 func (c *Controller) Targets() map[PoolKey]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out := make(map[PoolKey]int, len(c.keys))
 	for _, mk := range c.keys {
 		out[mk.Key] = c.autoscaler.Current(mk.Key)

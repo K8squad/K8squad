@@ -303,6 +303,29 @@ func TestControllerRunLoopStops(t *testing.T) {
 	_ = pool
 }
 
+// C8: Targets() is the status-surface read — it must not race the Run/Tick
+// loop's writes to the autoscaler's per-key state. The unsynchronized-read
+// twin is exactly the -race failure this pins (Go map concurrent
+// read/write is fatal, not a recoverable panic).
+func TestControllerTargetsConcurrentWithTick(t *testing.T) {
+	c, _, fp, lambda := newController(t, warmpool.ClassInteractive)
+	*lambda = warmpool.LambdaMedium
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = c.Run(ctx, time.Millisecond) }()
+
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if tgt := c.Targets()[gvisorKey]; tgt < 0 {
+			t.Fatalf("negative target %d", tgt)
+		}
+	}
+	cancel()
+
+	_ = fp
+}
+
 // bootedCopy is a test helper snapshot of fp.boots.
 func (f *fakeProvisioner) bootsCopy() map[string]warmpool.PoolKey {
 	f.mu.Lock()
