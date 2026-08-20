@@ -299,6 +299,19 @@ ci/github-actions-pipeline
 Common prefixes: `feature/`, `fix/`, `docs/`, `ci/`, `test/`, `arch/`. Never push to
 `main` directly.
 
+### No agent work products in the repo
+
+Issue reports, status updates, completion summaries, review notes, resume/fix
+scripts, PID files, and test/coverage output are **work products, not project
+files**. They belong in the issue tracker (comments or attachments) — never in
+the git tree, and especially never in the repo root.
+
+Before committing, check `git status` and make sure you are only staging files
+that belong to the change. The `.gitignore` blocks the known patterns
+(`ISI-*.md` reports, `*.pid`, test logs, coverage output), but do not rely on
+that alone: if a file documents *that* you did work rather than being *part of*
+the work, it does not get committed. Archive it to the issue or delete it.
+
 ### Commit messages — Conventional Commits
 
 We use [Conventional Commits](https://www.conventionalcommits.org/):

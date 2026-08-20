@@ -12,6 +12,28 @@ paperclip/
 # General
 *.md.bmad
 
+# Agent work products — NEVER commit reports/scripts/logs to the repo (ISI-2875)
+# Work reports belong in issue comments or issue artifacts, not the git tree.
+ISI-[0-9]*.md
+isi-[0-9]*.md
+SHARED_MEMORY_*.md
+INTEGRATION_TEST_SUMMARY.md
+resume-*.sh
+fix-is*.sh
+verify-isi-*.sh
+run_agent_integration_tests.sh
+test_agent_integration.go
+*.pid
+*_test.log
+*.test.log
+
+# Coverage / test report output
+console/coverage/
+coverage/
+
+# Nested repo checkouts accidentally added at root
+/K8squad-website/
+
 # Go build output / vendored tool binaries
 bin/
 

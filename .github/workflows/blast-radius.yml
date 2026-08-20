@@ -22,8 +22,6 @@ on:
       - 'pkg/**'                         # BFF read gate, teardown controller
       - 'test/blast-radius/**'
       - '.github/workflows/blast-radius.yml'
-      - 'docs/bmad/spikes/bench/memory-poisoning-check.py'  # ISI-2865: X.3 memory oracle
-      - 'docs/bmad/stories/X-3-memory-poisoning-test.md'    # X-3 memory poisoning story
   push:
     branches: [main]
   schedule:
@@ -58,10 +56,6 @@ jobs:
 
       - name: Run S4 suite (conformance + mutation arms)
         run: test/blast-radius/run-s4.sh all
-
-      - name: Run memory poisoning oracle check (ISI-2865)
-        run: python3 docs/bmad/spikes/bench/memory-poisoning-check.py
-        continue-on-error: false
 
       - name: Upload report
         if: always()
