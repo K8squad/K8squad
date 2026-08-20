@@ -29,9 +29,10 @@ function row(over: Partial<AgentCredentialRow> = {}): AgentCredentialRow {
     agent: "fixer-hermes",
     namespace: "squad-a",
     runtime: "Hermes",
-    credentialRef: "squad-a/sam/hermes-oauth",
+    credentialRef: "squad-a/sam-hermes-oauth",
     expiresKnown: false,
-    health: "connected",
+    // Mirrors the honest backend default: zero credential knowledge ⇒ unknown (PR #87 review).
+    health: "unknown",
     ...over,
   };
 }
@@ -41,14 +42,14 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     render(
       <CredentialsScreen
         load={async () =>
-          jsonResponse(200, overview([row(), row({ agent: "reviewer-openclaw", runtime: "OpenClaw", credentialRef: "squad-a/sam/openclaw-key", credentialClass: "api_key" })]))
+          jsonResponse(200, overview([row(), row({ agent: "reviewer-openclaw", runtime: "OpenClaw", credentialRef: "squad-a/sam-openclaw-key", credentialClass: "api_key" })]))
         }
         now={clock}
       />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     expect(screen.getByText("fixer-hermes")).toBeTruthy();
-    expect(screen.getByText("squad-a/sam/hermes-oauth")).toBeTruthy();
+    expect(screen.getByText("squad-a/sam-hermes-oauth")).toBeTruthy();
     expect(screen.getByText("API key")).toBeTruthy();
     expect(screen.getByText("— (static)")).toBeTruthy();
     // FR-G1 footer fact is on the screen.
@@ -73,12 +74,14 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     expect(link.getAttribute("href")).toBe("/runs/run-139");
   });
 
-  it("renders Valid + honest — expiry for unknown horizons (no fabricated numbers)", async () => {
+  it("renders Unknown + honest — expiry for zero-knowledge rows (no fabricated green badge)", async () => {
     render(
       <CredentialsScreen load={async () => jsonResponse(200, overview([row()]))} now={clock} />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
-    expect(screen.getAllByTestId("health-badge")[0].textContent).toBe("Valid");
+    // Zero credential knowledge ⇒ Unknown (idle tone), never a fabricated Valid badge (PR #87
+    // review: absence of a paused Run is not evidence a credential works).
+    expect(screen.getAllByTestId("health-badge")[0].textContent).toBe("Unknown");
     expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     expect(screen.queryByTestId("paused-banner")).toBeNull();
   });

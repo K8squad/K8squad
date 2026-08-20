@@ -69,8 +69,8 @@ func TestCredentialsProjection(t *testing.T) {
 	since := time.Date(2026, 8, 20, 12, 0, 41, 0, time.UTC)
 	r := newCredReader(t,
 		team("squad-a", "alpha", teamUID),
-		agent("squad-a", "fixer-hermes", "hermes", "sam/hermes-oauth"),
-		agent("squad-a", "reviewer-openclaw", "openclaw", "sam/openclaw-key"),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
+		agent("squad-a", "reviewer-openclaw", "openclaw", "sam-openclaw-key"),
 		pausedRun("squad-a", "run-139", "fixer-hermes", "credential_expired", since),
 		pausedRun("squad-a", "run-140", "reviewer-openclaw", "rate_limited", since),
 	)
@@ -105,9 +105,11 @@ func TestCredentialsProjection(t *testing.T) {
 		t.Fatalf("hold since: %+v", fixer.PausedRuns[0].Since)
 	}
 
-	// rate_limited is NOT a credential hold (7.6: distinct reason family): row stays connected.
-	if reviewer.Health != CredHealthConnected {
-		t.Fatalf("reviewer health: %q, want connected (rate_limited is not a credential hold)", reviewer.Health)
+	// rate_limited is NOT a credential hold (7.6: distinct reason family) and zero credential
+	// knowledge is NOT evidence of health: the row stays unknown, never a fabricated green
+	// badge (PR #87 review — the honesty rule the file header states).
+	if reviewer.Health != CredHealthUnknown {
+		t.Fatalf("reviewer health: %q, want unknown (no hold ≠ connected)", reviewer.Health)
 	}
 	if len(reviewer.PausedRuns) != 0 {
 		t.Fatalf("reviewer pausedRuns: %+v", reviewer.PausedRuns)
@@ -121,9 +123,117 @@ func TestCredentialsProjection(t *testing.T) {
 			t.Fatalf("row %s: credential ref is the point (FR-G1)", row.Agent)
 		}
 	}
-	if fixer.CredentialRef != "squad-a/sam/hermes-oauth" {
+	if fixer.CredentialRef != "squad-a/sam-hermes-oauth" {
 		t.Fatalf("fixer credentialRef: %q", fixer.CredentialRef)
 	}
+}
+
+// TestCredentialsZeroKnowledgeIsUnknown — an Agent with no Runs, no annotations, and no
+// controller data must render health unknown, NOT a fabricated connected badge: absence of a
+// paused Run is not evidence the credential works (PR #87 review).
+func TestCredentialsZeroKnowledgeIsUnknown(t *testing.T) {
+	const teamUID = "aaaaaaaa-4444-4444-4444-444444444444"
+	r := newCredReader(t,
+		team("squad-a", "alpha", teamUID),
+		agent("squad-a", "idle-agent", "hermes", "sam-idle-oauth"),
+	)
+	ov, err := r.Credentials(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	if len(ov.Agents) != 1 || ov.Agents[0].Health != CredHealthUnknown {
+		t.Fatalf("zero-knowledge health: %+v — want unknown", ov.Agents)
+	}
+}
+
+// TestCredentialsCrossNamespaceRefSkipped — a Run referencing an Agent by name with an explicit
+// FOREIGN namespace must not attribute its hold to a same-named Agent in this namespace (wrong
+// row, wrong banner). Empty-namespace refs (the Run's own namespace) still join.
+func TestCredentialsCrossNamespaceRefSkipped(t *testing.T) {
+	const teamUID = "aaaaaaaa-5555-5555-5555-555555555555"
+	since := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	r := newCredReader(t,
+		team("squad-a", "alpha", teamUID),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
+		&ksquadv1.Run{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "squad-a", Name: "run-foreign"},
+			Spec: ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{
+				{Name: "fixer-hermes", Namespace: "squad-b"}, // foreign — skip
+			}},
+			Status: ksquadv1.RunStatus{
+				Phase: ksquadv1.RunPhasePaused,
+				Conditions: []metav1.Condition{{
+					Type: "Paused", Status: metav1.ConditionTrue,
+					Reason: "credential_expired", LastTransitionTime: metav1.NewTime(since),
+				}},
+			},
+		},
+		pausedRun("squad-a", "run-local", "fixer-hermes", "credential_expired", since), // own ns — join
+	)
+	ov, err := r.Credentials(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	row := ov.Agents[0]
+	if len(row.PausedRuns) != 1 || row.PausedRuns[0].Name != "run-local" {
+		t.Fatalf("foreign-ns ref must be skipped, own-ns kept: %+v", row.PausedRuns)
+	}
+}
+
+// TestCredentialsTeamNamespaceMemoized — the UID→namespace list runs once per distinct UID:
+// repeat reads never re-scan every Team (PR #87 review perf note).
+func TestCredentialsTeamNamespaceMemoized(t *testing.T) {
+	const teamUID = "aaaaaaaa-6666-6666-6666-666666666666"
+	lists := 0
+	base := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(
+		team("squad-a", "alpha", teamUID),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
+	).Build()
+	counting := &listCounter{Client: base, lists: &lists}
+
+	reader := NewClientCredentialReader(counting)
+	for i := 0; i < 3; i++ {
+		if _, err := reader.Credentials(context.Background(), teamUID); err != nil {
+			t.Fatalf("Credentials #%d: %v", i, err)
+		}
+	}
+	if lists != 1 {
+		t.Fatalf("team list ran %d times for one UID — memoization must collapse it to 1", lists)
+	}
+}
+
+// listCounter counts TeamList calls flowing through an inner client (memoization assertion —
+// Agent/Run lists are per-request by design, only the UID scan must collapse).
+type listCounter struct {
+	client.Client
+	lists *int
+}
+
+func (c *listCounter) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, isTeam := list.(*ksquadv1.TeamList); isTeam {
+		*c.lists++
+	}
+	return c.Client.List(ctx, list, opts...)
+}
+
+// TestCredentialsHandlerUnavailable — a reader error that is NOT ErrTeamNotFound answers 502
+// (read model unavailable), the branch a downed backing produces.
+func TestCredentialsHandlerUnavailable(t *testing.T) {
+	teamID := uuid.MustParse("bbbbbbbb-7777-7777-7777-777777777777")
+	h := testCredServer(t, teamID, errReader{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/credentials", nil), devToken))
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("credentials(reader error): got %d, want 502", rec.Code)
+	}
+}
+
+// errReader always fails with a generic error (backing down).
+type errReader struct{}
+
+func (errReader) Credentials(context.Context, string) (CredentialsOverview, error) {
+	return CredentialsOverview{}, errors.New("backing store down")
 }
 
 // TestCredentialsTeamScopeIsolation — Team B's agents never leak into Team A's credential surface.
@@ -133,8 +243,8 @@ func TestCredentialsTeamScopeIsolation(t *testing.T) {
 	r := newCredReader(t,
 		team("squad-a", "alpha", uidA),
 		team("squad-b", "beta", uidB),
-		agent("squad-a", "a-agent", "hermes", "sam/a-oauth"),
-		agent("squad-b", "b-agent", "openclaw", "eve/b-oauth"),
+		agent("squad-a", "a-agent", "hermes", "sam-a-oauth"),
+		agent("squad-b", "b-agent", "openclaw", "eve-b-oauth"),
 	)
 	ov, err := r.Credentials(context.Background(), uidA)
 	if err != nil {
@@ -190,7 +300,7 @@ func TestCredentialsHandlerOK(t *testing.T) {
 	teamID := uuid.MustParse("dddddddd-4444-4444-4444-444444444444")
 	reader := newCredReader(t,
 		team("squad-a", "alpha", teamID.String()),
-		agent("squad-a", "fixer-hermes", "hermes", "sam/hermes-oauth"),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
 	)
 	h := testCredServer(t, teamID, reader)
 
@@ -271,7 +381,7 @@ func TestCredentialsReadModelIsReadOnly(t *testing.T) {
 	writes := 0
 	base := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(
 		team("squad-a", "alpha", teamUID),
-		agent("squad-a", "fixer-hermes", "hermes", "sam/hermes-oauth"),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
 	).Build()
 	recording := &countingWriter{Client: base, writes: &writes}
 

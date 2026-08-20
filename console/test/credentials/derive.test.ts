@@ -108,6 +108,24 @@ describe("bannerHold — the clearest signal wins", () => {
     ]);
     expect(hold).toEqual({ agent: "b", run: { name: "run-142", reason: "credential_expired", since: newer } });
   });
+  it("sub-second (RFC3339Nano) timestamps compare as instants, not strings", () => {
+    // Go emits "...:00.5Z" for sub-second precision; '.' (0x2E) sorts before 'Z' (0x5A), so a
+    // string compare would wrongly crown the older whole-second hold (PR #87 review).
+    const wholeSecond = new Date("2026-08-20T12:00:00Z").toISOString();
+    const halfSecondLater = new Date("2026-08-20T12:00:00.500Z").toISOString();
+    const hold = bannerHold([
+      row({ agent: "a", pausedRuns: [{ name: "run-whole", reason: "credential_expired", since: wholeSecond }] }),
+      row({ agent: "b", pausedRuns: [{ name: "run-half", reason: "credential_expired", since: halfSecondLater }] }),
+    ]);
+    expect(hold?.run.name).toBe("run-half");
+  });
+  it("missing since keeps first-wins (NaN comparisons are false)", () => {
+    const hold = bannerHold([
+      row({ agent: "a", pausedRuns: [{ name: "run-a", reason: "credential_expired" }] }),
+      row({ agent: "b", pausedRuns: [{ name: "run-b", reason: "credential_expired" }] }),
+    ]);
+    expect(hold?.run.name).toBe("run-a");
+  });
 });
 
 describe("formatDuration — mock-05 idiom", () => {

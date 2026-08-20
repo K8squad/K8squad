@@ -32,8 +32,10 @@ import (
 // screen must show a CLEAR paused-on-expiry signal — so a Paused Run whose condition reason names
 // a credential failure marks that Agent's row expired·paused and feeds the banner. What the cache
 // CANNOT see (token expiry horizons, refresh progress — the 7.7 credential controller's Secret
-// writes) is surfaced as unknown rather than fabricated: the console never renders a made-up
-// number (same no-placeholder discipline as 8.8b / FR-I3).
+// writes, which are also where *connected* and *refreshing* will be derived from once ISI-2899
+// lands) is surfaced as **unknown** rather than fabricated: absence of a paused Run is NOT
+// evidence a credential works, so the projection never seeds a green badge on zero knowledge
+// (no-placeholder discipline, 8.8b / FR-I3).
 //
 // FR-G1 footer fact is structural: every row is a per-user Secret ref read off the Agent spec;
 // there is no master-credential field anywhere to project.
@@ -112,14 +114,17 @@ type CredentialOverviewReader interface {
 }
 
 // ClientCredentialReader is the production CredentialOverviewReader over any client.Reader (the
-// informer cache in the host; a fake client in tests). Read-only.
+// informer cache in the host; a fake client in tests). Read-only. Team UIDs are immutable for an
+// object's lifetime, so the UID→namespace resolution is memoized after its first list rather
+// than re-scanning every Team on every request.
 type ClientCredentialReader struct {
 	reader client.Reader
+	teamNS map[string]string // teamUID → namespace (immutable once resolved)
 }
 
 // NewClientCredentialReader builds the read model over a client.Reader.
 func NewClientCredentialReader(r client.Reader) *ClientCredentialReader {
-	return &ClientCredentialReader{reader: r}
+	return &ClientCredentialReader{reader: r, teamNS: map[string]string{}}
 }
 
 // Credentials resolves the Team by UID (same rename-proof scoping as overview.go), then projects
@@ -140,7 +145,10 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 		return CredentialsOverview{}, err
 	}
 
-	// Index paused credential holds by the Agents the paused Run selects.
+	// Index paused credential holds by the Agents the paused Run selects. An explicit foreign
+	// namespace in the ref is skipped: ObjectRef.Namespace empty means the Run's own namespace,
+	// and a cross-namespace name would otherwise attribute the hold to a same-named Agent in
+	// THIS namespace — wrong row, wrong banner (PR #87 review).
 	holdsByAgent := map[string][]PausedRunRef{}
 	for i := range runs.Items {
 		run := &runs.Items[i]
@@ -149,6 +157,9 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 			continue
 		}
 		for _, ref := range run.Spec.Agents {
+			if ref.Namespace != "" && ref.Namespace != ns {
+				continue
+			}
 			holdsByAgent[ref.Name] = append(holdsByAgent[ref.Name], hold)
 		}
 	}
@@ -162,7 +173,11 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 			Runtime:       a.Spec.RuntimeRef.Name,
 			Model:         a.Spec.Model,
 			CredentialRef: a.Namespace + "/" + a.Spec.CredentialSecretRef.Name,
-			Health:        CredHealthConnected,
+			// HONESTY RULE: zero credential knowledge ⇒ unknown, never a fabricated green
+			// badge. Only a credential hold DOWNGRADES (to expired) today; *connected* and
+			// *refreshing* are positive states the 7.7 credential controller derives once it
+			// exists (ISI-2899) — the projection does not invent them.
+			Health: CredHealthUnknown,
 		}
 		if cls, ok := a.Annotations["ksquad.io/credential-class"]; ok {
 			row.CredentialClass = cls
@@ -178,11 +193,16 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 	return out, nil
 }
 
-// teamNamespace resolves the Team UID to its namespace (the §12.1 tenancy root). Shared shape
-// with overview.go's inline resolution, factored here because both read models scope by it.
+// teamNamespace resolves the Team UID to its namespace (the §12.1 tenancy root), memoized:
+// a Team's UID is immutable for the object's lifetime, so the cluster-wide list runs at most
+// once per distinct UID per reader — repeat page loads never re-deep-copy every Team
+// (PR #87 review perf note; overview.go keeps its inline shape until it adopts the same memo).
 func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID string) (string, error) {
 	if teamUID == "" {
 		return "", ErrTeamNotFound
+	}
+	if ns, ok := r.teamNS[teamUID]; ok {
+		return ns, nil
 	}
 	var teams ksquadv1.TeamList
 	if err := r.reader.List(ctx, &teams); err != nil {
@@ -190,7 +210,9 @@ func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID stri
 	}
 	for i := range teams.Items {
 		if string(teams.Items[i].UID) == teamUID {
-			return teams.Items[i].Namespace, nil
+			ns := teams.Items[i].Namespace
+			r.teamNS[teamUID] = ns
+			return ns, nil
 		}
 	}
 	return "", ErrTeamNotFound

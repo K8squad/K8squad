@@ -112,17 +112,22 @@ export function healthBadge(row: AgentCredentialRow, now: Date = new Date()): He
 }
 
 /** The paused-on-expiry banner selection (8.6 AC / S10): the most recent credential hold across
- *  the rows — the screen's clearest operator signal. Null when nothing is held. */
+ *  the rows — the screen's clearest operator signal. Null when nothing is held. Timestamps are
+ *  compared as parsed instants, never as strings: Go's encoding/json emits RFC3339Nano, where a
+ *  sub-second suffix would sort before "Z" lexicographically and pick the WRONG run (PR #87
+ *  review). NaN comparisons are false, preserving first-wins when a `since` is absent. */
 export interface BannerHold {
   agent: string;
   run: PausedRunRef;
 }
 
+const holdTs = (r: PausedRunRef): number => (r.since ? Date.parse(r.since) : Number.NaN);
+
 export function bannerHold(rows: AgentCredentialRow[]): BannerHold | null {
   let worst: BannerHold | null = null;
   for (const row of rows) {
     for (const run of row.pausedRuns ?? []) {
-      if (worst === null || (run.since && worst.run.since && run.since > worst.run.since)) {
+      if (worst === null || holdTs(run) > holdTs(worst.run)) {
         worst = { agent: row.agent, run };
       }
     }

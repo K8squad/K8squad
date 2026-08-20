@@ -6,6 +6,11 @@
 // answer VERBATIM; today that answer is the documented 501 naming ISI-2899, which the screen
 // renders as the button's legible "not configured yet" state — an honest contract, never a
 // fabricated login.
+//
+// ⚠ CSRF posture (PR #87 review, forward-looking): the moment ISI-2899 turns this into a real
+// cookie-authenticated state-changing OAuth initiation, the flow MUST gain an Origin/Referer
+// check (or SameSite=Strict on the session cookie) — proxyJsonWrite adds none today. Harmless
+// while the endpoint answers 501; required before the flow goes live. Tracked with ISI-2899.
 
 import type { NextRequest } from "next/server";
 import { proxyJsonWrite } from "@/lib/bff";
