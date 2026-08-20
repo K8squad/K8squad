@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -119,6 +120,9 @@ type CredentialOverviewReader interface {
 // than re-scanning every Team on every request.
 type ClientCredentialReader struct {
 	reader client.Reader
+	// mu guards teamNS: one reader is shared across HTTP request goroutines
+	// (cmd/apiserver/main.go), so the memo must be race-safe (PR #87 re-review).
+	mu     sync.RWMutex
 	teamNS map[string]string // teamUID → namespace (immutable once resolved)
 }
 
@@ -201,6 +205,16 @@ func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID stri
 	if teamUID == "" {
 		return "", ErrTeamNotFound
 	}
+	r.mu.RLock()
+	ns, hit := r.teamNS[teamUID]
+	r.mu.RUnlock()
+	if hit {
+		return ns, nil
+	}
+	// Write lock spans resolve+store so a cold-start burst runs the cluster-wide
+	// List at most once; the re-check keeps repeat callers on the memoized path.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if ns, ok := r.teamNS[teamUID]; ok {
 		return ns, nil
 	}

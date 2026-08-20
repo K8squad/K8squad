@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -417,4 +418,28 @@ func (c *countingWriter) Delete(_ context.Context, _ client.Object, _ ...client.
 func (c *countingWriter) DeleteAllOf(_ context.Context, _ client.Object, _ ...client.DeleteAllOfOption) error {
 	*c.writes++
 	return nil
+}
+
+// Regression (PR #87 re-review): cmd/apiserver/main.go shares ONE ClientCredentialReader
+// across HTTP request goroutines, so the teamNS memoization must be race-safe — an
+// unsynchronized map crashes the process on a concurrent cold-start burst
+// (fatal error: concurrent map writes). Goes green under -race only when guarded.
+func TestCredentialsConcurrentTeamNSMemoization(t *testing.T) {
+	const teamUID = "aaaaaaaa-1111-1111-1111-111111111111"
+	r := newCredReader(t,
+		team("squad-a", "alpha", teamUID),
+		agent("squad-a", "fixer-hermes", "hermes", "sam-hermes-oauth"),
+		pausedRun("squad-a", "run-139", "fixer-hermes", "credential_expired", time.Now().UTC()),
+	)
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := r.Credentials(context.Background(), teamUID); err != nil {
+				t.Errorf("Credentials: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
 }
