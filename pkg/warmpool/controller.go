@@ -35,7 +35,9 @@ limitations under the License.
 //     object, not duplicated here.
 //   - Warming entries COUNT toward live: a replenish in flight must not
 //     stack a second boot on the next tick (double-boot is the naive twin
-//     the falsification catches).
+//     the falsification catches). Run-RESERVED warmings (a cold claim's
+//     dedicated boot) do NOT: they are the claim's own sandbox, not pool
+//     warmth.
 //   - Bound entries do NOT count: a claimed sandbox is the Run's, not pool
 //     capacity — and §9.3 teardown-and-replace means the controller
 //     replenishes a fresh replacement on the next tick after a Release.
@@ -105,26 +107,40 @@ func NewController(pool *Pool, autoscaler *Autoscaler, keys ...ManagedKey) *Cont
 	c := &Controller{
 		pool:           pool,
 		autoscaler:     autoscaler,
-		keys:           keys,
 		byKey:          make(map[PoolKey]ManagedKey, len(keys)),
 		maxBootPerTick: 4,
 	}
-	for _, mk := range keys {
+	// Default nil Pressure sources onto the copies the controller KEEPS:
+	// Tick iterates c.keys and calls mk.Pressure — a nil left in c.keys by
+	// a range-copy-only default nil-panics the leader-elected Run loop on
+	// its first pass. A fresh slice is built so the caller's variadic
+	// backing array is never mutated.
+	def := make([]ManagedKey, len(keys))
+	for i, mk := range keys {
 		if mk.Pressure == nil {
 			mk.Pressure = StaticPressure(0)
 		}
+		def[i] = mk
 		c.byKey[mk.Key] = mk
 	}
+	c.keys = def
 	pool.SetBindMiss(func(key PoolKey, _ RunClass) { c.ReplenishKey(context.Background(), key) })
 	return c
 }
 
 // SetMaxBootPerTick overrides the per-tick boot fan-out bound (tests).
-func (c *Controller) SetMaxBootPerTick(n int) { c.maxBootPerTick = n }
+func (c *Controller) SetMaxBootPerTick(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxBootPerTick = n
+}
 
 // liveFor reads the pool's replenish-relevant count for key: Warming +
 // Ready. Bound sandboxes are excluded (claimed capacity is not pool
-// capacity; §9.3 replaces them after Release).
+// capacity; §9.3 replaces them after Release), and so are Reserved
+// warmings — a claiming run's own dedicated boot materializing is that
+// run's sandbox, not pool warmth; counting it would shrink the replenish
+// deficit by one (and starve the floor entirely at MinReady=1).
 func liveFor(inv map[PoolKey]Counts, key PoolKey) int {
 	return inv[key].Warming + inv[key].Ready
 }
@@ -135,6 +151,11 @@ func liveFor(inv map[PoolKey]Counts, key PoolKey) int {
 func (c *Controller) Tick(ctx context.Context) (map[PoolKey]int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		// Shutting down: no boot fan-out on a dead context.
+		return nil, err
+	}
 
 	inv := c.pool.Inventory()
 	targets := make(map[PoolKey]int, len(c.keys))
@@ -190,6 +211,9 @@ func (c *Controller) ReplenishKey(ctx context.Context, key PoolKey) {
 	mk, ok := c.byKey[key]
 	if !ok {
 		return // not a managed key (unregistered cold-boot) — nothing to do
+	}
+	if ctx.Err() != nil {
+		return // shutting down: no boot fan-out on a dead context
 	}
 	target := c.autoscaler.Current(key)
 	if target <= 0 {

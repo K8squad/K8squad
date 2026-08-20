@@ -34,9 +34,11 @@ limitations under the License.
 //     teardown-and-replace release path (§9.3 — a released sandbox is
 //     DESTROYED, never returned to Ready).
 //   - Binder — the coord.SandboxBinder adapter (pkg/coord/prodeffects.go)
-//     that feeds Pool.Bind to ProdEffects, closing the "nil binder =
-//     ledger-only mode" hole the 0007 migration comment names ("Story 3.4
-//     supplies the physical binder").
+//     that feeds Pool.Bind to ProdEffects — the physical binder the 0007
+//     migration comment defers to Story 3.4. Constructing it in the
+//     production assembly (over the kube provisioner) is the execution-
+//     layer adapter's job; until that lands, ProdEffects keeps its
+//     documented ledger-only default.
 //
 // The load-bearing property is the §6.4/0007 contract: Bind is idempotent on
 // runID. ProdEffects gates the physical call behind the coord.sandbox_bind
@@ -70,7 +72,9 @@ import (
 type SandboxState string
 
 const (
-	// StateWarming: booted, not yet Ready (image pull / sentry start).
+	// StateWarming: booted, not yet Ready (image pull / sentry start). A
+	// Warming entry with BoundRun set is the cold path's Run-reserved
+	// boot in flight — it never becomes claimable warmth.
 	StateWarming SandboxState = "warming"
 
 	// StateReady: pre-booted, image-pre-pulled, claimable at grab-time.
@@ -78,9 +82,6 @@ const (
 
 	// StateBound: claimed by exactly one Run (via its runID).
 	StateBound SandboxState = "bound"
-
-	// StateReleased: torn down (§9.3 teardown-and-replace) — terminal.
-	StateReleased SandboxState = "released"
 )
 
 // Sandbox is one physical warm-pool sandbox pod (§9.2): it carries only the
@@ -98,7 +99,9 @@ type Sandbox struct {
 	// State is the lifecycle state above.
 	State SandboxState
 
-	// BoundRun is the runID holding this sandbox ("" unless Bound/Released).
+	// BoundRun is the runID holding this sandbox — set from the moment the
+	// cold path RESERVES it (while still StateWarming) so a readiness
+	// event can never hand another claim a sandbox a Run already owns.
 	BoundRun string
 
 	// CreatedAt / ReadyAt record the boot and readiness instants (FIFO
@@ -179,7 +182,9 @@ func (p *Pool) SetBindMiss(fn BindMissFunc) { p.onBindMiss = fn }
 // SetClock overrides the time source (tests / fake clocks).
 func (p *Pool) SetClock(now func() time.Time) { p.now = now }
 
-// newID mints an opaque, collision-resistant sandbox id (hex-128).
+// newID mints an opaque, collision-resistant sandbox id (64 random bits,
+// hex-encoded; falls back to a time+seq id if the system entropy source
+// fails).
 func (p *Pool) newID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -206,6 +211,11 @@ func (p *Pool) newID() string {
 func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunClass) (string, error) {
 	if runID == "" {
 		return "", fmt.Errorf("warmpool.Pool.Bind: runID is required")
+	}
+	if class != ClassInteractive && class != ClassBatch {
+		// Fail closed like Policy.Target — an unknown class must never be
+		// silently treated as a warm-eligible (or cold) regime.
+		return "", fmt.Errorf("warmpool.Pool.Bind: unknown run class %q (want %q or %q)", class, ClassInteractive, ClassBatch)
 	}
 	p.mu.Lock()
 
@@ -246,36 +256,68 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 	miss := p.onBindMiss
 	p.mu.Unlock()
 
-	if miss != nil {
-		miss(key, class) // the controller's immediate scale-up trigger
-	}
+	// The claiming run's own boot goes FIRST — the miss trigger below fans
+	// out up to maxBootPerTick replenish boots, and the run's cold start
+	// (S9) must not queue behind them.
+	bootErr := error(nil)
 	if p.provisioner != nil {
-		if err := p.provisioner.Boot(ctx, key, id); err != nil {
-			// Boot failed: roll the reservation back so a retry can try
-			// afresh (the caller's durable marker — 0007 — was not yet
-			// written, so no orphan marker exists).
-			p.mu.Lock()
-			delete(p.entries, id)
-			delete(p.byRun, runID)
-			p.mu.Unlock()
-			return "", fmt.Errorf("warmpool.Pool.Bind: cold boot %s: %w", id, err)
+		bootErr = p.provisioner.Boot(ctx, key, id)
+	}
+	fireMiss := func() {
+		if miss != nil {
+			miss(key, class) // the controller's immediate scale-up trigger
 		}
 	}
+
 	p.mu.Lock()
+	if bootErr != nil {
+		// Boot failed: roll the reservation back so a retry can try
+		// afresh (the caller's durable marker — 0007 — was not yet
+		// written, so no orphan marker exists).
+		delete(p.entries, id)
+		delete(p.byRun, runID)
+		p.mu.Unlock()
+		fireMiss() // the pool is still empty — the controller should still replenish
+		return "", fmt.Errorf("warmpool.Pool.Bind: cold boot %s: %w", id, bootErr)
+	}
+	if _, tracked := p.entries[id]; !tracked {
+		// Released while the boot was in flight: Release's TearDown ran
+		// BEFORE this Boot created the pod, so the pod now exists with
+		// nothing tracking it. Destroy it (best-effort) and fail the bind
+		// — never leave an untracked live pod; the released run's retry
+		// binds afresh.
+		p.mu.Unlock()
+		if p.provisioner != nil {
+			_ = p.provisioner.TearDown(ctx, id)
+		}
+		fireMiss()
+		return "", fmt.Errorf("warmpool.Pool.Bind: run %s released while its cold boot %s was in flight; the orphaned sandbox was destroyed", runID, id)
+	}
 	sb.State = StateBound
 	p.mu.Unlock()
+	fireMiss()
 	return id, nil
 }
 
 // NotifyReady reports that a Warming sandbox finished booting (the kube
-// adapter calls this from the pod watch). The entry joins its key's Ready
-// FIFO — replenish-toward-target made visible to claims. Unknown or
-// non-Warming ids are ignored (idempotent, late arrivals after scale-down).
+// adapter calls this from the pod watch). A POOL-REPLENISH entry (BoundRun
+// empty) joins its key's Ready FIFO — replenish-toward-target made visible
+// to claims. A run-RESERVED entry (the cold path's dedicated boot, BoundRun
+// set) records its readiness instant but is never promoted: handing a
+// sandbox one Run already owns into the Ready FIFO would hand the same
+// sandbox to the next claim — the cross-run double hand-out §9.3
+// (reuse-contamination) exists to make impossible; Bind completes the
+// Warming→Bound transition itself. Unknown or non-Warming ids are ignored
+// (idempotent, late arrivals after scale-down).
 func (p *Pool) NotifyReady(sandboxID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	sb, ok := p.entries[sandboxID]
 	if !ok || sb.State != StateWarming {
+		return
+	}
+	if sb.BoundRun != "" {
+		sb.ReadyAt = p.now() // readiness observed — but never claimable warmth
 		return
 	}
 	sb.State = StateReady
@@ -288,6 +330,11 @@ func (p *Pool) NotifyReady(sandboxID string) {
 // next pass toward target; the released sandbox NEVER re-enters Ready
 // (reuse-contamination is structurally impossible). A second Release for
 // the same runID is a no-op (idempotent teardown).
+//
+// If the physical TearDown FAILS, the bookkeeping is RESTORED (the sandbox
+// returns to tracked state and Release returns the error) so a retry
+// re-attempts the teardown instead of reporting a false success while an
+// untracked pod keeps running.
 func (p *Pool) Release(ctx context.Context, runID string) error {
 	p.mu.Lock()
 	sb, ok := p.byRun[runID]
@@ -313,6 +360,14 @@ func (p *Pool) Release(ctx context.Context, runID string) error {
 
 	if p.provisioner != nil {
 		if err := p.provisioner.TearDown(ctx, id); err != nil {
+			// Teardown failed: the pod is still alive. Restore the entry
+			// so the sandbox stays tracked (inventory truthful) and a
+			// Release retry re-attempts the teardown — never orphan a
+			// live pod the pool has forgotten.
+			p.mu.Lock()
+			p.entries[id] = sb
+			p.byRun[runID] = sb
+			p.mu.Unlock()
 			return fmt.Errorf("warmpool.Pool.Release: teardown %s: %w", id, err)
 		}
 	}
@@ -320,11 +375,24 @@ func (p *Pool) Release(ctx context.Context, runID string) error {
 }
 
 // Counts returns the per-key live inventory snapshot the controller's
-// reconcile reads (warming + ready + bound per key).
+// reconcile reads.
 type Counts struct {
+	// Warming: pool-replenish boots in flight (not yet Ready, claimed by
+	// no one) — these count toward the reconcile's live count.
 	Warming int
-	Ready   int
-	Bound   int
+
+	// Ready: pre-booted, claimable at grab-time — the warm inventory.
+	Ready int
+
+	// Bound: claimed by exactly one Run.
+	Bound int
+
+	// Reserved: warming entries that are a specific Run's DEDICATED cold
+	// boot materializing (BoundRun set). They are the run's own sandbox,
+	// not pool warmth: the controller does NOT count them toward live
+	// (claiming one must not shrink the replenish deficit), and
+	// NotifyReady never promotes them into Ready.
+	Reserved int
 }
 
 // Inventory returns the per-key live counts (the controller's observed
@@ -336,15 +404,15 @@ func (p *Pool) Inventory() map[PoolKey]Counts {
 	out := make(map[PoolKey]Counts)
 	for _, sb := range p.entries {
 		c := out[sb.Key]
-		switch sb.State {
-		case StateWarming:
+		switch {
+		case sb.State == StateWarming && sb.BoundRun != "":
+			c.Reserved++
+		case sb.State == StateWarming:
 			c.Warming++
-		case StateReady:
+		case sb.State == StateReady:
 			c.Ready++
-		case StateBound:
+		case sb.State == StateBound:
 			c.Bound++
-		case StateReleased:
-			// destroyed — not live inventory (entries no longer holds it)
 		}
 		out[sb.Key] = c
 	}
@@ -366,32 +434,50 @@ func (p *Pool) Ref(runID string) string {
 // warmth drains before fresh), returning how many were actually destroyed.
 // The controller calls this after the autoscaler's stabilization band
 // commits a lower target; destroying only Ready entries means an in-flight
-// claim never loses its sandbox.
+// claim never loses its sandbox. A teardown that FAILS leaves its entry
+// re-tracked (front of the Ready FIFO, drain order preserved) so the next
+// pass retries it — a live pod is never left untracked.
 func (p *Pool) ScaleDown(ctx context.Context, key PoolKey, n int) int {
 	if n <= 0 {
 		return 0
 	}
 	p.mu.Lock()
-	var victims []string
+	var victims []*Sandbox
 	ids := p.ready[key]
 	for len(victims) < n && len(ids) > 0 {
-		victims = append(victims, ids[0])
+		if sb, ok := p.entries[ids[0]]; ok {
+			victims = append(victims, sb)
+		}
 		ids = ids[1:]
 	}
 	p.ready[key] = ids
-	for _, id := range victims {
-		delete(p.entries, id)
+	for _, sb := range victims {
+		delete(p.entries, sb.ID)
 	}
 	p.mu.Unlock()
 
 	destroyed := 0
-	for _, id := range victims {
+	var failed []*Sandbox
+	for _, sb := range victims {
 		if p.provisioner != nil {
-			if err := p.provisioner.TearDown(ctx, id); err != nil {
+			if err := p.provisioner.TearDown(ctx, sb.ID); err != nil {
+				failed = append(failed, sb)
 				continue // count only confirmed teardowns
 			}
 		}
 		destroyed++
+	}
+	if len(failed) > 0 {
+		// Those pods are still alive: re-track them so inventory stays
+		// truthful and the next scale-down pass re-attempts the teardown.
+		p.mu.Lock()
+		requeued := make([]string, len(failed))
+		for i, sb := range failed {
+			p.entries[sb.ID] = sb
+			requeued[i] = sb.ID
+		}
+		p.ready[key] = append(requeued, p.ready[key]...)
+		p.mu.Unlock()
 	}
 	return destroyed
 }
