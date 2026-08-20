@@ -173,3 +173,30 @@ a:hover {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent);
 }
+
+/* phase-chip — a Run-phase pill whose hue rides the theme-invariant status channel
+ * (story 8.1 overview rows + rollups, ISI-2900). data-tone maps 1:1 to the token roles
+ * the SSE stream-status already uses: running | paused | blocked | idle. */
+.phase-chip {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.phase-chip[data-tone="running"] {
+  background: color-mix(in srgb, var(--status-running) 18%, transparent);
+  color: var(--status-running);
+}
+.phase-chip[data-tone="paused"] {
+  background: color-mix(in srgb, var(--status-paused) 18%, transparent);
+  color: var(--status-paused);
+}
+.phase-chip[data-tone="blocked"] {
+  background: color-mix(in srgb, var(--status-blocked) 18%, transparent);
+  color: var(--status-blocked);
+}
+.phase-chip[data-tone="idle"] {
+  background: color-mix(in srgb, var(--status-idle) 18%, transparent);
+  color: var(--status-idle);
+}
