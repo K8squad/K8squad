@@ -3,11 +3,11 @@ entries:
   k8squad:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-08-20T19:44:31.335667625Z"
+    created: "2026-08-20T20:41:21.179210803Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Story 1.4 skeleton: installs the ksquad.io CRD group and the control-plane namespace.
       Services (apiserver, operator, console, memory, shim) are wired in later epics. '
-    digest: 228d0f11f822d1c45a69858029b819b9e2f72fa47384eeb5839553c6788a656a
+    digest: 193551e678e392970a92210e81bef3f558ef5659cbf29fd19573e5cc2ddeeadf
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -26,4 +26,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-0.1.0.tgz
     version: 0.1.0
-generated: "2026-08-20T19:44:31.334506778Z"
+generated: "2026-08-20T20:41:21.17860412Z"
