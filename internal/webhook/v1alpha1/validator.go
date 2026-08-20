@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -28,6 +29,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
+	"github.com/K8squad/K8squad/pkg/sandbox"
 )
 
 // Guard ids for the cross-object existence checks. Each id names one
@@ -52,10 +54,32 @@ const (
 	// Secret (spec.fallbackModel.modelEndpointRef, story 5.11) with the
 	// same existence + shape discipline.
 	GuardAgentFallbackModelEndpoint = "agent/fallbackModel.modelEndpointRef"
-	GuardRunTeam                    = "run/teamRef"
-	GuardRunProject                 = "run/projectRef"
-	GuardRunAgents                  = "run/agents"
+	GuardRunTeam     = "run/teamRef"
+	GuardRunProject  = "run/projectRef"
+	GuardRunAgents   = "run/agents"
+	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
+	// annotation: platform operators only. Without this guard the
+	// annotation is a plain metadata write any Run author can set,
+	// which would hand the shared-kernel escape to untrusted users.
+	GuardRunTrustedDev = "run/trusted-dev-annotation"
 )
+
+// controlPlaneNamespace is the ksquad control-plane namespace whose service
+// accounts count as platform operators for the trusted-dev escape. It
+// mirrors pkg/controller/team.SystemNamespace locally (sandbox.go keeps the
+// same class of local mirror to avoid dragging controller deps in).
+const controlPlaneNamespace = "ksquad-system"
+
+// trustedDevSetterServiceAccounts is the explicit allowlist of identities
+// that may set the trusted-dev escape annotation (F5). The pre-F5 prefix
+// check ("any system:serviceaccount:ksquad-system:*") treated EVERY
+// workload in the control-plane namespace — any current or future one — as
+// a privileged setter; a single compromised or over-permissioned
+// control-plane pod would have been enough to hand out the shared-kernel
+// escape. Adding a setter means adding a name here, deliberately, in review.
+var trustedDevSetterServiceAccounts = map[string]bool{
+	"system:serviceaccount:" + controlPlaneNamespace + ":operator": true,
+}
 
 // CrossRefValidator enforces the cross-object existence invariants the CRD
 // schemas cannot express: CEL in structural schemas evaluates against
@@ -264,4 +288,50 @@ func (v *CrossRefValidator) ValidateRun(ctx context.Context, run *ksquadv1alpha1
 // every denial renders as path + observed value + fix.
 func invalidf(path string, observed any, format string, args ...any) *field.Error {
 	return field.Invalid(field.NewPath(path), observed, fmt.Sprintf(format, args...))
+}
+
+// ValidateRunTrustedDev gates the ksquad.io/trusted-dev escape (story 4.2
+// §2: "explicit, audited, non-default"). Setting it must be a privileged,
+// deliberate act: only platform operators (service accounts in the
+// control-plane namespace or system:masters) may set or change it. On
+// update, an unchanged carry-over from an already-annotated Run is not a
+// new act and passes — the gate stops ESCALATION, not ordinary edits.
+// Absent request user info (non-admission callers, tests) fails closed:
+// anonymous is unprivileged.
+func (v *CrossRefValidator) ValidateRunTrustedDev(run, old *ksquadv1alpha1.Run, userInfo authenticationv1.UserInfo) field.ErrorList {
+	if !v.on(GuardRunTrustedDev) {
+		return nil
+	}
+	value, set := run.Annotations[sandbox.TrustedDevAnnotation]
+	if !set {
+		return nil
+	}
+	if old != nil && old.Annotations[sandbox.TrustedDevAnnotation] == value {
+		return nil
+	}
+	if isPrivilegedRequester(userInfo) {
+		return nil
+	}
+	var errs field.ErrorList
+	errs = append(errs, invalidf(
+		"metadata.annotations["+sandbox.TrustedDevAnnotation+"]", value,
+		"the trusted-dev escape admits the shared-kernel runtime and may only be set by platform operators (service accounts in %s, or system:masters); ask an operator to set it on your behalf", controlPlaneNamespace))
+	return errs
+}
+
+// isPrivilegedRequester reports whether the admission requester may set
+// the trusted-dev escape: a service account on the explicit
+// trustedDevSetterServiceAccounts allowlist (F5) or system:masters.
+// Anything else in the control-plane namespace is NOT privileged — the
+// namespace is not the grant.
+func isPrivilegedRequester(userInfo authenticationv1.UserInfo) bool {
+	if trustedDevSetterServiceAccounts[userInfo.Username] {
+		return true
+	}
+	for _, group := range userInfo.Groups {
+		if group == "system:masters" {
+			return true
+		}
+	}
+	return false
 }

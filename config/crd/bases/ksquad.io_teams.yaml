@@ -175,6 +175,21 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              namespace:
+                description: |-
+                  Namespace is the squad namespace this Team reconciles into (story 4.1,
+                  arch §12.1: a squad is a namespace). Resolved once — deterministically
+                  derived from the Team name + a short hash of the Team UID — and then
+                  recorded here; later reconciles read it back rather than re-deriving,
+                  so a Team rename never strands the original namespace (AC1).
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation most recently observed by the
+                  Team reconciler (§5.2) — readiness conditions are only trustworthy
+                  when stamped with the generation they describe.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

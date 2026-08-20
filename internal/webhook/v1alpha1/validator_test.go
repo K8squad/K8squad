@@ -21,12 +21,15 @@ import (
 	"errors"
 	"testing"
 
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 
@@ -330,4 +333,82 @@ func TestCrossNamespaceRefResolution(t *testing.T) {
 	assert.Contains(t, err.Error(), "gadget")
 	assert.Contains(t, err.Error(), "squad-alpha/gadget",
 		"denial must name the resolved namespace/name pair")
+}
+
+// TestTrustedDevAnnotationGatedByPrivilegedRequester (Cursor review on the
+// story 4.2 escape, F5-narrowed): setting ksquad.io/trusted-dev must be a
+// privileged, deliberate act. Plain users are denied; the ALLOWLISTED
+// control-plane service account and system:masters pass; a control-plane
+// service account NOT on the allowlist is denied (F5: the namespace is not
+// the grant); a missing admission identity fails closed; an unchanged
+// carry-over on update is not a new act.
+func TestTrustedDevAnnotationGatedByPrivilegedRequester(t *testing.T) {
+	v := newValidator(t, validWorld())
+	annotated := validRun()
+	annotated.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+
+	plain := authenticationv1.UserInfo{Username: "alice@corp.com", Groups: []string{"system:authenticated"}}
+	operator := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:operator", Groups: []string{"system:serviceaccounts"}}
+	breakGlass := authenticationv1.UserInfo{Username: "root-human", Groups: []string{"system:masters"}}
+	// A DIFFERENT service account in the control-plane namespace: pre-F5
+	// the prefix check admitted every ksquad-system SA; only the explicit
+	// allowlist may pass now.
+	otherCPSA := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:memory", Groups: []string{"system:serviceaccounts"}}
+
+	if errs := v.ValidateRunTrustedDev(annotated, nil, plain); len(errs) == 0 {
+		t.Errorf("plain user admitted setting the trusted-dev escape (shared-kernel escape handed to untrusted users)")
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, operator); len(errs) != 0 {
+		t.Errorf("allowlisted operator SA denied: %v", errs)
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, otherCPSA); len(errs) == 0 {
+		t.Errorf("non-allowlisted control-plane SA admitted (F5: the namespace prefix must not be the grant)")
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, breakGlass); len(errs) != 0 {
+		t.Errorf("system:masters denied: %v", errs)
+	}
+	// No admission identity in context: anonymous = unprivileged = denied.
+	if errs := v.ValidateRunTrustedDev(annotated, nil, authenticationv1.UserInfo{}); len(errs) == 0 {
+		t.Errorf("missing requester identity admitted the escape (must fail closed)")
+	}
+	// Unannotated Runs pass regardless of requester.
+	if errs := v.ValidateRunTrustedDev(validRun(), nil, plain); len(errs) != 0 {
+		t.Errorf("unannotated Run denied: %v", errs)
+	}
+	// Carry-over on update (annotation already present with the same
+	// value) is not a new act — ordinary edits to an operator-annotated
+	// Run must not be blocked.
+	old := annotated.DeepCopy()
+	if errs := v.ValidateRunTrustedDev(annotated, old, plain); len(errs) != 0 {
+		t.Errorf("unchanged carry-over denied: %v", errs)
+	}
+	// Escalation via update (annotation newly added by a plain user) is
+	// denied.
+	fresh := validRun()
+	fresh.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+	if errs := v.ValidateRunTrustedDev(fresh, validRun(), plain); len(errs) == 0 {
+		t.Errorf("plain user escalated the escape in via update")
+	}
+}
+
+// TestRunValidatorTrustedDevFromAdmissionContext: the CustomValidator path
+// derives the requester from the admission context — a privileged context
+// admits, a bare context (no request) fails closed.
+func TestRunValidatorTrustedDevFromAdmissionContext(t *testing.T) {
+	v := newValidator(t, validWorld())
+	rv := &RunCustomValidator{Validator: v}
+	annotated := validRun()
+	annotated.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+
+	privCtx := admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UserInfo: authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:operator"},
+		},
+	})
+	if _, err := rv.ValidateCreate(privCtx, annotated); err != nil {
+		t.Errorf("privileged admission context denied the escape: %v", err)
+	}
+	if _, err := rv.ValidateCreate(context.Background(), annotated); err == nil {
+		t.Errorf("context without admission request admitted the escape (fail-open shape)")
+	}
 }
