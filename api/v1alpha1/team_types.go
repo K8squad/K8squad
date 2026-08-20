@@ -63,11 +63,25 @@ func (t *Team) SetOwnedBy(p PrincipalRef) { t.Spec.OwnedBy = p }
 
 // TeamStatus defines the observed state of Team.
 type TeamStatus struct {
+	// Namespace is the squad namespace this Team reconciles into (story 4.1,
+	// arch §12.1: a squad is a namespace). Resolved once — deterministically
+	// derived from the Team name + a short hash of the Team UID — and then
+	// recorded here; later reconciles read it back rather than re-deriving,
+	// so a Team rename never strands the original namespace (AC1).
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
+
 	// Conditions represent the latest available observations of a Team's state.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// ObservedGeneration is the generation most recently observed by the
+	// Team reconciler (§5.2) — readiness conditions are only trustworthy
+	// when stamped with the generation they describe.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -21,12 +21,15 @@ import (
 	"errors"
 	"testing"
 
+	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 
@@ -48,6 +51,10 @@ func validWorld() []client.Object {
 		&ksquadv1alpha1.Role{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: ns}},
 		&ksquadv1alpha1.Skill{ObjectMeta: metav1.ObjectMeta{Name: "pg-migrate", Namespace: ns}},
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "amelia-claude-token", Namespace: ns}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "amelia-ollama", Namespace: ns},
+			Data: map[string][]byte{"endpointURL": []byte("http://ollama.svc:11434")}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "backup-ep", Namespace: ns},
+			Data: map[string][]byte{"endpointURL": []byte("https://backup.example.com")}},
 		&ksquadv1alpha1.Team{ObjectMeta: metav1.ObjectMeta{Name: "squad-alpha", Namespace: ns},
 			Spec: ksquadv1alpha1.TeamSpec{NamespaceStrategy: "dedicated"}},
 		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "amelia", Namespace: ns},
@@ -84,6 +91,26 @@ func validAgent() *ksquadv1alpha1.Agent {
 	}
 }
 
+// validBYOAgent is the story 5.7 specimen: a BYO-endpoint Agent (own
+// Ollama endpoint Secret) with a 5.11 fallback that carries its own
+// endpoint Secret. Both refs resolve against validWorld, so it admits.
+func validBYOAgent() *ksquadv1alpha1.Agent {
+	return &ksquadv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "amelia-byo", Namespace: ns},
+		Spec: ksquadv1alpha1.AgentSpec{
+			RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
+			RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
+			CredentialSecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"},
+			Model:               "qwen3:14b",
+			ModelEndpointRef:    &ksquadv1alpha1.SecretRef{Name: "amelia-ollama"},
+			FallbackModel: &ksquadv1alpha1.FallbackModel{
+				Model:            "gpt-oss:20b",
+				ModelEndpointRef: &ksquadv1alpha1.SecretRef{Name: "backup-ep"},
+			},
+		},
+	}
+}
+
 func validRun() *ksquadv1alpha1.Run {
 	return &ksquadv1alpha1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
@@ -114,6 +141,7 @@ func TestValidBaselineAdmits(t *testing.T) {
 
 	assert.NoError(t, toInvalid("Team", "squad-alpha", v.ValidateTeam(ctx, validTeam())), "valid Team must admit")
 	assert.NoError(t, toInvalid("Agent", "amelia", v.ValidateAgent(ctx, validAgent())), "valid Agent must admit")
+	assert.NoError(t, toInvalid("Agent", "amelia-byo", v.ValidateAgent(ctx, validBYOAgent())), "valid BYO-endpoint Agent with fallback (5.7+5.11) must admit")
 	assert.NoError(t, toInvalid("Run", "run-1", v.ValidateRun(ctx, validRun())), "valid Run must admit")
 }
 
@@ -157,6 +185,16 @@ func invalidCases() []invalidCase {
 		{GuardAgentSecret, func(ctx context.Context, v *CrossRefValidator) error {
 			a := validAgent()
 			a.Spec.CredentialSecretRef.Name = "ghost-secret"
+			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
+		}},
+		{GuardAgentModelEndpoint, func(ctx context.Context, v *CrossRefValidator) error {
+			a := validBYOAgent()
+			a.Spec.ModelEndpointRef.Name = "ghost-ep"
+			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
+		}},
+		{GuardAgentFallbackModelEndpoint, func(ctx context.Context, v *CrossRefValidator) error {
+			a := validBYOAgent()
+			a.Spec.FallbackModel.ModelEndpointRef.Name = "ghost-ep"
 			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
 		}},
 		{GuardRunTeam, func(ctx context.Context, v *CrossRefValidator) error {
@@ -295,4 +333,82 @@ func TestCrossNamespaceRefResolution(t *testing.T) {
 	assert.Contains(t, err.Error(), "gadget")
 	assert.Contains(t, err.Error(), "squad-alpha/gadget",
 		"denial must name the resolved namespace/name pair")
+}
+
+// TestTrustedDevAnnotationGatedByPrivilegedRequester (Cursor review on the
+// story 4.2 escape, F5-narrowed): setting ksquad.io/trusted-dev must be a
+// privileged, deliberate act. Plain users are denied; the ALLOWLISTED
+// control-plane service account and system:masters pass; a control-plane
+// service account NOT on the allowlist is denied (F5: the namespace is not
+// the grant); a missing admission identity fails closed; an unchanged
+// carry-over on update is not a new act.
+func TestTrustedDevAnnotationGatedByPrivilegedRequester(t *testing.T) {
+	v := newValidator(t, validWorld())
+	annotated := validRun()
+	annotated.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+
+	plain := authenticationv1.UserInfo{Username: "alice@corp.com", Groups: []string{"system:authenticated"}}
+	operator := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:operator", Groups: []string{"system:serviceaccounts"}}
+	breakGlass := authenticationv1.UserInfo{Username: "root-human", Groups: []string{"system:masters"}}
+	// A DIFFERENT service account in the control-plane namespace: pre-F5
+	// the prefix check admitted every ksquad-system SA; only the explicit
+	// allowlist may pass now.
+	otherCPSA := authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:memory", Groups: []string{"system:serviceaccounts"}}
+
+	if errs := v.ValidateRunTrustedDev(annotated, nil, plain); len(errs) == 0 {
+		t.Errorf("plain user admitted setting the trusted-dev escape (shared-kernel escape handed to untrusted users)")
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, operator); len(errs) != 0 {
+		t.Errorf("allowlisted operator SA denied: %v", errs)
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, otherCPSA); len(errs) == 0 {
+		t.Errorf("non-allowlisted control-plane SA admitted (F5: the namespace prefix must not be the grant)")
+	}
+	if errs := v.ValidateRunTrustedDev(annotated, nil, breakGlass); len(errs) != 0 {
+		t.Errorf("system:masters denied: %v", errs)
+	}
+	// No admission identity in context: anonymous = unprivileged = denied.
+	if errs := v.ValidateRunTrustedDev(annotated, nil, authenticationv1.UserInfo{}); len(errs) == 0 {
+		t.Errorf("missing requester identity admitted the escape (must fail closed)")
+	}
+	// Unannotated Runs pass regardless of requester.
+	if errs := v.ValidateRunTrustedDev(validRun(), nil, plain); len(errs) != 0 {
+		t.Errorf("unannotated Run denied: %v", errs)
+	}
+	// Carry-over on update (annotation already present with the same
+	// value) is not a new act — ordinary edits to an operator-annotated
+	// Run must not be blocked.
+	old := annotated.DeepCopy()
+	if errs := v.ValidateRunTrustedDev(annotated, old, plain); len(errs) != 0 {
+		t.Errorf("unchanged carry-over denied: %v", errs)
+	}
+	// Escalation via update (annotation newly added by a plain user) is
+	// denied.
+	fresh := validRun()
+	fresh.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+	if errs := v.ValidateRunTrustedDev(fresh, validRun(), plain); len(errs) == 0 {
+		t.Errorf("plain user escalated the escape in via update")
+	}
+}
+
+// TestRunValidatorTrustedDevFromAdmissionContext: the CustomValidator path
+// derives the requester from the admission context — a privileged context
+// admits, a bare context (no request) fails closed.
+func TestRunValidatorTrustedDevFromAdmissionContext(t *testing.T) {
+	v := newValidator(t, validWorld())
+	rv := &RunCustomValidator{Validator: v}
+	annotated := validRun()
+	annotated.Annotations = map[string]string{"ksquad.io/trusted-dev": "true"}
+
+	privCtx := admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			UserInfo: authenticationv1.UserInfo{Username: "system:serviceaccount:ksquad-system:operator"},
+		},
+	})
+	if _, err := rv.ValidateCreate(privCtx, annotated); err != nil {
+		t.Errorf("privileged admission context denied the escape: %v", err)
+	}
+	if _, err := rv.ValidateCreate(context.Background(), annotated); err == nil {
+		t.Errorf("context without admission request admitted the escape (fail-open shape)")
+	}
 }

@@ -13,13 +13,16 @@
   "github.com/K8squad/K8squad/internal/index": 66.6,
   "github.com/K8squad/K8squad/internal/memory": 29.3,
   "github.com/K8squad/K8squad/internal/webhook": 62.2,
-  "github.com/K8squad/K8squad/internal/webhook/v1alpha1": 77.8,
+  "github.com/K8squad/K8squad/internal/webhook/v1alpha1": 79.5,
   "github.com/K8squad/K8squad/pkg/controller/run": 93.3,
+  "github.com/K8squad/K8squad/pkg/controller/team": 74.4,
   "github.com/K8squad/K8squad/pkg/coord": 9,
   "github.com/K8squad/K8squad/pkg/covgate": 87.2,
   "github.com/K8squad/K8squad/pkg/events": 36.1,
   "github.com/K8squad/K8squad/pkg/events/jetstream": 0,
+  "github.com/K8squad/K8squad/pkg/modelendpoint": 87.5,
   "github.com/K8squad/K8squad/pkg/perfgate": 85,
   "github.com/K8squad/K8squad/pkg/reconcile": 91.6,
+  "github.com/K8squad/K8squad/pkg/sandbox": 89.7,
   "github.com/K8squad/K8squad/pkg/warmpool": 89.6
 }
