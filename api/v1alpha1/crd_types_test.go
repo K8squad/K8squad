@@ -210,6 +210,10 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		reflect.TypeOf(RetryPolicy{}):      true,
 		reflect.TypeOf(metav1.Condition{}): true,
 		reflect.TypeOf(metav1.Time{}):      true,
+		// ModelSegment is the in-CRD 5.11 provenance ledger (status-only,
+		// Secret NAME ref — never Secret contents or a Postgres row), so
+		// it is a legal RunStatus embed.
+		reflect.TypeOf(ModelSegment{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {
