@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"k8squad/internal/pkg/agent"
+	"github.com/K8squad/K8squad/internal/pkg/agent"
 )
 
 // AgentExecutor handles the execution of agents with real capabilities
@@ -25,39 +25,39 @@ func NewAgentExecutor(agentStore *agent.Store, timeout time.Duration) *AgentExec
 // ExecuteRun executes a specific agent with the given parameters
 func (ae *AgentExecutor) ExecuteRun(ctx context.Context, agentID, operationID string, params map[string]interface{}) error {
 	startTime := time.Now()
-	
+
 	// Log the real agent execution
-	fmt.Printf("[AGENT-EXECUTOR] Starting real execution of agent %s for operation %s at %s\n", 
+	fmt.Printf("[AGENT-EXECUTOR] Starting real execution of agent %s for operation %s at %s\n",
 		agentID, operationID, startTime.Format(time.RFC3339))
-	
+
 	// Validate agent exists
 	if err := ae.validateAgentExists(agentID); err != nil {
 		return fmt.Errorf("agent validation failed: %w", err)
 	}
-	
+
 	// Validate operation compatibility
 	if err := ae.validateOperationCompatibility(agentID, operationID); err != nil {
 		return fmt.Errorf("operation compatibility failed: %w", err)
 	}
-	
+
 	// Create execution context with timeout
 	execCtx, cancel := context.WithTimeout(ctx, ae.timeout)
 	defer cancel()
-	
+
 	// Execute the agent with real capabilities
 	err := ae.agentStore.ExecuteAgent(execCtx, agentID, operationID, params)
 	if err != nil {
 		duration := time.Since(startTime)
-		fmt.Printf("[AGENT-EXECUTOR] Real execution failed for agent %s operation %s after %v: %v\n", 
+		fmt.Printf("[AGENT-EXECUTOR] Real execution failed for agent %s operation %s after %v: %v\n",
 			agentID, operationID, duration, err)
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
-	
+
 	// Log successful execution
 	duration := time.Since(startTime)
-	fmt.Printf("[AGENT-EXECUTOR] Real execution completed successfully for agent %s operation %s in %v\n", 
+	fmt.Printf("[AGENT-EXECUTOR] Real execution completed successfully for agent %s operation %s in %v\n",
 		agentID, operationID, duration)
-	
+
 	return nil
 }
 
@@ -68,13 +68,13 @@ func (ae *AgentExecutor) validateAgentExists(agentID string) error {
 	if !exists {
 		return fmt.Errorf("agent %s does not exist", agentID)
 	}
-	
+
 	// Check agent capabilities
 	capabilities := ae.agentStore.GetAgentCapabilities(agentID)
 	if len(capabilities) == 0 {
 		return fmt.Errorf("agent %s has no capabilities", agentID)
 	}
-	
+
 	return nil
 }
 
@@ -82,7 +82,7 @@ func (ae *AgentExecutor) validateAgentExists(agentID string) error {
 func (ae *AgentExecutor) validateOperationCompatibility(agentID, operationID string) error {
 	// Get agent capabilities
 	capabilities := ae.agentStore.GetAgentCapabilities(agentID)
-	
+
 	// Check if the agent supports the operation
 	supported := false
 	for _, cap := range capabilities {
@@ -91,11 +91,11 @@ func (ae *AgentExecutor) validateOperationCompatibility(agentID, operationID str
 			break
 		}
 	}
-	
+
 	if !supported {
 		return fmt.Errorf("agent %s does not support operation %s", agentID, operationID)
 	}
-	
+
 	return nil
 }
 
@@ -106,7 +106,7 @@ func (ae *AgentExecutor) GetAgentStatus(agentID string) (string, error) {
 	if status == "" {
 		return "", fmt.Errorf("agent %s status not available", agentID)
 	}
-	
+
 	return status, nil
 }
 
