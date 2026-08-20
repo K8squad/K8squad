@@ -293,6 +293,104 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              contextSnapshot:
+                description: |-
+                  ContextSnapshot pins the resolved §8.5 context envelope inputs
+                  (work-item rev, goal rev, memory doc-ids, resolved budget, model
+                  window) for audit + re-entrant reuse (stories 3.6/5.9). Written by
+                  the Run reconciler at the Claiming → Running transition; a resumed
+                  Run re-assembles from it instead of re-querying latest.
+                properties:
+                  artifactRefs:
+                    description: |-
+                      ArtifactRefs are the linked artifacts injected in the
+                      untrusted-external tier (uri + digest, §5.4 mirror).
+                    items:
+                      description: ObjectRef is a light cross-CRD reference to another
+                        ksquad.io object.
+                      properties:
+                        name:
+                          description: Name of the referenced object.
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the referenced object. Empty means the referring object's
+                            own namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  assembledAt:
+                    description: |-
+                      AssembledAt records when the envelope was assembled (the Claiming →
+                      Running transition that consumed this snapshot).
+                    format: date-time
+                    type: string
+                  budget:
+                    description: |-
+                      Budget is the per-tier allocation actually applied after the
+                      Project → Agent → clamp-by-window resolution (§8.5).
+                    properties:
+                      artifacts:
+                        description: Artifacts tier allocation (build outputs, PR
+                          refs from the §5.4 mirror).
+                        format: int64
+                        type: integer
+                      memoryRecall:
+                        description: |-
+                          MemoryRecall tier allocation (scoped §7 semantic recall, untrusted
+                          provenance tier).
+                        format: int64
+                        type: integer
+                      projectDocs:
+                        description: ProjectDocs tier allocation (architecture docs,
+                          conventions).
+                        format: int64
+                        type: integer
+                      workItem:
+                        description: |-
+                          WorkItem tier allocation. Must-include content (work item + acceptance
+                          criteria + goals) is never truncated (§8.5).
+                        format: int64
+                        type: integer
+                    type: object
+                    x-kubernetes-validations:
+                    - message: context budget tiers must be >= 0 when set; remove
+                        or raise the negative tier
+                      rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
+                        || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
+                        >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+                  contextWindow:
+                    description: |-
+                      ContextWindow is the resolved model contextWindow (tokens, §10.1 —
+                      model-keyed, not runtime-keyed) the envelope was budgeted against.
+                    format: int64
+                    type: integer
+                  goalRevision:
+                    description: |-
+                      GoalRevision is the Project CRD revision the goals were read from
+                      (metadata.generation of the Project at assembly time).
+                    minLength: 1
+                    type: string
+                  memoryDocIds:
+                    description: |-
+                      MemoryDocIDs are the exact memory-recall record ids injected in the
+                      untrusted-recall tier, in relevance order.
+                    items:
+                      type: string
+                    type: array
+                  workItemRevision:
+                    description: |-
+                      WorkItemRevision is the work item's revision at assembly time (the
+                      coordination-DB revision token, opaque here per ADR-001).
+                    minLength: 1
+                    type: string
+                required:
+                - goalRevision
+                - workItemRevision
+                type: object
               modelSegments:
                 description: |-
                   ModelSegments is the 5.11 mid-Run provenance ledger: which model
