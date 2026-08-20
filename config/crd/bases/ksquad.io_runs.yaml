@@ -293,6 +293,53 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              modelSegments:
+                description: |-
+                  ModelSegments is the 5.11 mid-Run provenance ledger: which model
+                  served which portion of the Run, in order. The reconciler opens a
+                  segment at dispatch and at every fallback switch, and closes it when
+                  the portion ends (rate_limited switch or Run terminal). The endpoint
+                  rides as the Secret NAME (never the URL with credentials echoed);
+                  consumption attribution (7.6) and the 8.8 fallback indicators read
+                  this. Bounded (MaxItems) so a pathological switch loop cannot bloat
+                  the status subresource.
+                items:
+                  description: |-
+                    ModelSegment is one portion of a Run served by one model (5.11
+                    provenance). A segment is OPEN while its model serves (EndedAt nil) and
+                    CLOSED when the portion ends — Reason names why (rate_limited on a
+                    switch, terminal on completion).
+                  properties:
+                    endedAt:
+                      description: EndedAt is when the portion ended; nil while serving.
+                      format: date-time
+                      type: string
+                    model:
+                      description: Model is the model name that served this portion.
+                      minLength: 1
+                      type: string
+                    reason:
+                      description: |-
+                        Reason names why the portion ended (e.g. rate_limited on a fallback
+                        switch); empty on the still-open segment or a clean terminal handoff
+                        stamped by the reconciler.
+                      type: string
+                    secretName:
+                      description: |-
+                        SecretName names the per-user endpoint Secret this model was served
+                        from ("" = the runtime's provider default). Provenance only — never
+                        Secret contents.
+                      type: string
+                    startedAt:
+                      description: StartedAt is when the portion began.
+                      format: date-time
+                      type: string
+                  required:
+                  - model
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: atomic
               observedGeneration:
                 description: |-
                   ObservedGeneration is the generation most recently observed by the

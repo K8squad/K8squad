@@ -18,6 +18,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 )
 
 // Guard ids for the cross-object existence checks. Each id names one
@@ -40,9 +42,19 @@ const (
 	GuardAgentSkills  = "agent/skillRefs"
 	// #nosec G101 -- guard path key naming the field it guards, not a credential
 	GuardAgentSecret = "agent/credentialSecretRef"
-	GuardRunTeam     = "run/teamRef"
-	GuardRunProject  = "run/projectRef"
-	GuardRunAgents   = "run/agents"
+	// GuardAgentModelEndpoint guards the BYO model-endpoint Secret
+	// (spec.modelEndpointRef, §10.3 seam / stories 5.7+5.11): it must exist
+	// AND carry the 7.5 shape (endpointURL key, parseable http(s) URL) — a
+	// mis-shaped endpoint must fail at ADMISSION, never silently
+	// mid-Run (5.7 AC).
+	GuardAgentModelEndpoint = "agent/modelEndpointRef"
+	// GuardAgentFallbackModelEndpoint guards the fallback's own endpoint
+	// Secret (spec.fallbackModel.modelEndpointRef, story 5.11) with the
+	// same existence + shape discipline.
+	GuardAgentFallbackModelEndpoint = "agent/fallbackModel.modelEndpointRef"
+	GuardRunTeam                    = "run/teamRef"
+	GuardRunProject                 = "run/projectRef"
+	GuardRunAgents                  = "run/agents"
 )
 
 // CrossRefValidator enforces the cross-object existence invariants the CRD
@@ -174,7 +186,36 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 			errs = append(errs, invalidf("spec.credentialSecretRef", ref, "referenced Secret %s/%s does not exist; create the BYO credential Secret (arch §11) first", agent.Namespace, ref.Name))
 		}
 	}
+	if v.on(GuardAgentModelEndpoint) && agent.Spec.ModelEndpointRef != nil {
+		if err := v.validateEndpointRef(ctx, agent.Namespace, agent.Spec.ModelEndpointRef, "spec.modelEndpointRef"); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if v.on(GuardAgentFallbackModelEndpoint) && agent.Spec.FallbackModel != nil && agent.Spec.FallbackModel.ModelEndpointRef != nil {
+		if err := v.validateEndpointRef(ctx, agent.Namespace, agent.Spec.FallbackModel.ModelEndpointRef, "spec.fallbackModel.modelEndpointRef"); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errs
+}
+
+// validateEndpointRef runs the §10.3 model-endpoint resolution
+// (pkg/modelendpoint, story 5.7 + 7.5 shape) against one endpoint Secret
+// ref and converts its fail-closed verdict into an admission denial. An
+// endpoint that would strand a Run mid-flight (dangling Secret, missing
+// endpointURL key, malformed URL) is rejected HERE — the same resolver the
+// dispatch path uses, so what admission proved is what dispatch assumes.
+func (v *CrossRefValidator) validateEndpointRef(ctx context.Context, namespace string, ref *ksquadv1alpha1.SecretRef, path string) *field.Error {
+	r := modelendpoint.Resolver{Reader: v.Reader}
+	_, err := r.ResolveRef(ctx, namespace, ref, "")
+	var unresolved *modelendpoint.ErrUnresolved
+	if errors.As(err, &unresolved) {
+		return invalidf(path, ref.Name, "%s; fix the endpoint Secret (endpointURL + optional apiToken, story 7.5 shape) and retry", unresolved.Reason)
+	}
+	if err != nil {
+		return invalidf(path, ref.Name, "admission read failed (fail-closed): %v", err)
+	}
+	return nil
 }
 
 // ValidateRun rejects a Run whose teamRef, projectRef or agent selectors
