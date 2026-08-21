@@ -42,6 +42,15 @@ type RecallHit struct {
 // every hit projected through the untrusted envelope — so the assembler receives recall it
 // can cite, never recall it must obey.
 func (s *ReadService) ScopedRecall(ctx context.Context, teamID string, projectID *string, queryText string, topK int) ([]RecallHit, error) {
+	// Clamp the recall width: topK<=0 defaults to 10; a caller-supplied value >100
+	// is bounded to 100. Recall feeds the envelope's memory-recall tier — an
+	// unbounded width is an unbounded token budget downstream (5.9 truncates, but
+	// the recall seam never asks for the whole substrate in the first place).
+	if topK <= 0 {
+		topK = 10
+	} else if topK > 100 {
+		topK = 100
+	}
 	hits, err := s.readHits(ctx, SearchQuery{SquadID: teamID, ProjectID: projectID, Limit: topK}, queryText)
 	if err != nil {
 		return nil, err
