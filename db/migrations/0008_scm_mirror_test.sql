@@ -49,7 +49,10 @@ DECLARE dflt text;
 BEGIN
     SELECT column_default INTO dflt FROM information_schema.columns
      WHERE table_schema='scm' AND table_name='mirror_record' AND column_name='trust_level';
-    ASSERT dflt LIKE '''untrusted-external''', format('trust_level default must be untrusted-external, got %s', dflt);
+    -- Prefix match: PG16 normalizes column_default to `'untrusted-external'::character varying`
+    -- (pg_get_expr adds the implicit cast for a VARCHAR column); an unanchored suffix would let
+    -- any default containing the literal anywhere pass. The literal must lead the expression.
+    ASSERT dflt LIKE '''untrusted-external''%', format('trust_level default must be untrusted-external, got %s', dflt);
 END $$;
 
 DO $$
