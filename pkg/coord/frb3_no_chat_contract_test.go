@@ -155,6 +155,28 @@ var allowedSurface = map[string]string{
 	"Timer.Notify":          "§8 out-of-band kick when an earlier-deadline pause lands",
 	"EqualJitter":           "§8 equal-jitter backoff helper for resume_at derivation",
 
+	// §2.10/§6.2-6.3 rate-limit re-route to a different-credential Agent (Story
+	// 2.10 / ISI-2882). Custody-only, same discipline as reclaim (2.4) and
+	// handoff (2.8): fenced RELEASE → coordinator RE-DISPATCH → §6.2 claim —
+	// never a P2P lease handoff. The hold names the throttled credential's
+	// OPAQUE identity (7.6) so the credentialed claim can refuse the same
+	// credential while the window is live; no seat token is ever re-pointed
+	// (§11.2/ADR-041) and no parameter carries worker-authored content.
+	"ReroutePolicy":                           "§2.10/3.7 escalation policy (repeat attempts / long Retry-After), code-supplied",
+	"DefaultReroutePolicy":                    "§2.10 sane default escalation policy",
+	"ShouldReroute":                           "§2.10/3.7 pure verdict: does this escalated pause re-route?",
+	"PickAlternateCredential":                 "§2.10/7.6 pure roster pick: an Agent credential that differs from the throttled one",
+	"ProdRerouteStore":                        "§2.10 fenced-release + re-dispatch + hold store bound to the prod schema",
+	"NewProdRerouteStore":                     "§2.10 constructor",
+	"ProdRerouteStore.ReleaseForReroute":      "§2.10/§6.3 fenced release → todo re-dispatch → throttled-credential hold (one txn)",
+	"ProdRerouteOption":                       "§2.10 functional option for the reroute store (event capture opt-in)",
+	"WithRerouteOutboxCapture":                "§2.10/§17.4 co-commit a work_item/reroute_released outbox event in the release txn (emit-only)",
+	"RerouteReleaseResult":                    "§2.10 outcome of a release (installed fence + idempotency marker)",
+	"ErrNotRerouteCustodian":                  "§2.10 guard: only the paused Run's own holder/run may be released",
+	"ErrRerouteNotInProgress":                 "§2.10 guard: a re-route re-dispatches live (in_progress) work only",
+	"ProdClaimer.ClaimNextCredentialed":       "§2.10/§6.2 SKIP-LOCKED pop that skips items a live hold pins for this credential (7.6)",
+	"ProdClaimer.AcquireSpecificCredentialed": "§2.10/§6.2 guarded acquire of a named item, refused while a live hold pins this credential (7.6)",
+
 	// §6.4 Run reconcile machine's durable Store binding (Story 3.1 / ISI-2655,
 	// physical integration of pkg/reconcile / ISI-2535). Custody-only: every method
 	// is a fenced/step-CAS read or a co-committed advance over the coord.claim +
