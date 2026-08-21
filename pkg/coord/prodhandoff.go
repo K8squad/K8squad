@@ -325,25 +325,45 @@ func AuditHandoffContent(db *sql.DB) func(ctx context.Context, uri string) ([]by
 		}
 		id := strings.TrimPrefix(uri, AuditHandoffURI)
 
-		// Join the registering artifact row so the digest check reads the
+		// Join the registering artifact rows so the digest check reads a
 		// digest OF RECORD, not a caller-supplied one: the bytes at a handoff
 		// uri must hash to exactly what coord.artifact registered for them.
 		// payload::text is the stored jsonb canonical form — byte-identical
-		// to what WriteHandoff hashed at registration time.
-		var payload []byte
-		var want string
-		err := db.QueryRowContext(ctx, `
+		// to what WriteHandoff hashed at registration time. The schema's
+		// uniqueness is (work_item, run, kind), NOT uri — several rows may
+		// register the same uri, and a plain row-pick would verify against an
+		// ARBITRARY one of them — so verification is against the SET of
+		// registered digests: matching any of them proves the bytes are the
+		// registered ones. Which exact row a caller is being served is then
+		// enforced per-row by the reader (artifactbrowser.ProdStore.Content).
+		rows, err := db.QueryContext(ctx, `
 			SELECT al.payload::text, art.sha256
 			  FROM coord.audit_log al
 			  JOIN coord.artifact art ON art.uri = $1
-			 WHERE al.id = $2::bigint`, uri, id).Scan(&payload, &want)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("coord.AuditHandoffContent: no handoff content at %s", uri)
-		} else if err != nil {
+			 WHERE al.id = $2::bigint`, uri, id)
+		if err != nil {
 			return nil, fmt.Errorf("coord.AuditHandoffContent: read %s: %w", uri, err)
 		}
+		defer rows.Close()
+		var payload []byte
+		registered := make(map[string]struct{})
+		for rows.Next() {
+			var p []byte
+			var want string
+			if err := rows.Scan(&p, &want); err != nil {
+				return nil, fmt.Errorf("coord.AuditHandoffContent: read %s: %w", uri, err)
+			}
+			payload = p
+			registered[want] = struct{}{}
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("coord.AuditHandoffContent: read %s: %w", uri, err)
+		}
+		if len(registered) == 0 || payload == nil {
+			return nil, fmt.Errorf("coord.AuditHandoffContent: no handoff content at %s", uri)
+		}
 		got := sha256.Sum256(payload)
-		if hex.EncodeToString(got[:]) != want {
+		if _, ok := registered[hex.EncodeToString(got[:])]; !ok {
 			return nil, fmt.Errorf("coord.AuditHandoffContent: content digest mismatch at %s — "+
 				"payload no longer hashes to the registered sha256 (tamper or pointer drift)", uri)
 		}

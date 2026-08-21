@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 )
@@ -58,6 +59,10 @@ type Options struct {
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
+	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
+	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
+	// (dev run without the coord store wired).
+	Artifacts *artifactbrowser.Service
 }
 
 // NewServer assembles the root router from opts.
@@ -119,6 +124,27 @@ func (s *Server) routes(opts Options) {
 			build.HandleFunc("", buildHandler(opts.Builds)).Methods(http.MethodGet)
 		} else {
 			build.HandleFunc("", notImplemented("build-browser read model", "ISI-2759: wire a buildbrowser.Service (RunSource) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// 8.3 artifact browser (ISI-2900): the coordination-record view of a Run's artifacts —
+		// blobs via digest-verified uris plus the parsed structured handoff (story 2.8). When the
+		// coord store is wired (opts.Artifacts != nil) the routes serve real reads; otherwise they
+		// keep the documented 501 for a DB-less dev run.
+		arts := s.router.Path("/api/runs/{runId}/artifacts").Subrouter()
+		arts.Use(authz)
+		if opts.Artifacts != nil {
+			arts.HandleFunc("", artifactsHandler(opts.Artifacts)).Methods(http.MethodGet)
+		} else {
+			arts.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
+				Methods(http.MethodGet)
+		}
+		art := s.router.Path("/api/runs/{runId}/artifacts/{artifactId}").Subrouter()
+		art.Use(authz)
+		if opts.Artifacts != nil {
+			art.HandleFunc("", artifactContentHandler(opts.Artifacts)).Methods(http.MethodGet)
+		} else {
+			art.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
 				Methods(http.MethodGet)
 		}
 

@@ -31,6 +31,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
+	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/events"
@@ -132,17 +133,26 @@ func main() {
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
 	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
 	// git read-model serve a local repo. Nil ⇒ the routes keep the documented 501 (fail visible).
+	// The SAME RunSource is shared by the 8.3 artifact browser (ISI-2900) so the 8.7d per-principal
+	// + Team-scope gate resolves identical Run facts on both read models — tenancy inputs cannot
+	// drift between sibling console surfaces.
 	var builds *buildbrowser.Service
+	var artifacts *artifactbrowser.Service
 	if runsPath := os.Getenv("KSQUAD_DEV_RUNS"); runsPath != "" {
 		runs, rerr := buildbrowser.LoadStaticRuns(runsPath)
 		if rerr != nil {
 			log.Fatalf("ksquad-apiserver: load dev runs: %v", rerr)
 		}
 		builds = buildbrowser.NewService(runs, buildbrowser.NewGitReader())
+		artStore, aerr := artifactbrowser.NewProdStore(db)
+		if aerr != nil {
+			log.Fatalf("ksquad-apiserver: artifact store: %v", aerr)
+		}
+		artifacts = artifactbrowser.NewService(runs, artStore)
 		// #nosec G706 -- operator-supplied env path in a startup warning, not request-tainted input.
 		log.Printf("ksquad-apiserver: WARNING — using static dev runs from %s; NOT for production", runsPath)
 	} else {
-		log.Printf("ksquad-apiserver: no Run source configured — build-browser routes answer 501 until the read-model backing lands (ISI-2759)")
+		log.Printf("ksquad-apiserver: no Run source configured — build-browser and artifact-browser routes answer 501 until the read-model backing lands (ISI-2759/ISI-2900)")
 	}
 
 	// §4.4 SSE run-progress publish source (ISI-2756). The run-entity rows on coord.outbox — the
@@ -168,6 +178,7 @@ func main() {
 		Overview:      overview,
 		Credentials:   credentials,
 		Builds:        builds,
+		Artifacts:     artifacts,
 		Hub:           hub,
 	})
 
