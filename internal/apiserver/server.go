@@ -63,6 +63,13 @@ type Options struct {
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
 	Artifacts *artifactbrowser.Service
+	// Killer is the 3.3 run-kill seam (CancelEnter on the coord claim,
+	// ISI-2884). When nil the kill route keeps answering the documented 501
+	// (dev run without the coord store wired).
+	Killer RunKiller
+	// AuditLog is the audit log read model (ISI-2881). When nil the audit route
+	// keeps answering the documented 501 (dev run without the database wired).
+	AuditLog AuditLogReader
 	// Auth is the Epic 15 identity seam (15.1 /auth/* + 15.2 /admin/users, ISI-2920).
 	// A zero Service ⇒ the routes are not mounted (pre-Epic-15 host shape).
 	Auth AuthRoutesOptions
@@ -187,6 +194,28 @@ func (s *Server) routes(opts Options) {
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
 		connect.HandleFunc("", s.connectClaude()).Methods(http.MethodPost)
+
+		// 3.3 run kill (ISI-2884): the ≤2-click kill (8.4) lands here. Keyed
+		// by the work item — the coord claim key every read model already
+		// carries. The fence-first CancelEnter is hosted when the coord store
+		// is wired; the teardown + terminal finish are the operator's.
+		kill := s.router.Path("/api/work-items/{workItemId}/kill").Subrouter()
+		kill.Use(authz)
+if opts.Killer != nil {
+		kill.HandleFunc("", killRunHandler(opts.Killer)).Methods(http.MethodPost)
+	} else {
+		kill.HandleFunc("", notImplemented("run kill seam", "ISI-2884: wire a RunKiller (coord ProdCancelStore) to enable")).
+			.Methods(http.MethodPost)
+	}
+
+	// Audit log query (ISI-2881): the RBAC-scoped coord.audit_log query API.
+	audit := s.router.Path("/api/audit/log").Subrouter()
+	audit.Use(authz)
+	if opts.AuditLog != nil {
+		audit.HandleFunc("", s.queryAuditLog(opts.AuditLog)).Methods(http.MethodGet)
+	} else {
+		audit.HandleFunc("", notImplemented("audit log read model", "ISI-2881: wire an AuditLogReader (database connection) to enable")).
+			.Methods(http.MethodGet)
 	}
 }
 

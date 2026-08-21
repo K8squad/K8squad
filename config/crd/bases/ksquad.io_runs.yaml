@@ -453,6 +453,7 @@ spec:
                 - Claiming
                 - Running
                 - Paused
+                - Canceling
                 - Succeeded
                 - Failed
                 - Cancelled

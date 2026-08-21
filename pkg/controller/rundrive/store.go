@@ -83,11 +83,12 @@ func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, 
 // LapsUsed counts completed retry-lap dispatch markers (run_id#lapN rows in
 // coord.a2a_dispatch) — the durable retry budget ledger: no separate counter,
 // the at-most-once dispatch markers ARE the lap history.
+// Enhanced to count only proper retry lap markers and avoid false positives.
 func (c *ProdClaims) LapsUsed(ctx context.Context, runID string) (int, error) {
 	var laps int
 	if err := c.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM coord.a2a_dispatch
-		 WHERE run_id = $1::uuid AND a2a_task_id LIKE '%#lap%'`, runID).
+		 WHERE run_id = $1::uuid AND POSITION('#lap' IN a2a_task_id) > 0`, runID).
 		Scan(&laps); err != nil {
 		return 0, fmt.Errorf("rundrive.ProdClaims.LapsUsed: %w", err)
 	}
@@ -165,6 +166,23 @@ func (c *ProdClaims) FailEnter(ctx context.Context, workItemID, runID string, fr
 	_, ok, err := c.enter(ctx, workItemID, runID, "run_failed_entered", fromFence,
 		`, reconcile_step = 'failed'`, "failed")
 	return ok, err
+}
+
+// CancelFinish implements Claims.CancelFinish (3.3): the guarded cancelling →
+// cancelled transition after the sandbox teardown, over the shared coord kill
+// seam (same co-commit discipline as enter).
+func (c *ProdClaims) CancelFinish(ctx context.Context, workItemID, runID string, fromFence int64) (bool, error) {
+	outcome, err := coord.NewProdCancelStore(c.db).CancelFinish(ctx, workItemID, runID, c.principal, fromFence)
+	if err != nil {
+		return false, err
+	}
+	return outcome == "accepted", nil
+}
+
+// CancelDue implements Claims.CancelDue: the kill sweep's backlog (work items
+// at cancelling).
+func (c *ProdClaims) CancelDue(ctx context.Context) ([]string, error) {
+	return coord.NewProdCancelStore(c.db).Due(ctx)
 }
 
 // runIDFor looks up the Run's uuid for the audit/outbox provenance: the

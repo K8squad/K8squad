@@ -14,6 +14,7 @@
 //   501 → the read model is not wired in this deployment (dev run) · 5xx → retryable error.
 
 import { useEffect, useState } from "react";
+import { KillRun } from "@/components/KillRun";
 
 /** GET /api/squad/overview response (apiserver SquadOverview, overview.go).
  *
@@ -198,13 +199,20 @@ export function SquadOverview() {
                     <th style={{ padding: "4px 8px 4px 0" }}>Work item</th>
                     <th style={{ padding: "4px 8px 4px 0" }}>Phase</th>
                     <th style={{ padding: "4px 8px 4px 0" }}>Claimed</th>
+                    <th style={{ padding: "4px 8px 4px 0" }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(p.runs ?? []).map((r) => (
                     <tr key={r.name} data-testid="overview-run-row">
                       <td style={{ padding: "4px 8px 4px 0" }}>
-                        <a href={`/runs/${encodeURIComponent(r.name)}`}>{r.name}</a>
+                        <a
+                          href={`/runs/${encodeURIComponent(r.name)}${
+                            r.workItem ? `?wi=${encodeURIComponent(r.workItem)}` : ""
+                          }`}
+                        >
+                          {r.name}
+                        </a>
                       </td>
                       <td style={{ padding: "4px 8px 4px 0" }}>
                         {r.workItem ? <code>{r.workItem}</code> : <span className="muted">—</span>}
@@ -220,6 +228,9 @@ export function SquadOverview() {
                         ) : (
                           <span className="muted">—</span>
                         )}
+                      </td>
+                      <td style={{ padding: "4px 8px 4px 0" }}>
+                        <KillRun workItem={r.workItem ?? ""} phase={r.phase} />
                       </td>
                     </tr>
                   ))}

@@ -48,6 +48,7 @@ const (
 	reasonReconciling = "Reconciling"
 	reasonPaused      = "Paused"
 	reasonRateLimited = "RateLimited"
+	reasonCancelling  = "Cancelling"
 	reasonSucceeded   = "Succeeded"
 	reasonFailed      = "Failed"
 	reasonCancelled   = "Cancelled"
@@ -69,6 +70,8 @@ func PhaseOf(step reconcile.Step) api.RunPhase {
 		return api.RunPhaseRunning
 	case reconcile.PhasePaused:
 		return api.RunPhasePaused
+	case reconcile.PhaseCanceling:
+		return api.RunPhaseCanceling
 	case reconcile.PhaseSucceeded:
 		return api.RunPhaseSucceeded
 	case reconcile.PhaseFailed:
@@ -125,6 +128,10 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time) meta
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonCancelled
 		c.Message = "Run was cancelled by an operator"
+	case reconcile.StepCancelling:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonCancelling
+		c.Message = "Kill issued: sandbox teardown in progress"
 	case reconcile.StepPaused:
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonPaused
