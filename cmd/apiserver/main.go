@@ -205,6 +205,7 @@ func main() {
 		Credentials:   credentials,
 		Builds:        builds,
 		Artifacts:     artifacts,
+		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
 		Hub:           hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
