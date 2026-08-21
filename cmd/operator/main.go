@@ -46,9 +46,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/coord"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
-	"github.com/K8squad/K8squad/pkg/coord"
+	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
@@ -126,6 +127,17 @@ func main() {
 		}
 	}
 
+	// The Team reconciler provisions the squad tenancy scaffold (story 4.1,
+	// arch §12.1: a squad IS a namespace) — namespace, least-privilege
+	// SA/Role/RoleBinding, ResourceQuota, LimitRange, and the default-deny +
+	// allow-DNS + allow-control-plane NetworkPolicy baseline — and tears the
+	// namespace down finalizer-driven on Team delete. Unlike the Run
+	// projector it needs no coordination DB, so it registers unconditionally.
+	if err := (&teamctrl.Reconciler{}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Team reconciler")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -135,7 +147,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"run", "reposync"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "reposync"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
