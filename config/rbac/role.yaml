@@ -42,13 +42,30 @@ rules:
   resources:
   - agentruntimes
   - agents
-  - projects
   - roles
   - skills
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects/status
+  - teams/status
+  verbs:
+  - get
+  - patch
+  - update
 - apiGroups:
   - ksquad.io
   resources:
@@ -64,14 +81,6 @@ rules:
   resources:
   - teams/finalizers
   verbs:
-  - patch
-  - update
-- apiGroups:
-  - ksquad.io
-  resources:
-  - teams/status
-  verbs:
-  - get
   - patch
   - update
 - apiGroups:

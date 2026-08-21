@@ -41,6 +41,14 @@ linters:
           - gosec
         text: "G101"
         path: internal/memory/config\.go
+      # G101 in pkg/controller/reposync: the flagged constant is the condition
+      # REASON string "CredentialMissing" (k8s.io/apimachinery Condition
+      # reason), not a credential value — the identifier trips gosec's
+      # credential-name heuristic by coincidence.
+      - linters:
+          - gosec
+        text: "G101"
+        path: pkg/controller/reposync
       # G706 in cmd/memory/main.go: the logged value is a parsed time.Duration
       # (time.ParseDuration validates it), not raw env text — no injection surface.
       - linters:
