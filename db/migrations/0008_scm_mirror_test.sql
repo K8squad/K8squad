@@ -40,13 +40,28 @@ BEGIN
     ASSERT nullable = 'NO', 'external_origin must be NOT NULL';
 END $$;
 
--- Trust defaults to untrusted-external and rejects trusted-control from this path's writer.
+-- Trust defaults to untrusted-external AND the CHECK pins it to exactly that value: a write
+-- presenting coordination authority must be rejected by the schema itself (AC6 by construction,
+-- not by writer convention). The negative path below is the assertion that matters — reading
+-- column_default alone would pass even if the CHECK permitted other values.
 DO $$
 DECLARE dflt text;
 BEGIN
     SELECT column_default INTO dflt FROM information_schema.columns
      WHERE table_schema='scm' AND table_name='mirror_record' AND column_name='trust_level';
     ASSERT dflt LIKE '''untrusted-external''', format('trust_level default must be untrusted-external, got %s', dflt);
+END $$;
+
+DO $$
+BEGIN
+    BEGIN
+        INSERT INTO scm.mirror_record
+            (project_name, project_namespace, kind, external_id, state, external_origin, trust_level)
+        VALUES ('p','ns','pr','99','open','{}'::jsonb,'trusted-control');
+        RAISE EXCEPTION 'trust_level trusted-control was accepted - the mirror can express coordination authority';
+    EXCEPTION WHEN check_violation THEN
+        NULL;  -- expected: the schema itself refuses coordination authority
+    END;
 END $$;
 
 -- Idempotence (AC2): upserting the same (project, kind, external id) twice yields ONE row.
@@ -63,6 +78,15 @@ BEGIN
     SELECT count(*), max(state) INTO n, s FROM scm.mirror_record WHERE project_name='p' AND project_namespace='ns';
     ASSERT n = 1, format('idempotent upsert must keep exactly one row, found %s', n);
     ASSERT s = 'closed', format('upsert must update external-owned state in place, found %s', s);
+END $$;
+
+-- The upsert also advances updated_at (a stale-pinned timestamp would make the row look dead).
+DO $$
+DECLARE n int;
+BEGIN
+    SELECT count(*) INTO n FROM scm.mirror_record
+     WHERE project_name='p' AND project_namespace='ns' AND updated_at >= mirrored_at;
+    ASSERT n = 1, format('upsert must advance updated_at on conflict, found %s rows with updated_at < mirrored_at', 1 - n);
 END $$;
 
 -- A different external id is a DIFFERENT row (the key is external, not per-delivery).

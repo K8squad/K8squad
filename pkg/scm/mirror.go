@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,7 +30,8 @@ import (
 // Trust levels stamped on every mirror row (§7.3.2, story 11.1 AC6). The
 // mirror is UNTRUSTED-EXTERNAL by construction: the inbound reconciler only
 // ever writes TrustUntrustedExternal, and the schema CHECK constraint
-// (db/migrations/0008_scm_mirror.sql) rejects anything else from this path.
+// (db/migrations/0008_scm_mirror.sql) rejects anything else — the CHECK pins
+// the single allowed value; there is no second trust level in this schema.
 const (
 	// TrustUntrustedExternal is the only trust level the inbound mirror
 	// writes. Mirror rows are never trusted control input.
@@ -54,6 +56,26 @@ type ExternalOrigin struct {
 	Actor      string `json:"actor"`
 }
 
+// MirrorPayload is the normalized record detail persisted in the mirror's
+// `payload` JSONB column — everything NormalizedRecord collects beyond the
+// indexed columns (body, url, labels, assignees, timestamps, and the
+// kind-specific extras), so a mirror row is self-describing for consumers.
+type MirrorPayload struct {
+	Body       string    `json:"body,omitempty"`
+	URL        string    `json:"url,omitempty"`
+	Labels     []string  `json:"labels,omitempty"`
+	Assignees  []string  `json:"assignees,omitempty"`
+	Number     int       `json:"number,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	Merged     bool      `json:"merged,omitempty"`
+	HeadRef    string    `json:"head_ref,omitempty"`
+	BaseRef    string    `json:"base_ref,omitempty"`
+	Conclusion string    `json:"conclusion,omitempty"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Size       int64     `json:"size,omitempty"`
+}
+
 // MirrorRow is one record of the untrusted-external scm mirror, keyed by
 // (project namespace/name, kind, external id). Field ownership is split
 // (OQ13): every field here is external-owned, written ONLY by the inbound
@@ -70,23 +92,30 @@ type MirrorRow struct {
 	Actor            string
 	ExternalOrigin   ExternalOrigin
 	Trust            string
+	Payload          json.RawMessage
 }
 
 // MirrorStore is the persistence seam for the scm mirror (story 11.1 AC2).
-// ApplySnapshot performs ONE level-triggered, idempotent upsert pass: every
-// row is written keyed by (project, kind, external_id) — re-applying the
-// same snapshot (a redelivered webhook, a poll tick with no changes) leaves
-// the mirror byte-identical, and a second application never creates a
-// duplicate row. Records authored by botActor are echo-suppressed before
-// the upsert (AC6 loop prevention).
+// ApplySnapshot performs ONE level-triggered, idempotent, convergent pass:
+// every row is written keyed by (project, kind, external_id) — re-applying
+// the same snapshot (a redelivered webhook, a poll tick with no changes)
+// never creates a duplicate row — and records that have disappeared from
+// the snapshot are removed, so the mirror converges to the provider's
+// current state instead of accumulating stale rows. The return value is
+// the number of rows THIS pass applied (post echo-suppression), which is
+// what Project.status.sync.mirrorRecordCount reports. Echo suppression of
+// the bot actor happens in BuildMirrorRows, upstream of the store — a
+// caller feeding hand-built rows into ApplySnapshot does NOT get
+// suppression.
 type MirrorStore interface {
-	ApplySnapshot(ctx context.Context, projectNamespace, projectName string, rows []MirrorRow, botActor string) (applied int, err error)
+	ApplySnapshot(ctx context.Context, projectNamespace, projectName string, rows []MirrorRow) (applied int, err error)
 }
 
 // BuildMirrorRows maps a normalized provider snapshot onto provenanced,
 // untrusted-external mirror rows for one Project (story 11.1 AC6). Records
-// authored by the bot identity are dropped (echo suppression) so our own
-// reflected writes cannot re-enter as fresh inbound changes.
+// authored by the bot identity are dropped (echo suppression — the only
+// place it happens) so our own reflected writes cannot re-enter as fresh
+// inbound changes.
 func BuildMirrorRows(projectNamespace, projectName string, provider SourceControlProvider, repoURL string, records []NormalizedRecord, botActor string) []MirrorRow {
 	if botActor == "" {
 		botActor = DefaultBotActor
@@ -95,6 +124,27 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 	for _, rec := range records {
 		if rec.Actor == botActor {
 			continue // echo suppression (OQ13): drop our own reflected write
+		}
+		payload, err := json.Marshal(MirrorPayload{
+			Body:       rec.Body,
+			URL:        rec.URL,
+			Labels:     rec.Labels,
+			Assignees:  rec.Assignees,
+			Number:     rec.Number,
+			CreatedAt:  rec.CreatedAt,
+			UpdatedAt:  rec.UpdatedAt,
+			Merged:     rec.Merged,
+			HeadRef:    rec.HeadRef,
+			BaseRef:    rec.BaseRef,
+			Conclusion: rec.Conclusion,
+			ExpiresAt:  rec.ExpiresAt,
+			Size:       rec.Size,
+		})
+		if err != nil {
+			// MirrorPayload contains only JSON-safe types; a marshal
+			// failure would be a programming error. Persist the row
+			// without payload detail rather than dropping the record.
+			payload = nil
 		}
 		rows = append(rows, MirrorRow{
 			ProjectNamespace: projectNamespace,
@@ -110,7 +160,8 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 				ExternalID: rec.ExternalID,
 				Actor:      rec.Actor,
 			},
-			Trust: TrustUntrustedExternal,
+			Trust:   TrustUntrustedExternal,
+			Payload: payload,
 		})
 	}
 	return rows
@@ -118,7 +169,9 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 
 // InMemoryMirrorStore is a MirrorStore backed by a map — the unit-test
 // double for the repo-sync reconciler. It honours the same contract as the
-// SQL store: idempotent upsert keyed by (project, kind, external id).
+// SQL store: idempotent upsert keyed by (project, kind, external id), with
+// records absent from a later snapshot removed (per project), and a return
+// value counting THIS pass's rows.
 type InMemoryMirrorStore struct {
 	mu   sync.Mutex
 	rows map[string]MirrorRow
@@ -133,14 +186,27 @@ func mirrorKey(ns, name string, kind RecordType, externalID string) string {
 	return fmt.Sprintf("%s/%s|%s|%s", ns, name, kind, externalID)
 }
 
-// ApplySnapshot idempotent-upserts rows keyed by external id.
-func (s *InMemoryMirrorStore) ApplySnapshot(_ context.Context, ns, name string, rows []MirrorRow, _ string) (int, error) {
+func projectPrefix(ns, name string) string {
+	return fmt.Sprintf("%s/%s|", ns, name)
+}
+
+// ApplySnapshot idempotent-upserts rows keyed by external id and removes
+// this project's rows that the snapshot no longer contains — same
+// convergence semantics as the SQL store. It returns the number of rows
+// applied in THIS pass.
+func (s *InMemoryMirrorStore) ApplySnapshot(_ context.Context, ns, name string, rows []MirrorRow) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	prefix := projectPrefix(ns, name)
+	for key := range s.rows {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.rows, key)
+		}
+	}
 	for _, row := range rows {
 		s.rows[mirrorKey(ns, name, row.Kind, row.ExternalID)] = row
 	}
-	return len(s.rows), nil
+	return len(rows), nil
 }
 
 // Rows returns a deterministic (sorted) copy of the stored rows.
@@ -174,36 +240,108 @@ func NewSQLMirrorStore(db *sql.DB) *SQLMirrorStore {
 	return &SQLMirrorStore{db: db, now: time.Now}
 }
 
-// mirrorUpsertSQL upserts one row keyed by (project, kind, external_id) —
-// the idempotence contract (story 11.1 AC2). External-owned fields are the
-// ONLY columns written; the row's provenance is stamped NOT NULL and its
-// trust level pinned to untrusted-external by the schema CHECK (AC6).
-const mirrorUpsertSQL = `
+// upsertChunkRows bounds how many rows ride one multi-row INSERT: 7
+// parameters per row must stay well under Postgres's 65535-parameter
+// protocol limit even after future column additions.
+const upsertChunkRows = 500
+
+// applyChunkParams is the per-row parameter count of the chunked upsert.
+const applyChunkParams = 7
+
+// buildUpsertChunk renders one chunked multi-row upsert statement. Hoisted
+// scalars: $1 namespace, $2 name, $3 trust level, $4 pass timestamp
+// (mirrored_at and updated_at). Per-row: kind, external_id, state, title,
+// actor, external_origin jsonb, payload jsonb.
+func buildUpsertChunk(n int) string {
+	var sb strings.Builder
+	sb.WriteString(`
 INSERT INTO scm.mirror_record
     (project_namespace, project_name, kind, external_id, state, title, actor,
-     external_origin, trust_level, mirrored_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+     external_origin, trust_level, payload, mirrored_at, updated_at)
+SELECT $1, $2, v.kind, v.external_id, v.state, v.title, v.actor,
+       v.origin::jsonb, $3, v.payload::jsonb, $4, $4
+  FROM (VALUES `)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		base := 4 + i*applyChunkParams
+		fmt.Fprintf(&sb, "($%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			base+1, base+2, base+3, base+4, base+5, base+6, base+7)
+	}
+	sb.WriteString(`) AS v(kind, external_id, state, title, actor, origin, payload)
 ON CONFLICT (project_namespace, project_name, kind, external_id) DO UPDATE SET
-    state          = EXCLUDED.state,
-    title          = EXCLUDED.title,
-    actor          = EXCLUDED.actor,
+    state           = EXCLUDED.state,
+    title           = EXCLUDED.title,
+    actor           = EXCLUDED.actor,
     external_origin = EXCLUDED.external_origin,
-    trust_level    = EXCLUDED.trust_level,
-    mirrored_at    = EXCLUDED.mirrored_at`
+    trust_level     = EXCLUDED.trust_level,
+    payload         = EXCLUDED.payload,
+    mirrored_at     = EXCLUDED.mirrored_at,
+    updated_at      = EXCLUDED.updated_at`)
+	return sb.String()
+}
 
-// ApplySnapshot idempotent-upserts every row in one pass.
-func (s *SQLMirrorStore) ApplySnapshot(ctx context.Context, ns, name string, rows []MirrorRow, _ string) (int, error) {
-	for _, row := range rows {
-		origin, err := json.Marshal(row.ExternalOrigin)
-		if err != nil {
-			return 0, fmt.Errorf("marshal external_origin: %w", err)
+// deleteStaleSQL removes this project's rows whose mirrored_at is older
+// than the pass timestamp — every row the pass upserted carries the pass
+// timestamp, so what remains older is a record the snapshot no longer
+// contains (deleted/closed-out upstream). This is what makes the mirror
+// convergent instead of write-only.
+const deleteStaleSQL = `
+DELETE FROM scm.mirror_record
+ WHERE project_namespace = $1 AND project_name = $2 AND mirrored_at < $3`
+
+// ApplySnapshot applies the whole snapshot in ONE transaction: chunked
+// multi-row upserts (one round trip per 500 rows) followed by a single
+// stale-row delete, committed atomically. A mid-pass failure rolls back —
+// the mirror is never left half-applied, which is what the idempotence
+// contract on MirrorStore promises. It returns the number of rows applied
+// in this pass.
+func (s *SQLMirrorStore) ApplySnapshot(ctx context.Context, ns, name string, rows []MirrorRow) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("mirror apply begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	passAt := s.now()
+
+	args := make([]interface{}, 0, 4+upsertChunkRows*applyChunkParams)
+	for start := 0; start < len(rows); start += upsertChunkRows {
+		end := start + upsertChunkRows
+		if end > len(rows) {
+			end = len(rows)
 		}
-		if _, err := s.db.ExecContext(ctx, mirrorUpsertSQL,
-			ns, name, string(row.Kind), row.ExternalID, row.State, row.Title,
-			row.Actor, string(origin), TrustUntrustedExternal, s.now(),
-		); err != nil {
-			return 0, fmt.Errorf("upsert mirror row %s/%s:%s:%s: %w", ns, name, row.Kind, row.ExternalID, err)
+		chunk := rows[start:end]
+
+		args = args[:0]
+		args = append(args, ns, name, TrustUntrustedExternal, passAt)
+		for _, row := range chunk {
+			origin, err := json.Marshal(row.ExternalOrigin)
+			if err != nil {
+				return 0, fmt.Errorf("marshal external_origin for %s:%s: %w", row.Kind, row.ExternalID, err)
+			}
+			payload := row.Payload
+			if len(payload) == 0 {
+				payload = json.RawMessage("null")
+			}
+			args = append(args,
+				string(row.Kind), row.ExternalID, row.State, row.Title, row.Actor,
+				string(origin), string(payload),
+			)
 		}
+
+		if _, err := tx.ExecContext(ctx, buildUpsertChunk(len(chunk)), args...); err != nil {
+			return 0, fmt.Errorf("upsert mirror rows %s/%s [%d:%d]: %w", ns, name, start, end, err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx, deleteStaleSQL, ns, name, passAt); err != nil {
+		return 0, fmt.Errorf("delete stale mirror rows %s/%s: %w", ns, name, err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("mirror apply commit: %w", err)
 	}
 	return len(rows), nil
 }

@@ -37,6 +37,7 @@ package reposync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -95,6 +96,15 @@ type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
+	// APIReader reads Secrets WITHOUT the manager's cache: a cached Secret
+	// read would start a cluster-wide Secret informer, holding every Secret
+	// in the cluster in operator memory and widening a compromise's blast
+	// radius far beyond the per-Project BYO tokens this loop needs. One
+	// uncached read per reconcile is nothing at a 300s poll. SetupWithManager
+	// wires mgr.GetAPIReader(); when nil (unit tests) the embedded client is
+	// used directly.
+	APIReader client.Reader
+
 	// Providers resolves the Project's provider behind the seam. Required.
 	Providers *scm.ProviderRegistry
 
@@ -107,9 +117,9 @@ type Reconciler struct {
 	BotActor string
 }
 
-// +kubebuilder:rbac:groups=ksquad.io,resources=projects,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ksquad.io,resources=projects,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups=ksquad.io,resources=projects/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
 // Reconcile runs one level-triggered mirror pass for the requested Project
 // and schedules the poll fallback. Missing Projects are not errors (deleted
@@ -137,30 +147,43 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		logger.Error(err, "repo-sync: BYO credential not resolvable", "project", req.NamespacedName)
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonNoCredential, err.Error())})
-		return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, err
+		// Error only: controller-runtime ignores RequeueAfter alongside a
+		// non-nil error (it requeues with backoff instead).
+		return ctrl.Result{}, err
 	}
 
 	provider, err := r.Providers.Provider(ctx, sync.Provider, creds)
 	if err != nil {
 		logger.Error(err, "repo-sync: provider not resolvable", "project", req.NamespacedName)
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
-		return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, err
+		return ctrl.Result{}, err
 	}
 
 	// ── the level-triggered pass: provider snapshot → mirror upsert (AC2) ──
 	records, err := provider.Snapshot(ctx, project.Spec.Repo.URL, r.snapshotOptions(sync))
 	if err != nil {
 		logger.Error(err, "repo-sync: provider snapshot failed", "project", req.NamespacedName)
+		// A provider rate limit gets a respectful scheduled retry at the
+		// provider's own Retry-After — not exponential backoff fighting it.
+		var rateLimited *scm.RateLimitedError
+		if errors.As(err, &rateLimited) {
+			delay := rateLimited.RetryAfter
+			if delay < time.Second {
+				delay = time.Second
+			}
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
+			return ctrl.Result{RequeueAfter: delay}, nil
+		}
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
-		return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, err
+		return ctrl.Result{}, err
 	}
 
 	rows := scm.BuildMirrorRows(project.Namespace, project.Name, provider, project.Spec.Repo.URL, records, r.botActor())
-	applied, err := r.Store.ApplySnapshot(ctx, project.Namespace, project.Name, rows, r.botActor())
+	applied, err := r.Store.ApplySnapshot(ctx, project.Namespace, project.Name, rows)
 	if err != nil {
 		logger.Error(err, "repo-sync: mirror upsert failed", "project", req.NamespacedName)
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})
-		return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, err
+		return ctrl.Result{}, err
 	}
 
 	// Status is a downstream observation only (§5.1 status discipline):
@@ -194,6 +217,11 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Store == nil {
 		return fmt.Errorf("reposync.Reconciler requires a MirrorStore (scm.NewSQLMirrorStore over the coord pool)")
 	}
+	if r.APIReader == nil {
+		// Uncached reads for Secrets: keeps the manager from starting a
+		// cluster-wide Secret informer (memory + compromise blast radius).
+		r.APIReader = mgr.GetAPIReader()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ksquadapi.Project{}).
 		Complete(r)
@@ -210,7 +238,7 @@ func (r *Reconciler) resolveCredentials(ctx context.Context, project *ksquadapi.
 	}
 	key := types.NamespacedName{Name: auth.CredentialSecretRef.Name, Namespace: project.Namespace}
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, key, secret); err != nil {
+	if err := r.reader().Get(ctx, key, secret); err != nil {
 		return scm.ProviderCredentials{}, fmt.Errorf("resolve BYO provider secret %s: %w", key, err)
 	}
 	tokenKey := auth.CredentialSecretRef.Key
@@ -222,6 +250,15 @@ func (r *Reconciler) resolveCredentials(ctx context.Context, project *ksquadapi.
 		return scm.ProviderCredentials{}, fmt.Errorf("BYO provider secret %s has empty %q key", key, tokenKey)
 	}
 	return scm.ProviderCredentials{Token: string(token), TokenType: "pat"}, nil
+}
+
+// reader returns the Secret reader: the uncached API reader when wired,
+// otherwise the embedded client (unit tests with a fake client).
+func (r *Reconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // snapshotOptions maps the spec mirror subset onto the provider snapshot
@@ -278,14 +315,19 @@ type statusPatch struct {
 // preserving unrelated conditions. Failures are logged, not returned:
 // status is observation, and a failed observation write must not fail the
 // mirror pass it describes.
+//
+// The copy comes FIRST: meta.SetStatusCondition mutates the condition it
+// finds through the slice's backing array, so mutating project's own
+// conditions before DeepCopy would leave the DeepEqual guard comparing the
+// mutated original against a copy of itself — every write after the first
+// would be silently suppressed. A MergeFrom patch (not Update) also keeps
+// a concurrent status writer's unrelated fields from being clobbered.
 func (r *Reconciler) patchStatus(ctx context.Context, project *ksquadapi.Project, patch statusPatch) {
 	logger := log.FromContext(ctx)
-	conditions := project.Status.Conditions
-	patch.condition.LastTransitionTime = lastTransition(conditions, patch.condition.Type, patch.condition.Status)
-	meta.SetStatusCondition(&conditions, patch.condition)
 
 	next := project.DeepCopy()
-	next.Status.Conditions = conditions
+	patch.condition.LastTransitionTime = lastTransition(next.Status.Conditions, patch.condition.Type, patch.condition.Status)
+	meta.SetStatusCondition(&next.Status.Conditions, patch.condition)
 	if patch.sync != nil {
 		if next.Status.Sync == nil {
 			next.Status.Sync = &ksquadapi.ProjectSyncStatus{}
@@ -303,7 +345,7 @@ func (r *Reconciler) patchStatus(ctx context.Context, project *ksquadapi.Project
 	if apiequality.Semantic.DeepEqual(project.Status, next.Status) {
 		return
 	}
-	if err := r.Status().Update(ctx, next); err != nil {
+	if err := r.Status().Patch(ctx, next, client.MergeFrom(project)); err != nil {
 		logger.Error(err, "repo-sync: project status update failed", "project", project.Name)
 	}
 }

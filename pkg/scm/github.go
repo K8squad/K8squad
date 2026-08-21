@@ -18,15 +18,73 @@ package scm
 
 import (
 	"context"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
+	"time"
 
 	"github.com/google/go-github/v57/github"
 	"golang.org/x/oauth2"
 )
+
+// githubHTTPTimeout bounds every provider API call. A snapshot fans out to
+// several list endpoints; without a client-level timeout a wedged upstream
+// stalls the reconcile worker until the context deadline.
+const githubHTTPTimeout = 30 * time.Second
+
+// githubPerPage is the page size for every list call — GitHub's default is
+// 30, which triples the round trips on any real repository.
+const githubPerPage = 100
+
+// maxRecordsPerKind bounds one fetcher's in-memory accumulation: the snapshot
+// path holds whole result sets before writing, so a cap keeps the operator's
+// footprint bounded on very large repositories. Pagination stops once the cap
+// is reached; the next poll tick picks up whatever changed.
+const maxRecordsPerKind = 10000
+
+// maxCheckRunRefs bounds the per-ref fan-out in fetchCheckRuns (default
+// branch + open PR heads). Each ref costs one paginated list call.
+const maxCheckRunRefs = 100
+
+// RateLimitedError is returned when GitHub signals a primary rate limit or
+// an abuse/secondary rate limit. The reconciler honours RetryAfter instead
+// of fighting controller-runtime backoff against it.
+type RateLimitedError struct {
+	RetryAfter time.Duration
+	cause      error
+}
+
+func (e *RateLimitedError) Error() string {
+	return fmt.Sprintf("github rate limited, retry after %s: %v", e.RetryAfter, e.cause)
+}
+
+func (e *RateLimitedError) Unwrap() error { return e.cause }
+
+// wrapRateLimit converts go-github rate-limit errors into RateLimitedError
+// so callers can schedule a respectful retry; other errors pass through.
+func wrapRateLimit(err error) error {
+	if err == nil {
+		return nil
+	}
+	var primary *github.RateLimitError
+	if errors.As(err, &primary) {
+		retryAfter := time.Until(primary.Rate.Reset.Time)
+		if retryAfter < time.Second {
+			retryAfter = time.Second
+		}
+		return &RateLimitedError{RetryAfter: retryAfter, cause: err}
+	}
+	var abuse *github.AbuseRateLimitError
+	if errors.As(err, &abuse) {
+		retryAfter := time.Second
+		if abuse.RetryAfter != nil && *abuse.RetryAfter > retryAfter {
+			retryAfter = *abuse.RetryAfter
+		}
+		return &RateLimitedError{RetryAfter: retryAfter, cause: err}
+	}
+	return err
+}
 
 // GitHubProvider implements SourceControlProvider for GitHub.
 // This is the v1 implementation that the repo-sync reconciler talks to.
@@ -35,28 +93,39 @@ type GitHubProvider struct {
 	creds  ProviderCredentials
 }
 
-// NewGitHubProvider creates a new GitHub provider instance.
-func NewGitHubProvider(baseURL string, creds ProviderCredentials) *GitHubProvider {
-	httpClient := &http.Client{}
+// NewGitHubProvider creates a new GitHub provider instance. A malformed
+// baseURL is returned as an error — never silently swallowed (the old
+// `client.BaseURL, _ = url.Parse(baseURL)` dropped it and pointed every
+// call at github.com).
+func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvider, error) {
+	transport := http.DefaultTransport
 	if creds.Token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
-		httpClient = &http.Client{
-			Transport: &oauth2.Transport{
-				Base:   http.DefaultTransport,
-				Source: ts,
-			},
+		transport = &oauth2.Transport{
+			Base:   http.DefaultTransport,
+			Source: ts,
 		}
+	}
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   githubHTTPTimeout,
 	}
 
 	client := github.NewClient(httpClient)
 	if baseURL != "" {
-		client.BaseURL, _ = url.Parse(baseURL)
+		// WithEnterpriseURLs handles the /api/v3/ suffix and upload URL
+		// normalization; a hand-rolled BaseURL assignment silently skips both.
+		var err error
+		client, err = client.WithEnterpriseURLs(baseURL, baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("invalid provider baseURL %q: %w", baseURL, err)
+		}
 	}
 
 	return &GitHubProvider{
 		client: client,
 		creds:  creds,
-	}
+	}, nil
 }
 
 // Name returns "github".
@@ -93,16 +162,16 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 
 	// Fetch check runs
 	if len(options.Types) == 0 || contains(options.Types, RecordTypeCheckRun) {
-		checkRecords, err := p.fetchCheckRuns(ctx, repoOwner, repoName, options)
+		checkRecords, err := p.fetchCheckRuns(ctx, repoOwner, repoName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
 		}
 		records = append(records, checkRecords...)
 	}
 
-	// Fetch artifacts (workflow runs)
+	// Fetch artifacts
 	if len(options.Types) == 0 || contains(options.Types, RecordTypeArtifact) {
-		artifactRecords, err := p.fetchArtifacts(ctx, repoOwner, repoName, options)
+		artifactRecords, err := p.fetchArtifacts(ctx, repoOwner, repoName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch artifacts: %w", err)
 		}
@@ -112,21 +181,16 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 	return records, nil
 }
 
-// ValidateWebhook verifies the HMAC signature of a GitHub webhook.
-func (p *GitHubProvider) ValidateWebhook(ctx context.Context, signature string, secret string, payload []byte) bool {
-	if signature == "" || secret == "" || len(payload) == 0 {
+// ValidateWebhook verifies the HMAC signature of a GitHub webhook delivery.
+// It delegates to the canonical implementation in hmac.go (story 11.1 AC4,
+// D8/NFR-SEC8): a second, divergent copy of the verify logic is exactly how
+// a verify/parse skew bug is born. The comparison is constant time.
+func (p *GitHubProvider) ValidateWebhook(_ context.Context, signature string, secret string, payload []byte) bool {
+	digest, err := ParseSignatureHeader(signature)
+	if err != nil {
 		return false
 	}
-
-	// GitHub webhook signatures come in the format: sha256=<hash>
-	if !strings.HasPrefix(signature, "sha256=") {
-		return false
-	}
-
-	signatureHash := strings.TrimPrefix(signature, "sha256=")
-	expectedHash := computeHMACSHA256(payload, secret)
-	
-	return signatureHash == expectedHash
+	return VerifyHMAC(payload, secret, digest)
 }
 
 // CreateComment creates a comment on a GitHub issue or PR.
@@ -187,41 +251,49 @@ func (p *GitHubProvider) GetRepo(ctx context.Context, repoURL string) (*Reposito
 		return nil, fmt.Errorf("invalid repo URL: %w", err)
 	}
 
-	githubRepo, _, err := p.client.Repositories.Get(ctx, repoOwner, repoName)
+	githubRepo, resp, err := p.client.Repositories.Get(ctx, repoOwner, repoName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get repository: %w", err)
+		return nil, fmt.Errorf("failed to get repository: %w", wrapRateLimit(err))
 	}
+	_ = resp
 
 	return &Repository{
-		Name:         githubRepo.GetName(),
-		FullName:     githubRepo.GetFullName(),
-		CloneURL:     githubRepo.GetCloneURL(),
+		Name:          githubRepo.GetName(),
+		FullName:      githubRepo.GetFullName(),
+		CloneURL:      githubRepo.GetCloneURL(),
 		DefaultBranch: githubRepo.GetDefaultBranch(),
-		Private:      githubRepo.GetPrivate(),
-		Description:  githubRepo.GetDescription(),
-		Language:     githubRepo.GetLanguage(),
-		StarCount:    githubRepo.GetStargazersCount(),
-		LastPushedAt: githubRepo.GetPushedAt().Time,
+		Private:       githubRepo.GetPrivate(),
+		Description:   githubRepo.GetDescription(),
+		Language:      githubRepo.GetLanguage(),
+		StarCount:     githubRepo.GetStargazersCount(),
+		LastPushedAt:  githubRepo.GetPushedAt().Time,
 	}, nil
 }
 
-// fetchIssues fetches issues from GitHub.
+// fetchIssues fetches issues from GitHub. GitHub's issues endpoint also
+// returns pull requests as issues, so PRs are skipped here — they are
+// mirrored once, as RecordTypePR, by fetchPullRequests.
 func (p *GitHubProvider) fetchIssues(ctx context.Context, owner, repo string, options SnapshotOptions) ([]NormalizedRecord, error) {
 	var records []NormalizedRecord
 
 	opt := &github.IssueListByRepoOptions{
 		State: "all",
 		Since: options.Since,
+		ListOptions: github.ListOptions{
+			PerPage: githubPerPage,
+		},
 	}
 
-	for page := 1; ; page++ {
-		opt.Page = page
+	for {
 		issues, resp, err := p.client.Issues.ListByRepo(ctx, owner, repo, opt)
 		if err != nil {
-			return nil, err
+			return nil, wrapRateLimit(err)
 		}
 
 		for _, issue := range issues {
+			if issue.IsPullRequest() {
+				continue // mirrored once, as a PR, by fetchPullRequests
+			}
 			record := NormalizedRecord{
 				Kind:       RecordTypeIssue,
 				ExternalID: fmt.Sprintf("%d", issue.GetNumber()),
@@ -239,9 +311,10 @@ func (p *GitHubProvider) fetchIssues(ctx context.Context, owner, repo string, op
 			records = append(records, record)
 		}
 
-		if resp.NextPage == 0 {
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
 			break
 		}
+		opt.Page = resp.NextPage
 	}
 
 	return records, nil
@@ -253,16 +326,18 @@ func (p *GitHubProvider) fetchPullRequests(ctx context.Context, owner, repo stri
 
 	opt := &github.PullRequestListOptions{
 		State: "all",
+		ListOptions: github.ListOptions{
+			PerPage: githubPerPage,
+		},
 	}
 	if options.Branch != "" {
 		opt.Base = options.Branch
 	}
 
-	for page := 1; ; page++ {
-		opt.Page = page
+	for {
 		prs, resp, err := p.client.PullRequests.List(ctx, owner, repo, opt)
 		if err != nil {
-			return nil, err
+			return nil, wrapRateLimit(err)
 		}
 
 		for _, pr := range prs {
@@ -279,92 +354,136 @@ func (p *GitHubProvider) fetchPullRequests(ctx context.Context, owner, repo stri
 				Number:     pr.GetNumber(),
 				Assignees:  getGitHubUsernames(pr.Assignees),
 				Labels:     getGitHubLabels(pr.Labels),
-				HeadRef:   pr.GetHead().GetRef(),
-				BaseRef:   pr.GetBase().GetRef(),
+				HeadRef:    pr.GetHead().GetRef(),
+				BaseRef:    pr.GetBase().GetRef(),
 				Merged:     pr.GetMerged(),
 			}
 			records = append(records, record)
 		}
 
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	return records, nil
+}
+
+// fetchCheckRuns fetches check runs for the repository's current state: the
+// default branch ref plus the head SHAs of open PRs (bounded by
+// maxCheckRunRefs). Walking commit history per commit was both N+1 and
+// incomplete (no pagination); scoping to live refs is cheaper and matches
+// what the mirror actually consumes. ListCheckRunsForRef accepts a branch
+// name directly, so no SHA resolution round trip is needed for the default
+// branch. Duplicates (a check run visible on more than one ref) are
+// deduplicated by check-run id.
+func (p *GitHubProvider) fetchCheckRuns(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
+	repoInfo, _, err := p.client.Repositories.Get(ctx, owner, repo)
+	if err != nil {
+		return nil, wrapRateLimit(err)
+	}
+
+	refs := []string{repoInfo.GetDefaultBranch()}
+
+	prOpt := &github.PullRequestListOptions{
+		State:       "open",
+		ListOptions: github.ListOptions{PerPage: githubPerPage},
+	}
+	for len(refs) < maxCheckRunRefs {
+		prs, resp, err := p.client.PullRequests.List(ctx, owner, repo, prOpt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, pr := range prs {
+			if sha := pr.GetHead().GetSHA(); sha != "" && len(refs) < maxCheckRunRefs {
+				refs = append(refs, sha)
+			}
+		}
 		if resp.NextPage == 0 {
 			break
 		}
+		prOpt.Page = resp.NextPage
 	}
 
-	return records, nil
-}
-
-// fetchCheckRuns fetches check runs from GitHub.
-func (p *GitHubProvider) fetchCheckRuns(ctx context.Context, owner, repo string, options SnapshotOptions) ([]NormalizedRecord, error) {
 	var records []NormalizedRecord
-
-	opt := &github.ListCheckRunsOptions{}
-
-	// Get all commit SHAs first
-	commits, _, err := p.client.Repositories.ListCommits(ctx, owner, repo, &github.CommitsListOptions{
-		Since: options.Since,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, commit := range commits {
-		checkRuns, _, err := p.client.Checks.ListCheckRunsForRef(ctx, owner, repo, commit.GetSHA(), opt)
-		if err != nil {
-			return nil, err
+	seen := map[int64]struct{}{}
+	for _, ref := range refs {
+		if ref == "" {
+			continue
 		}
-
-		for _, checkRun := range checkRuns.CheckRuns {
-			record := NormalizedRecord{
-				Kind:        RecordTypeCheckRun,
-				ExternalID:  fmt.Sprintf("%d", checkRun.GetID()),
-				State:       checkRun.GetStatus(),
-				Title:      checkRun.GetName(),
-				URL:        checkRun.GetHTMLURL(),
-				Actor:      checkRunActor(checkRun),
-				CreatedAt:  checkRun.GetStartedAt().Time,
-				UpdatedAt:  checkRun.GetCompletedAt().Time,
-				Conclusion: checkRun.GetConclusion(),
+		opt := &github.ListCheckRunsOptions{
+			ListOptions: github.ListOptions{PerPage: githubPerPage},
+		}
+		for {
+			checkRuns, resp, err := p.client.Checks.ListCheckRunsForRef(ctx, owner, repo, ref, opt)
+			if err != nil {
+				return nil, wrapRateLimit(err)
 			}
-			records = append(records, record)
+			for _, checkRun := range checkRuns.CheckRuns {
+				id := checkRun.GetID()
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				record := NormalizedRecord{
+					Kind:        RecordTypeCheckRun,
+					ExternalID:  fmt.Sprintf("%d", id),
+					State:       checkRun.GetStatus(),
+					Title:       checkRun.GetName(),
+					URL:         checkRun.GetHTMLURL(),
+					Actor:       checkRunActor(checkRun),
+					CreatedAt:   checkRun.GetStartedAt().Time,
+					UpdatedAt:   checkRun.GetCompletedAt().Time,
+					Conclusion:  checkRun.GetConclusion(),
+				}
+				records = append(records, record)
+			}
+			if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+				break
+			}
+			opt.Page = resp.NextPage
 		}
 	}
 
 	return records, nil
 }
 
-// fetchArtifacts fetches workflow run artifacts from GitHub.
-func (p *GitHubProvider) fetchArtifacts(ctx context.Context, owner, repo string, options SnapshotOptions) ([]NormalizedRecord, error) {
+// fetchArtifacts fetches repository artifacts. ListArtifacts is repo-wide
+// (it takes no run identifier), so ONE paginated pass mirrors every
+// artifact; the previous per-workflow-run loop burned a full API call per
+// run for the same records.
+func (p *GitHubProvider) fetchArtifacts(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
 	var records []NormalizedRecord
 
-	// Get recent workflow runs
-	runs, _, err := p.client.Actions.ListRepositoryWorkflowRuns(ctx, owner, repo, &github.ListWorkflowRunsOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// ListArtifacts returns all artifacts for the repository; per-run
-	// filtering is unnecessary for the mirror snapshot.
-	for range runs.WorkflowRuns {
-		artifacts, _, err := p.client.Actions.ListArtifacts(ctx, owner, repo, &github.ListOptions{PerPage: 100})
+	opt := &github.ListOptions{PerPage: githubPerPage}
+	for {
+		artifacts, resp, err := p.client.Actions.ListArtifacts(ctx, owner, repo, opt)
 		if err != nil {
-			continue // Skip this run if artifacts can't be fetched
+			return nil, wrapRateLimit(err)
 		}
-
 		for _, artifact := range artifacts.Artifacts {
 			record := NormalizedRecord{
 				Kind:       RecordTypeArtifact,
 				ExternalID: fmt.Sprintf("%d", artifact.GetID()),
 				Title:      artifact.GetName(),
 				URL:        artifact.GetArchiveDownloadURL(),
-				CreatedAt:  artifact.CreatedAt.Time,
-				ExpiresAt:  artifact.ExpiresAt.Time,
+				CreatedAt:  time.Time{},
+				ExpiresAt:  time.Time{},
 				Size:       artifact.GetSizeInBytes(),
+			}
+			if artifact.CreatedAt != nil {
+				record.CreatedAt = artifact.CreatedAt.Time
+			}
+			if artifact.ExpiresAt != nil {
+				record.ExpiresAt = artifact.ExpiresAt.Time
 			}
 			records = append(records, record)
 		}
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
 	}
 
 	return records, nil
@@ -372,13 +491,33 @@ func (p *GitHubProvider) fetchArtifacts(ctx context.Context, owner, repo string,
 
 // Helper functions
 
+// parseRepoURL extracts the owner and repository from a GitHub remote URL.
+// It accepts https://host/owner/repo, host/owner/repo, and scp-style
+// git@host:owner/repo forms (with or without a trailing .git), and always
+// takes the LAST two path segments so a host with a port or a path-prefixed
+// mirror still yields the right owner/repo.
 func parseRepoURL(repoURL string) (owner, repo string, err error) {
-	// Extract owner and repo from URL like "https://github.com/owner/repo"
-	parts := strings.Split(strings.TrimPrefix(repoURL, "https://"), "/")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("invalid GitHub URL format")
+	s := strings.TrimSuffix(strings.TrimSpace(repoURL), ".git")
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+		// Strip any userinfo (https://token@github.com/owner/repo).
+		if slash := strings.Index(s, "/"); slash >= 0 {
+			if at := strings.LastIndex(s[:slash], "@"); at >= 0 {
+				s = s[at+1:]
+			}
+		}
 	}
-	return parts[0], parts[1], nil
+	s = strings.TrimPrefix(s, "git@")
+	s = strings.Replace(s, ":", "/", 1) // scp-style git@host:owner/repo
+	parts := strings.Split(strings.Trim(s, "/"), "/")
+	if len(parts) < 3 {
+		return "", "", fmt.Errorf("cannot parse owner/repo from %q", repoURL)
+	}
+	owner, repo = parts[len(parts)-2], parts[len(parts)-1]
+	if owner == "" || repo == "" || strings.ContainsAny(owner, " ") || strings.ContainsAny(repo, " .") {
+		return "", "", fmt.Errorf("cannot parse owner/repo from %q", repoURL)
+	}
+	return owner, repo, nil
 }
 
 func parseExternalID(id string) (int, error) {
@@ -430,14 +569,4 @@ func getGitHubLabels(labels []*github.Label) []string {
 		}
 	}
 	return names
-}
-
-// computeHMACSHA256 computes HMAC-SHA256 signature.
-// This is a simplified implementation for the example.
-// In production, use crypto/hmac and crypto/sha256.
-func computeHMACSHA256(payload []byte, secret string) string {
-	// This is a placeholder implementation
-	// Real implementation should use crypto/hmac and crypto/sha256
-	h := hex.EncodeToString(payload)
-	return h
 }

@@ -50,6 +50,38 @@ func (p *fakeProvider) Snapshot(_ context.Context, _ string, _ scm.SnapshotOptio
 	return p.snapshot, p.snapshotErr
 }
 
+// sequenceProvider fails with a different error on each Snapshot call —
+// the probe for the frozen-condition regression (meta.SetStatusCondition
+// used to mutate the shared backing array, so the second message never
+// reached the API server).
+type sequenceProvider struct {
+	name   string
+	errors []error
+	calls  int
+}
+
+func (p *sequenceProvider) Name() string { return p.name }
+
+func (p *sequenceProvider) Snapshot(_ context.Context, _ string, _ scm.SnapshotOptions) ([]scm.NormalizedRecord, error) {
+	i := p.calls
+	p.calls++
+	if i < len(p.errors) {
+		return nil, p.errors[i]
+	}
+	return nil, fmt.Errorf("sequence exhausted")
+}
+
+func (p *sequenceProvider) ValidateWebhook(_ context.Context, _, _ string, _ []byte) bool { return false }
+func (p *sequenceProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
+	return "", fmt.Errorf("unused")
+}
+func (p *sequenceProvider) CreateStatus(_ context.Context, _, _ string, _ scm.Status) error {
+	return fmt.Errorf("unused")
+}
+func (p *sequenceProvider) GetRepo(_ context.Context, _ string) (*scm.Repository, error) {
+	return nil, fmt.Errorf("unused")
+}
+
 func (p *fakeProvider) ValidateWebhook(_ context.Context, _, _ string, _ []byte) bool { return false }
 func (p *fakeProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
@@ -163,7 +195,9 @@ func TestReconcileLevelTriggeredIdempotent(t *testing.T) {
 		}
 	}
 
-	// Status observed the pass (downstream observation only).
+	// Status observed the pass (downstream observation only). The count is
+	// what THIS pass applied (post echo-suppression) — the same value the
+	// SQL store returns — not the store's cross-project total.
 	proj := &ksquadapi.Project{}
 	if err := r.Get(context.Background(), request().NamespacedName, proj); err != nil {
 		t.Fatal(err)
@@ -174,6 +208,10 @@ func TestReconcileLevelTriggeredIdempotent(t *testing.T) {
 	}
 	if proj.Status.Sync == nil || proj.Status.Sync.LastMirrorTime == nil {
 		t.Fatalf("status.sync.lastMirrorTime not recorded: %+v", proj.Status.Sync)
+	}
+	if proj.Status.Sync.MirrorRecordCount != 3 {
+		t.Fatalf("status.sync.mirrorRecordCount = %d, want 3 (this pass, post echo-suppression)",
+			proj.Status.Sync.MirrorRecordCount)
 	}
 }
 
@@ -324,5 +362,66 @@ func TestSnapshotOptionsMirrorSubset(t *testing.T) {
 	}
 	if got := r.snapshotOptions(&ksquadapi.RepoSyncSpec{}); len(got.Types) != 0 {
 		t.Fatalf("nil mirror must mean full snapshot, got %+v", got.Types)
+	}
+}
+
+// REGRESSION (Cursor review, blocking): patchStatus used to mutate the
+// condition through the slice's shared backing array before DeepCopy, so
+// the DeepEqual guard suppressed every status write after the first and
+// SyncReady=False messages froze at the earliest failure. Two failing
+// reconciles with DIFFERENT errors must persist the second message.
+func TestConditionMessageUpdatesAcrossFailures(t *testing.T) {
+	failing := &sequenceProvider{name: "github", errors: []error{
+		fmt.Errorf("upstream 503"),
+		fmt.Errorf("upstream 429 rate limited"),
+	}}
+	r, _ := newHarness(t, syncProject(300), failing)
+
+	if _, err := r.Reconcile(context.Background(), request()); err == nil {
+		t.Fatal("first failure must be returned")
+	}
+	proj := &ksquadapi.Project{}
+	if err := r.Get(context.Background(), request().NamespacedName, proj); err != nil {
+		t.Fatal(err)
+	}
+	first := meta.FindStatusCondition(proj.Status.Conditions, ConditionSyncReady)
+	if first == nil || first.Message != "upstream 503" {
+		t.Fatalf("first failure message: %+v", first)
+	}
+
+	if _, err := r.Reconcile(context.Background(), request()); err == nil {
+		t.Fatal("second failure must be returned")
+	}
+	if err := r.Get(context.Background(), request().NamespacedName, proj); err != nil {
+		t.Fatal(err)
+	}
+	second := meta.FindStatusCondition(proj.Status.Conditions, ConditionSyncReady)
+	if second == nil || second.Message != "upstream 429 rate limited" {
+		t.Fatalf("condition message frozen at first write: %+v (the shared-backing-array bug)", second)
+	}
+}
+
+// AC4: credential errors surface as errors (no retry) and update status
+func TestCredentialsProjectFailingCondition(t *testing.T) {
+	failing := &fakeProvider{name: "github", snapshotErr: fmt.Errorf("credentials expired")}
+	r, _ := newHarness(t, syncProject(300), failing)
+
+	res, err := r.Reconcile(context.Background(), request())
+	if err == nil {
+		t.Fatal("credential errors must surface as error")
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("credential errors must not requeue: %v", res.RequeueAfter)
+	}
+	proj := &ksquadapi.Project{}
+	if err := r.Get(context.Background(), request().NamespacedName, proj); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(proj.Status.Conditions, ConditionSyncReady)
+	if cond == nil || cond.Status != metav1.ConditionFalse {
+		t.Fatalf("SyncReady not False: %+v", cond)
+	}
+	if cond.Reason != reasonProviderFail {
+		t.Fatalf("reason %q, want %q", cond.Reason, reasonProviderFail)
 	}
 }

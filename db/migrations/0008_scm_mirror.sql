@@ -11,8 +11,12 @@
 --
 -- TRUST CONTRACT (§7.3.2 / D8, story 11.1 AC6): every row carries `external_origin` provenance
 -- (provider, repo, external id, actor) stamped NOT NULL, and a `trust_level` pinned to
--- 'untrusted-external' by CHECK. Mirror rows are never trusted control input: agents and the
--- console consume them through the same untrusted-provenance envelope as memory/discussion.
+-- 'untrusted-external' by CHECK — the constraint allows EXACTLY that one value, so the mirror
+-- cannot express coordination authority at the schema level, not by writer convention. Mirror
+-- rows are never trusted control input: agents and the console consume them through the same
+-- untrusted-provenance envelope as memory/discussion. If a 'trusted-control' trust level is
+-- ever genuinely needed, it belongs to the story that also ships its writer, in its own
+-- migration.
 --
 -- FIELD OWNERSHIP (OQ13): columns here are EXTERNAL-OWNED ONLY (title/state/actor/origin) —
 -- written solely by the inbound reconciler. KSquad-owned linkage (issue⇄work-item map, Run
@@ -20,8 +24,8 @@
 -- coordination path. There are deliberately NO claim/lease/fence columns: this schema cannot
 -- express coordination custody, so the mirror cannot take it (AC6 by construction).
 --
--- IDEMPOTENCE (story 11.1 AC2): `mirror_record_pkey` is (project_namespace, project_name, kind,
--- external_id) and every write is an INSERT .. ON CONFLICT DO UPDATE — a redelivered webhook or
+-- IDEMPOTENCE (story 11.1 AC2): `mirror_record_natural_key` is (project_namespace, project_name,
+-- kind, external_id) and every write is an INSERT .. ON CONFLICT DO UPDATE — a redelivered webhook or
 -- a no-change poll tick upserts the same bytes. The repo-sync reconciler writes through
 -- pkg/scm.SQLMirrorStore; nothing else writes here.
 
@@ -57,12 +61,12 @@ CREATE TABLE IF NOT EXISTS scm.mirror_record (
     actor              VARCHAR(255),
     external_origin    JSONB        NOT NULL,          -- {provider, repo, external_id, actor} (§7.3.2)
     trust_level        VARCHAR(20)  NOT NULL DEFAULT 'untrusted-external'
-                       CHECK (trust_level IN ('untrusted-external', 'trusted-control')),
+                       CHECK (trust_level = 'untrusted-external'),
     payload            JSONB,                          -- normalized record body (body/url/labels/…)
     mirrored_at        TIMESTAMPTZ  NOT NULL DEFAULT now(),
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT mirror_record_pkey UNIQUE (project_name, project_namespace, kind, external_id)
+    CONSTRAINT mirror_record_natural_key UNIQUE (project_name, project_namespace, kind, external_id)
 );
 
 -- Echo suppression is applied IN THE RECONCILER (pkg/scm.BuildMirrorRows drops

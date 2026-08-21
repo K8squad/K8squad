@@ -44,7 +44,7 @@ type ProviderRegistry struct {
 func NewProviderRegistry() *ProviderRegistry {
 	r := &ProviderRegistry{factories: map[string]ProviderFactory{}}
 	r.Register("github", func(ctx context.Context, creds ProviderCredentials) (SourceControlProvider, error) {
-		return NewGitHubProvider("", creds), nil
+		return NewGitHubProvider("", creds)
 	})
 	return r
 }

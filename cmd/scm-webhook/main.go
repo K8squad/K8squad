@@ -40,6 +40,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,8 +67,14 @@ const (
 	// holding the HMAC key (spec.repo.sync.webhookSecretRef).
 	webhookSecretKey = "webhookSecret"
 
-	// maxPayloadBytes bounds a delivery body (25 MB — GitHub's own cap).
-	maxPayloadBytes = 25 << 20
+	// defaultMaxPayloadBytes bounds a delivery body (25 MB — GitHub's own
+	// cap). Overridable with -max-payload-bytes for a tighter posture.
+	defaultMaxPayloadBytes = 25 << 20
+
+	// maxInFlightDeliveries bounds concurrent deliveries: each holds a
+	// bounded body buffer and two API reads, so an unauthenticated flood
+	// must not be able to open unbounded concurrency against this pod.
+	maxInFlightDeliveries = 64
 )
 
 var scheme = runtime.NewScheme()
@@ -79,7 +86,9 @@ func init() {
 
 func main() {
 	var listenAddr string
-	flag.StringVar(&listenAddr, "listen-address", ":8443", "Address the SCM webhook ingress listens on.")
+	var maxPayloadBytes int64
+	flag.StringVar(&listenAddr, "listen-address", ":8080", "Address the SCM webhook ingress listens on (plaintext HTTP; TLS terminates at the gateway).")
+	flag.Int64Var(&maxPayloadBytes, "max-payload-bytes", defaultMaxPayloadBytes, "Maximum accepted webhook delivery body size in bytes.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -93,7 +102,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	h := &webhookHandler{client: k8sClient, logger: logger}
+	h := &webhookHandler{
+		client:          k8sClient,
+		logger:          logger,
+		maxPayloadBytes: maxPayloadBytes,
+		inflight:        make(chan struct{}, maxInFlightDeliveries),
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -110,6 +124,10 @@ func main() {
 	}
 	logger.Info("starting ksquad-scm-webhook", "address", listenAddr)
 	if err := srv.ListenAndServe(); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			logger.Info("scm webhook server shut down")
+			return
+		}
 		logger.Error(err, "scm webhook server exited")
 		os.Exit(1)
 	}
@@ -117,41 +135,82 @@ func main() {
 
 // webhookHandler is the HTTP face of the ingress.
 type webhookHandler struct {
-	client client.Client
-	logger logr.Logger
+	client          client.Client
+	logger          logr.Logger
+	maxPayloadBytes int64
+	inflight        chan struct{}
+}
+
+// unauthorized is the uniform refusal for everything an unauthenticated
+// caller could use to enumerate Projects: unknown project, project without
+// repo-sync configured, unresolvable secret, malformed signature, and bad
+// signature. The detail lives in the server-side log line only — the HTTP
+// face never distinguishes them.
+func (h *webhookHandler) unauthorized(w http.ResponseWriter, detail string, logKV ...interface{}) {
+	h.logger.Info("webhook: "+detail, logKV...)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
 // handle enforces the AC4 pipeline: identify Project → resolve secret →
 // read body → verify HMAC → (only then) parse header → bump trigger.
 func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
+	// Bound concurrent deliveries before anything expensive happens.
+	if h.inflight != nil {
+		select {
+		case h.inflight <- struct{}{}:
+			defer func() { <-h.inflight }()
+		default:
+			http.Error(w, "overloaded", http.StatusServiceUnavailable)
+			return
+		}
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	projectName := firstNonEmpty(r.Header.Get("X-KSquad-Project"), r.URL.Query().Get("project"))
-	namespace := firstNonEmpty(r.Header.Get("X-KSquad-Namespace"), r.URL.Query().Get("namespace"), "default")
+	namespace := firstNonEmpty(r.Header.Get("X-KSquad-Namespace"), r.URL.Query().Get("namespace"))
 	if projectName == "" {
 		// The Project must be identified out-of-band: identifying it from
 		// the payload would mean parsing before verify (AC4 regression).
 		http.Error(w, "missing project identification (X-KSquad-Project header or ?project=)", http.StatusBadRequest)
 		return
 	}
+	// The namespace is fully attacker-controlled input; a silent "default"
+	// fallback would let probes target an unintended namespace. Explicit
+	// or reject.
+	if namespace == "" {
+		http.Error(w, "missing project namespace (X-KSquad-Namespace header or ?namespace=)", http.StatusBadRequest)
+		return
+	}
 
+	// Unknown project / unconfigured project / unresolvable secret / bad
+	// signature are indistinguishable to the caller (uniform 401): the
+	// alternatives formed a Project-enumeration oracle.
 	project := &ksquadv1alpha1.Project{}
 	if err := h.client.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: projectName}, project); err != nil {
-		h.logger.Error(err, "webhook: project lookup failed", "project", projectName, "namespace", namespace)
-		http.Error(w, "project not found", http.StatusNotFound)
+		h.unauthorized(w, "project lookup failed", "project", projectName, "namespace", namespace, "error", err.Error())
 		return
 	}
 	sync := project.Spec.Repo.Sync
 	if sync == nil || sync.WebhookSecretRef == nil || sync.WebhookSecretRef.Name == "" {
-		http.Error(w, "project has no repo-sync webhook secret configured", http.StatusConflict)
+		h.unauthorized(w, "project has no repo-sync webhook secret configured", "project", projectName)
 		return
 	}
 
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPayloadBytes))
+	maxBytes := h.maxPayloadBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxPayloadBytes
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBytes))
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "unreadable body", http.StatusBadRequest)
 		return
 	}
@@ -163,19 +222,16 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	secret := &corev1.Secret{}
 	if err := h.client.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: sync.WebhookSecretRef.Name}, secret); err != nil {
-		h.logger.Error(err, "webhook: secret lookup failed", "project", projectName)
-		http.Error(w, "webhook secret not resolvable", http.StatusInternalServerError)
+		h.unauthorized(w, "webhook secret not resolvable", "project", projectName, "error", err.Error())
 		return
 	}
 	digest, err := scm.ParseSignatureHeader(r.Header.Get("X-Hub-Signature-256"))
 	if err != nil {
-		h.logger.Info("webhook: absent/malformed signature dropped", "project", projectName)
-		http.Error(w, "missing or malformed signature", http.StatusUnauthorized)
+		h.unauthorized(w, "absent/malformed signature dropped", "project", projectName)
 		return
 	}
 	if !scm.VerifyHMAC(body, string(secret.Data[secretKey]), digest) {
-		h.logger.Info("webhook: bad signature dropped", "project", projectName)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		h.unauthorized(w, "bad signature dropped", "project", projectName)
 		return
 	}
 

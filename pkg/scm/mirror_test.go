@@ -123,7 +123,11 @@ func TestBuildMirrorRowsProviderNeutralDifferential(t *testing.T) {
 	}
 }
 
-// AC2: the store upsert is idempotent keyed by (project, kind, external id).
+// AC2: the store upsert is idempotent keyed by (project, kind, external id),
+// CONVERGENT (records absent from a later snapshot are removed, per project),
+// and its return value counts THIS pass's rows — the same contract the SQL
+// store implements, so status.sync.mirrorRecordCount means the same thing
+// whichever store backs the loop.
 func TestInMemoryMirrorStoreIdempotent(t *testing.T) {
 	store := NewInMemoryMirrorStore()
 	ctx := context.Background()
@@ -131,26 +135,54 @@ func TestInMemoryMirrorStoreIdempotent(t *testing.T) {
 	rows := BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", sampleSnapshot(), "")
 
 	for i := 0; i < 3; i++ { // redelivery / re-poll / racing trigger
-		if _, err := store.ApplySnapshot(ctx, "ns", "proj", rows, ""); err != nil {
+		applied, err := store.ApplySnapshot(ctx, "ns", "proj", rows)
+		if err != nil {
 			t.Fatalf("apply %d: %v", i, err)
+		}
+		if applied != 3 {
+			t.Fatalf("apply %d returned %d, want 3 (rows applied THIS pass, not the store total)", i, applied)
 		}
 	}
 	if got := len(store.Rows()); got != 3 {
 		t.Fatalf("after 3 applications expected 3 rows, got %d", got)
 	}
 
-	// A state change on the same external id updates in place.
+	// A state change on the same external id updates in place, and records
+	// the snapshot no longer contains disappear (convergence: the mirror
+	// tracks the provider's current state instead of accumulating forever).
 	changed := []NormalizedRecord{
 		{Kind: RecordTypePR, ExternalID: "1", State: "closed", Title: "feat", Actor: "dev"},
 	}
-	if _, err := store.ApplySnapshot(ctx, "ns", "proj",
-		BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", changed, ""), ""); err != nil {
+	applied, err := store.ApplySnapshot(ctx, "ns", "proj",
+		BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", changed, ""))
+	if err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range store.Rows() {
-		if row.Kind == RecordTypePR && row.ExternalID == "1" && row.State != "closed" {
-			t.Fatalf("state not updated in place: %+v", row)
-		}
+	if applied != 1 {
+		t.Fatalf("shrunk snapshot applied %d, want 1", applied)
+	}
+	remaining := store.Rows()
+	if len(remaining) != 1 {
+		t.Fatalf("stale rows not removed: %+v", remaining)
+	}
+	if remaining[0].Kind != RecordTypePR || remaining[0].ExternalID != "1" || remaining[0].State != "closed" {
+		t.Fatalf("state not updated in place: %+v", remaining[0])
+	}
+
+	// Removal is project-scoped: another project's rows are untouched.
+	other := BuildMirrorRows("ns2", "proj2", provider, "github.com/acme/app", sampleSnapshot(), "")
+	if _, err := store.ApplySnapshot(ctx, "ns2", "proj2", other); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Rows()); got != 4 {
+		t.Fatalf("cross-project isolation broken: %+v", store.Rows())
+	}
+	if _, err := store.ApplySnapshot(ctx, "ns", "proj",
+		BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", nil, "")); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Rows()); got != 3 {
+		t.Fatalf("empty snapshot must clear only its own project's rows: %+v", store.Rows())
 	}
 }
 
