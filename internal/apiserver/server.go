@@ -58,6 +58,9 @@ type Options struct {
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
+	// Auth is the Epic 15 identity seam (15.1 /auth/* + 15.2 /admin/users, ISI-2920).
+	// A zero Service ⇒ the routes are not mounted (pre-Epic-15 host shape).
+	Auth AuthRoutesOptions
 }
 
 // NewServer assembles the root router from opts.
@@ -98,6 +101,13 @@ func (s *Server) routes(opts Options) {
 	// The discussion Handler installs its own subrouter+BFFAuthz via Mount; the SSE and
 	// read-model routes are gated explicitly with the same middleware so identity resolution
 	// is uniform across the host.
+
+	// Epic 15 identity seam (ISI-2920): /auth/* is the cookie ISSUER (login answers
+	// unauthenticated; refresh/logout/me resolve the cookie themselves), and
+	// /admin/users rides the requireAdmin gate. Mounted before the gated surface so
+	// a route conflict fails loudly at assembly.
+	s.mountAuthRoutes(opts.Auth)
+
 	if opts.Discussion != nil && opts.Authenticator != nil {
 		opts.Discussion.Mount(s.router, opts.Authenticator)
 	}

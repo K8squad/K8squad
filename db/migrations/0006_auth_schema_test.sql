@@ -1,9 +1,11 @@
 -- 0006_auth_schema_test.sql — runnable self-check for the auth/session store (ADR-033 / §12.3, ISI-2758)
 --
--- No framework, no fixture: plain SQL that fails loudly if the identity/session invariants break. Runs
--- against a throwaway Postgres AFTER 0006_auth_schema.sql is applied:
+-- No framework, no fixture: plain SQL that fails loudly if the identity/session invariants break. In CI
+-- (db / migrations self-check) it runs against a throwaway Postgres AFTER THE FULL migration set is
+-- applied (0001..000N in filename order), so it must assert the FINAL schema shape — e.g. auth.user
+-- carries global_role (0008 derived it from 0006's is_admin boolean, then dropped the boolean):
 --
---     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/0006_auth_schema.sql \
+--     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/migrations/*.sql \
 --                                              -f db/migrations/0006_auth_schema_test.sql
 --
 -- Everything runs inside one transaction that is ROLLED BACK at the end, so the check leaves no residue
@@ -27,11 +29,12 @@ END $$;
 DO $$
 DECLARE nn text;
 BEGIN
-    -- user: username, principal, password_hash, team_id, is_admin, created_at all NOT NULL
+    -- user: username, principal, password_hash, team_id, global_role (0008 renamed
+    -- 0006's is_admin), created_at all NOT NULL
     SELECT string_agg(column_name, ', ') INTO nn
       FROM information_schema.columns
      WHERE table_schema='auth' AND table_name='user'
-       AND column_name IN ('username','principal','password_hash','team_id','is_admin','created_at')
+       AND column_name IN ('username','principal','password_hash','team_id','global_role','created_at')
        AND is_nullable = 'YES';
     ASSERT nn IS NULL, format('auth.user column(s) must be NOT NULL: %s', nn);
 
@@ -54,10 +57,11 @@ BEGIN
 END $$;
 
 -- Seed one user + one live session so the structural guards below have real rows to bite on.
-INSERT INTO auth.user (id, username, principal, password_hash, team_id, is_admin)
+-- global_role (final schema): 0008 replaced 0006's is_admin boolean with this text enum.
+INSERT INTO auth.user (id, username, principal, password_hash, team_id, global_role)
 VALUES ('11111111-1111-1111-1111-111111111111', 'amelia', 'user:amelia',
         '$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$0123456789abcdef0123456789abcdef', -- dummy PHC (not a real hash)
-        '22222222-2222-2222-2222-222222222222', false);
+        '22222222-2222-2222-2222-222222222222', 'user');
 
 INSERT INTO auth.session (token_hash, user_id, expires_at)
 VALUES (sha256('live-token'::bytea), '11111111-1111-1111-1111-111111111111', now() + interval '1 hour');

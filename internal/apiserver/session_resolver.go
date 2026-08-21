@@ -49,14 +49,16 @@ func NewPostgresSessionResolver(db *sql.DB) *PostgresSessionResolver {
 
 // resolveSessionSQL is the fail-closed lookup. It selects an identity ONLY for a live session; the
 // (revoked_at IS NULL AND expires_at > now()) predicate is the fail-closed guard, evaluated in the
-// database so a caller can never widen it.
+// database so a caller can never widen it. Since 0008 (ISI-2920) the admin flag derives from
+// global_role and a deactivated user resolves to nothing (soft-delete fails closed at the join).
 const resolveSessionSQL = `
-SELECT u.principal, u.team_id, u.is_admin
+SELECT u.principal, u.team_id, (u.global_role = 'admin') AS is_admin
   FROM auth.session s
   JOIN auth.user u ON u.id = s.user_id
  WHERE s.token_hash = $1
    AND s.revoked_at IS NULL
-   AND s.expires_at > now()`
+   AND s.expires_at > now()
+   AND u.deactivated_at IS NULL`
 
 // Resolve implements SessionResolver. It hashes the opaque token and looks up the single live session
 // bound to it, returning the joined user's server-derived identity + Team scope. Any doubt — empty
