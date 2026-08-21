@@ -10,16 +10,19 @@ import (
 )
 
 // fakeSource serves rows in order, re-serving anything at/after the watermark it is asked for —
-// the same contract as SQLSource.AllForMemoryMirror (oldest-first, created_at >= since).
+// the same contract as SQLSource.AllForMemoryMirror (oldest-first, created_at >= since, limited by limit).
 type fakeSource struct {
 	rows []MirrorSourceRow
 }
 
-func (f *fakeSource) AllForMemoryMirror(_ context.Context, since time.Time, _ int) ([]MirrorSourceRow, error) {
+func (f *fakeSource) AllForMemoryMirror(_ context.Context, since time.Time, limit int) ([]MirrorSourceRow, error) {
 	var out []MirrorSourceRow
 	for _, r := range f.rows {
 		if !r.CreatedAt.Before(since) {
 			out = append(out, r)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
 		}
 	}
 	return out, nil
@@ -197,5 +200,52 @@ func TestMirror_NilSupersederStillMirrors(t *testing.T) {
 	m := NewMirror(src, sink, memory.NewHashingEmbedder(), nil, 0)
 	if n, err := m.Sweep(context.Background()); err != nil || n != 1 {
 		t.Fatalf("Sweep = %d, %v — want 1, nil (nil superseder is legal)", n, err)
+	}
+}
+
+// TestMirror_WatermarkAdvancesPastTeamlessItems: teamless items don't freeze the watermark,
+// allowing newer handoffs with teams to be mirrored while waiting for teamless items to gain teams.
+func TestMirror_WatermarkAdvancesPastTeamlessItems(t *testing.T) {
+	t1 := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC) // teamless item
+	t2 := t1.Add(time.Minute)                           // teamless item
+	t3 := t2.Add(time.Minute)                           // item with team
+	t4 := t3.Add(time.Minute)                           // item with team
+
+	src := &fakeSource{rows: []MirrorSourceRow{
+		row(42, "wi-1", "run-7", "agent-a", "", "proj-A", t1),        // no team - should be deferred, watermark should advance
+		row(43, "wi-2", "run-8", "agent-b", "", "proj-A", t2),        // no team - should be deferred, watermark should advance
+		row(44, "wi-3", "run-9", "agent-c", "team-1", "proj-A", t3),  // has team - should be mirrored
+		row(45, "wi-4", "run-10", "agent-d", "team-1", "proj-A", t4), // has team - should be mirrored
+	}}
+	sink := &fakeSink{}
+	m := NewMirror(src, sink, memory.NewHashingEmbedder(), nil, 0)
+
+	// First sweep should mirror the two team items and advance past all four
+	n, err := m.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("mirrored %d, want 2 (only team items should mirror, teamless should be deferred)", n)
+	}
+	if len(sink.writes) != 2 {
+		t.Fatalf("wrote %d, want 2", len(sink.writes))
+	}
+
+	// Watermark should be at t4 (latest item, even though teamless items were deferred)
+	if !m.watermark.Equal(t4) {
+		t.Fatalf("watermark = %v, want %v (should advance past all items)", m.watermark, t4)
+	}
+
+	// Second sweep should mirror nothing (all items seen, teamless still deferred but not frozen)
+	n, err = m.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("mirrored %d, want 0 (all items should be seen or deferred)", n)
+	}
+	if len(sink.writes) != 2 {
+		t.Fatalf("wrote %d, want 2 (no new writes)", len(sink.writes))
 	}
 }

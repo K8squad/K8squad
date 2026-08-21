@@ -128,10 +128,14 @@ func (m *Mirror) Sweep(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	mirrored := 0
-	// Once a row in this batch fails, FREEZE the watermark (same self-healing
-	// discipline as the discussion indexer): later rows still mirror, but the
-	// watermark must not advance PAST the failed row or the failure is skipped
-	// forever; the frozen watermark re-fetches it on the next sweep.
+	// FREEZE discipline (same self-healing pattern as the discussion indexer):
+	// an actual mirror FAILURE freezes the watermark so the failed row is
+	// re-fetched next sweep. A TEAMLESS row deliberately does NOT freeze — one
+	// teamless root item must never wedge the mirror's liveness (every newer
+	// publication would stall behind it). The cost is honest: once the
+	// watermark advances past a teamless row it is not re-fetched in this
+	// process (a restart re-sweeps from zero and picks it up if it has since
+	// gained a team). Best-effort, not best-blocking (AC6).
 	frozen := false
 	for _, r := range rows {
 		if _, done := m.seen[r.AuditID]; done {
@@ -143,11 +147,10 @@ func (m *Mirror) Sweep(ctx context.Context) (int, error) {
 		if r.TeamID == "" {
 			// No team scope on the work item yet (§6.1 team is inherited and may
 			// be unset): a memory record's squad_id is NOT NULL, and mirroring to
-			// some default scope would FORGE tenancy. Skip — best-effort. The
-			// row stays unmirrored (and re-fetched) until it gains a team.
-			log.Printf("handoffmirror: skip audit %d (work item %s has no team scope; cannot mirror without forging tenancy)",
+			// some default scope would FORGE tenancy. Skip without freezing —
+			// see the freeze note above.
+			log.Printf("handoffmirror: skip audit %d (work item %s has no team scope; deferring, not freezing the sweep)",
 				r.AuditID, r.WorkItemID)
-			frozen = true
 			continue
 		}
 		if err := m.mirror(ctx, r); err != nil {
