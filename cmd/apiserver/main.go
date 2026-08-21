@@ -107,18 +107,26 @@ func main() {
 	authn := apiserver.NewCookieAuthenticator(resolver)
 	authn.CookieName = cfg.SessionCookie
 
-	// 8.1 squad-overview read model (ISI-2760). Its backing is the controller-runtime informer
-	// cache over Team/Project/Run — available only where the host has cluster access (in-cluster
-	// ServiceAccount or a KUBECONFIG). When it cannot be built (e.g. a cluster-less local run) we
-	// log and leave it nil: GET /api/squad/overview then keeps its documented 501, an honest
+	// The ONE shared informer-cache backing for both cache-backed read models — 8.1
+	// squad-overview (ISI-2760, Team/Project/Run) and 8.6 credentials (ISI-2902,
+	// Team/Agent/Run). Available only where the host has cluster access (in-cluster
+	// ServiceAccount or a KUBECONFIG); one cache, not one-per-reader, so watches and in-memory
+	// copies are never duplicated. When it cannot be built (e.g. a cluster-less local run) we
+	// log and leave the readers nil: their routes then keep their documented 501s — an honest
 	// contract rather than a hard start failure.
+	//
+	// Known cost, accepted for now (PR #87 review): both projections list Runs unfiltered per
+	// request, so per-page-load work grows with cluster history. A status.phase field index on
+	// this cache is the follow-up once the reconciler writes real Paused conditions (ISI-2898).
 	var overview apiserver.SquadOverviewReader
-	if reader, stopCache, oerr := apiserver.NewCacheOverviewReader(ctx, 30*time.Second); oerr != nil {
-		log.Printf("ksquad-apiserver: squad-overview read model disabled (GET /api/squad/overview → 501): %v", oerr)
+	var credentials apiserver.CredentialOverviewReader
+	if cacheReader, stopCache, cerr := apiserver.NewCacheReader(ctx, 30*time.Second); cerr != nil {
+		log.Printf("ksquad-apiserver: informer cache unavailable — squad-overview + credential read models disabled (GET /api/squad/overview, GET /api/credentials → 501): %v", cerr)
 	} else {
-		overview = reader
 		defer stopCache()
-		log.Printf("ksquad-apiserver: squad-overview read model ready (informer cache synced)")
+		overview = apiserver.NewClientOverviewReader(cacheReader)
+		credentials = apiserver.NewClientCredentialReader(cacheReader)
+		log.Printf("ksquad-apiserver: squad-overview + credential read models ready (informer cache synced)")
 	}
 
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
@@ -158,6 +166,7 @@ func main() {
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
 		Ready:         dbReady{db},
 		Overview:      overview,
+		Credentials:   credentials,
 		Builds:        builds,
 		Hub:           hub,
 	})
