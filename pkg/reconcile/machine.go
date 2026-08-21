@@ -272,6 +272,15 @@ type Options struct {
 	// FailAt diverts the given step to the terminal Failed edge (models an agent
 	// attempt failing), driving the §8/FR-A5 retry lap. "" = no failure.
 	FailAt Step
+	// MaxPasses bounds the per-phase loop iterations of ONE Reconcile call (0 =
+	// unlimited). It is not part of the falsification surface: with a healthy
+	// store every Advance commits and the loop terminates on a terminal step.
+	// The PRODUCTION driver sets it because a pass whose expected step or fence
+	// no longer holds (a concurrent §6.3 reclaim raced the drive) makes Advance
+	// commit nothing while Step() keeps returning the same step — an unbounded
+	// spin. Exhausting the bound returns nil with the step non-terminal; the
+	// level-triggered caller re-reads the (new) fence/step and requeues.
+	MaxPasses int
 }
 
 // ErrCrash is returned by Reconcile when a crash was injected at a configured
@@ -286,9 +295,16 @@ func (e ErrCrash) Error() string { return fmt.Sprintf("controller crash at step 
 // LEVEL-TRIGGERED: every pass reads store.Step() fresh and acts on it, never
 // relying on the previous pass having run in the same process (AC1). The durable
 // step is the only recovery state — a fresh process reconstructs exactly where
-// the Run is from it alone (AC2).
+// the Run is from it alone (AC2). A non-nil MaxPasses bounds the loop for
+// production drivers (see Options.MaxPasses) without altering the machine's
+// semantics: exhaustion is a non-terminal return, never a synthetic state.
 func Reconcile(w Effects, s Store, o Options) error {
+	passes := 0
 	for !IsTerminal(s.Step()) {
+		if o.MaxPasses > 0 && passes >= o.MaxPasses {
+			return nil // bounded stop: step is non-terminal; caller requeues
+		}
+		passes++
 		step := s.Step()
 		if o.CrashBefore != "" && step == o.CrashBefore {
 			return ErrCrash{At: step}

@@ -14,9 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// ksquad-operator is the epic-2 controller-manager: it hosts the Run
+// ksquad-operator is the epic-2/3 controller-manager: it hosts the Run
 // reconciler that projects the durable coord reconcile_step onto Run.status
-// (ISI-2655, Story 3.1).
+// (ISI-2655, Story 3.1), the Run DRIVE loop that advances that durable
+// machine — warm-pool bind, A2A dispatch marker, artifact collect, the §5.3
+// death/retry lap, and the 3.7 rate-limit pause/resume (ISI-2883) — the
+// repo-sync mirror (11.1) and the Team tenancy reconciler (4.1).
 //
 // Leader election is ON by default (arch §5.2, AC4 availability): exactly one
 // replica reconciles at a time, so a rolling restart or node loss fails over
@@ -24,13 +27,13 @@ limitations under the License.
 // store (pkg/coord) is the durable guard against a zombie writer, but leader
 // election keeps the steady state single-writer and avoids needless patch churn.
 //
-// The Run reconciler's StepSource is left nil here until the coord Postgres pool
-// wiring lands (its own slice, gated on the real-Postgres integration test): the
-// binary compiles and elects, and run.StepSource is the seam that wiring fills in
-// before the reconciler is registered.
+// The coord DSN gates the Run controllers (projector + driver) and repo-sync:
+// without one the operator still elects and serves probes (e.g. a probe-only
+// smoke deploy before the DB is provisioned).
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"os"
@@ -46,9 +49,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
-	"github.com/K8squad/K8squad/pkg/coord"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
+	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
+	"github.com/K8squad/K8squad/pkg/coord"
+	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
@@ -109,6 +114,39 @@ func main() {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
 		}
+
+		// The Run DRIVE loop (Story 3.1/3.2/3.7, ISI-2883): advances the
+		// durable reconcile machine for every Run CR — level-triggered, every
+		// pass re-derived from Postgres (the §6.4 crash-safe contract). Its
+		// pieces: the per-Run Store/Effects bindings over this coord pool,
+		// the warm-pool SandboxBinder (ledger-only pool until the kube
+		// Provisioner adapter lands, Story 3.4), the 3.7 resume timer (one
+		// per leader; a single durable wake per pause episode — never a
+		// poll), and the §5.3 death/retry lap (expired lease → fence-first
+		// reclaim, checkout release, bounded-backoff retry within
+		// spec.retryPolicy).
+		resumeStore, err := coord.NewProdResumeStore(db, coord.DefaultProdResumeConfig(), nil)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind resume store")
+			os.Exit(1)
+		}
+		pool := warmpool.NewPool(nil) // ledger-only: kube Provisioner lands with the 3.4 adapter
+		driver := rundrive.NewDriver(mgr.GetClient(),
+			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
+			rundrive.NewProdPauses(resumeStore),
+			rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
+				warmpool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), nil))
+		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
+		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
+		driver.Notify = timer.Notify
+		if err := driver.SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up Run drive loop")
+			os.Exit(1)
+		}
+		if err := mgr.Add(timerRunnable{t: timer}); err != nil {
+			ctrl.Log.Error(err, "unable to register resume timer")
+			os.Exit(1)
+		}
 	}
 
 	// The Team reconciler provisions the squad tenancy scaffold (story 4.1,
@@ -131,9 +169,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
 }
+
+// timerRunnable adapts the 3.7 resume timer to the manager's Runnable surface:
+// the wake loop runs (and exits) under the manager context, leader-gated with
+// every other controller.
+type timerRunnable struct{ t *coord.ProdTimer }
+
+// Start implements manager.Runnable.
+func (r timerRunnable) Start(ctx context.Context) error { return r.t.Run(ctx) }

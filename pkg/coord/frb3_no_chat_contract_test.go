@@ -151,9 +151,10 @@ var allowedSurface = map[string]string{
 	"DuePause":              "§8 a pause whose resume_at has elapsed and is due to wake",
 	"Timer":                 "§8 single-durable-wake timer over the resume store",
 	"NewTimer":              "§8 constructor",
-	"Timer.Run":             "§8 sleep-until-resume_at loop (zero reads while idle)",
-	"Timer.Notify":          "§8 out-of-band kick when an earlier-deadline pause lands",
-	"EqualJitter":           "§8 equal-jitter backoff helper for resume_at derivation",
+	// Timer.Run/Timer.Notify now live on the package-private generic wakeLoop
+	// (the harness Timer and the prod ProdTimer share one loop, ISI-2883) —
+	// promoted methods, invisible to this scanner by construction.
+	"EqualJitter": "§8 equal-jitter backoff helper for resume_at derivation",
 
 	// §6.4 Run reconcile machine's durable Store binding (Story 3.1 / ISI-2655,
 	// physical integration of pkg/reconcile / ISI-2535). Custody-only: every method
@@ -197,6 +198,22 @@ var allowedSurface = map[string]string{
 	"ProdEffects.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
 	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
 	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
+
+	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
+	// scheduled-resume surface — custody/schedule operations on the pause
+	// episode row, no agent-to-agent channel.
+	"ProdResumeStore":           "§8 tier-2 scheduled resume bound to coord.run_pause (custody/schedule)",
+	"NewProdResumeStore":        "§8 constructor (uuid-keyed pause-episode store, migration 0009)",
+	"DefaultProdResumeConfig":   "§8 v1 policy + the production Pause table binding",
+	"ProdResumeStore.Pause":     "§8 record/refresh the single durable pause episode (resume_at)",
+	"ProdResumeStore.Pending":   "§8 pending-episode probe (the driver's park guard)",
+	"ProdResumeStore.NextWake":  "§8 earliest pending resume_at (the single wake derivation)",
+	"ProdResumeStore.ResumeDue": "§8 exactly-once SKIP LOCKED claim of due episodes",
+	"ProdResumeStore.Stats":     "§8 statement counters (the no-polling proof surface)",
+	"ProdResumeStore.DB":        "§8 backing handle accessor (same surface as ResumeStore.DB)",
+	"ProdDuePause":              "§8 one claimed resume: real coord uuids + attempt + resume_at",
+	"ProdTimer":                 "§8 the production single-wake scheduler (uuid instantiation)",
+	"NewProdTimer":              "§8 constructor (wake loop + OnDue re-entry callback)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
