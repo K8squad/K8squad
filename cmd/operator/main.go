@@ -36,6 +36,7 @@ import (
 	"context"
 	"database/sql"
 	"flag"
+	"fmt"
 	"os"
 	"time"
 
@@ -191,6 +192,20 @@ func main() {
 			Providers: scm.NewProviderRegistry(),
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
+			os.Exit(1)
+		}
+
+		// The 3.3 kill sweep (ISI-2884): a kill issued while the Run was
+		// healthy has no death-detection requeue pending, so this bounded
+		// sweep kicks cancelling Runs back into the drive loop, which tears
+		// the sandbox down and finishes → cancelled. Latency sugar for the
+		// kick; correctness is level-triggered off the durable step.
+		if err := mgr.Add(&rundrive.CancelSweeper{
+			Claims: rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
+			OnDue:  driver.OnCancelDue,
+			Log:    func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register cancel sweep")
 			os.Exit(1)
 		}
 	}
