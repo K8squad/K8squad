@@ -70,6 +70,56 @@ type discussionProvenance struct {
 // ProvenanceSourceDiscussion is the provenance.source value the indexer stamps on discussion rows.
 const ProvenanceSourceDiscussion = "discussion"
 
+// ProvenanceSourceHandoff is the provenance.source value the §6.6 handoff mirror stamps on
+// handoff-mirror rows (Story 6.6). Like the discussion source, it is the marker buildEnvelope
+// keys on to surface the honest TEXT provenance (coord principals are text; the memory uuid
+// substrate columns carry deterministic derivations) back out of the record — provenance in =
+// provenance out, never laundered through the substrate columns.
+const ProvenanceSourceHandoff = "handoff"
+
+// handoffProvenance is the honest §6.5/§6.6 triple-plus carried in a mirrored handoff record's
+// provenance jsonb: the coord audit row's own columns (work item, run, fence, audit id, the
+// content-addressed uri + sha256) and the handoff's text authorship. Written by the
+// handoffmirror package's NewHandoffProvenance; read back verbatim here — nothing is derived
+// at read time that was not stamped at write time.
+type handoffProvenance struct {
+	Source          string  `json:"source"`
+	URI             string  `json:"uri"`
+	SHA256          string  `json:"sha256"`
+	WorkItemID      string  `json:"work_item_id"`
+	RunID           string  `json:"run_id"`
+	AuditID         int64   `json:"audit_id"`
+	FenceToken      *int64  `json:"fence_token"`
+	AuthorPrincipal string  `json:"author_principal"`
+	AuthorAgentID   *string `json:"author_agent_id"`
+	WrittenAt       string  `json:"written_at"` // RFC3339 — the audit row's created_at
+}
+
+// NewHandoffProvenance builds the provenance jsonb the §6.6 handoff mirror stamps on a mirrored
+// handoff record (Story 6.6 / ISI-2896). Taking primitives (not a coord type) keeps this package
+// decoupled from pkg/coord exactly as NewDiscussionProvenance keeps it decoupled from discussion:
+// the mirror is a consumer of the coord record, never an import of it. agentID may be nil (a human
+// operator handoff); fence may be nil (defensive — the writer always has one).
+func NewHandoffProvenance(uri, sha256, workItemID, runID string, auditID int64, fence *int64, principal string, agentID *string, writtenAt time.Time) json.RawMessage {
+	p := handoffProvenance{
+		Source:          ProvenanceSourceHandoff,
+		URI:             uri,
+		SHA256:          sha256,
+		WorkItemID:      workItemID,
+		RunID:           runID,
+		AuditID:         auditID,
+		FenceToken:      fence,
+		AuthorPrincipal: principal,
+		AuthorAgentID:   agentID,
+		WrittenAt:       writtenAt.Format(time.RFC3339Nano),
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return b
+}
+
 // NewDiscussionProvenance builds the provenance jsonb the 10.2 indexer stamps on a projected discussion
 // record. buildEnvelope reads exactly these fields back out — provenance in = provenance out, no
 // laundering. Taking primitives (not the discussion type) keeps this package decoupled from discussion.
@@ -109,6 +159,26 @@ func buildEnvelope(h SearchHit) Envelope {
 				AgentID:   p.AuthorAgentID,
 				IsAgent:   p.AuthorAgentID != nil,
 				RunID:     p.AuthorRunID,
+			}
+			if t, err := time.Parse(time.RFC3339Nano, p.WrittenAt); err == nil {
+				env.WrittenAt = t
+			}
+			return env
+		}
+	}
+	// Mirrored handoff artifact (6.6): attribution is the honest text provenance the mirror
+	// stamped — a coord principal is TEXT ("agent:coder"), not a uuid, and surfacing the
+	// substrate derivation would launder authorship. Run linkage prefers the provenance run id
+	// (the handing-off Run) over any substrate column.
+	if h.Kind == KindHandoffMirror {
+		var p handoffProvenance
+		if len(h.Provenance) > 0 && json.Unmarshal(h.Provenance, &p) == nil && p.Source == ProvenanceSourceHandoff {
+			run := p.RunID
+			env.Author = Author{
+				Principal: p.AuthorPrincipal,
+				AgentID:   p.AuthorAgentID,
+				IsAgent:   p.AuthorAgentID != nil,
+				RunID:     &run,
 			}
 			if t, err := time.Parse(time.RFC3339Nano, p.WrittenAt); err == nil {
 				env.WrittenAt = t
@@ -175,10 +245,12 @@ func (s *ReadService) DiscussionSearch(ctx context.Context, callerTeamID, projec
 	}, queryText)
 }
 
-// read is the SOLE read path: embed the query, run the scoped ANN search on pgvector, wrap every hit in
-// the untrusted envelope. The scope/kind predicates in `q` are pushed into the store (INV2/INV3); the
-// retraction filter lives in PgVectorStore.Search (INV4). `q.SquadID` is the authenticated caller tenant.
-func (s *ReadService) read(ctx context.Context, q SearchQuery, queryText string) ([]Envelope, error) {
+// readHits is the SOLE search path: embed the query, run the scoped ANN search on pgvector, return the
+// raw ranked hits. The scope/kind predicates in `q` are pushed into the store (INV2/INV3); the
+// retraction filter lives in PgVectorStore.Search (INV4). `q.SquadID` is the authenticated caller
+// tenant. Every read surface projects these hits through buildEnvelope itself — there is exactly one
+// search plan and exactly one untrusted projection, whichever shape the caller needs on top.
+func (s *ReadService) readHits(ctx context.Context, q SearchQuery, queryText string) ([]SearchHit, error) {
 	if q.SquadID == "" {
 		return nil, fmt.Errorf("read: caller team scope is required (server-authenticated, never widened by a request arg)")
 	}
@@ -187,7 +259,13 @@ func (s *ReadService) read(ctx context.Context, q SearchQuery, queryText string)
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
 	q.Embedding = vec
-	hits, err := s.backend.Search(ctx, q)
+	return s.backend.Search(ctx, q)
+}
+
+// read projects the sole search path through the ONE untrusted envelope — the agent-facing tools'
+// shape (INV1). ScopedRecall (6.6) projects the same hits into RecallHit instead.
+func (s *ReadService) read(ctx context.Context, q SearchQuery, queryText string) ([]Envelope, error) {
+	hits, err := s.readHits(ctx, q, queryText)
 	if err != nil {
 		return nil, err
 	}
