@@ -18,11 +18,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,10 +33,13 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
+	"github.com/google/uuid"
+
 	"github.com/K8squad/K8squad/internal/apiserver"
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/events"
 )
 
@@ -65,6 +71,7 @@ func main() {
 	if env := os.Getenv("KSQUAD_SESSION_COOKIE"); env != "" {
 		cfg.SessionCookie = env
 	}
+	cfg.ApplyEnvOverrides()
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("ksquad-apiserver: invalid config: %v", err)
 	}
@@ -107,6 +114,25 @@ func main() {
 
 	authn := apiserver.NewCookieAuthenticator(resolver)
 	authn.CookieName = cfg.SessionCookie
+
+	// ── Epic 15 identity seam (ISI-2920): the pkg/auth core inside the apiserver ──
+	authSvc := buildAuthService(ctx, db, cfg)
+	if authSvc != nil {
+		bootstrapAdmin(ctx, db, cfg)
+	}
+	var trustedProxies []*net.IPNet
+	if cfg.TrustedProxies != "" {
+		trustedProxies = auth.ParseCIDRs(cfg.TrustedProxies)
+		if len(trustedProxies) == 0 {
+			log.Fatalf("ksquad-apiserver: trustedProxies %q parsed to an empty set (must be IPs/CIDRs)", cfg.TrustedProxies)
+		}
+	}
+	var allowedOrigins []string
+	for _, o := range strings.Split(cfg.AllowedOrigins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowedOrigins = append(allowedOrigins, o)
+		}
+	}
 
 	// The ONE shared informer-cache backing for both cache-backed read models — 8.1
 	// squad-overview (ISI-2760, Team/Project/Run) and 8.6 credentials (ISI-2902,
@@ -180,6 +206,15 @@ func main() {
 		Builds:        builds,
 		Artifacts:     artifacts,
 		Hub:           hub,
+		Auth: apiserver.AuthRoutesOptions{
+			Service:        authSvc,
+			Authenticator:  authn,
+			CookieName:     cfg.SessionCookie,
+			SecureCookies:  cfg.SecureCookies,
+			TrustedProxies: trustedProxies,
+			AllowedOrigins: allowedOrigins,
+			Audit:          coordAuditWriter(db),
+		},
 	})
 
 	httpSrv := &http.Server{
@@ -206,3 +241,123 @@ func main() {
 type dbReady struct{ db *sql.DB }
 
 func (d dbReady) Ready(ctx context.Context) error { return d.db.PingContext(ctx) }
+
+// buildAuthService assembles the pkg/auth core (15.1): stores over the shared DSN,
+// the HS256 JWT issuer, the per-IP login brake, and the 15.9 groupMapping seam.
+func buildAuthService(ctx context.Context, db *sql.DB, cfg apiserver.Config) *auth.Service {
+	key := apiserver.DecodeJWTKey(cfg.JWTSigningKey)
+	if len(key) < 32 {
+		// In-process auto-generation (ADR-033): acceptable for dev; sessions die on
+		// restart. Helm 9.5 mounts the durable signing-key Secret in production.
+		gen := auth.GenerateSigningKey()
+		key = apiserver.DecodeJWTKey(gen)
+		log.Printf("ksquad-apiserver: WARNING — no jwtSigningKey configured; auto-generated (sessions will not survive restarts; set auth.signingKeySecretRef / KSQUAD_JWT_SIGNING_KEY for production)")
+	}
+	issuer, err := auth.NewJWTIssuer(key, time.Duration(cfg.JWTTTLSeconds)*time.Second)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: jwt issuer: %v", err)
+	}
+
+	// Bound concurrent argon2id derivations (PR #90 review finding 2): each holds
+	// 64 MiB; unbounded parallel logins would OOM the pod at the chart's memory limit.
+	hashConcurrency := cfg.MaxHashConcurrency
+	if hashConcurrency == 0 {
+		hashConcurrency = 2
+	}
+	auth.SetHashConcurrency(hashConcurrency)
+
+	// 15.9 seam: validate the groupMapping at startup so a bad chart value fails
+	// fast. CONSUMPTION is deliberately absent here — groups arrive as IdP-asserted
+	// claims inside the OIDC leg (15.9), never from a request body (PR #90 review
+	// finding 3). ParseGroupMapping + groupmapping.go pin the contract meanwhile.
+	if cfg.OidcGroupMapping != "" {
+		if _, err := auth.ParseGroupMapping(cfg.OidcGroupMapping); err != nil {
+			log.Fatalf("ksquad-apiserver: invalid oidcGroupMapping: %v", err)
+		}
+		log.Printf("ksquad-apiserver: oidc groupMapping config validated (consumed by the OIDC login leg, 15.9)")
+	}
+
+	limiter := auth.NewRateLimiter(cfg.LoginRateLimit, time.Duration(cfg.LoginRateWindowSeconds)*time.Second)
+	users := auth.NewPostgresUserStore(db)
+	sessions := auth.NewPostgresSessionStore(db)
+
+	// Fail visible, not fatal: if the auth schema is not applied yet the routes
+	// answer 500/501-shape errors while the rest of the host keeps serving.
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := users.Count(pingCtx); err != nil {
+		log.Printf("ksquad-apiserver: WARNING — auth schema not queryable (%v); /auth routes will fail until db/migrations through 0008 are applied", err)
+	}
+
+	return auth.NewService(users, sessions, issuer, limiter, auth.ServiceConfig{
+		SessionTTL: time.Duration(cfg.SessionTTLSeconds) * time.Second,
+	})
+}
+
+// bootstrapAdmin provisions the initial admin (15.2): ONLY on a fresh install
+// (auth.user empty), from chart values / env. Idempotent by construction — a
+// non-empty user table skips entirely, so re-running is a no-op.
+func bootstrapAdmin(ctx context.Context, db *sql.DB, cfg apiserver.Config) {
+	if cfg.BootstrapAdminUsername == "" || cfg.BootstrapAdminPassword == "" {
+		return
+	}
+	users := auth.NewPostgresUserStore(db)
+	count, err := users.Count(ctx)
+	if err != nil {
+		log.Printf("ksquad-apiserver: bootstrap admin skipped — cannot probe user table: %v", err)
+		return
+	}
+	if count > 0 {
+		// #nosec G706 -- count is a SQL COUNT(*) int rendered with %d; no tainted
+		// string and no control characters can reach the log line.
+		log.Printf("ksquad-apiserver: bootstrap admin skipped — %d users exist (idempotent no-op)", count)
+		return
+	}
+
+	teamID, err := uuid.Parse(cfg.BootstrapAdminTeamID)
+	if cfg.BootstrapAdminTeamID != "" && err != nil {
+		// An explicitly-configured-but-malformed team id is an operator error:
+		// fail loudly instead of silently inventing a random tenancy root
+		// (PR #90 review).
+		log.Fatalf("ksquad-apiserver: bootstrap admin teamId %q is not a uuid", cfg.BootstrapAdminTeamID)
+	}
+	if cfg.BootstrapAdminTeamID == "" {
+		// No team configured: mint a fresh tenancy root for the install's first
+		// admin (team_id has no FK; scope selection lands with 15.3 memberships).
+		teamID = uuid.New()
+		log.Printf("ksquad-apiserver: bootstrap admin team auto-generated %s (set KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID to pin one)", teamID)
+	}
+	hash, err := auth.HashPassword(cfg.BootstrapAdminPassword)
+	if err != nil {
+		log.Printf("ksquad-apiserver: bootstrap admin skipped — hash: %v", err)
+		return
+	}
+	u := &auth.User{
+		Username: cfg.BootstrapAdminUsername, PasswordHash: hash,
+		TeamID: teamID, GlobalRole: auth.RoleAdmin, // created_by stays NULL: the install-time seed
+	}
+	if err := users.Create(ctx, u); err != nil {
+		log.Printf("ksquad-apiserver: bootstrap admin FAILED: %v", err)
+		return
+	}
+	log.Printf("ksquad-apiserver: bootstrap admin %q created (principal %s) — clear the bootstrap password value now", u.Username, u.Principal)
+}
+
+// coordAuditWriter adapts the shared DB into the admin-mutation audit sink (§6.5,
+// ADR-040: the append-only coord.audit_log). work_item_id stays NULL — these are
+// platform user-admin events, not coord events; the log's append-only triggers
+// cover them the same way. A failed append is logged loudly, never silently lost.
+func coordAuditWriter(db *sql.DB) func(ctx context.Context, eventType, principal string, payload map[string]any) {
+	return func(ctx context.Context, eventType, principal string, payload map[string]any) {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			log.Printf("ksquad-apiserver: audit %s: marshal payload: %v", eventType, err)
+			return
+		}
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO coord.audit_log (event_type, principal, payload)
+			VALUES ($1, $2, $3)`, eventType, principal, data); err != nil {
+			log.Printf("ksquad-apiserver: audit append FAILED for %s by %s: %v", eventType, principal, err)
+		}
+	}
+}
