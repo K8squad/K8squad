@@ -281,17 +281,14 @@ func TestSnapshotTargetsParsedOwnerRepo(t *testing.T) {
 	} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			if path == "/repos/acme/app/issues" {
+			switch path {
+			case "/repos/acme/app/issues", "/repos/acme/app/pulls":
 				fmt.Fprint(w, `[]`)
-				return
-			} else if path == "/repos/acme/app/pulls" {
-				fmt.Fprint(w, `[]`)
-				return
-			} else if path == "/repos/acme/app/actions/artifacts" {
+			case "/repos/acme/app/actions/artifacts":
 				fmt.Fprint(w, `{"total_count":0,"artifacts":[]}`)
-				return
+			default:
+				fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
 			}
-			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
 		})
 	}
 	mux.HandleFunc("/repos/github.com/acme", func(w http.ResponseWriter, r *http.Request) {
