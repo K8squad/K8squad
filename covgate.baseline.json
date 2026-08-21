@@ -5,6 +5,7 @@
   "github.com/K8squad/K8squad/cmd/event-relay": 0,
   "github.com/K8squad/K8squad/cmd/memory": 0,
   "github.com/K8squad/K8squad/cmd/operator": 0,
+  "github.com/K8squad/K8squad/cmd/scm-webhook": 50.0,
   "github.com/K8squad/K8squad/cmd/webhook": 0,
   "github.com/K8squad/K8squad/internal/apiserver": 75.7,
   "github.com/K8squad/K8squad/internal/buildbrowser": 74.3,
@@ -16,6 +17,7 @@
   "github.com/K8squad/K8squad/internal/recallsource": 92,
   "github.com/K8squad/K8squad/internal/webhook": 62.2,
   "github.com/K8squad/K8squad/internal/webhook/v1alpha1": 79.5,
+  "github.com/K8squad/K8squad/pkg/controller/reposync": 72.1,
   "github.com/K8squad/K8squad/pkg/controller/run": 93.3,
   "github.com/K8squad/K8squad/pkg/coord": 9,
   "github.com/K8squad/K8squad/pkg/covgate": 87.2,
@@ -26,5 +28,6 @@
   "github.com/K8squad/K8squad/pkg/perfgate": 85,
   "github.com/K8squad/K8squad/pkg/reconcile": 91.6,
   "github.com/K8squad/K8squad/pkg/sandbox": 89.7,
+  "github.com/K8squad/K8squad/pkg/scm": 59.4,
   "github.com/K8squad/K8squad/pkg/warmpool": 89.6
 }

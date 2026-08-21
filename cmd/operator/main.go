@@ -51,8 +51,10 @@ import (
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
+	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
+	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
@@ -115,7 +117,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		// The Run DRIVE loop (Story 3.1/3.2/3.7, ISI-2883): advances the
+<<		// The Run DRIVE loop (Story 3.1/3.2/3.7, ISI-2883): advances the
 		// durable reconcile machine for every Run CR — level-triggered, every
 		// pass re-derived from Postgres (the §6.4 crash-safe contract). Its
 		// pieces: the per-Run Store/Effects bindings over this coord pool,
@@ -147,6 +149,20 @@ func main() {
 			ctrl.Log.Error(err, "unable to register resume timer")
 			os.Exit(1)
 		}
+
+		// The repo-sync reconciler (story 11.1, §5.4) mirrors a Project's
+		// upstream into the untrusted-external scm schema on the SAME
+		// Postgres (ADR-001 — one more schema, not a new datastore). Its
+		// triggers are the webhook-ingress annotation bump (cmd/scm-webhook,
+		// HMAC-verified before parse) and the spec's poll-interval requeue;
+		// every pass is the same idempotent provider-snapshot upsert.
+		if err := (&reposync.Reconciler{
+			Store:     scm.NewSQLMirrorStore(db),
+			Providers: scm.NewProviderRegistry(),
+		}).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
+			os.Exit(1)
+		}
 	}
 
 	// The Team reconciler provisions the squad tenancy scaffold (story 4.1,
@@ -169,8 +185,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive"})
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync"})	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}

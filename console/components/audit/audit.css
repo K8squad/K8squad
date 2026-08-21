@@ -1,0 +1,153 @@
+/* audit.css — the 2.6 Audit trail screen, themed off the shell tokens (8.9): dark + light ride
+ * the same --canvas/--surface/--border/--text vars via [data-theme]; badge tones reuse the
+ * status palette vocabulary shared with the rest of the console. */
+
+.audit {
+  display: grid;
+  gap: 1.25rem;
+  max-width: 72rem;
+}
+
+.audit__head h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: var(--text-1);
+}
+
+.audit__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  padding: 0.9rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.audit__filters label {
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+.audit__filters input,
+.audit__filters select {
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+  font-size: 0.85rem;
+  min-width: 10rem;
+}
+
+.audit__filters button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.audit__table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.audit__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.audit__table th {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  color: var(--text-2);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.audit__table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  vertical-align: top;
+}
+
+.audit__table tr:last-child td {
+  border-bottom: none;
+}
+
+.audit__empty td {
+  color: var(--text-2);
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.audit__badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.audit__badge--info {
+  color: var(--status-info, #3b82f6);
+  border-color: var(--status-info, #3b82f6);
+}
+
+.audit__badge--ok {
+  color: var(--status-ok, #22c55e);
+  border-color: var(--status-ok, #22c55e);
+}
+
+.audit__badge--warn {
+  color: var(--status-warn, #f59e0b);
+  border-color: var(--status-warn, #f59e0b);
+}
+
+.audit__badge--idle {
+  color: var(--text-2);
+}
+
+.audit__state {
+  padding: 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+}
+
+.audit__older {
+  justify-self: start;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  border-radius: var(--radius);
+  padding: 0.45rem 0.9rem;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.audit__older:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.audit__tail {
+  justify-self: start;
+}

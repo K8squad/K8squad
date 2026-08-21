@@ -66,6 +66,10 @@ type Options struct {
 	// Auth is the Epic 15 identity seam (15.1 /auth/* + 15.2 /admin/users, ISI-2920).
 	// A zero Service ⇒ the routes are not mounted (pre-Epic-15 host shape).
 	Auth AuthRoutesOptions
+	// AuditTrail is the 2.6 audit-log read model (coord.audit_log query surface,
+	// ISI-2881). Nil ⇒ GET /api/audit keeps its documented 501 (a DB-less dev run),
+	// exactly like the other read models.
+	AuditTrail AuditTrailReader
 }
 
 // NewServer assembles the root router from opts.
@@ -187,6 +191,20 @@ func (s *Server) routes(opts Options) {
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
 		connect.HandleFunc("", s.connectClaude()).Methods(http.MethodPost)
+
+		// 2.6 audit-trail query API (ISI-2881): the read side of coord.audit_log —
+		// who/what/when/result across work items, actors, and time. Behind the same
+		// choke point; the handler applies the admin/self RBAC scoping. Wired to the
+		// Postgres reader in prod (the DB is a hard start dependency), documented 501
+		// only for a reader-less host shape.
+		audit := s.router.Path("/api/audit").Subrouter()
+		audit.Use(authz)
+		if opts.AuditTrail != nil {
+			audit.HandleFunc("", auditTrailHandler(opts.AuditTrail)).Methods(http.MethodGet)
+		} else {
+			audit.HandleFunc("", notImplemented("audit-trail read model", "ISI-2881: wire an AuditTrailReader (Postgres) to enable")).
+				Methods(http.MethodGet)
+		}
 	}
 }
 
