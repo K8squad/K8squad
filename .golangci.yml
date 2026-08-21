@@ -28,12 +28,13 @@ linters:
           - errcheck
           - gosec
         path: _test\.go
-      # G201 in pkg/coord: SQL interpolates only table names from validated
-      # config constants; all values stay parameterized ($1, $2, ...).
+      # G201 in pkg/coord + pkg/controller/rundrive: SQL interpolates only table
+      # names from validated config constants and code-supplied step clauses;
+      # all values stay parameterized ($1, $2, ...).
       - linters:
           - gosec
         text: "G201: SQL string formatting"
-        path: ^pkg/coord
+        path: ^pkg/(coord|controller/rundrive)
       # G101 in internal/memory/config.go: the flagged string is the zero-config
       # DEV default DSN, overridden by env/flags/file in every real deployment
       # (LoadConfig/DefaultConfig). It is a placeholder, not a real secret.
