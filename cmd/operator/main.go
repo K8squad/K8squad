@@ -55,7 +55,9 @@ import (
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/scm"
-	"github.com/K8squad/K8squad/pkg/warmpool"
+	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
+	workspacepkg "github.com/K8squad/K8squad/pkg/workspace"
+	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 )
 
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
@@ -121,23 +123,24 @@ func main() {
 		// durable reconcile machine for every Run CR — level-triggered, every
 		// pass re-derived from Postgres (the §6.4 crash-safe contract). Its
 		// pieces: the per-Run Store/Effects bindings over this coord pool,
-		// the warm-pool SandboxBinder (ledger-only pool until the kube
-		// Provisioner adapter lands, Story 3.4), the 3.7 resume timer (one
-		// per leader; a single durable wake per pause episode — never a
-		// poll), and the §5.3 death/retry lap (expired lease → fence-first
-		// reclaim, checkout release, bounded-backoff retry within
+		// the warm-pool SandboxBinder with real kube Provisioner for pod creation,
+		// the 3.7 resume timer (one per leader; a single durable wake per pause 
+		// episode — never a poll), and the §5.3 death/retry lap (expired lease → 
+		// fence-first reclaim, checkout release, bounded-backoff retry within 
 		// spec.retryPolicy).
 		resumeStore, err := coord.NewProdResumeStore(db, coord.DefaultProdResumeConfig(), nil)
 		if err != nil {
 			ctrl.Log.Error(err, "unable to bind resume store")
 			os.Exit(1)
 		}
-		pool := warmpool.NewPool(nil) // ledger-only: kube Provisioner lands with the 3.4 adapter
+		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution)
+		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi")
+		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
 			rundrive.NewProdPauses(resumeStore),
 			rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-				warmpool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), nil))
+				kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), nil))
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
@@ -176,6 +179,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
+	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
+	
+	// Initialize network policy manager for team isolation (ISI-2884)
+	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
+	
+	// Register custom controllers for workspace and network management
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(&ksquadv1alpha1.Team{}).
+		Owns(&ksquadv1alpha1.PersistentVolumeClaim{}).
+		Complete(workspaceManager); err != nil {
+		ctrl.Log.Error(err, "unable to set up workspace manager")
+		os.Exit(1)
+	}
+	
+	if err := ctrl.NewControllerManagedBy(mgr).
+		For(&ksquadv1alpha1.Team{}).
+		Owns(&ksquadv1alpha1.NetworkPolicy{}).
+		Complete(networkPolicyManager); err != nil {
+		ctrl.Log.Error(err, "unable to set up network policy manager")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		ctrl.Log.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -185,7 +211,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync"})	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "workspace", "networkpolicy"})	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
