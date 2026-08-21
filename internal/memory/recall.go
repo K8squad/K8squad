@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 )
 
 // Story 6.6 (ISI-2896) — the scoped-recall seam the Context Assembler (3.6) consumes. The
@@ -60,6 +61,46 @@ func (s *ReadService) ScopedRecall(ctx context.Context, teamID string, projectID
 		out = append(out, RecallHit{
 			RecordID: hits[i].ID,
 			Distance: hits[i].Distance,
+			Envelope: buildEnvelope(hits[i]),
+		})
+	}
+	return out, nil
+}
+
+// idSearcher is the optional exact-id slice of the store the pinned path needs. The Backend seam
+// stays untouched (its fakes keep compiling); PgVectorStore satisfies this at compile time below.
+type idSearcher interface {
+	SearchByIDs(ctx context.Context, q SearchQuery, ids []string) ([]SearchHit, error)
+}
+
+// ensure the concrete store carries the pinned path (compile-time wiring guarantee, not runtime).
+var _ idSearcher = (*PgVectorStore)(nil)
+
+// ScopedRecallByIDs serves the §6.4 snapshot-reuse arm: a resumed Run pins the EXACT doc ids its
+// envelope snapshot resolved, and this read returns those records — unchanged, untrusted-envelope-
+// projected, and STILL tenancy-scoped (a pinned id from a foreign tenant is un-returnable; the ids
+// are the Run's own snapshot, but the service trusts nothing). Missing/soft-retracted ids are
+// simply absent — snapshot decay the assembler (3.6) handles, never an error here. Distance is 0
+// (no ranking on the pinned path — the order is the requested order).
+func (s *ReadService) ScopedRecallByIDs(ctx context.Context, teamID string, projectID *string, ids []string) ([]RecallHit, error) {
+	if teamID == "" {
+		return nil, fmt.Errorf("recall by ids: caller team scope is required (server-authenticated, never widened by a request arg)")
+	}
+	byID, ok := s.backend.(idSearcher)
+	if !ok {
+		return nil, fmt.Errorf("recall by ids: the configured backend does not support the pinned-snapshot read")
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	hits, err := byID.SearchByIDs(ctx, SearchQuery{SquadID: teamID, ProjectID: projectID}, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RecallHit, 0, len(hits))
+	for i := range hits {
+		out = append(out, RecallHit{
+			RecordID: hits[i].ID,
 			Envelope: buildEnvelope(hits[i]),
 		})
 	}

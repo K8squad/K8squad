@@ -163,3 +163,61 @@ func TestEnvelope_HandoffMirrorWithoutProvenanceFallsBack(t *testing.T) {
 		t.Fatalf("fallback principal = %q, want the substrate column (honest degradation)", env.Author.Principal)
 	}
 }
+
+// idSearchingFake extends the plain fake with the exact-id slice (what PgVectorStore provides).
+type idSearchingFake struct {
+	fakeSearcher
+	gotIDs []string
+	byID   []SearchHit
+}
+
+func (f *idSearchingFake) SearchByIDs(_ context.Context, q SearchQuery, ids []string) ([]SearchHit, error) {
+	f.got = q
+	f.gotIDs = ids
+	return f.byID, nil
+}
+
+// TestScopedRecallByIDs_PinnedPathIsScoped: the snapshot-reuse read pushes the SAME tenancy
+// predicate as the fresh path (a pinned foreign-tenant id is un-returnable), projects through
+// the untrusted envelope, and preserves the requested order with no ranking distance.
+func TestScopedRecallByIDs_PinnedPathIsScoped(t *testing.T) {
+	written := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	fake := &idSearchingFake{byID: []SearchHit{
+		handoffMirrorHit("team-1", "proj-A", "wi-9", "run-77", "agent-a", 42, 3, `{"did":["x"]}`, written),
+	}}
+	svc := NewReadService(fake, NewHashingEmbedder())
+
+	hits, err := svc.ScopedRecallByIDs(context.Background(), "team-1", str("proj-A"), []string{"rec-handoff-run-77"})
+	if err != nil {
+		t.Fatalf("ScopedRecallByIDs: %v", err)
+	}
+	if len(fake.gotIDs) != 1 || fake.gotIDs[0] != "rec-handoff-run-77" {
+		t.Fatalf("by-id read = %v, want exactly the pinned ids", fake.gotIDs)
+	}
+	if fake.got.SquadID != "team-1" || fake.got.ProjectID == nil || *fake.got.ProjectID != "proj-A" {
+		t.Fatalf("by-id plan = %+v — the pinned path is scope-enforced, never a bare id lookup", fake.got)
+	}
+	if len(hits) != 1 || hits[0].RecordID != "rec-handoff-run-77" {
+		t.Fatalf("hits = %+v, want the pinned record", hits)
+	}
+	if hits[0].Envelope.Trust != TrustUntrusted || hits[0].Envelope.Author.Principal != "agent-a" {
+		t.Fatalf("envelope = %+v — pinned rows ride the same untrusted projection", hits[0].Envelope)
+	}
+	// Empty ids: nothing to pin, no error (snapshot with no memory tier).
+	if hits, err := svc.ScopedRecallByIDs(context.Background(), "team-1", nil, nil); err != nil || len(hits) != 0 {
+		t.Fatalf("empty pins = %v, %v — want silent empty", hits, err)
+	}
+	// Unscoped: refused, same as the fresh path.
+	if _, err := svc.ScopedRecallByIDs(context.Background(), "", nil, []string{"x"}); err == nil {
+		t.Fatal("expected refusal on empty team scope (pinned path)")
+	}
+}
+
+// TestScopedRecallByIDs_RequiresIDCapableBackend: a backend without the exact-id slice (a
+// legacy fake) gets a legible error, never a silent empty recall.
+func TestScopedRecallByIDs_RequiresIDCapableBackend(t *testing.T) {
+	svc := NewReadService(&fakeSearcher{}, NewHashingEmbedder())
+	if _, err := svc.ScopedRecallByIDs(context.Background(), "team-1", nil, []string{"x"}); err == nil {
+		t.Fatal("expected an error when the backend lacks the pinned-snapshot read")
+	}
+}
