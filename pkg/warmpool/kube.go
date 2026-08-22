@@ -14,36 +14,40 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// kube.go — the Story 3.4 kube Provisioner adapter: creates/destroys sandbox pods
-// with the specified RuntimeClass and AgentRuntime image. This is the missing
-// piece that makes the warm-pool system actually functional for cluster testing.
-package kube
+// kube.go — the Story 3.4 kube Provisioner adapter: creates/destroys sandbox
+// pods with the pool key's RuntimeClass and AgentRuntime image. This is the
+// production drop-in for the Provisioner seam (pool.go) that makes the
+// warm-pool system actually create real cluster pods for cluster testing.
+package warmpool
 
 import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
-	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
-// KubeProvisioner implements the warmpool.Provisioner interface using Kubernetes
-// client-go to create and delete sandbox pods. It's the production adapter that
-// makes the warm-pool system actually functional.
+// sandboxNamespace is the namespace sandbox pods are created in. It is a
+// package default until Team-scoped namespacing lands (Epic 4).
+const sandboxNamespace = "default"
+
+// KubeProvisioner implements the Provisioner interface using a
+// controller-runtime client to create and delete sandbox pods. It is the
+// production adapter that makes the warm-pool system boot real pods.
 type KubeProvisioner struct {
 	client client.Client
-	// Default resource limits for sandbox pods
+	// Default resource limits for sandbox pods.
 	cpuLimit    string
 	memoryLimit string
 }
 
-// NewKubeProvisioner creates a new kube Provisioner with the given Kubernetes client
-// and optional resource limits. If limits are empty, reasonable defaults are used.
+// NewKubeProvisioner creates a new kube Provisioner with the given
+// controller-runtime client and optional resource limits. If a limit is
+// empty, a reasonable default is used.
 func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) *KubeProvisioner {
 	if cpuLimit == "" {
 		cpuLimit = "1"
@@ -51,7 +55,7 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 	if memoryLimit == "" {
 		memoryLimit = "512Mi"
 	}
-	
+
 	return &KubeProvisioner{
 		client:      kubeClient,
 		cpuLimit:    cpuLimit,
@@ -59,14 +63,21 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 	}
 }
 
-// Boot creates a new sandbox pod with the specified pool key and sandbox ID.
-// The pod will have the specified RuntimeClass and AgentRuntime image.
-func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandboxID string) error {
-	// Create the sandbox pod spec
-	pod := &ksquadv1alpha1.Pod{
+// Boot creates a fresh sandbox pod for key under the pool-assigned sandboxID.
+// The pod carries the key's RuntimeClass and AgentRuntime image. It returns
+// WITHOUT waiting for readiness — readiness is reported to the pool via the
+// pod watch (Provisioner contract, pool.go).
+func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string) error {
+	runtimeClass := key.RuntimeClass
+	limits := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(k.cpuLimit),
+		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
+	}
+
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        sandboxID,
-			Namespace:   "default", // Should be configurable based on Team
+			Name:      sandboxID,
+			Namespace: sandboxNamespace,
 			Labels: map[string]string{
 				"app":     "k8squad-sandbox",
 				"sandbox": sandboxID,
@@ -74,33 +85,31 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 			},
 			Annotations: map[string]string{
 				"k8squad.io/sandbox-id": sandboxID,
-				"k8squad.io/pool-key":  fmt.Sprintf("%s/%s", key.RuntimeClass, key.Image),
+				"k8squad.io/pool-key":   fmt.Sprintf("%s/%s", key.RuntimeClass, key.Image),
 			},
 		},
-		Spec: ksquadv1alpha1.PodSpec{
-			RuntimeClassName: &key.RuntimeClass,
-			Containers: []ksquadv1alpha1.Container{
+		Spec: corev1.PodSpec{
+			RuntimeClassName:              &runtimeClass,
+			TerminationGracePeriodSeconds: ptrTo[int64](30),
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsUser:  ptrTo[int64](1000),
+				RunAsGroup: ptrTo[int64](1000),
+			},
+			Containers: []corev1.Container{
 				{
 					Name:  "sandbox",
 					Image: key.Image,
-					Resources: ksquadv1alpha1.ResourceRequirements{
-						Limits: ksquadv1alpha1.ResourceList{
-							"cpu":    resource.MustParse(k.cpuLimit),
-							"memory": resource.MustParse(k.memoryLimit),
-						},
-						// Requests match limits for guaranteed QoS
-						Requests: ksquadv1alpha1.ResourceList{
-							"cpu":    resource.MustParse(k.cpuLimit),
-							"memory": resource.MustParse(k.memoryLimit),
-						},
+					Resources: corev1.ResourceRequirements{
+						// Requests match limits for guaranteed QoS.
+						Limits:   limits,
+						Requests: limits,
 					},
-					// Basic liveness probe for sandbox readiness
-					LivenessProbe: &ksquadv1alpha1.Probe{
-						ProbeHandler: ksquadv1alpha1.ProbeHandler{
-							HTTPGet: &ksquadv1alpha1.HTTPGetAction{
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
 								Path:   "/health",
 								Port:   intstr.FromInt(8080),
-								Scheme: "HTTP",
+								Scheme: corev1.URISchemeHTTP,
 							},
 						},
 						InitialDelaySeconds: 30,
@@ -109,13 +118,12 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 						SuccessThreshold:    1,
 						FailureThreshold:    3,
 					},
-					// Readiness probe for pool claiming
-					ReadinessProbe: &ksquadv1alpha1.Probe{
-						ProbeHandler: ksquadv1alpha1.ProbeHandler{
-							HTTPGet: &ksquadv1alpha1.HTTPGetAction{
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
 								Path:   "/ready",
 								Port:   intstr.FromInt(8080),
-								Scheme: "HTTP",
+								Scheme: corev1.URISchemeHTTP,
 							},
 						},
 						InitialDelaySeconds: 10,
@@ -126,17 +134,9 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 					},
 				},
 			},
-			// Security context for sandbox isolation
-			SecurityContext: &ksquadv1alpha1.PodSecurityContext{
-				RunAsUser:  ptrTo[int64](1000), // Non-root user
-				RunAsGroup: ptrTo[int64](1000),
-			},
-			// Termination grace period for clean shutdown
-			TerminationGracePeriodSeconds: ptrTo[int64](30)],
 		},
 	}
 
-	// Create the sandbox pod
 	if err := k.client.Create(ctx, pod); err != nil {
 		return fmt.Errorf("kubeProvisioner.Boot: failed to create sandbox pod %s: %w", sandboxID, err)
 	}
@@ -144,30 +144,27 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 	return nil
 }
 
-// TearDown deletes the sandbox pod with the given sandbox ID.
-// This implements the teardown-and-replace semantics: the pod is destroyed
-// and never reused across Runs.
+// TearDown deletes the sandbox pod with the given sandboxID (§9.3
+// teardown-and-replace: the pod is the disposable unit; a sandbox is NEVER
+// reused across Runs). Foreground deletion is used for graceful termination.
 func (k *KubeProvisioner) TearDown(ctx context.Context, sandboxID string) error {
-	// Create a pod object for deletion
-	pod := &ksquadv1alpha1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxID,
-			Namespace: "default", // Should match the namespace used in Boot
+			Namespace: sandboxNamespace,
 		},
 	}
 
-	// Delete the sandbox pod
-	// Use foreground deletion for graceful termination
 	deletePolicy := metav1.DeletePropagationForeground
-	if err := k.client.Delete(ctx, pod, client.PropagationPolicy(&deletePolicy)); err != nil {
+	if err := k.client.Delete(ctx, pod, client.PropagationPolicy(deletePolicy)); err != nil {
 		return fmt.Errorf("kubeProvisioner.TearDown: failed to delete sandbox pod %s: %w", sandboxID, err)
 	}
 
 	return nil
 }
 
-// ptrTo returns a pointer to the given value. This is a helper for
-// creating pointer values for pod specification fields.
+// ptrTo returns a pointer to v — a helper for the optional pointer fields in
+// the pod spec.
 func ptrTo[T any](v T) *T {
 	return &v
 }
