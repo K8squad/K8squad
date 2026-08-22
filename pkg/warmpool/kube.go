@@ -17,22 +17,24 @@ limitations under the License.
 // kube.go — the Story 3.4 kube Provisioner adapter: creates/destroys sandbox pods
 // with the specified RuntimeClass and AgentRuntime image. This is the missing
 // piece that makes the warm-pool system actually functional for cluster testing.
-package kube
+//
+// This file lives in package warmpool (not a separate "kube" package): the
+// operator consumes it as kubepool.NewKubeProvisioner (an alias for this
+// package), so keeping it in warmpool is what makes the operator build.
+package warmpool
 
 import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
-	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
-// KubeProvisioner implements the warmpool.Provisioner interface using Kubernetes
+// KubeProvisioner implements the Provisioner interface using Kubernetes
 // client-go to create and delete sandbox pods. It's the production adapter that
 // makes the warm-pool system actually functional.
 type KubeProvisioner struct {
@@ -61,9 +63,9 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 
 // Boot creates a new sandbox pod with the specified pool key and sandbox ID.
 // The pod will have the specified RuntimeClass and AgentRuntime image.
-func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandboxID string) error {
+func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string) error {
 	// Create the sandbox pod spec
-	pod := &ksquadv1alpha1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        sandboxID,
 			Namespace:   "default", // Should be configurable based on Team
@@ -77,27 +79,27 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 				"k8squad.io/pool-key":  fmt.Sprintf("%s/%s", key.RuntimeClass, key.Image),
 			},
 		},
-		Spec: ksquadv1alpha1.PodSpec{
+		Spec: corev1.PodSpec{
 			RuntimeClassName: &key.RuntimeClass,
-			Containers: []ksquadv1alpha1.Container{
+			Containers: []corev1.Container{
 				{
 					Name:  "sandbox",
 					Image: key.Image,
-					Resources: ksquadv1alpha1.ResourceRequirements{
-						Limits: ksquadv1alpha1.ResourceList{
+					Resources: corev1.ResourceRequirements{
+						Limits: corev1.ResourceList{
 							"cpu":    resource.MustParse(k.cpuLimit),
 							"memory": resource.MustParse(k.memoryLimit),
 						},
 						// Requests match limits for guaranteed QoS
-						Requests: ksquadv1alpha1.ResourceList{
+						Requests: corev1.ResourceList{
 							"cpu":    resource.MustParse(k.cpuLimit),
 							"memory": resource.MustParse(k.memoryLimit),
 						},
 					},
 					// Basic liveness probe for sandbox readiness
-					LivenessProbe: &ksquadv1alpha1.Probe{
-						ProbeHandler: ksquadv1alpha1.ProbeHandler{
-							HTTPGet: &ksquadv1alpha1.HTTPGetAction{
+					LivenessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
 								Path:   "/health",
 								Port:   intstr.FromInt(8080),
 								Scheme: "HTTP",
@@ -110,9 +112,9 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 						FailureThreshold:    3,
 					},
 					// Readiness probe for pool claiming
-					ReadinessProbe: &ksquadv1alpha1.Probe{
-						ProbeHandler: ksquadv1alpha1.ProbeHandler{
-							HTTPGet: &ksquadv1alpha1.HTTPGetAction{
+					ReadinessProbe: &corev1.Probe{
+						ProbeHandler: corev1.ProbeHandler{
+							HTTPGet: &corev1.HTTPGetAction{
 								Path:   "/ready",
 								Port:   intstr.FromInt(8080),
 								Scheme: "HTTP",
@@ -127,12 +129,12 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 				},
 			},
 			// Security context for sandbox isolation
-			SecurityContext: &ksquadv1alpha1.PodSecurityContext{
+			SecurityContext: &corev1.PodSecurityContext{
 				RunAsUser:  ptrTo[int64](1000), // Non-root user
 				RunAsGroup: ptrTo[int64](1000),
 			},
 			// Termination grace period for clean shutdown
-			TerminationGracePeriodSeconds: ptrTo[int64](30)],
+			TerminationGracePeriodSeconds: ptrTo[int64](30),
 		},
 	}
 
@@ -149,7 +151,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key warmpool.PoolKey, sandbo
 // and never reused across Runs.
 func (k *KubeProvisioner) TearDown(ctx context.Context, sandboxID string) error {
 	// Create a pod object for deletion
-	pod := &ksquadv1alpha1.Pod{
+	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxID,
 			Namespace: "default", // Should match the namespace used in Boot
@@ -159,7 +161,7 @@ func (k *KubeProvisioner) TearDown(ctx context.Context, sandboxID string) error 
 	// Delete the sandbox pod
 	// Use foreground deletion for graceful termination
 	deletePolicy := metav1.DeletePropagationForeground
-	if err := k.client.Delete(ctx, pod, client.PropagationPolicy(&deletePolicy)); err != nil {
+	if err := k.client.Delete(ctx, pod, client.PropagationPolicy(deletePolicy)); err != nil {
 		return fmt.Errorf("kubeProvisioner.TearDown: failed to delete sandbox pod %s: %w", sandboxID, err)
 	}
 
