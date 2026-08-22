@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -37,14 +38,14 @@ import (
 const (
 	// WorkspacePVCSize is the default size for agent workspace PVCs
 	WorkspacePVCSize = "10Gi"
-
+	
 	// WorkspaceStorageClass is the default storage class for workspace PVCs
 	// This should be configurable via Helm chart values
 	WorkspaceStorageClass = "standard"
-
+	
 	// LabelWorkspace identifies PVCs managed by this controller
 	LabelWorkspace = "k8squad.io/workspace"
-
+	
 	// LabelRun identifies the Run that owns this workspace
 	LabelRun = "k8squad.io/run"
 )
@@ -61,36 +62,53 @@ func NewWorkspaceManager(kubeClient client.Client) *WorkspaceManager {
 	}
 }
 
+// Reconcile ensures a workspace PVC exists for each Run. PVC teardown is handled
+// by the owner reference set in createWorkspacePVC, so a deleted/absent Run is a
+// no-op here.
+func (wm *WorkspaceManager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	run := &ksquadv1alpha1.Run{}
+	if err := wm.client.Get(ctx, req.NamespacedName, run); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !run.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	if _, err := wm.EnsureWorkspace(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
 // EnsureWorkspace ensures that a workspace PVC exists for the given Run.
 // If the PVC doesn't exist, it creates one. If it exists, it returns the reference.
 func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	logger := log.FromContext(ctx)
-
+	
 	// Generate the PVC name for this Run
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-
+	
 	// Check if PVC already exists
 	existingPVC := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, existingPVC)
-
+	
 	if err == nil {
 		// PVC already exists, return it
 		logger.Info("Workspace PVC already exists", "pvc", pvcName, "run", run.Name)
 		return existingPVC, nil
 	}
-
+	
 	if !errors.IsNotFound(err) {
 		// Other error occurred
 		return nil, fmt.Errorf("failed to check existing PVC %s: %w", pvcName, err)
 	}
-
+	
 	// PVC doesn't exist, create it
 	pvc := wm.createWorkspacePVC(run, pvcName)
-
+	
 	if err := wm.client.Create(ctx, pvc); err != nil {
 		return nil, fmt.Errorf("failed to create workspace PVC %s: %w", pvcName, err)
 	}
-
+	
 	logger.Info("Created workspace PVC", "pvc", pvcName, "run", run.Name)
 	return pvc, nil
 }
@@ -98,26 +116,26 @@ func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1al
 // GetWorkspace returns the workspace PVC for the given Run
 func (wm *WorkspaceManager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-
+	
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
-
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workspace PVC %s: %w", pvcName, err)
 	}
-
+	
 	return pvc, nil
 }
 
 // DeleteWorkspace deletes the workspace PVC for the given Run
 func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) error {
 	logger := log.FromContext(ctx)
-
+	
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-
+	
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
-
+	
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// PVC doesn't exist, nothing to do
@@ -126,26 +144,26 @@ func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1al
 		}
 		return fmt.Errorf("failed to get workspace PVC %s for deletion: %w", pvcName, err)
 	}
-
+	
 	// Delete the PVC
 	deletePolicy := metav1.DeletePropagationForeground
 	if err := wm.client.Delete(ctx, pvc, client.PropagationPolicy(deletePolicy)); err != nil {
 		return fmt.Errorf("failed to delete workspace PVC %s: %w", pvcName, err)
 	}
-
+	
 	logger.Info("Deleted workspace PVC", "pvc", pvcName, "run", run.Name)
 	return nil
 }
 
 // createWorkspacePVC creates a workspace PVC for the given Run
 func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *corev1.PersistentVolumeClaim {
-	// TODO(ISI-3029): per-Run storageClass/size override was written against a
-	// SandboxPolicy.Workspace{StorageClass,Size} field that does not exist on the
-	// CRD (SandboxPolicy only carries RuntimeClass/Class). Using chart defaults
-	// until the workspace-override CRD fields land (ISI-2880/ISI-2888).
+	// ponytail: RunSpec.SandboxPolicy carries no per-Run workspace sizing/class
+	// fields (api/v1alpha1/run_types.go), so we use the package defaults.
+	// Upgrade path: add a WorkspacePVC *PVCSpec to SandboxPolicy (mirror
+	// ProjectSpec.WorkspacePVC) and read Size/Class from it here.
 	storageClass := WorkspaceStorageClass
 	pvcSize := WorkspacePVCSize
-
+	
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
@@ -183,7 +201,7 @@ func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName 
 			StorageClassName: &storageClass,
 		},
 	}
-
+	
 	return pvc
 }
 
@@ -218,14 +236,14 @@ func IsWorkspaceOwned(pvc *corev1.PersistentVolumeClaim) bool {
 	if pvc == nil {
 		return false
 	}
-
+	
 	if pvc.Labels == nil {
 		return false
 	}
-
+	
 	_, isWorkspace := pvc.Labels[LabelWorkspace]
 	_, isRun := pvc.Labels[LabelRun]
-
+	
 	return isWorkspace && isRun
 }
 
@@ -234,7 +252,7 @@ func GetRunForWorkspace(pvc *corev1.PersistentVolumeClaim) (string, bool) {
 	if pvc == nil || pvc.Labels == nil {
 		return "", false
 	}
-
+	
 	runName, ok := pvc.Labels[LabelRun]
 	return runName, ok
 }
