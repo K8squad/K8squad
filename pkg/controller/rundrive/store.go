@@ -167,6 +167,13 @@ func (c *ProdClaims) FailEnter(ctx context.Context, workItemID, runID string, fr
 	return ok, err
 }
 
+// CancelEnter implements Claims.CancelEnter: same custody fix, step → cancelled.
+func (c *ProdClaims) CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (bool, error) {
+	_, ok, err := c.enter(ctx, workItemID, runID, "run_cancelled_entered", fromFence,
+		`, reconcile_step = 'cancelled'`, "cancelled")
+	return ok, err
+}
+
 // runIDFor looks up the Run's uuid for the audit/outbox provenance: the
 // latest dispatch marker for the item (the run that was executing when the
 // episode landed). Empty when none exists — audit_log.run_id is nullable.
