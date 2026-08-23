@@ -163,7 +163,9 @@ var allowedSurface = map[string]string{
 	// credential while the window is live; no seat token is ever re-pointed
 	// (§11.2/ADR-041) and no parameter carries worker-authored content.
 	"ReroutePolicy":                           "§2.10/3.7 escalation policy (repeat attempts / long Retry-After), code-supplied",
+	"ReroutePolicy.Validate":                  "§2.10/3.7 fail-open guard: rejects AfterAttempts<2 / non-positive window (ISI-3083 F4)",
 	"DefaultReroutePolicy":                    "§2.10 sane default escalation policy",
+	"MaxHoldWindow":                           "§2.10/3.7 upper bound on a hold's resume_at, mirrors resume.BackoffCap (ISI-3083 F5)",
 	"ShouldReroute":                           "§2.10/3.7 pure verdict: does this escalated pause re-route?",
 	"PickAlternateCredential":                 "§2.10/7.6 pure roster pick: an Agent credential that differs from the throttled one",
 	"ProdRerouteStore":                        "§2.10 fenced-release + re-dispatch + hold store bound to the prod schema",

@@ -107,15 +107,38 @@ type ReroutePolicy struct {
 }
 
 // DefaultReroutePolicy is the v1 policy: re-route on the second escalation
-// attempt, or on any Retry-After window of ten minutes or more.
+// attempt, or on any Retry-After window of ten minutes or more. It is the ONLY
+// sanctioned source of a ReroutePolicy — callers must not hand-build the struct
+// (a zero-value ReroutePolicy{} fails open, see Validate).
 func DefaultReroutePolicy() ReroutePolicy {
 	return ReroutePolicy{AfterAttempts: 2, MinWindow: 10 * time.Minute}
+}
+
+// Validate rejects a policy that would fail open (F1/ISI-3083, Cursor F4). A
+// zero-value or AfterAttempts<2 policy re-routes EVERY first, short pause:
+// ShouldReroute clamps attempt to >= 1 and then tests attempt >= AfterAttempts,
+// so any threshold below 2 fires on the first episode — the exact opposite of
+// the 3.7 "short first-time pauses RETAIN the checkout" contract. MinWindow must
+// be positive so the long-window arm has a real threshold (a zero window would
+// re-route on any Retry-After). Call this on any policy not obtained from
+// DefaultReroutePolicy before driving a release with it.
+func (p ReroutePolicy) Validate() error {
+	if p.AfterAttempts < 2 {
+		return fmt.Errorf("coord.ReroutePolicy: AfterAttempts must be >= 2 (got %d) — "+
+			"a lower threshold re-routes every first, short pause (3.7 retains those)", p.AfterAttempts)
+	}
+	if p.MinWindow <= 0 {
+		return fmt.Errorf("coord.ReroutePolicy: MinWindow must be positive (got %s)", p.MinWindow)
+	}
+	return nil
 }
 
 // ShouldReroute is the pure 3.7 escalation verdict for one pause episode:
 // repeat (attempt >= policy.AfterAttempts) OR long window (retryAfter present
 // and >= policy.MinWindow). attempt is clamped >= 1; a nil/zero Retry-After
 // never triggers the long-window arm (the 2.11 backoff clock owns that case).
+// The verdict is only meaningful for a Validate-clean policy; an unvalidated
+// zero-value policy fails open (that is what Validate exists to reject).
 func ShouldReroute(attempt int, retryAfter *time.Duration, policy ReroutePolicy) bool {
 	if attempt < 1 {
 		attempt = 1
@@ -159,6 +182,44 @@ var (
 	ErrRerouteNotInProgress = errors.New(
 		"coord: reroute release refused — work item is not in_progress")
 )
+
+// MaxHoldWindow caps how far in the future a re-route hold's resume_at may sit
+// (ISI-3083, Cursor F5). resumeAt is provider-derived (now + Retry-After) and
+// only rejected when zero; an absurd upstream header (a probe accepted
+// now+100y) would permanently remove the item from the throttled credential's
+// reachable set, and the hold has no clear/expire seam beyond its own predicate.
+// The release clamps resume_at to at most MaxHoldWindow past the release
+// instant, so a bad header degrades to "unavailable for MaxHoldWindow" rather
+// than "forever". This mirrors resume.go capping its own backoff at BackoffCap.
+const MaxHoldWindow = 6 * time.Hour
+
+// validateCredentialKey enforces the documented "opaque identity, never token
+// material" contract (§11.2 / 7.8, ISI-3083 Cursor F7) at the write boundary:
+// throttledCredential lands VERBATIM in the append-only coord.audit_log (and the
+// outbox), where §6.5 forbids UPDATE/DELETE — a token written here can never be
+// redacted. This is a cheap SHAPE check making the contract executable: a
+// credential IDENTITY (e.g. "secret:ns/name") is short and has no whitespace or
+// control bytes; token material overflows the length bound or carries structure
+// this rejects.
+//
+// ponytail: shape heuristic (length + charset), not entropy analysis — it
+// rejects the obvious footguns, not a short high-entropy secret. Upgrade path: a
+// distinct CredentialKey type minted at the k8s credentialSecretRef resolution
+// boundary would make the identity un-constructable from raw token material.
+func validateCredentialKey(field, key string) error {
+	const maxLen = 253 // a k8s-ish namespace/name identity; token material overflows this
+	if len(key) > maxLen {
+		return fmt.Errorf("coord: %s is %d chars (> %d) — looks like token material, not an opaque identity",
+			field, len(key), maxLen)
+	}
+	for _, r := range key {
+		if r == ' ' || r < 0x20 || r == 0x7f {
+			return fmt.Errorf("coord: %s contains whitespace/control characters — "+
+				"credential keys are opaque identities, never token material", field)
+		}
+	}
+	return nil
+}
 
 // RerouteReleaseResult reports the durable outcome of a release.
 type RerouteReleaseResult struct {
@@ -258,6 +319,11 @@ func (s *ProdRerouteStore) ReleaseForReroute(ctx context.Context, itemID, holder
 		return RerouteReleaseResult{}, errors.New(
 			"coord.ProdRerouteStore.ReleaseForReroute: resumeAt is required (the 3.7 window the hold expires at)")
 	}
+	// F7 (ISI-3083): the credential lands verbatim in the append-only audit log
+	// and cannot be redacted — enforce the opaque-identity shape at the boundary.
+	if err := validateCredentialKey("throttledCredential", throttledCredential); err != nil {
+		return RerouteReleaseResult{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -266,9 +332,13 @@ func (s *ProdRerouteStore) ReleaseForReroute(ctx context.Context, itemID, holder
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
 	// (0) §6.4 idempotency: a hold already naming THIS run's release is the
-	// convergent outcome of a re-drive. Checked FIRST and under the row locks
-	// taken below — after a successful release the claim row no longer names
-	// the holder, so the custody guard alone could not recognise the re-drive.
+	// convergent outcome of a re-drive. Checked FIRST — this SELECT takes NO
+	// lock and runs BEFORE the FOR UPDATE below; after a successful release the
+	// claim row no longer names the holder, so the custody guard alone could not
+	// recognise the re-drive, and this pre-check catches it. (A concurrent
+	// re-drive that clears step 0 before either takes the row locks falls
+	// through to the custody guard, which now returns ErrNotRerouteCustodian on
+	// the unheld row rather than an infra NULL-scan error — see F1 below.)
 	var priorFence int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT released_fence FROM coord.rate_limit_reroute
@@ -285,8 +355,16 @@ func (s *ProdRerouteStore) ReleaseForReroute(ctx context.Context, itemID, holder
 
 	// (1) custody guard, under row locks so a concurrent §6.3 reclaim (or a
 	// second releaser) serialises against us instead of interleaving.
-	var holder, state string
-	var claimRun string
+	//
+	// F1 (ISI-3083): holder_principal and run_id are NULLABLE — they are NULL on
+	// every UNHELD claim row (never claimed, already released, reclaimed). They
+	// MUST scan into sql.NullString: scanning NULL into a plain string surfaces
+	// "converting NULL to string is unsupported" as an *infrastructure* error,
+	// making both refusal sentinels unreachable — a caller that retries infra
+	// failures would retry a permanent refusal forever. An unheld row is the most
+	// ordinary refusal: the asserted custodian simply does not hold the checkout.
+	var holder, claimRun sql.NullString
+	var state string
 	err = tx.QueryRowContext(ctx, `
 		SELECT c.holder_principal, c.run_id::text, w.state
 		  FROM coord.claim c
@@ -300,9 +378,14 @@ func (s *ProdRerouteStore) ReleaseForReroute(ctx context.Context, itemID, holder
 	} else if err != nil {
 		return RerouteReleaseResult{}, fmt.Errorf("coord.ProdRerouteStore.ReleaseForReroute: read claim: %w", err)
 	}
-	if holder != holderPrincipal || claimRun != runID {
+	if !holder.Valid || !claimRun.Valid {
+		// Unheld checkout row — refusal, not infra failure.
+		return RerouteReleaseResult{}, fmt.Errorf("%w: claim row is unheld (holder/run NULL), release asserts (%s, %s)",
+			ErrNotRerouteCustodian, holderPrincipal, runID)
+	}
+	if holder.String != holderPrincipal || claimRun.String != runID {
 		return RerouteReleaseResult{}, fmt.Errorf("%w: claim names (%s, %s), release asserts (%s, %s)",
-			ErrNotRerouteCustodian, holder, claimRun, holderPrincipal, runID)
+			ErrNotRerouteCustodian, holder.String, claimRun.String, holderPrincipal, runID)
 	}
 	if state != "in_progress" {
 		return RerouteReleaseResult{}, fmt.Errorf("%w: state is %s", ErrRerouteNotInProgress, state)
@@ -352,18 +435,26 @@ func (s *ProdRerouteStore) ReleaseForReroute(ctx context.Context, itemID, holder
 	// (4) HOLD — the throttled-credential identity and its expiry window. One
 	// row per item, rewritten in place on a subsequent escalation episode (the
 	// claim-row discipline; a re-route after a re-claim supersedes).
-	if _, err := tx.ExecContext(ctx, `
+	//
+	// F5 (ISI-3083): resume_at is provider-derived and otherwise unbounded — a
+	// bad upstream Retry-After (a probe accepted now+100y) would strand the item
+	// forever. Clamp it DB-side to at most MaxHoldWindow past the release instant
+	// (clock_timestamp is authoritative; make_interval keeps the SQL bound in
+	// sync with the Go constant). EXCLUDED.resume_at inherits the clamped value.
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO coord.rate_limit_reroute
 		       (work_item_id, throttled_credential, attempt, resume_at,
 		        released_fence, released_run, coordinator)
-		VALUES ($1::uuid, $2, $3, $4, $5, $6::uuid, $7)
+		VALUES ($1::uuid, $2, $3,
+		        LEAST($4::timestamptz, clock_timestamp() + make_interval(secs => %d)),
+		        $5, $6::uuid, $7)
 		ON CONFLICT (work_item_id) DO UPDATE SET
 		       throttled_credential = EXCLUDED.throttled_credential,
 		       attempt              = EXCLUDED.attempt,
 		       resume_at            = EXCLUDED.resume_at,
 		       released_fence       = EXCLUDED.released_fence,
 		       released_run         = EXCLUDED.released_run,
-		       coordinator          = EXCLUDED.coordinator`,
+		       coordinator          = EXCLUDED.coordinator`, int64(MaxHoldWindow.Seconds())),
 		itemID, throttledCredential, attempt, resumeAt, fence, runID, coordinatorPrincipal); err != nil {
 		return RerouteReleaseResult{}, fmt.Errorf("coord.ProdRerouteStore.ReleaseForReroute: hold: %w", err)
 	}
@@ -435,9 +526,24 @@ const rerouteHoldGuard = `
 // an Agent never presents a foreign credential, so passing a key != the
 // Agent's own is a caller defect this layer cannot detect).
 func (p *ProdClaimer) ClaimNextCredentialed(ctx context.Context, principal, runID, credentialKey, initiatedByUserID string) (itemID string, fence int64, ok bool, err error) {
+	// F3 (ISI-3083): the sibling precondition ClaimNext and
+	// AcquireSpecificCredentialed both enforce. Without it an empty principal
+	// claims with holder_principal = '' (non-NULL), whose free-or-expired guard
+	// then blocks every real claimant until the lease lapses, and audits the
+	// claim to principal = ''.
+	if principal == "" || runID == "" {
+		return "", 0, false, fmt.Errorf(
+			"coord.ProdClaimer.ClaimNextCredentialed: principal and runID are required (got principal=%q runID=%q)",
+			principal, runID)
+	}
 	if credentialKey == "" {
 		return "", 0, false, errors.New(
 			"coord.ProdClaimer.ClaimNextCredentialed: credentialKey is required (the claimant's own credential identity, 7.6)")
+	}
+	// F7 (ISI-3083): the credential key is compared in the hold guard and is the
+	// same opaque-identity contract enforced at the release boundary.
+	if err := validateCredentialKey("credentialKey", credentialKey); err != nil {
+		return "", 0, false, err
 	}
 
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -488,6 +594,10 @@ func (p *ProdClaimer) AcquireSpecificCredentialed(ctx context.Context, principal
 		return "", 0, false, errors.New(
 			"coord.ProdClaimer.AcquireSpecificCredentialed: credentialKey is required (the claimant's own credential identity, 7.6)")
 	}
+	// F7 (ISI-3083): same opaque-identity shape contract as the release boundary.
+	if err := validateCredentialKey("credentialKey", credentialKey); err != nil {
+		return "", 0, false, err
+	}
 
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -502,11 +612,14 @@ func (p *ProdClaimer) AcquireSpecificCredentialed(ctx context.Context, principal
 	return itemID, fence, true, nil
 }
 
-// acquireCredentialed runs the shared tail of both credentialed claims INSIDE
-// the caller's transaction: guarded in-place acquire (fence bump + lease, plus
-// the live-hold credential guard) → board advance from the claimable lane →
-// §6.5 claim_acquired audit → optional 12.1 outbox capture. Commit is the
-// CALLER's: the tx lives or dies with its public method's outcome.
+// acquireCredentialed runs the shared tail of both credentialed claims inside
+// tx: guarded in-place acquire (fence bump + lease, plus the live-hold
+// credential guard) → board advance from the claimable lane → §6.5
+// claim_acquired audit → optional 12.1 outbox capture. On the happy path it
+// COMMITS tx itself (F10/ISI-3083 doc fix — the prior comment wrongly said the
+// caller commits); on a guard rejection or lane race it Rolls tx back and
+// returns (0, false, nil); on error it leaves the caller's deferred Rollback to
+// fire. Either way the public method must not touch tx after this returns.
 func (p *ProdClaimer) acquireCredentialed(ctx context.Context, tx *sql.Tx, principal, runID, itemID, credentialKey, initiatedByUserID string) (int64, bool, error) {
 	// The 2.2 acquire statement (fence bump, live wall-clock lease) plus the
 	// live-hold guard ($5 = credential), RETURNING the fresh fence. The UPDATE

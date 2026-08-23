@@ -25,6 +25,12 @@
 //	                                 does not name is refused, record intact
 //	T8 outbox co-commit             the 12.1 event rides the release txn (and
 //	                                 a refused release emits nothing)
+//	T9 unheld claim refused         a release against an UNHELD claim row is
+//	                                 ErrNotRerouteCustodian, not an infra error (F1)
+//	T10 no head-of-line block       a held item at the FIFO head is skipped, the
+//	                                 credentialed pop returns the next unheld item
+//	T11 blind claim bypasses hold   ClaimNext (credential-blind) re-claims a held
+//	                                 item by design — the F2 opt-in-guard decision
 package coord_test
 
 import (
@@ -104,6 +110,10 @@ func TestSpineReroute(t *testing.T) {
 	t.Run("T6_idempotent_rerelease", func(t *testing.T) { rerouteT6Idempotent(t, ctx, dsn) })
 	t.Run("T7_custody_guard", func(t *testing.T) { rerouteT7Custody(t, ctx, dsn) })
 	t.Run("T8_outbox_cocommit", func(t *testing.T) { rerouteT8Outbox(t, ctx, dsn) })
+	// ISI-3083 chaos-gate gaps closed with the Cursor-review fixes.
+	t.Run("T9_unheld_claim_refused", func(t *testing.T) { rerouteT9UnheldRefused(t, ctx, dsn) })
+	t.Run("T10_no_head_of_line_block", func(t *testing.T) { rerouteT10NoHeadOfLine(t, ctx, dsn) })
+	t.Run("T11_blind_claim_bypasses_hold", func(t *testing.T) { rerouteT11BlindBypass(t, ctx, dsn) })
 }
 
 // rerouteRelease drives the SUT release (attempt 2 = the policy's repeat
@@ -400,5 +410,86 @@ func rerouteT8Outbox(t *testing.T, ctx context.Context, dsn string) {
 	}
 	if n != 1 {
 		t.Fatalf("outbox rows after release = %d, want exactly 1", n)
+	}
+}
+
+// insertWorkItem seeds a bare work_item (its claim row is auto-provisioned,
+// holder NULL) and returns its uuid.
+func insertWorkItem(t *testing.T, ctx context.Context, db *sql.DB, title, state string) string {
+	t.Helper()
+	var id string
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO coord.work_item (project_id, title, state, created_by)
+		     VALUES (gen_random_uuid(), $1, $2, 'principal:test')
+		  RETURNING id`, title, state).Scan(&id); err != nil {
+		t.Fatalf("seed work_item %q: %v", title, err)
+	}
+	return id
+}
+
+// rerouteT9UnheldRefused pins F1 (ISI-3083): a release against an UNHELD claim
+// row (holder_principal / run_id NULL — a never-claimed item here) is the most
+// ordinary refusal and MUST return ErrNotRerouteCustodian, not the infra
+// NULL-scan error the plain-string scan produced before the fix. That error
+// made errors.Is(err, ErrNotRerouteCustodian) false, so a caller retrying infra
+// failures would retry a permanent refusal forever.
+func rerouteT9UnheldRefused(t *testing.T, ctx context.Context, dsn string) {
+	db, _ := seedRerouteSUT(t, ctx, dsn, false)
+	fresh := insertWorkItem(t, ctx, db, "never-claimed item", "todo")
+
+	s, err := coord.NewProdRerouteStore(db)
+	if err != nil {
+		t.Fatalf("NewProdRerouteStore: %v", err)
+	}
+	if _, err := s.ReleaseForReroute(ctx, fresh, rrHolder, rrRun, rrCredA, 2, holdWindow(), rrCoord); !errors.Is(err, coord.ErrNotRerouteCustodian) {
+		t.Fatalf("release against unheld claim row: err=%v, want ErrNotRerouteCustodian (F1)", err)
+	}
+}
+
+// rerouteT10NoHeadOfLine pins the "no head-of-line block" property Cursor could
+// not break but which the single-item fixture left untested: with the held,
+// re-routed item at the HEAD of the FIFO, the credentialed pop for the throttled
+// credential skips it (the hold's NOT EXISTS applies before LIMIT 1) and returns
+// the next, unheld item instead of stalling the lane.
+func rerouteT10NoHeadOfLine(t *testing.T, ctx context.Context, dsn string) {
+	db, wi := seedRerouteSUT(t, ctx, dsn, false)
+	rerouteRelease(t, ctx, db, wi) // wi → todo with a LIVE hold pinning rrCredA, at the FIFO head
+
+	second := insertWorkItem(t, ctx, db, "second lane item", "todo")
+
+	claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig())
+	if err != nil {
+		t.Fatalf("NewProdClaimer: %v", err)
+	}
+	// Pop presenting the THROTTLED credential: the held head (wi) is invisible,
+	// the unheld second item is claimed — no head-of-line block.
+	item, _, ok, err := claimer.ClaimNextCredentialed(ctx, rrClaimer, rrRunB, rrCredA, "")
+	if err != nil || !ok {
+		t.Fatalf("credentialed pop past held head: item=%s ok=%v err=%v, want ok", item, ok, err)
+	}
+	if item != second {
+		t.Fatalf("claimed %s, want the unheld second item %s (held head must be skipped, not block the lane)", item, second)
+	}
+}
+
+// rerouteT11BlindBypass pins the F2 decision (ISI-3083): the credential-BLIND
+// ClaimNext bypasses the re-route hold by design — it re-claims the re-routed
+// item even for the throttled credential. Recording it as a chaos case makes the
+// opt-in-per-call-site guard boundary intentional and test-visible: adding a
+// guard to ClaimNext later would be a deliberate change that flips this case.
+func rerouteT11BlindBypass(t *testing.T, ctx context.Context, dsn string) {
+	db, wi := seedRerouteSUT(t, ctx, dsn, false)
+	rerouteRelease(t, ctx, db, wi) // wi → todo, LIVE hold pins rrCredA
+
+	claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig())
+	if err != nil {
+		t.Fatalf("NewProdClaimer: %v", err)
+	}
+	item, _, ok, err := claimer.ClaimNext(ctx, rrHolder, rrRun, "")
+	if err != nil || !ok {
+		t.Fatalf("blind ClaimNext after re-route: item=%s ok=%v err=%v, want ok (hold bypassed by design)", item, ok, err)
+	}
+	if item != wi {
+		t.Fatalf("blind claim got %s, want the re-routed item %s (blind pop ignores the hold)", item, wi)
 	}
 }

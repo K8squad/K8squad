@@ -225,6 +225,17 @@ func (p *ProdClaimer) captureClaim(ctx context.Context, tx *sql.Tx, itemID, runI
 // principal and runID must be non-empty (a checkout is always held by a
 // principal on behalf of a Run); initiatedByUserID may be empty (recorded as
 // NULL — the §12.4 control-plane stamp is wired by the apiserver path).
+//
+// HAZARD — bypasses the Story 2.10 re-route hold (ISI-3083 Cursor F2 decision).
+// ClaimNext is credential-BLIND: it will re-claim an item under a LIVE
+// rate-limit re-route hold, even for the throttled credential, defeating the
+// "different credential" guarantee. This is BY DESIGN — the credential guard is
+// opt-in per call site (ClaimNextCredentialed / AcquireSpecificCredentialed);
+// the blind pair serves lanes with no rate-limit re-routing. A coordinator
+// dispatching a lane where re-routing is active MUST use the credentialed
+// methods. (Decision recorded rather than widening NewProdClaimer's signature:
+// no production caller constructs a ProdClaimer yet. See the re-route chaos gate
+// case that pins this bypass as intentional.)
 func (p *ProdClaimer) ClaimNext(ctx context.Context, principal, runID, initiatedByUserID string) (itemID string, fence int64, ok bool, err error) {
 	if principal == "" || runID == "" {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.ClaimNext: principal and runID are required (got principal=%q runID=%q)", principal, runID)
@@ -312,6 +323,10 @@ func (p *ProdClaimer) ClaimableCount(ctx context.Context) (int, error) {
 // acquire (fence bump + lease) → board advance from the claimable lane → §6.5
 // claim_acquired audit row. ok=false, err=nil means the guard rejected us (a
 // live foreign lease, or the item left the claimable lane) — nothing changed.
+//
+// HAZARD — like ClaimNext, this is credential-BLIND and bypasses the Story 2.10
+// re-route hold (ISI-3083 Cursor F2). Use AcquireSpecificCredentialed on any
+// lane where rate-limit re-routing is active.
 func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, itemID, initiatedByUserID string) (string, int64, bool, error) {
 	if principal == "" || runID == "" || itemID == "" {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: principal, runID and itemID are required (got principal=%q runID=%q itemID=%q)", principal, runID, itemID)

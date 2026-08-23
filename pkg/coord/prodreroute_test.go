@@ -30,7 +30,11 @@ func TestShouldReroute(t *testing.T) {
 		{"repeat escalates past threshold", 5, &short, true},
 		{"long window escalates on first episode", 1, &long, true},
 		{"window at threshold escalates", 1, &pol.MinWindow, true},
-		{"nil window never triggers long arm", 9, nil, true},
+		// F10 (ISI-3083): this case fires on the REPEAT arm (9 >= AfterAttempts),
+		// not the long-window arm — a nil window is fine because the repeat
+		// threshold already triggers. The "first episode, no Retry-After" long-arm
+		// property is covered by the retains-checkout case above.
+		{"repeat arm escalates even with nil window", 9, nil, true},
 		{"attempt clamped to 1", 0, &short, false},
 		{"negative attempt clamped to 1", -3, &short, false},
 	}
@@ -72,5 +76,48 @@ func TestPickAlternateCredential(t *testing.T) {
 func TestNewProdRerouteStore(t *testing.T) {
 	if _, err := coord.NewProdRerouteStore(nil); err == nil {
 		t.Fatal("nil db accepted, want rejection")
+	}
+}
+
+// TestDefaultReroutePolicy pins the shipped default's field values (F4/ISI-3083).
+// Without this, mutating DefaultReroutePolicy() to return ReroutePolicy{} left
+// BOTH lanes green — the function was at 0% coverage and TestShouldReroute built
+// the struct literally. This test kills that mutation and proves the default is
+// Validate-clean.
+func TestDefaultReroutePolicy(t *testing.T) {
+	got := coord.DefaultReroutePolicy()
+	if got.AfterAttempts != 2 {
+		t.Fatalf("DefaultReroutePolicy().AfterAttempts = %d, want 2", got.AfterAttempts)
+	}
+	if got.MinWindow != 10*time.Minute {
+		t.Fatalf("DefaultReroutePolicy().MinWindow = %s, want 10m", got.MinWindow)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("DefaultReroutePolicy() fails Validate: %v", err)
+	}
+}
+
+// TestReroutePolicyValidate proves the fail-open guard (F4/ISI-3083): a
+// zero-value or AfterAttempts<2 policy re-routes every first, short pause and
+// must be rejected before it drives a release.
+func TestReroutePolicyValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		policy  coord.ReroutePolicy
+		wantErr bool
+	}{
+		{"zero value fails open", coord.ReroutePolicy{}, true},
+		{"AfterAttempts 1 fires on first pause", coord.ReroutePolicy{AfterAttempts: 1, MinWindow: time.Minute}, true},
+		{"non-positive window", coord.ReroutePolicy{AfterAttempts: 2, MinWindow: 0}, true},
+		{"negative window", coord.ReroutePolicy{AfterAttempts: 2, MinWindow: -time.Minute}, true},
+		{"valid policy", coord.ReroutePolicy{AfterAttempts: 2, MinWindow: 10 * time.Minute}, false},
+		{"default is valid", coord.DefaultReroutePolicy(), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.policy.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate(%+v) err=%v, wantErr=%v", tc.policy, err, tc.wantErr)
+			}
+		})
 	}
 }
