@@ -40,6 +40,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the coord pool
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -119,7 +121,7 @@ func main() {
 			os.Exit(1)
 		}
 
-<<		// The Run DRIVE loop (Story 3.1/3.2/3.7, ISI-2883): advances the
+		// The Run DRIVE loop (Story 3.1/3.2/3.7, ISI-2883): advances the
 		// durable reconcile machine for every Run CR — level-triggered, every
 		// pass re-derived from Postgres (the §6.4 crash-safe contract). Its
 		// pieces: the per-Run Store/Effects bindings over this coord pool,
@@ -185,18 +187,20 @@ func main() {
 	// Initialize network policy manager for team isolation (ISI-2884)
 	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
 	
-	// Register custom controllers for workspace and network management
+	// Register custom controllers for workspace and network management.
+	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
+	// network policies are per-Team.
 	if err := ctrl.NewControllerManagedBy(mgr).
-		For(&ksquadv1alpha1.Team{}).
-		Owns(&ksquadv1alpha1.PersistentVolumeClaim{}).
+		For(&ksquadv1alpha1.Run{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Complete(workspaceManager); err != nil {
 		ctrl.Log.Error(err, "unable to set up workspace manager")
 		os.Exit(1)
 	}
-	
+
 	if err := ctrl.NewControllerManagedBy(mgr).
 		For(&ksquadv1alpha1.Team{}).
-		Owns(&ksquadv1alpha1.NetworkPolicy{}).
+		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(networkPolicyManager); err != nil {
 		ctrl.Log.Error(err, "unable to set up network policy manager")
 		os.Exit(1)
@@ -211,7 +215,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "workspace", "networkpolicy"})	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "workspace", "networkpolicy"})
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}

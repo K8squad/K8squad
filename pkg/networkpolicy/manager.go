@@ -24,8 +24,12 @@ import (
 	"fmt"
 	"reflect"
 
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -62,6 +66,29 @@ func NewNetworkPolicyManager(kubeClient client.Client) *NetworkPolicyManager {
 	}
 }
 
+// Reconcile ensures the isolation/egress/ingress NetworkPolicies exist for each
+// Team. The policies carry owner references to the Team, so deletion is handled
+// by garbage collection and an absent/deleted Team is a no-op here.
+func (npm *NetworkPolicyManager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	team := &ksquadv1alpha1.Team{}
+	if err := npm.client.Get(ctx, req.NamespacedName, team); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !team.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	if err := npm.EnsureTeamIsolation(ctx, team); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := npm.EnsureTeamEgress(ctx, team); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := npm.EnsureTeamIngress(ctx, team); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
 // EnsureTeamIsolation ensures that network policies exist for the given Team.
 // This creates policies that isolate the team's namespace from others.
 func (npm *NetworkPolicyManager) EnsureTeamIsolation(ctx context.Context, team *ksquadv1alpha1.Team) error {
@@ -71,7 +98,7 @@ func (npm *NetworkPolicyManager) EnsureTeamIsolation(ctx context.Context, team *
 	isolationPolicy := npm.createTeamIsolationPolicy(team)
 	
 	// Check if policy already exists
-	existingPolicy := &ksquadv1alpha1.NetworkPolicy{}
+	existingPolicy := &networkingv1.NetworkPolicy{}
 	err := npm.client.Get(ctx, types.NamespacedName{Name: isolationPolicy.Name, Namespace: team.Namespace}, existingPolicy)
 	
 	if err == nil {
@@ -108,7 +135,7 @@ func (npm *NetworkPolicyManager) EnsureTeamEgress(ctx context.Context, team *ksq
 	egressPolicy := npm.createTeamEgressPolicy(team)
 	
 	// Check if policy already exists
-	existingPolicy := &ksquadv1alpha1.NetworkPolicy{}
+	existingPolicy := &networkingv1.NetworkPolicy{}
 	err := npm.client.Get(ctx, types.NamespacedName{Name: egressPolicy.Name, Namespace: team.Namespace}, existingPolicy)
 	
 	if err == nil {
@@ -145,7 +172,7 @@ func (npm *NetworkPolicyManager) EnsureTeamIngress(ctx context.Context, team *ks
 	ingressPolicy := npm.createTeamIngressPolicy(team)
 	
 	// Check if policy already exists
-	existingPolicy := &ksquadv1alpha1.NetworkPolicy{}
+	existingPolicy := &networkingv1.NetworkPolicy{}
 	err := npm.client.Get(ctx, types.NamespacedName{Name: ingressPolicy.Name, Namespace: team.Namespace}, existingPolicy)
 	
 	if err == nil {
@@ -184,7 +211,7 @@ func (npm *NetworkPolicyManager) DeleteTeamPolicies(ctx context.Context, team *k
 	}
 	
 	for _, policyName := range policies {
-		policy := &ksquadv1alpha1.NetworkPolicy{}
+		policy := &networkingv1.NetworkPolicy{}
 		err := npm.client.Get(ctx, types.NamespacedName{Name: policyName, Namespace: team.Namespace}, policy)
 		
 		if err != nil {
@@ -207,8 +234,8 @@ func (npm *NetworkPolicyManager) DeleteTeamPolicies(ctx context.Context, team *k
 }
 
 // createTeamIsolationPolicy creates a network policy that isolates the team
-func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.Team) *ksquadv1alpha1.NetworkPolicy {
-	return &ksquadv1alpha1.NetworkPolicy{
+func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamIsolation, team.Name),
 			Namespace: team.Namespace,
@@ -218,7 +245,7 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 			// Owner reference for automatic cleanup when Team is deleted
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         ksquadv1alpha1.SchemeGroupVersion.String(),
+					APIVersion:         ksquadv1alpha1.GroupVersion.String(),
 					Kind:               "Team",
 					Name:               team.Name,
 					UID:                team.UID,
@@ -227,20 +254,20 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 				},
 			},
 		},
-		Spec: ksquadv1alpha1.NetworkPolicySpec{
-			PolicyTypes: []ksquadv1alpha1.PolicyType{
-				ksquadv1alpha1.PolicyTypeIngress,
-				ksquadv1alpha1.PolicyTypeEgress,
+		Spec: networkingv1.NetworkPolicySpec{
+			PolicyTypes: []networkingv1.PolicyType{
+				networkingv1.PolicyTypeIngress,
+				networkingv1.PolicyTypeEgress,
 			},
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					LabelTeam: team.Name,
 				},
 			},
-			Ingress: []ksquadv1alpha1.NetworkPolicyIngressRule{
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
 					// Allow traffic from the same team
-					From: []ksquadv1alpha1.NetworkPolicyPeer{
+					From: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
@@ -250,9 +277,9 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 						},
 					},
 					// Allow DNS queries to control plane
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 53, // DNS
@@ -262,7 +289,7 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 				},
 				{
 					// Allow health checks and metrics from control plane
-					From: []ksquadv1alpha1.NetworkPolicyPeer{
+					From: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
@@ -271,16 +298,16 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 							},
 						},
 					},
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 8080, // Metrics
 							},
 						},
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 9100, // Health checks
@@ -289,39 +316,39 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 					},
 				},
 			},
-			Egress: []ksquadv1alpha1.NetworkPolicyEgressRule{
+			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
 					// Allow egress to internet
-					To: []ksquadv1alpha1.NetworkPolicyPeer{
+					To: []networkingv1.NetworkPolicyPeer{
 						{
 							// Allow to all destinations (no selector = any IP)
 						},
 					},
 					// Allow common outbound ports
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 443, // HTTPS
 							},
 						},
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 80, // HTTP
 							},
 						},
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 53, // DNS
 							},
 						},
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 22, // SSH
@@ -335,8 +362,8 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 }
 
 // createTeamEgressPolicy creates a network policy that controls egress traffic
-func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Team) *ksquadv1alpha1.NetworkPolicy {
-	return &ksquadv1alpha1.NetworkPolicy{
+func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamEgress, team.Name),
 			Namespace: team.Namespace,
@@ -346,7 +373,7 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 			// Owner reference for automatic cleanup when Team is deleted
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         ksquadv1alpha1.SchemeGroupVersion.String(),
+					APIVersion:         ksquadv1alpha1.GroupVersion.String(),
 					Kind:               "Team",
 					Name:               team.Name,
 					UID:                team.UID,
@@ -355,25 +382,25 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 				},
 			},
 		},
-		Spec: ksquadv1alpha1.NetworkPolicySpec{
+		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					LabelTeam: team.Name,
 				},
 			},
-			Egress: []ksquadv1alpha1.NetworkPolicyEgressRule{
+			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
 					// Allow egress to public registries for image pulls
-					To: []ksquadv1alpha1.NetworkPolicyPeer{
+					To: []networkingv1.NetworkPolicyPeer{
 						{
 							NamespaceSelector: &metav1.LabelSelector{
 								// Allow to all namespaces (for public registries)
 							},
 						},
 					},
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 443, // HTTPS for registries
@@ -383,7 +410,7 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 				},
 				{
 					// Allow egress to other k8squad services within the cluster
-					To: []ksquadv1alpha1.NetworkPolicyPeer{
+					To: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
@@ -392,16 +419,16 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 							},
 						},
 					},
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 8080, // API server
 							},
 						},
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 9090, // NATS
@@ -415,8 +442,8 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 }
 
 // createTeamIngressPolicy creates a network policy that controls ingress traffic
-func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Team) *ksquadv1alpha1.NetworkPolicy {
-	return &ksquadv1alpha1.NetworkPolicy{
+func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamIngress, team.Name),
 			Namespace: team.Namespace,
@@ -426,7 +453,7 @@ func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Te
 			// Owner reference for automatic cleanup when Team is deleted
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         ksquadv1alpha1.SchemeGroupVersion.String(),
+					APIVersion:         ksquadv1alpha1.GroupVersion.String(),
 					Kind:               "Team",
 					Name:               team.Name,
 					UID:                team.UID,
@@ -435,16 +462,16 @@ func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Te
 				},
 			},
 		},
-		Spec: ksquadv1alpha1.NetworkPolicySpec{
+		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					LabelTeam: team.Name,
 				},
 			},
-			Ingress: []ksquadv1alpha1.NetworkPolicyIngressRule{
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
 					// Allow ingress from within the same team
-					From: []ksquadv1alpha1.NetworkPolicyPeer{
+					From: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
@@ -456,7 +483,7 @@ func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Te
 				},
 				{
 					// Allow ingress from control plane components
-					From: []ksquadv1alpha1.NetworkPolicyPeer{
+					From: []networkingv1.NetworkPolicyPeer{
 						{
 							PodSelector: &metav1.LabelSelector{
 								MatchLabels: map[string]string{
@@ -465,9 +492,9 @@ func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Te
 							},
 						},
 					},
-					Ports: []ksquadv1alpha1.NetworkPolicyPort{
+					Ports: []networkingv1.NetworkPolicyPort{
 						{
-							Protocol: &[]ksquadv1alpha1.Protocol{ksquadv1alpha1.ProtocolTCP}[0],
+							Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
 							Port: &intstr.IntOrString{
 								Type:   intstr.Int,
 								IntVal: 8080, // API server

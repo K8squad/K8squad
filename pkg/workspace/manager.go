@@ -22,8 +22,8 @@ package workspace
 import (
 	"context"
 	"fmt"
-	"reflect"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,16 +62,33 @@ func NewWorkspaceManager(kubeClient client.Client) *WorkspaceManager {
 	}
 }
 
+// Reconcile ensures a workspace PVC exists for each Run. PVC teardown is handled
+// by the owner reference set in createWorkspacePVC, so a deleted/absent Run is a
+// no-op here.
+func (wm *WorkspaceManager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	run := &ksquadv1alpha1.Run{}
+	if err := wm.client.Get(ctx, req.NamespacedName, run); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	if !run.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, nil
+	}
+	if _, err := wm.EnsureWorkspace(ctx, run); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
 // EnsureWorkspace ensures that a workspace PVC exists for the given Run.
 // If the PVC doesn't exist, it creates one. If it exists, it returns the reference.
-func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*ksquadv1alpha1.PersistentVolumeClaim, error) {
+func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	logger := log.FromContext(ctx)
 	
 	// Generate the PVC name for this Run
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
 	
 	// Check if PVC already exists
-	existingPVC := &ksquadv1alpha1.PersistentVolumeClaim{}
+	existingPVC := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, existingPVC)
 	
 	if err == nil {
@@ -97,10 +114,10 @@ func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1al
 }
 
 // GetWorkspace returns the workspace PVC for the given Run
-func (wm *WorkspaceManager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*ksquadv1alpha1.PersistentVolumeClaim, error) {
+func (wm *WorkspaceManager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
 	
-	pvc := &ksquadv1alpha1.PersistentVolumeClaim{}
+	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
 	
 	if err != nil {
@@ -116,7 +133,7 @@ func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1al
 	
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
 	
-	pvc := &ksquadv1alpha1.PersistentVolumeClaim{}
+	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
 	
 	if err != nil {
@@ -130,7 +147,7 @@ func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1al
 	
 	// Delete the PVC
 	deletePolicy := metav1.DeletePropagationForeground
-	if err := wm.client.Delete(ctx, pvc, client.PropagationPolicy(&deletePolicy)); err != nil {
+	if err := wm.client.Delete(ctx, pvc, client.PropagationPolicy(deletePolicy)); err != nil {
 		return fmt.Errorf("failed to delete workspace PVC %s: %w", pvcName, err)
 	}
 	
@@ -139,20 +156,15 @@ func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1al
 }
 
 // createWorkspacePVC creates a workspace PVC for the given Run
-func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *ksquadv1alpha1.PersistentVolumeClaim {
-	// Get storage class from Run spec, or use default
+func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *corev1.PersistentVolumeClaim {
+	// ponytail: RunSpec.SandboxPolicy carries no per-Run workspace sizing/class
+	// fields (api/v1alpha1/run_types.go), so we use the package defaults.
+	// Upgrade path: add a WorkspacePVC *PVCSpec to SandboxPolicy (mirror
+	// ProjectSpec.WorkspacePVC) and read Size/Class from it here.
 	storageClass := WorkspaceStorageClass
-	if run.Spec.SandboxPolicy != nil && run.Spec.SandboxPolicy.Workspace != nil && run.Spec.SandboxPolicy.Workspace.StorageClass != "" {
-		storageClass = run.Spec.SandboxPolicy.Workspace.StorageClass
-	}
-	
-	// Get PVC size from Run spec, or use default
 	pvcSize := WorkspacePVCSize
-	if run.Spec.SandboxPolicy != nil && run.Spec.SandboxPolicy.Workspace != nil && run.Spec.SandboxPolicy.Workspace.Size != "" {
-		pvcSize = run.Spec.SandboxPolicy.Workspace.Size
-	}
 	
-	pvc := &ksquadv1alpha1.PersistentVolumeClaim{
+	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
 			Namespace: run.Namespace,
@@ -168,7 +180,7 @@ func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName 
 			// Owner reference for automatic cleanup when Run is deleted
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         ksquadv1alpha1.SchemeGroupVersion.String(),
+					APIVersion:         ksquadv1alpha1.GroupVersion.String(),
 					Kind:               "Run",
 					Name:               run.Name,
 					UID:                run.UID,
@@ -177,12 +189,12 @@ func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName 
 				},
 			},
 		},
-		Spec: ksquadv1alpha1.PersistentVolumeClaimSpec{
-			AccessModes: []ksquadv1alpha1.PersistentVolumeAccessMode{
-				ksquadv1alpha1.ReadWriteOnce, // One node can mount it read-write
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{
+				corev1.ReadWriteOnce, // One node can mount it read-write
 			},
-			Resources: ksquadv1alpha1.ResourceRequirements{
-				Requests: ksquadv1alpha1.ResourceList{
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
 					"storage": resource.MustParse(pvcSize),
 				},
 			},
@@ -194,8 +206,8 @@ func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName 
 }
 
 // WorkspaceVolumeMount returns a volume mount specification for the workspace PVC
-func WorkspaceVolumeMount(runName string) ksquadv1alpha1.VolumeMount {
-	return ksquadv1alpha1.VolumeMount{
+func WorkspaceVolumeMount(runName string) corev1.VolumeMount {
+	return corev1.VolumeMount{
 		Name:      "workspace",
 		MountPath: "/workspace",
 		ReadOnly:  false,
@@ -203,11 +215,11 @@ func WorkspaceVolumeMount(runName string) ksquadv1alpha1.VolumeMount {
 }
 
 // WorkspaceVolume returns a volume specification for the workspace PVC
-func WorkspaceVolume(runName string) ksquadv1alpha1.Volume {
-	return ksquadv1alpha1.Volume{
+func WorkspaceVolume(runName string) corev1.Volume {
+	return corev1.Volume{
 		Name: "workspace",
-		VolumeSource: ksquadv1alpha1.VolumeSource{
-			PersistentVolumeClaim: &ksquadv1alpha1.PersistentVolumeClaimVolumeSource{
+		VolumeSource: corev1.VolumeSource{
+			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 				ClaimName: fmt.Sprintf("workspace-%s", runName),
 			},
 		},
@@ -220,7 +232,7 @@ func ptrTo[T any](v T) *T {
 }
 
 // IsWorkspaceOwned checks if the given PVC is owned by a workspace
-func IsWorkspaceOwned(pvc *ksquadv1alpha1.PersistentVolumeClaim) bool {
+func IsWorkspaceOwned(pvc *corev1.PersistentVolumeClaim) bool {
 	if pvc == nil {
 		return false
 	}
@@ -236,7 +248,7 @@ func IsWorkspaceOwned(pvc *ksquadv1alpha1.PersistentVolumeClaim) bool {
 }
 
 // GetRunForWorkspace returns the Run that owns the given PVC
-func GetRunForWorkspace(pvc *ksquadv1alpha1.PersistentVolumeClaim) (string, bool) {
+func GetRunForWorkspace(pvc *corev1.PersistentVolumeClaim) (string, bool) {
 	if pvc == nil || pvc.Labels == nil {
 		return "", false
 	}
