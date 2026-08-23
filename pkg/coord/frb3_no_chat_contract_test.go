@@ -214,6 +214,34 @@ var allowedSurface = map[string]string{
 	"ProdDuePause":              "§8 one claimed resume: real coord uuids + attempt + resume_at",
 	"ProdTimer":                 "§8 the production single-wake scheduler (uuid instantiation)",
 	"NewProdTimer":              "§8 constructor (wake loop + OnDue re-entry callback)",
+
+	// §6.3 background crash-safe reclaim sweeper (Story 2.4 / ISI-3104): a
+	// periodic scan that reclaims expired leases the same custody way ClaimNext
+	// does opportunistically — one data-modifying CTE co-commits the monotonic
+	// fence bump (fences the dead holder), the reclaim_fenced_at stamp + holder/
+	// lease release, and work_item→open, under FOR UPDATE OF claim SKIP LOCKED.
+	// Custody-only: no parameter carries worker-authored content, the loop is
+	// stateless (crash-safe re-derivation from durable claim state), and the
+	// OnReclaim callback is the §6.3 resource-layer fence seam, not an A2A channel.
+	"SweepConfig":                            "§6.3 sweeper config (interval/batch/jitter), code-supplied",
+	"DefaultSweepConfig":                     "§6.3 sane default sweeper config",
+	"Reclaimed":                              "§6.3 one reclaimed lease (item + fenced holder), custody record",
+	"SweepStore":                             "§6.3 durable expired-lease reclaim store bound to coord.claim",
+	"NewSweepStore":                          "§6.3 constructor",
+	"NewSweepForTest":                        "§6.3 chaos-harness constructor (int-keyed schema)",
+	"SweepStore.ReclaimExpired":              "§6.3 fence-first batch reclaim of expired leases (CTE, SKIP LOCKED)",
+	"SweepStore.Scans":                       "§6.3 scan-counter introspection for tests/ops",
+	"SweepStore.DB":                          "§6.3 harness handle accessor",
+	"Sweeper":                                "§6.3 the periodic reclaim loop (stateless, crash-safe)",
+	"NewSweeper":                             "§6.3 constructor (store + metrics + OnReclaim fence callback)",
+	"Sweeper.Run":                            "§6.3 run the periodic scan until context cancellation",
+	"SweeperMetrics":                         "§6.3 sweeper metrics sink interface (cycle/reclaim/duration)",
+	"PrometheusSweeperMetrics":               "§6.3 Prometheus metrics sink for the sweeper",
+	"NewPrometheusSweeperMetrics":            "§6.3 constructor",
+	"PrometheusSweeperMetrics.IncSweepCycle": "§6.3 count one completed sweep cycle",
+	"PrometheusSweeperMetrics.AddSweepReclaims":     "§6.3 add the reclaims from one cycle",
+	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
+	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
