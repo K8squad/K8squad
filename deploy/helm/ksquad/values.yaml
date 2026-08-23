@@ -204,10 +204,52 @@ storage:
 #   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
 # ═════════════════════════════════════════════════════════════════════════════
 nats:
-  # The event bus is ON by default (one `helm install` yields the whole stack,
-  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
-  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+# The event bus is ON by default (one `helm install` yields the whole stack,
+# §16). Turning it OFF must NEVER break the core install — the outbox buffers
+# and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+enabled: true
+
+# Egress configuration for Projects (story 4.6, ISI-2888)
+# This controls the default-deny + allowlist egress policy structure applied
+# to each Project's Run workloads. When enabled, the operator will create
+# NetworkPolicies for Projects that specify egressPolicyRef.
+egress:
+  # Enable egress policy reconciliation for Projects
   enabled: true
+  
+  # Default egress proxy configuration. Projects can override this by
+  # specifying their own egressPolicyRef.
+  defaultEgressProxy:
+    # Service name of the egress proxy in each team namespace
+    service: "egress-proxy"
+    # Port the egress proxy listens on
+    port: 8080
+    
+  # NetworkPolicy configuration for egress control
+  networkPolicy:
+    # Default-deny policy name prefix
+    defaultDenyName: "ksquad-default-deny"
+    # Project-specific egress policy name prefix
+    projectEgressPrefix: "ksquad-egress"
+    
+  # Allowed egress destinations by default
+  defaultAllow:
+    # DNS resolution is always allowed
+    dns:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 53
+        - protocol: "UDP" 
+          port: 53
+    # Control plane communication (API server, health checks)
+    controlPlane:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 443  # HTTPS (API server)
+        - protocol: "TCP"
+          port: 8080 # Health/proxy ports
   image: nats:2.10-alpine
   port: 4222
   jetstream:
