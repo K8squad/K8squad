@@ -37,6 +37,7 @@ import (
 	"database/sql"
 	"flag"
 	"os"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the coord pool
 
@@ -51,15 +52,16 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
-	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
+	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
 	workspacepkg "github.com/K8squad/K8squad/pkg/workspace"
-	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 )
 
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
@@ -87,6 +89,28 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// One signal context drives the whole process: the OTel spine flushes on it,
+	// and the manager stops on it. (ctrl.SetupSignalHandler must be called once.)
+	ctx := ctrl.SetupSignalHandler()
+
+	// Install the OpenTelemetry spine (ISI-2915/ISI-3103): W3C propagation, a
+	// TracerProvider so every Run drive pass is one span, and the otelslog bridge
+	// so structured logs carry trace_id/span_id. Exports to stdout for now.
+	_, otelShutdown, err := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-operator"})
+	if err != nil {
+		ctrl.Log.Error(err, "unable to initialize OpenTelemetry spine")
+		os.Exit(1)
+	}
+	defer func() {
+		// Flush on a fresh bounded context: the signal ctx is already cancelled
+		// by the time the manager returns, and Shutdown must still drain buffers.
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := otelShutdown(flushCtx); err != nil {
+			ctrl.Log.Error(err, "OpenTelemetry shutdown")
+		}
+	}()
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
@@ -126,9 +150,9 @@ func main() {
 		// pass re-derived from Postgres (the §6.4 crash-safe contract). Its
 		// pieces: the per-Run Store/Effects bindings over this coord pool,
 		// the warm-pool SandboxBinder with real kube Provisioner for pod creation,
-		// the 3.7 resume timer (one per leader; a single durable wake per pause 
-		// episode — never a poll), and the §5.3 death/retry lap (expired lease → 
-		// fence-first reclaim, checkout release, bounded-backoff retry within 
+		// the 3.7 resume timer (one per leader; a single durable wake per pause
+		// episode — never a poll), and the §5.3 death/retry lap (expired lease →
+		// fence-first reclaim, checkout release, bounded-backoff retry within
 		// spec.retryPolicy).
 		resumeStore, err := coord.NewProdResumeStore(db, coord.DefaultProdResumeConfig(), nil)
 		if err != nil {
@@ -183,10 +207,10 @@ func main() {
 
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
-	
+
 	// Initialize network policy manager for team isolation (ISI-2884)
 	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
-	
+
 	// Register custom controllers for workspace and network management.
 	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
 	// network policies are per-Team.
@@ -216,7 +240,7 @@ func main() {
 	}
 
 	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "workspace", "networkpolicy"})
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
