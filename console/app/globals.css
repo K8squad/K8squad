@@ -200,3 +200,265 @@ a:hover {
   background: color-mix(in srgb, var(--status-idle) 18%, transparent);
   color: var(--status-idle);
 }
+
+/* ---- Agents surface: org diagram (8.10) + agent detail (8.11) ---- */
+
+/* Derived status chip (idle / running / blocked / paused) — theme-invariant status hues. */
+.agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  text-transform: lowercase;
+  letter-spacing: 0.3px;
+}
+.agent-status__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.agent-status--idle {
+  color: var(--status-idle);
+}
+.agent-status--running {
+  color: var(--status-running);
+}
+.agent-status--blocked {
+  color: var(--status-blocked);
+}
+.agent-status--paused {
+  color: var(--status-paused);
+}
+
+/* Org diagram (8.10). */
+.org-diagram__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.org-diagram__team {
+  margin: 0;
+  font-size: 18px;
+}
+.org-diagram__agents {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.org-node {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+.org-node__link {
+  display: block;
+  padding: 12px 14px;
+  color: inherit;
+  text-decoration: none;
+}
+.org-node__link:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+  border-radius: var(--radius);
+}
+.org-node__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.org-node__name {
+  font-weight: 600;
+}
+.org-node__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.org-node__runtime {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text-2) 14%, transparent);
+}
+.org-node__roles {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.role-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+}
+
+/* Agent detail + run history (8.11). */
+.agent-detail__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agent-detail__id {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.agent-detail__name {
+  margin: 0;
+  font-size: 20px;
+}
+.agent-detail__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agent-detail__runs-title {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.agent-detail__tokens-note {
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.run-history {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.run-history th,
+.run-history td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.run-history th {
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.run-history__drill {
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+.run-history__drill:hover {
+  border-color: var(--accent);
+}
+.run-phase {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.run-phase--running {
+  color: var(--status-running);
+}
+.run-phase--paused {
+  color: var(--status-paused);
+}
+.run-phase--failed,
+.run-phase--cancelled {
+  color: var(--status-blocked);
+}
+.run-phase--pending,
+.run-phase--claiming {
+  color: var(--status-idle);
+}
+
+/* Tabbed run logs (8.11). */
+.run-logs {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.run-logs__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.run-logs__tabs {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.run-logs__tab {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.run-logs__tab--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.run-logs__trace {
+  font-size: 12px;
+  color: var(--ksq-run);
+}
+.run-logs__entries,
+.run-logs__tail-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.run-logs__entry code {
+  font-size: 12px;
+  color: var(--text-1);
+  word-break: break-word;
+}
+.run-logs__tail {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.run-logs__tail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.run-logs__tail-item {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+.run-logs__tail-actor {
+  font-weight: 600;
+}
+.run-logs__tail-ts {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
