@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -173,10 +174,26 @@ type PVCSpec struct {
 	// +kubebuilder:validation:Required
 	Size resource.Quantity `json:"size"`
 
-	// Class is the storageClass name; empty means the cluster default.
+	// Class is the storageClass name. Empty does NOT mean the cluster
+	// default (story 9.2: relying on the cluster default is
+	// misconfiguration) — the operator resolves it from its Helm-provided
+	// workspace storage class and fails closed when that is unset too:
+	// no PVC is created silently bound to an unsuitable class.
 	// +optional
 	Class string `json:"class,omitempty"`
+
+	// AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+	// serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+	// opt-in for storage classes that support true parallelism.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
 }
+
+// defaultWorkspaceAccessModes is the §9.4 default when spec.accessModes is
+// unset: RWO — writers are serialized by the per-Project write-lease
+// (story 4.4) and each Run works in its own git worktree.
+var defaultWorkspaceAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=proj,categories=ksquad
