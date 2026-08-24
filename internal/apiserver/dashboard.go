@@ -321,8 +321,8 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	}
 
 	// ── 8.8b/8.8c tickets + approvals: coord seam (Epic 2).
-	switch {
-	case s.tickets == nil:
+	switch s.tickets {
+	case nil:
 		out.Tickets = TicketsTile{TileStatus: degradedTile("source not wired: coordination store (Epic 2 §6.5)")}
 	default:
 		facts, terr := s.tickets.TicketFacts(ctx, auth.Principal, ns, projectID)
@@ -342,8 +342,8 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	}
 
 	// ── 8.8d PR mini-board: scm mirror seam (Epic 11.3). Unsynced repo ⇒ EMPTY board.
-	switch {
-	case s.prs == nil:
+	switch s.prs {
+	case nil:
 		out.PullRequests = PRTile{TileStatus: degradedTile("source not wired: scm PR mirror (Epic 11.3, §5.4)")}
 	default:
 		prs, perr := s.prs.PullRequests(ctx, ns, projectID)
@@ -370,8 +370,8 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	}
 
 	// ── 8.8e consumption: metrics seam (Epic 13.4). Unwired ⇒ throughput-without-cost.
-	switch {
-	case s.metrics == nil:
+	switch s.metrics {
+	case nil:
 		out.Consumption = ConsumptionTile{TileStatus: degradedTile("source not wired: metrics query seam (Epic 13.4, §17.2)")}
 	default:
 		total, cost, currency, trend, merr := s.metrics.TokenConsumption(ctx, ns, projectID)
