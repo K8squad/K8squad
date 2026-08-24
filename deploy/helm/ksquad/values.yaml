@@ -269,10 +269,24 @@ storage:
 #   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
 # ═════════════════════════════════════════════════════════════════════════════
 nats:
-# The event bus is ON by default (one `helm install` yields the whole stack,
-# §16). Turning it OFF must NEVER break the core install — the outbox buffers
-# and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
-enabled: true
+  # The event bus is ON by default (one `helm install` yields the whole stack,
+  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
+  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+  enabled: true
+  image: nats:2.10-alpine
+  port: 4222
+  jetstream:
+    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
+    maxFileStore: 4GB
+  ha:
+    enabled: false
+    replicas: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 
 # Egress configuration for Projects (story 4.6, ISI-2888)
 # This controls the default-deny + allowlist egress policy structure applied
