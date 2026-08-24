@@ -1,0 +1,64 @@
+{{- /* ksquad-event-relay Deployment (ISI-2913, Story 12.1 / ISI-2260 / §17.4).
+       Standalone outbox→NATS relay worker. Tails coord.outbox via LISTEN/NOTIFY+poll
+       and publishes to JetStream at-least-once. DECOUPLED from the write path:
+       NATS-down or relay-down NEVER blocks a Run/claim/memory/scm write (ADR-023).
+       The relay ConfigMap (event-relay.yaml) provides its config. */ -}}
+{{- if and .Values.eventRelay.enabled .Values.nats.enabled -}}
+{{- $dbSecret := .Values.eventRelay.database.existingSecret | default (printf "%s-pg-app" (include "ksquad.fullname" .)) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ksquad.event-relay.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: event-relay
+spec:
+  replicas: {{ .Values.eventRelay.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: event-relay
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: event-relay
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: event-relay
+          image: "{{ .Values.eventRelay.image.repository }}:{{ .Values.eventRelay.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.eventRelay.image.pullPolicy }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ .Values.eventRelay.database.existingSecretKey | quote }}
+            - name: RELAY_NATS_URL
+              value: {{ include "ksquad.nats.url" . | quote }}
+            - name: RELAY_SUBJECT_PREFIX
+              value: {{ .Values.events.relay.subjectPrefix | quote }}
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.eventRelay.resources | nindent 12 }}
+{{- end }}

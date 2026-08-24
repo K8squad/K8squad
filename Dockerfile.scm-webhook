@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-scm-webhook — Story 11.1 HMAC-verified SCM webhook ingress (ISI-2913).
+# Lightweight HTTP server: verifies per-Project HMAC, patches the scm-sync-trigger
+# annotation on the Project CR, and returns immediately. The operator's level-triggered
+# reconciler does the actual mirror work.
+# Multi-arch cross-compile → static non-root distroless (same shape as operator).
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/scm-webhook ./cmd/scm-webhook
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-scm-webhook" \
+      org.opencontainers.image.description="KSquad SCM webhook ingress: HMAC-verified GitHub/GitLab push trigger (Story 11.1)" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/scm-webhook /usr/local/bin/scm-webhook
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/scm-webhook"]
