@@ -151,9 +151,34 @@ var allowedSurface = map[string]string{
 	"DuePause":              "§8 a pause whose resume_at has elapsed and is due to wake",
 	"Timer":                 "§8 single-durable-wake timer over the resume store",
 	"NewTimer":              "§8 constructor",
-	"Timer.Run":             "§8 sleep-until-resume_at loop (zero reads while idle)",
-	"Timer.Notify":          "§8 out-of-band kick when an earlier-deadline pause lands",
-	"EqualJitter":           "§8 equal-jitter backoff helper for resume_at derivation",
+	// Timer.Run/Timer.Notify now live on the package-private generic wakeLoop
+	// (the harness Timer and the prod ProdTimer share one loop, ISI-2883) —
+	// promoted methods, invisible to this scanner by construction.
+	"EqualJitter": "§8 equal-jitter backoff helper for resume_at derivation",
+
+	// §2.10/§6.2-6.3 rate-limit re-route to a different-credential Agent (Story
+	// 2.10 / ISI-2882). Custody-only, same discipline as reclaim (2.4) and
+	// handoff (2.8): fenced RELEASE → coordinator RE-DISPATCH → §6.2 claim —
+	// never a P2P lease handoff. The hold names the throttled credential's
+	// OPAQUE identity (7.6) so the credentialed claim can refuse the same
+	// credential while the window is live; no seat token is ever re-pointed
+	// (§11.2/ADR-041) and no parameter carries worker-authored content.
+	"ReroutePolicy":                           "§2.10/3.7 escalation policy (repeat attempts / long Retry-After), code-supplied",
+	"ReroutePolicy.Validate":                  "§2.10/3.7 fail-open guard: rejects AfterAttempts<2 / non-positive window (ISI-3083 F4)",
+	"DefaultReroutePolicy":                    "§2.10 sane default escalation policy",
+	"MaxHoldWindow":                           "§2.10/3.7 upper bound on a hold's resume_at, mirrors resume.BackoffCap (ISI-3083 F5)",
+	"ShouldReroute":                           "§2.10/3.7 pure verdict: does this escalated pause re-route?",
+	"PickAlternateCredential":                 "§2.10/7.6 pure roster pick: an Agent credential that differs from the throttled one",
+	"ProdRerouteStore":                        "§2.10 fenced-release + re-dispatch + hold store bound to the prod schema",
+	"NewProdRerouteStore":                     "§2.10 constructor",
+	"ProdRerouteStore.ReleaseForReroute":      "§2.10/§6.3 fenced release → todo re-dispatch → throttled-credential hold (one txn)",
+	"ProdRerouteOption":                       "§2.10 functional option for the reroute store (event capture opt-in)",
+	"WithRerouteOutboxCapture":                "§2.10/§17.4 co-commit a work_item/reroute_released outbox event in the release txn (emit-only)",
+	"RerouteReleaseResult":                    "§2.10 outcome of a release (installed fence + idempotency marker)",
+	"ErrNotRerouteCustodian":                  "§2.10 guard: only the paused Run's own holder/run may be released",
+	"ErrRerouteNotInProgress":                 "§2.10 guard: a re-route re-dispatches live (in_progress) work only",
+	"ProdClaimer.ClaimNextCredentialed":       "§2.10/§6.2 SKIP-LOCKED pop that skips items a live hold pins for this credential (7.6)",
+	"ProdClaimer.AcquireSpecificCredentialed": "§2.10/§6.2 guarded acquire of a named item, refused while a live hold pins this credential (7.6)",
 
 	// §6.4 Run reconcile machine's durable Store binding (Story 3.1 / ISI-2655,
 	// physical integration of pkg/reconcile / ISI-2535). Custody-only: every method
@@ -197,6 +222,65 @@ var allowedSurface = map[string]string{
 	"ProdEffects.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
 	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
 	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
+
+	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
+	// scheduled-resume surface — custody/schedule operations on the pause
+	// episode row, no agent-to-agent channel.
+	"ProdResumeStore":           "§8 tier-2 scheduled resume bound to coord.run_pause (custody/schedule)",
+	"NewProdResumeStore":        "§8 constructor (uuid-keyed pause-episode store, migration 0009)",
+	"DefaultProdResumeConfig":   "§8 v1 policy + the production Pause table binding",
+	"ProdResumeStore.Pause":     "§8 record/refresh the single durable pause episode (resume_at)",
+	"ProdResumeStore.Pending":   "§8 pending-episode probe (the driver's park guard)",
+	"ProdResumeStore.NextWake":  "§8 earliest pending resume_at (the single wake derivation)",
+	"ProdResumeStore.ResumeDue": "§8 exactly-once SKIP LOCKED claim of due episodes",
+	"ProdResumeStore.Stats":     "§8 statement counters (the no-polling proof surface)",
+	"ProdResumeStore.DB":        "§8 backing handle accessor (same surface as ResumeStore.DB)",
+	"ProdDuePause":              "§8 one claimed resume: real coord uuids + attempt + resume_at",
+	"ProdTimer":                 "§8 the production single-wake scheduler (uuid instantiation)",
+	"NewProdTimer":              "§8 constructor (wake loop + OnDue re-entry callback)",
+
+	// §6.3 background crash-safe reclaim sweeper (Story 2.4 / ISI-3104): a
+	// periodic scan that reclaims expired leases the same custody way ClaimNext
+	// does opportunistically — one data-modifying CTE co-commits the monotonic
+	// fence bump (fences the dead holder), the reclaim_fenced_at stamp + holder/
+	// lease release, and work_item→open, under FOR UPDATE OF claim SKIP LOCKED.
+	// Custody-only: no parameter carries worker-authored content, the loop is
+	// stateless (crash-safe re-derivation from durable claim state), and the
+	// OnReclaim callback is the §6.3 resource-layer fence seam, not an A2A channel.
+	"SweepConfig":                            "§6.3 sweeper config (interval/batch/jitter), code-supplied",
+	"DefaultSweepConfig":                     "§6.3 sane default sweeper config",
+	"Reclaimed":                              "§6.3 one reclaimed lease (item + fenced holder), custody record",
+	"SweepStore":                             "§6.3 durable expired-lease reclaim store bound to coord.claim",
+	"NewSweepStore":                          "§6.3 constructor",
+	"NewSweepForTest":                        "§6.3 chaos-harness constructor (int-keyed schema)",
+	"SweepStore.ReclaimExpired":              "§6.3 fence-first batch reclaim of expired leases (CTE, SKIP LOCKED)",
+	"SweepStore.Scans":                       "§6.3 scan-counter introspection for tests/ops",
+	"SweepStore.DB":                          "§6.3 harness handle accessor",
+	"Sweeper":                                "§6.3 the periodic reclaim loop (stateless, crash-safe)",
+	"NewSweeper":                             "§6.3 constructor (store + metrics + OnReclaim fence callback)",
+	"Sweeper.Run":                            "§6.3 run the periodic scan until context cancellation",
+	"SweeperMetrics":                         "§6.3 sweeper metrics sink interface (cycle/reclaim/duration)",
+	"PrometheusSweeperMetrics":               "§6.3 Prometheus metrics sink for the sweeper",
+	"NewPrometheusSweeperMetrics":            "§6.3 constructor",
+	"PrometheusSweeperMetrics.IncSweepCycle": "§6.3 count one completed sweep cycle",
+	"PrometheusSweeperMetrics.AddSweepReclaims":     "§6.3 add the reclaims from one cycle",
+	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
+	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
+
+	// §8.6/§13 human board-lane status transition (Story 8.14a / ISI-2909, gap
+	// ISI-2876). The Kanban board is a PROJECTION of work_item.state; this is the
+	// write path for a HUMAN to move a card between lanes. Custody-only in the
+	// FR-B3 sense: it changes a work_item's own lane + writes a §6.5 audit row,
+	// carries NO worker-authored content, and — ADR-037 — holds no claim and bumps
+	// no fence (audit fence_token NULL, the claim untouched). Not an agent channel:
+	// agents hand off via comment + Complete (§6.1/§2.8), never through this op.
+	"StateTransition":                 "§8.6 outcome of a human lane move (from/to lane projection, read-only)",
+	"ErrInvalidState":                 "§8.6 guard: target is not one of the pinned board lanes (→400)",
+	"ErrWorkItemNotFound":             "§12.1 guard: item outside the caller's Team scope is 404-not-403",
+	"ErrStateConflict":                "§8.6 guard: fromState precondition missed / already in target lane (→409)",
+	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
+	"NewHumanStateStore":              "§8.6 constructor",
+	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

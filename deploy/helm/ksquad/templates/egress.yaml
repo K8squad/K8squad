@@ -1,0 +1,54 @@
+{{/*
+  Default-deny NetworkPolicy for all namespaces managed by KSquad.
+  
+  This creates the baseline "no egress" policy that all namespaces inherit.
+  Project-specific egress policies (created by the Project controller) then
+  carve out allowlists for specific destinations like egress proxies.
+  
+  See story 4.6 and ISI-2888 for details on the egress architecture.
+*/}}
+{{- if .Values.egress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.egress.networkPolicy.defaultDenyName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: egress-default-deny
+spec:
+  policyTypes:
+  - Egress
+  - Ingress
+  egress:
+  # Default deny: no egress traffic allowed by default
+  ingress:
+  # Default deny: no ingress traffic allowed by default
+  podSelector: {}
+  # Apply to all pods in the namespace as baseline
+---
+{{/*
+  Global default-deny policy template for team namespaces.
+  
+  This is used as a base template that can be applied to different namespaces
+  to provide the baseline egress isolation.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Values.egress.networkPolicy.defaultDenyName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: egress-default-deny
+spec:
+  policyTypes:
+  - Egress
+  - Ingress
+  egress: []
+  ingress: []
+  podSelector: {}
+  namespaceSelector: {}
+  # This is a template - it will be applied to specific namespaces by the operator
+{{- end }}

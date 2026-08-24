@@ -7,6 +7,31 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - limitranges
+  - resourcequotas
+  - serviceaccounts
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - get
@@ -17,11 +42,67 @@ rules:
   resources:
   - agentruntimes
   - agents
-  - projects
   - roles
   - skills
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects/status
+  - teams/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ksquad.io
+  resources:
   - teams
   verbs:
   - get
   - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - teams/finalizers
+  verbs:
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
   - watch

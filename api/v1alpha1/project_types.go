@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -129,6 +130,16 @@ type RepoSyncSpec struct {
 	// +optional
 	Mirror *RepoMirrorSpec `json:"mirror,omitempty"`
 
+	// PollIntervalSeconds is the periodic poll-fallback cadence (§5.4,
+	// story 11.1 AC3): the level-triggered reconcile re-runs at this
+	// interval so a lost webhook is never permanent drift. It comes from
+	// the spec/chart values, never a reconciler hardcode; zero means the
+	// default of 300s.
+	// +optional
+	// +kubebuilder:validation:Minimum=60
+	// +kubebuilder:default=300
+	PollIntervalSeconds int32 `json:"pollIntervalSeconds,omitempty"`
+
 	// ReflectOutbound opts in to posting KSquad Run status/comments back to
 	// the provider (§5.4): off by default, requires a status-write-scoped
 	// token, every write origin-marked for echo suppression.
@@ -163,13 +174,45 @@ type PVCSpec struct {
 	// +kubebuilder:validation:Required
 	Size resource.Quantity `json:"size"`
 
-	// Class is the storageClass name; empty means the cluster default.
+	// Class is the storageClass name. Empty does NOT mean the cluster
+	// default (story 9.2: relying on the cluster default is
+	// misconfiguration) — the operator resolves it from its Helm-provided
+	// workspace storage class and fails closed when that is unset too:
+	// no PVC is created silently bound to an unsuitable class.
 	// +optional
 	Class string `json:"class,omitempty"`
+
+	// AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+	// serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+	// opt-in for storage classes that support true parallelism.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+}
+
+// defaultWorkspaceAccessModes is the §9.4 default when spec.accessModes is
+// unset: RWO — writers are serialized by the per-Project write-lease
+// (story 4.4) and each Run works in its own git worktree.
+var defaultWorkspaceAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+
+// EffectiveAccessModes resolves the workspace PVC access modes, applying the
+// §9.4 default ([ReadWriteOnce]) when spec.accessModes is unset. Callers (the
+// PVC reconciler of story 4.4, the workspace defaulting webhook) get the
+// default from exactly one place instead of re-hardcoding RWO. A fresh slice
+// is returned so callers never mutate the shared default.
+func (s *PVCSpec) EffectiveAccessModes() []corev1.PersistentVolumeAccessMode {
+	src := s.AccessModes
+	if len(src) == 0 {
+		src = defaultWorkspaceAccessModes
+	}
+	out := make([]corev1.PersistentVolumeAccessMode, len(src))
+	copy(out, src)
+	return out
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=proj,categories=ksquad
+// +kubebuilder:subresource:status
 // +kubebuilder:webhook:path=/mutate-ksquad-io-v1alpha1-project,mutating=true,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=projects,verbs=create;update,versions=v1alpha1,name=mproject-attribution.ksquad.io,admissionReviewVersions=v1
 // +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-project,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=projects,verbs=create;update,versions=v1alpha1,name=vproject-attribution.ksquad.io,admissionReviewVersions=v1
 
@@ -179,7 +222,46 @@ type Project struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec ProjectSpec `json:"spec,omitempty"`
+	Spec   ProjectSpec   `json:"spec,omitempty"`
+	Status ProjectStatus `json:"status,omitempty"`
+}
+
+// ProjectStatus is the observed state of a Project. The repo-sync
+// reconciler (story 11.1) is its only writer: status reports mirror
+// liveness — never desired state, and never coordination custody (§6).
+type ProjectStatus struct {
+	// Conditions summarize the repo-sync loop's latest observations
+	// (story 11.1): SyncReady when the provider seam + BYO credential
+	// resolved and the last level-triggered mirror pass applied.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Sync reports repo-sync mirror progress (§5.4, story 11.1). Nil
+	// until the first successful mirror pass.
+	// +optional
+	Sync *ProjectSyncStatus `json:"sync,omitempty"`
+}
+
+// ProjectSyncStatus is the repo-sync slice of Project.status (§5.4).
+// Every field is a read-only observation of the inbound mirror loop —
+// the fenced coordination record (§6) stays authoritative and nothing
+// here is control input.
+type ProjectSyncStatus struct {
+	// LastMirrorTime is when the level-triggered reconcile last applied
+	// a provider snapshot to the scm mirror (webhook-triggered or poll).
+	// +optional
+	LastMirrorTime *metav1.Time `json:"lastMirrorTime,omitempty"`
+
+	// LastWebhookTime is when a good-signature webhook last triggered a
+	// reconcile fast path (§5.4). Unaffected by poll ticks.
+	// +optional
+	LastWebhookTime *metav1.Time `json:"lastWebhookTime,omitempty"`
+
+	// MirrorRecordCount is the number of records the last snapshot
+	// applied (post echo-suppression) — a liveness signal, not a
+	// coordination fact.
+	// +optional
+	MirrorRecordCount int64 `json:"mirrorRecordCount,omitempty"`
 }
 
 // +kubebuilder:object:root=true

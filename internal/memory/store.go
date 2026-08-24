@@ -170,6 +170,54 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 	return hits, nil
 }
 
+// SearchByIDs is the §6.6 pinned-snapshot read: fetch EXACTLY these live records by id —
+// no ranking, no embedding — still scope-enforced (squad_id, optional project/kind narrowing)
+// and retraction-filtered (invalidated rows never return), so a pinned doc id from a foreign
+// tenant is un-returnable exactly as a foreign row is un-recallable (AC1 discipline applied to
+// the exact-id path; the ids come from the Run's own §6.4 envelope snapshot, but the store
+// trusts nothing). Rows come back in the ORDER REQUESTED when found (missing ids are simply
+// absent — a soft-retracted pin drops out, which the assembler treats as snapshot decay).
+// Not part of the Backend seam: this is the 6.6 recall-side store companion, like Pool().
+func (s *PgVectorStore) SearchByIDs(ctx context.Context, q SearchQuery, ids []string) ([]SearchHit, error) {
+	if q.SquadID == "" {
+		return nil, fmt.Errorf("search by ids: squad_id is required — even the pinned path is tenancy-scoped (AC1)")
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	const q1 = `
+		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
+		       created_at, invalidated_at, provenance
+		FROM memory.memory_records
+		WHERE squad_id = $1 AND invalidated_at IS NULL
+		  AND ($2::uuid IS NULL OR project_id = $2::uuid)
+		  AND ($3::text IS NULL OR kind = $3::text)
+		  AND id = ANY($4::uuid[])
+		ORDER BY array_position($4::uuid[], id)`
+	rows, err := s.pool.Query(ctx, q1, q.SquadID, q.ProjectID, q.Kind, ids)
+	if err != nil {
+		return nil, fmt.Errorf("search by ids: %w", err)
+	}
+	defer rows.Close()
+	var hits []SearchHit
+	for rows.Next() {
+		var h SearchHit
+		var prov []byte
+		if err := rows.Scan(
+			&h.ID, &h.SquadID, &h.ProjectID, &h.PrincipalID, &h.RunID, &h.AgentID,
+			&h.Kind, &h.Content, &h.CreatedAt, &h.InvalidatedAt, &prov,
+		); err != nil {
+			return nil, fmt.Errorf("scan by-ids hit: %w", err)
+		}
+		h.Provenance = json.RawMessage(prov)
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate by-ids hits: %w", err)
+	}
+	return hits, nil
+}
+
 // Invalidate is the §7.4 soft-retract: it stamps invalidated_at on a live record, never DELETEs it.
 func (s *PgVectorStore) Invalidate(ctx context.Context, id string) (bool, error) {
 	tag, err := s.pool.Exec(ctx,
@@ -179,6 +227,36 @@ func (s *PgVectorStore) Invalidate(ctx context.Context, id string) (bool, error)
 		return false, fmt.Errorf("invalidate memory_record: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// SupersedeHandoffMirrors is the §6.6 republish discipline: when a Run re-publishes its
+// structured handoff (the coord artifact upserts in place — ONE live artifact per
+// (work_item, run, kind)), the mirror soft-retracts every EARLIER live handoff-mirror record
+// for the same (squad, work item, run) so recall surfaces exactly the newest mirror, never a
+// stale duplicate. keepID (the just-written mirror of the new publication) is excluded; the
+// retract is a §7.4 invalidated_at stamp, never a DELETE — the superseded mirrors stay
+// queryable for audit. The (work_item, run) pair lives in the mirror's provenance jsonb
+// (stamped by the handoffmirror writer), so the predicate is a jsonb filter — no schema
+// change, and a handoff-mirror written without that provenance is simply never superseded.
+// Not part of the Backend seam: this is the §6.6 writer-side store companion, like Pool().
+func (s *PgVectorStore) SupersedeHandoffMirrors(ctx context.Context, squadID, workItemID, runID, keepID string) (int64, error) {
+	if squadID == "" || workItemID == "" || runID == "" {
+		return 0, fmt.Errorf("supersede handoff mirrors: squadID, workItemID and runID are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE memory.memory_records SET invalidated_at = now()
+		 WHERE squad_id = $1
+		   AND kind = $2
+		   AND invalidated_at IS NULL
+		   AND id <> $3
+		   AND provenance->>'source' = $4
+		   AND provenance->>'work_item_id' = $5
+		   AND provenance->>'run_id' = $6`,
+		squadID, KindHandoffMirror, keepID, ProvenanceSourceHandoff, workItemID, runID)
+	if err != nil {
+		return 0, fmt.Errorf("supersede handoff mirrors: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // Close releases the connection pool.

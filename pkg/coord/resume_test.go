@@ -232,7 +232,7 @@ func (f *fakeSource) addPending(at time.Time) {
 func newFakeTimer() (*Timer, *fakeSource, *fakeClock) {
 	fc := &fakeClock{now: time.Unix(1_000_000, 0)}
 	fs := &fakeSource{nowFn: fc.Now}
-	tm := &Timer{
+	tm := &Timer{wakeLoop: wakeLoop[DuePause]{
 		store: fs,
 		OnDue: func(ctx context.Context, due []DuePause) {
 			fs.mu.Lock()
@@ -242,7 +242,7 @@ func newFakeTimer() (*Timer, *fakeSource, *fakeClock) {
 		kick:  make(chan struct{}, 1),
 		now:   fc.Now,
 		sleep: func(ctx context.Context, d time.Duration) <-chan time.Time { return fc.sleepCh(d) },
-	}
+	}}
 	return tm, fs, fc
 }
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/internal/discussionindex"
+	"github.com/K8squad/K8squad/internal/handoffmirror"
 	"github.com/K8squad/K8squad/internal/memory"
 )
 
@@ -82,6 +83,12 @@ func main() {
 	// never prevent the memory service (and its reads) from starting.
 	startDiscussionIndexer(ctx, cfg.DatabaseURL, store, embedder)
 
+	// Best-effort handoff→memory mirror (6.6, §8.5): projects committed 2.8 handoff artifacts into the
+	// memory index out of band so the NEXT Run recalls them at the untrusted-recall tier. Same fail-open
+	// posture as the discussion indexer — a coord-schema absence or DB problem disables mirroring with a
+	// log line, never preventing the memory service (and its reads) from starting (AC6).
+	startHandoffMirror(ctx, cfg.DatabaseURL, store, embedder)
+
 	mux := http.NewServeMux()
 	tools.Mount(mux)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -138,6 +145,33 @@ func startDiscussionIndexer(ctx context.Context, dsn string, store *memory.PgVec
 	log.Printf("ksquad-memory: discussion indexer running (interval=%s)", interval)
 	go func() {
 		ix.Run(ctx, interval)
+		_ = db.Close()
+	}()
+}
+
+// startHandoffMirror launches the best-effort handoff→memory mirror (6.6, §8.5) in the background.
+// Deliberately fail-open, exactly like the discussion indexer: any setup problem disables mirroring
+// with a log line rather than taking down the memory service — the mirror is best-effort over the
+// committed 2.8 coord artifact, and a memory outage must never gate the artifact (AC6). The sweep
+// tolerates a missing coord schema (its query error is logged and retried), so it can start before
+// the coord spine is provisioned. The superseder is the same *memory.PgVectorStore: a republished
+// handoff soft-retracts its earlier mirrors so recall surfaces only the newest publication.
+func startHandoffMirror(ctx context.Context, dsn string, store *memory.PgVectorStore, embedder memory.Embedder) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: handoff mirror disabled (open db: %v)", err)
+		return
+	}
+	m := handoffmirror.NewMirror(handoffmirror.NewSQLSource(db), store, embedder, store, 0)
+	interval := 15 * time.Second
+	if v := os.Getenv("HANDOFF_MIRROR_INTERVAL"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil {
+			interval = d
+		}
+	}
+	log.Printf("ksquad-memory: handoff mirror running (interval=%s)", interval)
+	go func() {
+		m.Run(ctx, interval)
 		_ = db.Close()
 	}()
 }
