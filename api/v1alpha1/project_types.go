@@ -195,6 +195,21 @@ type PVCSpec struct {
 // (story 4.4) and each Run works in its own git worktree.
 var defaultWorkspaceAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 
+// EffectiveAccessModes resolves the workspace PVC access modes, applying the
+// §9.4 default ([ReadWriteOnce]) when spec.accessModes is unset. Callers (the
+// PVC reconciler of story 4.4, the workspace defaulting webhook) get the
+// default from exactly one place instead of re-hardcoding RWO. A fresh slice
+// is returned so callers never mutate the shared default.
+func (s *PVCSpec) EffectiveAccessModes() []corev1.PersistentVolumeAccessMode {
+	src := s.AccessModes
+	if len(src) == 0 {
+		src = defaultWorkspaceAccessModes
+	}
+	out := make([]corev1.PersistentVolumeAccessMode, len(src))
+	copy(out, src)
+	return out
+}
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=proj,categories=ksquad
 // +kubebuilder:subresource:status
