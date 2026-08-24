@@ -735,3 +735,83 @@ a:hover {
   gap: 8px;
   align-items: center;
 }
+
+/* Compose (story 8.5 / UX screen 04-compose-crd, ISI-2901): the CRD authoring surface. Reuses the
+   card / btn / state / field-error idioms; only the layout scaffolding is compose-specific. */
+.compose__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+  margin: 12px 0;
+}
+
+.compose__controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.compose__controls select {
+  min-height: 44px;
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font: inherit;
+}
+
+.compose__mode {
+  display: flex;
+  gap: 8px;
+}
+
+.compose__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.compose__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.compose__field input,
+.compose__field select,
+.compose__field textarea {
+  min-height: 44px;
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font: inherit;
+}
+
+.compose__field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.field-hint {
+  color: var(--text-2);
+  font-style: normal;
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.compose__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-top: 12px;
+}
