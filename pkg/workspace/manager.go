@@ -50,14 +50,14 @@ const (
 	LabelRun = "k8squad.io/run"
 )
 
-// WorkspaceManager manages PVC lifecycle for agent workspaces
-type WorkspaceManager struct {
+// Manager manages PVC lifecycle for agent workspaces
+type Manager struct {
 	client client.Client
 }
 
 // NewWorkspaceManager creates a new workspace manager
-func NewWorkspaceManager(kubeClient client.Client) *WorkspaceManager {
-	return &WorkspaceManager{
+func NewWorkspaceManager(kubeClient client.Client) *Manager {
+	return &Manager{
 		client: kubeClient,
 	}
 }
@@ -65,7 +65,7 @@ func NewWorkspaceManager(kubeClient client.Client) *WorkspaceManager {
 // Reconcile ensures a workspace PVC exists for each Run. PVC teardown is handled
 // by the owner reference set in createWorkspacePVC, so a deleted/absent Run is a
 // no-op here.
-func (wm *WorkspaceManager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (wm *Manager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	run := &ksquadv1alpha1.Run{}
 	if err := wm.client.Get(ctx, req.NamespacedName, run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -81,7 +81,7 @@ func (wm *WorkspaceManager) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 // EnsureWorkspace ensures that a workspace PVC exists for the given Run.
 // If the PVC doesn't exist, it creates one. If it exists, it returns the reference.
-func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
+func (wm *Manager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	logger := log.FromContext(ctx)
 	
 	// Generate the PVC name for this Run
@@ -114,7 +114,7 @@ func (wm *WorkspaceManager) EnsureWorkspace(ctx context.Context, run *ksquadv1al
 }
 
 // GetWorkspace returns the workspace PVC for the given Run
-func (wm *WorkspaceManager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
+func (wm *Manager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
 	
 	pvc := &corev1.PersistentVolumeClaim{}
@@ -128,7 +128,7 @@ func (wm *WorkspaceManager) GetWorkspace(ctx context.Context, run *ksquadv1alpha
 }
 
 // DeleteWorkspace deletes the workspace PVC for the given Run
-func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) error {
+func (wm *Manager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) error {
 	logger := log.FromContext(ctx)
 	
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
@@ -156,7 +156,7 @@ func (wm *WorkspaceManager) DeleteWorkspace(ctx context.Context, run *ksquadv1al
 }
 
 // createWorkspacePVC creates a workspace PVC for the given Run
-func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *corev1.PersistentVolumeClaim {
+func (wm *Manager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *corev1.PersistentVolumeClaim {
 	// ponytail: RunSpec.SandboxPolicy carries no per-Run workspace sizing/class
 	// fields (api/v1alpha1/run_types.go), so we use the package defaults.
 	// Upgrade path: add a WorkspacePVC *PVCSpec to SandboxPolicy (mirror
@@ -205,8 +205,8 @@ func (wm *WorkspaceManager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName 
 	return pvc
 }
 
-// WorkspaceVolumeMount returns a volume mount specification for the workspace PVC
-func WorkspaceVolumeMount(runName string) corev1.VolumeMount {
+// VolumeMount returns a volume mount specification for the workspace PVC
+func VolumeMount(runName string) corev1.VolumeMount {
 	return corev1.VolumeMount{
 		Name:      "workspace",
 		MountPath: "/workspace",
@@ -214,8 +214,8 @@ func WorkspaceVolumeMount(runName string) corev1.VolumeMount {
 	}
 }
 
-// WorkspaceVolume returns a volume specification for the workspace PVC
-func WorkspaceVolume(runName string) corev1.Volume {
+// Volume returns a volume specification for the workspace PVC
+func Volume(runName string) corev1.Volume {
 	return corev1.Volume{
 		Name: "workspace",
 		VolumeSource: corev1.VolumeSource{
