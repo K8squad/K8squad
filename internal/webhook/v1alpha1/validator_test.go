@@ -145,6 +145,28 @@ func TestValidBaselineAdmits(t *testing.T) {
 	assert.NoError(t, toInvalid("Run", "run-1", v.ValidateRun(ctx, validRun())), "valid Run must admit")
 }
 
+// TestValidateAgentCredentialClass (story 5.4, GuardAgentCredentialClass): a
+// valid credential class (or an empty one, which defaults to service-account
+// at injection) admits; an unknown class is rejected at admission before it
+// can reach the injection seam.
+func TestValidateAgentCredentialClass(t *testing.T) {
+	ctx := context.Background()
+	v := newValidator(t, validWorld())
+
+	for _, class := range []string{"", "human-seat", "service-account"} {
+		a := validAgent()
+		a.Spec.CredentialClass = class
+		assert.NoError(t, toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a)),
+			"credential class %q must admit", class)
+	}
+
+	bad := validAgent()
+	bad.Spec.CredentialClass = "root"
+	err := toInvalid("Agent", bad.Name, v.ValidateAgent(ctx, bad))
+	require.Error(t, err, "unknown credential class must be rejected")
+	assert.Contains(t, err.Error(), "credentialClass")
+}
+
 // invalidCase couples one guard with its dangling-ref specimen: invalid
 // runs the exact denial the webhook server serializes (toInvalid shape).
 type invalidCase struct {

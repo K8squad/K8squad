@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/credinject"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/sandbox"
 )
@@ -44,6 +45,13 @@ const (
 	GuardAgentSkills  = "agent/skillRefs"
 	// #nosec G101 -- guard path key naming the field it guards, not a credential
 	GuardAgentSecret = "agent/credentialSecretRef"
+	// GuardAgentCredentialClass validates spec.credentialClass against the
+	// credential injection contract's taxonomy (story 5.4, pkg/credinject):
+	// an unknown class must fail at ADMISSION, never reach the injection seam
+	// where an unmapped class would strand a Run with no runtime-native
+	// credential env.
+	// #nosec G101 -- guard path key naming the field it guards, not a credential
+	GuardAgentCredentialClass = "agent/credentialClass"
 	// GuardAgentModelEndpoint guards the BYO model-endpoint Secret
 	// (spec.modelEndpointRef, §10.3 seam / stories 5.7+5.11): it must exist
 	// AND carry the 7.5 shape (endpointURL key, parseable http(s) URL) — a
@@ -54,9 +62,9 @@ const (
 	// Secret (spec.fallbackModel.modelEndpointRef, story 5.11) with the
 	// same existence + shape discipline.
 	GuardAgentFallbackModelEndpoint = "agent/fallbackModel.modelEndpointRef"
-	GuardRunTeam     = "run/teamRef"
-	GuardRunProject  = "run/projectRef"
-	GuardRunAgents   = "run/agents"
+	GuardRunTeam                    = "run/teamRef"
+	GuardRunProject                 = "run/projectRef"
+	GuardRunAgents                  = "run/agents"
 	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
 	// annotation: platform operators only. Without this guard the
 	// annotation is a plain metadata write any Run author can set,
@@ -208,6 +216,11 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 			errs = append(errs, invalidf("spec.credentialSecretRef", ref, "admission read failed (fail-closed): %v", err))
 		case !ok:
 			errs = append(errs, invalidf("spec.credentialSecretRef", ref, "referenced Secret %s/%s does not exist; create the BYO credential Secret (arch §11) first", agent.Namespace, ref.Name))
+		}
+	}
+	if v.on(GuardAgentCredentialClass) {
+		if err := credinject.ValidateClass(credinject.CredentialClass(agent.Spec.CredentialClass)); err != nil {
+			errs = append(errs, invalidf("spec.credentialClass", agent.Spec.CredentialClass, "%v", err))
 		}
 	}
 	if v.on(GuardAgentModelEndpoint) && agent.Spec.ModelEndpointRef != nil {

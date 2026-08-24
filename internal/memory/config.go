@@ -13,8 +13,10 @@ import (
 const EmbeddingDim = 768
 
 // Config is the ksquad-memory service configuration. DatabaseURL is the shared Postgres DSN (the sole
-// store of record, §17.3/ADR-001). EmbedderEndpoint sits behind the §7.1 embedder seam — v1 records it
-// in provenance; wiring a live embedder client is not this story's schema substrate.
+// store of record, §17.3/ADR-001). EmbedderEndpoint sits behind the §7.1 embedder seam — when set,
+// NewEmbedder wires a live semantic HTTPEmbedder (OpenAI-shaped /v1/embeddings) against it; when empty,
+// the service falls back to the deterministic local HashingEmbedder. EmbedderModel is the model id
+// passed to that endpoint.
 type Config struct {
 	DatabaseURL      string `json:"databaseUrl"`
 	EmbedderEndpoint string `json:"embedderEndpoint"`
