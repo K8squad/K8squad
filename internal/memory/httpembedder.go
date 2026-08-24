@@ -82,12 +82,16 @@ func (e *HTTPEmbedder) Embed(ctx context.Context, text string) ([]float32, error
 	if err != nil {
 		return nil, fmt.Errorf("embedder: marshal request: %w", err)
 	}
+	// #nosec G704 -- e.endpoint is operator-supplied config (Config.EmbedderEndpoint), fixed at startup by
+	// the §7.1 seam factory; it is never request-tainted (the per-request input is the body's `Input` text,
+	// not the URL). Same posture as the other operator-config-not-request-input suppressions in this repo.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("embedder: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// #nosec G704 -- same operator-config endpoint as above; the request URL carries no request-tainted data.
 	resp, err := e.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("embedder: call %s: %w", e.endpoint, err)
