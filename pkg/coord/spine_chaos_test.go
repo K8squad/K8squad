@@ -158,6 +158,20 @@ func openDB(t testing.TB, dsn string) *sql.DB {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
+	// Bound and REUSE the pool. C1's naive-teeth arm spins mClaimers goroutines
+	// in a tight check-then-act retry loop; against real CNPG the DB is reached
+	// over a single `kubectl port-forward`, which tunnels every TCP connection as
+	// a stream over one SPDY channel. An unbounded database/sql pool answers that
+	// busy loop with a storm of short-lived dials, and the churn drops the forward
+	// mid-run — the primary connection dies ("unexpected EOF"), the local listener
+	// goes away, and every subsequent subtest fails on "connect: connection
+	// refused" (ISI-2918). Capping MaxOpenConns to the claimer count with matching
+	// idle keeps the forward carrying a steady, reused set of connections instead
+	// of a dial storm, while preserving the full mClaimers-way contention the
+	// teeth need. ConnMaxLifetime(0) = reuse for the whole test.
+	db.SetMaxOpenConns(mClaimers)
+	db.SetMaxIdleConns(mClaimers)
+	db.SetConnMaxLifetime(0)
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }

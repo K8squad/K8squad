@@ -131,9 +131,19 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: |
           # Expose the read-write service on a stable localhost DSN for the Go
-          # test process. Background the forward and poll until the port answers.
-          kubectl -n chaos port-forward svc/coord-chaos-pg-rw 5432:5432 \
-            > /tmp/pgforward.log 2>&1 &
+          # test process. SUPERVISED: kubectl port-forward tunnels every TCP
+          # connection as a stream over one SPDY channel and can drop that channel
+          # under the spine suite's heavy concurrent load (C1's naive-teeth arm).
+          # If the forward exits, respawn it so a transient drop self-heals into a
+          # brief reconnect gap instead of stranding the rest of the suite on
+          # "connection refused" (ISI-2918). The Go-side pool cap (openDB) keeps
+          # the steady-state load gentle enough that this respawn should rarely
+          # fire; it is insurance, not the primary fix.
+          ( while true; do
+              kubectl -n chaos port-forward svc/coord-chaos-pg-rw 5432:5432 >> /tmp/pgforward.log 2>&1 || true
+              echo "$(date -u +%H:%M:%S) port-forward exited, respawning" >> /tmp/pgforward.log
+              sleep 1
+            done ) &
           echo "PG_FORWARD_PID=$!" >> "$GITHUB_ENV"
           for i in $(seq 1 30); do
             if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
@@ -197,7 +207,11 @@ jobs:
       - name: Tear down port-forward
         if: always() && steps.guard.outputs.present == 'true'
         run: |
+          # PG_FORWARD_PID is the supervisor subshell: kill it first so the loop
+          # stops respawning, THEN reap the kubectl child by pattern (a leftover
+          # forward would leak between runs on the self-hosted runner).
           if [ -n "${PG_FORWARD_PID:-}" ]; then kill "$PG_FORWARD_PID" 2>/dev/null || true; fi
+          pkill -f 'port-forward svc/coord-chaos-pg-rw' 2>/dev/null || true
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
