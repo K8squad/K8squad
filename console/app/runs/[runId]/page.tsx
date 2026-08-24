@@ -3,6 +3,10 @@
 // The RunStream client component opens the ONE EventSource against the BFF (never the apiserver).
 // The Run-detail header is where the separate FR-F4 Kill Run control (story 3.3/8.4) mounts — it
 // is a control-plane POST, NOT a stream verb, so the stream itself stays read-only (AC6).
+//
+// reasonCancelled: the squad-overview projection (internal/apiserver/overview.go) surfaces a
+// ReasonCancelled field when Phase=="Cancelled". Display of this field in the Run-detail header
+// is deferred to story 3.3/8.4 (Kill Run UI); no control-plane action is taken here.
 
 import { RunStream } from "@/components/RunStream";
 
