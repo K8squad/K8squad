@@ -97,10 +97,16 @@ jobs:
         run: |
           kubectl create namespace chaos --dry-run=client -o yaml | kubectl apply -f -
           # A minimal single-instance CNPG Cluster. `initdb` creates the app DB
-          # `coord_chaos` owned by role `coord` so the suite's freshSchema DDL
-          # (DROP/CREATE on the coord tables) runs as the owner. The generated
-          # app secret <cluster>-app carries the password — no credential in-repo
-          # (repo policy). kind uses the `standard` (local-path) StorageClass.
+          # `coord_chaos`. The suite connects as the Postgres SUPERUSER (not the
+          # `coord` app role): the P/D chaos cases create an ISOLATED per-test
+          # database (`CREATE DATABASE gate_*`) for schema isolation, which needs
+          # the CREATEDB privilege the app role lacks — the bare postgres:16
+          # container this replaced ran as the `postgres` superuser (trust auth),
+          # so the superuser DSN reproduces that exact green baseline on the real
+          # CNPG engine. `enableSuperuserAccess: true` makes CNPG mint the
+          # <cluster>-superuser secret; the generated password lives only in that
+          # k8s secret — no credential in-repo (repo policy). kind uses the
+          # `standard` (local-path) StorageClass.
           cat <<'EOF' | kubectl apply -f -
           apiVersion: postgresql.cnpg.io/v1
           kind: Cluster
@@ -109,6 +115,7 @@ jobs:
             namespace: chaos
           spec:
             instances: 1
+            enableSuperuserAccess: true
             storage:
               size: 1Gi
               storageClass: standard
@@ -151,15 +158,19 @@ jobs:
           # CI WIRING (ISI-2394 / ISI-2918): export the real CNPG DSN to the test
           # step. Under -tags=chaos a missing DATABASE_URL is a FATAL, never a
           # silent skip (dsnOrFatal, AC1) — a required correctness gate must fail
-          # loud, not go silently green. Password is read from the CNPG-generated
-          # app secret <cluster>-app at runtime; sslmode=prefer so the connection
-          # negotiates TLS when CNPG offers it and still succeeds over the
-          # plaintext port-forward otherwise.
+          # loud, not go silently green. Credentials are read from the CNPG
+          # SUPERUSER secret <cluster>-superuser (username `postgres`) at runtime:
+          # the P/D suites `CREATE DATABASE gate_*` for per-test isolation, which
+          # needs CREATEDB — the app role can't, and losing that isolation
+          # cross-contaminates coord_chaos and cascades into 2BP01 drop-dependency
+          # failures in the C-suite. sslmode=prefer so the connection negotiates
+          # TLS when CNPG offers it and still succeeds over the plaintext
+          # port-forward otherwise.
           PGDATABASE: coord_chaos
         run: |
-          PGPASSWORD="$(kubectl -n chaos get secret coord-chaos-pg-app \
+          PGPASSWORD="$(kubectl -n chaos get secret coord-chaos-pg-superuser \
             -o jsonpath='{.data.password}' | base64 -d)"
-          PGUSER="$(kubectl -n chaos get secret coord-chaos-pg-app \
+          PGUSER="$(kubectl -n chaos get secret coord-chaos-pg-superuser \
             -o jsonpath='{.data.username}' | base64 -d)"
           export DATABASE_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/coord_chaos?sslmode=prefer"
           # Build tag `chaos` guards the fault-injection tests (real Postgres required).
