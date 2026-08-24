@@ -7,6 +7,7 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 )
@@ -51,13 +52,27 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
-	Hub           *Hub                // optional; NewServer allocates one when nil
+	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
+	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
+	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
+	Hub         *Hub                     // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
 	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
 	// route keeps answering the documented 501 (dev run without an informer cache wired).
 	Dashboard *DashboardService
+	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
+	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
+	// (dev run without the coord store wired).
+	Artifacts *artifactbrowser.Service
+	// Auth is the Epic 15 identity seam (15.1 /auth/* + 15.2 /admin/users, ISI-2920).
+	// A zero Service ⇒ the routes are not mounted (pre-Epic-15 host shape).
+	Auth AuthRoutesOptions
+	// AuditTrail is the 2.6 audit-log read model (coord.audit_log query surface,
+	// ISI-2881). Nil ⇒ GET /api/audit keeps its documented 501 (a DB-less dev run),
+	// exactly like the other read models.
+	AuditTrail AuditTrailReader
 }
 
 // NewServer assembles the root router from opts.
@@ -98,6 +113,13 @@ func (s *Server) routes(opts Options) {
 	// The discussion Handler installs its own subrouter+BFFAuthz via Mount; the SSE and
 	// read-model routes are gated explicitly with the same middleware so identity resolution
 	// is uniform across the host.
+
+	// Epic 15 identity seam (ISI-2920): /auth/* is the cookie ISSUER (login answers
+	// unauthenticated; refresh/logout/me resolve the cookie themselves), and
+	// /admin/users rides the requireAdmin gate. Mounted before the gated surface so
+	// a route conflict fails loudly at assembly.
+	s.mountAuthRoutes(opts.Auth)
+
 	if opts.Discussion != nil && opts.Authenticator != nil {
 		opts.Discussion.Mount(s.router, opts.Authenticator)
 	}
@@ -122,6 +144,27 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// 8.3 artifact browser (ISI-2900): the coordination-record view of a Run's artifacts —
+		// blobs via digest-verified uris plus the parsed structured handoff (story 2.8). When the
+		// coord store is wired (opts.Artifacts != nil) the routes serve real reads; otherwise they
+		// keep the documented 501 for a DB-less dev run.
+		arts := s.router.Path("/api/runs/{runId}/artifacts").Subrouter()
+		arts.Use(authz)
+		if opts.Artifacts != nil {
+			arts.HandleFunc("", artifactsHandler(opts.Artifacts)).Methods(http.MethodGet)
+		} else {
+			arts.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
+				Methods(http.MethodGet)
+		}
+		art := s.router.Path("/api/runs/{runId}/artifacts/{artifactId}").Subrouter()
+		art.Use(authz)
+		if opts.Artifacts != nil {
+			art.HandleFunc("", artifactContentHandler(opts.Artifacts)).Methods(http.MethodGet)
+		} else {
+			art.HandleFunc("", notImplemented("artifact-browser read model", "ISI-2900: wire a RunSource (KSQUAD_DEV_RUNS or the prod source, ISI-2759) to enable — the coord store is already wired")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.1 squad-overview: served by the Team→Project→Run-status read model (overview.go,
 		// ISI-2760) when the informer cache is wired. Absent a reader (cluster-less dev run)
 		// it keeps the documented 501 so the contract stays honest.
@@ -143,6 +186,38 @@ func (s *Server) routes(opts Options) {
 			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
 		} else {
 			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
+		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
+		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
+		// Connect-Claude seam and answers its own documented 501 until ISI-2899 lands the
+		// OAuth flow — the route exists so the console has one honest endpoint, never a
+		// fabricated login.
+		creds := s.router.Path("/api/credentials").Subrouter()
+		creds.Use(authz)
+		if opts.Credentials != nil {
+			creds.HandleFunc("", s.credentials(opts.Credentials)).Methods(http.MethodGet)
+		} else {
+			creds.HandleFunc("", notImplemented("credential read model", "ISI-2902: wire a CredentialOverviewReader (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+		connect := s.router.Path("/api/credentials/connect").Subrouter()
+		connect.Use(authz)
+		connect.HandleFunc("", s.connectClaude()).Methods(http.MethodPost)
+
+		// 2.6 audit-trail query API (ISI-2881): the read side of coord.audit_log —
+		// who/what/when/result across work items, actors, and time. Behind the same
+		// choke point; the handler applies the admin/self RBAC scoping. Wired to the
+		// Postgres reader in prod (the DB is a hard start dependency), documented 501
+		// only for a reader-less host shape.
+		audit := s.router.Path("/api/audit").Subrouter()
+		audit.Use(authz)
+		if opts.AuditTrail != nil {
+			audit.HandleFunc("", auditTrailHandler(opts.AuditTrail)).Methods(http.MethodGet)
+		} else {
+			audit.HandleFunc("", notImplemented("audit-trail read model", "ISI-2881: wire an AuditTrailReader (Postgres) to enable")).
 				Methods(http.MethodGet)
 		}
 	}

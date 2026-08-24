@@ -369,13 +369,17 @@ var randv2 = rand.Float64
 // Timer: the single durable wake
 // ---------------------------------------------------------------------------
 
-// Timer is the single-wake scheduler. At most one Run loop per process; across
-// processes, ResumeDue's SKIP LOCKED claim keeps every wake exactly-once.
-type Timer struct {
-	store wakeSource
+// wakeLoop is the generic single-wake scheduler core: at most one loop per
+// process; across processes, the ResumeDue SKIP LOCKED claim keeps every wake
+// exactly-once. It is generic over the due-episode type so the harness Timer
+// (int-keyed DuePause) and the production ProdTimer (uuid-keyed ProdDuePause,
+// resumeprod.go) share ONE loop implementation — the no-polling contract is
+// proved once, in the shape both bindings run.
+type wakeLoop[T any] struct {
+	store wakeSource[T]
 	// OnDue is invoked once per fired wake with the batch of episodes claimed
 	// by THIS timer. Production (Story 3.7) re-enters the Run reconciler here.
-	OnDue func(ctx context.Context, due []DuePause)
+	OnDue func(ctx context.Context, due []T)
 
 	kick chan struct{}
 	// sleep/now are injection points for the unit-tested fake clock; nil
@@ -386,15 +390,23 @@ type Timer struct {
 
 // wakeSource is exactly the two statements the timer needs — an interface so
 // the scheduling loop is unit-testable without Postgres (the chaos gate binds
-// it to ResumeStore).
-type wakeSource interface {
+// it to ResumeStore / ProdResumeStore).
+type wakeSource[T any] interface {
 	NextWake(ctx context.Context) (time.Time, bool, error)
-	ResumeDue(ctx context.Context) ([]DuePause, error)
+	ResumeDue(ctx context.Context) ([]T, error)
+}
+
+// Timer is the int-keyed harness timer over DuePause (the shape the chaos gate
+// drives). Production uses ProdTimer (resumeprod.go) over the same wakeLoop.
+type Timer struct {
+	wakeLoop[DuePause]
 }
 
 // NewTimer wires a Timer over a ResumeStore.
 func NewTimer(s *ResumeStore, onDue func(context.Context, []DuePause)) *Timer {
-	return &Timer{store: s, OnDue: onDue, kick: make(chan struct{}, 1)}
+	return &Timer{wakeLoop[DuePause]{
+		store: s, OnDue: onDue, kick: make(chan struct{}, 1),
+	}}
 }
 
 // Notify kicks the timer: a new pause may have landed with an EARLIER
@@ -403,7 +415,7 @@ func NewTimer(s *ResumeStore, onDue func(context.Context, []DuePause)) *Timer {
 // current derivation still fires at or after the new deadline only if the
 // new deadline is later, in which case re-derivation is not needed).
 // Production wiring (Story 3.7) replaces this with LISTEN/NOTIFY.
-func (t *Timer) Notify() {
+func (t *wakeLoop[T]) Notify() {
 	select {
 	case t.kick <- struct{}{}:
 	default:
@@ -423,7 +435,7 @@ func (t *Timer) Notify() {
 // deadline BEFORE the database clock does, resumeDue claims nothing and the
 // loop re-derives a deadline still in the local past — it then sleeps the
 // small skew guard rather than spinning (a bounded reconcile, not a poll).
-func (t *Timer) Run(ctx context.Context) error {
+func (t *wakeLoop[T]) Run(ctx context.Context) error {
 	// skewGuards counts consecutive deadline fires that claimed nothing
 	// because the LOCAL clock reached the deadline before the DATABASE clock
 	// did. While > 0, the re-derived (locally-past) deadline sleeps the small
@@ -466,7 +478,7 @@ func (t *Timer) Run(ctx context.Context) error {
 				t.OnDue(ctx, due)
 			}
 		}
-		
+
 		// loop: re-derive only if there was a kick (or skew guard)
 		// - fire resumes sleep on the same deadline (no re-derive)
 		// - kick triggers immediate re-derive for earlier deadline
@@ -479,7 +491,7 @@ func (t *Timer) Run(ctx context.Context) error {
 // until converts the DB-authored deadline into a local sleep duration,
 // flooring at 0 and ceiling at the skew guard when the local clock is behind
 // the deadline already having passed per the DB clock's claim.
-func (t *Timer) until(next time.Time) time.Duration {
+func (t *wakeLoop[T]) until(next time.Time) time.Duration {
 	d := next.Sub(t.nowf())
 	if d < 0 {
 		return 0
@@ -487,7 +499,7 @@ func (t *Timer) until(next time.Time) time.Duration {
 	return d
 }
 
-func (t *Timer) sleeper() func(context.Context, time.Duration) <-chan time.Time {
+func (t *wakeLoop[T]) sleeper() func(context.Context, time.Duration) <-chan time.Time {
 	if t.sleep != nil {
 		return t.sleep
 	}
@@ -506,7 +518,7 @@ func (t *Timer) sleeper() func(context.Context, time.Duration) <-chan time.Time 
 	}
 }
 
-func (t *Timer) nowf() time.Time {
+func (t *wakeLoop[T]) nowf() time.Time {
 	if t.now != nil {
 		return t.now()
 	}

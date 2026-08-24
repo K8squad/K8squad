@@ -42,6 +42,47 @@ apiserver:
   # Name of the HttpOnly session cookie the BFF forwards (arch §12.3/ADR-033).
   # MUST match the console's KSQUAD_SESSION_COOKIE.
   sessionCookie: ksquad_session
+
+  # ── Epic 15 auth seam (9.5 / ISI-2920) ────────────────────────────────────
+  auth:
+    # HS256 signing key for the internal JWT. SUPPLY A DURABLE ONE for any
+    # multi-replica or restart-surviving install (auto-generated per-pod
+    # otherwise — sessions die on every restart and replicas disagree).
+    # Value is raw or base64 bytes; >= 32 bytes required.
+    jwtSigningKey: "" # e.g. from `openssl rand -base64 32`
+    jwtTtlSeconds: 3600 # internal JWT lifetime (spec 15.1: 1h)
+    sessionTtlSeconds: 86400 # edge session lifetime (24h)
+    # Failed-login brake (only FAILURES count; successes reset the window).
+    loginRateLimit: 5
+    loginRateWindowSeconds: 900
+    # Secure attribute on issued cookies. Keep true behind chart TLS; a local
+    # http dev run may set false explicitly.
+    secureCookies: true
+    # Comma-separated IPs/CIDRs whose X-Forwarded-For the login limiter may
+    # trust (e.g. the console BFF pod range). EMPTY = trust no proxy: client IP
+    # falls back to the socket address. Do not widen this blindly.
+    trustedProxies: ""
+    # Browser origins accepted on cookie-authenticated state changes (CSRF
+    # guard). List the PUBLIC console origin, e.g. https://console.ksquad.example.com.
+    # Empty = strict same-host Origin matching (direct exposure only).
+    allowedOrigins: ""
+    # Max simultaneous argon2id derivations (each holds 64 MiB; default 2 fits
+    # the 256Mi limit — raise together with resources.limits.memory).
+    maxHashConcurrency: 2
+    # Raw JSON of the 15.9 OIDC group→access mapping (validated at startup,
+    # consumed by the OIDC login leg).
+    oidcGroupMapping: ""
+    # Secret refs for the sensitive values — preferred over the plain values:
+    #   existingJwtKeySecret: { name: my-secret, key: signing-key }
+    #   existingBootstrapPasswordSecret: { name: my-secret, key: admin-password }
+    existingJwtKeySecret: null
+    existingBootstrapPasswordSecret: null
+    # One-time initial admin (15.2). Created ONLY when the user table is empty.
+    # CLEAR THE PASSWORD after first login — it should not live in values.
+    bootstrap:
+      adminUsername: ""
+      adminPassword: ""
+      adminTeamId: "" # optional uuid; empty = auto-generated tenancy root
   resources:
     requests:
       cpu: 50m
@@ -163,10 +204,52 @@ storage:
 #   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
 # ═════════════════════════════════════════════════════════════════════════════
 nats:
-  # The event bus is ON by default (one `helm install` yields the whole stack,
-  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
-  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+# The event bus is ON by default (one `helm install` yields the whole stack,
+# §16). Turning it OFF must NEVER break the core install — the outbox buffers
+# and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+enabled: true
+
+# Egress configuration for Projects (story 4.6, ISI-2888)
+# This controls the default-deny + allowlist egress policy structure applied
+# to each Project's Run workloads. When enabled, the operator will create
+# NetworkPolicies for Projects that specify egressPolicyRef.
+egress:
+  # Enable egress policy reconciliation for Projects
   enabled: true
+  
+  # Default egress proxy configuration. Projects can override this by
+  # specifying their own egressPolicyRef.
+  defaultEgressProxy:
+    # Service name of the egress proxy in each team namespace
+    service: "egress-proxy"
+    # Port the egress proxy listens on
+    port: 8080
+    
+  # NetworkPolicy configuration for egress control
+  networkPolicy:
+    # Default-deny policy name prefix
+    defaultDenyName: "ksquad-default-deny"
+    # Project-specific egress policy name prefix
+    projectEgressPrefix: "ksquad-egress"
+    
+  # Allowed egress destinations by default
+  defaultAllow:
+    # DNS resolution is always allowed
+    dns:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 53
+        - protocol: "UDP" 
+          port: 53
+    # Control plane communication (API server, health checks)
+    controlPlane:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 443  # HTTPS (API server)
+        - protocol: "TCP"
+          port: 8080 # Health/proxy ports
   image: nats:2.10-alpine
   port: 4222
   jetstream:

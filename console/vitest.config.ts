@@ -10,6 +10,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
+      // lib/bff.ts imports `server-only` (correct at Next runtime); unit tests import the BFF
+      // route modules directly outside that context, where the real package throws. Map it to an
+      // empty stub so the proxy boundary stays testable (see test/server-only-stub.ts).
+      "server-only": fileURLToPath(new URL("./test/server-only-stub.ts", import.meta.url)),
     },
   },
   test: {

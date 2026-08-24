@@ -70,11 +70,15 @@ type Caller struct {
 	IsAdmin   bool      // a Team admin may read a co-Team member's build browser
 }
 
-// authorized applies the 8.7d rule: the caller must be in the Run's Team AND be either the Run's
+// Authorized applies the 8.7d rule: the caller must be in the Run's Team AND be either the Run's
 // owning principal or a (same-Team) admin. Cross-Team is denied even for an admin — the Team is the
 // tenancy root and is never crossed on this read path. A false result is surfaced as ErrNotFound
 // (never a distinct 403), which is what makes deny indistinguishable from not-found.
-func authorized(c Caller, m RunMeta) bool {
+//
+// It is EXPORTED because it is the single per-principal + Team-scope gate every Run-scoped console
+// read model applies (8.7d build browser, 8.3 artifact browser — ISI-2900): one rule, one place, so
+// the existence-hiding contract cannot drift between sibling read models.
+func Authorized(c Caller, m RunMeta) bool {
 	if c.TeamID == uuid.Nil || c.TeamID != m.TeamID {
 		return false // outside the Run's Team → hidden
 	}
@@ -116,7 +120,7 @@ func (s *Service) resolve(ctx context.Context, c Caller, runID string) (RunMeta,
 	if err != nil || !found {
 		return RunMeta{}, ErrNotFound
 	}
-	if !authorized(c, m) {
+	if !Authorized(c, m) {
 		return RunMeta{}, ErrNotFound
 	}
 	return m, nil

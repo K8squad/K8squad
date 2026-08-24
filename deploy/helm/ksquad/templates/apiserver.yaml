@@ -58,6 +58,76 @@ spec:
                   key: {{ .Values.apiserver.database.existingSecretKey | quote }}
             - name: KSQUAD_SESSION_COOKIE
               value: {{ .Values.apiserver.sessionCookie | quote }}
+            {{- /* Epic 15 auth seam (9.5 / ISI-2920). The signing key and bootstrap
+                   password are Secret material when supplied via dedicated keys; the
+                   plain values render as-is for the documented dev path. */}}
+            {{- with .Values.apiserver.auth.existingJwtKeySecret }}
+            - name: KSQUAD_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name }}
+                  key: {{ .key }}
+            {{- end }}
+            {{- with .Values.apiserver.auth.existingBootstrapPasswordSecret }}
+            - name: KSQUAD_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name }}
+                  key: {{ .key }}
+            {{- end }}
+            {{- $auth := .Values.apiserver.auth }}
+            {{- if $auth.jwtSigningKey }}
+            - name: KSQUAD_JWT_SIGNING_KEY
+              value: {{ $auth.jwtSigningKey | quote }}
+            {{- end }}
+            {{- if ne $auth.jwtTtlSeconds 3600 }}
+            - name: KSQUAD_JWT_TTL_SECONDS
+              value: {{ $auth.jwtTtlSeconds | quote }}
+            {{- end }}
+            {{- if ne $auth.sessionTtlSeconds 86400 }}
+            - name: KSQUAD_SESSION_TTL_SECONDS
+              value: {{ $auth.sessionTtlSeconds | quote }}
+            {{- end }}
+            {{- if ne $auth.loginRateLimit 5 }}
+            - name: KSQUAD_LOGIN_RATE_LIMIT
+              value: {{ $auth.loginRateLimit | quote }}
+            {{- end }}
+            {{- if ne $auth.loginRateWindowSeconds 900 }}
+            - name: KSQUAD_LOGIN_RATE_WINDOW_SECONDS
+              value: {{ $auth.loginRateWindowSeconds | quote }}
+            {{- end }}
+            {{- if not $auth.secureCookies }}
+            - name: KSQUAD_SECURE_COOKIES
+              value: "false"
+            {{- end }}
+            {{- with $auth.trustedProxies }}
+            - name: KSQUAD_TRUSTED_PROXIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $auth.allowedOrigins }}
+            - name: KSQUAD_ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and $auth.maxHashConcurrency (ne $auth.maxHashConcurrency 2) }}
+            - name: KSQUAD_MAX_HASH_CONCURRENCY
+              value: {{ $auth.maxHashConcurrency | quote }}
+            {{- end }}
+            {{- with $auth.oidcGroupMapping }}
+            - name: KSQUAD_OIDC_GROUP_MAPPING
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $auth.bootstrap.adminUsername }}
+            - name: KSQUAD_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if and (not .Values.apiserver.auth.existingBootstrapPasswordSecret) $auth.bootstrap.adminPassword }}
+            - name: KSQUAD_BOOTSTRAP_ADMIN_PASSWORD
+              value: {{ $auth.bootstrap.adminPassword | quote }}
+            {{- end }}
+            {{- with $auth.bootstrap.adminTeamId }}
+            - name: KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID
+              value: {{ . | quote }}
+            {{- end }}
           # Liveness = process up (never gated on the DB/NATS: a dependency blip must not
           # trigger a restart loop). Readiness = the store of record is reachable (§17.3).
           livenessProbe:

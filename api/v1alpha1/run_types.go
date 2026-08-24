@@ -194,10 +194,62 @@ type RunStatus struct {
 	// +optional
 	ArtifactRefs []ObjectRef `json:"artifactRefs,omitempty"`
 
+	// ModelSegments is the 5.11 mid-Run provenance ledger: which model
+	// served which portion of the Run, in order. The reconciler opens a
+	// segment at dispatch and at every fallback switch, and closes it when
+	// the portion ends (rate_limited switch or Run terminal). The endpoint
+	// rides as the Secret NAME (never the URL with credentials echoed);
+	// consumption attribution (7.6) and the 8.8 fallback indicators read
+	// this. Bounded (MaxItems) so a pathological switch loop cannot bloat
+	// the status subresource.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=32
+	ModelSegments []ModelSegment `json:"modelSegments,omitempty"`
+
+	// ContextSnapshot pins the resolved §8.5 context envelope inputs
+	// (work-item rev, goal rev, memory doc-ids, resolved budget, model
+	// window) for audit + re-entrant reuse (stories 3.6/5.9). Written by
+	// the Run reconciler at the Claiming → Running transition; a resumed
+	// Run re-assembles from it instead of re-querying latest.
+	// +optional
+	ContextSnapshot *ContextSnapshot `json:"contextSnapshot,omitempty"`
+
 	// ObservedGeneration is the generation most recently observed by the
 	// Run reconciler (§5.2).
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+}
+
+// ModelSegment is one portion of a Run served by one model (5.11
+// provenance). A segment is OPEN while its model serves (EndedAt nil) and
+// CLOSED when the portion ends — Reason names why (rate_limited on a
+// switch, terminal on completion).
+type ModelSegment struct {
+	// Model is the model name that served this portion.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Model string `json:"model"`
+
+	// SecretName names the per-user endpoint Secret this model was served
+	// from ("" = the runtime's provider default). Provenance only — never
+	// Secret contents.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// StartedAt is when the portion began.
+	// +optional
+	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+
+	// EndedAt is when the portion ended; nil while serving.
+	// +optional
+	EndedAt *metav1.Time `json:"endedAt,omitempty"`
+
+	// Reason names why the portion ended (e.g. rate_limited on a fallback
+	// switch); empty on the still-open segment or a clean terminal handoff
+	// stamped by the reconciler.
+	// +optional
+	Reason string `json:"reason,omitempty"`
 }
 
 // +kubebuilder:object:root=true
