@@ -107,11 +107,11 @@ func dsnOrFatal(t testing.TB) string {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		// CI WIRING GAP: spine-chaos.yml stands up CNPG but does not yet export
-		// DATABASE_URL to the test step. Under the `chaos` build tag these tests
-		// REQUIRE real Postgres; a missing DSN is a FATAL, not a skip — a required
-		// gate must fail loud, never go silently green (AC1). Wire the CNPG
-		// service DSN into the "Run chaos suite" step's env before first green.
+		// spine-chaos.yml stands up CNPG-in-kind and exports DATABASE_URL from the
+		// generated <cluster>-app secret via a localhost port-forward (ISI-2918).
+		// Under the `chaos` build tag these tests REQUIRE real Postgres; a missing
+		// DSN is a FATAL, not a skip — a required gate must fail loud, never go
+		// silently green (AC1). A local run must export DATABASE_URL itself.
 		t.Fatal("DATABASE_URL unset under -tags=chaos: the spine chaos gate " +
 			"requires a live Postgres (CNPG). Refusing to pass silently (AC1).")
 	}
