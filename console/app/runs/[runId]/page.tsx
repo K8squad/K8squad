@@ -18,7 +18,10 @@ export default async function RunPage({
         <h1 style={{ margin: 0 }}>Run {runId}</h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
           Live coordination progress. Kill Run (FR-F4) is a separate authorized
-          control-plane action, not a stream verb.
+          control-plane action, not a stream verb.{" "}
+          <a href={`/runs/${encodeURIComponent(runId)}/artifacts`}>
+            Inspect artifacts &amp; handoff (8.3)
+          </a>
         </p>
       </header>
       <div className="card">

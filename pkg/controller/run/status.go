@@ -82,8 +82,9 @@ func PhaseOf(step reconcile.Step) api.RunPhase {
 
 // ProjectStatus computes the Run.status that the durable step commands, merged
 // onto the current status so operator-invisible fields survive (SandboxRef,
-// ArtifactRefs, ClaimedAt — those are written by the effects/claim path, not by
-// this projection). It is pure: same (current, step, generation, now) always
+// ArtifactRefs, ClaimedAt, ModelSegments — those are written by the
+// effects/claim/fallback-switch paths, not by this projection). It is pure:
+// same (current, step, generation, now) always
 // yields the same status, which is what makes the reconciler idempotent and the
 // projection unit-testable without a cluster.
 //

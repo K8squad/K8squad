@@ -72,7 +72,9 @@ func waitLine(t *testing.T, lines <-chan string, pred func(string) bool, what st
 	}
 }
 
-func hasPrefix(p string) func(string) bool { return func(s string) bool { return strings.HasPrefix(s, p) } }
+func hasPrefix(p string) func(string) bool {
+	return func(s string) bool { return strings.HasPrefix(s, p) }
+}
 func isExactly(w string) func(string) bool { return func(s string) bool { return s == w } }
 
 // A fresh connection (no Last-Event-ID) gets the preamble, replays nothing, and

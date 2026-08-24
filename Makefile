@@ -24,6 +24,7 @@ all: generate manifests
 .PHONY: manifests
 manifests: controller-gen ## Generate CRD manifests.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(MAKE) helm-sync-crds
 
 .PHONY: generate
 generate: controller-gen ## Generate DeepCopy method implementations (zz_generated.deepcopy.go).

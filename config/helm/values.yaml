@@ -16,3 +16,24 @@ namespace:
 # Standard `app.kubernetes.io/*` label roots applied to chart-owned resources.
 nameOverride: ""
 fullnameOverride: ""
+
+# Workspace PVC configuration for Projects (story 4.3, §9.4)
+workspacePVC:
+  # Default storage class for workspace PVCs. Empty means the cluster default,
+  # but this is discouraged as it can lead to misconfiguration (story 9.2).
+  # Should be resolved by the operator from Helm-provided workspace storage class.
+  # +optional
+  defaultClass: ""
+  
+  # Default size for workspace PVCs when not specified in Project.spec.workspacePVC.size
+  # +optional
+  defaultSize: "10Gi"
+  
+  # Default access modes for workspace PVCs (RWO by default for write-lease serialization)
+  # +optional
+  defaultAccessModes:
+  - ReadWriteOnce
+  
+  # Supported storage classes for workspace PVCs
+  # +optional
+  supportedClasses: []

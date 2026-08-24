@@ -24,6 +24,7 @@ package webhook
 import (
 	"context"
 
+	authenticationv1 "k8s.io/api/authentication/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -86,7 +87,8 @@ func (v *AgentCustomValidator) ValidateDelete(_ context.Context, _ runtime.Objec
 	return nil, nil
 }
 
-// RunCustomValidator validates Run admission (story 1.3).
+// RunCustomValidator validates Run admission (story 1.3 + the story 4.2
+// trusted-dev escape gate).
 type RunCustomValidator struct{ Validator *CrossRefValidator }
 
 var _ admission.CustomValidator = &RunCustomValidator{}
@@ -97,12 +99,32 @@ func (v *RunCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	if !ok {
 		return nil, apierrors.NewBadRequest("expected a Run but got " + obj.GetObjectKind().GroupVersionKind().String())
 	}
-	return nil, toInvalid("Run", run.Name, v.Validator.ValidateRun(ctx, run))
+	errs := v.Validator.ValidateRun(ctx, run)
+	errs = append(errs, v.Validator.ValidateRunTrustedDev(run, nil, requesterFrom(ctx))...)
+	return nil, toInvalid("Run", run.Name, errs)
 }
 
 // ValidateUpdate implements admission.CustomValidator.
-func (v *RunCustomValidator) ValidateUpdate(ctx context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	return v.ValidateCreate(ctx, newObj)
+func (v *RunCustomValidator) ValidateUpdate(ctx context.Context, old, newObj runtime.Object) (admission.Warnings, error) {
+	newRun, ok := newObj.(*ksquadv1alpha1.Run)
+	if !ok {
+		return nil, apierrors.NewBadRequest("expected a Run but got " + newObj.GetObjectKind().GroupVersionKind().String())
+	}
+	oldRun, _ := old.(*ksquadv1alpha1.Run)
+	errs := v.Validator.ValidateRun(ctx, newRun)
+	errs = append(errs, v.Validator.ValidateRunTrustedDev(newRun, oldRun, requesterFrom(ctx))...)
+	return nil, toInvalid("Run", newRun.Name, errs)
+}
+
+// requesterFrom extracts the authenticated requester from the admission
+// context. No request in context (non-admission callers) yields the zero
+// UserInfo — anonymous, i.e. unprivileged: the trusted-dev gate fails
+// closed, same as every other guard here.
+func requesterFrom(ctx context.Context) authenticationv1.UserInfo {
+	if req, err := admission.RequestFromContext(ctx); err == nil {
+		return req.UserInfo
+	}
+	return authenticationv1.UserInfo{}
 }
 
 // ValidateDelete implements admission.CustomValidator (kills are FR-A6, not
