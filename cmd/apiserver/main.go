@@ -216,7 +216,11 @@ func main() {
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState: workItemState,
-		Hub:           hub,
+		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
+		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
+		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
+		ProjectRoles: auth.NewPostgresMembershipStore(db),
+		Hub:          hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,
