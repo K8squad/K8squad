@@ -54,14 +54,14 @@ const (
 	PolicyTeamIngress = "team-ingress"
 )
 
-// NetworkPolicyManager manages network policy lifecycle for team isolation
-type NetworkPolicyManager struct {
+// Manager manages network policy lifecycle for team isolation
+type Manager struct {
 	client client.Client
 }
 
-// NewNetworkPolicyManager creates a new network policy manager
-func NewNetworkPolicyManager(kubeClient client.Client) *NetworkPolicyManager {
-	return &NetworkPolicyManager{
+// NewManager creates a new network policy manager
+func NewManager(kubeClient client.Client) *Manager {
+	return &Manager{
 		client: kubeClient,
 	}
 }
@@ -69,7 +69,7 @@ func NewNetworkPolicyManager(kubeClient client.Client) *NetworkPolicyManager {
 // Reconcile ensures the isolation/egress/ingress NetworkPolicies exist for each
 // Team. The policies carry owner references to the Team, so deletion is handled
 // by garbage collection and an absent/deleted Team is a no-op here.
-func (npm *NetworkPolicyManager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (npm *Manager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	team := &ksquadv1alpha1.Team{}
 	if err := npm.client.Get(ctx, req.NamespacedName, team); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -91,7 +91,7 @@ func (npm *NetworkPolicyManager) Reconcile(ctx context.Context, req ctrl.Request
 
 // EnsureTeamIsolation ensures that network policies exist for the given Team.
 // This creates policies that isolate the team's namespace from others.
-func (npm *NetworkPolicyManager) EnsureTeamIsolation(ctx context.Context, team *ksquadv1alpha1.Team) error {
+func (npm *Manager) EnsureTeamIsolation(ctx context.Context, team *ksquadv1alpha1.Team) error {
 	logger := log.FromContext(ctx)
 	
 	// Create team isolation policy
@@ -128,7 +128,7 @@ func (npm *NetworkPolicyManager) EnsureTeamIsolation(ctx context.Context, team *
 
 // EnsureTeamEgress ensures that egress network policy exists for the given Team.
 // This allows controlled outbound traffic from the team's namespace.
-func (npm *NetworkPolicyManager) EnsureTeamEgress(ctx context.Context, team *ksquadv1alpha1.Team) error {
+func (npm *Manager) EnsureTeamEgress(ctx context.Context, team *ksquadv1alpha1.Team) error {
 	logger := log.FromContext(ctx)
 	
 	// Create team egress policy
@@ -165,7 +165,7 @@ func (npm *NetworkPolicyManager) EnsureTeamEgress(ctx context.Context, team *ksq
 
 // EnsureTeamIngress ensures that ingress network policy exists for the given Team.
 // This allows controlled inbound traffic within the team's namespace.
-func (npm *NetworkPolicyManager) EnsureTeamIngress(ctx context.Context, team *ksquadv1alpha1.Team) error {
+func (npm *Manager) EnsureTeamIngress(ctx context.Context, team *ksquadv1alpha1.Team) error {
 	logger := log.FromContext(ctx)
 	
 	// Create team ingress policy
@@ -201,7 +201,7 @@ func (npm *NetworkPolicyManager) EnsureTeamIngress(ctx context.Context, team *ks
 }
 
 // DeleteTeamPolicies deletes all network policies for the given Team
-func (npm *NetworkPolicyManager) DeleteTeamPolicies(ctx context.Context, team *ksquadv1alpha1.Team) error {
+func (npm *Manager) DeleteTeamPolicies(ctx context.Context, team *ksquadv1alpha1.Team) error {
 	logger := log.FromContext(ctx)
 	
 	policies := []string{
@@ -234,7 +234,7 @@ func (npm *NetworkPolicyManager) DeleteTeamPolicies(ctx context.Context, team *k
 }
 
 // createTeamIsolationPolicy creates a network policy that isolates the team
-func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+func (npm *Manager) createTeamIsolationPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamIsolation, team.Name),
@@ -362,7 +362,7 @@ func (npm *NetworkPolicyManager) createTeamIsolationPolicy(team *ksquadv1alpha1.
 }
 
 // createTeamEgressPolicy creates a network policy that controls egress traffic
-func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+func (npm *Manager) createTeamEgressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamEgress, team.Name),
@@ -442,7 +442,7 @@ func (npm *NetworkPolicyManager) createTeamEgressPolicy(team *ksquadv1alpha1.Tea
 }
 
 // createTeamIngressPolicy creates a network policy that controls ingress traffic
-func (npm *NetworkPolicyManager) createTeamIngressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
+func (npm *Manager) createTeamIngressPolicy(team *ksquadv1alpha1.Team) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-%s", PolicyTeamIngress, team.Name),
