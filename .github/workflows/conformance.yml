@@ -1,0 +1,50 @@
+name: conformance
+
+# Story 5.6 [GATE-BLOCKING]: the runnable A2A shim conformance suite. It certifies
+# the v1 shim set (openclaw, hermes, opencode) against the six conformance
+# dimensions — Agent Card validity, task lifecycle, SSE progress, artifact
+# emission, capability-flag honesty, credential-metadata correctness — on both
+# the runtime's native wire (default lane) and the BYO Ollama endpoint (ollama
+# lane, stories 5.7/5.8). The Ollama lane is the $0 proof path (ISI-2157): the
+# suite drives the real pkg/shim engine through a scripted runner, so it asserts
+# the model-wire shape with NO live Ollama server and NO paid credential.
+#
+# This is a required status check: a non-conformant shim (or a regression in the
+# shared engine every shim relies on) fails the merge.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-${{ github.workflow }}-${{ github.ref }}
+  # Never cancel a main run (drops its required-check signal); self-cancel superseded PR pushes.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  conformance:
+    name: a2a shim conformance
+    # Self-hosted per R1 (K8squad/K8squad has no hosted-runner minutes).
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          # Pin the toolchain to the module's declared Go version (see ci.yml rationale).
+          go-version-file: go.mod
+          cache: true
+
+      - name: Conformance suite (unit, race)
+        run: go test -race -count=1 ./conformance/... ./cmd/conformance/...
+
+      - name: Certify the v1 shim set — default lane (native vendor wire)
+        run: go run ./cmd/conformance -lane default
+
+      - name: Certify the v1 shim set — $0 Ollama lane (BYO endpoint, zero paid credential)
+        run: go run ./cmd/conformance -lane ollama
