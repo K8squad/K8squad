@@ -312,7 +312,10 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	live, err := s.liveRuns(ctx, ns, projectID)
 	switch {
 	case err != nil:
-		out.LiveRuns = LiveRunsTile{TileStatus: degradedTile(err.Error())}
+		// Runs stays a non-nil empty slice so the tile marshals "runs":[] not
+		// "runs":null — dashboard.ts types runs as a non-null LiveRun[]; the
+		// array invariant holds even in the degraded shape.
+		out.LiveRuns = LiveRunsTile{TileStatus: degradedTile(err.Error()), Runs: []LiveRun{}}
 	default:
 		out.LiveRuns = LiveRunsTile{TileStatus: TileStatus{Available: true}, Runs: live}
 	}
