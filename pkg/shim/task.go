@@ -64,15 +64,19 @@ func (t *task) nextEvent(typ a2a.EventType, payload any) a2a.Event {
 // once the task is terminal, so a late runtime status cannot resurrect a
 // canceled/failed task.
 func (t *task) setState(state a2a.TaskState, reason string) {
+	// t.mu is held across append so seq assignment (nextEvent) and the
+	// stream append are atomic: a racing emit cannot slot a lower-seq event
+	// into the log after a higher-seq one (C4 gap-free monotonic ordering).
+	// Lock order t.mu→ts.mu is consistent and subscribe never takes t.mu, so
+	// no deadlock.
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.state.IsTerminal() {
-		t.mu.Unlock()
 		return
 	}
 	t.state = state
 	t.reason = reason
 	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason})
-	t.mu.Unlock()
 	t.stream.append(ev)
 }
 
@@ -81,15 +85,18 @@ func (t *task) setState(state a2a.TaskState, reason string) {
 // runner completing and CancelTask racing) are no-ops (C8) — the first winner
 // owns the terminal state.
 func (t *task) terminate(state a2a.TaskState, reason string) {
+	// t.mu held across append+finish so the terminal event's seq and its log
+	// position are atomic vs a racing emitProgress (see setState). Without
+	// this, a concurrent progress emit could append its lower-seq event after
+	// the terminal event, replaying out of order on resume.
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.state.IsTerminal() {
-		t.mu.Unlock()
 		return
 	}
 	t.state = state
 	t.reason = reason
 	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason})
-	t.mu.Unlock()
 	t.stream.append(ev)
 	t.stream.finish()
 }
@@ -97,9 +104,11 @@ func (t *task) terminate(state a2a.TaskState, reason string) {
 // emitProgress appends one runtime progress unit as a sequenced §4 event. A
 // progress emit after the task is terminal is dropped (the stream is closed).
 func (t *task) emitProgress(p Progress) {
+	// t.mu held across append so this progress event's seq and its log slot
+	// are atomic vs a racing terminate (see setState) — preserves C4 ordering.
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.state.IsTerminal() {
-		t.mu.Unlock()
 		return
 	}
 	var (
@@ -122,7 +131,6 @@ func (t *task) emitProgress(p Progress) {
 		payload = a2a.MessagePayload{Role: "agent", Text: "", Trust: "untrusted"}
 	}
 	ev := t.nextEvent(typ, payload)
-	t.mu.Unlock()
 	t.stream.append(ev)
 }
 

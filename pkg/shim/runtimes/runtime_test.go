@@ -91,9 +91,9 @@ func TestCapabilityHonesty(t *testing.T) {
 func TestCredentialMapping(t *testing.T) {
 	const secret = "super-secret-token-value"
 	cases := map[string]string{
-		apiv1alpha1.RuntimeTypeOpenClaw:  "OPENCLAW_API_KEY",
-		apiv1alpha1.RuntimeTypeHermes:    "HERMES_API_KEY",
-		apiv1alpha1.RuntimeTypeOpenCode:  "OPENCODE_API_KEY",
+		apiv1alpha1.RuntimeTypeOpenClaw: "OPENCLAW_API_KEY",
+		apiv1alpha1.RuntimeTypeHermes:   "HERMES_API_KEY",
+		apiv1alpha1.RuntimeTypeOpenCode: "OPENCODE_API_KEY",
 	}
 	for typ, wantVar := range cases {
 		rt, _ := Get(typ)
