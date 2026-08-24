@@ -180,6 +180,17 @@ spec:
                               (FR-H2).
                             type: boolean
                         type: object
+                      pollIntervalSeconds:
+                        default: 300
+                        description: |-
+                          PollIntervalSeconds is the periodic poll-fallback cadence (§5.4,
+                          story 11.1 AC3): the level-triggered reconcile re-runs at this
+                          interval so a lost webhook is never permanent drift. It comes from
+                          the spec/chart values, never a reconciler hardcode; zero means the
+                          default of 300s.
+                        format: int32
+                        minimum: 60
+                        type: integer
                       provider:
                         description: |-
                           Provider is the source-control provider. GitHub is v1; GitLab and
@@ -230,9 +241,22 @@ spec:
                   WorkspacePVC sizes and classes the Project workspace PVC (§9.4 —
                   Runs work in their own git-worktree on this volume).
                 properties:
+                  accessModes:
+                    description: |-
+                      AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+                      serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+                      opt-in for storage classes that support true parallelism.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
                   class:
-                    description: Class is the storageClass name; empty means the cluster
-                      default.
+                    description: |-
+                      Class is the storageClass name. Empty does NOT mean the cluster
+                      default (story 9.2: relying on the cluster default is
+                      misconfiguration) — the operator resolves it from its Helm-provided
+                      workspace storage class and fails closed when that is unset too:
+                      no PVC is created silently bound to an unsuitable class.
                     type: string
                   size:
                     anyOf:
@@ -247,6 +271,100 @@ spec:
             required:
             - repo
             type: object
+          status:
+            description: |-
+              ProjectStatus is the observed state of a Project. The repo-sync
+              reconciler (story 11.1) is its only writer: status reports mirror
+              liveness — never desired state, and never coordination custody (§6).
+            properties:
+              conditions:
+                description: |-
+                  Conditions summarize the repo-sync loop's latest observations
+                  (story 11.1): SyncReady when the provider seam + BYO credential
+                  resolved and the last level-triggered mirror pass applied.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              sync:
+                description: |-
+                  Sync reports repo-sync mirror progress (§5.4, story 11.1). Nil
+                  until the first successful mirror pass.
+                properties:
+                  lastMirrorTime:
+                    description: |-
+                      LastMirrorTime is when the level-triggered reconcile last applied
+                      a provider snapshot to the scm mirror (webhook-triggered or poll).
+                    format: date-time
+                    type: string
+                  lastWebhookTime:
+                    description: |-
+                      LastWebhookTime is when a good-signature webhook last triggered a
+                      reconcile fast path (§5.4). Unaffected by poll ticks.
+                    format: date-time
+                    type: string
+                  mirrorRecordCount:
+                    description: |-
+                      MirrorRecordCount is the number of records the last snapshot
+                      applied (post echo-suppression) — a liveness signal, not a
+                      coordination fact.
+                    format: int64
+                    type: integer
+                type: object
+            type: object
         type: object
     served: true
     storage: true
+    subresources:
+      status: {}

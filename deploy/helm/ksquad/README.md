@@ -171,6 +171,49 @@ helm install ksquad ./deploy/helm/ksquad \
 
 ## Verify the chart
 
+## Egress control (story 4.6, ISI-2888)
+
+KSquad implements a default-deny egress policy to secure outbound traffic. Projects can specify their egress requirements via the `egressPolicyRef` field, which triggers the creation of allowlist NetworkPolicies.
+
+### Configuration
+
+```yaml
+egress:
+  enabled: true
+  defaultEgressProxy:
+    service: "egress-proxy"
+    port: 8080
+  networkPolicy:
+    defaultDenyName: "ksquad-default-deny"
+    projectEgressPrefix: "ksquad-egress"
+```
+
+### Egress proxy pattern
+
+The default pattern uses an egress proxy for secure outbound access:
+
+1. **Sandbox pods** can only reach their team's egress proxy
+2. **Egress proxy** can reach infrastructure services  
+3. **Infrastructure services** only accept traffic from egress proxies
+
+This ensures all outbound traffic is proxied and auditable.
+
+### Project egress configuration
+
+Projects specify egress requirements in their spec:
+
+```yaml
+spec:
+  egressPolicyRef:
+    name: "my-egress-policy"
+```
+
+The Project controller automatically creates corresponding NetworkPolicies that allowlist specific destinations while maintaining the default-deny baseline.
+
+See [docs/egress-configuration.md](../docs/egress-configuration.md) for detailed architecture and troubleshooting.
+
+## Verify the chart
+
 ```sh
 ./deploy/helm/ksquad/ci/test.sh
 ```
