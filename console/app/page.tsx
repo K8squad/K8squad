@@ -1,18 +1,16 @@
-// app/page.tsx — console landing / squad-overview mount point (story 8.1).
+// app/page.tsx — Dashboard (fleet) mount point (story 8.13 nav root; screen 8.8).
 //
-// This is the shell's root route. The full Teams→Projects→Run-status read model (story 8.1) and
-// the other 8.x feature screens mount into this shell as they land; this scaffold establishes the
-// route so those stories have somewhere to build. Server component by default.
+// Dashboard is GLOBAL (not project-scoped) and tops the rail. The fleet dashboard screen
+// itself (8.8: health/consumption/live mapping) is built under ISI-2906; this interim mount
+// keeps the nav hierarchy honest — the rail's Dashboard node lands here.
 
-export default function HomePage() {
+export default function DashboardPage() {
   return (
     <div>
-      <h1>KSquad Console</h1>
+      <h1>Dashboard</h1>
       <p className="muted">
-        Operator console shell — the BFF choke point (arch §13), the one SSE bus
-        (story 8.2), and whole-shell theming (story 8.9) are wired. Feature
-        screens (8.1 squad overview, 8.3–8.11, 10.3 discussion room) mount into
-        this shell.
+        Fleet-level view — health, consumption, live mapping (story 8.8,
+        [ISI-2906](/ISI/issues/ISI-2906) in flight).
       </p>
 
       <div className="card">
@@ -34,6 +32,9 @@ export default function HomePage() {
           </li>
           <li>
             <strong>Theme</strong> — dark/light token swap + v2 8-Crest logo
+          </li>
+          <li>
+            <strong>Nav</strong> — Project-rooted adaptive shell (8.13/8.20)
           </li>
         </ul>
       </div>

@@ -1,16 +1,14 @@
-// app/layout.tsx — the console shell (App Router root layout).
+// app/layout.tsx — the console shell (App Router root layout, stories 8.13 + 8.20).
 //
-// The whole-shell theming contract (story 8.9) mounts here: <html data-theme="dark"> is the
-// default canvas, and the ThemeProvider swaps the token role attribute on toggle. Every screen
-// mounts inside this shell (nav rail + 8-Crest lockup + theme toggle), so theming is shell-wide,
-// never a per-screen paint job.
+// The root layout stays a server component and mounts the ONE adaptive nav shell (ConsoleShell,
+// a client component that reads the pathname) so the project-rooted, responsive nav wraps every
+// page: desktop/tablet rail, mobile bottom nav + drawer, Project selector, and breadcrumb.
 
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { ThemeToggle } from "@/components/ThemeToggle";
-import { Logo } from "@/components/Logo";
+import { ConsoleShell } from "@/components/nav/ConsoleShell";
 import { DEFAULT_THEME } from "@/lib/theme";
 
 export const metadata: Metadata = {
@@ -24,13 +22,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="en" data-theme={DEFAULT_THEME} suppressHydrationWarning>
       <body>
         <ThemeProvider>
-          <div className="shell">
-            <header className="shell__topbar">
-              <Logo />
-              <ThemeToggle />
-            </header>
-            <main className="shell__main">{children}</main>
-          </div>
+          <ConsoleShell>{children}</ConsoleShell>
         </ThemeProvider>
       </body>
     </html>
