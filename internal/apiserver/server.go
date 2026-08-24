@@ -10,6 +10,7 @@ import (
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/auth"
 )
 
 // ============================================================================
@@ -77,6 +78,12 @@ type Options struct {
 	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
 	// DB-less dev run), exactly like the read models above.
 	WorkItemState WorkItemStateTransitioner
+	// ProjectRoles is the 15.4 per-Project RBAC enforcement seam (auth.project_membership,
+	// ISI-2921). When set, project-scoped routes gain a requireProjectRole gate INSIDE the §13
+	// choke point (admin bypasses; a caller with no membership gets 404 existence-hiding; an
+	// under-privileged member gets 403). Nil ⇒ the routes keep the pre-15.4 shape (team-scope
+	// checks only), so a DB-less dev run and existing deployments are unchanged.
+	ProjectRoles ProjectRoleResolver
 }
 
 // NewServer assembles the root router from opts.
@@ -186,6 +193,13 @@ func (s *Server) routes(opts Options) {
 		// authz path. Nil service (cluster-less dev run) keeps the documented 501.
 		dash := s.router.Path("/api/projects/{projectId}/dashboard").Subrouter()
 		dash.Use(authz)
+		// 15.4 RBAC (ISI-2921): when a membership resolver is wired, the dashboard — the first
+		// project-scoped read surface — requires at least viewer on {projectId}. Admin bypasses;
+		// a non-member gets 404 (existence-hiding, matching the handler's own foreign-Project 404).
+		// Nil resolver ⇒ unchanged (team-scope checks in the handler still apply).
+		if opts.ProjectRoles != nil {
+			dash.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
 		if opts.Dashboard != nil {
 			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
 		} else {
