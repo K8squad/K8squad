@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/credinject"
 )
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -93,6 +94,45 @@ func TestBuildSandboxPod(t *testing.T) {
 	// Empty class fails closed.
 	if _, err := BuildSandboxPod(run, PodSpec{Namespace: run.Namespace, TeamName: "alpha", Image: "img"}); err == nil {
 		t.Errorf("pod assembled without a RuntimeClass (node-default hole)")
+	}
+}
+
+// TestBuildSandboxPodInjectsCredentialEnv (story 5.4): the credential
+// injection contract's output lands on the agent container as env-by-reference
+// — the credential rides a SecretKeyRef, never a literal, so the control plane
+// never handles the plaintext. This is the end-to-end verifiable seam the gap
+// ticket ISI-2890 flagged as missing (admission checked the Secret existed but
+// nothing ever injected it).
+func TestBuildSandboxPodInjectsCredentialEnv(t *testing.T) {
+	run := testRun("r-cred", "uid-r-cred")
+	inj, err := credinject.Inject(api.RuntimeTypeClaudeCode, credinject.ClassHumanSeat, api.SecretRef{Name: "alice-claude"})
+	if err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	pod, err := BuildSandboxPod(run, PodSpec{
+		Namespace:    run.Namespace,
+		TeamName:     "alpha",
+		RuntimeClass: ClassGVisor,
+		Image:        "ghcr.io/k8squad/claude-code:1.0",
+		Env:          inj.Env,
+	})
+	if err != nil {
+		t.Fatalf("build pod: %v", err)
+	}
+	var got *corev1.EnvVar
+	for i := range pod.Spec.Containers[0].Env {
+		if pod.Spec.Containers[0].Env[i].Name == "CLAUDE_CODE_OAUTH_TOKEN" {
+			got = &pod.Spec.Containers[0].Env[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("agent container missing injected CLAUDE_CODE_OAUTH_TOKEN env; got %+v", pod.Spec.Containers[0].Env)
+	}
+	if got.Value != "" {
+		t.Errorf("credential env carries a literal Value %q; must be SecretKeyRef only", got.Value)
+	}
+	if got.ValueFrom == nil || got.ValueFrom.SecretKeyRef == nil || got.ValueFrom.SecretKeyRef.Name != "alice-claude" {
+		t.Errorf("credential env must reference Secret alice-claude by SecretKeyRef, got %+v", got.ValueFrom)
 	}
 }
 

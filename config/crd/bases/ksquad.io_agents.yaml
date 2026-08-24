@@ -109,6 +109,23 @@ spec:
                   rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
                     || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
                     >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+              credentialClass:
+                description: |-
+                  CredentialClass declares whether the referenced credential is a
+                  HUMAN-SEAT interactive OAuth token bound to a person's subscription seat
+                  (e.g. Claude Code OAuth, §7.2 / zero-touch 7.7) or a SERVICE-ACCOUNT
+                  long-lived API key / provider token (§7.3, second-runtime story). It is
+                  the vendor-neutral axis the credential injection contract (story 5.4,
+                  pkg/credinject) keys on to select the runtime-native env var — e.g.
+                  CLAUDE_CODE_OAUTH_TOKEN for a human seat vs ANTHROPIC_API_KEY for a
+                  service account — and it drives the Epic 7 lifecycle (a human seat has an
+                  OAuth refresh/concurrency lifecycle; a service account rotates by Secret
+                  update). Empty defaults to service-account at injection time
+                  (credinject.DefaultClass): a human OAuth seat is opt-in, never inferred.
+                enum:
+                - human-seat
+                - service-account
+                type: string
               credentialSecretRef:
                 description: |-
                   CredentialSecretRef is the per-user BYO credential Secret (arch §11,
