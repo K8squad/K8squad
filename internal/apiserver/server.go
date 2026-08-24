@@ -55,6 +55,9 @@ type Options struct {
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
+	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
+	// route keeps answering the documented 501 (dev run without an informer cache wired).
+	Dashboard *DashboardService
 }
 
 // NewServer assembles the root router from opts.
@@ -128,6 +131,18 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", s.squadOverview(opts.Overview)).Methods(http.MethodGet)
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
+				Methods(http.MethodGet)
+		}
+
+		// 8.8a per-Project dashboard: the ONE composed payload every 8.8b–8.8f tile draws from
+		// (dashboard.go, ISI-2906), behind the SAME §12.3 choke point — no dashboard-specific
+		// authz path. Nil service (cluster-less dev run) keeps the documented 501.
+		dash := s.router.Path("/api/projects/{projectId}/dashboard").Subrouter()
+		dash.Use(authz)
+		if opts.Dashboard != nil {
+			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
+		} else {
+			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
 				Methods(http.MethodGet)
 		}
 	}
