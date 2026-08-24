@@ -4,8 +4,10 @@
 // the vector extension, and reports readiness — failing closed if pgvector is absent or the schema is
 // at an unexpected version (AC1). It never silently degrades to a bespoke in-app vector store.
 //
-// The MCP tool surface (memory.write/memory.search) is Story 6.2 and builds on this store; this binary
-// stands up the service + store and exposes a health/readiness endpoint.
+// The tool surface builds on this store: the untrusted read tools (memory_search / discussion_search)
+// and the authorized write tool (memory_write, Story 6.3 — author + tenancy server-stamped from the BFF
+// headers). They are exposed over a thin JSON/HTTP surface until the shared MCP transport (Story 6.2)
+// lands; the ReadService/WriteService plug into the MCP registry unchanged when it does.
 package main
 
 import (
@@ -68,14 +70,22 @@ func main() {
 	defer store.Close()
 	log.Printf("ksquad-memory: store ready (pgvector, dim=%d)", memory.EmbeddingDim)
 
-	// The §7.1 embedder seam: the deterministic local default (a live endpoint client is a fast-follow
-	// behind Config.Embedder*). Shared by the read tools (embed the query) and the indexer (embed bodies).
-	embedder := memory.NewHashingEmbedder()
+	// The §7.1 embedder seam: a live semantic embedder when Config.EmbedderEndpoint is set, else the
+	// deterministic local default. Shared by the read tools (embed the query), the write tool (embed the
+	// body), and the indexer/mirror (embed projected bodies) — one vector space for the whole substrate.
+	embedder := memory.NewEmbedder(cfg)
+	if cfg.EmbedderEndpoint != "" {
+		log.Printf("ksquad-memory: semantic embedder wired (endpoint=%s, model=%s)", cfg.EmbedderEndpoint, cfg.EmbedderModel)
+	} else {
+		log.Printf("ksquad-memory: using deterministic local embedder (no EmbedderEndpoint configured)")
+	}
 
-	// Untrusted read tools (§7.3.2): memory_search + the scoped discussion_search(project). Until the
-	// shared MCP transport (6.2) lands, they are reachable over a thin JSON/HTTP surface.
+	// Untrusted read tools (§7.3.2): memory_search + the scoped discussion_search(project). The
+	// authorized write tool (§6.3): memory_write, author/tenancy server-stamped from the BFF headers.
+	// Reachable over a thin JSON/HTTP surface until the shared MCP transport (6.2) lands.
 	readSvc := memory.NewReadService(store, embedder)
-	tools := memory.NewToolHTTP(readSvc)
+	writeSvc := memory.NewWriteService(store, embedder)
+	tools := memory.NewToolHTTP(readSvc, writeSvc)
 
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
 	// messages into the memory index out of band; it NEVER blocks a room write or Run (AC5). If the

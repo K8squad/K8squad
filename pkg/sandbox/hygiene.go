@@ -50,6 +50,13 @@ type PodSpec struct {
 	Mounts []corev1.VolumeMount
 	// Volumes are the PVC volumes backing the mounts.
 	Volumes []corev1.Volume
+	// Env is the credential injection contract's output (story 5.4,
+	// pkg/credinject): runtime-native credential env vars, every one a
+	// SecretKeyRef reference so the credential is materialised by the kubelet
+	// and never read by the control plane. Nil for a warm pod — credentials
+	// attach at claim/bind time with the per-principal mounts, not at warm
+	// time (a warm pod holds no principal's credential).
+	Env []corev1.EnvVar
 }
 
 // BuildSandboxPod assembles the per-Run sandbox pod (story 4.2 AC1/AC3):
@@ -113,6 +120,7 @@ func hardenedPodSpec(spec PodSpec) (corev1.PodSpec, error) {
 		Image:        spec.Image,
 		Command:      spec.Command,
 		Args:         spec.Args,
+		Env:          spec.Env,
 		VolumeMounts: spec.Mounts,
 		SecurityContext: &corev1.SecurityContext{
 			AllowPrivilegeEscalation: ptr.To(false),
