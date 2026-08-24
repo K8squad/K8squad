@@ -182,10 +182,10 @@ func main() {
 	}
 
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
-	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
+	workspaceManager := workspacepkg.NewManager(mgr.GetClient())
 	
 	// Initialize network policy manager for team isolation (ISI-2884)
-	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
+	networkPolicyManager := networkpkg.NewManager(mgr.GetClient())
 	
 	// Register custom controllers for workspace and network management.
 	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
