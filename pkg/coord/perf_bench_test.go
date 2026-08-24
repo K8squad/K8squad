@@ -132,16 +132,21 @@ func BenchmarkP2WarmPoolTarget(b *testing.B) {
 }
 
 // ---------------------------------------------------------------------------
-// P3 — SSE throughput (NFR-USE). The emit→deliver progress bus lives behind the
-// apiserver (cmd/apiserver), which has not landed in code yet (only planned in
-// Dockerfile.apiserver / README). SKIP-WITH-REASON until it does — never a
-// silent green. The perfgate P3 gate (latency drift + zero-tolerance dropped
-// events) is already proven by TestPerfGate against fixed vectors.
+// P3 — SSE throughput (NFR-USE). The emit→deliver progress bus HAS landed: it is
+// the in-process SSE Hub in internal/apiserver/sse.go (Story 8.2). The real P3
+// benchmark now lives next to it as internal/apiserver.BenchmarkP3SSEThroughput
+// (+ BenchmarkP3SSEFanout), where it drives the actual Hub.Publish fan-out and
+// asserts the zero-dropped-events tooth against the real transport. This
+// coord-package leg is retired to a pointer so the old "bus not landed" skip
+// (stale — ISI-2918 / gap ISI-2876) can no longer read as a silent green here.
+// The perfgate P3 gate (latency drift + zero-tolerance dropped events) continues
+// to hold the drift teeth against fixed vectors (TestPerfGate).
 // ---------------------------------------------------------------------------
 func BenchmarkP3SSEThroughput(b *testing.B) {
-	b.Skip("SKIP-WITH-REASON: SSE progress bus (cmd/apiserver emit→deliver) not " +
-		"implemented yet — no publish/subscribe surface to measure. Gate logic is " +
-		"held by perfgate.P3Gate/TestPerfGate; wire this leg when Epic 8.2 apiserver lands.")
+	b.Skip("MOVED: the SSE progress bus landed (internal/apiserver/sse.go, Story " +
+		"8.2); the live P3 throughput + zero-drop benchmark now runs as " +
+		"internal/apiserver.BenchmarkP3SSEThroughput (ISI-2918). perf.yml's bench-p3 " +
+		"job drives it there.")
 }
 
 // ---------------------------------------------------------------------------
