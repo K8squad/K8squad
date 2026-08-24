@@ -40,6 +40,7 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/events"
 )
 
@@ -197,6 +198,14 @@ func main() {
 		}
 	}()
 
+	// 8.14a human board-lane transition write path (ISI-2909): the DB is a hard start
+	// dependency here, so the store is always bound (the documented-501 fallback exists
+	// only for a store-less host shape, e.g. a DB-less dev run).
+	workItemState, err := coord.NewHumanStateStore(db)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: work-item state store: %v", err)
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
@@ -206,6 +215,7 @@ func main() {
 		Builds:        builds,
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
+		WorkItemState: workItemState,
 		Hub:           hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
