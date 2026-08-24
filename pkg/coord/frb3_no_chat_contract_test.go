@@ -266,6 +266,21 @@ var allowedSurface = map[string]string{
 	"PrometheusSweeperMetrics.AddSweepReclaims":     "§6.3 add the reclaims from one cycle",
 	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
 	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
+
+	// §8.6/§13 human board-lane status transition (Story 8.14a / ISI-2909, gap
+	// ISI-2876). The Kanban board is a PROJECTION of work_item.state; this is the
+	// write path for a HUMAN to move a card between lanes. Custody-only in the
+	// FR-B3 sense: it changes a work_item's own lane + writes a §6.5 audit row,
+	// carries NO worker-authored content, and — ADR-037 — holds no claim and bumps
+	// no fence (audit fence_token NULL, the claim untouched). Not an agent channel:
+	// agents hand off via comment + Complete (§6.1/§2.8), never through this op.
+	"StateTransition":                 "§8.6 outcome of a human lane move (from/to lane projection, read-only)",
+	"ErrInvalidState":                 "§8.6 guard: target is not one of the pinned board lanes (→400)",
+	"ErrWorkItemNotFound":             "§12.1 guard: item outside the caller's Team scope is 404-not-403",
+	"ErrStateConflict":                "§8.6 guard: fromState precondition missed / already in target lane (→409)",
+	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
+	"NewHumanStateStore":              "§8.6 constructor",
+	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

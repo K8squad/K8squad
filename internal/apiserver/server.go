@@ -70,6 +70,10 @@ type Options struct {
 	// ISI-2881). Nil ⇒ GET /api/audit keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models.
 	AuditTrail AuditTrailReader
+	// WorkItemState is the 8.14a human board-lane transition op (coord.HumanStateStore,
+	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
+	// DB-less dev run), exactly like the read models above.
+	WorkItemState WorkItemStateTransitioner
 }
 
 // NewServer assembles the root router from opts.
@@ -204,6 +208,20 @@ func (s *Server) routes(opts Options) {
 		} else {
 			audit.HandleFunc("", notImplemented("audit-trail read model", "ISI-2881: wire an AuditTrailReader (Postgres) to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// 8.14a human board-lane transition (ISI-2909): the write side of the §8.6/§13
+		// board — PATCH /api/work-items/{id}/state. Behind the same choke point; the
+		// handler applies the human-only RBAC and the store applies Team scoping +
+		// no-fence audit (ADR-037). Wired to coord.HumanStateStore in prod (the DB is a
+		// hard start dependency), documented 501 only for a store-less host shape.
+		workItemState := s.router.Path("/api/work-items/{id}/state").Subrouter()
+		workItemState.Use(authz)
+		if opts.WorkItemState != nil {
+			workItemState.HandleFunc("", workItemStateHandler(opts.WorkItemState)).Methods(http.MethodPatch)
+		} else {
+			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
+				Methods(http.MethodPatch)
 		}
 	}
 }
