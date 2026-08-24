@@ -36,6 +36,7 @@ function activeIds(pathname: string): Set<string> {
   if (pathname === "/") ids.add("dashboard");
   if (pathname.startsWith("/overview")) ids.add("overview");
   if (pathname.startsWith("/agents")) ids.add("agents");
+  if (pathname.startsWith("/users")) ids.add("users");
   const m = pathname.match(/^\/projects\/([^/]+)(?:\/(\w+))?/);
   if (m) {
     ids.add("project");

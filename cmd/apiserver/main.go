@@ -206,6 +206,12 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item state store: %v", err)
 	}
 
+	// 15.3 per-Project membership store (auth.project_membership, db/migrations/0010): ONE
+	// instance backs both the 15.4 enforcement gate (Options.ProjectRoles, read-only resolver)
+	// and the 8.15 admin Users & Roles surface (Auth.Memberships, grant/revoke/list), so a grant
+	// made in the console is immediately effective at the enforcement wall (ISI-2911).
+	memberships := auth.NewPostgresMembershipStore(db)
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
@@ -219,7 +225,7 @@ func main() {
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
-		ProjectRoles: auth.NewPostgresMembershipStore(db),
+		ProjectRoles: memberships,
 		Hub:          hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
@@ -229,6 +235,7 @@ func main() {
 			TrustedProxies: trustedProxies,
 			AllowedOrigins: allowedOrigins,
 			Audit:          coordAuditWriter(db),
+			Memberships:    memberships,
 		},
 	})
 

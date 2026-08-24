@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { ConsoleShell } from "@/components/nav/ConsoleShell";
+import { viewerAccess } from "@/lib/session";
 import { DEFAULT_THEME } from "@/lib/theme";
 
 export const metadata: Metadata = {
@@ -17,12 +18,15 @@ export const metadata: Metadata = {
     "Operator console — legibility + composition surface for KSquad squads.",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  // Story 8.16: resolve the viewer's global role server-side so the shell renders the role-adapted
+  // nav (admin-only nodes present only for admins). Fails closed to "user" (lib/session.ts).
+  const access = await viewerAccess();
   return (
     <html lang="en" data-theme={DEFAULT_THEME} suppressHydrationWarning>
       <body>
         <ThemeProvider>
-          <ConsoleShell>{children}</ConsoleShell>
+          <ConsoleShell access={access}>{children}</ConsoleShell>
         </ThemeProvider>
       </body>
     </html>
