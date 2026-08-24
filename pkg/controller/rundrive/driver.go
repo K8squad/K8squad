@@ -49,9 +49,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -61,6 +65,7 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // workItemField is the Run index key the resume kick lists Runs by (a work
@@ -176,7 +181,15 @@ func NewDriver(cl client.Client, claims Claims, pauses Pauses, runner Runner) *D
 }
 
 // Reconcile is one level-triggered drive pass over the Run's durable state.
-func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+//
+// Every drivable Run pass opens exactly one span (ISI-2915 AC3): the operator's
+// OTel spine gives each Run a distributed trace. Inbound W3C trace-context on
+// the Run's annotations makes this span a child of whoever enqueued the Run;
+// absent that, it roots a fresh trace. The span context flows into the
+// Claims/Runner/reconcile calls below, and a correlated slog line ties the log
+// stream to the trace (AC4). The named err return lets one deferred hook record
+// failure on the span across every return path.
+func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, err error) {
 	var run api.Run
 	if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -185,6 +198,23 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 		return ctrl.Result{}, nil
 	}
 	runID := string(run.UID)
+
+	ctx = telemetry.Extract(ctx, run.Annotations)
+	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(
+		attribute.String("ksquad.run.id", runID),
+		attribute.String("ksquad.run.work_item_ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.run.namespace", run.Namespace),
+		attribute.String("ksquad.run.name", run.Name),
+	))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	slog.InfoContext(ctx, "rundrive: driving run",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef)
 
 	cs, found, err := r.Claims.State(ctx, run.Spec.WorkItemRef)
 	if err != nil {
