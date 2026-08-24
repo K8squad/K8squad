@@ -47,12 +47,32 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/K8squad/K8squad/pkg/reconcile"
 )
+
+// BuildSnapshot is the content-addressed capture the 8.7c build-snapshot artifact persists. It mirrors
+// internal/buildbrowser.Snapshot but keeps pkg/coord decoupled from the git reader: the production
+// wiring adapts a buildbrowser.GitReader (bound to the Run's worktree + refs) into a BuildSnapshotter.
+// URI/SHA256 are empty for a truncated (byte-less) capture; Meta is always the summary object.
+type BuildSnapshot struct {
+	URI    string         // "sha256:<hex>", or "" when the capture was truncated (no servable bytes)
+	SHA256 string         // hex sha256 of the bundle, or "" when truncated
+	Meta   map[string]any // git-native summary → coord.artifact.meta jsonb (base, runRef, commit, fileCount, …)
+}
+
+// BuildSnapshotter captures a Run's build at Collecting for the 8.7c artifact. A nil snapshotter
+// selects snapshot-off mode (Collect emits only the base patch artifact, exactly as before). The
+// production impl reads the Run's live worktree git-natively and MUST be read-only on it.
+type BuildSnapshotter interface {
+	// Snapshot captures the Run's workspace. A capture FAILURE (err != nil) is a legible "no build
+	// view" signal, never a run failure — Collect audits it and continues.
+	Snapshot(ctx context.Context) (BuildSnapshot, error)
+}
 
 // SandboxBinder is the physical warm-pool bind mechanism (Story 3.4/3.5). ProdEffects
 // invokes it at most once per Run — gated by the coord.sandbox_bind marker — to
@@ -94,8 +114,9 @@ type ProdEffects struct {
 	principal   string // who is driving (§6.5 provenance on every marker/audit row)
 	initiatedBy string // §12.4 control-plane stamp (may be empty → NULL)
 
-	binder     SandboxBinder  // physical warm-pool bind; nil = ledger-only
-	dispatcher TaskDispatcher // physical A2A shim submit; nil = ledger-only
+	binder      SandboxBinder    // physical warm-pool bind; nil = ledger-only
+	dispatcher  TaskDispatcher   // physical A2A shim submit; nil = ledger-only
+	snapshotter BuildSnapshotter // 8.7c build-snapshot capture; nil = snapshot-off
 
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
@@ -126,6 +147,14 @@ func NewProdEffects(ctx context.Context, db *sql.DB, workItemID, runID, principa
 		binder:      binder,
 		dispatcher:  dispatcher,
 	}, nil
+}
+
+// WithSnapshotter enables 8.7c build-snapshot capture at Collecting. It is an option (not a
+// constructor arg) so the many existing NewProdEffects call sites keep working unchanged and only the
+// build-browser wiring opts in. Returns e for chaining. A nil snapshotter leaves snapshot-off mode.
+func (e *ProdEffects) WithSnapshotter(s BuildSnapshotter) *ProdEffects {
+	e.snapshotter = s
+	return e
 }
 
 // Err returns the first infrastructure error captured by any effect, or nil. The
@@ -311,6 +340,62 @@ func (e *ProdEffects) Collect(key, content string, upsert bool) {
 	}
 	if n == 1 {
 		e.audit("artifact_registered", reconcile.StepCollecting, nil)
+	}
+
+	// 8.7c: alongside the base patch artifact, capture the build-snapshot so a COMPLETED Run (pod
+	// gone) still serves tree/diffs/code with live:false. Snapshot-off (nil snapshotter) is the
+	// pre-8.7c behavior. A capture failure degrades legibly (audit row), never a run failure.
+	e.collectBuildSnapshot()
+}
+
+// collectBuildSnapshot captures the 8.7c build-snapshot and upserts it as a fence-guarded,
+// re-entry-idempotent kind="build-snapshot" coord.artifact row carrying the summary meta (0010).
+//
+// Failure legibility (§7, ISI-2273): a capture FAILURE is recorded as a `build_snapshot_unavailable`
+// §6.5 audit row and returns — it is a "no build view" signal, NEVER a silent absence and never a run
+// failure (e.err stays clear so the machine still advances past Collecting). Only an infrastructure
+// error persisting the row (or its audit) is sticky.
+func (e *ProdEffects) collectBuildSnapshot() {
+	if e.err != nil || e.snapshotter == nil {
+		return
+	}
+	snap, err := e.snapshotter.Snapshot(e.ctx)
+	if err != nil {
+		// Legible degradation: the run keeps going; the console shows "no build view".
+		e.audit("build_snapshot_unavailable", reconcile.StepCollecting, nil)
+		return
+	}
+
+	meta := snap.Meta
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	metaJSON, merr := json.Marshal(meta)
+	if merr != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.collectBuildSnapshot: marshal meta: %w", merr))
+		return
+	}
+
+	// Content-addressed upsert on the UNIQUE (work_item_id, run_id, kind) key: a re-entry
+	// republishes the same build-snapshot row idempotently (DO NOTHING). A truncated capture carries
+	// empty uri/sha256 (no servable bytes) but still persists meta{truncated:true} — the read side
+	// surfaces that as an explicit "unavailable" build view rather than a bare 404.
+	res, xerr := e.db.ExecContext(e.ctx, `
+		INSERT INTO coord.artifact (work_item_id, run_id, kind, uri, sha256, meta)
+		     VALUES ($1::uuid, $2::uuid, 'build-snapshot', $3, $4, $5::jsonb)
+		ON CONFLICT (work_item_id, run_id, kind) DO NOTHING`,
+		e.workItemID, e.runID, snap.URI, snap.SHA256, string(metaJSON))
+	if xerr != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.collectBuildSnapshot: upsert: %w", xerr))
+		return
+	}
+	n, rerr := res.RowsAffected()
+	if rerr != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.collectBuildSnapshot: rows: %w", rerr))
+		return
+	}
+	if n == 1 {
+		e.audit("build_snapshot_registered", reconcile.StepCollecting, nil)
 	}
 }
 
