@@ -84,6 +84,11 @@ type Options struct {
 	// under-privileged member gets 403). Nil ⇒ the routes keep the pre-15.4 shape (team-scope
 	// checks only), so a DB-less dev run and existing deployments are unchanged.
 	ProjectRoles ProjectRoleResolver
+	// ComposeCRD is the 8.5 CRD-apply write surface (ISI-3198): create/edit endpoints
+	// for Team/Project/Agent/Role/Skill behind the membership write-tier gate. Nil ⇒
+	// the routes answer the documented 501 (a cluster-less dev run without a writer
+	// client), exactly like the read models.
+	ComposeCRD *ComposeService
 }
 
 // NewServer assembles the root router from opts.
@@ -251,6 +256,53 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// 8.5 CRD-apply write surface (ISI-3198): create + edit endpoints for the
+		// five compose CRDs behind the SAME §13 choke point. Each kind's write-tier
+		// RBAC, field validation, team-namespace scoping and provenance live in the
+		// ComposeService. A nil service (cluster-less dev run) keeps the documented
+		// 501 so the console contract stays honest.
+		s.mountComposeRoutes(authz, opts)
+	}
+}
+
+// composeKinds is the fixed set of compose CRDs and their route segment (8.5).
+var composeKinds = []struct {
+	segment string
+	create  func(*ComposeService) http.HandlerFunc
+	edit    func(*ComposeService) http.HandlerFunc
+}{
+	{"teams", func(s *ComposeService) http.HandlerFunc { return s.handleTeam(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleTeam(false) }},
+	{"projects", func(s *ComposeService) http.HandlerFunc { return s.handleProject(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleProject(false) }},
+	{"agents", func(s *ComposeService) http.HandlerFunc { return s.handleAgent(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgent(false) }},
+	{"roles", func(s *ComposeService) http.HandlerFunc { return s.handleRole(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleRole(false) }},
+	{"skills", func(s *ComposeService) http.HandlerFunc { return s.handleSkill(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleSkill(false) }},
+}
+
+// mountComposeRoutes installs POST /api/{kind} + PUT /api/{kind}/{name} for each
+// compose CRD behind authz (+ same-origin CSRF guard and a bounded body, matching
+// the admin-mutation write surface). A nil ComposeService answers the documented
+// 501 so the route is a discoverable contract, not a 404.
+func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
+	for _, k := range composeKinds {
+		coll := s.router.Path("/api/" + k.segment).Subrouter()
+		coll.Use(authz)
+		coll.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		coll.Use(maxBytesBody(64 << 10)) // skill inline bodies can be large; still bounded
+
+		item := s.router.Path("/api/" + k.segment + "/{name}").Subrouter()
+		item.Use(authz)
+		item.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		item.Use(maxBytesBody(64 << 10))
+
+		if opts.ComposeCRD != nil {
+			coll.HandleFunc("", k.create(opts.ComposeCRD)).Methods(http.MethodPost)
+			item.HandleFunc("", k.edit(opts.ComposeCRD)).Methods(http.MethodPut)
+		} else {
+			h := notImplemented("CRD-apply write surface", "ISI-3198: wire a ComposeService (controller-runtime client) to enable")
+			coll.HandleFunc("", h).Methods(http.MethodPost)
+			item.HandleFunc("", h).Methods(http.MethodPut)
 		}
 	}
 }
