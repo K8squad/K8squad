@@ -59,6 +59,9 @@ type Options struct {
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
+	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
+	// route keeps answering the documented 501 (dev run without an informer cache wired).
+	Dashboard *DashboardService
 	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
@@ -70,6 +73,10 @@ type Options struct {
 	// ISI-2881). Nil ⇒ GET /api/audit keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models.
 	AuditTrail AuditTrailReader
+	// WorkItemState is the 8.14a human board-lane transition op (coord.HumanStateStore,
+	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
+	// DB-less dev run), exactly like the read models above.
+	WorkItemState WorkItemStateTransitioner
 }
 
 // NewServer assembles the root router from opts.
@@ -174,6 +181,18 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// 8.8a per-Project dashboard: the ONE composed payload every 8.8b–8.8f tile draws from
+		// (dashboard.go, ISI-2906), behind the SAME §12.3 choke point — no dashboard-specific
+		// authz path. Nil service (cluster-less dev run) keeps the documented 501.
+		dash := s.router.Path("/api/projects/{projectId}/dashboard").Subrouter()
+		dash.Use(authz)
+		if opts.Dashboard != nil {
+			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
+		} else {
+			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
@@ -204,6 +223,20 @@ func (s *Server) routes(opts Options) {
 		} else {
 			audit.HandleFunc("", notImplemented("audit-trail read model", "ISI-2881: wire an AuditTrailReader (Postgres) to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// 8.14a human board-lane transition (ISI-2909): the write side of the §8.6/§13
+		// board — PATCH /api/work-items/{id}/state. Behind the same choke point; the
+		// handler applies the human-only RBAC and the store applies Team scoping +
+		// no-fence audit (ADR-037). Wired to coord.HumanStateStore in prod (the DB is a
+		// hard start dependency), documented 501 only for a store-less host shape.
+		workItemState := s.router.Path("/api/work-items/{id}/state").Subrouter()
+		workItemState.Use(authz)
+		if opts.WorkItemState != nil {
+			workItemState.HandleFunc("", workItemStateHandler(opts.WorkItemState)).Methods(http.MethodPatch)
+		} else {
+			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
+				Methods(http.MethodPatch)
 		}
 	}
 }
