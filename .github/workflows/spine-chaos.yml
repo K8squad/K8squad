@@ -69,7 +69,7 @@ jobs:
     # tracked on ISI-2808 — and plugs into the same fail-closed ordering contract
     # this suite proves; the coordinator side is fully exercised here.
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if spine source is absent (skeleton phase)
         id: guard

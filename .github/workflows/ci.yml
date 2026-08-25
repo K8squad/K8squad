@@ -42,7 +42,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.go) }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if component source is absent (skeleton phase)
         id: guard
@@ -159,7 +159,7 @@ jobs:
           --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if no migrations present (skeleton phase)
         id: guard
@@ -213,7 +213,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.shims) }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if shim source is absent (skeleton phase)
         id: guard
@@ -268,7 +268,7 @@ jobs:
     env:
       HELM_VERSION: v3.16.4
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if chart is absent (skeleton phase)
         id: guard
@@ -316,7 +316,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.node) }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Skip if console source is absent (skeleton phase)
         id: guard

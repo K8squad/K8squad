@@ -43,7 +43,7 @@ jobs:
     name: gate teeth (pkg/perfgate)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if perfgate source absent
         id: guard
         run: |
@@ -87,7 +87,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if coord source absent
         id: guard
         run: |
@@ -156,7 +156,7 @@ jobs:
     name: P2 warm-pool convergence (pure)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if warmpool source absent
         id: guard
         run: |
@@ -214,7 +214,7 @@ jobs:
     name: P3 SSE throughput (zero dropped events)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if SSE bus source absent
         id: guard
         run: |

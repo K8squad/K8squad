@@ -68,7 +68,7 @@ jobs:
     name: gate teeth (pkg/covgate)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if covgate source absent
         id: guard
         run: |
@@ -102,7 +102,7 @@ jobs:
     needs: components
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if no Go module
         id: guard
         run: |
@@ -145,7 +145,7 @@ jobs:
     needs: [components, gate-logic]
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if no Go module
         id: guard
         run: |
@@ -202,7 +202,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.node) }}
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Skip-with-reason if console package absent
         id: guard
         run: |
