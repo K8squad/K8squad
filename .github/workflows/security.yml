@@ -39,12 +39,12 @@ jobs:
     # (ISI-2656; do not revert to ubuntu-latest.)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: guard
         run: |
           f=hack/security/hostile-run-blast-radius-check.py
           if [ -f "$f" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         if: steps.guard.outputs.present == 'true'
         with:
           python-version: '3.x'
@@ -56,7 +56,7 @@ jobs:
     name: trivyignore (expiry lint)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Lint .trivyignore (expiry + justification on every entry)
         run: |
           python3 - <<'PY'
@@ -112,7 +112,7 @@ jobs:
     name: no-softening (L4 teeth)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Assert no failure-swallowing softening in the L4 workflows
         run: |
           # Patterns are assembled by concatenation so this lint's own source text
@@ -136,11 +136,11 @@ jobs:
     name: govulncheck (Go modules)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: guard
         run: |
           if [ ! -f go.mod ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           # Match the module's declared Go version (go.mod) rather than `stable`, so the
@@ -156,11 +156,11 @@ jobs:
     name: npm audit (console)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: guard
         run: |
           if [ ! -f console/package.json ] && [ ! -f package.json ]; then echo "present=false" >> "$GITHUB_OUTPUT"; else echo "present=true" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.guard.outputs.present == 'true'
         with:
           node-version: 24
@@ -176,12 +176,12 @@ jobs:
     name: Trivy (filesystem + config)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Trivy fs scan
         # v0.36.0 pins its setup-trivy dependency by commit SHA; older tags (e.g. v0.28.0)
         # pin aquasecurity/setup-trivy@v0.2.1, which was deleted upstream and no longer
         # resolves — breaking the job at "Set up job" before any step runs.
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -197,7 +197,7 @@ jobs:
     name: Gitleaks (secrets)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           fetch-depth: 0   # full history for the scheduled git-history scan
       # Run the gitleaks CLI directly rather than gitleaks/gitleaks-action, whose v2
@@ -228,7 +228,7 @@ jobs:
       matrix:
         language: [go, javascript-typescript]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if analyzed source is absent (skeleton phase)
         id: guard
@@ -256,20 +256,20 @@ jobs:
       # language's runtime before extraction. Go uses build-mode autobuild (the tree compiles —
       # govulncheck's `go build ./...` is green); Go does NOT support build-mode none. JS/TS uses
       # build-mode none but still needs `node` on PATH for TS type extraction. (ISI-2644)
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true' && matrix.language == 'go'
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.guard.outputs.present == 'true' && matrix.language == 'javascript-typescript'
         with:
           node-version: 24
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@42947a340483f03ba47bb1a039b2c519aab3df85 # v3
         if: steps.guard.outputs.present == 'true'
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
-      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/autobuild@42947a340483f03ba47bb1a039b2c519aab3df85 # v3
         if: steps.guard.outputs.present == 'true' && matrix.language == 'go'
       # upload:false — SARIF upload to code scanning requires GitHub Advanced
       # Security, which is not enabled on this private repo (and cannot be
@@ -278,14 +278,14 @@ jobs:
       # runs; results are attached as workflow artifacts. To restore native
       # code-scanning alerts: enable Advanced Security under repo Settings →
       # Code security, then remove `upload: false` and the artifact step.
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@42947a340483f03ba47bb1a039b2c519aab3df85 # v3
         if: steps.guard.outputs.present == 'true'
         with:
           upload: false
           output: ${{ runner.temp }}/sarif/${{ matrix.language }}.sarif
       - name: Attach SARIF artifact (GHAS unavailable)
         if: steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: codeql-sarif-${{ matrix.language }}
           path: ${{ runner.temp }}/sarif/${{ matrix.language }}.sarif
