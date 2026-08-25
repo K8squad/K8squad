@@ -186,9 +186,8 @@ func ApplyCredentialSignal(ctx context.Context, db *sql.DB, cfg CredPauseConfig,
 
 	// 2 — the guarded durable step move (AC6 discipline: co-committed, never diverging).
 	step := SignalStep(sig.Event)
-	q := fmt.Sprintf(
-		`UPDATE coord.claim SET reconcile_step = $1
-		  WHERE work_item_id = $2 AND reconcile_step = ANY($3)`)
+	q := `UPDATE coord.claim SET reconcile_step = $1
+		  WHERE work_item_id = $2 AND reconcile_step = ANY($3)`
 	var item any
 	if sig.Item != "" {
 		item = sig.Item
@@ -224,10 +223,9 @@ func ApplyCredentialSignal(ctx context.Context, db *sql.DB, cfg CredPauseConfig,
 	if sig.Item != "" {
 		wid = sig.Item
 	}
-	ev := fmt.Sprintf(
-		`INSERT INTO coord.outbox
+	ev := `INSERT INTO coord.outbox
 		     (entity, project_id, squad, event_type, work_item_id, run_id, payload)
-		 VALUES ('run', $1, $2, 'paused', $3, $4, $5)`)
+		 VALUES ('run', $1, $2, 'paused', $3, $4, $5)`
 	if _, err := tx.ExecContext(ctx, ev, projectID, squad, wid, sig.Run, body); err != nil {
 		return ApplyResult{}, fmt.Errorf("coord.ApplyCredentialSignal: outbox: %w", err)
 	}
