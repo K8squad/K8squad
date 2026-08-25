@@ -49,8 +49,12 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
     expect(screen.getByTestId("overview-team").textContent).toBe("alpha");
     expect(screen.getAllByTestId("overview-project").length).toBe(2);
     expect(screen.getAllByTestId("overview-run-row").length).toBe(2);
-    const link = document.querySelector('a[href="/runs/run-1"]') as HTMLAnchorElement | null;
+    // Run rows deep-link to Run detail; when the run carries a workItem the link
+    // also threads it as `?wi=` (ISI-2884 / PR #138 kill-run wiring), so match on
+    // the /runs/<name> prefix rather than an exact bare href.
+    const link = document.querySelector('a[href^="/runs/run-1"]') as HTMLAnchorElement | null;
     expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/runs/run-1?wi=ticket-9");
   });
 
   it("renders run rows deep-linked to Run detail and phase chips toned by phase", async () => {
