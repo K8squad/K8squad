@@ -58,6 +58,13 @@ const (
 	// TaskAuthRequired is a first-class pause signal (spec §7/§11), NOT a
 	// failure: it maps to the Run→Paused path, not to TaskFailed (C7).
 	TaskAuthRequired TaskState = "auth-required"
+	// TaskRateLimited is a first-class pause signal (story 5.10, spec §7/§11),
+	// NOT a failure: a provider 429 maps to the Run→Paused path with a
+	// Retry-After resume window, exactly like TaskAuthRequired, instead of
+	// collapsing into TaskFailed. The standardized RateLimitedPayload carries
+	// the raw Retry-After; the core normalizes it once (pkg/modelendpoint,
+	// NormalizeRateLimited) and hands the window to the 2.11 resume timer.
+	TaskRateLimited TaskState = "rate-limited"
 	// TaskCompleted is the terminal success state.
 	TaskCompleted TaskState = "completed"
 	// TaskFailed is the terminal generic-failure state.
@@ -147,6 +154,10 @@ const (
 	EventUsage EventType = "usage"
 	// EventAuthRequired is the auth-failure pause signal (spec §7/§11, C7).
 	EventAuthRequired EventType = "auth-required"
+	// EventRateLimited is the standardized rate_limited pause signal (story
+	// 5.10): the runtime's provider returned 429. Its RateLimitedPayload
+	// carries the raw Retry-After for the core to normalize once.
+	EventRateLimited EventType = "rate-limited"
 )
 
 // Event is one SSE progress event (spec §4). seq is monotonic + gap-free per
@@ -209,6 +220,22 @@ type AuthRequiredPayload struct {
 	Detail    string `json:"detail"`
 }
 
+// RateLimitedPayload is the payload of an EventRateLimited event (story 5.10):
+// the standardized rate_limited signal a shim emits when its provider returns
+// 429. RetryAfter is the provider's Retry-After header value carried through
+// RAW and UNPARSED (RFC 7231 §7.1.3 — either delta-seconds like "120" or an
+// HTTP-date, or "" when the provider sent none). Producers MUST NOT pre-parse
+// it: the core owns the single interpretation via
+// modelendpoint.NormalizeRateLimited, so the Retry-After grammar lives in
+// exactly one place. Provider/Model identify what limited (Model feeds
+// RawRateLimit.FromModel, letting OnRateLimited fall back to the Agent's spec
+// model when empty).
+type RateLimitedPayload struct {
+	Provider   string `json:"provider"`
+	Model      string `json:"model,omitempty"`
+	RetryAfter string `json:"retryAfter,omitempty"`
+}
+
 // AgentCard is the capability contract the core negotiates against (spec §6.1).
 // It is generated at shim startup from the Agent CRD + resolved AgentRuntime +
 // the runtime adapter's declared capabilities, and advertises the pinned
@@ -260,14 +287,20 @@ type AuthInfo struct {
 // MUST be true (SSE V2 is mandatory); interactivePrompt gates §3.1
 // input-required (C6); byoModelEndpoint gates the model-provider seam (§11).
 type Capabilities struct {
-	Streaming         bool     `json:"streaming"`
-	ToolCalls         bool     `json:"toolCalls"`
-	InteractivePrompt bool     `json:"interactivePrompt"`
-	BYOModelEndpoint  bool     `json:"byoModelEndpoint"`
-	ArtifactKinds     []string `json:"artifactKinds"`
-	Docker            bool     `json:"docker"`
-	GitHub            bool     `json:"github"`
-	PackageInstall    bool     `json:"packageInstall"`
+	Streaming         bool `json:"streaming"`
+	ToolCalls         bool `json:"toolCalls"`
+	InteractivePrompt bool `json:"interactivePrompt"`
+	BYOModelEndpoint  bool `json:"byoModelEndpoint"`
+	// RateLimited advertises that the runtime emits the standardized 5.10
+	// rate_limited signal (EventRateLimited + RetryAfter) on a provider 429,
+	// rather than collapsing it into a generic TaskFailed. false is the honest
+	// default: a shim that does not yet detect 429s MUST NOT claim it, so the
+	// core keeps treating an opaque failure as a failure.
+	RateLimited    bool     `json:"rateLimited"`
+	ArtifactKinds  []string `json:"artifactKinds"`
+	Docker         bool     `json:"docker"`
+	GitHub         bool     `json:"github"`
+	PackageInstall bool     `json:"packageInstall"`
 }
 
 // Shim is the internal stable interface every conformant runtime shim

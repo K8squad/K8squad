@@ -32,12 +32,13 @@ import (
 // the seq, timestamp and task id. Exactly one field is set per Progress,
 // selected by Kind.
 type Progress struct {
-	Kind     a2a.EventType
-	Message  *a2a.MessagePayload
-	Tool     *a2a.ToolPayload
-	Usage    *a2a.UsagePayload
-	Artifact *a2a.ArtifactRef
-	Auth     *a2a.AuthRequiredPayload
+	Kind        a2a.EventType
+	Message     *a2a.MessagePayload
+	Tool        *a2a.ToolPayload
+	Usage       *a2a.UsagePayload
+	Artifact    *a2a.ArtifactRef
+	Auth        *a2a.AuthRequiredPayload
+	RateLimited *a2a.RateLimitedPayload
 }
 
 // Outcome is the terminal result of a runtime process (spec §3.1). State is
