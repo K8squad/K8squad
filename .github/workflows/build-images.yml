@@ -197,7 +197,7 @@ jobs:
         # §6.1/§6.6: Trivy is the primary gate on every image; Grype is an independent
         # second-scanner cross-check on release images so a single scanner's DB gap doesn't
         # silently ship a known-vulnerable release. Same fixable-only posture as Trivy.
-        uses: anchore/scan-action@1638637db639e0ade3258b51db49a9a137574c3e # v6
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
           image: ${{ steps.imgref.outputs.ref }}
           severity-cutoff: high
