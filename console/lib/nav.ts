@@ -62,6 +62,17 @@ export function navTree(): NavNode[] {
     },
     { id: "agents", label: "Agents", href: "/agents", scope: "global" },
     {
+      // Users & Roles (stories 8.15 + 8.16): the admin identity surface. requiredAccess "admin"
+      // means visibleNav removes it from the tree for a non-admin BEFORE any breakpoint expresses
+      // it — hidden = absent from the DOM (never display:none-as-authz), and the Go apiserver's
+      // requireAdmin gate stays the real wall (§13 choke point).
+      id: "users",
+      label: "Users & Roles",
+      href: "/users",
+      scope: "global",
+      requiredAccess: "admin",
+    },
+    {
       id: "settings",
       label: "Settings",
       href: "/settings",
@@ -141,6 +152,7 @@ const SECTION_LABEL: Record<string, string> = {
   build: "Build",
   tickets: "Tickets",
   discussion: "Discussion",
+  users: "Users & Roles",
 };
 
 function labelFor(segment: string): string {

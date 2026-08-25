@@ -1,0 +1,65 @@
+{{- /* ksquad-console Deployment (ISI-2913, §12 / ISI-2180).
+       The Next.js BFF / console front-end. Proxies to ksquad-apiserver for all
+       API calls. The matching Service is rendered in service.yaml and is the
+       backend for every exposure.mode (including clusterip). */ -}}
+{{- if .Values.console.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ksquad.console.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: console
+spec:
+  replicas: {{ .Values.console.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: console
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: console
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: console
+          image: "{{ .Values.console.image.repository }}:{{ .Values.console.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.console.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: KSQUAD_API_URL
+              value: "http://{{ include "ksquad.apiserver.fullname" . }}:{{ .Values.apiserver.service.port }}"
+            - name: KSQUAD_SESSION_COOKIE
+              value: {{ .Values.apiserver.sessionCookie | quote }}
+            - name: NODE_ENV
+              value: production
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.console.resources | nindent 12 }}
+{{- end }}

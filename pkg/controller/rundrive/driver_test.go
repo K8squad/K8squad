@@ -74,6 +74,9 @@ func (f *fakeClaims) FailEnter(_ context.Context, workItemID, runID string, fenc
 	f.failCall = true
 	return f.failOK, f.failErr
 }
+func (f *fakeClaims) CancelEnter(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
+	return true, nil
+}
 func (f *fakeClaims) RequeuePaused(context.Context, string) (bool, error) {
 	f.requeueCall = true
 	return f.requeueOK, f.requeueErr

@@ -1,7 +1,12 @@
-// app/projects/[projectId]/tickets/page.tsx — Project → Tickets mount (stories 8.13/8.14).
-//
-// The Tickets surface (Kanban 8.14b / List 8.14c over the 8.17 sub-ticket tree) lands with
-// ISI-2910; the project-scoped route + sub-nav tab exist now (story 8.13 IA).
+// Project-scoped Tickets route (stories 8.14b–d + 8.17). Mounted inside the
+// Epic 8 shell (app/layout.tsx) at Project → Tickets per the Project-rooted nav
+// IA (8.13). Thin server component: all interactive work (dual view, filters,
+// tree, DnD) lives in the client TicketsScreen; reads and the one mutation ride
+// the BFF choke point (ADR-013).
+
+import { TicketsScreen } from "@/components/tickets/TicketsScreen";
+
+export const dynamic = "force-dynamic";
 
 export default async function TicketsPage({
   params,
@@ -10,15 +15,8 @@ export default async function TicketsPage({
 }) {
   const { projectId } = await params;
   return (
-    <div>
-      <h1>Tickets</h1>
-      <p className="muted">
-        Kanban + List views for{" "}
-        <strong>{decodeURIComponent(projectId)}</strong> (stories 8.14/8.17 — in
-        flight under [ISI-2910](/ISI/issues/ISI-2910)). Status transitions go
-        through the 8.14a endpoint; this screen never writes client-authored
-        state.
-      </p>
-    </div>
+    <main className="ksq-tickets-page">
+      <TicketsScreen projectId={projectId} />
+    </main>
   );
 }

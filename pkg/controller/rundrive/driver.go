@@ -109,6 +109,9 @@ type Claims interface {
 	// FailEnter is the terminal variant: same fence-first discipline, step →
 	// failed, checkout released.
 	FailEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelEnter is the terminal variant: same fence-first discipline, step →
+	// cancelled, checkout released.
+	CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
@@ -333,6 +336,27 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 		return ctrl.Result{}, fmt.Errorf("rundrive: fail-enter %s: %w", run.Spec.WorkItemRef, err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// CancelRun transitions a Run to the cancelled state (ISI-2884).
+// This method fences any current holder and transitions the reconcile step to cancelled.
+func (r *Driver) CancelRun(ctx context.Context, run *api.Run) error {
+	runID := string(run.UID)
+	cs, found, err := r.Claims.State(ctx, run.Spec.WorkItemRef)
+	if err != nil {
+		return fmt.Errorf("rundrive: read claim for cancellation %s: %w", run.UID, err)
+	}
+	if !found {
+		return fmt.Errorf("rundrive: claim not found for %s", run.UID)
+	}
+	ok, err := r.Claims.CancelEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence)
+	if err != nil {
+		return fmt.Errorf("rundrive: cancel enter for %s: %w", run.UID, err)
+	}
+	if !ok {
+		return fmt.Errorf("rundrive: cancel failed - claim already modified for %s", run.UID)
+	}
+	return nil
 }
 
 // OnResumeDue is the 3.7 wake: each due episode re-enters its Run into

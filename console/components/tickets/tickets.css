@@ -1,0 +1,430 @@
+/* components/tickets/tickets.css — token-driven styling for the Tickets views
+ * (8.14b–d + 8.17). Every color rides the story-8.9 CSS vars keyed off
+ * [data-theme], so dark ⇄ light re-tints the whole surface from the SAME token
+ * roles. Touch targets are ≥44px (responsive spec), the Kanban scrolls
+ * horizontally on narrow viewports, and the List collapses to 3 columns under
+ * 720px with a row-expand for the rest. */
+
+/* ---- Layout ---- */
+.ksq-tickets-page {
+  padding: 24px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.ksq-tickets__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ksq-tickets__head h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+/* ---- View toggle (8.14d) ---- */
+.ksq-viewtoggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.ksq-viewtoggle button {
+  min-height: 44px;
+  min-width: 88px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ksq-viewtoggle button.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ---- Filters (8.14d) ---- */
+.ksq-tickets__filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 16px 0;
+}
+
+.ksq-tickets__filters input,
+.ksq-tickets__filters select {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  padding: 10px 12px;
+  min-height: 44px;
+}
+
+.ksq-tickets__filters input[type="search"] {
+  flex: 1 1 220px;
+}
+
+/* ---- Chips / badges ---- */
+.ksq-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--text-2);
+  margin-inline-end: 4px;
+}
+
+.ksq-chip--state {
+  color: var(--text-1);
+}
+
+.ksq-chip--prov {
+  border-color: var(--ksq-run);
+  color: var(--ksq-run);
+}
+
+.ksq-ticket-id {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.ksq-notice {
+  padding: 8px 12px;
+  border: 1px solid var(--status-blocked);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  background: var(--surface);
+}
+
+.ksq-empty-hint,
+.muted {
+  color: var(--text-2);
+}
+
+.ksq-empty-state {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 32px;
+  text-align: center;
+  background: var(--surface);
+}
+
+.ksq-empty-state__title {
+  font-weight: 600;
+  margin: 0 0 4px;
+  color: var(--text-1);
+}
+
+/* ---- Kanban (8.14b) ---- */
+.ksq-kanban {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(260px, 1fr);
+  gap: 12px;
+  overflow-x: auto; /* horizontal scroll on narrow viewports (responsive spec) */
+  padding-bottom: 8px;
+}
+
+.ksq-kanban-column {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ksq-kanban-column--over {
+  border-color: var(--accent);
+}
+
+.ksq-kanban-column__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ksq-kanban-column__head h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.ksq-kanban-column__count {
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.ksq-kanban-column__cards {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ksq-kanban-card {
+  position: relative;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-height: 44px;
+}
+
+.ksq-kanban-card[data-tree-depth="0"] {
+  background: var(--surface);
+}
+
+.ksq-kanban-card[draggable="true"] {
+  cursor: grab;
+}
+
+.ksq-kanban-card--blocked {
+  border-color: var(--status-blocked);
+}
+
+.ksq-kanban-blocked {
+  position: absolute;
+  top: -8px;
+  right: 8px;
+  background: var(--status-blocked);
+  color: #16060b;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.ksq-kanban-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ksq-kanban-card__title {
+  margin: 6px 0;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ksq-kanban-card__meta {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.ksq-quickmove {
+  display: block;
+  margin-top: 8px;
+}
+
+.ksq-quickmove select {
+  width: 100%;
+  min-height: 44px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  padding: 6px 8px;
+}
+
+/* ---- Sub-ticket tree (8.17) ---- */
+.ksq-tree-node {
+  position: relative;
+}
+
+.ksq-tree-children {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  padding-inline-start: calc(var(--tree-indent-depth, 0) * 0px + 20px);
+}
+
+/* Indentation is depth-driven and capped by --tree-indent-depth (INDENT_CAP). */
+.ksq-tree-children .ksq-tree-children {
+  padding-inline-start: 20px;
+}
+
+.ksq-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  min-width: 44px;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ksq-tree-caret:hover,
+.ksq-tree-caret:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ksq-tree-badge {
+  font-size: 0.7rem;
+  background: var(--border);
+  color: var(--text-1);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+
+.ksq-tree-node--capped > .ksq-kanban-card,
+.ksq-tree-node--capped > table {
+  border-inline-start: 2px dashed var(--border);
+}
+
+.ksq-tree-continue {
+  color: var(--text-2);
+  margin-inline-end: 4px;
+}
+
+.ksq-tree-empty {
+  color: var(--text-2);
+  font-size: 0.8rem;
+  padding: 4px 0;
+}
+
+/* ---- List view (8.14c) ---- */
+.ksq-list-scroll {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ksq-list-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.ksq-list-table th,
+.ksq-list-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.ksq-list-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.ksq-list-sort {
+  background: none;
+  border: none;
+  color: var(--text-1);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 44px;
+  padding: 0;
+}
+
+.ksq-list-sort__dir {
+  margin-inline-start: 4px;
+  color: var(--accent);
+}
+
+.ksq-list-title {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  /* Sub-ticket depth indent (8.17), capped at INDENT_CAP by --tree-indent-depth. */
+  padding-inline-start: calc(var(--tree-indent-depth, 0) * 18px);
+}
+
+.ksq-list-title__text {
+  color: var(--text-1);
+}
+
+.ksq-list-rowdetail td {
+  background: var(--canvas);
+}
+
+.ksq-list-detail {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.ksq-list-detail dt {
+  font-size: 0.75rem;
+  color: var(--text-2);
+}
+
+.ksq-list-detail dd {
+  margin: 0;
+}
+
+.ksq-rowexpand {
+  display: none; /* mobile-only affordance (unhidden below) */
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  min-height: 44px;
+  min-width: 32px;
+  cursor: pointer;
+  font: inherit;
+}
+
+/* ---- Responsive (spec: Tickets — Kanban / List / tree rows) ---- */
+@media (max-width: 720px) {
+  .ksq-list-table .ksq-col-priority,
+  .ksq-list-table .ksq-col-assignee,
+  .ksq-list-table .ksq-col-labels,
+  .ksq-list-table .ksq-col-updated {
+    display: none; /* 3 visible columns: ID + Title + Status */
+  }
+
+  .ksq-rowexpand {
+    display: inline-flex;
+  }
+
+  .ksq-kanban {
+    grid-auto-columns: minmax(240px, 80vw); /* swipeable-pane feel */
+  }
+}
+
+/* ---- A11y helpers ---- */
+.ksq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

@@ -206,6 +206,26 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item state store: %v", err)
 	}
 
+	// 15.3 per-Project membership store (auth.project_membership, db/migrations/0010): ONE
+	// instance backs both the 15.4 enforcement gate (Options.ProjectRoles, read-only resolver)
+	// and the 8.15 admin Users & Roles surface (Auth.Memberships, grant/revoke/list), so a grant
+	// made in the console is immediately effective at the enforcement wall (ISI-2911).
+	memberships := auth.NewPostgresMembershipStore(db)
+
+	// 8.5 CRD-apply write surface (ISI-3198): the DIRECT controller-runtime client the
+	// compose endpoints apply through. Built where the host has cluster access (in-cluster
+	// SA or KUBECONFIG); when it cannot be built (cluster-less dev run) we log and leave it
+	// nil so POST/PUT /api/{teams,projects,agents,roles,skills} keep the documented 501 —
+	// an honest contract, not a hard start failure. The SAME memberships store backs its
+	// write-tier gate, and the SAME coord.audit_log writer records its provenance rows.
+	var composeCRD *apiserver.ComposeService
+	if applier, aerr := apiserver.NewCRDApplier(); aerr != nil {
+		log.Printf("ksquad-apiserver: CRD-apply write surface disabled (POST/PUT /api/{teams,projects,agents,roles,skills} → 501): %v", aerr)
+	} else {
+		composeCRD = apiserver.NewComposeService(applier, memberships, coordAuditWriter(db))
+		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
@@ -216,7 +236,12 @@ func main() {
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState: workItemState,
-		Hub:           hub,
+		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
+		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
+		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
+		ProjectRoles: memberships,
+		ComposeCRD:   composeCRD,
+		Hub:          hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,
@@ -225,6 +250,7 @@ func main() {
 			TrustedProxies: trustedProxies,
 			AllowedOrigins: allowedOrigins,
 			Audit:          coordAuditWriter(db),
+			Memberships:    memberships,
 		},
 	})
 
