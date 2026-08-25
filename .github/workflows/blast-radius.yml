@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run. Mirrors ci.yml / l1.yml (ISI-2748 R2).
+  group: blast-radius-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   s4:
     name: blast-radius (S4 suite in kind)

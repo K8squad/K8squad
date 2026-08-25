@@ -23,6 +23,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run. Mirrors ci.yml / l1.yml (ISI-2748 R2).
+  group: workflow-policy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   policy:
     name: Enforce workflow security policy
