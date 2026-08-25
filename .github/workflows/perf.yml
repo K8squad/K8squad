@@ -43,7 +43,7 @@ jobs:
     name: gate teeth (pkg/perfgate)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if perfgate source absent
         id: guard
         run: |
@@ -53,7 +53,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -87,7 +87,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if coord source absent
         id: guard
         run: |
@@ -97,7 +97,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -116,7 +116,7 @@ jobs:
             -benchtime=200x -count=6 ./pkg/coord/ | tee new-p1p4.txt
       - name: Restore cached main baseline (P1)
         if: steps.guard.outputs.present == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p1p4.txt
           # Exact key never pre-exists (run_id is unique) → always falls back to the
@@ -136,13 +136,13 @@ jobs:
         run: cp new-p1p4.txt base-p1p4.txt
       - name: Save baseline cache
         if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p1p4.txt
           key: perf-baseline-p1p4-v1-${{ github.run_id }}
       - name: Upload P1/P4 bench report
         if: always() && steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: perf-p1p4-report
           path: new-p1p4.txt
@@ -156,7 +156,7 @@ jobs:
     name: P2 warm-pool convergence (pure)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if warmpool source absent
         id: guard
         run: |
@@ -166,7 +166,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -178,7 +178,7 @@ jobs:
             -benchtime=2000x -count=6 ./pkg/warmpool/ | tee new-p2.txt
       - name: Restore cached main baseline (P2)
         if: steps.guard.outputs.present == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p2.txt
           key: perf-baseline-p2-v1-${{ github.run_id }}
@@ -195,7 +195,7 @@ jobs:
         run: cp new-p2.txt base-p2.txt
       - name: Save baseline cache
         if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p2.txt
           key: perf-baseline-p2-v1-${{ github.run_id }}
@@ -214,7 +214,7 @@ jobs:
     name: P3 SSE throughput (zero dropped events)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if SSE bus source absent
         id: guard
         run: |
@@ -224,7 +224,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod

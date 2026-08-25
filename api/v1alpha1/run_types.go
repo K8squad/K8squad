@@ -24,10 +24,11 @@ import (
 //
 //	Pending → Claiming → Running → {Succeeded | Failed | Cancelled | Paused}
 //
-// with retry/backoff edges Failed → Claiming and Paused → Running/Claiming.
+// with retry/backoff edges Failed → Claiming and Paused → Running/Claiming, and
+// the 3.3 operator-kill transitional Canceling (teardown owed → Cancelled).
 // The phase is CEL/OpenAPI-validated to exactly this set — an out-of-set
 // phase fails admission (fail-closed, story 1.2 AC6/AC8).
-// +kubebuilder:validation:Enum=Pending;Claiming;Running;Paused;Succeeded;Failed;Cancelled
+// +kubebuilder:validation:Enum=Pending;Claiming;Running;Paused;Canceling;Succeeded;Failed;Cancelled
 type RunPhase string
 
 const (
@@ -46,6 +47,11 @@ const (
 	// RunPhasePaused: credential expiry (§11) or rate-limit wait (§8
 	// tier 2) with a persisted resume_at.
 	RunPhasePaused RunPhase = "Paused"
+
+	// RunPhaseCanceling: the 3.3 operator-kill transitional phase — kill was
+	// issued, the controller owes the sandbox teardown, then the Run marks
+	// Cancelled (FR-A6/F4).
+	RunPhaseCanceling RunPhase = "Canceling"
 
 	// RunPhaseSucceeded: terminal success.
 	RunPhaseSucceeded RunPhase = "Succeeded"
@@ -149,16 +155,21 @@ type SandboxPolicy struct {
 }
 
 // RetryPolicy bounds the §8 failure/resume retry loop (FR-A5, NFR-REL1/2).
+// Default values: MaxRetries=5, BackoffSeconds=60.
 //
-// +kubebuilder:validation:XValidation:message="retryPolicy.maxRetries must be >= 0 (0 means no automatic retry)",rule="!has(self.maxRetries) || self.maxRetries >= 0"
-// +kubebuilder:validation:XValidation:message="retryPolicy.backoffSeconds must be >= 1; set a positive base delay for the exponential backoff",rule="!has(self.backoffSeconds) || self.backoffSeconds >= 1"
+// +kubebuilder:validation:XValidation:message="retryPolicy.maxRetries must be >= 0 and <= 20 (0 means no automatic retry, 20 is safety limit)",rule="!has(self.maxRetries) || (self.maxRetries >= 0 && self.maxRetries <= 20)"
+// +kubebuilder:validation:XValidation:message="retryPolicy.backoffSeconds must be >= 1 and <= 3600; set a reasonable base delay for the exponential backoff",rule="!has(self.backoffSeconds) || (self.backoffSeconds >= 1 && self.backoffSeconds <= 3600)"
 type RetryPolicy struct {
 	// MaxRetries bounds automatic retries; 0 means no automatic retry.
+	// Default: 5 (safety limit to prevent infinite loops)
+	// +kubebuilder:default=5
 	// +optional
 	MaxRetries *int32 `json:"maxRetries,omitempty"`
 
 	// BackoffSeconds is the base delay for the exponential backoff with
 	// jitter applied between retries (§8).
+	// Default: 60 seconds
+	// +kubebuilder:default=60
 	// +optional
 	BackoffSeconds *int32 `json:"backoffSeconds,omitempty"`
 }
