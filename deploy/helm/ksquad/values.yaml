@@ -13,13 +13,78 @@
 nameOverride: ""
 fullnameOverride: ""
 
-# Services the exposure layer routes to. Ports/targetPorts only — the
-# Deployments themselves are owned by other tickets. Services always render
-# (they are the backends for every exposure.mode, including clusterip).
+# ─────────────────────────────────────────────────────────────────────────────
+# Workload Deployments (ISI-2913 / Story 9.5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── console (Next.js BFF + frontend, ISI-2180) ──────────────────────────────
 console:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/k8squad/ksquad-console
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
   service:
     port: 80
     targetPort: 3000
+
+# ── operator (controller-runtime reconcilers, §9.4 / Epic 2/3/4/11) ─────────
+operator:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/k8squad/ksquad-operator
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  database:
+    existingSecret: "" # empty → derived CNPG app secret <fullname>-pg-app
+    existingSecretKey: uri
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# ── scm-webhook (Story 11.1 HMAC-verified SCM ingress) ──────────────────────
+scmWebhook:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/k8squad/ksquad-scm-webhook
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+# ── event-relay (Story 12.1 outbox→NATS relay, ISI-2260) ────────────────────
+eventRelay:
+  enabled: true
+  replicas: 1
+  image:
+    repository: ghcr.io/k8squad/ksquad-event-relay
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  database:
+    existingSecret: "" # empty → derived CNPG app secret <fullname>-pg-app
+    existingSecretKey: uri
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
 apiserver:
   # The ksquad-apiserver HTTP host (ISI-2750, §17.3) — the binary the console BFF
   # proxies to. Mounts the §7.5 discussion surface behind the §13 authz choke
@@ -204,10 +269,87 @@ storage:
 #   sole source-of-truth, ADR-001) — only in-flight/replayable event copies.
 # ═════════════════════════════════════════════════════════════════════════════
 nats:
-# The event bus is ON by default (one `helm install` yields the whole stack,
-# §16). Turning it OFF must NEVER break the core install — the outbox buffers
-# and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
-enabled: true
+  # The event bus is ON by default (one `helm install` yields the whole stack,
+  # §16). Turning it OFF must NEVER break the core install — the outbox buffers
+  # and the relay is best-effort, so NATS-down never blocks a Run/claim/write.
+  enabled: true
+  image: nats:2.10-alpine
+  port: 4222
+  jetstream:
+    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
+    maxFileStore: 4GB
+  ha:
+    enabled: false
+    replicas: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+# Egress configuration for Projects (story 4.6, ISI-2888)
+# This controls the default-deny + allowlist egress policy structure applied
+# to each Project's Run workloads. When enabled, the operator will create
+# NetworkPolicies for Projects that specify egressPolicyRef.
+egress:
+  # Enable egress policy reconciliation for Projects
+  enabled: true
+  
+  # Default egress proxy configuration. Projects can override this by
+  # specifying their own egressPolicyRef.
+  defaultEgressProxy:
+    # Service name of the egress proxy in each team namespace
+    service: "egress-proxy"
+    # Port the egress proxy listens on
+    port: 8080
+    
+  # NetworkPolicy configuration for egress control
+  networkPolicy:
+    # Default-deny policy name prefix
+    defaultDenyName: "ksquad-default-deny"
+    # Project-specific egress policy name prefix
+    projectEgressPrefix: "ksquad-egress"
+    
+  # Allowed egress destinations by default
+  defaultAllow:
+    # DNS resolution is always allowed
+    dns:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 53
+        - protocol: "UDP" 
+          port: 53
+    # Control plane communication (API server, health checks)
+    controlPlane:
+      enabled: true
+      ports:
+        - protocol: "TCP"
+          port: 443  # HTTPS (API server)
+        - protocol: "TCP"
+          port: 8080 # Health/proxy ports
+  image: nats:2.10-alpine
+  port: 4222
+  jetstream:
+    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
+    # Max on-disk JetStream file store. Keep ≤ storage.nats.size (5Gi).
+    # This is a nats-server config size, emitted UNQUOTED into nats.conf (see
+    # templates/nats.yaml): 4GB == 4Gi == 4*1024^3 bytes to nats. Do NOT quote
+    # a multi-char suffix in the template — nats fails to parse "4GB"/"4Gi".
+    maxFileStore: 4GB
+  # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
+  # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
+  # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.
+  ha:
+    enabled: false
+    replicas: 3
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
 
 # Egress configuration for Projects (story 4.6, ISI-2888)
 # This controls the default-deny + allowlist egress policy structure applied

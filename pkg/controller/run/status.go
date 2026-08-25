@@ -29,6 +29,8 @@ limitations under the License.
 package run
 
 import (
+	"time"
+
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -45,13 +47,16 @@ const ConditionReady = "Ready"
 // Ready condition reasons. Each is a valid k8s condition reason
 // (^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$) and maps 1:1 to a durable step class.
 const (
-	reasonReconciling = "Reconciling"
-	reasonPaused      = "Paused"
-	reasonRateLimited = "RateLimited"
-	reasonSucceeded   = "Succeeded"
-	reasonFailed      = "Failed"
-	reasonCancelled   = "Cancelled"
-	reasonUnknownStep = "UnknownStep"
+	reasonReconciling        = "Reconciling"
+	reasonPaused             = "Paused"
+	reasonRateLimited        = "RateLimited"
+	reasonCredentialExpired  = "CredentialExpired"
+	reasonCredentialRotated  = "CredentialRotated"
+	reasonEndpointUnreach    = "EndpointUnreachable"
+	reasonSucceeded          = "Succeeded"
+	reasonFailed             = "Failed"
+	reasonCancelled          = "Cancelled"
+	reasonUnknownStep        = "UnknownStep"
 )
 
 // PhaseOf bridges the reconcile machine's coarse Phase (pkg/reconcile) onto the
@@ -94,19 +99,64 @@ func PhaseOf(step reconcile.Step) api.RunPhase {
 // from the clock) so the LastTransitionTime is deterministic in tests and stable
 // across a no-op requeue.
 func ProjectStatus(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time) api.RunStatus {
+	return ProjectStatusWithPause(current, step, generation, now, nil)
+}
+
+// PauseDetail is the per-credential attribution snapshot the credential pause
+// ledger (pkg/coord.CredentialPauseStore, Story 7.6) hands the reconciler when
+// the durable step is a member of the credential pause family. It exists so the
+// Run condition can carry the 7.6 operator string verbatim —
+// "paused: rate-limited (credential X, resumes ~T)" — instead of a bare
+// phase the console would have to re-derive. Reason is one of
+// rate_limited|credential_expired|credential_rotated|endpoint_unreachable.
+// ResumeAt is nil exactly when the hold is refresh-driven (no timer wake).
+type PauseDetail struct {
+	CredentialID string       // the per-user Secret identity ("namespace/name", arch §11)
+	Principal    string       // the human seat / service principal owning the credential
+	Reason       string       // legible pause reason (the same family as the step suffix)
+	ResumeAt     *metav1.Time // nil ⇒ clears on refresh (7.4), not on a timer (7.6)
+}
+
+// OperatorMessage renders the 7.4/7.6 operator-facing pause string: a legible
+// reason attributed to the specific credential, with the resume horizon when
+// one is scheduled. This exact string is the contract the console (8.6/8.11)
+// and the §6.6 outbox projection surface — never "failed: auth".
+func (d PauseDetail) OperatorMessage() string {
+	who := d.CredentialID
+	if who == "" {
+		who = d.Principal
+	}
+	var when string
+	if d.ResumeAt != nil {
+		when = ", resumes ~" + d.ResumeAt.UTC().Format(time.RFC3339)
+	} else {
+		when = ", resumes on credential refresh"
+	}
+	return "paused: " + d.Reason + " (credential " + who + when + ")"
+}
+
+// ProjectStatusWithPause is ProjectStatus with the per-credential pause
+// attribution (Story 7.6): when step is a credential pause family member and
+// detail is non-nil, the Ready condition's Message is the OperatorMessage and
+// the reason names the specific hold. detail is ignored for non-paused steps,
+// so a stale snapshot can never fabricate a hold the durable step does not
+// command (status stays downstream of the step, AC2).
+func ProjectStatusWithPause(current api.RunStatus, step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail) api.RunStatus {
 	out := *current.DeepCopy()
 	out.Phase = PhaseOf(step)
 	out.ObservedGeneration = generation
-	meta.SetStatusCondition(&out.Conditions, readyCondition(step, generation, now))
+	meta.SetStatusCondition(&out.Conditions, readyCondition(step, generation, now, detail))
 	return out
 }
 
 // readyCondition derives the summary Ready condition from the durable step.
 // Ready is True ONLY at Succeeded; every other step (including the terminal
-// Failed/Cancelled) is not-Ready with a reason that names the sub-state. The two
-// paused steps share PhasePaused but keep distinct reasons so the rate-limit hold
-// is legible.
-func readyCondition(step reconcile.Step, generation int64, now metav1.Time) metav1.Condition {
+// Failed/Cancelled) is not-Ready with a reason that names the sub-state. The
+// paused steps share PhasePaused but keep distinct reasons so each hold is
+// legible on its own — rate-limit vs credential expiry vs rotation vs endpoint
+// — and, when the reconciler supplies the per-credential detail, the message is
+// the 7.6 operator string with the attributed credential and resume horizon.
+func readyCondition(step reconcile.Step, generation int64, now metav1.Time, detail *PauseDetail) metav1.Condition {
 	c := metav1.Condition{
 		Type:               ConditionReady,
 		ObservedGeneration: generation,
@@ -132,7 +182,19 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time) meta
 	case reconcile.StepPausedRateLimited:
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonRateLimited
-		c.Message = "Run is paused waiting on a rate-limit window"
+		c.Message = pauseMessage(detail, "Run is paused waiting on a rate-limit window")
+	case reconcile.StepPausedCredentialExpired:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonCredentialExpired
+		c.Message = pauseMessage(detail, "Run is paused: credential expired, resumes on refresh")
+	case reconcile.StepPausedCredentialRotated:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonCredentialRotated
+		c.Message = pauseMessage(detail, "Run is paused: credential rotated, resumes when the new credential propagates")
+	case reconcile.StepPausedEndpointUnreachable:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonEndpointUnreach
+		c.Message = pauseMessage(detail, "Run is paused: credential endpoint unreachable")
 	case reconcile.StepPending, reconcile.StepClaimingSandbox,
 		reconcile.StepDispatching, reconcile.StepRunning, reconcile.StepCollecting:
 		c.Status = metav1.ConditionFalse
@@ -144,4 +206,17 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time) meta
 		c.Message = "Run reconcile_step is not recognised by this controller"
 	}
 	return c
+}
+
+// pauseMessage prefers the attributed operator string (7.6) and falls back to
+// the step's generic message when the reconciler had no ledger snapshot — the
+// condition is never empty, and never invents attribution it was not given.
+func pauseMessage(detail *PauseDetail, fallback string) string {
+	if detail == nil {
+		return fallback
+	}
+	if msg := detail.OperatorMessage(); msg != "" {
+		return msg
+	}
+	return fallback
 }

@@ -12,6 +12,7 @@ export type NavIconId =
   | "settings"
   | "configuration"
   | "credentials"
+  | "users"
   | "menu"
   | "close";
 
@@ -34,6 +35,8 @@ const P: Record<NavIconId, string> = {
     "M4 6h16M4 12h16M4 18h16m1-14a1 1 0 100 2 1 1 0 000-2zm0 6a1 1 0 100 2 1 1 0 000-2zm0 6a1 1 0 100 2 1 1 0 000-2z",
   credentials:
     "M12 2a5 5 0 015 5v3h1a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2h1V7a5 5 0 015-5zm0 2a3 3 0 00-3 3v3h6V7a3 3 0 00-3-3z",
+  users:
+    "M9 11a3 3 0 100-6 3 3 0 000 6zm7 0a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm14 0v-1c0-1.3-.6-2.4-1.5-3.2 2.1.3 4.5 1.4 4.5 3.2v1h-3z",
   menu: "M4 6h16M4 12h16M4 18h16",
   close: "M6 6l12 12M18 6L6 18",
 };

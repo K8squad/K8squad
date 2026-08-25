@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-event-relay — Story 12.1 outbox→NATS domain-event relay (ISI-2260).
+# Standalone process that tails coord.outbox and publishes to JetStream.
+# Decoupled from the write path: NATS-down never blocks Run/claim/memory writes.
+# Multi-arch cross-compile → static non-root distroless (same shape as operator).
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/event-relay ./cmd/event-relay
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-event-relay" \
+      org.opencontainers.image.description="KSquad event relay: outbox→NATS JetStream publisher (Story 12.1 / ISI-2260)" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/event-relay /usr/local/bin/event-relay
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/event-relay"]

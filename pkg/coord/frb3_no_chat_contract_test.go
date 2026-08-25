@@ -292,6 +292,57 @@ var allowedSurface = map[string]string{
 	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
 	"NewHumanStateStore":              "§8.6 constructor",
 	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",
+
+	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
+	// (Stories 7.4+7.6 / ISI-2898, gap ISI-2876). Reuses the 2.11/3.7 resume
+	// machinery, keyed on the per-user credential (attribution, 7.6) with a
+	// legible reason family (7.4). Custody-only: an episode names a credential
+	// and moves a Run into a Paused(reason) step + one §6.6 outbox event;
+	// ApplyCredentialSignal co-commits the three facts in ONE txn (AC6). No
+	// parameter carries worker-authored content, nothing published re-enters
+	// coordination (§17.4 no-P2P) — the shim signal is a lifecycle observation,
+	// not an agent-to-agent channel. SelectAlternate/EarliestResume are the pure
+	// read-side advisories the §2.10 re-route consumes.
+	"CredentialPauseStore":                 "§10/7.6 per-credential pause/resume ledger (single-wake, no polling)",
+	"NewCredentialPauseStore":              "§10 constructor",
+	"NewCredPauseForTest":                  "§10 chaos-harness constructor (self-contained schema)",
+	"CredPauseConfig":                      "§10 credential-pause store config (backoff/jitter), code-supplied",
+	"DefaultCredPauseConfig":               "§10 sane default credential-pause config",
+	"CredPauseReason":                      "§7.4 legible pause reason family (rate_limited|expired|rotated|unreachable)",
+	"CredPauseReason.Valid":                "§7.4 fail-closed reason guard",
+	"CredPauseReason.TimerResumed":         "§7.4 resume-mode split: timer (rate_limited) vs refresh",
+	"CredentialClass":                      "§11 story-pinned credential model tag (claude_oauth|api_key|byo_endpoint)",
+	"CredentialClass.Valid":                "§11 fail-closed class guard",
+	"CredentialRef":                        "§11 per-user credential identity (the attribution key), code-supplied",
+	"CredPauseRequest":                     "§10 one credential-lifecycle observation to record (custody-only)",
+	"CredPauseInfo":                        "§10 durable outcome of a credential pause (reason + resume horizon)",
+	"CredDuePause":                         "§8 a credential pause whose resume_at elapsed and is due to wake",
+	"CredPauseView":                        "§2.10/8.6 advisory read of a held credential (reason + horizon, read-only)",
+	"CredentialPauseStore.PauseCredential": "§10 persist/refresh a credential pause episode",
+	"CredentialPauseStore.ResumeOnRefresh": "§7.4 clear a refresh-mode hold when fresh material lands (idempotent)",
+	"CredentialPauseStore.ResumeDue":       "§8 pop credential pauses whose resume_at has elapsed (SKIP LOCKED)",
+	"CredentialPauseStore.NextWake":        "§8 re-derive the next durable timer wake from resume_at",
+	"CredentialPauseStore.PausedSet":       "§2.10/8.6 read the pending held set (advisory projection)",
+	"CredentialPauseStore.DB":              "§10 harness handle accessor",
+	"ReasonRateLimited":                    "§7.6 reason: subscription throttled (timer resume)",
+	"ReasonCredentialExpired":              "§7.4 reason: credential expired (refresh resume)",
+	"ReasonCredentialRotated":              "§7.4 reason: credential rotated (refresh resume)",
+	"ReasonEndpointUnreachable":            "§7.4/7.5 reason: BYO endpoint unreachable (refresh resume)",
+	"ClassClaudeOAuth":                     "§7.2 credential class: per-user Claude OAuth seat token",
+	"ClassAPIKey":                          "§7.3 credential class: long-lived provider API key",
+	"ClassBYOEndpoint":                     "§7.5 credential class: BYO/Ollama endpoint URL (+ optional token)",
+	"SelectAlternate":                      "§2.10/7.6 pure re-route advisory: pick an unheld credential",
+	"EarliestResume":                       "§2.10 pure scheduling hint: earliest timer horizon in the held set",
+	"ApplyCredentialSignal":                "§10/7.4 atomic shim-signal applier (episode + guarded step + §6.6 outbox, one txn)",
+	"ApplyResult":                          "§10 outcome of an applied signal (episode + whether the step moved)",
+	"CredentialSignal":                     "§7.2 one credentialLifecycle observation from the shim (custody-only, code-supplied)",
+	"CredentialEvent":                      "§7.2 the lifecycle event kind (expired|rotated|rate_limited|unreachable)",
+	"EventExpired":                         "§7.2 lifecycle event: token no longer authenticates",
+	"EventRotated":                         "§7.2 lifecycle event: Secret rotated mid-Run",
+	"EventRateLimited":                     "§7.2 lifecycle event: provider throttle (Retry-After)",
+	"EventUnreachable":                     "§7.2/7.5 lifecycle event: BYO endpoint not answering",
+	"SignalStep":                           "§7.4 pure map: lifecycle event → durable Paused(reason) step",
+	"EventReason":                          "§7.4 pure map: lifecycle event → ledger reason",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

@@ -58,10 +58,11 @@ type ProjectOverview struct {
 // "Pending" when the Run has not yet been reconciled (empty status.phase) so the console never
 // renders a blank cell.
 type RunStatus struct {
-	Name      string     `json:"name"`
-	WorkItem  string     `json:"workItem,omitempty"`
-	Phase     string     `json:"phase"`
-	ClaimedAt *time.Time `json:"claimedAt,omitempty"`
+	Name             string     `json:"name"`
+	WorkItem         string     `json:"workItem,omitempty"`
+	Phase            string     `json:"phase"`
+	ClaimedAt        *time.Time `json:"claimedAt,omitempty"`
+	ReasonCancelled  string     `json:"reasonCancelled,omitempty"`
 }
 
 // ErrTeamNotFound is returned by a SquadOverviewReader when no Team resolves to the caller's Team
@@ -174,6 +175,16 @@ func projectRunStatus(run *ksquadv1.Run) RunStatus {
 	if run.Status.ClaimedAt != nil {
 		t := run.Status.ClaimedAt.Time
 		rs.ClaimedAt = &t
+	}
+	// Populate ReasonCancelled from the Ready condition message when the Run
+	// has reached the Cancelled terminal phase (RunPhaseCancelled / FR-A6).
+	if run.Status.Phase == ksquadv1.RunPhaseCancelled {
+		for _, c := range run.Status.Conditions {
+			if c.Type == "Ready" {
+				rs.ReasonCancelled = c.Message
+				break
+			}
+		}
 	}
 	return rs
 }

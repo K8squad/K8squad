@@ -1,0 +1,77 @@
+{{- /* ksquad-operator Deployment (ISI-2913, §9.4 / Epic 2/3/4/11).
+       The controller-manager hosting the Run reconciler (Story 3.1), Run DRIVE loop
+       (§5.3), repo-sync mirror (11.1), and Team tenancy reconciler (4.1).
+
+       Leader election is ON by default (arch §5.2, AC4): exactly one replica reconciles
+       at a time, preventing race on Run.status patches. The fenced coord store
+       (pkg/coord) guards against zombie writers on failover.
+
+       The operator reads the storage ConfigMap (`<fullname>-storage`) for PVC
+       parameters; it reads the CNPG-generated DB secret for the coord DSN.
+       Without a coord DSN it still elects and serves probes (smoke-deploy path). */ -}}
+{{- if .Values.operator.enabled -}}
+{{- $dbSecret := .Values.operator.database.existingSecret | default (printf "%s-pg-app" (include "ksquad.fullname" .)) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ksquad.operator.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+spec:
+  replicas: {{ .Values.operator.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: operator
+    spec:
+      serviceAccountName: {{ include "ksquad.operator.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          args:
+            - --leader-elect=true
+            - --storage-config={{ include "ksquad.fullname" . }}-storage
+            - --namespace={{ .Release.Namespace }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $dbSecret }}
+                  key: {{ .Values.operator.database.existingSecretKey | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            {{- toYaml .Values.operator.resources | nindent 12 }}
+{{- end }}

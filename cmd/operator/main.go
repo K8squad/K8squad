@@ -52,6 +52,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
@@ -205,6 +206,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The credential controller (story 7.7, arch §5.2/§11.1, ADR-032) is the
+	// zero-touch Claude OAuth lifecycle: it watches per-user HUMAN-SEAT OAuth
+	// Secrets and refreshes the ~8h access token in place before it expires, so
+	// the many agent pods that MOUNT that Secret share one login and never
+	// handle token strings. Registering it on the manager (whose leader
+	// election is enabled above) makes it the SINGLE leader-elected refresher —
+	// no per-pod refresh, no thundering-refresh race. Its Watch predicate
+	// selects only `ksquad.io/credential-class: human-seat`, so a
+	// service-account credential is never given the OAuth lifecycle (ADR-041).
+	if err := (&credentialctrl.Reconciler{
+		Refresher: credentialctrl.NewDefaultAnthropicRefresher(),
+	}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up credential reconciler")
+		os.Exit(1)
+	}
+
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
 
@@ -239,7 +256,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "workspace", "networkpolicy"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "workspace", "networkpolicy"})
 	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)

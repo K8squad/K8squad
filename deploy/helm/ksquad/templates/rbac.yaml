@@ -1,0 +1,57 @@
+{{- /* RBAC for ksquad-operator (ISI-2913).
+       The operator needs to read/patch Project CRs (for scm-sync-trigger), manage
+       Run/Agent CRs, create/delete PVCs for workspace provisioning, and manage
+       NetworkPolicies for egress control. The scm-webhook shares this ServiceAccount
+       since it only patches Project annotations. */ -}}
+{{- if .Values.operator.enabled -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ksquad.operator.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ksquad.operator.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+rules:
+  - apiGroups: ["ksquad.io"]
+    resources: ["projects", "agents", "runs", "teams", "sandboxpools", "egresspolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["ksquad.io"]
+    resources: ["projects/status", "runs/status", "agents/status", "teams/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "ksquad.operator.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "ksquad.operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ksquad.operator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
