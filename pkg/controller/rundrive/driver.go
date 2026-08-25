@@ -109,9 +109,16 @@ type Claims interface {
 	// FailEnter is the terminal variant: same fence-first discipline, step →
 	// failed, checkout released.
 	FailEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
-	// CancelEnter is the terminal variant: same fence-first discipline, step →
-	// cancelled, checkout released.
+	// CancelEnter is the kill-side entry (apiserver, §3.3): fence-first move
+	// running-ish → cancelling; the driver then owes the teardown + finish.
 	CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelFinish is the operator-side kill completion (§3.3): the guarded
+	// cancelling → cancelled transition, committed after the driver tears the
+	// sandbox down (same fence-first co-commit discipline as the enter side).
+	CancelFinish(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelDue lists work items parked at cancelling — the kill sweep's
+	// backlog it hands to the driver's kick.
+	CancelDue(ctx context.Context) (due []string, err error)
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
@@ -237,6 +244,14 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return r.park(ctx, &run, runID)
 	}
 
+	// 3.3 operator-kill completion: a kill was recorded fence-first at the
+	// apiserver (CancelEnter → cancelling); the driver owes the sandbox
+	// teardown and the guarded finish → cancelled. Kill is a caller-owned
+	// transition — never machine-driven — so it short-circuits the happy path.
+	if cs.Step == reconcile.StepCancelling {
+		return r.cancelFinish(ctx, &run, cs)
+	}
+
 	// 3.2 death detection: in flight with a lease that expired under a holder
 	// that stopped heart-keeping — sandbox or agent died mid-execution (§5.3).
 	if r.dead(cs) {
@@ -338,25 +353,37 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 	return ctrl.Result{}, nil
 }
 
-// CancelRun transitions a Run to the cancelled state (ISI-2884).
-// This method fences any current holder and transitions the reconcile step to cancelled.
-func (r *Driver) CancelRun(ctx context.Context, run *api.Run) error {
+// cancelFinish is the §3.3 operator-side kill completion: tear the killed
+// Run's sandbox down (best-effort) then commit the guarded cancelling →
+// cancelled finish over the shared coord kill seam. The kill was already
+// recorded fence-first at the apiserver (CancelEnter cleared the holder/lease),
+// so this NEVER runs the happy-path machine — it just teardown-and-finishes.
+func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) (ctrl.Result, error) {
 	runID := string(run.UID)
-	cs, found, err := r.Claims.State(ctx, run.Spec.WorkItemRef)
-	if err != nil {
-		return fmt.Errorf("rundrive: read claim for cancellation %s: %w", run.UID, err)
+	if r.Sandbox != nil {
+		// Best-effort: a stuck teardown must not block the terminal finish;
+		// the pool's draining state retries it (§9.3).
+		_ = r.Sandbox.Release(ctx, runID)
 	}
-	if !found {
-		return fmt.Errorf("rundrive: claim not found for %s", run.UID)
-	}
-	ok, err := r.Claims.CancelEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence)
+	ok, err := r.Claims.CancelFinish(ctx, run.Spec.WorkItemRef, runID, cs.Fence)
 	if err != nil {
-		return fmt.Errorf("rundrive: cancel enter for %s: %w", run.UID, err)
+		return ctrl.Result{}, fmt.Errorf("rundrive: cancel-finish %s: %w", run.Spec.WorkItemRef, err)
 	}
 	if !ok {
-		return fmt.Errorf("rundrive: cancel failed - claim already modified for %s", run.UID)
+		// Fence moved under us (another kill/teardown raced): re-read next pass.
+		return ctrl.Result{RequeueAfter: continueDelay}, nil
 	}
-	return nil
+	return ctrl.Result{}, nil
+}
+
+// OnCancelDue is the kill sweep's wake: each work item still at cancelling has
+// its owning Run(s) kicked back into the drive loop, where cancelFinish tears
+// the sandbox down and commits the terminal cancelled transition. Pure latency
+// sugar for the kick — correctness is level-triggered off the durable step.
+func (r *Driver) OnCancelDue(ctx context.Context, due []string) {
+	for _, workItemID := range due {
+		r.kickWorkItem(ctx, workItemID)
+	}
 }
 
 // OnResumeDue is the 3.7 wake: each due episode re-enters its Run into
