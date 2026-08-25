@@ -168,6 +168,23 @@ func TestSSEStreamDeliversPublishedEvent(t *testing.T) {
 				got += string(buf[:n])
 				if strings.Contains(got, "event: progress") && strings.Contains(got, "data: step-1") {
 					return
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-readCtx.Done():
+	}
+	if !strings.Contains(got, ": subscribed") {
+		t.Errorf("stream missing subscribed preamble; got:\n%s", got)
+	}
+	if !strings.Contains(got, "event: progress") || !strings.Contains(got, "data: step-1") {
+		t.Errorf("stream missing published event; got:\n%s", got)
+	}
 }
 
 // TestAuditLogGating — /api/audit/log is gated behind authentication and team-based access control
@@ -191,7 +208,6 @@ func TestAuditLogGating(t *testing.T) {
 	})
 
 	rec = httptest.NewRecorder()
-	withSession(httptest.NewRequest(http.MethodGet, "/api/audit/log", nil), devToken)
 	srv.Handler().ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/audit/log", nil), devToken))
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("no audit log reader: got %d, want 501", rec.Code)
@@ -271,26 +287,9 @@ type MockAuditLogReader struct {
 	Error    error
 }
 
-func (m *MockAuditLogReader) QueryAuditLog(ctx context.Context, query AuditQuery, teamID string) (AuditResponse, error) {
+func (m *MockAuditLogReader) QueryAuditLog(ctx context.Context, query AuditQuery, teamID uuid.UUID) (AuditResponse, error) {
 	if m.Error != nil {
 		return AuditResponse{}, m.Error
 	}
 	return m.Response, nil
-}
-			}
-			if rerr != nil {
-				return
-			}
-		}
-	}()
-	select {
-	case <-done:
-	case <-readCtx.Done():
-	}
-	if !strings.Contains(got, ": subscribed") {
-		t.Errorf("stream missing subscribed preamble; got:\n%s", got)
-	}
-	if !strings.Contains(got, "event: progress") || !strings.Contains(got, "data: step-1") {
-		t.Errorf("stream missing published event; got:\n%s", got)
-	}
 }
