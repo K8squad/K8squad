@@ -25,6 +25,13 @@ permissions:
   actions: read          # codeql-action status/telemetry reads the workflow run
   security-events: write # CodeQL SARIF upload (when GHAS is enabled)
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run — cancelling a merge-train run drops its required
+  # check signal. Mirrors the ci.yml / l1.yml policy (ISI-2748 R2).
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   s4-blast-radius-model-gate:
     # Story X.1 / ISI-2240 (arch §4.3, §17.1, S4, NFR-SEC1). DESIGN-LEVEL model gate: falsifies the

@@ -135,7 +135,10 @@ func TestCancelSweeperTicksAndDelegates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	require.NoError(t, s.Start(ctx))
-	require.Len(t, got, 1)
+	// The static fake re-lists the same due item every tick, so the sweep
+	// delegates it at least once over the window; the contract under test is
+	// tick → CancelDue → OnDue, not the exact tick count.
+	require.GreaterOrEqual(t, len(got), 1)
 	assert.Equal(t, []string{"wi-a"}, got[0])
 }
 
