@@ -465,6 +465,7 @@ _(Maintainers cut releases; this is here so contributors understand the mechanic
   these processes will continue to evolve with the community.
 - **Security.** To report a vulnerability, follow [SECURITY.md](./SECURITY.md) — please do
   not open a public issue for security problems.
+- **Agent working notes.** Automated agents must keep per-task status, review, and completion notes in the Paperclip issue thread (or as issue attachments) — never commit `ISI-*.md` working files or `*-review.md`/`*-completion.md` artifacts to the repository. Root-level agent artifact patterns are gitignored (see `.gitignore`).
 
 ---
 
