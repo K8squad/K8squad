@@ -90,28 +90,6 @@ linters:
           - gosec
         text: "G202"
         path: ^internal/apiserver/audit\.go
-      # SA1019 controller-runtime 0.24 / k8s 0.36 deprecation wave (ISI-3238 dep
-      # bump). The bumped libraries deprecate APIs still in wide use here —
-      # admission.Custom{Validator,Defaulter} (untyped aliases), scheme.Builder,
-      # Result.Requeue, WithCustomValidator. The code is CORRECT and compiles;
-      # only the symbols are marked deprecated. Migrating the admission webhooks
-      # to the typed Validator[T]/Defaulter[T] builders (and the scheme/Result
-      # changes) is a deliberate follow-up (tracked separately), not a hasty
-      # edit inside a dependency bump — a rushed webhook rewrite risks admission
-      # bypass. Silence the deprecation notices for these specific symbols until
-      # that migration lands.
-      - linters:
-          - staticcheck
-        text: "SA1019.*admission\\.(Custom)?(Validator|Defaulter) is deprecated"
-      - linters:
-          - staticcheck
-        text: "SA1019.*scheme\\.Builder is deprecated"
-      - linters:
-          - staticcheck
-        text: "SA1019.*Result\\)\\.Requeue is deprecated"
-      - linters:
-          - staticcheck
-        text: "SA1019.*WithCustom(Validator|Defaulter) is deprecated"
     paths:
       - third_party$
       - builtin$
