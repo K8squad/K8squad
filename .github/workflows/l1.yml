@@ -158,7 +158,53 @@ jobs:
           GOGC: "40"
           GOMEMLIMIT: "3800MiB"
         run: |
-          go test -p 1 -tags=integration,discussion_integration ./...
+          # -coverprofile + -coverpkg=./... turns this feature lane into the
+          # DB-backed COVERAGE lane the 80% ratchet (ISI-2714) needs. The ci.yml
+          # unit gate runs untagged `go test ./...` with NO Postgres, so DB-backed
+          # code — pkg/coord resume/store, pkg/events store/listen/publisher — is
+          # unreachable there and is correctly split behind //go:build integration
+          # (excluded from the unit gate). This lane is where that code is actually
+          # exercised against a real engine, so it is where its coverage must be
+          # measured. -coverpkg=./... attributes coverage to EVERY module package a
+          # test touches (not just the test's own package), so the store/listen
+          # funcs the integration suites drive show up in the profile.
+          go test -p 1 -tags=integration,discussion_integration \
+            -covermode=atomic -coverpkg=./... \
+            -coverprofile=coverage-l1-integration.out ./...
+
+      - name: Report DB-backed coverage (report-only — no gate yet, ISI-2714)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # Report-only for now: the ratchet gate lives in ci.yml (unit lane). This
+          # surfaces the DB-backed numbers so the backend test-writing that climbs
+          # 35 -> 50 -> 65 -> 80 (and the >=90% pkg/coord sub-gate) can be tracked
+          # against real integration coverage, not just the DB-free unit slice.
+          # Exclude generated deepcopy so the number reflects authored code, exactly
+          # like the unit gate.
+          if [ ! -f coverage-l1-integration.out ]; then
+            echo "::notice::no integration coverage profile produced — nothing to report."
+            exit 0
+          fi
+          grep -v -E '/zz_generated[^:]*\.go:' coverage-l1-integration.out > coverage-l1.filtered.out
+          go tool cover -func=coverage-l1.filtered.out | tee coverage-l1.txt
+          total=$(grep -E '^total:' coverage-l1.txt | awk '{print $3}')
+          echo "::notice::L1 DB-backed coverage (excl. generated) = ${total} (report-only, ISI-2714)"
+          echo "### L1 DB-backed coverage (report-only, ISI-2714)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Total (excl. generated): **${total}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "pkg/coord + pkg/events store/listen coverage below (drives the 80% ratchet):" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(github.com/[^ ]*/pkg/(coord|events))' coverage-l1.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload DB-backed coverage profile
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: coverage-l1-integration
+          path: coverage-l1-integration.out
+          if-no-files-found: ignore
 
       - name: Stop NATS
         if: always()
