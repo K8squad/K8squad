@@ -26,6 +26,10 @@ export default async function RunPage({
           <a href={`/runs/${encodeURIComponent(runId)}/artifacts`}>
             Inspect artifacts &amp; handoff (8.3)
           </a>
+          {" · "}
+          <a href={`/runs/${encodeURIComponent(runId)}/build`}>
+            Browse the build workspace (8.7)
+          </a>
         </p>
       </header>
       <div className="card">
