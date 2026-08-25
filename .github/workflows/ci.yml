@@ -116,12 +116,27 @@ jobs:
           # Floor is the current honest hand-written baseline. Ratcheting up to 80%
           # (adding unit tests + a DB-backed coverage lane) is tracked in ISI-2714.
           # Do NOT lower this number; raise it as coverage improves.
-          # Ratchet log (ISI-2714): 30 (baseline) -> 35. The 30->35 step is backed by
-          # DB-free error-branch tests for the internal/discussion §7.5 handlers
-          # (handler_errorpaths_test.go), which lift that package 23.6% -> 46.2% and the
-          # module-wide authored total 31.0% -> 35.4%. Next steps: 50 -> 65 -> 80 as the
-          # DB-backed lane and pkg/coord|pkg/events unit tests land.
-          COVERAGE_FLOOR: "35"
+          # Ratchet log (ISI-2714): 30 (baseline) -> 35 -> 50.
+          #   30->35: DB-free error-branch tests for the internal/discussion §7.5 handlers
+          #     (handler_errorpaths_test.go) lifted that package 23.6% -> 46.2% and the
+          #     module-wide authored total 31.0% -> 35.4%.
+          #   35->50 (ISI-3213): the module-wide authored total has since climbed to 55.4%
+          #     as the event-seam / apiserver / coord code accreted hand-written tests, and
+          #     this step adds DB-free unit tests for the scoped pure-logic funcs —
+          #     pkg/coord helpers (isi3213_purehelpers_test.go: cancel-terminal/credential-key
+          #     validation, artifact-kind, bound-task-id, sticky-error), the pkg/events NATS
+          #     subject taxonomy (isi3213_subject_test.go), and the api/v1alpha1 attribution
+          #     accessors + per-type ownedBy holders (isi3213_attribution_test.go, 94% avg).
+          #     50 sits ~5pt under the measured 55.4% so the gate has margin against
+          #     per-run variance. Next steps: 65 -> 80 as pkg/coord|pkg/events DB-backed
+          #     funcs gain integration coverage (visible in the L1 lane artifact, PR #141)
+          #     and more unit tests land — one bump per PR, each backed by its tests.
+          # NOTE: the ">=90% pkg/coord" sub-gate the step name once promised is intentionally
+          # NOT enabled: pkg/coord's *unit-lane* (no-Postgres) coverage is ~15-25% because its
+          # correctness-critical funcs are DB-backed (resume/store, prod claim/reconcile) and
+          # only run under `-tags=integration`. Turning the sub-gate on now would redden the
+          # trunk. Enable it only once pkg/coord's gated unit coverage actually clears 90%.
+          COVERAGE_FLOOR: "50"
         run: |
           # Exclude generated files from the profile before scoring (the `mode:` header
           # line has no path and is preserved).
