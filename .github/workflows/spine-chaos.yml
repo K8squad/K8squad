@@ -37,6 +37,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run. Mirrors ci.yml / l1.yml (ISI-2748 R2).
+  group: spine-chaos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   # CloudNativePG operator release, pinned. The 14.2 AC requires the spine suite
   # run against a REAL CNPG Postgres in a kind cluster (a PVC-backed engine), not
