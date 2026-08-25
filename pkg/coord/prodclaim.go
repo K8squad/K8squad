@@ -372,3 +372,35 @@ func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, ite
 	}
 	return itemID, fence, true, nil
 }
+
+// Renew = §6.2 prod lease heartbeat. Extends the lease on itemID only while
+// principal is still the recorded holder at fence AND the lease has not yet
+// lapsed AND the item is not terminal. On success (ok=true) renewed_at is
+// stamped with clock_timestamp() so auditors can observe heartbeat cadence.
+//
+// A stale fence (the item was reclaimed by a different Run), a foreign
+// holder, an already-lapsed lease, or a terminal item all return ok=false —
+// the caller MUST stop work immediately; continuing would be a zombie write.
+// Any database error panics: prod Renew failures are infrastructure failures,
+// not logical ones (same contract as coord.Coordinator.Renew / coord.go:249).
+func (p *ProdClaimer) Renew(ctx context.Context, itemID, principal, runID string, fence int64) bool {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE coord.claim
+		    SET lease_expires_at = clock_timestamp() + $5::interval,
+		        renewed_at       = clock_timestamp()
+		  WHERE work_item_id     = $1::uuid
+		    AND holder_principal = $2
+		    AND run_id           = $3::uuid
+		    AND fence_token      = $4
+		    AND lease_expires_at > clock_timestamp()
+		    AND NOT EXISTS (
+		          SELECT 1 FROM coord.work_item
+		           WHERE id = $1::uuid AND state = 'done'
+		        )`,
+		itemID, principal, runID, fence, p.cfg.LeaseInterval)
+	if err != nil {
+		panic(fmt.Errorf("coord.ProdClaimer.Renew: %w", err))
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
+}
