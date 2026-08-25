@@ -90,6 +90,15 @@ var allowedSurface = map[string]string{
 	"ProdClaimer.ClaimNext":      "§6.2 single-claim under contention (SKIP LOCKED + fence)",
 	"ProdClaimer.ClaimableCount": "§6.2 claimable backlog introspection for tests/ops",
 
+	// §6.2 production lease-renewal path + heartbeat loop (Story 2.3 / ISI-2879).
+	// Renew is a holder+fence+live-lease-guarded custody heartbeat that only ever
+	// stamps renewed_at on the item of record — it carries no worker content and
+	// is not an agent-to-agent channel (same contract as Coordinator.Renew, §6.2).
+	// RunHeartbeater is a periodic driver over that one custody op; its channel
+	// signals only cancel vs lease-lost, never worker payload.
+	"ProdClaimer.Renew": "§6.2 lease heartbeat under holder+fence+live-lease guard, stamps renewed_at",
+	"RunHeartbeater":    "§6.2 periodic driver for ProdClaimer.Renew; signals cancel vs lease-lost only",
+
 	// §17.4 domain-event capture wiring (Story 12.1 / ISI-2260). Emit-only: the
 	// option co-commits ONE append-only coord.outbox event in the claim txn. NOT
 	// an agent-to-agent channel — events are one-way non-custodial projections
@@ -343,6 +352,27 @@ var allowedSurface = map[string]string{
 	"EventUnreachable":                     "§7.2/7.5 lifecycle event: BYO endpoint not answering",
 	"SignalStep":                           "§7.4 pure map: lifecycle event → durable Paused(reason) step",
 	"EventReason":                          "§7.4 pure map: lifecycle event → ledger reason",
+
+	// §3.3 operator-kill custody surface (Story 3.3/8.4 / ISI-2884, gap
+	// ISI-2876). CancelEnter (apiserver) moves a running-ish claim → cancelling
+	// fence-first; CancelFinish (operator drive loop) commits cancelling →
+	// cancelled after the sandbox teardown; Due lists the cancelling backlog for
+	// the kill sweep. Custody-only: every op co-commits the fence bump + checkout
+	// release + §6.5 audit + §6.6 outbox in one txn, carries NO worker-authored
+	// content, and never opens an agent channel — kill is a human/operator custody
+	// transition on the claim, not a handoff.
+	"CancelOutcome":                "§3.3 outcome of a kill transition (accepted|conflict|terminal|missing)",
+	"CancelAccepted":               "§3.3 outcome: claim moved to cancelling (fence bumped, checkout released)",
+	"CancelConflict":               "§3.3 outcome: expected fence no longer held (retry lap / concurrent kill)",
+	"CancelTerminal":               "§3.3 outcome: Run already terminal — kill is a no-op",
+	"CancelMissing":                "§3.3 outcome: no claim row exists for the work item",
+	"CancelState":                  "§3.3 claim snapshot the kill API reads before entering (fence/step/holder)",
+	"ProdCancelStore":              "§3.3 operator-kill custody store bound to coord.claim",
+	"NewProdCancelStore":           "§3.3 constructor (uuid-keyed kill store)",
+	"ProdCancelStore.State":        "§3.3 read the claim snapshot before a kill (fence-first precondition)",
+	"ProdCancelStore.CancelEnter":  "§3.3 fence-first running-ish → cancelling (kill-side entry)",
+	"ProdCancelStore.CancelFinish": "§3.3 guarded cancelling → cancelled after teardown (operator-side finish)",
+	"ProdCancelStore.Due":          "§3.3 list work items parked at cancelling (the kill sweep's backlog)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

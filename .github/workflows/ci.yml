@@ -42,7 +42,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.go) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if component source is absent (skeleton phase)
         id: guard
@@ -54,7 +54,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           # Pin the toolchain to the module's declared Go version (go.mod) instead of
@@ -68,7 +68,7 @@ jobs:
 
       - name: golangci-lint
         if: steps.guard.outputs.present == 'true'
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         # Memory cap for the self-hosted gitrunner (7.8 GB VM). Unbounded, golangci-lint
         # peaked ~7.7 GB RSS / 16-18 GB vm and triggered a global OOM-kill of the runner
         # (ISI-2614, parent ISI-2612). Host-side GOMEMLIMIT alone is a soft limit and can't
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload coverage
         if: steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: coverage-${{ matrix.component }}
           path: coverage-${{ matrix.component }}.out
@@ -159,7 +159,7 @@ jobs:
           --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if no migrations present (skeleton phase)
         id: guard
@@ -213,7 +213,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.shims) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if shim source is absent (skeleton phase)
         id: guard
@@ -226,7 +226,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -234,7 +234,7 @@ jobs:
 
       - name: golangci-lint
         if: steps.guard.outputs.present == 'true'
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         # Same OOM containment as the go leg (ISI-2614/ISI-2612): serial analysis under the
         # self-hosted gitrunner's cgroup cap.
         env:
@@ -268,7 +268,7 @@ jobs:
     env:
       HELM_VERSION: v3.16.4
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if chart is absent (skeleton phase)
         id: guard
@@ -316,7 +316,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.node) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if console source is absent (skeleton phase)
         id: guard
@@ -328,7 +328,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.guard.outputs.present == 'true'
         with:
           node-version: 24

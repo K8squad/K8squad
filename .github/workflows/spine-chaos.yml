@@ -63,7 +63,7 @@ jobs:
     # tracked on ISI-2808 — and plugs into the same fail-closed ordering contract
     # this suite proves; the coordinator side is fully exercised here.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if spine source is absent (skeleton phase)
         id: guard
@@ -78,7 +78,7 @@ jobs:
       # ── kind cluster + CloudNativePG (the 14.2 "real CNPG Postgres" engine) ──
       - name: Stand up kind cluster
         if: steps.guard.outputs.present == 'true'
-        uses: helm/kind-action@v1.12.0
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: spine-chaos
 
@@ -156,7 +156,7 @@ jobs:
             sleep 1
           done
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version: stable
@@ -215,7 +215,7 @@ jobs:
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: spine-chaos-report
           path: |

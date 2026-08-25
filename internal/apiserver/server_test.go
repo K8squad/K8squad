@@ -186,3 +186,110 @@ func TestSSEStreamDeliversPublishedEvent(t *testing.T) {
 		t.Errorf("stream missing published event; got:\n%s", got)
 	}
 }
+
+// TestAuditLogGating — /api/audit/log is gated behind authentication and team-based access control
+func TestAuditLogGating(t *testing.T) {
+	// Test without authentication (should be 401)
+	rec := httptest.NewRecorder()
+	testServer(t, nil).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/audit/log", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized access: got %d, want 401", rec.Code)
+	}
+
+	// Test with authentication but no audit log reader (should be 501)
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: uuid.New()},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		Ready:         nil,
+		// AuditLog is intentionally nil to test 501 response
+	})
+
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/audit/log", nil), devToken))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("no audit log reader: got %d, want 501", rec.Code)
+	}
+
+	// Verify response structure
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	if resp["error"] != "not implemented" {
+		t.Errorf("expected error 'not implemented', got: %s", resp["error"])
+	}
+	if resp["detail"] == "" || !strings.Contains(resp["detail"], "audit log read model") {
+		t.Errorf("expected detail mentioning audit log, got: %s", resp["detail"])
+	}
+	if resp["tracking"] != "ISI-2881: wire an AuditLogReader (database connection) to enable" {
+		t.Errorf("expected tracking ISI-2881, got: %s", resp["tracking"])
+	}
+}
+
+// TestAuditLogRouteStructure — verify the route is properly mounted
+func TestAuditLogRouteStructure(t *testing.T) {
+	// Create a mock audit log reader for testing
+	mockReader := &MockAuditLogReader{
+		Response: AuditResponse{
+			Entries: []AuditEntry{},
+			Total:   0,
+			Offset:  0,
+			Limit:   100,
+		},
+	}
+
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: uuid.New()},
+	}}
+
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		Ready:         nil,
+		AuditLog:      mockReader,
+	})
+
+	// Test the route is accessible with proper authentication
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/audit/log", nil)
+	req = withSession(req, devToken)
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	// Should succeed with empty response
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authenticated access failed: got %d, want 200", rec.Code)
+	}
+
+	// Verify response structure
+	var response AuditResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	if response.Total != 0 {
+		t.Errorf("expected total 0, got: %d", response.Total)
+	}
+	if response.Offset != 0 {
+		t.Errorf("expected offset 0, got: %d", response.Offset)
+	}
+	if response.Limit != 100 {
+		t.Errorf("expected limit 100, got: %d", response.Limit)
+	}
+}
+
+// MockAuditLogReader for testing
+type MockAuditLogReader struct {
+	Response AuditResponse
+	Error    error
+}
+
+func (m *MockAuditLogReader) QueryAuditLog(ctx context.Context, query AuditQuery, teamID uuid.UUID) (AuditResponse, error) {
+	if m.Error != nil {
+		return AuditResponse{}, m.Error
+	}
+	return m.Response, nil
+}

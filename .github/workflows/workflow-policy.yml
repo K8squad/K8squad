@@ -1,0 +1,69 @@
+# Workflow security policy guard (ISI-3229).
+#
+# K8squad/K8squad is a PUBLIC repo whose CI runs on SELF-HOSTED runners, so a
+# fork-triggerable `pull_request_target` job would run with a read/write token
+# AND the base repo's secrets against attacker-controlled code — the classic
+# self-hosted-runner RCE + secret-exfil path. This job fails the build if any
+# workflow re-introduces that trigger, enforcing the review red-line as code.
+#
+# It also asserts every workflow declares a top-level `permissions:` block so no
+# workflow silently inherits the repo default (which may be read/write).
+name: Workflow Policy
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/dependabot.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  policy:
+    name: Enforce workflow security policy
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Forbid pull_request_target on self-hosted workflows
+        run: |
+          set -euo pipefail
+          # Match the trigger key only (avoid false-hits inside comments/strings).
+          if grep -REn '^[[:space:]]*pull_request_target[[:space:]]*:' .github/workflows/; then
+            echo "::error::pull_request_target is forbidden — this repo is public and runs on self-hosted runners (arbitrary-code-execution risk). Use 'pull_request' + a gated deploy job instead. See ISI-3229."
+            exit 1
+          fi
+          echo "OK: no pull_request_target trigger found."
+
+      - name: Require top-level permissions block in every workflow
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in .github/workflows/*.yml .github/workflows/*.yaml; do
+            [ -e "$f" ] || continue
+            if ! grep -Eq '^permissions:' "$f"; then
+              echo "::error file=$f::workflow has no top-level 'permissions:' block — declare least-privilege (default 'contents: read')."
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] && echo "OK: all workflows declare a top-level permissions block."
+          exit $missing
+
+      - name: Require SHA-pinned third-party actions
+        run: |
+          set -euo pipefail
+          # Any `uses:` that is not a local (./) ref and not pinned to a 40-hex SHA fails.
+          unpinned=$(grep -REn '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]' .github/workflows/ \
+            | grep -vE 'uses:[[:space:]]*\./' \
+            | grep -vE '@[0-9a-f]{40}' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::third-party actions must be pinned to a full commit SHA (mutable tags allow supply-chain takeover). Offenders:"
+            echo "$unpinned"
+            exit 1
+          fi
+          echo "OK: all third-party actions are SHA-pinned."

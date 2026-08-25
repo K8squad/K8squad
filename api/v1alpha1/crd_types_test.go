@@ -276,10 +276,10 @@ func TestRunPhaseEnumFailsClosed(t *testing.T) {
 	got := crdEnumFor(t, "ksquad.io_runs.yaml", "status", "phase")
 	want := []string{
 		string(RunPhasePending), string(RunPhaseClaiming), string(RunPhaseRunning),
-		string(RunPhasePaused), string(RunPhaseSucceeded), string(RunPhaseFailed),
-		string(RunPhaseCancelled),
+		string(RunPhasePaused), string(RunPhaseCanceling), string(RunPhaseSucceeded),
+		string(RunPhaseFailed), string(RunPhaseCancelled),
 	}
-	assert.ElementsMatch(t, want, got, "CRD phase enum must be exactly the §8 set")
+	assert.ElementsMatch(t, want, got, "CRD phase enum must be exactly the §8 set (+3.3 Canceling)")
 	assert.NotContains(t, got, "Bogus", "an out-of-set phase must not be admissible")
 }
 

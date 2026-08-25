@@ -12,6 +12,19 @@ paperclip/
 # General
 *.md.bmad
 
+# Agent-generated working artifacts — never commit (ISI-3215)
+/ISI-*.md
+/*-review.md
+/*-review-*.md
+/review-*.md
+/*-completion.md
+/*-summary.md
+/*-STATUS.md
+/*-FINAL-STATUS.md
+/*IMPLEMENTATION-PLAN.md
+/productivity-review*.md
+/final-productivity-review*.md
+
 # Go build output / vendored tool binaries
 bin/
 
