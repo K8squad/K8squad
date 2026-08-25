@@ -42,6 +42,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/events"
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 func main() {
@@ -206,6 +207,15 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item state store: %v", err)
 	}
 
+	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
+	// (migration 0012). The DB is a hard start dependency here, so the searcher is
+	// always bound (the documented-501 fallback exists only for a searcher-less host
+	// shape). RBAC scope (admin fleet-wide vs Team-fenced) is applied in-query per ADR-039.
+	searcher, err := search.NewPostgresSearcher(db)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: search store: %v", err)
+	}
+
 	// 15.3 per-Project membership store (auth.project_membership, db/migrations/0010): ONE
 	// instance backs both the 15.4 enforcement gate (Options.ProjectRoles, read-only resolver)
 	// and the 8.15 admin Users & Roles surface (Auth.Memberships, grant/revoke/list), so a grant
@@ -245,6 +255,7 @@ func main() {
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState: workItemState,
+		Search:        searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
