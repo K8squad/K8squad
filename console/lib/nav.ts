@@ -62,6 +62,17 @@ export function navTree(): NavNode[] {
     },
     { id: "agents", label: "Agents", href: "/agents", scope: "global" },
     {
+      // Compose (story 8.5 / UX screen 04-compose-crd): the CRD authoring surface for
+      // Team/Project/Agent/Role/Skill. Like Settings → Configuration it is a write surface with NO
+      // requiredAccess — the apiserver's write-tier membership gate (§13 choke point) is the real
+      // wall (viewer → 403, Team creation admin-only), so hiding it in nav would only mislead a
+      // contributor who legitimately composes.
+      id: "compose",
+      label: "Compose",
+      href: "/compose",
+      scope: "global",
+    },
+    {
       // Users & Roles (stories 8.15 + 8.16): the admin identity surface. requiredAccess "admin"
       // means visibleNav removes it from the tree for a non-admin BEFORE any breakpoint expresses
       // it — hidden = absent from the DOM (never display:none-as-authz), and the Go apiserver's
@@ -146,6 +157,7 @@ export type Crumb = { label: string; href: string | null };
 const SECTION_LABEL: Record<string, string> = {
   overview: "Overview",
   agents: "Agents",
+  compose: "Compose",
   runs: "Runs",
   settings: "Settings",
   configuration: "Configuration",

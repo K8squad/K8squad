@@ -226,6 +226,15 @@ func main() {
 		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints)")
 	}
 
+	// Audit log read model (ISI-2881). The DB connection is already available.
+	var auditLog apiserver.AuditLogReader
+	if db != nil {
+		auditLog = apiserver.NewDBAuditLogReader(db)
+		log.Printf("ksquad-apiserver: audit log read model ready")
+	} else {
+		log.Printf("ksquad-apiserver: no database connection — audit log route will answer 501 until the database is available")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
@@ -241,6 +250,8 @@ func main() {
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
 		ProjectRoles: memberships,
 		ComposeCRD:   composeCRD,
+		Killer:       apiserver.NewProdRunKiller(db),
+		AuditLog:     auditLog,
 		Hub:          hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,

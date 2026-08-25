@@ -90,6 +90,15 @@ var allowedSurface = map[string]string{
 	"ProdClaimer.ClaimNext":      "§6.2 single-claim under contention (SKIP LOCKED + fence)",
 	"ProdClaimer.ClaimableCount": "§6.2 claimable backlog introspection for tests/ops",
 
+	// §6.2 production lease-renewal path + heartbeat loop (Story 2.3 / ISI-2879).
+	// Renew is a holder+fence+live-lease-guarded custody heartbeat that only ever
+	// stamps renewed_at on the item of record — it carries no worker content and
+	// is not an agent-to-agent channel (same contract as Coordinator.Renew, §6.2).
+	// RunHeartbeater is a periodic driver over that one custody op; its channel
+	// signals only cancel vs lease-lost, never worker payload.
+	"ProdClaimer.Renew": "§6.2 lease heartbeat under holder+fence+live-lease guard, stamps renewed_at",
+	"RunHeartbeater":    "§6.2 periodic driver for ProdClaimer.Renew; signals cancel vs lease-lost only",
+
 	// §17.4 domain-event capture wiring (Story 12.1 / ISI-2260). Emit-only: the
 	// option co-commits ONE append-only coord.outbox event in the claim txn. NOT
 	// an agent-to-agent channel — events are one-way non-custodial projections

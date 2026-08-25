@@ -1,0 +1,38 @@
+# Dependabot keeps our SHA-pinned GitHub Actions fresh.
+# Because every `uses:` is pinned to a 40-char commit SHA with a `# vX.Y.Z`
+# trailing comment (ISI-3229 supply-chain hardening), Dependabot bumps BOTH the
+# SHA and the comment when a new release ships — pins never go stale silently.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(actions)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # Batch low-risk first-party action bumps into one PR to cut review noise.
+      actions-official:
+        patterns:
+          - "actions/*"
+          - "github/codeql-action"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(go)"
+    labels:
+      - "dependencies"
+      - "go"

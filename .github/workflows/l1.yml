@@ -69,7 +69,7 @@ jobs:
           --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if the Go module is absent (skeleton phase)
         id: guard
@@ -92,7 +92,7 @@ jobs:
           echo "component-matrix shims= ${{ needs.components.outputs.shims }}"
           echo "::notice::L1 integration covers all landed Go packages via one module test pass; unlanded operator/apiserver/shim entrypoints contribute no packages (skip-with-reason)."
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -219,7 +219,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.components.outputs.node) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip until the console app exposes runnable Vitest units
         id: guard
@@ -242,7 +242,7 @@ jobs:
             echo "::notice::${{ matrix.component }}: no runnable Vitest 'test' script yet — L1 units skip-with-reason (§3.3 Epic 8)."
           fi
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         if: steps.guard.outputs.present == 'true'
         with:
           node-version: 24

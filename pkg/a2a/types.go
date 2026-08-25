@@ -147,6 +147,14 @@ const (
 	EventUsage EventType = "usage"
 	// EventAuthRequired is the auth-failure pause signal (spec §7/§11, C7).
 	EventAuthRequired EventType = "auth-required"
+	// EventRateLimited is the standardized rate_limited signal (story 5.10,
+	// gap ISI-2894): the runtime's model provider returned a 429. Unlike
+	// EventAuthRequired it is NOT a pause state — it is a progress signal the
+	// core normalizes (modelendpoint.NormalizeRateLimited) and hands to the
+	// 5.11 decision core (SwitchModel) or the 2.11 durable resume (PauseRun).
+	// The task keeps running/failing on its own terms; the signal only tells
+	// the core WHY and, via Retry-After, HOW LONG the provider asked us to wait.
+	EventRateLimited EventType = "rate-limited"
 )
 
 // Event is one SSE progress event (spec §4). seq is monotonic + gap-free per
@@ -209,6 +217,24 @@ type AuthRequiredPayload struct {
 	Detail    string `json:"detail"`
 }
 
+// RateLimitedPayload is the payload of an EventRateLimited event (spec §4,
+// story 5.10). It is the wire form of the standardized rate_limited signal: the
+// model the Run was serving from, plus the provider's Retry-After header value
+// carried RAW and UNPARSED. The single canonical parse lives consumer-side in
+// modelendpoint.ParseRetryAfter (RFC 7231 §7.1.3) — the shim must not pre-parse,
+// so an HTTP-date window is resolved against the CONSUMER's clock, never the
+// producer's, and there is exactly one Retry-After interpretation in the tree.
+// An empty RetryAfter means the provider sent no window (the backoff path).
+type RateLimitedPayload struct {
+	// Model is the model that was rate-limited (maps to RawRateLimit.FromModel;
+	// empty falls back to Agent.spec.model in OnRateLimited).
+	Model string `json:"model"`
+	// RetryAfter is the raw Retry-After header exactly as the provider sent it
+	// ("120", "Wed, 21 Oct 2015 07:28:00 GMT", or "" for no window). The
+	// consumer feeds it to modelendpoint.ParseRetryAfter.
+	RetryAfter string `json:"retryAfter,omitempty"`
+}
+
 // AgentCard is the capability contract the core negotiates against (spec §6.1).
 // It is generated at shim startup from the Agent CRD + resolved AgentRuntime +
 // the runtime adapter's declared capabilities, and advertises the pinned
@@ -258,12 +284,16 @@ type AuthInfo struct {
 
 // Capabilities is the runtime-declared capability set (spec §6.1). streaming
 // MUST be true (SSE V2 is mandatory); interactivePrompt gates §3.1
-// input-required (C6); byoModelEndpoint gates the model-provider seam (§11).
+// input-required (C6); byoModelEndpoint gates the model-provider seam (§11);
+// rateLimitSignal advertises that the runtime emits the standardized §4
+// EventRateLimited signal (story 5.10) — a peer that negotiates it false must
+// not rely on the signal and stays on the 2.11 backoff-only path.
 type Capabilities struct {
 	Streaming         bool     `json:"streaming"`
 	ToolCalls         bool     `json:"toolCalls"`
 	InteractivePrompt bool     `json:"interactivePrompt"`
 	BYOModelEndpoint  bool     `json:"byoModelEndpoint"`
+	RateLimitSignal   bool     `json:"rateLimitSignal"`
 	ArtifactKinds     []string `json:"artifactKinds"`
 	Docker            bool     `json:"docker"`
 	GitHub            bool     `json:"github"`

@@ -80,6 +80,9 @@ const (
 	PhaseClaiming  Phase = "Claiming"
 	PhaseRunning   Phase = "Running"
 	PhasePaused    Phase = "Paused"
+	// PhaseCanceling is the 3.3 operator-kill transitional phase (spec
+	// "Canceling"): teardown owed, terminal Cancelled pending.
+	PhaseCanceling Phase = "Canceling"
 	PhaseSucceeded Phase = "Succeeded"
 	PhaseFailed    Phase = "Failed"
 	PhaseCancelled Phase = "Cancelled"
@@ -100,6 +103,11 @@ const (
 	StepSucceeded         Step = "succeeded"
 	StepFailed            Step = "failed"
 	StepCancelled         Step = "cancelled"
+	// StepCancelling is the 3.3 operator-kill transitional step: kill was
+	// issued (fence-first CancelEnter), the driver owes the sandbox teardown
+	// and the guarded finish → cancelled. Resumable (not terminal): a driver
+	// crash mid-teardown re-enters it and finishes the job (AC5).
+	StepCancelling        Step = "cancelling"
 	StepPaused            Step = "paused"
 	StepPausedRateLimited Step = "paused(rate_limited)"
 	// StepPausedCredentialExpired is the 7.4 credential-expiry hold (arch §10,
@@ -160,6 +168,7 @@ var resumableSteps = map[Step]bool{
 	StepDispatching:               true,
 	StepRunning:                   true,
 	StepCollecting:                true,
+	StepCancelling:                true,
 	StepPaused:                    true,
 	StepPausedRateLimited:         true,
 	StepPausedCredentialExpired:   true,
@@ -210,6 +219,8 @@ func PhaseOf(s Step) Phase {
 	case StepPaused, StepPausedRateLimited, StepPausedCredentialExpired,
 		StepPausedCredentialRotated, StepPausedEndpointUnreachable:
 		return PhasePaused
+	case StepCancelling:
+		return PhaseCanceling
 	case StepSucceeded:
 		return PhaseSucceeded
 	case StepFailed:

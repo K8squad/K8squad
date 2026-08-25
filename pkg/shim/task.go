@@ -126,6 +126,8 @@ func (t *task) emitProgress(p Progress) {
 		payload = deref(p.Artifact)
 	case a2a.EventAuthRequired:
 		payload = deref(p.Auth)
+	case a2a.EventRateLimited:
+		payload = deref(p.RateLimited)
 	default:
 		typ = a2a.EventMessage
 		payload = a2a.MessagePayload{Role: "agent", Text: "", Trust: "untrusted"}
