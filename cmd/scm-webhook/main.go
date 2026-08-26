@@ -39,13 +39,13 @@ limitations under the License.
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -107,6 +107,7 @@ func main() {
 		logger:          logger,
 		maxPayloadBytes: maxPayloadBytes,
 		inflight:        make(chan struct{}, maxInFlightDeliveries),
+		registry:        scm.NewProviderRegistry(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -139,6 +140,25 @@ type webhookHandler struct {
 	logger          logr.Logger
 	maxPayloadBytes int64
 	inflight        chan struct{}
+	// registry resolves the per-provider WebhookExtractor. The handler never
+	// reads a provider-specific header itself — Story 11.5 puts webhook
+	// parsing behind the scm.WebhookExtractor seam.
+	registry *scm.ProviderRegistry
+}
+
+// defaultRegistry is the process-wide fallback provider registry used when a
+// handler is built without one (chiefly in tests). Production main() sets
+// h.registry explicitly; this keeps a zero-value handler from panicking.
+var defaultRegistry = sync.OnceValue(scm.NewProviderRegistry)
+
+// extractorFor resolves the webhook extractor for a provider, falling back to
+// the process default registry when the handler was built without one.
+func (h *webhookHandler) extractorFor(name string) (scm.WebhookExtractor, error) {
+	reg := h.registry
+	if reg == nil {
+		reg = defaultRegistry()
+	}
+	return reg.ExtractorFor(name)
 }
 
 // unauthorized is the uniform refusal for everything an unauthenticated
@@ -225,7 +245,20 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		h.unauthorized(w, "webhook secret not resolvable", "project", projectName, "error", err.Error())
 		return
 	}
-	digest, err := scm.ParseSignatureHeader(r.Header.Get("X-Hub-Signature-256"))
+	// The provider seam owns every provider-specific header/payload read.
+	// An unknown provider is dropped uniformly (never a hard-coded GitHub
+	// fallback) — same enumeration-safe refusal as a bad signature.
+	providerName := sync.Provider
+	if providerName == "" {
+		providerName = "github"
+	}
+	extractor, err := h.extractorFor(providerName)
+	if err != nil {
+		h.unauthorized(w, "no webhook extractor for provider", "project", projectName, "provider", providerName)
+		return
+	}
+	// Signature reads headers only — the body is still unverified here.
+	digest, err := extractor.Signature(r.Header)
 	if err != nil {
 		h.unauthorized(w, "absent/malformed signature dropped", "project", projectName)
 		return
@@ -235,11 +268,8 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ── verified: payload may NOW be parsed (event header for logging) ──
-	eventType := r.Header.Get("X-GitHub-Event")
-	if eventType == "" {
-		eventType = unknownEvent(body)
-	}
+	// ── verified: payload may NOW be parsed (event name for logging) ──
+	eventType := extractor.Event(r.Header, body)
 	h.logger.Info("webhook: good signature, triggering repo-sync reconcile",
 		"project", projectName, "namespace", namespace, "event", eventType)
 
@@ -259,31 +289,6 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "triggered")
-}
-
-// unknownEvent inspects the (already verified) payload for a hint about the
-// event type, for logging only. Unparseable payloads still trigger a
-// reconcile — the reconcile is level-triggered and never trusts the payload
-// anyway (AC2).
-func unknownEvent(body []byte) string {
-	var probe struct {
-		Zen     string `json:"zen"`
-		Action  string `json:"action"`
-		PullReq *struct {
-			Title string `json:"title"`
-		} `json:"pull_request"`
-	}
-	if err := json.Unmarshal(body, &probe); err != nil {
-		return "unknown"
-	}
-	switch {
-	case probe.Zen != "":
-		return "ping"
-	case probe.PullReq != nil:
-		return "pull_request/" + probe.Action
-	default:
-		return "unknown"
-	}
 }
 
 func firstNonEmpty(values ...string) string {

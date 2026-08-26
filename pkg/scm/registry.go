@@ -34,18 +34,23 @@ type ProviderFactory func(ctx context.Context, creds ProviderCredentials) (Sourc
 // concrete provider name is branched on — the composition root, not the
 // control loop.
 type ProviderRegistry struct {
-	mu        sync.RWMutex
-	factories map[string]ProviderFactory
+	mu         sync.RWMutex
+	factories  map[string]ProviderFactory
+	extractors map[string]WebhookExtractor
 }
 
 // NewProviderRegistry returns a registry with the v1 GitHub provider
 // pre-registered. GitHub Enterprise Server deployments register an
 // additional factory with the enterprise baseURL at wiring time.
 func NewProviderRegistry() *ProviderRegistry {
-	r := &ProviderRegistry{factories: map[string]ProviderFactory{}}
+	r := &ProviderRegistry{
+		factories:  map[string]ProviderFactory{},
+		extractors: map[string]WebhookExtractor{},
+	}
 	r.Register("github", func(ctx context.Context, creds ProviderCredentials) (SourceControlProvider, error) {
 		return NewGitHubProvider("", creds)
 	})
+	r.RegisterWebhookExtractor("github", GitHubWebhookExtractor{})
 	return r
 }
 
@@ -56,6 +61,30 @@ func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.factories[name] = factory
+}
+
+// RegisterWebhookExtractor adds (or replaces) the webhook extractor for a
+// provider name. Webhook parsing carries no credentials, so extractors are
+// registered as stateless values, not factories. Registering a drop-in
+// extractor is how a new provider's inbound path lands with zero
+// webhook-handler change (Story 11.5).
+func (r *ProviderRegistry) RegisterWebhookExtractor(name string, extractor WebhookExtractor) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.extractors[name] = extractor
+}
+
+// ExtractorFor returns the webhook extractor for the named provider. An
+// unknown name is an error the webhook handler surfaces (as an unverifiable
+// drop) — never a silent fall-through to a hard-coded GitHub parse.
+func (r *ProviderRegistry) ExtractorFor(name string) (WebhookExtractor, error) {
+	r.mu.RLock()
+	extractor, ok := r.extractors[name]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("no webhook extractor registered for %q (registered: %v)", name, r.Names())
+	}
+	return extractor, nil
 }
 
 // Names returns the registered provider names, sorted.
