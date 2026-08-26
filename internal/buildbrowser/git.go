@@ -57,6 +57,10 @@ type MetaResult struct {
 	Head         string `json:"head"`
 	Base         string `json:"base"`
 	ChangedFiles int    `json:"changedFiles"`
+	// Live distinguishes a read served from the Run's live worktree (GitReader, true) from one
+	// served from a captured build-snapshot after the pod is gone (SnapshotReader, false) — the
+	// 8.7c live:false contract the console header renders.
+	Live bool `json:"live"`
 }
 
 // ── GitReader ───────────────────────────────────────────────────────────────────────────────────
@@ -65,8 +69,9 @@ type MetaResult struct {
 // `git -C RepoPath …` against server-controlled refs, with the caller's path resolved as a tree
 // object (`<ref>:<path>`) so traversal outside the workspace is structurally impossible.
 type GitReader struct {
-	GitBin  string        // git binary; defaults to "git"
-	Timeout time.Duration // per-invocation timeout; 0 ⇒ no extra timeout beyond ctx
+	GitBin      string        // git binary; defaults to "git"
+	Timeout     time.Duration // per-invocation timeout; 0 ⇒ no extra timeout beyond ctx
+	SnapshotCap int64         // max 8.7c bundle bytes; 0 ⇒ MaxSnapshotBytes (see snapshot.go)
 }
 
 // NewGitReader returns a GitReader with sane defaults (a 30s per-call timeout).
@@ -260,6 +265,7 @@ func (g *GitReader) Meta(ctx context.Context, m RunMeta) (*MetaResult, error) {
 		Head:         strings.TrimSpace(string(head)),
 		Base:         strings.TrimSpace(string(base)),
 		ChangedFiles: countNUL(names),
+		Live:         true, // GitReader reads the Run's live worktree; SnapshotReader overrides to false
 	}, nil
 }
 

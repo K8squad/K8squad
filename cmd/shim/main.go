@@ -26,6 +26,9 @@ limitations under the License.
 //	shim run          Read one A2A Task (spec §3 V1) as JSON from stdin, drive it
 //	                  through the runtime, stream sequenced SSE events (spec §4)
 //	                  as JSONL to stdout, and exit non-zero on a failed task.
+//	shim read         Answer a read-only build-browser query (tree | diff | file |
+//	                  meta) against the Run's live worktree and print it as JSON with
+//	                  live:true (story 8.7b). Runtime-agnostic; no engine needed.
 //
 // The runtime flavor and Agent config are read from the environment the
 // reconciler injects (arch §7.2/§7.3); the raw credential is held only in
@@ -61,6 +64,12 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		cmd = args[0]
 	}
 
+	// The 8.7b read verb is runtime-agnostic: it reads the Run's workspace, so it needs no runtime
+	// selection or engine. Handle it before requiring KSQUAD_RUNTIME_TYPE.
+	if cmd == "read" {
+		return driveRead(args[1:], stdout)
+	}
+
 	runtimeType := env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))
 	if runtimeType == "" {
 		return fmt.Errorf("no runtime selected: set KSQUAD_RUNTIME_TYPE to one of %v", runtimes.Registered())
@@ -81,7 +90,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	case "run":
 		return driveRun(engine, stdin, stdout)
 	default:
-		return fmt.Errorf("unknown subcommand %q (want: card | run)", cmd)
+		return fmt.Errorf("unknown subcommand %q (want: card | run | read)", cmd)
 	}
 }
 
