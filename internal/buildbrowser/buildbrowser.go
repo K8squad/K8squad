@@ -51,6 +51,14 @@ type RunMeta struct {
 	RepoPath  string    // absolute path to the Run's git worktree/repo (server-controlled)
 	HeadRef   string    // the Run ref — resolves ?ref=run (e.g. the worktree HEAD)
 	BaseRef   string    // the base ref — resolves ?ref=base (the branch point the diff is against)
+
+	// PrURL/CIStatus are the 8.7g PR/CI header-strip facts, server-derived by the RunSource from the
+	// Epic 11 SCM mirror (scm_pr_mirror, §5.4) when a Run's PR/CI has been synced. They are OPTIONAL:
+	// the build browser does not depend on Epic 11 to ship — with no SCM sync the RunSource leaves
+	// both empty and the console header strip is simply absent (git-only degradation, 8.7g AC). When
+	// Epic 11.3/11.4 land, the prod RunSource populates them and the strip renders — no read-path change.
+	PrURL    string // the Run's pull-request URL ("" ⇒ no synced PR; strip absent)
+	CIStatus string // the Run's CI status ("" ⇒ no synced CI; strip absent)
 }
 
 // RunSource resolves a Run id to its server-derived RunMeta. It is the seam the host injects

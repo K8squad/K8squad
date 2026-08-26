@@ -58,6 +58,13 @@ export interface MetaResult {
   head: string;
   base: string;
   changedFiles: number;
+  /**
+   * 8.7g PR/CI header-strip facts, populated by the Epic 11 SCM mirror when a Run's PR/CI is synced.
+   * Both are optional: absent (omitempty on the server) when no PR/CI is synced, so the header strip
+   * renders only when present and the browser degrades to git-only otherwise — no Epic 11 dependency.
+   */
+  prUrl?: string;
+  ciStatus?: string;
 }
 
 type ScreenState =
@@ -236,6 +243,7 @@ export function BuildBrowser({ runId }: { runId: string }) {
           <code>{meta.head.slice(0, 12)}</code> vs base <code>{meta.base.slice(0, 12)}</code> ·{" "}
           {meta.changedFiles} changed {meta.changedFiles === 1 ? "file" : "files"}
         </p>
+        <PrCiHeaderStrip prUrl={meta.prUrl} ciStatus={meta.ciStatus} />
       </section>
 
       <div
@@ -331,6 +339,33 @@ export function BuildBrowser({ runId }: { runId: string }) {
           )}
         </section>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PrCiHeaderStrip is the 8.7g PR/CI header strip. It renders the Run's pull-request link and CI
+ * status ONLY when the Epic 11 SCM mirror has synced them (prUrl/ciStatus present). With neither
+ * present it renders nothing — the build browser degrades to git-only and never depends on Epic 11
+ * to ship (8.7g AC). A ciStatus with no prUrl (or vice-versa) still renders the part that is present.
+ */
+function PrCiHeaderStrip({ prUrl, ciStatus }: { prUrl?: string; ciStatus?: string }) {
+  if (!prUrl && !ciStatus) return null;
+  return (
+    <div
+      data-testid="build-pr-ci-strip"
+      style={{ marginTop: 6, display: "flex", gap: 10, alignItems: "center", fontSize: 13 }}
+    >
+      {prUrl ? (
+        <a data-testid="build-pr-link" href={prUrl} target="_blank" rel="noopener noreferrer">
+          View pull request
+        </a>
+      ) : null}
+      {ciStatus ? (
+        <span data-testid="build-ci-status" className="muted">
+          CI: {ciStatus}
+        </span>
+      ) : null}
     </div>
   );
 }

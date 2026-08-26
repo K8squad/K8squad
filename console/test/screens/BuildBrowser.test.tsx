@@ -140,6 +140,39 @@ describe("<BuildBrowser> — story 8.7e three-pane wiring (ISI-2904)", () => {
   });
 });
 
+describe("<BuildBrowser> — story 8.7g PR/CI header strip", () => {
+  it("renders the PR link and CI status when the SCM mirror has synced them", async () => {
+    stubByUrl({
+      "/meta": ok({ ...meta, prUrl: "https://github.com/K8squad/K8squad/pull/140", ciStatus: "passing" }),
+      "/tree": ok(tree),
+      "/diff": ok(diff),
+    });
+    render(<BuildBrowser runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId("build-ready")).toBeTruthy());
+    const strip = screen.getByTestId("build-pr-ci-strip");
+    expect(strip.querySelector('[data-testid="build-pr-link"]')?.getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad/pull/140",
+    );
+    expect(screen.getByTestId("build-ci-status").textContent).toContain("passing");
+  });
+
+  it("omits the strip entirely when no PR/CI is synced (git-only degradation, no Epic 11 dep)", async () => {
+    stubByUrl({ "/meta": ok(meta), "/tree": ok(tree), "/diff": ok(diff) });
+    render(<BuildBrowser runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId("build-ready")).toBeTruthy());
+    expect(screen.queryByTestId("build-pr-ci-strip")).toBeNull();
+  });
+
+  it("renders only the CI badge when a Run has CI state but no PR yet", async () => {
+    stubByUrl({ "/meta": ok({ ...meta, ciStatus: "running" }), "/tree": ok(tree), "/diff": ok(diff) });
+    render(<BuildBrowser runId="run-1" />);
+    await waitFor(() => expect(screen.getByTestId("build-ready")).toBeTruthy());
+    expect(screen.getByTestId("build-pr-ci-strip")).toBeTruthy();
+    expect(screen.queryByTestId("build-pr-link")).toBeNull();
+    expect(screen.getByTestId("build-ci-status").textContent).toContain("running");
+  });
+});
+
 describe("classifyBuildStatus / decodeContent — unit contract", () => {
   it("maps relayed statuses to distinct honest states (matching the 8.3 read model)", () => {
     expect(classifyBuildStatus(401).kind).toBe("unauthenticated");
