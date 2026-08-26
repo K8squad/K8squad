@@ -1,0 +1,29 @@
+# gitleaks configuration for K8squad (L4 security gate — .github/workflows/security.yml A4).
+#
+# Keeps the full upstream default ruleset (extend.useDefault) and adds ONLY a path
+# allowlist for generated build output and vendored dependencies. These directories are
+# gitignored and never committed, so they cannot be a source of a *committed* secret — but
+# the PR/push gate scans the working tree with `--no-git`, which reads every file on disk
+# regardless of .gitignore. On a self-hosted runner whose workspace still holds a prior
+# console build, that scan trips on Next.js's per-build random previewModeSigningKey /
+# previewModeEncryptionKey (console/.next/**) — a false positive, not a leak.
+#
+# Scope is deliberately narrow: only build-artifact / vendored trees, never source dirs.
+# This does not soften real-secret detection (default rules stay on for all source), so it
+# is consistent with the "green means clean, not ran" invariant of the L4 workflow.
+title = "K8squad gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated build output and vendored deps (gitignored; scanned only because --no-git ignores .gitignore)"
+paths = [
+  '''(^|/)\.next/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''(^|/)coverage/''',
+  '''(^|/)\.turbo/''',
+  '''(^|/)vendor/''',
+]
