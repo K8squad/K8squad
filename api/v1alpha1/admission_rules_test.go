@@ -86,11 +86,29 @@ func TestCRDHasSandboxDefaults(t *testing.T) {
 }
 
 // RetryPolicy sanity: negative retry counts and zero/negative backoff are
-// rejected fail-closed.
+// rejected fail-closed, and the retry loop is bounded (maxRetries <= 20,
+// backoffSeconds <= 3600 — the run_types.go markers, ISI-3297 resync).
 func TestCRDHasRetryPolicyRules(t *testing.T) {
 	yaml := squashed(loadCRD(t, "../../config/crd/bases/ksquad.io_runs.yaml"))
-	assert.Contains(t, yaml, squashed("!has(self.maxRetries) || self.maxRetries >= 0"))
-	assert.Contains(t, yaml, squashed("!has(self.backoffSeconds) || self.backoffSeconds >= 1"))
+	assert.Contains(t, yaml, squashed("!has(self.maxRetries) || (self.maxRetries >= 0 && self.maxRetries <= 20)"))
+	assert.Contains(t, yaml, squashed("!has(self.backoffSeconds) || (self.backoffSeconds >= 1 && self.backoffSeconds <= 3600)"))
+}
+
+// Structural defaulting for the retry loop (ISI-3297): the documented
+// MaxRetries=5 / BackoffSeconds=60 defaults apply at admission, server-side.
+func TestCRDHasRetryPolicyDefaults(t *testing.T) {
+	yaml := loadCRD(t, "../../config/crd/bases/ksquad.io_runs.yaml")
+	for _, field := range []string{"maxRetries:", "backoffSeconds:"} {
+		idx := strings.Index(yaml, field)
+		require.NotEqual(t, -1, idx, field+" must be in the Run CRD")
+		section := yaml[idx : idx+400]
+		switch field {
+		case "maxRetries:":
+			assert.Contains(t, section, "default: 5", "maxRetries must default to 5 (anti-infinite-loop safety default)")
+		case "backoffSeconds:":
+			assert.Contains(t, section, "default: 60", "backoffSeconds must default to 60s (§8 backoff base)")
+		}
+	}
 }
 
 // ContextBudget tiers are non-negative wherever the budget appears

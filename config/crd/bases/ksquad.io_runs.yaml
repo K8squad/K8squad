@@ -117,24 +117,30 @@ spec:
                   failures (§8, FR-A5).
                 properties:
                   backoffSeconds:
+                    default: 60
                     description: |-
                       BackoffSeconds is the base delay for the exponential backoff with
                       jitter applied between retries (§8).
+                      Default: 60 seconds
                     format: int32
                     type: integer
                   maxRetries:
-                    description: MaxRetries bounds automatic retries; 0 means no automatic
-                      retry.
+                    default: 5
+                    description: |-
+                      MaxRetries bounds automatic retries; 0 means no automatic retry.
+                      Default: 5 (safety limit to prevent infinite loops)
                     format: int32
                     type: integer
                 type: object
                 x-kubernetes-validations:
-                - message: retryPolicy.maxRetries must be >= 0 (0 means no automatic
-                    retry)
-                  rule: '!has(self.maxRetries) || self.maxRetries >= 0'
-                - message: retryPolicy.backoffSeconds must be >= 1; set a positive
-                    base delay for the exponential backoff
-                  rule: '!has(self.backoffSeconds) || self.backoffSeconds >= 1'
+                - message: retryPolicy.maxRetries must be >= 0 and <= 20 (0 means
+                    no automatic retry, 20 is safety limit)
+                  rule: '!has(self.maxRetries) || (self.maxRetries >= 0 && self.maxRetries
+                    <= 20)'
+                - message: retryPolicy.backoffSeconds must be >= 1 and <= 3600; set
+                    a reasonable base delay for the exponential backoff
+                  rule: '!has(self.backoffSeconds) || (self.backoffSeconds >= 1 &&
+                    self.backoffSeconds <= 3600)'
               sandboxPolicy:
                 description: |-
                   SandboxPolicy is the RuntimeClass/isolation selection input to §9.1
