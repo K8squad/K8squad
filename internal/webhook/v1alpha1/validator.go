@@ -65,6 +65,11 @@ const (
 	GuardRunTeam                    = "run/teamRef"
 	GuardRunProject                 = "run/projectRef"
 	GuardRunAgents                  = "run/agents"
+	// GuardSkillMCPServers guards Skill.spec.mcpToolRefs (story A2 /
+	// ADR-042): every ref must resolve to an existing MCPServer. The old
+	// schema-only world admitted dangling refs silently because no target
+	// CRD existed; the capability plane fails closed instead.
+	GuardSkillMCPServers = "skill/mcpToolRefs"
 	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
 	// annotation: platform operators only. Without this guard the
 	// annotation is a plain metadata write any Run author can set,
@@ -253,6 +258,33 @@ func (v *CrossRefValidator) validateEndpointRef(ctx context.Context, namespace s
 		return invalidf(path, ref.Name, "admission read failed (fail-closed): %v", err)
 	}
 	return nil
+}
+
+// ValidateSkill rejects a Skill whose spec.mcpToolRefs target a missing
+// MCPServer (story A2, ADR-042 webhook contract, fail-closed). Refs resolve
+// in the ref's explicit namespace or the Skill's own namespace. The denial
+// message names both endpoints of the dangling ref so the fix is actionable:
+// create the MCPServer first or drop the ref.
+func (v *CrossRefValidator) ValidateSkill(ctx context.Context, skill *ksquadv1alpha1.Skill) field.ErrorList {
+	var errs field.ErrorList
+	if !v.on(GuardSkillMCPServers) {
+		return errs
+	}
+	for i, ref := range skill.Spec.McpToolRefs {
+		ns := resolveNamespace(ref, skill.Namespace)
+		ok, err := refExists(ctx, v.Reader, &ksquadv1alpha1.MCPServer{}, ns, ref.Name)
+		switch {
+		case err != nil:
+			errs = append(errs, invalidf(fmt.Sprintf("spec.mcpToolRefs[%d]", i), ref,
+				"admission read failed (fail-closed): %v; retry or check apiserver health", err))
+			continue
+		case !ok:
+			errs = append(errs, invalidf(fmt.Sprintf("spec.mcpToolRefs[%d]", i), ref,
+				"skill %s/%s references missing MCPServer %s/%s; create the MCPServer first or drop the ref",
+				skill.Namespace, skill.Name, ns, ref.Name))
+		}
+	}
+	return errs
 }
 
 // ValidateRun rejects a Run whose teamRef, projectRef or agent selectors
