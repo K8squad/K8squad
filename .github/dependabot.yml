@@ -27,6 +27,16 @@ updates:
       all-actions:
         patterns:
           - "*"
+    ignore:
+      # helm/kind-action's default `kindest/node` image pins the kind cluster's
+      # Kubernetes version. Our kind-based suites (spine-chaos, e2e, blast-radius)
+      # run a version-pinned CloudNativePG operator (release-1.24) against that
+      # cluster. An automated kind-action bump to v1.14 silently jumped the node
+      # image to Kubernetes v1.35, which CNPG 1.24 does not support — the Postgres
+      # port-forward flapped and the required spine-chaos gate went red (ISI-3238).
+      # Bump kind-action deliberately, paired with a matching CNPG operator bump,
+      # not in the automated all-actions group.
+      - dependency-name: "helm/kind-action"
 
   - package-ecosystem: "gomod"
     directory: "/"
