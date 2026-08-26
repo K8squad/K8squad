@@ -7,6 +7,13 @@
 #
 # Skill wiring: every role gets `bmad`; coder/devops/code-reviewer add `github`;
 # observability-engineer adds `dynatrace`; graphical-designer adds `graphical`.
+#
+# Dev/debug Skills (ISI-3273): the broad-value ones (code-search, kubectl-debug,
+# go-build-test, git-workflow, otel-observability-query, psql-inspect,
+# http-grpc-probe) attach here as defaultSkills. The three specialist ones
+# (golangci-lint, container-build, delve-pprof) attach per-member on
+# Agent.spec.skillRefs (06-agents.yaml) instead — since skillRefs *replaces* a
+# role's defaultSkills, those members enumerate their full skill set there.
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -48,6 +55,7 @@ spec:
     name: architect-prompt
   defaultSkills:
     - name: bmad
+    - name: code-search
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -120,6 +128,9 @@ spec:
   defaultSkills:
     - name: bmad
     - name: github
+    - name: code-search
+    - name: go-build-test
+    - name: git-workflow
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -135,6 +146,13 @@ spec:
   runtimeClassHint: gvisor
   defaultSkills:
     - name: bmad
+    - name: code-search
+    - name: kubectl-debug
+    - name: go-build-test
+    - name: git-workflow
+    - name: otel-observability-query
+    - name: psql-inspect
+    - name: http-grpc-probe
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -151,6 +169,13 @@ spec:
   defaultSkills:
     - name: bmad
     - name: github
+    - name: code-search
+    - name: kubectl-debug
+    - name: go-build-test
+    - name: git-workflow
+    - name: otel-observability-query
+    - name: psql-inspect
+    - name: http-grpc-probe
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -167,6 +192,11 @@ spec:
   defaultSkills:
     - name: bmad
     - name: github
+    - name: kubectl-debug
+    - name: git-workflow
+    - name: otel-observability-query
+    - name: psql-inspect
+    - name: http-grpc-probe
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -182,6 +212,8 @@ spec:
   defaultSkills:
     - name: bmad
     - name: dynatrace
+    - name: kubectl-debug
+    - name: otel-observability-query
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
