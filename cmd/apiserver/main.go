@@ -39,6 +39,7 @@ import (
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/internal/runsource"
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/events"
@@ -166,21 +167,40 @@ func main() {
 	// drift between sibling console surfaces.
 	var builds *buildbrowser.Service
 	var artifacts *artifactbrowser.Service
+	artStore, aerr := artifactbrowser.NewProdStore(db)
+	if aerr != nil {
+		log.Fatalf("ksquad-apiserver: artifact store: %v", aerr)
+	}
 	if runsPath := os.Getenv("KSQUAD_DEV_RUNS"); runsPath != "" {
+		// Dev override (ISI-2759): a static runs file drives the LIVE git read-model against a local
+		// repo. NOT for production — a real deployment leaves KSQUAD_DEV_RUNS unset and takes the
+		// Postgres branch below.
 		runs, rerr := buildbrowser.LoadStaticRuns(runsPath)
 		if rerr != nil {
 			log.Fatalf("ksquad-apiserver: load dev runs: %v", rerr)
 		}
 		builds = buildbrowser.NewService(runs, buildbrowser.NewGitReader())
-		artStore, aerr := artifactbrowser.NewProdStore(db)
-		if aerr != nil {
-			log.Fatalf("ksquad-apiserver: artifact store: %v", aerr)
-		}
 		artifacts = artifactbrowser.NewService(runs, artStore)
 		// #nosec G706 -- operator-supplied env path in a startup warning, not request-tainted input.
 		log.Printf("ksquad-apiserver: WARNING — using static dev runs from %s; NOT for production", runsPath)
 	} else {
-		log.Printf("ksquad-apiserver: no Run source configured — build-browser and artifact-browser routes answer 501 until the read-model backing lands (ISI-2759/ISI-2900)")
+		// Production (ISI-3207): the Postgres-backed RunSource resolves a Run's Team/owner from the
+		// coord custody row (claim.run_id → holder_principal ⋈ work_item.team_id) and its git coords
+		// from the 8.7c build-snapshot meta. The SAME source backs both read models so their 8.7d
+		// gate resolves identical Run facts. The build reader serves a COMPLETED Run from the captured
+		// snapshot: Meta from the persisted summary today; tree/diff/file byte reads degrade to 404
+		// (existence-hiding) until the ISI-2900 blob store binds a BundleResolver here.
+		runs, rerr := runsource.NewPostgresRunSource(db)
+		if rerr != nil {
+			log.Fatalf("ksquad-apiserver: build/artifact run source: %v", rerr)
+		}
+		snapStore, serr := runsource.NewPostgresSnapshotStore(db)
+		if serr != nil {
+			log.Fatalf("ksquad-apiserver: build snapshot store: %v", serr)
+		}
+		builds = buildbrowser.NewService(runs, runsource.NewSnapshotStoreReader(snapStore, nil))
+		artifacts = artifactbrowser.NewService(runs, artStore)
+		log.Printf("ksquad-apiserver: build-browser + artifact-browser wired to the Postgres Run source (8.7e backend, ISI-3207)")
 	}
 
 	// §4.4 SSE run-progress publish source (ISI-2756). The run-entity rows on coord.outbox — the
