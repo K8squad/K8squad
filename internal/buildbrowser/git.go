@@ -61,6 +61,12 @@ type MetaResult struct {
 	// served from a captured build-snapshot after the pod is gone (SnapshotReader, false) — the
 	// 8.7c live:false contract the console header renders.
 	Live bool `json:"live"`
+	// PrURL/CIStatus are the 8.7g header-strip facts, echoed from the server-derived RunMeta (the
+	// Epic 11 SCM mirror). Both are omitempty: absent when the Run has no synced PR/CI, so the console
+	// renders the strip only when present and degrades to git-only otherwise (8.7g AC) — the build
+	// browser never depends on Epic 11 to ship.
+	PrURL    string `json:"prUrl,omitempty"`
+	CIStatus string `json:"ciStatus,omitempty"`
 }
 
 // ── GitReader ───────────────────────────────────────────────────────────────────────────────────
@@ -266,6 +272,10 @@ func (g *GitReader) Meta(ctx context.Context, m RunMeta) (*MetaResult, error) {
 		Base:         strings.TrimSpace(string(base)),
 		ChangedFiles: countNUL(names),
 		Live:         true, // GitReader reads the Run's live worktree; SnapshotReader overrides to false
+		// 8.7g: echo the server-derived PR/CI facts. Empty (no SCM sync) ⇒ omitempty drops them ⇒ the
+		// console header strip is absent — git-only degradation, no Epic 11 dependency to ship.
+		PrURL:    m.PrURL,
+		CIStatus: m.CIStatus,
 	}, nil
 }
 
