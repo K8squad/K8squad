@@ -55,6 +55,9 @@ type mcpTestDouble struct {
 	seenSess  string
 	seenProto string
 	failInit  bool
+	// rpcErr, when set, makes tools/list reply with a JSON-RPC error
+	// envelope carrying this verbatim message (hostile-endpoint double).
+	rpcErr string
 }
 
 func newMCPTestDouble(t *testing.T, tools []string) *mcpTestDouble {
@@ -90,6 +93,14 @@ func newMCPTestDouble(t *testing.T, tools []string) *mcpTestDouble {
 		case req.Method == "tools/list":
 			if d.seenSess != "sess-1234" {
 				http.Error(w, "missing session", http.StatusNotFound)
+				return
+			}
+			if d.rpcErr != "" {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0", "id": req.ID,
+					"error": map[string]any{"code": -32000, "message": d.rpcErr},
+				})
 				return
 			}
 			tools := make([]map[string]string, 0, len(d.tools))

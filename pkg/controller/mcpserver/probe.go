@@ -48,7 +48,35 @@ const (
 	probeContentType = "application/json"
 	probeAccept      = "application/json, text/event-stream"
 	maxProbeBody     = 1 << 20 // 1 MiB: a tools/list result never exceeds this
+
+	// maxRemoteErrText caps remote-controlled error text (JSON-RPC
+	// error.message, HTTP reason phrases) before it can surface in
+	// MCPServer condition messages (ADR-045 hygiene: truncate + strip
+	// control chars).
+	maxRemoteErrText = 256
 )
+
+// sanitizeRemoteText makes remote-controlled text safe for conditions:
+// control characters are stripped (newlines included, so a hostile
+// endpoint cannot forge multi-line status text) and the length is capped
+// at maxRemoteErrText runes with a truncation marker. Everything after
+// the cap — e.g. a credential the endpoint may reflect back — is dropped.
+func sanitizeRemoteText(s string) string {
+	var b strings.Builder
+	count := 0
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		if count >= maxRemoteErrText {
+			b.WriteString("…[truncated]")
+			break
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return b.String()
+}
 
 // httpTimeoutClient builds the default probe client.
 func httpTimeoutClient() *http.Client {
@@ -113,8 +141,9 @@ func (p *StreamableHTTPProber) DiscoverTools(ctx context.Context, server *ksquad
 
 	session, negotiated, err := p.initialize(ctx, endpoint, server, credential)
 	if err != nil {
-		// Error text carries method + status only — never header values,
-		// so credential material cannot leak (A3 AC5).
+		// Error text carries method + sanitized status/remote text only —
+		// never header values, so credential material cannot leak (A3 AC5;
+		// remote text is capped + control-stripped per ADR-045, ISI-3296).
 		return nil, err
 	}
 	defer func() {
@@ -232,7 +261,7 @@ func (p *StreamableHTTPProber) callWithSession(ctx context.Context, endpoint, se
 	if method == http.MethodDelete {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxProbeBody))
 		if resp.StatusCode >= 400 {
-			return nil, "", fmt.Errorf("DELETE %s", resp.Status)
+			return nil, "", fmt.Errorf("DELETE %s", sanitizeRemoteText(resp.Status))
 		}
 		return nil, "", nil
 	}
@@ -242,7 +271,7 @@ func (p *StreamableHTTPProber) callWithSession(ctx context.Context, endpoint, se
 		return nil, "", fmt.Errorf("session expired (404): re-initialize")
 	}
 	if resp.StatusCode >= 400 {
-		return nil, "", fmt.Errorf("HTTP %s", resp.Status)
+		return nil, "", fmt.Errorf("HTTP %s", sanitizeRemoteText(resp.Status))
 	}
 
 	respBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBody))
@@ -270,7 +299,10 @@ func (p *StreamableHTTPProber) callWithSession(ctx context.Context, endpoint, se
 		return nil, issued, fmt.Errorf("unparsable reply: %w", err)
 	}
 	if envelope.Error != nil {
-		return nil, issued, fmt.Errorf("JSON-RPC error %d: %s", envelope.Error.Code, envelope.Error.Message)
+		// error.message is remote-controlled text: sanitize before it can
+		// reach condition messages (ADR-045 hygiene; ISI-3296).
+		return nil, issued, fmt.Errorf("JSON-RPC error %d: %s",
+			envelope.Error.Code, sanitizeRemoteText(envelope.Error.Message))
 	}
 	return envelope.Result, issued, nil
 }

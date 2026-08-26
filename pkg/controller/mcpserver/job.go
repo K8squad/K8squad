@@ -25,6 +25,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,17 +80,59 @@ func (r *Reconciler) ensureProbeScaffold(ctx context.Context, server *ksquadv1al
 	return createOrUpdate(ctx, r.Client, binding)
 }
 
-// createOrUpdate applies create-or-replace-by-label semantics without
-// clobbering server-set defaults (resourceVersion-aware update on conflict
-// is unnecessary at v1alpha1 probe scope: the objects are fully owned).
+// createOrUpdate applies create-or-repair semantics: an absent object is
+// created; an existing one has drifted managed labels and owned payload
+// fields (Role rules, RoleBinding subjects) restored in place — the same
+// repair discipline as the Team reconciler's ensureOwned. RoleRef is
+// deliberately not rewritten: it is API-immutable and derived from a
+// constant. Foreign fields (annotations, unmanaged labels) are preserved.
 func createOrUpdate(ctx context.Context, c client.Client, obj client.Object) error {
-	if err := c.Create(ctx, obj); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return nil // fully-owned scaffold; drift healed on next pass
-		}
+	if err := c.Create(ctx, obj); err == nil {
+		return nil
+	} else if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	return nil
+	existing := obj.DeepCopyObject().(client.Object)
+	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), existing); err != nil {
+		return err
+	}
+	if !mergeManaged(existing, obj) {
+		return nil // already converged; nothing drifted
+	}
+	return c.Update(ctx, existing)
+}
+
+// mergeManaged restores the fields the probe scaffold owns — managed
+// labels, Role rules, RoleBinding subjects — on an existing object from
+// the desired form, reporting whether anything drifted.
+func mergeManaged(existing, desired client.Object) bool {
+	drifted := false
+	labels := existing.GetLabels()
+	for k, v := range desired.GetLabels() {
+		if labels[k] != v {
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[k] = v
+			drifted = true
+		}
+	}
+	if drifted {
+		existing.SetLabels(labels)
+	}
+	switch e := existing.(type) {
+	case *rbacv1.Role:
+		if d, ok := desired.(*rbacv1.Role); ok && !apiequality.Semantic.DeepEqual(e.Rules, d.Rules) {
+			e.Rules = d.Rules
+			drifted = true
+		}
+	case *rbacv1.RoleBinding:
+		if d, ok := desired.(*rbacv1.RoleBinding); ok && !apiequality.Semantic.DeepEqual(e.Subjects, d.Subjects) {
+			e.Subjects = d.Subjects
+			drifted = true
+		}
+	}
+	return drifted
 }
 
 // probeJob builds the short-lived stdio discovery Job (ADR-042): an init
