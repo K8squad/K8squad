@@ -18,13 +18,22 @@ package scm
 
 import (
 	"context"
+	"net/http"
 	"time"
 )
 
-// SourceControlProvider defines the interface for source control operations.
-// This is the provider seam that enables different source control providers
-// to be used interchangeably by the repo-sync reconciler.
-type SourceControlProvider interface {
+// SourceProvider is THE provider seam (story 11.5, arch §5.4/§10.2): every
+// byte of provider-specific knowledge in this codebase lives behind it.
+// GitHub is the v1 implementation; GitLab/Bitbucket/Gitea drop in as new
+// implementations + a ProviderRegistry entry — with ZERO change to the
+// repo-sync reconciler, the scm-webhook ingress, or the mirror.
+//
+// The seam discipline mirrors the §10 runtime shims: the reconciler and the
+// ingress code against NormalizedRecord/WebhookEvent shapes only, never
+// provider API types, provider header names, or provider payload schemas.
+// Adding a provider must never introduce a provider-name branch outside
+// pkg/scm and the composition root.
+type SourceProvider interface {
 	// Name returns the provider name (github, gitlab, gitea).
 	Name() string
 
@@ -33,10 +42,20 @@ type SourceControlProvider interface {
 	// The reconciler uses this to implement level-triggered idempotent upsert.
 	Snapshot(ctx context.Context, repoURL string, options SnapshotOptions) ([]NormalizedRecord, error)
 
-	// ValidateWebhook verifies the HMAC signature of a webhook delivery.
-	// Returns true if the signature is valid, false otherwise.
-	// This is called BEFORE any webhook payload parsing (AC4 from Story 11.1).
-	ValidateWebhook(ctx context.Context, signature string, secret string, payload []byte) bool
+	// VerifyWebhookDelivery authenticates one webhook delivery using the
+	// provider's OWN scheme — which header carries the credential and what
+	// form it takes is provider knowledge and stays inside the provider
+	// (GitHub: X-Hub-Signature-256 HMAC; GitLab: X-Gitlab-Token shared
+	// secret). It is called BEFORE any payload parsing (story 11.1 AC4,
+	// D8/NFR-SEC8) and must be constant time. False means drop, always.
+	VerifyWebhookDelivery(ctx context.Context, headers http.Header, payload []byte, secret string) bool
+
+	// ParseWebhookEvent extracts a normalized event summary from a VERIFIED
+	// delivery — the provider's event header and payload schema stay inside
+	// the provider. Called only after VerifyWebhookDelivery returned true.
+	// An unparseable delivery is an error, not a refusal: the reconcile the
+	// delivery triggers is level-triggered and never trusts the payload.
+	ParseWebhookEvent(ctx context.Context, headers http.Header, payload []byte) (*WebhookEvent, error)
 
 	// CreateComment creates a comment on an issue or PR.
 	// Used for outbound reflection when reflectOutbound is enabled.
@@ -49,6 +68,29 @@ type SourceControlProvider interface {
 
 	// GetRepo fetches repository information.
 	GetRepo(ctx context.Context, repoURL string) (*Repository, error)
+}
+
+// SourceControlProvider is the pre-11.5 name of SourceProvider, kept as an
+// alias so external references to the seam keep compiling. New code uses
+// SourceProvider.
+type SourceControlProvider = SourceProvider
+
+// WebhookEvent is the provider-agnostic summary of one webhook delivery,
+// extracted AFTER verification. It exists for logging/trigger attribution
+// only — the mirror is written exclusively from provider snapshots, never
+// from webhook payloads (story 11.1 AC2).
+type WebhookEvent struct {
+	// Type is the normalized event type: issue, pull_request, check_run,
+	// artifact, push, ping, unknown. Providers map their native event
+	// names onto this set; "unknown" is a valid answer.
+	Type string `json:"type"`
+
+	// Action is the event's action verb (opened, closed, ...), or empty.
+	Action string `json:"action,omitempty"`
+
+	// DeliveryID is the provider's delivery/request identifier, for
+	// correlation in logs. Empty when the provider does not supply one.
+	DeliveryID string `json:"delivery_id,omitempty"`
 }
 
 // SnapshotOptions contains options for snapshot operations.
@@ -69,11 +111,11 @@ type SnapshotOptions struct {
 type RecordType string
 
 const (
-	RecordTypeIssue     RecordType = "issue"
-	RecordTypePR        RecordType = "pr"
-	RecordTypeCheckRun  RecordType = "check_run"
-	RecordTypeArtifact  RecordType = "artifact"
-	RecordTypeRelease   RecordType = "release"
+	RecordTypeIssue    RecordType = "issue"
+	RecordTypePR       RecordType = "pr"
+	RecordTypeCheckRun RecordType = "check_run"
+	RecordTypeArtifact RecordType = "artifact"
+	RecordTypeRelease  RecordType = "release"
 )
 
 // NormalizedRecord represents a normalized source control record.
@@ -122,7 +164,7 @@ type NormalizedRecord struct {
 	Merged  bool   `json:"merged,omitempty"`
 
 	// CheckRun-specific fields
-	Conclusion string `json:"conclusion,omitempty"`
+	Conclusion string    `json:"conclusion,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitempty"`
 
 	// Artifact-specific fields
@@ -135,25 +177,25 @@ type NormalizedRecord struct {
 
 // Status represents a commit or PR status.
 type Status struct {
-	State     string      // pending, success, failure, error
-	Context   string      // The status context (e.g., "ci/travis-ci")
-	TargetURL string      // URL for details about the status
+	State       string    // pending, success, failure, error
+	Context     string    // The status context (e.g., "ci/travis-ci")
+	TargetURL   string    // URL for details about the status
 	Description string    // Short description
-	CreatedAt time.Time   // When the status was created
-	UpdatedAt time.Time   // When the status was last updated
+	CreatedAt   time.Time // When the status was created
+	UpdatedAt   time.Time // When the status was last updated
 }
 
 // Repository represents a source control repository.
 type Repository struct {
-	Name         string
-	FullName     string
-	CloneURL     string
+	Name          string
+	FullName      string
+	CloneURL      string
 	DefaultBranch string
-	Private      bool
-	Description  string
-	Language     string
-	StarCount    int
-	LastPushedAt time.Time
+	Private       bool
+	Description   string
+	Language      string
+	StarCount     int
+	LastPushedAt  time.Time
 }
 
 // ProviderCredentials holds resolved provider credentials.

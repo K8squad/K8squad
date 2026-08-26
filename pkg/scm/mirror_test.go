@@ -19,6 +19,7 @@ package scm
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"reflect"
 	"testing"
 	"time"
@@ -34,7 +35,7 @@ func sampleSnapshot() []NormalizedRecord {
 	}
 }
 
-// stubProvider is a SourceControlProvider returning a fixed normalized
+// stubProvider is a SourceProvider returning a fixed normalized
 // snapshot under a chosen name — the differential double for AC1.
 type stubProvider struct {
 	name string
@@ -46,8 +47,12 @@ func (s *stubProvider) Snapshot(_ context.Context, _ string, _ SnapshotOptions) 
 	return sampleSnapshot(), nil
 }
 
-func (s *stubProvider) ValidateWebhook(_ context.Context, _ string, _ string, _ []byte) bool {
+func (s *stubProvider) VerifyWebhookDelivery(_ context.Context, _ http.Header, _ []byte, _ string) bool {
 	return false
+}
+
+func (s *stubProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []byte) (*WebhookEvent, error) {
+	return nil, fmt.Errorf("not implemented in stub")
 }
 
 func (s *stubProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
