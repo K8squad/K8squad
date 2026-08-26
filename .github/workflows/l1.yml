@@ -158,7 +158,78 @@ jobs:
           GOGC: "40"
           GOMEMLIMIT: "3800MiB"
         run: |
+          # Gate: run the feature/functional suites EXACTLY as main does —
+          # uninstrumented. Coverage instrumentation is captured separately below so
+          # it can never perturb this gate's timing (see the next step's rationale).
           go test -p 1 -tags=integration,discussion_integration ./...
+
+      - name: Capture DB-backed coverage (report-only, NON-GATING — ISI-2714)
+        if: steps.guard.outputs.present == 'true'
+        # Report-only: this MUST NOT be able to red the L1 lane. An earlier revision
+        # instrumented the gate step above with `-covermode=atomic -coverpkg=./...`;
+        # the whole-module atomic counters slowed the test binary enough under
+        # GOMAXPROCS=2 to blow the 5s JetStream delivery deadline in
+        # pkg/events/jetstream (TestRelayPublishesToJetStream) — a flake main never
+        # has running the same suites uninstrumented. So the gate stays exactly as
+        # main runs it, and coverage is captured HERE in a separate, lighter pass:
+        #   * -covermode=count (no -race in this lane, so atomic is unnecessary and
+        #     heavier),
+        #   * scoped to ./pkg/events/... — the DB-backed packages THIS lane actually
+        #     exercises (pkg/coord store tests are //go:build chaos, measured in the
+        #     spine-chaos lane, not here),
+        #   * wrapped so any flake in the report pass can NEVER fail the job — the
+        #     number is a best-effort signal for the ISI-3213 ratchet, not a gate.
+        env:
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
+          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_memory
+          NATS_URL: ${{ steps.nats.outputs.url }}
+          GOMAXPROCS: "2"
+          GOGC: "40"
+          GOMEMLIMIT: "3800MiB"
+        run: |
+          set +e
+          go test -p 1 -tags=integration \
+            -covermode=count -coverpkg=./pkg/events/... \
+            -coverprofile=coverage-l1-events.out ./pkg/events/... \
+            > coverage-l1-run.log 2>&1
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::notice::report-only coverage pass exited ${rc} (NON-GATING, ISI-2714); last lines:"
+            tail -n 25 coverage-l1-run.log || true
+          fi
+          exit 0
+
+      - name: Report DB-backed coverage (report-only — no gate, ISI-2714)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # Report-only: the ratchet gate lives in ci.yml (unit lane). This surfaces
+          # pkg/events DB-backed numbers so ISI-3213's test authoring toward the 80%
+          # gate can track real integration coverage. Exclude generated deepcopy so
+          # the number reflects authored code, exactly like the unit gate.
+          if [ ! -f coverage-l1-events.out ]; then
+            echo "::notice::no coverage profile produced (report pass skipped/flaked) — nothing to report."
+            exit 0
+          fi
+          grep -v -E '/zz_generated[^:]*\.go:' coverage-l1-events.out > coverage-l1.filtered.out
+          go tool cover -func=coverage-l1.filtered.out | tee coverage-l1.txt
+          total=$(grep -E '^total:' coverage-l1.txt | awk '{print $3}')
+          echo "::notice::L1 pkg/events DB-backed coverage (excl. generated) = ${total} (report-only, ISI-2714)"
+          echo "### L1 pkg/events DB-backed coverage (report-only, ISI-2714)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Total pkg/events (excl. generated): **${total}**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-func (drives the ISI-3213 ratchet):" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(github.com/[^ ]*/pkg/events)' coverage-l1.txt >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload DB-backed coverage profile
+        if: steps.guard.outputs.present == 'true'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: coverage-l1-events
+          path: coverage-l1-events.out
+          if-no-files-found: ignore
 
       - name: Stop NATS
         if: always()
