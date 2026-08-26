@@ -185,7 +185,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	due := probeDue(&server, &next)
 	var wait bool
 
-	switch ksquadv1alpha1.MCPTransport(server.Spec.Transport) {
+	switch server.Spec.Transport {
 	case ksquadv1alpha1.MCPTransportStreamableHTTP:
 		if due {
 			r.probeHTTP(ctx, &server, &next, now)

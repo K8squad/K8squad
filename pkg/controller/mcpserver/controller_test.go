@@ -129,7 +129,7 @@ func newReconciler(t *testing.T, objs ...client.Object) (*Reconciler, client.Wit
 	return r, c
 }
 
-var fixedTime = metav1.NewTime(metav1.Now().Time.Truncate(0))
+var fixedTime = metav1.NewTime(metav1.Now().Truncate(0))
 var fixedClock = func() metav1.Time { return fixedTime }
 
 func httpMCPServer(name, endpoint string, mutate func(*ksquadv1alpha1.MCPServer)) *ksquadv1alpha1.MCPServer {
