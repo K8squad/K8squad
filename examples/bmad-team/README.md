@@ -88,6 +88,18 @@ CEO (sam)
     └── Graphical Designer (gabi)
 ```
 
+## Skills — canonical source
+
+> **Source of truth:** the reusable `Skill` CRs live in
+> **[`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)** — the
+> canonical, versioned catalog (one dir per skill + install/wiring docs). The
+> `03-skills.yaml` in this folder is a **convenience mirror** so the squad stays
+> `kubectl apply`-able in one shot; when the two diverge, k8squad-skills wins.
+> To pull the catalog directly instead of the mirror:
+> `kubectl apply -k github.com/K8squad/k8squad-skills` (then apply the rest of
+> this squad), or repoint the git-sourced skills' `ref` at a pinned commit of
+> that repo.
+
 ## The 4 default Skills
 
 A `Skill` is the CRD-authorized capability envelope. `bmad` ships **inline**
