@@ -209,6 +209,55 @@ func (p *GitHubProvider) VerifyWebhookDelivery(_ context.Context, headers http.H
 	return VerifyHMAC(payload, secret, digest)
 }
 
+// GitHubWebhookExtractor implements WebhookExtractor for GitHub deliveries.
+// It is stateless — one value serves every Project — and reads only GitHub's
+// own delivery headers (X-Hub-Signature-256, X-GitHub-Event). A GitLab
+// extractor would read X-Gitlab-Token / X-Gitlab-Event instead, with no
+// change to the webhook handler (Story 11.5).
+type GitHubWebhookExtractor struct{}
+
+// Signature extracts the bare HMAC digest from GitHub's X-Hub-Signature-256
+// header. It reads headers only — the body is unverified at this point in the
+// AC4 pipeline and must not be touched.
+func (GitHubWebhookExtractor) Signature(header http.Header) (string, error) {
+	return ParseSignatureHeader(header.Get("X-Hub-Signature-256"))
+}
+
+// Event returns GitHub's X-GitHub-Event header, falling back to a probe of
+// the (already-verified) body when the header is absent. Logging/trigger use
+// only — the reconcile is level-triggered and never trusts the payload.
+func (GitHubWebhookExtractor) Event(header http.Header, body []byte) string {
+	if e := header.Get("X-GitHub-Event"); e != "" {
+		return e
+	}
+	return githubEventFromPayload(body)
+}
+
+// githubEventFromPayload inspects an already-verified delivery body for an
+// event hint when the X-GitHub-Event header is absent (logging only).
+// Unparseable payloads still trigger a reconcile upstream — the reconcile is
+// level-triggered and never trusts the payload (Story 11.1 AC2).
+func githubEventFromPayload(body []byte) string {
+	var probe struct {
+		Zen     string `json:"zen"`
+		Action  string `json:"action"`
+		PullReq *struct {
+			Title string `json:"title"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return "unknown"
+	}
+	switch {
+	case probe.Zen != "":
+		return "ping"
+	case probe.PullReq != nil:
+		return "pull_request/" + probe.Action
+	default:
+		return "unknown"
+	}
+}
+
 // ParseWebhookEvent summarizes a VERIFIED GitHub delivery. The event type
 // comes from X-GitHub-Event; when the header is absent (e.g. a proxied or
 // hand-rolled delivery) the already-verified payload is probed for a hint —
