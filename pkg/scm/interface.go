@@ -93,6 +93,33 @@ type WebhookEvent struct {
 	DeliveryID string `json:"delivery_id,omitempty"`
 }
 
+// WebhookExtractor is the provider-agnostic seam for reading an inbound
+// webhook HTTP request. Webhook receipt needs no API credentials, so it is a
+// separate, STATELESS seam from SourceProvider — a GitLab or Bitbucket
+// build supplies its own extractor (reading X-Gitlab-Token / etc.) with ZERO
+// change to the webhook handler, the same "new impl + config, no reconciler
+// rewrite" discipline the ProviderRegistry gives the reconcile loop
+// (Story 11.5).
+//
+// The seam deliberately splits into two calls so the handler can keep the
+// verify-before-parse gate (Story 11.1 AC4, D8/NFR-SEC8): Signature is
+// header-only and runs BEFORE HMAC verification; Event may inspect the body
+// and is called ONLY after the signature verifies.
+type WebhookExtractor interface {
+	// Signature returns the bare HMAC digest carried by the provider's
+	// signature header (GitHub: X-Hub-Signature-256, "sha256=<hex>"). An
+	// absent or malformed signature is an error the handler treats as an
+	// unverifiable delivery to drop — never an unsigned parse. Reads
+	// headers ONLY; it must not touch the body (which is unverified here).
+	Signature(header http.Header) (string, error)
+
+	// Event returns a short, provider-normalized event name for logging and
+	// trigger decisions. It is called only after the signature has verified,
+	// so it may inspect the now-trusted body as a fallback when the
+	// provider's event header is absent.
+	Event(header http.Header, body []byte) string
+}
+
 // SnapshotOptions contains options for snapshot operations.
 type SnapshotOptions struct {
 	// Branch specifies a specific branch to snapshot. If empty, snapshots all.

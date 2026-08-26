@@ -234,7 +234,6 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		h.unauthorized(w, "webhook secret not resolvable", "project", projectName, "error", err.Error())
 		return
 	}
-
 	// Resolve the delivery's provider through the SAME registry the
 	// reconciler uses (story 11.5): which header carries the credential
 	// and how it is checked is provider knowledge behind the seam. The
