@@ -20,7 +20,7 @@ jobs:
     name: Check sign-off
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Need the full PR history so we can walk base..head.
           fetch-depth: 0
