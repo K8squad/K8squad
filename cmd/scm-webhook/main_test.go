@@ -104,6 +104,41 @@ func newServer(t *testing.T) client.Client {
 		WithObjects(project, webhookSecret, glProject, glWebhookSecret).Build()
 }
 
+// newServerWithProvider builds the fake client with a Project whose repo-sync
+// declares an arbitrary provider name — used to exercise the unknown-provider
+// drop path (Story 11.5: an unregistered provider is a uniform 401, never a
+// hard-coded GitHub parse).
+func newServerWithProvider(t *testing.T, provider string) client.Client {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := ksquadapi.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	project := &ksquadapi.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: projName, Namespace: ns},
+		Spec: ksquadapi.ProjectSpec{
+			Repo: ksquadapi.RepoSpec{
+				URL: "gitlab.com/acme/app",
+				Sync: &ksquadapi.RepoSyncSpec{
+					Provider: provider,
+					WebhookSecretRef: &ksquadapi.SecretRef{
+						Name: "acme-webhook-hmac", Key: "webhookSecret",
+					},
+				},
+			},
+		},
+	}
+	webhookSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "acme-webhook-hmac", Namespace: ns},
+		Data:       map[string][]byte{"webhookSecret": []byte(hmacSecret)},
+	}
+	return fake.NewClientBuilder().WithScheme(s).
+		WithObjects(project, webhookSecret).Build()
+}
+
 func doWebhook(t *testing.T, c client.Client, body string, sigHeader string) *httptest.ResponseRecorder {
 	t.Helper()
 	h := &webhookHandler{client: c, logger: zap.New().WithName("test")}
@@ -148,6 +183,25 @@ func TestBadSignatureDroppedBeforeParse(t *testing.T) {
 	}
 	if _, ok := triggerAnnotation(t, c); ok {
 		t.Fatal("absent signature must not trigger a reconcile")
+	}
+}
+
+// Story 11.5: a Project pinned to a provider with no registered extractor is
+// dropped uniformly (401, no trigger) even with an otherwise well-formed
+// signature header — the handler never falls back to a hard-coded GitHub parse.
+func TestUnknownProviderDropped(t *testing.T) {
+	c := newServerWithProvider(t, "bitbucket")
+	payload := `{"zen":"keep it simple"}`
+	// A signature that WOULD verify under GitHub's scheme — proves the drop
+	// is about the missing provider seam, not a bad signature.
+	good := "sha256=" + scm.ComputeHMACSHA256([]byte(payload), hmacSecret)
+
+	rec := doWebhook(t, c, payload, good)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown provider: got %d, want 401", rec.Code)
+	}
+	if _, ok := triggerAnnotation(t, c); ok {
+		t.Fatal("unknown provider must not trigger a reconcile")
 	}
 }
 
