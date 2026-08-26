@@ -147,6 +147,28 @@ jobs:
           path: coverage-${{ matrix.component }}.out
           if-no-files-found: ignore
 
+  # ISI-3297: codegen-drift gate. The +kubebuilder markers in api/v1alpha1 are the
+  # source of truth; zz_generated.deepcopy.go, config/crd/bases and the helm crds/
+  # mirror are artifacts of `make generate manifests`. This lane regenerates them
+  # from the checked-out markers and fails on ANY diff, so a marker edit can never
+  # land without its regenerated artifacts again (exactly how the runs CRD
+  # retryPolicy defaults/CEL bounds drifted on main). controller-gen is pinned via
+  # CONTROLLER_TOOLS_VERSION in the Makefile; the runner starts from bin/-less
+  # checkout so it always installs the pinned version.
+  codegen-drift:
+    name: codegen / drift gate
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24f796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify generated code + manifests match the markers
+        run: make verify-codegen
+
   migrations:
     name: db / migrations self-check
     runs-on: [self-hosted, linux, x64]

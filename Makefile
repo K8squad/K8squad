@@ -30,6 +30,23 @@ manifests: controller-gen ## Generate CRD manifests.
 generate: controller-gen ## Generate DeepCopy method implementations (zz_generated.deepcopy.go).
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
+# ISI-3297: codegen-drift gate. Regenerates everything codegen owns
+# (zz_generated.deepcopy.go, config/crd/bases, config/helm/crds) and fails if
+# the result differs from what is committed — the markers in api/v1alpha1 are
+# the source of truth, the YAML/deepcopy artifacts must never lag them.
+# This is what .github/workflows/ci.yml (codegen-drift job) runs on every
+# PR/push to main; run it locally after editing any +kubebuilder marker.
+.PHONY: verify-codegen
+verify-codegen: generate manifests ## Fail when generated code/manifests drift from the committed state (ISI-3297).
+	@git diff --exit-code -- api/ config/crd/bases/ config/helm/crds/ || { \
+		echo ""; \
+		echo "CODEGEN DRIFT (ISI-3297): generated artifacts do not match the committed state."; \
+		echo "The api/v1alpha1 +kubebuilder markers are the source of truth. Run:"; \
+		echo "  make generate manifests && git add api/ config/crd/bases/ config/helm/crds/"; \
+		echo "and commit the result alongside your marker changes."; \
+		exit 1; }
+	@echo "OK: no codegen drift (api/ config/crd/bases/ config/helm/crds/ in sync)."
+
 HELM ?= $(shell command -v helm 2>/dev/null)
 CHART_DIR ?= config/helm
 
