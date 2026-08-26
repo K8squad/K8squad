@@ -47,11 +47,11 @@ func TestParseRepoURL(t *testing.T) {
 		{in: "https://github.com/acme/app/", owner: "acme", repo: "app"},
 		{in: "https://ghe.corp/api/v3/acme/app", owner: "acme", repo: "app"},
 		{in: "https://token@github.com/acme/app", owner: "acme", repo: "app"},
-		{in: "https://github.com/acme", err: true},             // no repo segment
-		{in: "acme/app", err: true},                            // bare owner/repo is ambiguous
-		{in: "", err: true},                                    // nothing
-		{in: "https://github.com/acme/app extra", err: true},   // trailing junk
-		{in: "https://github.com/acme/app.tar.gz", err: true},  // not a repo name
+		{in: "https://github.com/acme", err: true},            // no repo segment
+		{in: "acme/app", err: true},                           // bare owner/repo is ambiguous
+		{in: "", err: true},                                   // nothing
+		{in: "https://github.com/acme/app extra", err: true},  // trailing junk
+		{in: "https://github.com/acme/app.tar.gz", err: true}, // not a repo name
 	}
 	for _, tc := range cases {
 		owner, repo, err := parseRepoURL(tc.in)
@@ -71,43 +71,104 @@ func TestParseRepoURL(t *testing.T) {
 	}
 }
 
-// ValidateWebhook is the exported AC4 gate: a genuine signature verifies,
-// and nothing computable WITHOUT the secret does. This pins the regression
-// where the digest was hex(payload) — a complete authentication bypass.
-func TestValidateWebhookRejectsForgedSignatures(t *testing.T) {
+// VerifyWebhookDelivery is the exported AC4 gate: a genuine signature
+// verifies, and nothing computable WITHOUT the secret does. This pins the
+// regression where the digest was hex(payload) — a complete authentication
+// bypass. The GitHub header name is provider knowledge exercised here, at
+// the provider, not in the ingress (story 11.5).
+func TestVerifyWebhookDeliveryRejectsForgedSignatures(t *testing.T) {
 	p := &GitHubProvider{}
 	ctx := context.Background()
 	payload := []byte(`{"action":"opened"}`)
 	secret := "whsec-per-project"
 
+	headers := func(sig string) http.Header {
+		h := http.Header{}
+		if sig != "" {
+			h.Set("X-Hub-Signature-256", sig)
+		}
+		return h
+	}
+
 	genuine := "sha256=" + ComputeHMACSHA256(payload, secret)
-	if !p.ValidateWebhook(ctx, genuine, secret, payload) {
+	if !p.VerifyWebhookDelivery(ctx, headers(genuine), payload, secret) {
 		t.Fatal("genuine signature rejected")
 	}
 
 	// The old bypass: hex(payload) presented as a signature.
 	forged := "sha256=" + fmt.Sprintf("%x", payload)
-	if p.ValidateWebhook(ctx, forged, secret, payload) {
+	if p.VerifyWebhookDelivery(ctx, headers(forged), payload, secret) {
 		t.Fatal("BYPASS CONFIRMED: forged signature accepted without the secret")
 	}
 
 	// Right shape, wrong secret.
 	wrongSecret := "sha256=" + ComputeHMACSHA256(payload, "wrong-secret")
-	if p.ValidateWebhook(ctx, wrongSecret, secret, payload) {
+	if p.VerifyWebhookDelivery(ctx, headers(wrongSecret), payload, secret) {
 		t.Fatal("signature under a different secret accepted")
 	}
 
-	// Malformed / absent headers, empty secret, empty payload.
+	// Malformed / absent headers, empty secret, empty payload, nil headers.
 	for _, sig := range []string{"", "sha256=deadbeef", "not-a-signature", "md5=abc"} {
-		if p.ValidateWebhook(ctx, sig, secret, payload) {
+		if p.VerifyWebhookDelivery(ctx, headers(sig), payload, secret) {
 			t.Fatalf("malformed signature %q accepted", sig)
 		}
 	}
-	if p.ValidateWebhook(ctx, genuine, "", payload) {
+	if p.VerifyWebhookDelivery(ctx, headers(genuine), payload, "") {
 		t.Fatal("empty secret must never verify")
 	}
-	if p.ValidateWebhook(ctx, genuine, secret, nil) {
+	if p.VerifyWebhookDelivery(ctx, headers(genuine), nil, secret) {
 		t.Fatal("empty payload must never verify")
+	}
+	if p.VerifyWebhookDelivery(ctx, nil, payload, secret) {
+		t.Fatal("nil headers must never verify")
+	}
+}
+
+// ParseWebhookEvent normalizes the provider's event header, and — when the
+// header is absent — probes the (already verified) payload for logging
+// attribution only. Unparseable deliveries stay "unknown", never an error.
+func TestParseWebhookEvent(t *testing.T) {
+	p := &GitHubProvider{}
+	ctx := context.Background()
+
+	headers := func(k, v string) http.Header {
+		h := http.Header{}
+		if k != "" {
+			h.Set(k, v)
+		}
+		return h
+	}
+
+	// Header present: used verbatim, delivery id carried along.
+	h := headers("X-GitHub-Event", "issues")
+	h.Set("X-GitHub-Delivery", "d-1234")
+	ev, err := p.ParseWebhookEvent(ctx, h, []byte(`{}`))
+	if err != nil || ev == nil {
+		t.Fatalf("header event: err=%v ev=%v", err, ev)
+	}
+	if ev.Type != "issues" || ev.DeliveryID != "d-1234" {
+		t.Fatalf("header event: got %+v", ev)
+	}
+
+	// Header absent: payload probe recognizes ping / pull_request / issue.
+	cases := []struct {
+		payload string
+		want    string
+	}{
+		{`{"zen":"keep it simple"}`, "ping"},
+		{`{"action":"opened","pull_request":{"title":"x"}}`, "pull_request/opened"},
+		{`{"action":"closed","issue":{"title":"y"}}`, "issue/closed"},
+		{`{"something":"else"}`, "unknown"},
+		{`not json`, "unknown"},
+	}
+	for _, tc := range cases {
+		ev, err := p.ParseWebhookEvent(ctx, headers("", ""), []byte(tc.payload))
+		if err != nil || ev == nil {
+			t.Fatalf("payload %q: err=%v ev=%v", tc.payload, err, ev)
+		}
+		if ev.Type != tc.want {
+			t.Fatalf("payload %q: got type %q, want %q", tc.payload, ev.Type, tc.want)
+		}
 	}
 }
 
@@ -129,10 +190,10 @@ func newTestGitHubProvider(t *testing.T, mux *http.ServeMux) (*GitHubProvider, *
 
 func issueJSON(number int, state, title, actor string, isPR bool) string {
 	b, _ := json.Marshal(map[string]interface{}{
-		"number": number,
-		"title":  title,
-		"state":  state,
-		"user":   map[string]string{"login": actor},
+		"number":   number,
+		"title":    title,
+		"state":    state,
+		"user":     map[string]string{"login": actor},
 		"html_url": fmt.Sprintf("https://github.com/acme/app/issues/%d", number),
 	})
 	if isPR {

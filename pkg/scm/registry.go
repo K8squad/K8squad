@@ -26,9 +26,9 @@ import (
 // ProviderFactory builds a connected provider for one Project from its BYO
 // credential (story 11.1 AC5). Factories are registered per provider name at
 // composition time; the RECONCILE LOOP never switches on a provider name —
-// it asks the registry and talks to whatever SourceControlProvider comes
-// back (AC1, §10.2).
-type ProviderFactory func(ctx context.Context, creds ProviderCredentials) (SourceControlProvider, error)
+// it asks the registry and talks to whatever SourceProvider comes back
+// (AC1, §10.2).
+type ProviderFactory func(ctx context.Context, creds ProviderCredentials) (SourceProvider, error)
 
 // ProviderRegistry maps provider names to factories. It is the ONLY place a
 // concrete provider name is branched on — the composition root, not the
@@ -38,20 +38,26 @@ type ProviderRegistry struct {
 	factories map[string]ProviderFactory
 }
 
-// NewProviderRegistry returns a registry with the v1 GitHub provider
-// pre-registered. GitHub Enterprise Server deployments register an
-// additional factory with the enterprise baseURL at wiring time.
+// NewProviderRegistry returns a registry with the v1 GitHub provider and
+// the story-11.5 GitLab skeleton pre-registered. GitHub Enterprise Server
+// deployments register an additional factory with the enterprise baseURL at
+// wiring time; adding a provider (Bitbucket, Gitea) is the same one-line
+// Register — new implementation + registration, no reconciler or ingress
+// change (story 11.5 seam contract).
 func NewProviderRegistry() *ProviderRegistry {
 	r := &ProviderRegistry{factories: map[string]ProviderFactory{}}
-	r.Register("github", func(ctx context.Context, creds ProviderCredentials) (SourceControlProvider, error) {
+	r.Register("github", func(ctx context.Context, creds ProviderCredentials) (SourceProvider, error) {
 		return NewGitHubProvider("", creds)
+	})
+	r.Register("gitlab", func(_ context.Context, _ ProviderCredentials) (SourceProvider, error) {
+		return NewGitLabProvider()
 	})
 	return r
 }
 
 // Register adds (or replaces) the factory for a provider name. Registering
-// a drop-in provider (GitLab, Gitea) is how §5.4/§10.2 provider extension
-// happens — with zero reconciler change.
+// a drop-in provider (GitLab, Bitbucket, Gitea) is how §5.4/§10.2 provider
+// extension happens — with zero reconciler change.
 func (r *ProviderRegistry) Register(name string, factory ProviderFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -72,7 +78,7 @@ func (r *ProviderRegistry) Names() []string {
 
 // Provider builds the named provider. An unknown name is an error the
 // reconciler surfaces on the Project status — never a silent skip.
-func (r *ProviderRegistry) Provider(ctx context.Context, name string, creds ProviderCredentials) (SourceControlProvider, error) {
+func (r *ProviderRegistry) Provider(ctx context.Context, name string, creds ProviderCredentials) (SourceProvider, error) {
 	r.mu.RLock()
 	factory, ok := r.factories[name]
 	r.mu.RUnlock()

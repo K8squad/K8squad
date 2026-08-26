@@ -41,6 +41,12 @@ const (
 	hmacSecret = "whsec-per-project"
 	ns         = "webhook-ns"
 	projName   = "app"
+
+	// glProjName/glToken back the story-11.5 provider-agnosticism probe:
+	// a GitLab Project (shared-secret token scheme, no HMAC header)
+	// through the SAME handler code path.
+	glProjName = "gl-app"
+	glToken    = "gl-webhook-token"
 )
 
 func newServer(t *testing.T) client.Client {
@@ -73,8 +79,29 @@ func newServer(t *testing.T) client.Client {
 		ObjectMeta: metav1.ObjectMeta{Name: "acme-webhook-hmac", Namespace: ns},
 		Data:       map[string][]byte{"webhookSecret": []byte(hmacSecret)},
 	}
+	glProject := &ksquadapi.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: glProjName, Namespace: ns},
+		Spec: ksquadapi.ProjectSpec{
+			Repo: ksquadapi.RepoSpec{
+				URL: "gitlab.com/acme/gl-app",
+				Auth: &ksquadapi.RepoAuth{CredentialSecretRef: ksquadapi.SecretRef{
+					Name: "gl-scm-token",
+				}},
+				Sync: &ksquadapi.RepoSyncSpec{
+					Provider: "gitlab",
+					WebhookSecretRef: &ksquadapi.SecretRef{
+						Name: "gl-webhook-token", Key: "webhookSecret",
+					},
+				},
+			},
+		},
+	}
+	glWebhookSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "gl-webhook-token", Namespace: ns},
+		Data:       map[string][]byte{"webhookSecret": []byte(glToken)},
+	}
 	return fake.NewClientBuilder().WithScheme(s).
-		WithObjects(project, webhookSecret).Build()
+		WithObjects(project, webhookSecret, glProject, glWebhookSecret).Build()
 }
 
 func doWebhook(t *testing.T, c client.Client, body string, sigHeader string) *httptest.ResponseRecorder {
@@ -178,5 +205,96 @@ func TestMethodNotAllowed(t *testing.T) {
 	h.handle(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET: got %d, want 405", rec.Code)
+	}
+}
+
+// Story 11.5 AC falsification: the ingress contains NO provider-specific
+// branch. A GitLab delivery (X-Gitlab-Token shared secret, X-Gitlab-Event
+// naming) against a Project configured provider=gitlab goes through the
+// SAME handler — verifies, attributes the event, and bumps the trigger —
+// with zero GitHub headers present and zero ingress change. GitLab
+// following GitHub is a provider-impl + config diff, not a redesign.
+func TestGitLabDeliveryThroughSameIngress(t *testing.T) {
+	c := newServer(t)
+	h := &webhookHandler{client: c, logger: zap.New().WithName("test")}
+
+	payload := `{"object_kind":"merge_request","object_attributes":{"action":"open"}}`
+	req := httptest.NewRequest(http.MethodPost,
+		"/scm/webhook?project="+glProjName+"&namespace="+ns, bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Gitlab-Token", glToken)
+	req.Header.Set("X-Gitlab-Event", "Merge Request Hook")
+	rec := httptest.NewRecorder()
+	h.handle(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gitlab delivery: got %d (%s), want 200", rec.Code, rec.Body.String())
+	}
+	project := &ksquadapi.Project{}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: glProjName}, project); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := project.Annotations[reposync.TriggerAnnotation]; !ok {
+		t.Fatal("verified gitlab delivery must bump the trigger annotation")
+	}
+
+	// Wrong token: uniform 401, no trigger — AC4 holds for every provider.
+	req = httptest.NewRequest(http.MethodPost,
+		"/scm/webhook?project="+glProjName+"&namespace="+ns, bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Gitlab-Token", "wrong-token")
+	rec = httptest.NewRecorder()
+	h.handle(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("gitlab wrong token: got %d, want 401", rec.Code)
+	}
+
+	// A GitHub-style HMAC header must NOT authenticate the GitLab project
+	// (scheme cross-wiring would be a seam violation).
+	req = httptest.NewRequest(http.MethodPost,
+		"/scm/webhook?project="+glProjName+"&namespace="+ns, bytes.NewReader([]byte(payload)))
+	req.Header.Set("X-Hub-Signature-256", "sha256="+scm.ComputeHMACSHA256([]byte(payload), glToken))
+	rec = httptest.NewRecorder()
+	h.handle(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cross-provider scheme accepted: got %d, want 401", rec.Code)
+	}
+}
+
+// An unknown provider name is a Project misconfiguration: uniform 401
+// (no enumeration oracle), detail logged server-side only.
+func TestUnknownProviderRefused(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := ksquadapi.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	project := &ksquadapi.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "odd", Namespace: ns},
+		Spec: ksquadapi.ProjectSpec{
+			Repo: ksquadapi.RepoSpec{
+				URL: "example.com/acme/odd",
+				Sync: &ksquadapi.RepoSyncSpec{
+					Provider: "bitbucket",
+					WebhookSecretRef: &ksquadapi.SecretRef{
+						Name: "odd-secret", Key: "webhookSecret",
+					},
+				},
+			},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "odd-secret", Namespace: ns},
+		Data:       map[string][]byte{"webhookSecret": []byte("s")},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(project, secret).Build()
+
+	h := &webhookHandler{client: c, logger: zap.New().WithName("test")}
+	req := httptest.NewRequest(http.MethodPost,
+		"/scm/webhook?project=odd&namespace="+ns, bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+	h.handle(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unknown provider: got %d, want 401", rec.Code)
 	}
 }
