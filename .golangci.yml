@@ -50,6 +50,36 @@ linters:
           - gosec
         text: "G101"
         path: pkg/controller/reposync
+      # G101 in pkg/controller/credential: the flagged strings are the Anthropic
+      # OAuth token *endpoint URL* (defaultAnthropicTokenURL) and a k8s label key
+      # ("ksquad.io/credential-class") — a URL and an identifier, not secrets;
+      # they trip gosec's credential-name heuristic by coincidence.
+      - linters:
+          - gosec
+        text: "G101"
+        path: ^pkg/controller/credential/
+      # G101 in pkg/controller/run/status.go: the flagged constants are Condition
+      # REASON strings ("CredentialExpired"/"CredentialRotated"), same class as
+      # the reposync exclusion above — reason identifiers, not credential values.
+      - linters:
+          - gosec
+        text: "G101"
+        path: ^pkg/controller/run/status\.go
+      # G101 in pkg/coord/credpause.go: the flagged constants are CredPauseReason
+      # enum values ("credential_expired"/"credential_rotated") — pause-reason
+      # identifiers surfaced to the console, not secrets.
+      - linters:
+          - gosec
+        text: "G101"
+        path: ^pkg/coord/credpause\.go
+      # G202 in internal/apiserver/audit.go: the only concatenated fragment is the
+      # positional placeholder tail (" LIMIT $N OFFSET $M") built from int
+      # counters; every value stays parameterized via QueryContext(ctx, q, params...).
+      # No user-controlled string enters the query text — no injection surface.
+      - linters:
+          - gosec
+        text: "G202"
+        path: ^internal/apiserver/audit\.go
       # G706 in cmd/memory/main.go: the logged value is a parsed time.Duration
       # (time.ParseDuration validates it), not raw env text — no injection surface.
       - linters:
