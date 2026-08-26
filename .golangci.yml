@@ -72,6 +72,14 @@ linters:
           - gosec
         text: "G101"
         path: ^pkg/coord/credpause\.go
+      # G101 in pkg/scm/gitlab.go: the flagged constant is the GitLab webhook
+      # authentication HEADER NAME ("X-Gitlab-Token") — a wire identifier the
+      # provider reads, not a credential value; it trips gosec's credential-name
+      # heuristic by coincidence.
+      - linters:
+          - gosec
+        text: "G101"
+        path: ^pkg/scm/gitlab\.go
       # G202 in internal/apiserver/audit.go: the only concatenated fragment is the
       # positional placeholder tail (" LIMIT $N OFFSET $M") built from int
       # counters; every value stays parameterized via QueryContext(ctx, q, params...).
