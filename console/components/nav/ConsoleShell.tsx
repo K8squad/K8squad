@@ -19,6 +19,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
@@ -178,12 +179,14 @@ export function ConsoleShell({
             <NavIcon id="menu" size={20} />
           </button>
           <Logo size={22} />
+          <GlobalSearch />
           <ThemeToggle />
         </header>
 
         {/* Desktop/tablet content header */}
         <header className="contentbar">
           <Breadcrumb pathname={pathname} />
+          <GlobalSearch />
           <ThemeToggle />
         </header>
 
