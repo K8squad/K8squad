@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -37,10 +38,10 @@ func TestSubscriber_HasNoPublishSurface(t *testing.T) {
 // it CANNOT reach Publish even though both live here — the guardrail is that the
 // read path never hands out a *Publisher.
 func TestSubscribe_RequiresURLAndDurable(t *testing.T) {
-	if _, err := Subscribe(nil, SubscribeConfig{Durable: "d"}); err == nil {
+	if _, err := Subscribe(context.TODO(), SubscribeConfig{Durable: "d"}); err == nil {
 		t.Fatal("Subscribe with empty URL = nil error, want required-URL error")
 	}
-	if _, err := Subscribe(nil, SubscribeConfig{URL: "nats://x:4222"}); err == nil {
+	if _, err := Subscribe(context.TODO(), SubscribeConfig{URL: "nats://x:4222"}); err == nil {
 		t.Fatal("Subscribe with empty Durable = nil error, want required-Durable error (per-plugin cursor)")
 	}
 }
