@@ -2,7 +2,7 @@
 
 A self-contained, `kubectl apply`-able squad that models the **BMAD method**
 (Breakthrough Method of Agile AI-Driven Development): 13 roles in a reporting
-hierarchy, wired with 4 default Skills. Use it to onboard onto K8squad on a real
+hierarchy, wired with 4 default + 10 dev/debug Skills. Use it to onboard onto K8squad on a real
 cluster and as a template for your own squad.
 
 Everything lives in one namespace (`bmad-squad`) and every cross-reference
@@ -56,7 +56,7 @@ Tear down with `kubectl delete namespace bmad-squad`.
 | 00 | `00-namespace.yaml` | `bmad-squad` namespace |
 | 01 | `01-credentials.yaml` | model-credential `Secret` (token `REPLACE_ME`) |
 | 02 | `02-runtimes.yaml` | `AgentRuntime` (`claude-code`) |
-| 03 | `03-skills.yaml` | the 4 default `Skill`s |
+| 03 | `03-skills.yaml` | 4 default + 10 dev/debug `Skill`s |
 | 04 | `04-prompts.yaml` | 13 prompt `ConfigMap`s (behavior + hierarchy) |
 | 05 | `05-roles.yaml` | 13 `Role`s (promptRef + defaultSkills + labels) |
 | 06 | `06-agents.yaml` | 13 `Agent`s (model + role + runtime + credential) |
@@ -88,6 +88,18 @@ CEO (sam)
     └── Graphical Designer (gabi)
 ```
 
+## Skills — canonical source
+
+> **Source of truth:** the reusable `Skill` CRs live in
+> **[`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)** — the
+> canonical, versioned catalog (one dir per skill + install/wiring docs). The
+> `03-skills.yaml` in this folder is a **convenience mirror** so the squad stays
+> `kubectl apply`-able in one shot; when the two diverge, k8squad-skills wins.
+> To pull the catalog directly instead of the mirror:
+> `kubectl apply -k github.com/K8squad/k8squad-skills` (then apply the rest of
+> this squad), or repoint the git-sourced skills' `ref` at a pinned commit of
+> that repo.
+
 ## The 4 default Skills
 
 A `Skill` is the CRD-authorized capability envelope. `bmad` ships **inline**
@@ -101,9 +113,39 @@ A `Skill` is the CRD-authorized capability envelope. `bmad` ships **inline**
 | `dynatrace` | git | observability-engineer | telemetry queries (dtctl + Dynatrace MCP) |
 | `graphical` | git | graphical-designer | SVG rendering + asset toolchain |
 
-Skills attach to roles via `Role.spec.defaultSkills[]`; every Agent inherits its
-role's defaults (no per-Agent `skillRefs` override is used here, but the seam
-exists on `Agent.spec.skillRefs[]`).
+## The 10 dev/debug Skills
+
+Beyond the four defaults, the squad ships ten Skills for **local coding and
+on-cluster debugging** (recommended on ISI-3271, added in ISI-3273). Each is a
+real `Skill` CR: `source` (inline or SHA-pinned git), least-privilege
+`permissions[]` (read-first — no write/apply/delete verbs on the debug skills),
+and `requires{toolchains[],sidecars[]}`. Toolchains are standardized on the
+repo's real versions (`go@1.25`, `kubectl@1.31`) because version conflicts
+across a Run's skills fail closed at pod assembly (arch §5.3.4); the two
+`dockerd`-sidecar skills only resolve where `AgentRuntime.capabilities` grants
+the capability (§5.3.3).
+
+| Skill | Source | Focus | Granted to |
+|-------|--------|-------|-----------|
+| `code-search` | git | dev | coder, code-reviewer, architect, test-architect |
+| `kubectl-debug` | inline | debug | coder, test-architect, devops-engineer, observability-engineer |
+| `go-build-test` | inline | dev+debug | coder, code-reviewer, test-architect |
+| `git-workflow` | inline | dev+debug | coder, code-reviewer, test-architect, devops-engineer |
+| `golangci-lint` | inline | dev | coder, code-reviewer |
+| `otel-observability-query` | git | debug | coder, test-architect, devops-engineer, observability-engineer |
+| `container-build` | inline | dev+debug | coder, devops-engineer |
+| `delve-pprof` | inline | debug | coder, observability-engineer |
+| `psql-inspect` | inline | debug | coder, devops-engineer, test-architect |
+| `http-grpc-probe` | inline | debug | coder, test-architect, devops-engineer |
+
+**How they attach.** Broad-value skills (attached to ≥3 roles) attach via
+`Role.spec.defaultSkills[]`. The three specialist skills (`golangci-lint`,
+`container-build`, `delve-pprof`) attach per-member via `Agent.spec.skillRefs[]`.
+Because `skillRefs` **replaces** a role's `defaultSkills` (it is an override, not
+a merge), the four members that use it — `amelia`, `ada`, `devon`, `otto` —
+enumerate their **complete** skill set there, so none of them loses `bmad`,
+`github`, or `dynatrace`. Every other member inherits purely from its role
+defaults. The most tool-rich member is the Coder (`ada`), who carries all ten.
 
 ## Customizing
 

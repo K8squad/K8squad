@@ -1,7 +1,13 @@
 # One Agent per Role — the concrete squad members. Each Agent binds a model +
 # credential to a Role and Runtime. Skills are inherited from the Role's
-# spec.defaultSkills (05-roles.yaml); an Agent could override with its own
-# spec.skillRefs, but here we let the role defaults stand.
+# spec.defaultSkills (05-roles.yaml) unless the Agent sets its own
+# spec.skillRefs — which *replaces* (does not merge with) the role defaults.
+#
+# Most members leave skillRefs unset and inherit the role defaults. The four
+# members that carry a specialist dev/debug Skill (ISI-3273) — amelia
+# (golangci-lint), ada (golangci-lint + container-build + delve-pprof), devon
+# (container-build), otto (delve-pprof) — therefore enumerate their FULL skill
+# set in skillRefs, since a partial skillRefs would drop bmad/github/dynatrace.
 #
 # Models: opus for the strategic/heavy-reasoning roles (CEO, PM, Architect),
 # sonnet for the rest. credentialClass defaults to service-account.
@@ -148,6 +154,14 @@ spec:
   credentialSecretRef:
     name: model-credentials
     key: token
+  # Full set = code-reviewer role defaults + specialist golangci-lint.
+  skillRefs:
+    - name: bmad
+    - name: github
+    - name: code-search
+    - name: go-build-test
+    - name: git-workflow
+    - name: golangci-lint
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Agent
@@ -184,6 +198,21 @@ spec:
   credentialSecretRef:
     name: model-credentials
     key: token
+  # Full set = coder role defaults + specialists golangci-lint, container-build,
+  # delve-pprof. The Coder is the most tool-rich member of the squad.
+  skillRefs:
+    - name: bmad
+    - name: github
+    - name: code-search
+    - name: kubectl-debug
+    - name: go-build-test
+    - name: git-workflow
+    - name: golangci-lint
+    - name: otel-observability-query
+    - name: container-build
+    - name: delve-pprof
+    - name: psql-inspect
+    - name: http-grpc-probe
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Agent
@@ -202,6 +231,16 @@ spec:
   credentialSecretRef:
     name: model-credentials
     key: token
+  # Full set = devops-engineer role defaults + specialist container-build.
+  skillRefs:
+    - name: bmad
+    - name: github
+    - name: kubectl-debug
+    - name: git-workflow
+    - name: otel-observability-query
+    - name: psql-inspect
+    - name: http-grpc-probe
+    - name: container-build
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Agent
@@ -220,6 +259,13 @@ spec:
   credentialSecretRef:
     name: model-credentials
     key: token
+  # Full set = observability-engineer role defaults + specialist delve-pprof.
+  skillRefs:
+    - name: bmad
+    - name: dynatrace
+    - name: kubectl-debug
+    - name: otel-observability-query
+    - name: delve-pprof
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Agent
