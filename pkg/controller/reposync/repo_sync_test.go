@@ -19,6 +19,7 @@ package reposync
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/go-logr/logr/funcr"
@@ -36,7 +37,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
-// fakeProvider is a SourceControlProvider returning a canned snapshot and
+// fakeProvider is a SourceProvider returning a canned snapshot and
 // recording the credential it was built with (the AC5 differential probe).
 type fakeProvider struct {
 	name        string
@@ -71,7 +72,12 @@ func (p *sequenceProvider) Snapshot(_ context.Context, _ string, _ scm.SnapshotO
 	return nil, fmt.Errorf("sequence exhausted")
 }
 
-func (p *sequenceProvider) ValidateWebhook(_ context.Context, _, _ string, _ []byte) bool { return false }
+func (p *sequenceProvider) VerifyWebhookDelivery(_ context.Context, _ http.Header, _ []byte, _ string) bool {
+	return false
+}
+func (p *sequenceProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []byte) (*scm.WebhookEvent, error) {
+	return nil, fmt.Errorf("unused")
+}
 func (p *sequenceProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
 }
@@ -82,7 +88,12 @@ func (p *sequenceProvider) GetRepo(_ context.Context, _ string) (*scm.Repository
 	return nil, fmt.Errorf("unused")
 }
 
-func (p *fakeProvider) ValidateWebhook(_ context.Context, _, _ string, _ []byte) bool { return false }
+func (p *fakeProvider) VerifyWebhookDelivery(_ context.Context, _ http.Header, _ []byte, _ string) bool {
+	return false
+}
+func (p *fakeProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []byte) (*scm.WebhookEvent, error) {
+	return nil, fmt.Errorf("unused")
+}
 func (p *fakeProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
 }
