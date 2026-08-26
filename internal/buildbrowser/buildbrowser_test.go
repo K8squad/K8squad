@@ -3,6 +3,7 @@ package buildbrowser
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -245,6 +246,47 @@ func TestGitReader_Meta(t *testing.T) {
 	// a.txt modified + newdir/b.txt + huge.txt added = 3 changed files.
 	if res.ChangedFiles != 3 {
 		t.Errorf("ChangedFiles = %d, want 3", res.ChangedFiles)
+	}
+}
+
+// TestGitReader_Meta_PrCiEcho covers the 8.7g header-strip seam: when the server-derived RunMeta
+// carries PR/CI facts (from the Epic 11 SCM mirror), Meta echoes them; when it does not, the fields
+// are empty and JSON-drop (omitempty) so the console header strip is absent — git-only degradation.
+func TestGitReader_Meta_PrCiEcho(t *testing.T) {
+	requireGit(t)
+
+	// Populated: prUrl/ciStatus flow through to MetaResult and marshal into the JSON.
+	m := setupRepo(t)
+	m.PrURL = "https://github.com/K8squad/K8squad/pull/140"
+	m.CIStatus = "passing"
+	res, err := NewGitReader().Meta(context.Background(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PrURL != m.PrURL || res.CIStatus != m.CIStatus {
+		t.Errorf("PR/CI echo = %q/%q, want %q/%q", res.PrURL, res.CIStatus, m.PrURL, m.CIStatus)
+	}
+	j, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(j, []byte(`"prUrl":"https://github.com/K8squad/K8squad/pull/140"`)) ||
+		!bytes.Contains(j, []byte(`"ciStatus":"passing"`)) {
+		t.Errorf("populated meta JSON missing PR/CI fields: %s", j)
+	}
+
+	// Absent (no SCM sync): omitempty drops both keys, so the strip renders nothing.
+	bare := setupRepo(t)
+	resBare, err := NewGitReader().Meta(context.Background(), bare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jb, err := json.Marshal(resBare)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(jb, []byte("prUrl")) || bytes.Contains(jb, []byte("ciStatus")) {
+		t.Errorf("bare meta JSON should omit PR/CI fields (git-only degradation): %s", jb)
 	}
 }
 

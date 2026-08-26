@@ -109,3 +109,13 @@ l1-node: ## L1 console half: Vitest units (skip-with-reason until console/packag
 	else \
 	  echo ">> console/package.json absent — L1 node lane skipped (skip-with-reason, §3.3 Epic 8 / ISI-2743)"; \
 	fi
+
+.PHONY: conformance
+conformance: ## Story 5.6 (GATE-BLOCKING): run the A2A shim conformance suite over the v1 shim set, both lanes.
+	go test -race -count=1 ./conformance/...
+	go run ./cmd/conformance -lane default
+	go run ./cmd/conformance -lane ollama
+
+.PHONY: conformance-ollama
+conformance-ollama: ## Story 5.6 $0 lane: prove every byoModelEndpoint runtime is conformant on a BYO Ollama endpoint (ISI-2157).
+	go run ./cmd/conformance -lane ollama

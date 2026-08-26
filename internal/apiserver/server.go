@@ -11,6 +11,7 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 // ============================================================================
@@ -85,6 +86,11 @@ type Options struct {
 	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
 	// DB-less dev run), exactly like the read models above.
 	WorkItemState WorkItemStateTransitioner
+	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
+	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
+	// exactly like the other read models. RBAC scoping (admin fleet-wide vs Team-fenced) is
+	// applied in-query by pkg/search per ADR-039.
+	Search search.Searcher
 	// ProjectRoles is the 15.4 per-Project RBAC enforcement seam (auth.project_membership,
 	// ISI-2921). When set, project-scoped routes gain a requireProjectRole gate INSIDE the §13
 	// choke point (admin bypasses; a caller with no membership gets 404 existence-hiding; an
@@ -263,6 +269,21 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// 8.18 global search (ISI-2912): the read side of the coord.work_item full-text
+		// index (migration 0012) — GET /api/search?q=…. Behind the same choke point; the
+		// handler derives the RBAC scope from AuthorContext and pkg/search applies it
+		// in-query (admin fleet-wide vs Team-fenced, ADR-039). Wired to the Postgres
+		// searcher in prod (the DB is a hard start dependency), documented 501 only for a
+		// searcher-less host shape.
+		srch := s.router.Path("/api/search").Subrouter()
+		srch.Use(authz)
+		if opts.Search != nil {
+			srch.HandleFunc("", searchHandler(opts.Search)).Methods(http.MethodGet)
+		} else {
+			srch.HandleFunc("", notImplemented("global search read model", "ISI-2912: wire a search.Searcher (Postgres) to enable")).
+				Methods(http.MethodGet)
 		}
 
 		// 8.5 CRD-apply write surface (ISI-3198): create + edit endpoints for the
