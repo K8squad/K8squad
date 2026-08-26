@@ -21,7 +21,7 @@ kubectl -n bmad-squad edit secret model-credentials    # replace REPLACE_ME
 kubectl -n bmad-squad get team,agents,roles,skills
 
 # 5. (Optional) add the dev/debug Skills from the canonical catalog
-git clone https://github.com/K8squad/k8squad-skills.git && kubectl apply -k k8squad-skills/
+kubectl apply -k github.com/K8squad/k8squad-skills
 ```
 
 That is the whole journey. The rest of this guide explains each step, what you
@@ -110,13 +110,19 @@ The [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) repo i
 the **canonical Skill catalog** — the source of truth for the 4 defaults *plus*
 a dev/debug set (`code-search`, `kubectl-debug`, `go-build-test`, `git-workflow`,
 `golangci-lint`, `otel-observability-query`, `container-build`, `delve-pprof`,
-`psql-inspect`, and the optional `http-grpc-probe`). Apply the whole catalog into
-the squad namespace with Kustomize:
+`psql-inspect`, and the optional `http-grpc-probe`). Apply the whole catalog
+straight from the repo with Kustomize — its `kustomization.yaml` stamps the
+`bmad-squad` namespace, so no clone or `-n` override is needed:
 
 ```bash
-git clone https://github.com/K8squad/k8squad-skills.git
-kubectl apply -k k8squad-skills/     # kustomization.yaml targets the bmad-squad namespace
+kubectl apply -k github.com/K8squad/k8squad-skills
+
+# …or a single skill:
+kubectl apply -f https://raw.githubusercontent.com/K8squad/k8squad-skills/main/skills/kubectl-debug/skill.yaml
 ```
+
+(Prefer a local clone? `git clone https://github.com/K8squad/k8squad-skills.git
+&& kubectl apply -k k8squad-skills/` does the same.)
 
 Re-applying is safe — the catalog is the authoritative definition of the same 4
 defaults, so this simply layers the dev/debug skills alongside them. Then wire a
@@ -295,7 +301,7 @@ reviewers execute. The same is possible declaratively with a `Run` CR — see th
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Agents never become Ready | Secret still holds `REPLACE_ME` | Set a real token (Step 3). |
-| An Agent references a dev/debug skill that doesn't exist | Catalog not applied | `kubectl apply -k k8squad-skills/` (Step 2). |
+| An Agent references a dev/debug skill that doesn't exist | Catalog not applied | `kubectl apply -k github.com/K8squad/k8squad-skills` (Step 2). |
 | `apply` errors on unknown kind `ksquad.io/...` | Operator/CRDs not installed | Run the Helm install (Prerequisites). |
 | An Agent event says a `*Ref` is missing | Applied a subset of the folder | Re-apply the whole `examples/bmad-team/`. |
 | Console shows no team | Wrong namespace | The squad lives in `bmad`, not `k8squad-demo`. |
