@@ -7,6 +7,17 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - limitranges
   - resourcequotas
   - serviceaccounts
@@ -40,10 +51,22 @@ rules:
   - update
   - watch
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
   - ksquad.io
   resources:
   - agentruntimes
   - agents
+  - egresspolicies
+  - mcpservers
   - roles
   - skills
   verbs:
@@ -53,21 +76,22 @@ rules:
 - apiGroups:
   - ksquad.io
   resources:
-  - projects
-  verbs:
-  - get
-  - list
-  - patch
-  - watch
-- apiGroups:
-  - ksquad.io
-  resources:
+  - mcpservers/status
   - projects/status
   - teams/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - ksquad.io
+  resources:
+  - projects
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
 - apiGroups:
   - ksquad.io
   resources:
