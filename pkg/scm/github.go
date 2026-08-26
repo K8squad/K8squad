@@ -342,6 +342,48 @@ func (p *GitHubProvider) CreateComment(ctx context.Context, repoURL string, kind
 	return fmt.Sprintf("%d", githubComment.GetID()), nil
 }
 
+// Issue state projections normalized across providers (story 11.2): the
+// outbound half of issue sync only ever commands these two.
+const (
+	IssueStateOpen   = "open"
+	IssueStateClosed = "closed"
+)
+
+// UpdateIssue applies a partial update to one GitHub issue (story 11.2
+// outbound sync): one PATCH /repos/{owner}/{repo}/issues/{n} carrying the
+// state and/or the full replacement label set. An update that commands
+// neither is refused — a no-op write would still bump the issue's
+// updated_at and look like a fresh external change on the next mirror pass
+// (an echo the LWW loop would then have to suppress).
+func (p *GitHubProvider) UpdateIssue(ctx context.Context, repoURL string, externalID string, update IssueUpdate) error {
+	if update.State == "" && update.Labels == nil {
+		return fmt.Errorf("github UpdateIssue: empty update (state and labels both unchanged)")
+	}
+	if update.State != "" && update.State != IssueStateOpen && update.State != IssueStateClosed {
+		return fmt.Errorf("github UpdateIssue: unsupported state %q (want open|closed)", update.State)
+	}
+	repoOwner, repoName, err := parseRepoURL(repoURL)
+	if err != nil {
+		return fmt.Errorf("invalid repo URL: %w", err)
+	}
+	issueNum, err := parseExternalID(externalID)
+	if err != nil {
+		return fmt.Errorf("invalid issue ID: %w", err)
+	}
+
+	req := &github.IssueRequest{}
+	if update.State != "" {
+		req.State = &update.State
+	}
+	if update.Labels != nil {
+		req.Labels = &update.Labels
+	}
+	if _, _, err := p.client.Issues.Edit(ctx, repoOwner, repoName, issueNum, req); err != nil {
+		return wrapRateLimit(err)
+	}
+	return nil
+}
+
 // CreateStatus creates a status on a GitHub commit or PR.
 func (p *GitHubProvider) CreateStatus(ctx context.Context, repoURL string, sha string, status Status) error {
 	repoOwner, repoName, err := parseRepoURL(repoURL)

@@ -34,6 +34,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
 	"github.com/google/uuid"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
@@ -43,6 +44,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/auth"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/events"
+	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/search"
 )
 
@@ -150,13 +152,34 @@ func main() {
 	// this cache is the follow-up once the reconciler writes real Paused conditions (ISI-2898).
 	var overview apiserver.SquadOverviewReader
 	var credentials apiserver.CredentialOverviewReader
+	// 8.8a dashboard: the same informer cache that backs overview/credentials
+	// also feeds the dashboard's live-Runs tile, so the cache block below is
+	// the ONE place all three read models get their reader.
+	var dashboardReader client.Reader
 	if cacheReader, stopCache, cerr := apiserver.NewCacheReader(ctx, 30*time.Second); cerr != nil {
 		log.Printf("ksquad-apiserver: informer cache unavailable — squad-overview + credential read models disabled (GET /api/squad/overview, GET /api/credentials → 501): %v", cerr)
 	} else {
 		defer stopCache()
 		overview = apiserver.NewClientOverviewReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
+		dashboardReader = cacheReader
 		log.Printf("ksquad-apiserver: squad-overview + credential read models ready (informer cache synced)")
+	}
+
+	// 11.2 issue⇄work-item linkage API (ISI-2738): GET/POST/DELETE
+	// /api/projects/{projectId}/issue-links over issuesync.SQLStore
+	// (scm.issue_link, migration 0013). Needs BOTH the DB (link store) and
+	// the informer cache (Team→namespace + Project tenancy resolution); a
+	// dev run without either keeps the documented 501. The sync loop itself
+	// lives in the operator's repo-sync reconciler, not here.
+	var issueLinks *apiserver.IssueLinkService
+	if db != nil && dashboardReader != nil {
+		if linkStore, lerr := issuesync.NewSQLStore(db); lerr != nil {
+			log.Printf("ksquad-apiserver: issue-link store unavailable (issue-link API → 501, story 11.2): %v", lerr)
+		} else {
+			issueLinks = apiserver.NewIssueLinkService(linkStore, dashboardReader)
+			log.Printf("ksquad-apiserver: issue-link API ready (11.2 GitHub issues ⇄ work items)")
+		}
 	}
 
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
@@ -281,6 +304,7 @@ func main() {
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
 		ProjectRoles: memberships,
 		ComposeCRD:   composeCRD,
+		IssueLinks:   issueLinks,
 		Killer:       apiserver.NewProdRunKiller(db),
 		AuditLog:     auditLog,
 		Hub:          hub,

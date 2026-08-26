@@ -156,6 +156,13 @@ func (p *GitLabProvider) CreateComment(_ context.Context, _, _, _, _ string) (st
 	return "", gitlabNotImplemented("CreateComment")
 }
 
+// UpdateIssue is not implemented for GitLab yet — fail closed (story 11.2
+// outbound sync is GitHub-first; the seam method exists so the sync engine
+// stays provider-neutral).
+func (p *GitLabProvider) UpdateIssue(_ context.Context, _, _ string, _ IssueUpdate) error {
+	return gitlabNotImplemented("UpdateIssue")
+}
+
 // CreateStatus is not implemented for GitLab yet — fail closed.
 func (p *GitLabProvider) CreateStatus(_ context.Context, _, _ string, _ Status) error {
 	return gitlabNotImplemented("CreateStatus")
