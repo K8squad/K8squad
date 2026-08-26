@@ -11,18 +11,17 @@ about ten minutes.
 helm repo add ksquad https://charts.k8squad.io
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
 
-# 2. Apply the predefined BMAD squad (Team, Roles, Agents, Project)
+# 2. Apply the predefined BMAD squad — Team, Roles, Agents, Project + 4 default Skills
 kubectl apply -f examples/bmad-team/
 
-# 3. Install the four default Skills from the dedicated Skills repo
-git clone https://github.com/K8squad/k8squad-skills.git
-kubectl apply -n bmad -f k8squad-skills/
+# 3. Put a real model token in the credentials Secret
+kubectl -n bmad-squad edit secret model-credentials    # replace REPLACE_ME
 
-# 4. Put a real model token in the credentials Secret
-kubectl -n bmad edit secret model-credentials    # replace REPLACE_ME
+# 4. Watch the team come up
+kubectl -n bmad-squad get team,agents,roles,skills
 
-# 5. Watch the team come up
-kubectl -n bmad get team,agents,roles,skills
+# 5. (Optional) add the dev/debug Skills from the canonical catalog
+git clone https://github.com/K8squad/k8squad-skills.git && kubectl apply -k k8squad-skills/
 ```
 
 That is the whole journey. The rest of this guide explains each step, what you
@@ -30,15 +29,17 @@ just deployed, and how to kick off a first Run.
 
 > **Heads-up on sources.** Two repos back this squad:
 > - The **team** manifests live in this repo under
->   [`examples/bmad-team/`](../examples/bmad-team/) (built in ISI-3270) — Team,
->   Roles, Agents, Project, and the credentials Secret.
-> - The **Skills** are sourced from the dedicated
->   [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) repo
->   (populated in ISI-3274), applied separately into the `bmad` namespace.
+>   [`examples/bmad-team/`](../examples/bmad-team/) (ISI-3270) — Team, Roles,
+>   Agents, Project, the credentials Secret, **and the 4 default Skills**
+>   (`03-skills.yaml`), all in the `bmad-squad` namespace. One apply gives you a
+>   working squad.
+> - The dedicated [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)
+>   repo (ISI-3274) is the **canonical Skill catalog** — the authoritative
+>   definitions of those 4 defaults *plus* the dev/debug skill set. You only
+>   apply it when you want the extra dev/debug capabilities (Step 2).
 >
-> This guide mirrors both sources' planned layout and apply-order. If a filename
-> or apply path here ever disagrees with the repo it comes from, the repo wins —
-> treat its own `README.md` as the source of truth and
+> If a filename or apply path here ever disagrees with the repo it comes from,
+> the repo wins — treat its own `README.md` as the source of truth and
 > [open an issue](https://github.com/K8squad/K8squad/issues) so we can reconcile.
 
 ---
@@ -91,29 +92,53 @@ instead:
 kubectl apply -f examples/bmad-team/squad.yaml
 ```
 
-Everything lands in a dedicated **`bmad`** namespace so it never collides with
-the `k8squad-demo` quickstart squad. The Roles reference four Skills by name via
-their `defaultSkills[]`; those Skill CRs ship from a separate repo and you
-install them next, so an Agent isn't fully Ready until Step 2 lands them.
+Everything — including the four default `Skill` CRs (`03-skills.yaml`) — lands
+in a dedicated **`bmad-squad`** namespace so it never collides with the
+`k8squad-demo` quickstart squad. The Roles reference those Skills by name via
+their `defaultSkills[]`, and they apply in the same bundle, so the squad is
+self-contained: this one apply is enough to bring the team up.
 
 ---
 
-## Step 2 — Install the default Skills
+## Step 2 — (Optional) add the dev/debug Skills
 
-Skills are **not** part of the `examples/bmad-team/` bundle — they live in the
-dedicated [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)
-repo so they can be versioned and reused across squads. Clone it and apply the
-Skill CRs into the same `bmad` namespace the team lives in:
+The four defaults (`bmad`, `github`, `dynatrace`, `graphical`) already applied
+with the squad in Step 1, so you can skip straight to credentials. This step is
+for when you want more.
+
+The [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) repo is
+the **canonical Skill catalog** — the source of truth for the 4 defaults *plus*
+a dev/debug set (`code-search`, `kubectl-debug`, `go-build-test`, `git-workflow`,
+`golangci-lint`, `otel-observability-query`, `container-build`, `delve-pprof`,
+`psql-inspect`, and the optional `http-grpc-probe`). Apply the whole catalog into
+the squad namespace with Kustomize:
 
 ```bash
 git clone https://github.com/K8squad/k8squad-skills.git
-kubectl apply -n bmad -f k8squad-skills/
+kubectl apply -k k8squad-skills/     # kustomization.yaml targets the bmad-squad namespace
 ```
 
-This creates the four `Skill` CRs (`bmad`, `github`, `dynatrace`, `graphical`)
-that the Roles' `defaultSkills[]` reference by name. The operator picks them up
-and finishes reconciling the Agents once they exist. See the repo's own
-`README.md` for the authoritative apply path and any per-skill notes.
+Re-applying is safe — the catalog is the authoritative definition of the same 4
+defaults, so this simply layers the dev/debug skills alongside them. Then wire a
+skill to the roles or agents that should have it:
+
+```yaml
+# grant to every agent assuming a role
+kind: Role
+spec:
+  defaultSkills:
+    - name: code-search
+    - name: go-build-test
+---
+# grant to one specific agent (overrides the role defaults)
+kind: Agent
+spec:
+  skillRefs:
+    - name: delve-pprof
+```
+
+See the repo's own `README.md` for the per-skill purpose, the least-privilege
+`permissions[]`, and the recommended role→skill matrix.
 
 ---
 
@@ -124,14 +149,14 @@ cannot authenticate until you swap it for a real one. The token lives in a
 `Secret` named `model-credentials`:
 
 ```bash
-kubectl -n bmad edit secret model-credentials
+kubectl -n bmad-squad edit secret model-credentials
 # find stringData.token: "REPLACE_ME" and paste your real token
 ```
 
 Or set it non-interactively:
 
 ```bash
-kubectl -n bmad create secret generic model-credentials \
+kubectl -n bmad-squad create secret generic model-credentials \
   --from-literal=token='sk-your-real-token' \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
@@ -186,11 +211,12 @@ composed flat inside a single `Team`.
 
 ### The four default Skills
 
-`Skill` is a first-class CR, shipped from the dedicated
-[`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) repo you
-applied in Step 2. The squad grants four defaults and attaches them to the roles
-that need them via each Role's `defaultSkills[]` (an agent inherits its role's
-defaults unless it overrides them with its own `skillRefs[]`):
+`Skill` is a first-class CR. The squad ships four defaults in its bundle
+(`03-skills.yaml`; canonical definitions in the
+[`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) catalog)
+and attaches them to the roles that need them via each Role's `defaultSkills[]`
+(an agent inherits its role's defaults unless it overrides them with its own
+`skillRefs[]`):
 
 | Skill | Purpose | Attached to |
 |-------|---------|-------------|
@@ -201,8 +227,9 @@ defaults unless it overrides them with its own `skillRefs[]`):
 
 Each Skill declares its own `source` (`inline` or `git`), `permissions` (the
 authorized capability envelope), and `requires` (toolchains and sidecars the
-operator provisions). Research is ranking additional dev/debugging skills
-(ISI-3271); those fold in later without changing these four.
+operator provisions). Beyond these four, the catalog carries a **dev/debug set**
+(code-search, kubectl-debug, go-build-test, and more — see Step 2) you can layer
+on per role or per agent.
 
 ---
 
@@ -210,21 +237,21 @@ operator provisions). Research is ranking additional dev/debugging skills
 
 ```bash
 # All resources present
-kubectl -n bmad get team,agents,roles,skills,project
+kubectl -n bmad-squad get team,agents,roles,skills,project
 
 # The Team should report its agents composed and Ready
-kubectl -n bmad get team bmad-squad -o wide
-kubectl -n bmad describe team bmad-squad
+kubectl -n bmad-squad get team bmad-squad -o wide
+kubectl -n bmad-squad describe team bmad-squad
 
 # Spot-check that an Agent resolved its role, runtime, skills and credential
-kubectl -n bmad describe agent ceo
+kubectl -n bmad-squad describe agent ceo
 ```
 
 You want the `Team` status to show its agents reconciled and no events
 complaining about a missing `*Ref`. If an Agent is stuck, `describe` it — the
-most common causes are the credentials Secret still holding `REPLACE_ME`, the
-four Skills not yet applied from `k8squad-skills/` (Step 2), or a prompt
-ConfigMap that failed to apply.
+most common causes are the credentials Secret still holding `REPLACE_ME`, or a
+prompt ConfigMap or default `Skill` from the bundle that failed to apply
+(re-apply the whole `examples/bmad-team/`).
 
 ---
 
@@ -237,7 +264,7 @@ Open the console to drive it from the UI:
 
 ```bash
 kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
-# → http://localhost:8080  — pick the bmad team, create a Run, watch it stream
+# → http://localhost:8080  — pick the bmad-squad team, create a Run, watch it stream
 ```
 
 From the console you create a Run, give it a goal, and watch progress stream
@@ -253,8 +280,10 @@ reviewers execute. The same is possible declaratively with a `Run` CR — see th
 - **13 `Role`s + 13 prompt `ConfigMap`s** — behavior and the reporting hierarchy.
 - **13 `Agent`s** — one per role, each bound to a model, runtime, role, and the
   shared credential.
-- **4 `Skill`s** — `bmad`, `github`, `dynatrace`, `graphical` — installed from
-  the separate [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills) repo.
+- **4 default `Skill`s** — `bmad`, `github`, `dynatrace`, `graphical` (in the
+  bundle's `03-skills.yaml`; canonical definitions live in
+  [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills), which
+  also carries the optional dev/debug set).
 - **1+ `AgentRuntime`** — the coding-agent flavor (e.g. `claude-code`).
 - **1 `Project`** — the repository the squad works on.
 - **1 `Secret`** — your model token, referenced everywhere.
@@ -266,7 +295,7 @@ reviewers execute. The same is possible declaratively with a `Run` CR — see th
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
 | Agents never become Ready | Secret still holds `REPLACE_ME` | Set a real token (Step 3). |
-| An Agent stays un-Ready with a missing Skill `*Ref` | Skills not installed | Apply `k8squad-skills/` into `bmad` (Step 2). |
+| An Agent references a dev/debug skill that doesn't exist | Catalog not applied | `kubectl apply -k k8squad-skills/` (Step 2). |
 | `apply` errors on unknown kind `ksquad.io/...` | Operator/CRDs not installed | Run the Helm install (Prerequisites). |
 | An Agent event says a `*Ref` is missing | Applied a subset of the folder | Re-apply the whole `examples/bmad-team/`. |
 | Console shows no team | Wrong namespace | The squad lives in `bmad`, not `k8squad-demo`. |
