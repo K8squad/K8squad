@@ -1,0 +1,240 @@
+# One Agent per Role — the concrete squad members. Each Agent binds a model +
+# credential to a Role and Runtime. Skills are inherited from the Role's
+# spec.defaultSkills (05-roles.yaml); an Agent could override with its own
+# spec.skillRefs, but here we let the role defaults stand.
+#
+# Models: opus for the strategic/heavy-reasoning roles (CEO, PM, Architect),
+# sonnet for the rest. credentialClass defaults to service-account.
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: sam
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: ceo
+spec:
+  model: claude-opus-5
+  roleRef:
+    name: ceo
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: john
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: product-manager
+    ksquad.io/reports-to: ceo
+spec:
+  model: claude-opus-5
+  roleRef:
+    name: product-manager
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: winston
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: architect
+    ksquad.io/reports-to: ceo
+spec:
+  model: claude-opus-5
+  roleRef:
+    name: architect
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: uma
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: ux-designer
+    ksquad.io/reports-to: ceo
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: ux-designer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: mary
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: brainstormer
+    ksquad.io/reports-to: product-manager
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: brainstormer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: cade
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: challenger
+    ksquad.io/reports-to: product-manager
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: challenger
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: quill
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: content-writer
+    ksquad.io/reports-to: product-manager
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: content-writer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: amelia
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: code-reviewer
+    ksquad.io/reports-to: architect
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: code-reviewer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: tess
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: test-architect
+    ksquad.io/reports-to: architect
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: test-architect
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: ada
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: coder
+    ksquad.io/reports-to: architect
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: coder
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: devon
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: devops-engineer
+    ksquad.io/reports-to: architect
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: devops-engineer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: otto
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: observability-engineer
+    ksquad.io/reports-to: architect
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: observability-engineer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: gabi
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: graphical-designer
+    ksquad.io/reports-to: ux-designer
+spec:
+  model: claude-sonnet-5
+  roleRef:
+    name: graphical-designer
+  runtimeRef:
+    name: claude-code
+  credentialSecretRef:
+    name: model-credentials
+    key: token

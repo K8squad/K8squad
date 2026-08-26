@@ -1,0 +1,15 @@
+# The repository this squad works on (arch §5.4). Point repo.url at your own
+# project and set repo.ref to the branch you want tracked. Goals are injected
+# into every Run's context envelope (§8.5).
+apiVersion: ksquad.io/v1alpha1
+kind: Project
+metadata:
+  name: bmad-demo-project
+  namespace: bmad-squad
+spec:
+  repo:
+    url: https://github.com/K8squad/hello-k8squad
+    ref: main
+  goals:
+    - "Ship the BMAD-method demo following the phased workflow."
+    - "Keep every change small, tested, and reviewable."

@@ -1,0 +1,10 @@
+# BMAD squad namespace. Everything in this example lives here so a single
+# `kubectl delete namespace bmad-squad` tears the whole demo down.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bmad-squad
+  labels:
+    app.kubernetes.io/part-of: k8squad
+    app.kubernetes.io/managed-by: bmad-team-example
+    ksquad.io/example: bmad-team

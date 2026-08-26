@@ -1,0 +1,12 @@
+# AgentRuntime = the coding-agent flavor + CLI version policy an Agent points
+# at via spec.runtimeRef (arch §5.3). This squad runs one flavor, claude-code,
+# so every Agent references the same runtime. Pin cliVersion to an immutable
+# tag/SHA for reproducibility (ADR-017); left unset here so the shim resolves
+# the default channel.
+apiVersion: ksquad.io/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: claude-code
+  namespace: bmad-squad
+spec:
+  type: claude-code
