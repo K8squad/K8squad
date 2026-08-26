@@ -1,6 +1,9 @@
 package events
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // DefaultPrefix is the root token of every event subject (relay.subjectPrefix in
 // the Story 9.4 event-relay ConfigMap). Plugins subscribe with wildcards below
@@ -32,6 +35,44 @@ func Subject(prefix, entity, project, squad, eventType string) string {
 		sanitizeToken(squad),
 		sanitizeToken(eventType),
 	}, ".")
+}
+
+// SubjectParts is the taxonomy a subscriber recovers from a delivered subject.
+// It is the read-side mirror of the four subject components the relay composes
+// from the outbox COLUMNS — the payload is NEVER parsed for these (§17.4), so a
+// plugin can route on entity/project/squad/event_type without unmarshalling the
+// (versioned) body first.
+type SubjectParts struct {
+	Prefix    string // subject root ("ksquad")
+	Entity    string // one of Entities
+	ProjectID string // tenancy predicate + subject component
+	Squad     string // team_id; "" when the subject carried the "_" NULL token
+	EventType string // e.g. completed|claimed|handoff
+}
+
+// ParseSubject splits a delivered five-token subject back into its taxonomy for
+// the plugin subscribe SDK (Story 12.2). It is the inverse of Subject for real
+// values: the relay guarantees exactly five tokens (each component is sanitized
+// of the '.' separator before publish), so anything else is a malformed/foreign
+// subject and is rejected rather than silently mis-routed. The "_" squad token
+// decodes back to "" to mirror Event.Squad's NULL semantics — a real squad is a
+// team uuid and is never literally "_".
+func ParseSubject(subject string) (SubjectParts, error) {
+	tok := strings.Split(subject, ".")
+	if len(tok) != 5 {
+		return SubjectParts{}, fmt.Errorf("events.ParseSubject: %q is not a 5-token subject (prefix.entity.project.squad.event_type)", subject)
+	}
+	squad := tok[3]
+	if squad == nullSquadToken {
+		squad = ""
+	}
+	return SubjectParts{
+		Prefix:    tok[0],
+		Entity:    tok[1],
+		ProjectID: tok[2],
+		Squad:     squad,
+		EventType: tok[4],
+	}, nil
 }
 
 // sanitizeToken replaces NATS subject metacharacters with '_' so a single

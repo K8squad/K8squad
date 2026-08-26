@@ -37,36 +37,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run. Mirrors ci.yml / l1.yml (ISI-2748 R2).
+  group: spine-chaos-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # CloudNativePG operator release, pinned. The 14.2 AC requires the spine suite
+  # run against a REAL CNPG Postgres in a kind cluster (a PVC-backed engine), not
+  # a bare postgres:16 service container. Bump deliberately — the operator API is
+  # stable across the release-1.24 line.
+  CNPG_MANIFEST: https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.1.yaml
+
 jobs:
   chaos:
     name: coordination-spine chaos suite
+    # Self-hosted gitrunner (ISI-2602/ISI-2671): GitHub-hosted `ubuntu-latest` is
+    # not serviceable on this repo and a hosted target startup-fails with zero
+    # steps. Every kind/heavy job here (e2e, blast-radius, build-images) uses this
+    # label; helm/kind-action runs on it successfully.
     runs-on: [self-hosted, linux, x64]
-    # Real Postgres for the claim/lease/fence guards, exposed to the Go test as a
-    # stable localhost DSN (see DATABASE_URL on the run step). The staged C1..C7
-    # suite (ISI-2347) exercises the spine against this real PG with -race on.
-    # C5 asserts the §6.3 fence-before-release ORDER via the reclaim_fenced_at
-    # marker; when it gains live pod-kill fidelity, reintroduce kind + CNPG for the
-    # resource-layer fence (see the C5 note in pkg/coord/spine_chaos_test.go).
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_DB: coord_chaos
-          # No inline credential (repo policy). trust auth is safe here: the
-          # container is ephemeral, bound to localhost, unreachable off-runner,
-          # and holds only throwaway chaos-test data. There is no password to
-          # hard-code or leak. (Copilot review thread — credentials.)
-          POSTGRES_HOST_AUTH_METHOD: trust
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    timeout-minutes: 45
+    # 14.2 AC: "Given a kind cluster + real CNPG Postgres, When L2 runs, Then
+    # C1..C7 pass with -race." The engine is now CNPG-in-kind, exposed to the Go
+    # test as a stable localhost DSN via a port-forward (see DATABASE_URL on the
+    # run step). C5 asserts the §6.3 fence-before-release ORDER via the
+    # reclaim_fenced_at marker AND the ResourceFencer seam
+    # (reclaim_fence_ordering_test.go). The concrete K8s pod-kill/cordon fencer
+    # (controller-runtime) is supplied by the operator's live resource layer —
+    # tracked on ISI-2808 — and plugs into the same fail-closed ordering contract
+    # this suite proves; the coordinator side is fully exercised here.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Skip if spine source is absent (skeleton phase)
         id: guard
@@ -78,7 +81,88 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-go@v6
+      # ── kind cluster + CloudNativePG (the 14.2 "real CNPG Postgres" engine) ──
+      - name: Stand up kind cluster
+        if: steps.guard.outputs.present == 'true'
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: spine-chaos
+
+      - name: Install CloudNativePG operator
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          kubectl apply --server-side -f "$CNPG_MANIFEST"
+          # The operator's own CRDs + webhook must be Established before a Cluster
+          # CR will admit; wait on the controller rollout, then the CRD.
+          kubectl -n cnpg-system rollout status deployment/cnpg-controller-manager --timeout=300s
+          kubectl wait --for=condition=Established --timeout=120s \
+            crd/clusters.postgresql.cnpg.io
+
+      - name: Provision the chaos Postgres (CNPG Cluster CR)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          kubectl create namespace chaos --dry-run=client -o yaml | kubectl apply -f -
+          # A minimal single-instance CNPG Cluster. `initdb` creates the app DB
+          # `coord_chaos`. The suite connects as the Postgres SUPERUSER (not the
+          # `coord` app role): the P/D chaos cases create an ISOLATED per-test
+          # database (`CREATE DATABASE gate_*`) for schema isolation, which needs
+          # the CREATEDB privilege the app role lacks — the bare postgres:16
+          # container this replaced ran as the `postgres` superuser (trust auth),
+          # so the superuser DSN reproduces that exact green baseline on the real
+          # CNPG engine. `enableSuperuserAccess: true` makes CNPG mint the
+          # <cluster>-superuser secret; the generated password lives only in that
+          # k8s secret — no credential in-repo (repo policy). kind uses the
+          # `standard` (local-path) StorageClass.
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: postgresql.cnpg.io/v1
+          kind: Cluster
+          metadata:
+            name: coord-chaos-pg
+            namespace: chaos
+          spec:
+            instances: 1
+            enableSuperuserAccess: true
+            storage:
+              size: 1Gi
+              storageClass: standard
+            bootstrap:
+              initdb:
+                database: coord_chaos
+                owner: coord
+          EOF
+          # CNPG publishes a Ready condition once the primary is serving.
+          kubectl -n chaos wait --for=condition=Ready --timeout=420s cluster/coord-chaos-pg
+
+      - name: Port-forward CNPG primary to localhost:5432
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # Expose the read-write service on a stable localhost DSN for the Go
+          # test process. SUPERVISED: kubectl port-forward tunnels every TCP
+          # connection as a stream over one SPDY channel and can drop that channel
+          # under the spine suite's heavy concurrent load (C1's naive-teeth arm).
+          # If the forward exits, respawn it so a transient drop self-heals into a
+          # brief reconnect gap instead of stranding the rest of the suite on
+          # "connection refused" (ISI-2918). The Go-side pool cap (openDB) keeps
+          # the steady-state load gentle enough that this respawn should rarely
+          # fire; it is insurance, not the primary fix.
+          ( while true; do
+              kubectl -n chaos port-forward svc/coord-chaos-pg-rw 5432:5432 >> /tmp/pgforward.log 2>&1 || true
+              echo "$(date -u +%H:%M:%S) port-forward exited, respawning" >> /tmp/pgforward.log
+              sleep 1
+            done ) &
+          echo "PG_FORWARD_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+              exec 3>&- 3<&-
+              echo "port-forward ready after ${i}s"; break
+            fi
+            if [ "$i" = "30" ]; then
+              echo "::error::CNPG port-forward never came up"; cat /tmp/pgforward.log; exit 1
+            fi
+            sleep 1
+          done
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version: stable
@@ -87,13 +171,24 @@ jobs:
       - name: Run chaos suite (C1..C7, race on, fail-fast on missing fence)
         if: steps.guard.outputs.present == 'true'
         env:
-          # CI WIRING (ISI-2394): export the real Postgres DSN to the test step.
-          # Under -tags=chaos a missing DATABASE_URL is a FATAL, never a silent skip
-          # (dsnOrFatal, AC1) — a required correctness gate must fail loud, not go
-          # silently green. This closes the gap flagged by the ISI-2347 staging.
-          # No password in the DSN — the service uses trust auth (see above).
-          DATABASE_URL: postgres://postgres@localhost:5432/coord_chaos?sslmode=disable
+          # CI WIRING (ISI-2394 / ISI-2918): export the real CNPG DSN to the test
+          # step. Under -tags=chaos a missing DATABASE_URL is a FATAL, never a
+          # silent skip (dsnOrFatal, AC1) — a required correctness gate must fail
+          # loud, not go silently green. Credentials are read from the CNPG
+          # SUPERUSER secret <cluster>-superuser (username `postgres`) at runtime:
+          # the P/D suites `CREATE DATABASE gate_*` for per-test isolation, which
+          # needs CREATEDB — the app role can't, and losing that isolation
+          # cross-contaminates coord_chaos and cascades into 2BP01 drop-dependency
+          # failures in the C-suite. sslmode=prefer so the connection negotiates
+          # TLS when CNPG offers it and still succeeds over the plaintext
+          # port-forward otherwise.
+          PGDATABASE: coord_chaos
         run: |
+          PGPASSWORD="$(kubectl -n chaos get secret coord-chaos-pg-superuser \
+            -o jsonpath='{.data.password}' | base64 -d)"
+          PGUSER="$(kubectl -n chaos get secret coord-chaos-pg-superuser \
+            -o jsonpath='{.data.username}' | base64 -d)"
+          export DATABASE_URL="postgres://${PGUSER}:${PGPASSWORD}@127.0.0.1:5432/coord_chaos?sslmode=prefer"
           # Build tag `chaos` guards the fault-injection tests (real Postgres required).
           # Target only the coord package dir(s) that actually exist: `go test` errors
           # ("no such file or directory") on a package pattern whose directory is absent,
@@ -115,9 +210,18 @@ jobs:
           echo "chaos targets: ${targets[*]}"
           go test -race -tags=chaos -run 'TestSpine' "${targets[@]}" -v
 
+      - name: Tear down port-forward
+        if: always() && steps.guard.outputs.present == 'true'
+        run: |
+          # PG_FORWARD_PID is the supervisor subshell: kill it first so the loop
+          # stops respawning, THEN reap the kubectl child by pattern (a leftover
+          # forward would leak between runs on the self-hosted runner).
+          if [ -n "${PG_FORWARD_PID:-}" ]; then kill "$PG_FORWARD_PID" 2>/dev/null || true; fi
+          pkill -f 'port-forward svc/coord-chaos-pg-rw' 2>/dev/null || true
+
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: spine-chaos-report
           path: |

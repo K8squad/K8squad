@@ -38,6 +38,18 @@ Component service names.
 {{- printf "%s-apiserver" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{- define "ksquad.operator.fullname" -}}
+{{- printf "%s-operator" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "ksquad.scm-webhook.fullname" -}}
+{{- printf "%s-scm-webhook" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{- define "ksquad.event-relay.fullname" -}}
+{{- printf "%s-event-relay" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
 {{/*
 NATS/JetStream event-bus names + resolution (ISI-2253, §16/§17.4).
 */}}

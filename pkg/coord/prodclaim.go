@@ -225,6 +225,17 @@ func (p *ProdClaimer) captureClaim(ctx context.Context, tx *sql.Tx, itemID, runI
 // principal and runID must be non-empty (a checkout is always held by a
 // principal on behalf of a Run); initiatedByUserID may be empty (recorded as
 // NULL — the §12.4 control-plane stamp is wired by the apiserver path).
+//
+// HAZARD — bypasses the Story 2.10 re-route hold (ISI-3083 Cursor F2 decision).
+// ClaimNext is credential-BLIND: it will re-claim an item under a LIVE
+// rate-limit re-route hold, even for the throttled credential, defeating the
+// "different credential" guarantee. This is BY DESIGN — the credential guard is
+// opt-in per call site (ClaimNextCredentialed / AcquireSpecificCredentialed);
+// the blind pair serves lanes with no rate-limit re-routing. A coordinator
+// dispatching a lane where re-routing is active MUST use the credentialed
+// methods. (Decision recorded rather than widening NewProdClaimer's signature:
+// no production caller constructs a ProdClaimer yet. See the re-route chaos gate
+// case that pins this bypass as intentional.)
 func (p *ProdClaimer) ClaimNext(ctx context.Context, principal, runID, initiatedByUserID string) (itemID string, fence int64, ok bool, err error) {
 	if principal == "" || runID == "" {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.ClaimNext: principal and runID are required (got principal=%q runID=%q)", principal, runID)
@@ -312,6 +323,10 @@ func (p *ProdClaimer) ClaimableCount(ctx context.Context) (int, error) {
 // acquire (fence bump + lease) → board advance from the claimable lane → §6.5
 // claim_acquired audit row. ok=false, err=nil means the guard rejected us (a
 // live foreign lease, or the item left the claimable lane) — nothing changed.
+//
+// HAZARD — like ClaimNext, this is credential-BLIND and bypasses the Story 2.10
+// re-route hold (ISI-3083 Cursor F2). Use AcquireSpecificCredentialed on any
+// lane where rate-limit re-routing is active.
 func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, itemID, initiatedByUserID string) (string, int64, bool, error) {
 	if principal == "" || runID == "" || itemID == "" {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: principal, runID and itemID are required (got principal=%q runID=%q itemID=%q)", principal, runID, itemID)
@@ -356,4 +371,36 @@ func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, ite
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: commit: %w", err)
 	}
 	return itemID, fence, true, nil
+}
+
+// Renew = §6.2 prod lease heartbeat. Extends the lease on itemID only while
+// principal is still the recorded holder at fence AND the lease has not yet
+// lapsed AND the item is not terminal. On success (ok=true) renewed_at is
+// stamped with clock_timestamp() so auditors can observe heartbeat cadence.
+//
+// A stale fence (the item was reclaimed by a different Run), a foreign
+// holder, an already-lapsed lease, or a terminal item all return ok=false —
+// the caller MUST stop work immediately; continuing would be a zombie write.
+// Any database error panics: prod Renew failures are infrastructure failures,
+// not logical ones (same contract as coord.Coordinator.Renew / coord.go:249).
+func (p *ProdClaimer) Renew(ctx context.Context, itemID, principal, runID string, fence int64) bool {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE coord.claim
+		    SET lease_expires_at = clock_timestamp() + $5::interval,
+		        renewed_at       = clock_timestamp()
+		  WHERE work_item_id     = $1::uuid
+		    AND holder_principal = $2
+		    AND run_id           = $3::uuid
+		    AND fence_token      = $4
+		    AND lease_expires_at > clock_timestamp()
+		    AND NOT EXISTS (
+		          SELECT 1 FROM coord.work_item
+		           WHERE id = $1::uuid AND state = 'done'
+		        )`,
+		itemID, principal, runID, fence, p.cfg.LeaseInterval)
+	if err != nil {
+		panic(fmt.Errorf("coord.ProdClaimer.Renew: %w", err))
+	}
+	n, _ := res.RowsAffected()
+	return n == 1
 }

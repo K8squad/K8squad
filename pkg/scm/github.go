@@ -87,7 +87,7 @@ func wrapRateLimit(err error) error {
 	return err
 }
 
-// GitHubProvider implements SourceControlProvider for GitHub.
+// GitHubProvider implements SourceProvider for GitHub.
 // This is the v1 implementation that the repo-sync reconciler talks to.
 type GitHubProvider struct {
 	client *github.Client
@@ -182,12 +182,27 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 	return records, nil
 }
 
-// ValidateWebhook verifies the HMAC signature of a GitHub webhook delivery.
-// It delegates to the canonical implementation in hmac.go (story 11.1 AC4,
-// D8/NFR-SEC8): a second, divergent copy of the verify logic is exactly how
-// a verify/parse skew bug is born. The comparison is constant time.
-func (p *GitHubProvider) ValidateWebhook(_ context.Context, signature string, secret string, payload []byte) bool {
-	digest, err := ParseSignatureHeader(signature)
+// GitHub webhook delivery headers — provider knowledge that lives here,
+// behind the seam, never in the ingress (story 11.5).
+const (
+	githubSignatureHeader = "X-Hub-Signature-256"
+	githubEventHeader     = "X-GitHub-Event"
+	githubDeliveryHeader  = "X-GitHub-Delivery"
+)
+
+// VerifyWebhookDelivery authenticates a GitHub webhook delivery: the
+// X-Hub-Signature-256 header ("sha256=<hex>") is parsed and compared
+// against the HMAC-SHA256 of the payload under the per-Project secret.
+// It delegates to the canonical implementation in hmac.go (story 11.1
+// AC4, D8/NFR-SEC8): a second, divergent copy of the verify logic is
+// exactly how a verify/parse skew bug is born. Absent or malformed
+// header, empty secret, or empty payload all verify false — the caller
+// drops the delivery, never falls back to an unsigned parse.
+func (p *GitHubProvider) VerifyWebhookDelivery(_ context.Context, headers http.Header, payload []byte, secret string) bool {
+	if headers == nil {
+		return false
+	}
+	digest, err := ParseSignatureHeader(headers.Get(githubSignatureHeader))
 	if err != nil {
 		return false
 	}
@@ -238,6 +253,57 @@ func githubEventFromPayload(body []byte) string {
 		return "ping"
 	case probe.PullReq != nil:
 		return "pull_request/" + probe.Action
+	default:
+		return "unknown"
+	}
+}
+
+// ParseWebhookEvent summarizes a VERIFIED GitHub delivery. The event type
+// comes from X-GitHub-Event; when the header is absent (e.g. a proxied or
+// hand-rolled delivery) the already-verified payload is probed for a hint —
+// logging-grade attribution only, since the triggered reconcile is
+// level-triggered and never trusts the payload (story 11.1 AC2).
+func (p *GitHubProvider) ParseWebhookEvent(_ context.Context, headers http.Header, payload []byte) (*WebhookEvent, error) {
+	event := &WebhookEvent{
+		Type:       "unknown",
+		DeliveryID: headers.Get(githubDeliveryHeader),
+	}
+	eventType := ""
+	if headers != nil {
+		eventType = headers.Get(githubEventHeader)
+	}
+	if eventType == "" {
+		eventType = probeGitHubPayload(payload)
+	}
+	event.Type = eventType
+	return event, nil
+}
+
+// probeGitHubPayload guesses the event type from a verified payload body.
+// It recognizes only the shapes the ingress historically logged (ping zen,
+// pull_request objects); anything else stays "unknown" — an unattributed
+// delivery still triggers the reconcile.
+func probeGitHubPayload(payload []byte) string {
+	var probe struct {
+		Zen     string `json:"zen"`
+		Action  string `json:"action"`
+		PullReq *struct {
+			Title string `json:"title"`
+		} `json:"pull_request"`
+		Issue *struct {
+			Title string `json:"title"`
+		} `json:"issue"`
+	}
+	if err := json.Unmarshal(payload, &probe); err != nil {
+		return "unknown"
+	}
+	switch {
+	case probe.Zen != "":
+		return "ping"
+	case probe.PullReq != nil:
+		return "pull_request/" + probe.Action
+	case probe.Issue != nil:
+		return "issue/" + probe.Action
 	default:
 		return "unknown"
 	}

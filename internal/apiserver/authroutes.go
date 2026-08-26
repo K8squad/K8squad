@@ -56,6 +56,13 @@ type AuthRoutesOptions struct {
 	// Audit appends an admin-mutation event to the append-only coord.audit_log
 	// (§6.5, ADR-040). Nil ⇒ audit events are logged only.
 	Audit func(ctx context.Context, eventType, principal string, payload map[string]any)
+	// Memberships is the 15.3 per-Project membership store (auth.project_membership,
+	// ISI-2921). It backs the admin Users & Roles surface (story 8.15): list a user's
+	// per-Project grants and grant/revoke them. Nil ⇒ the /admin/users/{id}/memberships
+	// routes answer 501 (a DB-less dev run), matching the read-model convention. This is the
+	// SAME store instance wired as Options.ProjectRoles (the resolver the 15.4 gate reads),
+	// so a grant made here is immediately effective at the enforcement wall.
+	Memberships auth.MembershipStore
 }
 
 // mountAuthRoutes installs /auth/* and /admin/users on the root router.
@@ -95,6 +102,13 @@ func (s *Server) mountAuthRoutes(opts AuthRoutesOptions) {
 	admin.HandleFunc("/{id}", s.adminGetUser(svc)).Methods(http.MethodGet)
 	admin.HandleFunc("/{id}", s.adminPatchUser(svc, opts)).Methods(http.MethodPatch)
 	admin.HandleFunc("/{id}", s.adminDeleteUser(svc, opts)).Methods(http.MethodDelete)
+	// 8.15 per-Project roles surface (ISI-2911): the admin Users & Roles screen reads and
+	// edits a user's project_membership grants. All three ride the SAME requireAdmin gate as
+	// the user CRUD above — per-Project role administration is a global-admin power (fleet-wide
+	// authority, 0008), not a per-Project one.
+	admin.HandleFunc("/{id}/memberships", s.adminListMemberships(svc, opts)).Methods(http.MethodGet)
+	admin.HandleFunc("/{id}/memberships", s.adminGrantMembership(svc, opts)).Methods(http.MethodPut)
+	admin.HandleFunc("/{id}/memberships", s.adminRevokeMembership(svc, opts)).Methods(http.MethodDelete)
 }
 
 type cookieConfig struct {
@@ -532,6 +546,124 @@ func (s *Server) adminDeleteUser(svc *auth.Service, opts AuthRoutesOptions) http
 		author := actingAdmin(r)
 		auditAdminMutation(r.Context(), opts, "user_deactivated", author.Principal, map[string]any{
 			"userId": u.ID.String(), "username": u.Username,
+		})
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// ── /admin/users/{id}/memberships handlers (8.15 per-Project roles, ISI-2911) ──
+
+// isProjectRole reports whether role is one of the ADR-035 three-tier vocabulary values. The
+// store's CHECK constraint is the real gatekeeper, but validating here turns a bad grant into a
+// clean 400 instead of a 500 from the DB.
+func isProjectRole(role string) bool {
+	switch role {
+	case auth.ProjectRoleViewer, auth.ProjectRoleContributor, auth.ProjectRoleMaintainer:
+		return true
+	default:
+		return false
+	}
+}
+
+// adminMembershipUser resolves + validates the {id} user for a membership route, answering the
+// error itself (400 bad uuid, 404 no such user, 501 no store, 500 lookup). It returns the user and
+// true only when the caller may proceed.
+func (s *Server) adminMembershipUser(w http.ResponseWriter, r *http.Request, svc *auth.Service, opts AuthRoutesOptions) (*auth.User, bool) {
+	if opts.Memberships == nil {
+		writeJSONError(w, http.StatusNotImplemented, "membership store not wired")
+		return nil, false
+	}
+	id, ok := userIDParam(w, r)
+	if !ok {
+		return nil, false
+	}
+	u, err := svc.Users.ByID(r.Context(), id)
+	if errors.Is(err, auth.ErrNotFound) {
+		writeJSONError(w, http.StatusNotFound, "no such user")
+		return nil, false
+	}
+	if err != nil {
+		log.Printf("apiserver: membership user lookup: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "user lookup failed")
+		return nil, false
+	}
+	return u, true
+}
+
+func (s *Server) adminListMemberships(svc *auth.Service, opts AuthRoutesOptions) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := s.adminMembershipUser(w, r, svc, opts)
+		if !ok {
+			return
+		}
+		items, err := opts.Memberships.ListForUser(r.Context(), u.ID)
+		if err != nil {
+			log.Printf("apiserver: list memberships: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "list memberships failed")
+			return
+		}
+		if items == nil {
+			items = []auth.ProjectMembership{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"userId": u.ID.String(), "items": items})
+	}
+}
+
+type grantMembershipRequest struct {
+	Project string `json:"project"`
+	Role    string `json:"role"`
+}
+
+func (s *Server) adminGrantMembership(svc *auth.Service, opts AuthRoutesOptions) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := s.adminMembershipUser(w, r, svc, opts)
+		if !ok {
+			return
+		}
+		var req grantMembershipRequest
+		if err := decodeJSON(w, r, &req); err != nil {
+			return
+		}
+		req.Project = strings.TrimSpace(req.Project)
+		if req.Project == "" {
+			writeJSONError(w, http.StatusBadRequest, "project is required")
+			return
+		}
+		if !isProjectRole(req.Role) {
+			writeJSONError(w, http.StatusBadRequest, "role must be viewer, contributor, or maintainer")
+			return
+		}
+		by := actingAdmin(r).Principal
+		if err := opts.Memberships.Grant(r.Context(), u.ID, req.Project, req.Role, by); err != nil {
+			log.Printf("apiserver: grant membership: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "grant membership failed")
+			return
+		}
+		auditAdminMutation(r.Context(), opts, "membership_granted", by, map[string]any{
+			"userId": u.ID.String(), "username": u.Username, "project": req.Project, "role": req.Role,
+		})
+		writeJSON(w, http.StatusOK, auth.ProjectMembership{Project: req.Project, Role: req.Role})
+	}
+}
+
+func (s *Server) adminRevokeMembership(svc *auth.Service, opts AuthRoutesOptions) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, ok := s.adminMembershipUser(w, r, svc, opts)
+		if !ok {
+			return
+		}
+		project := strings.TrimSpace(r.URL.Query().Get("project"))
+		if project == "" {
+			writeJSONError(w, http.StatusBadRequest, "project query parameter is required")
+			return
+		}
+		if err := opts.Memberships.Revoke(r.Context(), u.ID, project); err != nil {
+			log.Printf("apiserver: revoke membership: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "revoke membership failed")
+			return
+		}
+		auditAdminMutation(r.Context(), opts, "membership_revoked", actingAdmin(r).Principal, map[string]any{
+			"userId": u.ID.String(), "username": u.Username, "project": project,
 		})
 		w.WriteHeader(http.StatusNoContent)
 	}

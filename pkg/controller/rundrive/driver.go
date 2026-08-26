@@ -49,9 +49,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -61,6 +65,7 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // workItemField is the Run index key the resume kick lists Runs by (a work
@@ -104,6 +109,16 @@ type Claims interface {
 	// FailEnter is the terminal variant: same fence-first discipline, step →
 	// failed, checkout released.
 	FailEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelEnter is the kill-side entry (apiserver, §3.3): fence-first move
+	// running-ish → cancelling; the driver then owes the teardown + finish.
+	CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelFinish is the operator-side kill completion (§3.3): the guarded
+	// cancelling → cancelled transition, committed after the driver tears the
+	// sandbox down (same fence-first co-commit discipline as the enter side).
+	CancelFinish(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// CancelDue lists work items parked at cancelling — the kill sweep's
+	// backlog it hands to the driver's kick.
+	CancelDue(ctx context.Context) (due []string, err error)
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
@@ -176,7 +191,15 @@ func NewDriver(cl client.Client, claims Claims, pauses Pauses, runner Runner) *D
 }
 
 // Reconcile is one level-triggered drive pass over the Run's durable state.
-func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+//
+// Every drivable Run pass opens exactly one span (ISI-2915 AC3): the operator's
+// OTel spine gives each Run a distributed trace. Inbound W3C trace-context on
+// the Run's annotations makes this span a child of whoever enqueued the Run;
+// absent that, it roots a fresh trace. The span context flows into the
+// Claims/Runner/reconcile calls below, and a correlated slog line ties the log
+// stream to the trace (AC4). The named err return lets one deferred hook record
+// failure on the span across every return path.
+func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, err error) {
 	var run api.Run
 	if err := r.Get(ctx, req.NamespacedName, &run); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
@@ -185,6 +208,23 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 		return ctrl.Result{}, nil
 	}
 	runID := string(run.UID)
+
+	ctx = telemetry.Extract(ctx, run.Annotations)
+	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(
+		attribute.String("ksquad.run.id", runID),
+		attribute.String("ksquad.run.work_item_ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.run.namespace", run.Namespace),
+		attribute.String("ksquad.run.name", run.Name),
+	))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	slog.InfoContext(ctx, "rundrive: driving run",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef)
 
 	cs, found, err := r.Claims.State(ctx, run.Spec.WorkItemRef)
 	if err != nil {
@@ -202,6 +242,14 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 
 	if isPaused(cs.Step) {
 		return r.park(ctx, &run, runID)
+	}
+
+	// 3.3 operator-kill completion: a kill was recorded fence-first at the
+	// apiserver (CancelEnter → cancelling); the driver owes the sandbox
+	// teardown and the guarded finish → cancelled. Kill is a caller-owned
+	// transition — never machine-driven — so it short-circuits the happy path.
+	if cs.Step == reconcile.StepCancelling {
+		return r.cancelFinish(ctx, &run, cs)
 	}
 
 	// 3.2 death detection: in flight with a lease that expired under a holder
@@ -303,6 +351,39 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 		return ctrl.Result{}, fmt.Errorf("rundrive: fail-enter %s: %w", run.Spec.WorkItemRef, err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// cancelFinish is the §3.3 operator-side kill completion: tear the killed
+// Run's sandbox down (best-effort) then commit the guarded cancelling →
+// cancelled finish over the shared coord kill seam. The kill was already
+// recorded fence-first at the apiserver (CancelEnter cleared the holder/lease),
+// so this NEVER runs the happy-path machine — it just teardown-and-finishes.
+func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) (ctrl.Result, error) {
+	runID := string(run.UID)
+	if r.Sandbox != nil {
+		// Best-effort: a stuck teardown must not block the terminal finish;
+		// the pool's draining state retries it (§9.3).
+		_ = r.Sandbox.Release(ctx, runID)
+	}
+	ok, err := r.Claims.CancelFinish(ctx, run.Spec.WorkItemRef, runID, cs.Fence)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("rundrive: cancel-finish %s: %w", run.Spec.WorkItemRef, err)
+	}
+	if !ok {
+		// Fence moved under us (another kill/teardown raced): re-read next pass.
+		return ctrl.Result{RequeueAfter: continueDelay}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// OnCancelDue is the kill sweep's wake: each work item still at cancelling has
+// its owning Run(s) kicked back into the drive loop, where cancelFinish tears
+// the sandbox down and commits the terminal cancelled transition. Pure latency
+// sugar for the kick — correctness is level-triggered off the durable step.
+func (r *Driver) OnCancelDue(ctx context.Context, due []string) {
+	for _, workItemID := range due {
+		r.kickWorkItem(ctx, workItemID)
+	}
 }
 
 // OnResumeDue is the 3.7 wake: each due episode re-enters its Run into

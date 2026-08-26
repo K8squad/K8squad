@@ -1,0 +1,50 @@
+# Dependabot keeps our SHA-pinned GitHub Actions fresh.
+# Because every `uses:` is pinned to a 40-char commit SHA with a `# vX.Y.Z`
+# trailing comment (ISI-3229 supply-chain hardening), Dependabot bumps BOTH the
+# SHA and the comment when a new release ships — pins never go stale silently.
+#
+# Grouping (ISI-3235): the two self-hosted runners cannot absorb a fan-out of one
+# PR per dependency — each PR fires CI + Security + L1 + DCO (+ Workflow Policy for
+# actions), so 10 ungrouped bumps = ~50 queued self-hosted runs. Batch aggressively
+# so a weekly bump cycle costs ~2 PRs, not ~10.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci(actions)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      # Every action is SHA-pinned and gated by the Workflow Policy check + review,
+      # so batch ALL action bumps (incl. majors and third-party actions/*, github/*,
+      # docker/*, anchore/*, …) into a single PR to collapse the self-hosted fan-out.
+      all-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(go)"
+    labels:
+      - "dependencies"
+      - "go"
+    groups:
+      # Batch all minor/patch Go module bumps into one PR (one CI run instead of N).
+      # Majors stay separate so a breaking bump gets its own focused review.
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

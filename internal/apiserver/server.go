@@ -10,6 +10,8 @@ import (
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 // ============================================================================
@@ -59,10 +61,20 @@ type Options struct {
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
+	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
+	// route keeps answering the documented 501 (dev run without an informer cache wired).
+	Dashboard *DashboardService
 	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
 	Artifacts *artifactbrowser.Service
+	// Killer is the 3.3 run-kill seam (CancelEnter on the coord claim,
+	// ISI-2884). When nil the kill route keeps answering the documented 501
+	// (dev run without the coord store wired).
+	Killer RunKiller
+	// AuditLog is the audit log read model (ISI-2881). When nil the audit route
+	// keeps answering the documented 501 (dev run without the database wired).
+	AuditLog AuditLogReader
 	// Auth is the Epic 15 identity seam (15.1 /auth/* + 15.2 /admin/users, ISI-2920).
 	// A zero Service ⇒ the routes are not mounted (pre-Epic-15 host shape).
 	Auth AuthRoutesOptions
@@ -70,6 +82,26 @@ type Options struct {
 	// ISI-2881). Nil ⇒ GET /api/audit keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models.
 	AuditTrail AuditTrailReader
+	// WorkItemState is the 8.14a human board-lane transition op (coord.HumanStateStore,
+	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
+	// DB-less dev run), exactly like the read models above.
+	WorkItemState WorkItemStateTransitioner
+	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
+	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
+	// exactly like the other read models. RBAC scoping (admin fleet-wide vs Team-fenced) is
+	// applied in-query by pkg/search per ADR-039.
+	Search search.Searcher
+	// ProjectRoles is the 15.4 per-Project RBAC enforcement seam (auth.project_membership,
+	// ISI-2921). When set, project-scoped routes gain a requireProjectRole gate INSIDE the §13
+	// choke point (admin bypasses; a caller with no membership gets 404 existence-hiding; an
+	// under-privileged member gets 403). Nil ⇒ the routes keep the pre-15.4 shape (team-scope
+	// checks only), so a DB-less dev run and existing deployments are unchanged.
+	ProjectRoles ProjectRoleResolver
+	// ComposeCRD is the 8.5 CRD-apply write surface (ISI-3198): create/edit endpoints
+	// for Team/Project/Agent/Role/Skill behind the membership write-tier gate. Nil ⇒
+	// the routes answer the documented 501 (a cluster-less dev run without a writer
+	// client), exactly like the read models.
+	ComposeCRD *ComposeService
 }
 
 // NewServer assembles the root router from opts.
@@ -174,6 +206,25 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// 8.8a per-Project dashboard: the ONE composed payload every 8.8b–8.8f tile draws from
+		// (dashboard.go, ISI-2906), behind the SAME §12.3 choke point — no dashboard-specific
+		// authz path. Nil service (cluster-less dev run) keeps the documented 501.
+		dash := s.router.Path("/api/projects/{projectId}/dashboard").Subrouter()
+		dash.Use(authz)
+		// 15.4 RBAC (ISI-2921): when a membership resolver is wired, the dashboard — the first
+		// project-scoped read surface — requires at least viewer on {projectId}. Admin bypasses;
+		// a non-member gets 404 (existence-hiding, matching the handler's own foreign-Project 404).
+		// Nil resolver ⇒ unchanged (team-scope checks in the handler still apply).
+		if opts.ProjectRoles != nil {
+			dash.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.Dashboard != nil {
+			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
+		} else {
+			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
@@ -204,6 +255,105 @@ func (s *Server) routes(opts Options) {
 		} else {
 			audit.HandleFunc("", notImplemented("audit-trail read model", "ISI-2881: wire an AuditTrailReader (Postgres) to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// 8.14a human board-lane transition (ISI-2909): the write side of the §8.6/§13
+		// board — PATCH /api/work-items/{id}/state. Behind the same choke point; the
+		// handler applies the human-only RBAC and the store applies Team scoping +
+		// no-fence audit (ADR-037). Wired to coord.HumanStateStore in prod (the DB is a
+		// hard start dependency), documented 501 only for a store-less host shape.
+		workItemState := s.router.Path("/api/work-items/{id}/state").Subrouter()
+		workItemState.Use(authz)
+		if opts.WorkItemState != nil {
+			workItemState.HandleFunc("", workItemStateHandler(opts.WorkItemState)).Methods(http.MethodPatch)
+		} else {
+			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
+				Methods(http.MethodPatch)
+		}
+
+		// 8.18 global search (ISI-2912): the read side of the coord.work_item full-text
+		// index (migration 0012) — GET /api/search?q=…. Behind the same choke point; the
+		// handler derives the RBAC scope from AuthorContext and pkg/search applies it
+		// in-query (admin fleet-wide vs Team-fenced, ADR-039). Wired to the Postgres
+		// searcher in prod (the DB is a hard start dependency), documented 501 only for a
+		// searcher-less host shape.
+		srch := s.router.Path("/api/search").Subrouter()
+		srch.Use(authz)
+		if opts.Search != nil {
+			srch.HandleFunc("", searchHandler(opts.Search)).Methods(http.MethodGet)
+		} else {
+			srch.HandleFunc("", notImplemented("global search read model", "ISI-2912: wire a search.Searcher (Postgres) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// 8.5 CRD-apply write surface (ISI-3198): create + edit endpoints for the
+		// five compose CRDs behind the SAME §13 choke point. Each kind's write-tier
+		// RBAC, field validation, team-namespace scoping and provenance live in the
+		// ComposeService. A nil service (cluster-less dev run) keeps the documented
+		// 501 so the console contract stays honest.
+		s.mountComposeRoutes(authz, opts)
+
+		// 3.3 run kill (ISI-2884): the ≤2-click kill (8.4) lands here. Keyed
+		// by the work item — the coord claim key every read model already
+		// carries. The fence-first CancelEnter is hosted when the coord store
+		// is wired; the teardown + terminal finish are the operator's.
+		kill := s.router.Path("/api/work-items/{workItemId}/kill").Subrouter()
+		kill.Use(authz)
+		if opts.Killer != nil {
+			kill.HandleFunc("", killRunHandler(opts.Killer)).Methods(http.MethodPost)
+		} else {
+			kill.HandleFunc("", notImplemented("run kill seam", "ISI-2884: wire a RunKiller (coord ProdCancelStore) to enable")).
+				Methods(http.MethodPost)
+		}
+
+		// Audit log query (ISI-2881): the RBAC-scoped coord.audit_log query API.
+		auditLog := s.router.Path("/api/audit/log").Subrouter()
+		auditLog.Use(authz)
+		if opts.AuditLog != nil {
+			auditLog.HandleFunc("", s.queryAuditLog(opts.AuditLog)).Methods(http.MethodGet)
+		} else {
+			auditLog.HandleFunc("", notImplemented("audit log read model", "ISI-2881: wire an AuditLogReader (database connection) to enable")).
+				Methods(http.MethodGet)
+		}
+	}
+}
+
+// composeKinds is the fixed set of compose CRDs and their route segment (8.5).
+var composeKinds = []struct {
+	segment string
+	create  func(*ComposeService) http.HandlerFunc
+	edit    func(*ComposeService) http.HandlerFunc
+}{
+	{"teams", func(s *ComposeService) http.HandlerFunc { return s.handleTeam(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleTeam(false) }},
+	{"projects", func(s *ComposeService) http.HandlerFunc { return s.handleProject(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleProject(false) }},
+	{"agents", func(s *ComposeService) http.HandlerFunc { return s.handleAgent(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgent(false) }},
+	{"roles", func(s *ComposeService) http.HandlerFunc { return s.handleRole(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleRole(false) }},
+	{"skills", func(s *ComposeService) http.HandlerFunc { return s.handleSkill(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleSkill(false) }},
+}
+
+// mountComposeRoutes installs POST /api/{kind} + PUT /api/{kind}/{name} for each
+// compose CRD behind authz (+ same-origin CSRF guard and a bounded body, matching
+// the admin-mutation write surface). A nil ComposeService answers the documented
+// 501 so the route is a discoverable contract, not a 404.
+func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
+	for _, k := range composeKinds {
+		coll := s.router.Path("/api/" + k.segment).Subrouter()
+		coll.Use(authz)
+		coll.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		coll.Use(maxBytesBody(64 << 10)) // skill inline bodies can be large; still bounded
+
+		item := s.router.Path("/api/" + k.segment + "/{name}").Subrouter()
+		item.Use(authz)
+		item.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		item.Use(maxBytesBody(64 << 10))
+
+		if opts.ComposeCRD != nil {
+			coll.HandleFunc("", k.create(opts.ComposeCRD)).Methods(http.MethodPost)
+			item.HandleFunc("", k.edit(opts.ComposeCRD)).Methods(http.MethodPut)
+		} else {
+			h := notImplemented("CRD-apply write surface", "ISI-3198: wire a ComposeService (controller-runtime client) to enable")
+			coll.HandleFunc("", h).Methods(http.MethodPost)
+			item.HandleFunc("", h).Methods(http.MethodPut)
 		}
 	}
 }

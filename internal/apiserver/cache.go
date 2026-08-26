@@ -75,3 +75,27 @@ func NewCacheReader(ctx context.Context, syncTimeout time.Duration) (reader clie
 
 	return c, cancel, nil
 }
+
+// NewCRDApplier builds the DIRECT (uncached) controller-runtime client the 8.5
+// CRD-apply write surface (ISI-3198) uses. Writes — and the reads that back an
+// edit (Get the current revision, List Teams for namespace scope) — must hit the
+// API server live: a just-created CR must be immediately visible, and an edit
+// must bump from the latest revision, so a cache would be a staleness hazard on a
+// write path. It resolves the rest.Config the standard way (in-cluster SA, then
+// KUBECONFIG). Like NewCacheReader it fails rather than degrading silently; the
+// caller decides whether that is fatal or a fall-back to the documented 501.
+func NewCRDApplier() (CRDApplier, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build write client: %w", err)
+	}
+	return c, nil
+}

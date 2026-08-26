@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -173,9 +174,40 @@ type PVCSpec struct {
 	// +kubebuilder:validation:Required
 	Size resource.Quantity `json:"size"`
 
-	// Class is the storageClass name; empty means the cluster default.
+	// Class is the storageClass name. Empty does NOT mean the cluster
+	// default (story 9.2: relying on the cluster default is
+	// misconfiguration) — the operator resolves it from its Helm-provided
+	// workspace storage class and fails closed when that is unset too:
+	// no PVC is created silently bound to an unsuitable class.
 	// +optional
 	Class string `json:"class,omitempty"`
+
+	// AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+	// serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+	// opt-in for storage classes that support true parallelism.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	AccessModes []corev1.PersistentVolumeAccessMode `json:"accessModes,omitempty"`
+}
+
+// defaultWorkspaceAccessModes is the §9.4 default when spec.accessModes is
+// unset: RWO — writers are serialized by the per-Project write-lease
+// (story 4.4) and each Run works in its own git worktree.
+var defaultWorkspaceAccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
+
+// EffectiveAccessModes resolves the workspace PVC access modes, applying the
+// §9.4 default ([ReadWriteOnce]) when spec.accessModes is unset. Callers (the
+// PVC reconciler of story 4.4, the workspace defaulting webhook) get the
+// default from exactly one place instead of re-hardcoding RWO. A fresh slice
+// is returned so callers never mutate the shared default.
+func (s *PVCSpec) EffectiveAccessModes() []corev1.PersistentVolumeAccessMode {
+	src := s.AccessModes
+	if len(src) == 0 {
+		src = defaultWorkspaceAccessModes
+	}
+	out := make([]corev1.PersistentVolumeAccessMode, len(src))
+	copy(out, src)
+	return out
 }
 
 // +kubebuilder:object:root=true

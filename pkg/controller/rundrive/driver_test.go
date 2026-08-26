@@ -57,6 +57,13 @@ type fakeClaims struct {
 	failErr  error
 	failCall bool
 
+	cancelFinishOK   bool
+	cancelFinishErr  error
+	cancelFinishCall bool
+
+	cancelDue    []string
+	cancelDueErr error
+
 	requeueOK   bool
 	requeueErr  error
 	requeueCall bool
@@ -74,6 +81,14 @@ func (f *fakeClaims) FailEnter(_ context.Context, workItemID, runID string, fenc
 	f.failCall = true
 	return f.failOK, f.failErr
 }
+func (f *fakeClaims) CancelEnter(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
+	return true, nil
+}
+func (f *fakeClaims) CancelFinish(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
+	f.cancelFinishCall = true
+	return f.cancelFinishOK, f.cancelFinishErr
+}
+func (f *fakeClaims) CancelDue(context.Context) ([]string, error) { return f.cancelDue, f.cancelDueErr }
 func (f *fakeClaims) RequeuePaused(context.Context, string) (bool, error) {
 	f.requeueCall = true
 	return f.requeueOK, f.requeueErr

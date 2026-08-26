@@ -80,6 +80,9 @@ const (
 	PhaseClaiming  Phase = "Claiming"
 	PhaseRunning   Phase = "Running"
 	PhasePaused    Phase = "Paused"
+	// PhaseCanceling is the 3.3 operator-kill transitional phase (spec
+	// "Canceling"): teardown owed, terminal Cancelled pending.
+	PhaseCanceling Phase = "Canceling"
 	PhaseSucceeded Phase = "Succeeded"
 	PhaseFailed    Phase = "Failed"
 	PhaseCancelled Phase = "Cancelled"
@@ -100,9 +103,40 @@ const (
 	StepSucceeded         Step = "succeeded"
 	StepFailed            Step = "failed"
 	StepCancelled         Step = "cancelled"
+	// StepCancelling is the 3.3 operator-kill transitional step: kill was
+	// issued (fence-first CancelEnter), the driver owes the sandbox teardown
+	// and the guarded finish → cancelled. Resumable (not terminal): a driver
+	// crash mid-teardown re-enters it and finishes the job (AC5).
+	StepCancelling        Step = "cancelling"
 	StepPaused            Step = "paused"
 	StepPausedRateLimited Step = "paused(rate_limited)"
+	// StepPausedCredentialExpired is the 7.4 credential-expiry hold (arch §10,
+	// FR-G3): the shim's credentialLifecycle surfaced an expired credential
+	// (OAuth refresh window lapsed, static key revoked). NOT timer-resumable —
+	// it clears only on refresh/rotation write-back (ResumeOnRefresh), which is
+	// what makes it a legible Paused instead of an opaque auth failure.
+	StepPausedCredentialExpired Step = "paused(credential_expired)"
+	// StepPausedCredentialRotated is the 7.4 rotation hold: the credential was
+	// rotated mid-Run (Secret update observed under the shim's feet). The
+	// in-flight agent context is stale; the Run pauses until the new credential
+	// material propagates (ResumeOnRefresh), then re-enters Running.
+	StepPausedCredentialRotated Step = "paused(credential_rotated)"
+	// StepPausedEndpointUnreachable is the 7.4/7.5 BYO-endpoint hold: the
+	// Ollama/endpoint-URL credential model's endpoint is unreachable — a
+	// legible Paused in the same family, never an opaque dial failure.
+	StepPausedEndpointUnreachable Step = "paused(endpoint_unreachable)"
 )
+
+// CredentialPauseSteps is the closed family of credential-driven pause steps
+// (Story 7.4/7.6): one pause/resume machinery, distinct legible reasons. Every
+// member projects onto PhasePaused and classifies resumable; members differ
+// ONLY in why the Run is held and what resumes it (timer vs refresh).
+var CredentialPauseSteps = map[Step]bool{
+	StepPausedRateLimited:         true, // 7.6: per-credential attribution, Retry-After timer resume
+	StepPausedCredentialExpired:   true, // 7.4: OAuth/static-key expiry, refresh resume
+	StepPausedCredentialRotated:   true, // 7.4: rotation, propagation resume
+	StepPausedEndpointUnreachable: true, // 7.4/7.5: BYO endpoint, recovery resume
+}
 
 // happyPath is the linear reconcile progression the machine advances through
 // (arch §8). Terminal steps and Paused are reached off this path (fail_at edge,
@@ -123,18 +157,23 @@ var terminalSteps = map[Step]bool{
 }
 
 // resumableSteps are the non-terminal steps a reconcile loop may re-enter after
-// a crash/failover (AC5). Paused / Paused(rate_limited) are included so the
-// machine does NOT make them unreachable — driving them is §8's rate-limit tiers
-// (a later Epic 3 story), but a classifier that dropped them into "unknown"
-// would let a future story wire a phase this machine can never re-enter.
+// a crash/failover (AC5). Paused / Paused(rate_limited) / the credential pause
+// family are included so the machine does NOT make them unreachable — driving
+// them is §8's rate-limit tiers and §10's credential lifecycle (Story 7.4/7.6),
+// but a classifier that dropped them into "unknown" would let a future story
+// wire a phase this machine can never re-enter.
 var resumableSteps = map[Step]bool{
-	StepPending:           true,
-	StepClaimingSandbox:   true,
-	StepDispatching:       true,
-	StepRunning:           true,
-	StepCollecting:        true,
-	StepPaused:            true,
-	StepPausedRateLimited: true,
+	StepPending:                   true,
+	StepClaimingSandbox:           true,
+	StepDispatching:               true,
+	StepRunning:                   true,
+	StepCollecting:                true,
+	StepCancelling:                true,
+	StepPaused:                    true,
+	StepPausedRateLimited:         true,
+	StepPausedCredentialExpired:   true,
+	StepPausedCredentialRotated:   true,
+	StepPausedEndpointUnreachable: true,
 }
 
 // Classification is the AC5 terminal-vs-resumable verdict for a step.
@@ -149,8 +188,9 @@ const (
 )
 
 // Classify reports whether a step is terminal (absorbing) or non-terminal
-// (resumable) — AC5. Paused/Paused(rate_limited) classify resumable so a later
-// rate-limit-recovery story can wire them without re-architecting the machine.
+// (resumable) — AC5. Paused/Paused(rate_limited) and the credential pause
+// family (7.4/7.6) classify resumable so the rate-limit-recovery and
+// credential-refresh stories wire them without re-architecting the machine.
 func Classify(s Step) Classification {
 	if terminalSteps[s] {
 		return ClassTerminal
@@ -176,8 +216,11 @@ func PhaseOf(s Step) Phase {
 		return PhaseClaiming
 	case StepRunning, StepCollecting:
 		return PhaseRunning
-	case StepPaused, StepPausedRateLimited:
+	case StepPaused, StepPausedRateLimited, StepPausedCredentialExpired,
+		StepPausedCredentialRotated, StepPausedEndpointUnreachable:
 		return PhasePaused
+	case StepCancelling:
+		return PhaseCanceling
 	case StepSucceeded:
 		return PhaseSucceeded
 	case StepFailed:

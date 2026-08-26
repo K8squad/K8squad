@@ -6,7 +6,7 @@ name: Perf Regression Gates (L3)
 #
 #   P1  claim latency (S9 / NFR-PERF1)      — pkg/coord §6.2 SKIP LOCKED claim, real PG
 #   P2  warm-pool ready-count convergence    — pkg/warmpool sizing hot-path, pure compute
-#   P3  SSE throughput, zero dropped events  — skip-with-reason: apiserver bus not landed
+#   P3  SSE throughput, zero dropped events  — LIVE: internal/apiserver SSE Hub (Story 8.2), race on
 #   P4  outbox delivery-lag isolation (§17.4)— write p95 sick/healthy ratio, branch-internal
 #
 # This is a NIGHTLY + release + manual lane, NOT a blocking PR check: perf noise
@@ -43,7 +43,7 @@ jobs:
     name: gate teeth (pkg/perfgate)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if perfgate source absent
         id: guard
         run: |
@@ -53,7 +53,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -87,7 +87,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if coord source absent
         id: guard
         run: |
@@ -97,7 +97,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -116,7 +116,7 @@ jobs:
             -benchtime=200x -count=6 ./pkg/coord/ | tee new-p1p4.txt
       - name: Restore cached main baseline (P1)
         if: steps.guard.outputs.present == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p1p4.txt
           # Exact key never pre-exists (run_id is unique) → always falls back to the
@@ -136,13 +136,13 @@ jobs:
         run: cp new-p1p4.txt base-p1p4.txt
       - name: Save baseline cache
         if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p1p4.txt
           key: perf-baseline-p1p4-v1-${{ github.run_id }}
       - name: Upload P1/P4 bench report
         if: always() && steps.guard.outputs.present == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: perf-p1p4-report
           path: new-p1p4.txt
@@ -156,7 +156,7 @@ jobs:
     name: P2 warm-pool convergence (pure)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - name: Skip-with-reason if warmpool source absent
         id: guard
         run: |
@@ -166,7 +166,7 @@ jobs:
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
@@ -178,7 +178,7 @@ jobs:
             -benchtime=2000x -count=6 ./pkg/warmpool/ | tee new-p2.txt
       - name: Restore cached main baseline (P2)
         if: steps.guard.outputs.present == 'true'
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p2.txt
           key: perf-baseline-p2-v1-${{ github.run_id }}
@@ -195,27 +195,45 @@ jobs:
         run: cp new-p2.txt base-p2.txt
       - name: Save baseline cache
         if: steps.guard.outputs.present == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'schedule'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: base-p2.txt
           key: perf-baseline-p2-v1-${{ github.run_id }}
 
   # ---------------------------------------------------------------------------
-  # P3 (SSE throughput / zero dropped events) — skip-with-reason. The emit->deliver
-  # progress bus lives behind the apiserver (cmd/apiserver, Epic 8.2), not yet in
-  # code. BenchmarkP3SSEThroughput self-skips; pkg/perfgate.P3Gate already holds
-  # the zero-drop + latency-drift teeth against fixed vectors (TestPerfGate). This
-  # job makes the skip VISIBLE in the lane rather than silently absent.
+  # P3 (SSE throughput / zero dropped events) — LIVE. The emit->deliver progress
+  # bus has landed: it is the in-process SSE Hub in internal/apiserver/sse.go
+  # (Story 8.2). This job now runs the real BenchmarkP3SSEThroughput (+ the
+  # fan-out variant) against that Hub with -race on. The bench itself FAILS on any
+  # dropped event (published != delivered after drain), so a green run IS the
+  # zero-drop tooth proven against the real transport — no longer a skip-with-
+  # reason (ISI-2918 / gap ISI-2876). pkg/perfgate.P3Gate / TestPerfGate keeps the
+  # latency-drift teeth against fixed vectors.
   # ---------------------------------------------------------------------------
   bench-p3:
-    name: P3 SSE throughput (skip-with-reason)
+    name: P3 SSE throughput (zero dropped events)
     runs-on: [self-hosted, linux, x64]
     steps:
-      - uses: actions/checkout@v5
-      - name: P3 status
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Skip-with-reason if SSE bus source absent
+        id: guard
         run: |
-          if grep -rq 'text/event-stream' --include='*.go' . 2>/dev/null; then
-            echo "::notice::P3: SSE progress bus source detected — wire BenchmarkP3SSEThroughput to it (remove the self-skip)."
+          if [ ! -f internal/apiserver/sse.go ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::internal/apiserver/sse.go absent — P3 skipped (skip-with-reason)."
           else
-            echo "::notice::P3 skip-with-reason: SSE progress bus (apiserver emit->deliver, Epic 8.2) not in code yet — no publish/subscribe surface to measure. Gate teeth held by pkg/perfgate.P3Gate / TestPerfGate."
+            echo "present=true" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        if: steps.guard.outputs.present == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run P3 SSE throughput benchmark (race on, zero-drop asserted)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          # -race surfaces any fan-out data race; the bench Fatal-fails on a
+          # dropped event, so a passing run is the zero-drop gate against the
+          # real Hub.Publish path.
+          go test -run '^$' -bench 'BenchmarkP3SSE' \
+            -benchtime=2000x -race -count=1 ./internal/apiserver/ | tee new-p3.txt

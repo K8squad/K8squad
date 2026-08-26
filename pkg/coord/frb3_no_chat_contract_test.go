@@ -90,6 +90,15 @@ var allowedSurface = map[string]string{
 	"ProdClaimer.ClaimNext":      "§6.2 single-claim under contention (SKIP LOCKED + fence)",
 	"ProdClaimer.ClaimableCount": "§6.2 claimable backlog introspection for tests/ops",
 
+	// §6.2 production lease-renewal path + heartbeat loop (Story 2.3 / ISI-2879).
+	// Renew is a holder+fence+live-lease-guarded custody heartbeat that only ever
+	// stamps renewed_at on the item of record — it carries no worker content and
+	// is not an agent-to-agent channel (same contract as Coordinator.Renew, §6.2).
+	// RunHeartbeater is a periodic driver over that one custody op; its channel
+	// signals only cancel vs lease-lost, never worker payload.
+	"ProdClaimer.Renew": "§6.2 lease heartbeat under holder+fence+live-lease guard, stamps renewed_at",
+	"RunHeartbeater":    "§6.2 periodic driver for ProdClaimer.Renew; signals cancel vs lease-lost only",
+
 	// §17.4 domain-event capture wiring (Story 12.1 / ISI-2260). Emit-only: the
 	// option co-commits ONE append-only coord.outbox event in the claim txn. NOT
 	// an agent-to-agent channel — events are one-way non-custodial projections
@@ -156,6 +165,30 @@ var allowedSurface = map[string]string{
 	// promoted methods, invisible to this scanner by construction.
 	"EqualJitter": "§8 equal-jitter backoff helper for resume_at derivation",
 
+	// §2.10/§6.2-6.3 rate-limit re-route to a different-credential Agent (Story
+	// 2.10 / ISI-2882). Custody-only, same discipline as reclaim (2.4) and
+	// handoff (2.8): fenced RELEASE → coordinator RE-DISPATCH → §6.2 claim —
+	// never a P2P lease handoff. The hold names the throttled credential's
+	// OPAQUE identity (7.6) so the credentialed claim can refuse the same
+	// credential while the window is live; no seat token is ever re-pointed
+	// (§11.2/ADR-041) and no parameter carries worker-authored content.
+	"ReroutePolicy":                           "§2.10/3.7 escalation policy (repeat attempts / long Retry-After), code-supplied",
+	"ReroutePolicy.Validate":                  "§2.10/3.7 fail-open guard: rejects AfterAttempts<2 / non-positive window (ISI-3083 F4)",
+	"DefaultReroutePolicy":                    "§2.10 sane default escalation policy",
+	"MaxHoldWindow":                           "§2.10/3.7 upper bound on a hold's resume_at, mirrors resume.BackoffCap (ISI-3083 F5)",
+	"ShouldReroute":                           "§2.10/3.7 pure verdict: does this escalated pause re-route?",
+	"PickAlternateCredential":                 "§2.10/7.6 pure roster pick: an Agent credential that differs from the throttled one",
+	"ProdRerouteStore":                        "§2.10 fenced-release + re-dispatch + hold store bound to the prod schema",
+	"NewProdRerouteStore":                     "§2.10 constructor",
+	"ProdRerouteStore.ReleaseForReroute":      "§2.10/§6.3 fenced release → todo re-dispatch → throttled-credential hold (one txn)",
+	"ProdRerouteOption":                       "§2.10 functional option for the reroute store (event capture opt-in)",
+	"WithRerouteOutboxCapture":                "§2.10/§17.4 co-commit a work_item/reroute_released outbox event in the release txn (emit-only)",
+	"RerouteReleaseResult":                    "§2.10 outcome of a release (installed fence + idempotency marker)",
+	"ErrNotRerouteCustodian":                  "§2.10 guard: only the paused Run's own holder/run may be released",
+	"ErrRerouteNotInProgress":                 "§2.10 guard: a re-route re-dispatches live (in_progress) work only",
+	"ProdClaimer.ClaimNextCredentialed":       "§2.10/§6.2 SKIP-LOCKED pop that skips items a live hold pins for this credential (7.6)",
+	"ProdClaimer.AcquireSpecificCredentialed": "§2.10/§6.2 guarded acquire of a named item, refused while a live hold pins this credential (7.6)",
+
 	// §6.4 Run reconcile machine's durable Store binding (Story 3.1 / ISI-2655,
 	// physical integration of pkg/reconcile / ISI-2535). Custody-only: every method
 	// is a fenced/step-CAS read or a co-committed advance over the coord.claim +
@@ -199,6 +232,17 @@ var allowedSurface = map[string]string{
 	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
 	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
 
+	// §8.7c build-snapshot capture at Collecting (Story 8.7c / ISI-2903). At Collecting
+	// ProdEffects additionally upserts a content-addressed kind='build-snapshot' artifact
+	// so a COMPLETED Run still serves its build read-model (live:false). Custody-only: the
+	// snapshotter reads the Run's OWN worktree git-natively (read-only) and returns a
+	// content hash + summary meta — no worker-authored content, nothing re-enters
+	// coordination (no-P2P). A capture failure is a legible audit row, never a channel.
+	"BuildSnapshot":               "§8.7c content-addressed build-snapshot (uri/sha256 + summary meta)",
+	"BuildSnapshotter":            "§8.7c read-only worktree capture seam (custody/execution, no content)",
+	"NewBuildbrowserSnapshotter":  "§8.7c constructor binding the git read-model to one Run's worktree",
+	"ProdEffects.WithSnapshotter": "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
+
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause
 	// episode row, no agent-to-agent channel.
@@ -214,6 +258,121 @@ var allowedSurface = map[string]string{
 	"ProdDuePause":              "§8 one claimed resume: real coord uuids + attempt + resume_at",
 	"ProdTimer":                 "§8 the production single-wake scheduler (uuid instantiation)",
 	"NewProdTimer":              "§8 constructor (wake loop + OnDue re-entry callback)",
+
+	// §6.3 background crash-safe reclaim sweeper (Story 2.4 / ISI-3104): a
+	// periodic scan that reclaims expired leases the same custody way ClaimNext
+	// does opportunistically — one data-modifying CTE co-commits the monotonic
+	// fence bump (fences the dead holder), the reclaim_fenced_at stamp + holder/
+	// lease release, and work_item→open, under FOR UPDATE OF claim SKIP LOCKED.
+	// Custody-only: no parameter carries worker-authored content, the loop is
+	// stateless (crash-safe re-derivation from durable claim state), and the
+	// OnReclaim callback is the §6.3 resource-layer fence seam, not an A2A channel.
+	"SweepConfig":                            "§6.3 sweeper config (interval/batch/jitter), code-supplied",
+	"DefaultSweepConfig":                     "§6.3 sane default sweeper config",
+	"Reclaimed":                              "§6.3 one reclaimed lease (item + fenced holder), custody record",
+	"SweepStore":                             "§6.3 durable expired-lease reclaim store bound to coord.claim",
+	"NewSweepStore":                          "§6.3 constructor",
+	"NewSweepForTest":                        "§6.3 chaos-harness constructor (int-keyed schema)",
+	"SweepStore.ReclaimExpired":              "§6.3 fence-first batch reclaim of expired leases (CTE, SKIP LOCKED)",
+	"SweepStore.Scans":                       "§6.3 scan-counter introspection for tests/ops",
+	"SweepStore.DB":                          "§6.3 harness handle accessor",
+	"Sweeper":                                "§6.3 the periodic reclaim loop (stateless, crash-safe)",
+	"NewSweeper":                             "§6.3 constructor (store + metrics + OnReclaim fence callback)",
+	"Sweeper.Run":                            "§6.3 run the periodic scan until context cancellation",
+	"SweeperMetrics":                         "§6.3 sweeper metrics sink interface (cycle/reclaim/duration)",
+	"PrometheusSweeperMetrics":               "§6.3 Prometheus metrics sink for the sweeper",
+	"NewPrometheusSweeperMetrics":            "§6.3 constructor",
+	"PrometheusSweeperMetrics.IncSweepCycle": "§6.3 count one completed sweep cycle",
+	"PrometheusSweeperMetrics.AddSweepReclaims":     "§6.3 add the reclaims from one cycle",
+	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
+	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
+
+	// §8.6/§13 human board-lane status transition (Story 8.14a / ISI-2909, gap
+	// ISI-2876). The Kanban board is a PROJECTION of work_item.state; this is the
+	// write path for a HUMAN to move a card between lanes. Custody-only in the
+	// FR-B3 sense: it changes a work_item's own lane + writes a §6.5 audit row,
+	// carries NO worker-authored content, and — ADR-037 — holds no claim and bumps
+	// no fence (audit fence_token NULL, the claim untouched). Not an agent channel:
+	// agents hand off via comment + Complete (§6.1/§2.8), never through this op.
+	"StateTransition":                 "§8.6 outcome of a human lane move (from/to lane projection, read-only)",
+	"ErrInvalidState":                 "§8.6 guard: target is not one of the pinned board lanes (→400)",
+	"ErrWorkItemNotFound":             "§12.1 guard: item outside the caller's Team scope is 404-not-403",
+	"ErrStateConflict":                "§8.6 guard: fromState precondition missed / already in target lane (→409)",
+	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
+	"NewHumanStateStore":              "§8.6 constructor",
+	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",
+
+	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
+	// (Stories 7.4+7.6 / ISI-2898, gap ISI-2876). Reuses the 2.11/3.7 resume
+	// machinery, keyed on the per-user credential (attribution, 7.6) with a
+	// legible reason family (7.4). Custody-only: an episode names a credential
+	// and moves a Run into a Paused(reason) step + one §6.6 outbox event;
+	// ApplyCredentialSignal co-commits the three facts in ONE txn (AC6). No
+	// parameter carries worker-authored content, nothing published re-enters
+	// coordination (§17.4 no-P2P) — the shim signal is a lifecycle observation,
+	// not an agent-to-agent channel. SelectAlternate/EarliestResume are the pure
+	// read-side advisories the §2.10 re-route consumes.
+	"CredentialPauseStore":                 "§10/7.6 per-credential pause/resume ledger (single-wake, no polling)",
+	"NewCredentialPauseStore":              "§10 constructor",
+	"NewCredPauseForTest":                  "§10 chaos-harness constructor (self-contained schema)",
+	"CredPauseConfig":                      "§10 credential-pause store config (backoff/jitter), code-supplied",
+	"DefaultCredPauseConfig":               "§10 sane default credential-pause config",
+	"CredPauseReason":                      "§7.4 legible pause reason family (rate_limited|expired|rotated|unreachable)",
+	"CredPauseReason.Valid":                "§7.4 fail-closed reason guard",
+	"CredPauseReason.TimerResumed":         "§7.4 resume-mode split: timer (rate_limited) vs refresh",
+	"CredentialClass":                      "§11 story-pinned credential model tag (claude_oauth|api_key|byo_endpoint)",
+	"CredentialClass.Valid":                "§11 fail-closed class guard",
+	"CredentialRef":                        "§11 per-user credential identity (the attribution key), code-supplied",
+	"CredPauseRequest":                     "§10 one credential-lifecycle observation to record (custody-only)",
+	"CredPauseInfo":                        "§10 durable outcome of a credential pause (reason + resume horizon)",
+	"CredDuePause":                         "§8 a credential pause whose resume_at elapsed and is due to wake",
+	"CredPauseView":                        "§2.10/8.6 advisory read of a held credential (reason + horizon, read-only)",
+	"CredentialPauseStore.PauseCredential": "§10 persist/refresh a credential pause episode",
+	"CredentialPauseStore.ResumeOnRefresh": "§7.4 clear a refresh-mode hold when fresh material lands (idempotent)",
+	"CredentialPauseStore.ResumeDue":       "§8 pop credential pauses whose resume_at has elapsed (SKIP LOCKED)",
+	"CredentialPauseStore.NextWake":        "§8 re-derive the next durable timer wake from resume_at",
+	"CredentialPauseStore.PausedSet":       "§2.10/8.6 read the pending held set (advisory projection)",
+	"CredentialPauseStore.DB":              "§10 harness handle accessor",
+	"ReasonRateLimited":                    "§7.6 reason: subscription throttled (timer resume)",
+	"ReasonCredentialExpired":              "§7.4 reason: credential expired (refresh resume)",
+	"ReasonCredentialRotated":              "§7.4 reason: credential rotated (refresh resume)",
+	"ReasonEndpointUnreachable":            "§7.4/7.5 reason: BYO endpoint unreachable (refresh resume)",
+	"ClassClaudeOAuth":                     "§7.2 credential class: per-user Claude OAuth seat token",
+	"ClassAPIKey":                          "§7.3 credential class: long-lived provider API key",
+	"ClassBYOEndpoint":                     "§7.5 credential class: BYO/Ollama endpoint URL (+ optional token)",
+	"SelectAlternate":                      "§2.10/7.6 pure re-route advisory: pick an unheld credential",
+	"EarliestResume":                       "§2.10 pure scheduling hint: earliest timer horizon in the held set",
+	"ApplyCredentialSignal":                "§10/7.4 atomic shim-signal applier (episode + guarded step + §6.6 outbox, one txn)",
+	"ApplyResult":                          "§10 outcome of an applied signal (episode + whether the step moved)",
+	"CredentialSignal":                     "§7.2 one credentialLifecycle observation from the shim (custody-only, code-supplied)",
+	"CredentialEvent":                      "§7.2 the lifecycle event kind (expired|rotated|rate_limited|unreachable)",
+	"EventExpired":                         "§7.2 lifecycle event: token no longer authenticates",
+	"EventRotated":                         "§7.2 lifecycle event: Secret rotated mid-Run",
+	"EventRateLimited":                     "§7.2 lifecycle event: provider throttle (Retry-After)",
+	"EventUnreachable":                     "§7.2/7.5 lifecycle event: BYO endpoint not answering",
+	"SignalStep":                           "§7.4 pure map: lifecycle event → durable Paused(reason) step",
+	"EventReason":                          "§7.4 pure map: lifecycle event → ledger reason",
+
+	// §3.3 operator-kill custody surface (Story 3.3/8.4 / ISI-2884, gap
+	// ISI-2876). CancelEnter (apiserver) moves a running-ish claim → cancelling
+	// fence-first; CancelFinish (operator drive loop) commits cancelling →
+	// cancelled after the sandbox teardown; Due lists the cancelling backlog for
+	// the kill sweep. Custody-only: every op co-commits the fence bump + checkout
+	// release + §6.5 audit + §6.6 outbox in one txn, carries NO worker-authored
+	// content, and never opens an agent channel — kill is a human/operator custody
+	// transition on the claim, not a handoff.
+	"CancelOutcome":                "§3.3 outcome of a kill transition (accepted|conflict|terminal|missing)",
+	"CancelAccepted":               "§3.3 outcome: claim moved to cancelling (fence bumped, checkout released)",
+	"CancelConflict":               "§3.3 outcome: expected fence no longer held (retry lap / concurrent kill)",
+	"CancelTerminal":               "§3.3 outcome: Run already terminal — kill is a no-op",
+	"CancelMissing":                "§3.3 outcome: no claim row exists for the work item",
+	"CancelState":                  "§3.3 claim snapshot the kill API reads before entering (fence/step/holder)",
+	"ProdCancelStore":              "§3.3 operator-kill custody store bound to coord.claim",
+	"NewProdCancelStore":           "§3.3 constructor (uuid-keyed kill store)",
+	"ProdCancelStore.State":        "§3.3 read the claim snapshot before a kill (fence-first precondition)",
+	"ProdCancelStore.CancelEnter":  "§3.3 fence-first running-ish → cancelling (kill-side entry)",
+	"ProdCancelStore.CancelFinish": "§3.3 guarded cancelling → cancelled after teardown (operator-side finish)",
+	"ProdCancelStore.Due":          "§3.3 list work items parked at cancelling (the kill sweep's backlog)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

@@ -49,6 +49,21 @@ type AgentSpec struct {
 	// +kubebuilder:validation:Required
 	CredentialSecretRef SecretRef `json:"credentialSecretRef"`
 
+	// CredentialClass declares whether the referenced credential is a
+	// HUMAN-SEAT interactive OAuth token bound to a person's subscription seat
+	// (e.g. Claude Code OAuth, §7.2 / zero-touch 7.7) or a SERVICE-ACCOUNT
+	// long-lived API key / provider token (§7.3, second-runtime story). It is
+	// the vendor-neutral axis the credential injection contract (story 5.4,
+	// pkg/credinject) keys on to select the runtime-native env var — e.g.
+	// CLAUDE_CODE_OAUTH_TOKEN for a human seat vs ANTHROPIC_API_KEY for a
+	// service account — and it drives the Epic 7 lifecycle (a human seat has an
+	// OAuth refresh/concurrency lifecycle; a service account rotates by Secret
+	// update). Empty defaults to service-account at injection time
+	// (credinject.DefaultClass): a human OAuth seat is opt-in, never inferred.
+	// +optional
+	// +kubebuilder:validation:Enum=human-seat;service-account
+	CredentialClass string `json:"credentialClass,omitempty"`
+
 	// CapabilityOverrides are applied to the generated Agent Card
 	// capabilities (arch §10.1) — the ticket's agentCardOverrides.
 	// +optional

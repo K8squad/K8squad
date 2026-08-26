@@ -233,8 +233,22 @@ func prodP2AtomicInterrupt(t *testing.T, dsn string) {
 	if err != nil {
 		t.Fatalf("NewProdClaimer: %v", err)
 	}
-	delays := []time.Duration{0, 50 * time.Microsecond, 100 * time.Microsecond, 250 * time.Microsecond,
-		500 * time.Microsecond, time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond, 8 * time.Millisecond}
+	// The sweep must span from "interrupted before the first statement" all the
+	// way to "comfortably longer than a full claim commit" so BOTH sides of the
+	// invariant are exercised. The short end (µs..low-ms) probes every mid-flight
+	// interruption point. The long end must exceed the claim's commit latency on
+	// the ACTUAL engine — and a single ClaimNext against real CNPG reached over a
+	// kubectl port-forward is an order of magnitude slower than the bare
+	// postgres:16 container this suite used to run on, so an 8ms ceiling now fires
+	// before every commit and the "claimed side" is never reached (ISI-2918). The
+	// graded tail up to seconds guarantees several attempts always commit
+	// regardless of engine latency, without weakening the short-deadline probes.
+	delays := []time.Duration{
+		0, 50 * time.Microsecond, 100 * time.Microsecond, 250 * time.Microsecond,
+		500 * time.Microsecond, time.Millisecond, 2 * time.Millisecond, 4 * time.Millisecond,
+		8 * time.Millisecond, 16 * time.Millisecond, 32 * time.Millisecond, 64 * time.Millisecond,
+		125 * time.Millisecond, 250 * time.Millisecond, time.Second, 2 * time.Second,
+	}
 	for i := 0; i < items; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), delays[i%len(delays)])
 		// The outcome (claimed / nothing / ctx error) is irrelevant — the

@@ -19,11 +19,18 @@ limitations under the License.
 // Gateway/HTTPRoute routes here).
 //
 // The load-bearing order (story 11.1 AC4, D8/NFR-SEC8): the per-Project
-// HMAC signature is verified BEFORE any byte of the payload is parsed or
-// acted on. A bad or absent signature is dropped — 401, no parse, no mirror
-// write, no trigger. There is no unsigned diagnostic path.
+// delivery credential is verified BEFORE any byte of the payload is parsed
+// or acted on. A bad or absent credential is dropped — 401, no parse, no
+// mirror write, no trigger. There is no unsigned diagnostic path.
 //
-// On a GOOD signature the delivery still never writes mirror state (AC2):
+// This handler is PROVIDER-AGNOSTIC (story 11.5): which header carries the
+// delivery credential, what form it takes, and how the event is named are
+// provider knowledge behind the scm.SourceProvider seam. The provider is
+// resolved from the Project's spec.repo.sync.provider through the same
+// scm.ProviderRegistry the reconciler uses — no provider name is branched
+// on here, and a GitLab/Bitbucket delivery needs no ingress change.
+//
+// On a GOOD credential the delivery still never writes mirror state (AC2):
 // the handler patches the ksquad.io/scm-sync-trigger annotation on the
 // Project, the operator's Project watch fires, and the reconciler runs the
 // SAME level-triggered provider snapshot it would have run on the poll
@@ -32,10 +39,11 @@ limitations under the License.
 //
 // Project identification is explicit — X-KSquad-Project/X-KSquad-Namespace
 // headers or ?project=&namespace= query parameters — because the webhook
-// secret is per-Project: the signature cannot be checked until the Project
+// secret is per-Project: the credential cannot be checked until the Project
 // (and therefore the secret) is known, so the body is NOT parsed for
-// identification. Reading the body for HMAC and reading it for meaning are
-// different operations; only the first happens before the verify gate.
+// identification. Reading the body for verification and reading it for
+// meaning are different operations; only the first happens before the
+// verify gate.
 package main
 
 import (
@@ -45,7 +53,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -105,9 +112,9 @@ func main() {
 	h := &webhookHandler{
 		client:          k8sClient,
 		logger:          logger,
+		providers:       scm.NewProviderRegistry(),
 		maxPayloadBytes: maxPayloadBytes,
 		inflight:        make(chan struct{}, maxInFlightDeliveries),
-		registry:        scm.NewProviderRegistry(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -138,27 +145,9 @@ func main() {
 type webhookHandler struct {
 	client          client.Client
 	logger          logr.Logger
+	providers       *scm.ProviderRegistry
 	maxPayloadBytes int64
 	inflight        chan struct{}
-	// registry resolves the per-provider WebhookExtractor. The handler never
-	// reads a provider-specific header itself — Story 11.5 puts webhook
-	// parsing behind the scm.WebhookExtractor seam.
-	registry *scm.ProviderRegistry
-}
-
-// defaultRegistry is the process-wide fallback provider registry used when a
-// handler is built without one (chiefly in tests). Production main() sets
-// h.registry explicitly; this keeps a zero-value handler from panicking.
-var defaultRegistry = sync.OnceValue(scm.NewProviderRegistry)
-
-// extractorFor resolves the webhook extractor for a provider, falling back to
-// the process default registry when the handler was built without one.
-func (h *webhookHandler) extractorFor(name string) (scm.WebhookExtractor, error) {
-	reg := h.registry
-	if reg == nil {
-		reg = defaultRegistry()
-	}
-	return reg.ExtractorFor(name)
 }
 
 // unauthorized is the uniform refusal for everything an unauthenticated
@@ -245,33 +234,41 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		h.unauthorized(w, "webhook secret not resolvable", "project", projectName, "error", err.Error())
 		return
 	}
-	// The provider seam owns every provider-specific header/payload read.
-	// An unknown provider is dropped uniformly (never a hard-coded GitHub
-	// fallback) — same enumeration-safe refusal as a bad signature.
-	providerName := sync.Provider
-	if providerName == "" {
-		providerName = "github"
+	// Resolve the delivery's provider through the SAME registry the
+	// reconciler uses (story 11.5): which header carries the credential
+	// and how it is checked is provider knowledge behind the seam. The
+	// provider is built with EMPTY credentials on purpose — verifying a
+	// delivery needs only the per-Project webhook secret, never the BYO
+	// repo-read token (which this process never resolves). An unknown
+	// provider name is logged and folded into the uniform 401: it is a
+	// Project misconfiguration, not a caller-actionable distinction.
+	registry := h.providers
+	if registry == nil {
+		registry = scm.NewProviderRegistry()
 	}
-	extractor, err := h.extractorFor(providerName)
+	provider, err := registry.Provider(r.Context(), sync.Provider, scm.ProviderCredentials{})
 	if err != nil {
-		h.unauthorized(w, "no webhook extractor for provider", "project", projectName, "provider", providerName)
+		h.unauthorized(w, "provider not resolvable", "project", projectName, "provider", sync.Provider, "error", err.Error())
 		return
 	}
-	// Signature reads headers only — the body is still unverified here.
-	digest, err := extractor.Signature(r.Header)
-	if err != nil {
-		h.unauthorized(w, "absent/malformed signature dropped", "project", projectName)
-		return
-	}
-	if !scm.VerifyHMAC(body, string(secret.Data[secretKey]), digest) {
-		h.unauthorized(w, "bad signature dropped", "project", projectName)
+	if !provider.VerifyWebhookDelivery(r.Context(), r.Header, body, string(secret.Data[secretKey])) {
+		h.unauthorized(w, "bad delivery credential dropped", "project", projectName, "provider", sync.Provider)
 		return
 	}
 
-	// ── verified: payload may NOW be parsed (event name for logging) ──
-	eventType := extractor.Event(r.Header, body)
-	h.logger.Info("webhook: good signature, triggering repo-sync reconcile",
-		"project", projectName, "namespace", namespace, "event", eventType)
+	// ── verified: payload may NOW be parsed (event attribution for logging) ──
+	// An unparseable delivery is NOT a refusal — the reconcile it triggers
+	// is level-triggered and never trusts the payload (AC2); "unknown" is
+	// a valid attribution.
+	attribution := "unknown"
+	if event, err := provider.ParseWebhookEvent(r.Context(), r.Header, body); err == nil && event != nil && event.Type != "" {
+		attribution = event.Type
+		if event.Action != "" {
+			attribution += "/" + event.Action
+		}
+	}
+	h.logger.Info("webhook: good credential, triggering repo-sync reconcile",
+		"project", projectName, "namespace", namespace, "provider", sync.Provider, "event", attribution)
 
 	// AC2: the delivery only TRIGGERS the level-triggered reconcile — the
 	// payload is never written to the mirror. The timestamped annotation

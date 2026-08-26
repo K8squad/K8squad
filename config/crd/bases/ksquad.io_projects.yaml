@@ -241,9 +241,22 @@ spec:
                   WorkspacePVC sizes and classes the Project workspace PVC (§9.4 —
                   Runs work in their own git-worktree on this volume).
                 properties:
+                  accessModes:
+                    description: |-
+                      AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+                      serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+                      opt-in for storage classes that support true parallelism.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
                   class:
-                    description: Class is the storageClass name; empty means the cluster
-                      default.
+                    description: |-
+                      Class is the storageClass name. Empty does NOT mean the cluster
+                      default (story 9.2: relying on the cluster default is
+                      misconfiguration) — the operator resolves it from its Helm-provided
+                      workspace storage class and fails closed when that is unset too:
+                      no PVC is created silently bound to an unsuitable class.
                     type: string
                   size:
                     anyOf:

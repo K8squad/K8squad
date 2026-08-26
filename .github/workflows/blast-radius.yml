@@ -30,6 +30,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # ISI-3235: cancel superseded PR pushes to free the two self-hosted slots, but
+  # NEVER cancel a `main` run. Mirrors ci.yml / l1.yml (ISI-2748 R2).
+  group: blast-radius-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   s4:
     name: blast-radius (S4 suite in kind)
@@ -41,11 +47,11 @@ jobs:
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       # kind with the default CNI disabled; run-s4.sh bootstraps Calico so
       # NetworkPolicy enforcement is the real primitive under test.
-      - uses: helm/kind-action@v1.12.0
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: blast-radius
           config: test/blast-radius/kind-config.yaml
@@ -59,7 +65,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: blast-radius-report
           path: blast-radius-report.txt
