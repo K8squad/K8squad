@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+
+	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 )
 
 // Config is the ksquad-apiserver host configuration. DatabaseURL is the shared Postgres DSN
@@ -57,6 +59,15 @@ type Config struct {
 	// each holds 64 MiB; the chart's 256Mi apiserver limit fits 2 with headroom).
 	// 0 means "use the package default"; negative disables the bound.
 	MaxHashConcurrency int `json:"maxHashConcurrency"`
+
+	// BuildReaderPodEnabled is the story 8.7f (ISI-2905) feature flag for the on-demand full-tree
+	// RO reader pod. Default FALSE: the build browser serves snapshot-only (v1) and never launches a
+	// pod — the story degrades by default and never blocks 8.7e. An operator opts in via the chart
+	// ConfigMap (9.5) / env only once a full-tree read need is proven (design §4.2 ponytail).
+	BuildReaderPodEnabled bool `json:"buildReaderPodEnabled"`
+	// BuildReaderPodImage is the RO git-reader image used when BuildReaderPodEnabled is true. It is
+	// required for the flag to have effect; empty with the flag on still degrades to snapshot-only.
+	BuildReaderPodImage string `json:"buildReaderPodImage"`
 }
 
 // DefaultConfig returns the zero-config defaults; env/flags/file override these.
@@ -183,5 +194,23 @@ func (c *Config) ApplyEnvOverrides() {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.MaxHashConcurrency = n
 		}
+	}
+	// 8.7f build-reader-pod opt-in (default off; only takes effect with an image set).
+	if v := os.Getenv("KSQUAD_BUILD_READER_POD_ENABLED"); v != "" {
+		c.BuildReaderPodEnabled = v != "false" && v != "0"
+	}
+	if v := os.Getenv("KSQUAD_BUILD_READER_POD_IMAGE"); v != "" {
+		c.BuildReaderPodImage = v
+	}
+}
+
+// ReaderPodConfig projects the host config onto the 8.7f readerpod.Config the build-browser reader
+// launcher consumes. It is the single mapping point so the flag surface (chart/env) and the launcher
+// tunables cannot drift. With BuildReaderPodEnabled false (the default) the launcher degrades to
+// snapshot-only regardless of the other fields.
+func (c Config) ReaderPodConfig() readerpod.Config {
+	return readerpod.Config{
+		Enabled:     c.BuildReaderPodEnabled,
+		ReaderImage: c.BuildReaderPodImage,
 	}
 }

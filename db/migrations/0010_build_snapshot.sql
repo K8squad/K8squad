@@ -1,0 +1,33 @@
+-- 0010_build_snapshot.sql — build-snapshot artifact meta column (Story 8.7c, ISI-2903).
+--
+-- Forward-only companion to 0001_coord_schema.sql. Story 8.7c: at Collecting the
+-- reconcile machine emits a fence-guarded `coord.artifact` upsert
+-- (kind:"build-snapshot") capturing `base..runRef` git-natively so a COMPLETED Run
+-- (pod torn down) still serves tree + diffs + changed-file code view with live:false.
+--
+-- The 0001 artifact table already carries the load-bearing 8.7c guarantees:
+--   * UNIQUE (work_item_id, run_id, kind)  — re-entrancy-safe republish (ON CONFLICT
+--     DO NOTHING re-drive is a no-op), and
+--   * uri/sha256                            — content-addressed (uri = "sha256:<hex>",
+--     sha256 = hash of the captured bundle).
+-- What it lacks is the summary META the console header and the "no build view"
+-- degradation need without re-hydrating the bundle: base/runRef/commit shas and the
+-- fileCount / totalAdditions / totalDeletions / truncated figures. This migration
+-- adds that jsonb column with a non-breaking DEFAULT so existing rows and existing
+-- INSERTs (0001 self-check, ProdEffects.Collect) keep working unchanged.
+--
+-- Failure legibility (§7): a snapshot-emit FAILURE is recorded as a §6.5 audit row
+-- (`build_snapshot_unavailable`), never as a silent absence; the read side surfaces
+-- the missing row as an explicit snapshotState="unavailable" meta response rather
+-- than a bare 404. No schema is needed for that beyond this column.
+
+-- ---------------------------------------------------------------------------
+-- coord.artifact.meta — 8.7c build-snapshot summary (jsonb)
+-- ---------------------------------------------------------------------------
+-- Kind-scoped by convention: only kind='build-snapshot' rows carry a non-empty
+-- meta object today ({base, runRef, commit, fileCount, totalAdditions,
+-- totalDeletions, truncated}); every other artifact kind keeps the '{}' default.
+-- jsonb (not json) so the summary is indexable/queryable if the console later
+-- projects snapshot KPIs without blob hydration.
+ALTER TABLE coord.artifact
+    ADD COLUMN IF NOT EXISTS meta jsonb NOT NULL DEFAULT '{}'::jsonb;

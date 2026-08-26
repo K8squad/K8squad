@@ -28,6 +28,7 @@ SQL migrations** applied in filename order.
 | 0004 | `0004_discussion_schema.sql` | `discussion` — `thread`, `message` (per-Project room; append-only, server-stamped provenance, NO room table) | Story 10.1 (ISI-2702/ISI-2709), Arch §7.5/ADR-019 |
 | 0005 | `0005_reconcile_step.sql` | `coord` — `reconcile_step` (§6.4 crash-safe Run reconcile state machine) | Story 3.1 (ISI-2535/ISI-2655), Arch §6.4 |
 | 0006 | `0006_auth_schema.sql` | `auth` — `user`, `session` (local-cred identity + fail-closed session store; the `ksquad_session` → AuthorContext backing) | ISI-2758 (split from ISI-2750), Arch §12.3/ADR-033 |
+| 0012 | `0012_work_item_search.sql` | `coord` — `work_item.search_tsv` generated tsvector + GIN index (Postgres FTS corpus for global search) | Story 8.18 (ISI-2912), ADR-039 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 

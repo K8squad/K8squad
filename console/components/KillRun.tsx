@@ -62,7 +62,7 @@ export function KillRun({ workItem, phase }: { workItem: string; phase?: string 
 
   return (
     <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-      {state === "armed" ? (
+      {state === "armed" || state === "killing" ? (
         <>
           <button
             className="danger"
@@ -72,14 +72,18 @@ export function KillRun({ workItem, phase }: { workItem: string; phase?: string 
           >
             {state === "killing" ? "Killing…" : "Confirm kill"}
           </button>
-          <button data-testid="kill-abort" onClick={() => setState("idle")}>
+          <button
+            data-testid="kill-abort"
+            disabled={state === "killing"}
+            onClick={() => setState("idle")}
+          >
             Keep run
           </button>
         </>
       ) : (
         <button
           data-testid="kill-arm"
-          disabled={state === "killing" || state === "error"}
+          disabled={state === "error"}
           onClick={() => setState("armed")}
         >
           Kill
