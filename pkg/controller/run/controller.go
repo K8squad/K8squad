@@ -53,11 +53,20 @@ type Clock func() metav1.Time
 // status subresource (arch §5.1/§8, AC2). It writes ONLY status, never spec, and
 // is idempotent: a requeue whose durable step is unchanged recomputes an
 // identical status and skips the patch entirely.
+//
+// Epic B (ISI-3286) adds the toolchain RBAC side-channel: while the Run is
+// live, the RBAC renderer keeps the per-Run Role union (bound to the managed
+// ksquad-agent SA) converged to the Run's resolved toolchains and records the
+// union on status; when the step goes terminal, the rendered objects are
+// released and the record cleared (acceptance 3b).
 type Reconciler struct {
 	client.Client
 	Source StepSource
 	// Now defaults to metav1.Now when nil.
 	Now Clock
+	// RBAC renders the per-Run toolchain Role union. Nil disables the
+	// side-channel (unit tests of the pure status projection).
+	RBAC *RBACRenderer
 }
 
 // Reconcile reads the Run, looks up its committed durable step, projects that
@@ -87,6 +96,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 
 	desired := ProjectStatus(runObj.Status, step, runObj.Generation, now)
+
+	// Toolchain RBAC side-channel (Epic B): converge while live, release on
+	// terminal. Fail-closed — a resolution or render error requeues rather
+	// than letting a Run proceed with partial (or stale) grants.
+	if r.RBAC != nil {
+		if isTerminalPhase(desired.Phase) {
+			if err := r.RBAC.Release(ctx, &runObj); err != nil {
+				return ctrl.Result{}, fmt.Errorf("release toolchain rbac for run %s: %w", req.NamespacedName, err)
+			}
+			desired.GrantedToolchainRBAC = nil
+		} else {
+			grant, err := r.RBAC.Ensure(ctx, &runObj)
+			if err != nil {
+				return ctrl.Result{}, fmt.Errorf("render toolchain rbac for run %s: %w", req.NamespacedName, err)
+			}
+			desired.GrantedToolchainRBAC = grant
+		}
+	}
+
 	if apiequality.Semantic.DeepEqual(runObj.Status, desired) {
 		return ctrl.Result{}, nil
 	}

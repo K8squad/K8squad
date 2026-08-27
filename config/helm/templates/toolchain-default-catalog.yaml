@@ -1,0 +1,35 @@
+{{/*
+Epic B (ISI-3286) — the default toolchain catalog (plan §2.2/§2.2b).
+
+Behind tools.defaultCatalog.enabled: renders one Toolchain object per
+curated entry into the control-plane namespace (the cluster catalog — the
+admin-authored authority team namespaces may only narrow). Deploying a
+tool for squads stays "flip one flag": the operator owns the per-Run RBAC
+rendering, so there is no Role/RoleBinding/SA plumbing to hand-write.
+
+The curated defaults are least-privilege (plan §2.2b): kubectl gets
+read-only core+apps; git, gh, go, node, dtctl and helm declare no RBAC at
+all — they are staged onto PATH without any Kubernetes API grant.
+*/}}
+{{- if .Values.tools.defaultCatalog.enabled }}
+{{- $catalogNS := .Values.namespace.name }}
+{{- range $name, $entry := .Values.tools.defaultCatalog.entries }}
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Toolchain
+metadata:
+  name: {{ $name }}
+  namespace: {{ $catalogNS }}
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    ksquad.io/catalog: default
+spec:
+  versions:
+    {{- toYaml $entry.versions | nindent 4 }}
+  {{- with $entry.rbac }}
+  rbac:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}

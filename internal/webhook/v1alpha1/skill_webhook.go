@@ -19,6 +19,7 @@ package webhook
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -44,6 +45,9 @@ var _ admission.Validator[*ksquadv1alpha1.Skill] = &SkillCustomValidator{}
 
 // ValidateCreate implements admission.Validator.
 func (v *SkillCustomValidator) ValidateCreate(ctx context.Context, skill *ksquadv1alpha1.Skill) (admission.Warnings, error) {
+	if skill == nil {
+		return nil, apierrors.NewBadRequest("expected a Skill but got nil")
+	}
 	return nil, toInvalid("Skill", skill.Name, v.Validator.ValidateSkill(ctx, skill))
 }
 
