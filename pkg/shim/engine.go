@@ -32,6 +32,7 @@ import (
 
 	"github.com/K8squad/K8squad/internal/protocol"
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 )
 
@@ -65,6 +66,11 @@ type Config struct {
 	Experimental bool
 	// WorkDir is the sandbox working directory Runs execute in.
 	WorkDir string
+	// MCPEndpoints is the Run's resolved MCP IR (Epic C, ADR-044): parsed
+	// once at shim startup from the projected K8SQUAD_MCP_CONFIG document
+	// and handed to the runtime adapters, which render their native config
+	// from it. Empty when the Run demanded no MCP servers.
+	MCPEndpoints []capability.Endpoint
 	// Nower is an injectable clock for deterministic tests; nil uses time.Now.
 	Nower func() time.Time
 }
@@ -114,11 +120,12 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		return existing.status(), nil // reattach / terminal dedup (C1)
 	}
 	spec, err := e.rt.Command(runtimes.LaunchContext{
-		Envelope:   t.Envelope,
-		ModelRoute: t.ModelRoute,
-		Model:      e.cfg.Model,
-		Credential: e.cfg.Credential,
-		WorkDir:    e.cfg.WorkDir,
+		Envelope:     t.Envelope,
+		ModelRoute:   t.ModelRoute,
+		Model:        e.cfg.Model,
+		Credential:   e.cfg.Credential,
+		WorkDir:      e.cfg.WorkDir,
+		MCPEndpoints: e.cfg.MCPEndpoints,
 	})
 	if err != nil {
 		e.mu.Unlock()

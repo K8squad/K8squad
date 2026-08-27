@@ -231,6 +231,180 @@ spec:
                   - name
                   type: object
                 type: array
+              capabilityManifest:
+                description: |-
+                  CapabilityManifest is the resolved capability envelope this Run was
+                  dispatched with (plan §2.3, ADR-044 step 5): resolved toolchain
+                  images, resolved MCP endpoints with their EFFECTIVE tool filters,
+                  and the capabilityHash that keys warm-pool inventory. Computed
+                  pre-dispatch and IMMUTABLE for the life of the Run — mid-flight
+                  changes to Skills/Toolchains/MCPServers never widen a running
+                  sandbox; they apply to the next Run. Unlike GrantedToolchainRBAC it
+                  is NOT cleared at terminal: it is the reproducibility record of
+                  what the sandbox actually ran with (ADR-017 discipline).
+                properties:
+                  capabilityHash:
+                    description: |-
+                      CapabilityHash is sha256 of the manifest's canonical JSON. It keys
+                      warm-pool inventory (ADR-044 step 7: identical capability envelopes
+                      share pool stock) and gives consoles/audits a cheap equality handle.
+                    minLength: 1
+                    type: string
+                  mcpEndpoints:
+                    description: |-
+                      MCPEndpoints is the resolved MCP server set with each server's
+                      EFFECTIVE tool filter (server envelope − deny globs, computed
+                      fail-closed at assembly — ADR-042/044).
+                    items:
+                      description: |-
+                        ResolvedMCPEndpoint is one MCP server a Run resolved, recorded without
+                        credential material: the transport and endpoint/command, the effective
+                        allow/deny tool globs, the sidecar flag, and the Secret/EgressPolicy
+                        NAMES involved (provenance, never contents — ADR-045).
+                      properties:
+                        allowTools:
+                          description: |-
+                            AllowTools is the EFFECTIVE allow set after the server envelope was
+                            intersected with observed tools and deny globs subtracted
+                            (fail-closed on empty — ADR-044 step 4).
+                          items:
+                            type: string
+                          maxItems: 256
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        args:
+                          description: Args are the stdio command arguments.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        command:
+                          description: Command is the stdio server executable (empty
+                            for streamable-http).
+                          type: string
+                        credentialSecretRef:
+                          description: |-
+                            CredentialSecretRef names the BYO Secret backing this server's
+                            credential (name only — never material; ADR-045 D5).
+                          properties:
+                            key:
+                              description: Key inside the Secret; empty means the
+                                consumer-defined default key.
+                              type: string
+                            name:
+                              description: Name of the referenced Secret.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        denyTools:
+                          description: |-
+                            DenyTools is the deny-glob set recorded verbatim from the server
+                            envelope (already subtracted from AllowTools).
+                          items:
+                            type: string
+                          maxItems: 256
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        egressPolicyRef:
+                          description: |-
+                            EgressPolicyRef names the EgressPolicy covering a streamable-http
+                            endpoint's egress (R1: MCP rides the existing egress story).
+                          properties:
+                            name:
+                              description: Name of the referenced object.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace of the referenced object. Empty means the referring object's
+                                own namespace.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        headers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Headers are the static non-secret HTTP headers sent to a
+                            streamable-http endpoint (secret-bearing header names are rejected
+                            at MCPServer admission — nothing sensitive is recorded here).
+                          type: object
+                        image:
+                          description: |-
+                            Image is the stdio server's packaged image; when set, Run assembly
+                            stages it as a native sidecar container (ADR-044 step 6). Empty for
+                            streamable-http, or stdio servers whose command must exist inside
+                            the runtime image.
+                          type: string
+                        name:
+                          description: Name is the MCPServer object's name.
+                          minLength: 1
+                          type: string
+                        sidecar:
+                          description: |-
+                            Sidecar records whether assembly staged a dedicated sidecar
+                            container for this endpoint (stdio with image).
+                          type: boolean
+                        transport:
+                          description: Transport is the server's transport (stdio
+                            | streamable-http).
+                          enum:
+                          - stdio
+                          - streamable-http
+                          type: string
+                        url:
+                          description: URL is the streamable-http endpoint (empty
+                            for stdio).
+                          type: string
+                      required:
+                      - name
+                      - transport
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  toolchains:
+                    description: |-
+                      Toolchains is the resolved, pinned toolchain set staged as init
+                      containers (sorted by name for stable bytes).
+                    items:
+                      description: |-
+                        ResolvedToolchainRef pins one toolchain a Run resolved (plan §2.2
+                        reproducibility): the name@version the skills demanded, the image Run
+                        assembly stages, and the catalog namespace the winning entry came from.
+                      properties:
+                        image:
+                          description: Image is the resolved OCI reference (digest
+                            pins recommended).
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the catalog name ("kubectl").
+                          minLength: 1
+                          type: string
+                        sourceNamespace:
+                          description: |-
+                            SourceNamespace is the namespace of the winning catalog entry (the
+                            override when one applied, else the cluster catalog).
+                          minLength: 1
+                          type: string
+                        version:
+                          description: Version is the pinned version ("1.31").
+                          minLength: 1
+                          type: string
+                      required:
+                      - image
+                      - name
+                      - sourceNamespace
+                      - version
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
               claimedAt:
                 description: |-
                   ClaimedAt records when the Run's fenced claim was acquired (§6.2/§6.3,

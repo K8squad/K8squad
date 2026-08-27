@@ -19,6 +19,7 @@ package runtimes
 import (
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // openClaw is the OpenClaw shim adapter (story 5.5). OpenClaw is a full coding
@@ -55,12 +56,20 @@ func (r openClaw) Command(lc LaunchContext) (ExecSpec, error) {
 		env = append(env, "OPENCLAW_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
-	return ExecSpec{
+	spec := ExecSpec{
 		Path:    "openclaw",
 		Args:    []string{"run", "--format=json", "--model=" + resolveModel(r, lc)},
 		Env:     env,
 		WorkDir: lc.WorkDir,
-	}, nil
+	}
+	// Epic C (ADR-044 step 6): openclaw.json's mcp.servers section,
+	// rendered from the projected IR at start.
+	if f, err := mcpWorkDirFile("openclaw.json", capability.RenderOpenClaw, lc.MCPEndpoints); err != nil {
+		return ExecSpec{}, err
+	} else if f != nil {
+		spec.WorkDirFiles = append(spec.WorkDirFiles, *f)
+	}
+	return spec, nil
 }
 
 func init() { Register(openClaw{}) }

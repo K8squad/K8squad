@@ -44,6 +44,7 @@ import (
 	"strings"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 )
@@ -79,7 +80,10 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		return err
 	}
 
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		return err
+	}
 	engine := shim.New(rt, shim.NewOSRunner(), cfg)
 
 	switch cmd {
@@ -129,8 +133,8 @@ func driveRun(engine *shim.Engine, stdin io.Reader, stdout io.Writer) error {
 	return nil
 }
 
-func configFromEnv() shim.Config {
-	return shim.Config{
+func configFromEnv() (shim.Config, error) {
+	cfg := shim.Config{
 		Identity: shim.Identity{
 			Name:    os.Getenv("KSQUAD_AGENT_NAME"),
 			Squad:   os.Getenv("KSQUAD_SQUAD"),
@@ -144,6 +148,15 @@ func configFromEnv() shim.Config {
 		Experimental:        os.Getenv("KSQUAD_EXPERIMENTAL") == "true",
 		WorkDir:             os.Getenv("KSQUAD_WORKDIR"),
 	}
+	// Epic C (ADR-044 step 6): the projected MCP IR, parsed once at
+	// startup — fail-closed on a set-but-broken document so a Run never
+	// serves with a silently missing capability envelope.
+	endpoints, err := capability.LoadMCPConfig(os.Getenv(capability.MCPConfigEnvVar))
+	if err != nil {
+		return shim.Config{}, err
+	}
+	cfg.MCPEndpoints = endpoints
+	return cfg, nil
 }
 
 func env(key, fallback string) string {

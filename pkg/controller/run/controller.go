@@ -59,6 +59,12 @@ type Clock func() metav1.Time
 // ksquad-agent SA) converged to the Run's resolved toolchains and records the
 // union on status; when the step goes terminal, the rendered objects are
 // released and the record cleared (acceptance 3b).
+//
+// Epic C (ISI-3287) adds the capability-manifest side-channel: pre-dispatch,
+// the assembler resolves the Run's full capability envelope fail-closed,
+// stamps status.capabilityManifest (immutable for the Run's life — the
+// audit/reproducibility truth, kept at terminal) and projects the MCP IR
+// ConfigMap the runtime adapters consume.
 type Reconciler struct {
 	client.Client
 	Source StepSource
@@ -67,6 +73,9 @@ type Reconciler struct {
 	// RBAC renders the per-Run toolchain Role union. Nil disables the
 	// side-channel (unit tests of the pure status projection).
 	RBAC *RBACRenderer
+	// Assembler resolves and records the capability manifest (Epic C).
+	// Nil disables the side-channel.
+	Assembler *Assembler
 }
 
 // Reconcile reads the Run, looks up its committed durable step, projects that
@@ -112,6 +121,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 				return ctrl.Result{}, fmt.Errorf("render toolchain rbac for run %s: %w", req.NamespacedName, err)
 			}
 			desired.GrantedToolchainRBAC = grant
+		}
+	}
+
+	// Capability-manifest side-channel (Epic C): compute pre-dispatch,
+	// immutable afterwards — the recorded manifest IS the audit truth, so
+	// unlike the RBAC grant it survives the Run going terminal. Fail-closed:
+	// an unresolvable envelope requeues (a Run never dispatches with a
+	// partial capability plane).
+	if r.Assembler != nil {
+		if isTerminalPhase(desired.Phase) {
+			// The IR projection follows the Run's life; the manifest record
+			// stays (owner-ref GC removes the ConfigMap with the object;
+			// this sweep covers the terminal-but-not-deleted drift case).
+			if err := r.Assembler.ReleaseConfig(ctx, &runObj); err != nil {
+				return ctrl.Result{}, fmt.Errorf("release mcp config for run %s: %w", req.NamespacedName, err)
+			}
+			desired.CapabilityManifest = runObj.Status.CapabilityManifest
+		} else {
+			manifest, err := r.Assembler.EnsureManifest(ctx, &runObj)
+			if err != nil {
+				return ctrl.Result{}, wrapAssemblyError(&runObj, err)
+			}
+			desired.CapabilityManifest = manifest
 		}
 	}
 
