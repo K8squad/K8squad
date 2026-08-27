@@ -108,7 +108,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs", "mcpservers", "skills"})
+	// Epic B (ISI-3286): Toolchain admission (catalog shape discipline +
+	// the narrow-only override / cluster-scope opt-in trust boundary),
+	// failurePolicy=fail. The Run toolchain guard (story B2) chains onto
+	// the existing run validating path via CrossRefValidator.
+	if err := crossrefs.SetupToolchainWebhookWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Toolchain webhook")
+		os.Exit(1)
+	}
+
+	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs", "mcpservers", "skills", "toolchains"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "webhook server exited with error")
 		os.Exit(1)

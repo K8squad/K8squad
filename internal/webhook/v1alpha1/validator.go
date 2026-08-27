@@ -31,6 +31,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/credinject"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/sandbox"
+	"github.com/K8squad/K8squad/pkg/toolchain"
 )
 
 // Guard ids for the cross-object existence checks. Each id names one
@@ -70,6 +71,19 @@ const (
 	// schema-only world admitted dangling refs silently because no target
 	// CRD existed; the capability plane fails closed instead.
 	GuardSkillMCPServers = "skill/mcpToolRefs"
+	// GuardToolchainCatalog guards Toolchain admission (Epic B / ISI-3286,
+	// plan §2.2b trust boundary): team-namespace Toolchains may only
+	// narrow an existing cluster-catalog entry, wildcards are rejected,
+	// and cluster-scope RBAC needs the explicit platform opt-in.
+	GuardToolchainCatalog = "toolchain/catalog"
+	// GuardRunToolchains guards Run admission's toolchain resolution
+	// (story B2, plan §2.2): every name@version ref the Run's skills
+	// require must resolve in the team namespace override or the cluster
+	// catalog, and a Run's skills must pin one version per toolchain.
+	// Unknown name/version and version conflicts fail closed — the same
+	// resolver Run assembly uses, so what admission proved is what
+	// dispatch assumes.
+	GuardRunToolchains = "run/toolchains"
 	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
 	// annotation: platform operators only. Without this guard the
 	// annotation is a plain metadata write any Run author can set,
@@ -102,6 +116,13 @@ var trustedDevSetterServiceAccounts = map[string]bool{
 type CrossRefValidator struct {
 	// Reader fetches referenced objects at admission time.
 	Reader client.Reader
+
+	// Toolchains carries the platform-side toolchain configuration
+	// (cluster catalog namespace, cluster-scope opt-in). The zero value
+	// defaults to the standard control-plane namespace with cluster scope
+	// off; production wiring injects the deployment env (Helm
+	// tools.rbac.clusterScopeEnabled).
+	Toolchains toolchain.PlatformConfig
 
 	// DisabledGuards turns individual guards off. It exists for the
 	// falsification suite (delete-a-guard tests) and MUST stay empty in
@@ -326,7 +347,63 @@ func (v *CrossRefValidator) ValidateRun(ctx context.Context, run *ksquadv1alpha1
 			}
 		}
 	}
+	errs = append(errs, v.validateRunToolchains(ctx, run)...)
 	return errs
+}
+
+// validateRunToolchains resolves the Run's full toolchain demand — its
+// agents' skills' spec.requires.toolchains — against the catalog through
+// the SAME resolver Run assembly uses (story B2, plan §2.2 fail-closed):
+// unknown names, unknown versions, version conflicts and narrow-only
+// boundary violations reject the Run with actionable messages naming the
+// demanding skill.
+func (v *CrossRefValidator) validateRunToolchains(ctx context.Context, run *ksquadv1alpha1.Run) field.ErrorList {
+	if !v.on(GuardRunToolchains) {
+		return nil
+	}
+	resolver := &toolchain.Resolver{Reader: v.Reader, Platform: v.Toolchains}
+	reqs, err := resolver.RefsForRun(ctx, run)
+	if err != nil {
+		// Read failures fail closed — same posture as every other guard.
+		return field.ErrorList{invalidf("spec.agents", run.Spec.Agents, "toolchain resolution read failed (fail-closed): %v", err)}
+	}
+	if len(reqs.Refs) == 0 {
+		return nil
+	}
+	if _, err := resolver.ResolveRefs(ctx, run.Namespace, reqs.Refs, toolchain.DetailsFor(run)); err != nil {
+		path := "spec.agents"
+		var observed any = reqs.Refs
+		if ref := firstRefByError(err, reqs); ref != "" {
+			if skill := reqs.Sources[ref]; skill != "" {
+				path = "spec.agents.skills.requires.toolchains"
+				observed = ref + " (skill " + skill + ")"
+			} else {
+				observed = ref
+			}
+		}
+		return field.ErrorList{invalidf(path, observed, "%v; enable the default catalog (tools.defaultCatalog.enabled), define the Toolchain, or align the skills' version pins", err)}
+	}
+	return nil
+}
+
+// firstRefByError extracts the ref a resolver error points at, so the
+// denial's observed value names the exact demanding requirement.
+func firstRefByError(err error, reqs *toolchain.RunRequirements) string {
+	switch e := err.(type) {
+	case *toolchain.UnknownError:
+		return e.Ref
+	case *toolchain.VersionError:
+		return e.Ref
+	case *toolchain.ConflictError:
+		return e.Name + toolchain.RefSeparator + e.Have
+	case *toolchain.TrustError:
+		for _, ref := range reqs.Refs {
+			if reqs.Sources[ref] != "" {
+				return ref
+			}
+		}
+	}
+	return ""
 }
 
 // invalidf is field.Invalid with a printf-shaped detail (fix) message, so

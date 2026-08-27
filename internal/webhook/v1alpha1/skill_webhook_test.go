@@ -104,6 +104,11 @@ func TestSkillCustomValidatorSurface(t *testing.T) {
 	w, err = v.ValidateDelete(ctx, skillWithRefs())
 	require.NoError(t, err)
 	assert.Nil(t, w)
+
+	// The controller-runtime 0.24 typed validator surface makes a
+	// wrong-kind object unrepresentable (ValidateCreate takes
+	// *ksquadv1alpha1.Skill), so no nil/wrong-type runtime check remains
+	// to exercise.
 }
 
 // failingReader always errors: simulates apiserver read trouble so the

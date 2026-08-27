@@ -17,6 +17,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -226,10 +227,78 @@ type RunStatus struct {
 	// +optional
 	ContextSnapshot *ContextSnapshot `json:"contextSnapshot,omitempty"`
 
+	// GrantedToolchainRBAC records the toolchain RBAC the operator
+	// rendered for this Run (plan §2.2b): which catalog entries
+	// contributed, and the exact unioned rule set bound to the pod's
+	// ServiceAccount — the full audit of "which Run got which permissions
+	// through which toolchain". Cleared when the Run goes terminal and
+	// the per-Run Role is garbage-collected.
+	// +optional
+	GrantedToolchainRBAC *ToolchainRBACGrant `json:"grantedToolchainRBAC,omitempty"`
+
 	// ObservedGeneration is the generation most recently observed by the
 	// Run reconciler (§5.2).
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+}
+
+// ToolchainRBACGrant is the recorded outcome of the per-Run toolchain RBAC
+// rendering (plan §2.2b): the union of every resolved toolchain's rules,
+// rendered as a Role (plus, behind the platform opt-in, a ClusterRole for
+// cluster-scope rules) bound to the managed ksquad-agent ServiceAccount.
+type ToolchainRBACGrant struct {
+	// RoleRef names the per-Run Role (ksquad-run-<run-name>) in the Run's
+	// namespace. Absent when no resolved toolchain declared RBAC.
+	// +optional
+	RoleRef *ObjectRef `json:"roleRef,omitempty"`
+
+	// ClusterRoleRef names the per-Run ClusterRole rendered for
+	// cluster-scope rules (platform opt-in only). Absent in the default
+	// posture — the curated catalog is namespace-scoped.
+	// +optional
+	ClusterRoleRef *ObjectRef `json:"clusterRoleRef,omitempty"`
+
+	// Toolchains is the resolved provenance set: which catalog entry
+	// (name@version → image) contributed to the grant, for reproducibility
+	// and the Epic C capability manifest.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=32
+	Toolchains []ResolvedToolchainRef `json:"toolchains,omitempty"`
+
+	// Rules is the exact unioned grant — what `kubectl auth can-i
+	// --as=system:serviceaccount:<ns>:ksquad-agent` shows for this Run's
+	// toolchain surface (plus the Team baseline, which stays empty).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=256
+	Rules []rbacv1.PolicyRule `json:"rules,omitempty"`
+}
+
+// ResolvedToolchainRef pins one toolchain a Run resolved (plan §2.2
+// reproducibility): the name@version the skills demanded, the image Run
+// assembly stages, and the catalog namespace the winning entry came from.
+type ResolvedToolchainRef struct {
+	// Name is the catalog name ("kubectl").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Version is the pinned version ("1.31").
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Version string `json:"version"`
+
+	// Image is the resolved OCI reference (digest pins recommended).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// SourceNamespace is the namespace of the winning catalog entry (the
+	// override when one applied, else the cluster catalog).
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	SourceNamespace string `json:"sourceNamespace"`
 }
 
 // ModelSegment is one portion of a Run served by one model (5.11

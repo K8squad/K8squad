@@ -170,4 +170,10 @@ func TestMCPServerWebhookMethods(t *testing.T) {
 	w, err = v.ValidateDelete(ctx, httpServer())
 	require.NoError(t, err)
 	assert.Empty(t, w)
+
+	// The controller-runtime 0.24 typed validator surface makes a
+	// wrong-kind object unrepresentable (ValidateCreate takes
+	// *MCPServer); a nil object still fails loudly rather than panicking.
+	_, err = v.ValidateCreate(ctx, nil)
+	require.ErrorContains(t, err, "expected an MCPServer object")
 }
