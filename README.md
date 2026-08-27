@@ -73,6 +73,10 @@ kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) to build from source instead.
 
+Want the full pre-defined **BMAD squad** (13 roles in a CEO → PM/Architect/UX
+hierarchy, wired with four default Skills) instead of the one-agent demo? Follow
+the [Getting Started: the BMAD squad](./docs/getting-started-bmad.md) guide.
+
 ## 🏗️ Architecture
 
 KSquad runs a trusted **control plane** (`ksquad-system`) and per-team, untrusted **data planes**.
@@ -133,6 +137,7 @@ and workspace PVCs, per `Team`. Untrusted, least-privilege, blast-radius-bounded
 
 - **Website** — https://k8squad.io
 - **Documentation** — https://k8squad.io/docs
+- **Getting Started (BMAD squad)** — [docs/getting-started-bmad.md](./docs/getting-started-bmad.md)
 - **Contributing** — [CONTRIBUTING.md](./CONTRIBUTING.md)
 - **Plugin SDK guide** — [docs/plugin-sdk-guide.md](./docs/plugin-sdk-guide.md)
 - **Code of Conduct** — [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)

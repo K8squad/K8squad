@@ -1,0 +1,27 @@
+# The Team composes the flat list of Agents and Projects into one squad
+# (arch §5.1, §12.1 — a squad is a namespace). Team.spec.agents is intentionally
+# flat: the BMAD reporting hierarchy lives in the role prompts and labels, not
+# in a controller relationship.
+apiVersion: ksquad.io/v1alpha1
+kind: Team
+metadata:
+  name: bmad-squad
+  namespace: bmad-squad
+spec:
+  namespaceStrategy: dedicated
+  projects:
+    - name: bmad-demo-project
+  agents:
+    - name: sam       # CEO
+    - name: john      # Product Manager
+    - name: winston   # System Architect
+    - name: uma       # UX Designer
+    - name: mary      # Brainstormer
+    - name: cade      # Challenger
+    - name: quill     # Content Writer
+    - name: amelia    # Code Reviewer
+    - name: tess      # Test Architect
+    - name: ada       # Coder
+    - name: devon     # DevOps Engineer
+    - name: otto      # Observability Engineer
+    - name: gabi      # Graphical Designer

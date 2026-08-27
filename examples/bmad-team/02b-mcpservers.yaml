@@ -1,0 +1,70 @@
+# MCP servers the squad's tool Skills reach (ADR-042, Epic A / ISI-3285).
+#
+# Skill.spec.mcpToolRefs in 03-skills.yaml resolve against these MCPServer
+# objects — fail-closed: a dangling ref rejects the Run at admission.
+# Each server is data-only (transport + endpoint/command + credential +
+# tool envelope + egress linkage); Skills may only NARROW toolFilter, never
+# widen it (trust boundary D8).
+#
+# The discovery controller probes each server from the control plane
+# (initialize → tools/list) and records status.observedTools plus the
+# Ready / CredentialsValid / EgressAllowed / ToolsDiscovered conditions.
+# Runs never admit against a server whose tool surface is unknown
+# (empty observedTools ⇒ fail-closed staleness, ADR-042) — so expect a
+# short delay after the first apply before Runs referencing these servers
+# go through.
+#
+# Endpoints/tokens below are illustrative — repoint them at your own
+# GitHub Copilot MCP / Dynatrace tenant before use, and swap the
+# REPLACE_ME tokens in 01-credentials.yaml.
+---
+# GitHub MCP over the Streamable HTTP transport (spike A.2/A.3: one
+# endpoint, POST for messages, Mcp-Session-Id header echo; SSE is not a
+# v1alpha1 transport). Credential rides the Secret, projected per-Run as
+# an env var — never into any file the agent runtime reads (ADR-045 D5).
+apiVersion: ksquad.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp
+  namespace: bmad-squad
+spec:
+  transport: streamable-http
+  endpoint: https://api.githubcopilot.com/mcp/
+  credentialSecretRef:
+    name: github-mcp-token
+    key: token
+  # The granted tool envelope: allow globs minus deny globs. Empty allow
+  # would grant everything observed; this envelope keeps PR/issue work
+  # and subtracts the destructive corners.
+  toolFilter:
+    allow:
+      - "*"
+    deny:
+      - "delete_*"
+  # egressRef: { name: github-egress }   # optional: tie to an EgressPolicy
+  # covering this endpoint (R1 — MCP rides the existing egress story).
+  discovery:
+    intervalMinutes: 10
+---
+# Dynatrace MCP over stdio, packaged as an image: Run assembly stages it
+# as a sidecar container in pods of Runs whose skills reference it
+# (ADR-044 step 6), and the discovery probe Job runs the same image.
+# Pin the digest in real use.
+apiVersion: ksquad.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: dynatrace-mcp
+  namespace: bmad-squad
+spec:
+  transport: stdio
+  command: /usr/local/bin/dynatrace-mcp
+  args: ["--stdio"]
+  image: ghcr.io/k8squad/mcp/dynatrace:1.0
+  credentialSecretRef:
+    name: dynatrace-mcp-token
+    key: token
+  toolFilter:
+    allow:
+      - "query_*"
+      - "list_*"
+      - "get_*"
