@@ -218,6 +218,12 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		// opaque revision tokens and ids — refs to coordination/memory rows,
 		// never embedded row content (ADR-001/AC7).
 		reflect.TypeOf(ContextSnapshot{}): true,
+		// ToolchainRBACGrant (Epic B, ISI-3286, plan §2.2b) is the
+		// audit record of the operator-rendered per-Run Role union:
+		// ObjectRef provenance + rbacv1.PolicyRule rules. Refs and
+		// declarative grant data, never embedded coordination rows.
+		reflect.TypeOf(ToolchainRBACGrant{}):   true,
+		reflect.TypeOf(ResolvedToolchainRef{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {

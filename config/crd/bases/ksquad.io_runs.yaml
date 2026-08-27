@@ -397,6 +397,146 @@ spec:
                 - goalRevision
                 - workItemRevision
                 type: object
+              grantedToolchainRBAC:
+                description: |-
+                  GrantedToolchainRBAC records the toolchain RBAC the operator
+                  rendered for this Run (plan §2.2b): which catalog entries
+                  contributed, and the exact unioned rule set bound to the pod's
+                  ServiceAccount — the full audit of "which Run got which permissions
+                  through which toolchain". Cleared when the Run goes terminal and
+                  the per-Run Role is garbage-collected.
+                properties:
+                  clusterRoleRef:
+                    description: |-
+                      ClusterRoleRef names the per-Run ClusterRole rendered for
+                      cluster-scope rules (platform opt-in only). Absent in the default
+                      posture — the curated catalog is namespace-scoped.
+                    properties:
+                      name:
+                        description: Name of the referenced object.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the referenced object. Empty means the referring object's
+                          own namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  roleRef:
+                    description: |-
+                      RoleRef names the per-Run Role (ksquad-run-<run-name>) in the Run's
+                      namespace. Absent when no resolved toolchain declared RBAC.
+                    properties:
+                      name:
+                        description: Name of the referenced object.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the referenced object. Empty means the referring object's
+                          own namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  rules:
+                    description: |-
+                      Rules is the exact unioned grant — what `kubectl auth can-i
+                      --as=system:serviceaccount:<ns>:ksquad-agent` shows for this Run's
+                      toolchain surface (plus the Team baseline, which stays empty).
+                    items:
+                      description: |-
+                        PolicyRule holds information that describes a policy rule, but does not contain information
+                        about who the rule applies to or which namespace the rule applies to.
+                      properties:
+                        apiGroups:
+                          description: |-
+                            APIGroups is the name of the APIGroup that contains the resources.  If multiple API groups are specified, any action requested against one of
+                            the enumerated resources in any API group will be allowed. "" represents the core API group and "*" represents all API groups.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        nonResourceURLs:
+                          description: |-
+                            NonResourceURLs is a set of partial urls that a user should have access to.  *s are allowed, but only as the full, final step in the path
+                            Since non-resource URLs are not namespaced, this field is only applicable for ClusterRoles referenced from a ClusterRoleBinding.
+                            Rules can either apply to API resources (such as "pods" or "secrets") or non-resource URL paths (such as "/api"),  but not both.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        resourceNames:
+                          description: ResourceNames is an optional white list of
+                            names that the rule applies to.  An empty set means that
+                            everything is allowed.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        resources:
+                          description: Resources is a list of resources this rule
+                            applies to. '*' represents all resources.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        verbs:
+                          description: Verbs is a list of Verbs that apply to ALL
+                            the ResourceKinds contained in this rule. '*' represents
+                            all verbs.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - verbs
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  toolchains:
+                    description: |-
+                      Toolchains is the resolved provenance set: which catalog entry
+                      (name@version → image) contributed to the grant, for reproducibility
+                      and the Epic C capability manifest.
+                    items:
+                      description: |-
+                        ResolvedToolchainRef pins one toolchain a Run resolved (plan §2.2
+                        reproducibility): the name@version the skills demanded, the image Run
+                        assembly stages, and the catalog namespace the winning entry came from.
+                      properties:
+                        image:
+                          description: Image is the resolved OCI reference (digest
+                            pins recommended).
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the catalog name ("kubectl").
+                          minLength: 1
+                          type: string
+                        sourceNamespace:
+                          description: |-
+                            SourceNamespace is the namespace of the winning catalog entry (the
+                            override when one applied, else the cluster catalog).
+                          minLength: 1
+                          type: string
+                        version:
+                          description: Version is the pinned version ("1.31").
+                          minLength: 1
+                          type: string
+                      required:
+                      - image
+                      - name
+                      - sourceNamespace
+                      - version
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
               modelSegments:
                 description: |-
                   ModelSegments is the 5.11 mid-Run provenance ledger: which model

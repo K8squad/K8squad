@@ -105,8 +105,10 @@ func TestSkillCustomValidatorSurface(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, w)
 
-	_, err = v.ValidateCreate(ctx, &ksquadv1alpha1.Team{})
-	require.ErrorContains(t, err, "expected a Skill")
+	// The controller-runtime 0.24 typed validator surface makes a
+	// wrong-kind object unrepresentable (ValidateCreate takes
+	// *ksquadv1alpha1.Skill), so no nil/wrong-type runtime check remains
+	// to exercise.
 }
 
 // failingReader always errors: simulates apiserver read trouble so the

@@ -37,3 +37,71 @@ workspacePVC:
   # Supported storage classes for workspace PVCs
   # +optional
   supportedClasses: []
+
+# Toolchain capability plane (Epic B, ISI-3286, plan §2.2/§2.2b).
+tools:
+  # defaultCatalog ships the curated cluster catalog as chart-rendered
+  # Toolchain objects in the control-plane namespace. One flag deploys
+  # the seven-tool set Skills reference (kubectl, git, gh, go, node,
+  # dtctl, helm); the operator owns all per-Run RBAC rendering.
+  defaultCatalog:
+    # +optional
+    enabled: false
+    # Catalog entries. The defaults are the curated least-privilege set:
+    # kubectl → read-only core+apps RBAC, everything else → no RBAC
+    # (staged onto PATH, no Kubernetes API grant). Override versions or
+    # images per tool; add entries to extend the catalog (cluster scope
+    # additionally needs tools.rbac.clusterScopeEnabled).
+    # +optional
+    entries:
+      kubectl:
+        versions:
+        - version: "1.31"
+          image: ghcr.io/k8squad/toolchains/kubectl:1.31
+          provides: [kubectl]
+        rbac:
+          scope: namespace
+          rules:
+          - apiGroups: [""]
+            resources: [pods, services, configmaps, events]
+            verbs: [get, list, watch]
+          - apiGroups: [apps]
+            resources: [deployments, replicasets, statefulsets]
+            verbs: [get, list, watch]
+      git:
+        versions:
+        - version: "2.45"
+          image: ghcr.io/k8squad/toolchains/git:2.45
+          provides: [git]
+      gh:
+        versions:
+        - version: "2.62"
+          image: ghcr.io/k8squad/toolchains/gh:2.62
+          provides: [gh]
+      go:
+        versions:
+        - version: "1.23"
+          image: ghcr.io/k8squad/toolchains/go:1.23
+          provides: [go]
+      node:
+        versions:
+        - version: "22"
+          image: ghcr.io/k8squad/toolchains/node:22
+          provides: [node, npm]
+      dtctl:
+        versions:
+        - version: "1.0"
+          image: ghcr.io/k8squad/toolchains/dtctl:1.0
+          provides: [dtctl]
+      helm:
+        versions:
+        - version: "3.16"
+          image: ghcr.io/k8squad/toolchains/helm:3.16
+          provides: [helm]
+  # rbac gates the cluster-scope escape (plan §2.2b): when true, a
+  # cluster-catalog Toolchain may declare rbac.scope=cluster (rendered as
+  # a per-Run ClusterRole). Injected as KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED
+  # on the webhook and operator deployments. Never default-on.
+  rbac:
+    # +optional
+    clusterScopeEnabled: false

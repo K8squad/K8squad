@@ -127,8 +127,10 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 // never admits) for every guarded kind. Story 1.6 unified the attribution
 // wiring — each of the four attributed kinds (Team, Project, Agent, Run)
 // has exactly one mutating and one validating entry — story 1.5 adds
-// the OTelConfig validating webhook, and Epic A (ISI-3285) adds the
-// MCPServer and Skill validating webhooks.
+// the OTelConfig validating webhook, Epic A (ISI-3285) adds the
+// MCPServer and Skill validating webhooks, and Epic B (ISI-3286) adds
+// the Toolchain validating webhook (the Run toolchain guard chains onto
+// the existing run validating path).
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
 	for _, name := range []string{
@@ -139,6 +141,7 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 		"votelconfig-v1alpha1.ksquad.io",
 		"vmcpserver-v1alpha1.ksquad.io",
 		"vskill-crossrefs.ksquad.io",
+		"vtoolchain-v1alpha1.ksquad.io",
 	} {
 		assert.Contains(t, yaml, "name: "+name)
 	}
@@ -147,6 +150,6 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 	assert.NotContains(t, yaml, "name: vteam.kb.io")
 	assert.NotContains(t, yaml, "name: vagent.kb.io")
 	assert.NotContains(t, yaml, "name: vrun.kb.io")
-	assert.Equal(t, 11, strings.Count(yaml, "failurePolicy: Fail"),
+	assert.Equal(t, 12, strings.Count(yaml, "failurePolicy: Fail"),
 		"every mutating and validating webhook must fail closed")
 }
