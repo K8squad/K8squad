@@ -61,8 +61,9 @@ jobs:
     timeout-minutes: 45
     # 14.2 AC: "Given a kind cluster + real CNPG Postgres, When L2 runs, Then
     # C1..C7 pass with -race." The engine is now CNPG-in-kind, exposed to the Go
-    # test as a stable localhost DSN via a port-forward (see DATABASE_URL on the
-    # run step). C5 asserts the §6.3 fence-before-release ORDER via the
+    # test as a stable localhost DSN via a kind extraPortMapping -> NodePort
+    # Service (ISI-3247; see the "Expose CNPG over a NodePort" step and
+    # DATABASE_URL on the run step). C5 asserts the §6.3 fence-before-release ORDER via the
     # reclaim_fenced_at marker AND the ResourceFencer seam
     # (reclaim_fence_ordering_test.go). The concrete K8s pod-kill/cordon fencer
     # (controller-runtime) is supplied by the operator's live resource layer —
@@ -87,6 +88,9 @@ jobs:
         uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
         with:
           cluster_name: spine-chaos
+          # extraPortMappings 30432 -> host 127.0.0.1:5432, so a NodePort Service
+          # can hand the chaos test a stable localhost DSN with no SPDY tunnel.
+          config: .github/kind/spine-chaos-kind.yaml
 
       - name: Install CloudNativePG operator
         if: steps.guard.outputs.present == 'true'
@@ -133,34 +137,55 @@ jobs:
           # CNPG publishes a Ready condition once the primary is serving.
           kubectl -n chaos wait --for=condition=Ready --timeout=420s cluster/coord-chaos-pg
 
-      - name: Port-forward CNPG primary to localhost:5432
+      - name: Expose CNPG over a NodePort (stable localhost DSN, no SPDY tunnel)
         if: steps.guard.outputs.present == 'true'
         run: |
-          # Expose the read-write service on a stable localhost DSN for the Go
-          # test process. SUPERVISED: kubectl port-forward tunnels every TCP
-          # connection as a stream over one SPDY channel and can drop that channel
-          # under the spine suite's heavy concurrent load (C1's naive-teeth arm).
-          # If the forward exits, respawn it so a transient drop self-heals into a
-          # brief reconnect gap instead of stranding the rest of the suite on
-          # "connection refused" (ISI-2918). The Go-side pool cap (openDB) keeps
-          # the steady-state load gentle enough that this respawn should rarely
-          # fire; it is insurance, not the primary fix.
-          ( while true; do
-              kubectl -n chaos port-forward svc/coord-chaos-pg-rw 5432:5432 >> /tmp/pgforward.log 2>&1 || true
-              echo "$(date -u +%H:%M:%S) port-forward exited, respawning" >> /tmp/pgforward.log
-              sleep 1
-            done ) &
-          echo "PG_FORWARD_PID=$!" >> "$GITHUB_ENV"
+          # ISI-3247: replace the `kubectl port-forward` SPDY tunnel — which drops
+          # its single channel under the suite's concurrent -race load and strands
+          # the rest of the C/P/D cases on "connection refused" — with a NodePort
+          # Service reachable over the kind extraPortMapping (host 127.0.0.1:5432
+          # -> node NodePort 30432 -> primary pod 5432). Routing is plain
+          # kube-proxy datapath: no per-connection stream to drop, no respawn loop.
+          #
+          # `kubectl expose` copies CNPG's OWN `-rw` Service selector (which tracks
+          # the current primary via cnpg.io/instanceRole=primary), so a failover
+          # would re-point this Service automatically. The new Service carries no
+          # CNPG owner reference, so the operator leaves it untouched.
+          kubectl -n chaos expose service coord-chaos-pg-rw \
+            --name coord-chaos-pg-np --type NodePort \
+            --port 5432 --target-port 5432
+          # Pin the NodePort to 30432 to match the kind extraPortMapping.
+          kubectl -n chaos patch service coord-chaos-pg-np --type=json \
+            -p='[{"op":"replace","path":"/spec/ports/0/nodePort","value":30432}]'
+          # Gate readiness on a REAL Postgres handshake, not a bare TCP connect.
+          # Two conditions must BOTH hold before the suite starts:
+          #   1. the engine answers the startup packet — `pg_isready` run inside
+          #      the primary pod (guaranteed to carry the pg client binaries, so no
+          #      image tag to guess), and
+          #   2. the host-side NodePort datapath is wired — a TCP accept on
+          #      127.0.0.1:5432 (kube-proxy -> pod).
+          # A TCP accept alone can precede engine readiness; the pg_isready gate
+          # closes that window that the old respawn loop left open.
+          PRIMARY="$(kubectl -n chaos get pods \
+            -l cnpg.io/cluster=coord-chaos-pg,cnpg.io/instanceRole=primary \
+            -o jsonpath='{.items[0].metadata.name}')"
+          echo "primary pod: ${PRIMARY:-<none>}"
+          ready=false
           for i in $(seq 1 30); do
-            if (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
-              exec 3>&- 3<&-
-              echo "port-forward ready after ${i}s"; break
+            if kubectl -n chaos exec "$PRIMARY" -- \
+                 pg_isready -U postgres -d coord_chaos -t 5 >/dev/null 2>&1 \
+               && (exec 3<>/dev/tcp/127.0.0.1/5432) 2>/dev/null; then
+              exec 3>&- 3<&- 2>/dev/null || true
+              echo "CNPG reachable via NodePort after ${i} tries"; ready=true; break
             fi
-            if [ "$i" = "30" ]; then
-              echo "::error::CNPG port-forward never came up"; cat /tmp/pgforward.log; exit 1
-            fi
-            sleep 1
+            sleep 2
           done
+          if [ "$ready" != "true" ]; then
+            echo "::error::CNPG NodePort never became reachable on 127.0.0.1:5432"
+            kubectl -n chaos get svc coord-chaos-pg-np -o wide || true
+            kubectl -n chaos get pods -o wide || true
+            exit 1
+          fi
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: steps.guard.outputs.present == 'true'
@@ -180,8 +205,8 @@ jobs:
           # needs CREATEDB — the app role can't, and losing that isolation
           # cross-contaminates coord_chaos and cascades into 2BP01 drop-dependency
           # failures in the C-suite. sslmode=prefer so the connection negotiates
-          # TLS when CNPG offers it and still succeeds over the plaintext
-          # port-forward otherwise.
+          # TLS when CNPG offers it and still succeeds in plaintext otherwise
+          # (the NodePort datapath passes whatever the pod serves through).
           PGDATABASE: coord_chaos
         run: |
           PGPASSWORD="$(kubectl -n chaos get secret coord-chaos-pg-superuser \
@@ -209,15 +234,6 @@ jobs:
           fi
           echo "chaos targets: ${targets[*]}"
           go test -race -tags=chaos -run 'TestSpine' "${targets[@]}" -v
-
-      - name: Tear down port-forward
-        if: always() && steps.guard.outputs.present == 'true'
-        run: |
-          # PG_FORWARD_PID is the supervisor subshell: kill it first so the loop
-          # stops respawning, THEN reap the kubectl child by pattern (a leftover
-          # forward would leak between runs on the self-hosted runner).
-          if [ -n "${PG_FORWARD_PID:-}" ]; then kill "$PG_FORWARD_PID" 2>/dev/null || true; fi
-          pkill -f 'port-forward svc/coord-chaos-pg-rw' 2>/dev/null || true
 
       - name: Upload chaos report
         if: always() && steps.guard.outputs.present == 'true'
