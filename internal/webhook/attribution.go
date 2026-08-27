@@ -50,8 +50,8 @@ var (
 	ErrUnauthenticated = fmt.Errorf("%s: no authenticated principal in admission request; cannot stamp %s", ksquadv1.ReasonUnauthenticated, ksquadv1.CreatedByAnnotation)
 )
 
-// AttributionWebhook implements admission.CustomDefaulter and
-// admission.CustomValidator generically over runtime.Object, so it serves
+// AttributionWebhook implements admission.Defaulter and
+// admission.Validator generically over runtime.Object, so it serves
 // every CRD that carries the attribution contract:
 //
 //   - types with metadata annotations get the immutable created-by stamp
@@ -66,9 +66,12 @@ var (
 // vocabulary changes (arch §5.1 r20 note, §12.3/§12.4).
 type AttributionWebhook struct{}
 
+// The type-agnostic (runtime.Object) generic forms are the non-deprecated
+// controller-runtime 0.24 interfaces; the concrete typed registration wraps
+// this via typedDefaulter[T]/typedValidator[T].
 var (
-	_ admission.CustomDefaulter = &AttributionWebhook{}
-	_ admission.CustomValidator = &AttributionWebhook{}
+	_ admission.Defaulter[runtime.Object] = &AttributionWebhook{}
+	_ admission.Validator[runtime.Object] = &AttributionWebhook{}
 )
 
 // requestPrincipal resolves the authenticated principal from the admission
@@ -92,7 +95,7 @@ func asClientObject(obj runtime.Object) (client.Object, error) {
 	return cobj, nil
 }
 
-// Default implements admission.CustomDefaulter. It stamps attribution from
+// Default implements admission.Defaulter. It stamps attribution from
 // the authenticated principal, filling only what is unset:
 //
 //   - created-by annotation: set when absent (never overwritten — an
@@ -128,7 +131,7 @@ func (w *AttributionWebhook) Default(ctx context.Context, obj runtime.Object) er
 	return nil
 }
 
-// ValidateCreate implements admission.CustomValidator. Creation fails
+// ValidateCreate implements admission.Validator. Creation fails
 // closed when no authenticated principal is present, and rejects an explicit
 // created-by value for anyone other than the authenticated requester (the
 // defaulter has already stamped the requester's own principal by the time
@@ -151,7 +154,7 @@ func (w *AttributionWebhook) ValidateCreate(ctx context.Context, obj runtime.Obj
 	return nil, nil
 }
 
-// ValidateUpdate implements admission.CustomValidator. The created-by
+// ValidateUpdate implements admission.Validator. The created-by
 // annotation is immutable: it may neither change nor be introduced after
 // creation. ownedBy is deliberately NOT validated here — it is the mutable
 // ownership signal (story 1.6 AC, Epic 15.3 scope queries).
@@ -180,40 +183,60 @@ func (w *AttributionWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj 
 	return nil, nil
 }
 
-// ValidateDelete implements admission.CustomValidator. Attribution never
+// ValidateDelete implements admission.Validator. Attribution never
 // blocks deletion.
 func (w *AttributionWebhook) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
 
-// chainValidator runs attribution validation first and then an optional
-// secondary validator (the story 1.3 cross-ref guards) on the same
-// validating path — first failure wins, so admission stays fail-closed
-// under either contract.
-type chainValidator struct {
-	attribution admission.CustomValidator
-	secondary   admission.CustomValidator
+// typedDefaulter adapts the type-agnostic AttributionWebhook (which operates
+// on runtime.Object) to the controller-runtime 0.24 typed
+// admission.Defaulter[T]. Binding a concrete T lets registration use the
+// non-deprecated WithDefaulter builder path; Default itself is unchanged.
+type typedDefaulter[T client.Object] struct{ w *AttributionWebhook }
+
+func (d typedDefaulter[T]) Default(ctx context.Context, obj T) error {
+	return d.w.Default(ctx, obj)
 }
 
-func (c chainValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	if w, err := c.attribution.ValidateCreate(ctx, obj); err != nil {
-		return w, err
-	}
-	return c.secondary.ValidateCreate(ctx, obj)
+// typedValidator adapts AttributionWebhook to the typed admission.Validator[T]
+// and optionally chains a secondary cross-ref validator (the story 1.3
+// guards) on the same validating path — first failure wins, so admission
+// stays fail-closed under either contract. A nil secondary runs attribution
+// alone (e.g. Project, which carries no cross-object guards).
+type typedValidator[T client.Object] struct {
+	w         *AttributionWebhook
+	secondary admission.Validator[runtime.Object] // may be nil
 }
 
-func (c chainValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	if w, err := c.attribution.ValidateUpdate(ctx, oldObj, newObj); err != nil {
+func (v typedValidator[T]) ValidateCreate(ctx context.Context, obj T) (admission.Warnings, error) {
+	if w, err := v.w.ValidateCreate(ctx, obj); err != nil {
 		return w, err
 	}
-	return c.secondary.ValidateUpdate(ctx, oldObj, newObj)
+	if v.secondary != nil {
+		return v.secondary.ValidateCreate(ctx, obj)
+	}
+	return nil, nil
 }
 
-func (c chainValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	if w, err := c.attribution.ValidateDelete(ctx, obj); err != nil {
+func (v typedValidator[T]) ValidateUpdate(ctx context.Context, oldObj, newObj T) (admission.Warnings, error) {
+	if w, err := v.w.ValidateUpdate(ctx, oldObj, newObj); err != nil {
 		return w, err
 	}
-	return c.secondary.ValidateDelete(ctx, obj)
+	if v.secondary != nil {
+		return v.secondary.ValidateUpdate(ctx, oldObj, newObj)
+	}
+	return nil, nil
+}
+
+func (v typedValidator[T]) ValidateDelete(ctx context.Context, obj T) (admission.Warnings, error) {
+	if w, err := v.w.ValidateDelete(ctx, obj); err != nil {
+		return w, err
+	}
+	if v.secondary != nil {
+		return v.secondary.ValidateDelete(ctx, obj)
+	}
+	return nil, nil
 }
 
 // SetupAttributionWebhookWithManager registers the attribution defaulter and
@@ -228,20 +251,46 @@ func (c chainValidator) ValidateDelete(ctx context.Context, obj runtime.Object) 
 // validating path, so the webhook server registers each path exactly once.
 // Per-type +kubebuilder:webhook markers on the type files drive the
 // emitted manifests.
+//
+// The controller-runtime 0.24 builder binds the object type at construction
+// (WebhookManagedBy[T] and the typed WithValidator/WithDefaulter), so the
+// concrete type must be recovered from each runtime value before the generic
+// setupAttributionFor helper can instantiate the typed webhook.
 func SetupAttributionWebhookWithManager(mgr manager.Manager, objs ...client.Object) error {
-	w := &AttributionWebhook{}
 	cross := crossrefs.NewCrossRefValidators(mgr.GetClient())
 	for _, obj := range objs {
-		validator := admission.CustomValidator(w)
-		if secondary := cross.For(obj); secondary != nil {
-			validator = chainValidator{attribution: w, secondary: secondary}
+		var err error
+		switch o := obj.(type) {
+		case *ksquadv1.Team:
+			err = setupAttributionFor(mgr, o, cross)
+		case *ksquadv1.Project:
+			err = setupAttributionFor(mgr, o, cross)
+		case *ksquadv1.Agent:
+			err = setupAttributionFor(mgr, o, cross)
+		case *ksquadv1.Run:
+			err = setupAttributionFor(mgr, o, cross)
+		default:
+			err = fmt.Errorf("attribution webhook: unsupported object type %T (add it to SetupAttributionWebhookWithManager)", obj)
 		}
-		if err := ctrl.WebhookManagedBy(mgr, obj).
-			WithCustomDefaulter(w).
-			WithCustomValidator(validator).
-			Complete(); err != nil {
-			return fmt.Errorf("registering attribution webhook for %T: %w", obj, err)
+		if err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// setupAttributionFor wires the attribution defaulter + validator for a single
+// concrete type T on the manager's webhook server, chaining the story 1.3
+// cross-ref validator after attribution when the type carries one (cross.For
+// returns nil otherwise).
+func setupAttributionFor[T client.Object](mgr manager.Manager, obj T, cross *crossrefs.CrossRefValidators) error {
+	w := &AttributionWebhook{}
+	validator := typedValidator[T]{w: w, secondary: cross.For(obj)}
+	if err := ctrl.WebhookManagedBy(mgr, obj).
+		WithDefaulter(typedDefaulter[T]{w: w}).
+		WithValidator(validator).
+		Complete(); err != nil {
+		return fmt.Errorf("registering attribution webhook for %T: %w", obj, err)
 	}
 	return nil
 }
