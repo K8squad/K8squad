@@ -232,8 +232,6 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
-
 // hashToolArgs stamps the tool-call arguments hash at the shim's tool-call
 // boundary — BEFORE the event leaves the process (Epic D, plan §2.4: args are
 // hashed, never transported raw — they may carry secrets). Raw args ride the

@@ -146,6 +146,8 @@ func writeMetricsTextfile(reg *prometheus.Registry) {
 		fmt.Fprintf(os.Stderr, "shim: gather metrics: %v\n", err)
 		return
 	}
+	// #nosec G703 -- KSQUAD_PROM_TEXTFILE is an operator-supplied pod-spec env
+	// path (same convention as covgate's profile path), not request-tainted input.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "shim: open metrics textfile: %v\n", err)

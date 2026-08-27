@@ -371,9 +371,10 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 		return
 	}
 	ps.span.SetAttributes(attrs...)
-	if outcome == outcomeError {
+	switch outcome {
+	case outcomeError:
 		ps.span.SetStatus(codes.Error, "")
-	} else if outcome == outcomeSuccess {
+	case outcomeSuccess:
 		ps.span.SetStatus(codes.Ok, "")
 	}
 	ps.span.End()

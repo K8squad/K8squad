@@ -206,8 +206,8 @@ func AggregateToolUsageExposition(exposition string) ([]ToolUsageAgent, []MCPSta
 		if !ok {
 			continue
 		}
-		switch {
-		case name == "ksquad_tool_calls_total":
+		switch name {
+		case "ksquad_tool_calls_total":
 			a := agentOf(labels["agent"])
 			key := labels["tool"] + "\x00" + labels["skill"]
 			st, seen := a.tools[key]
@@ -216,7 +216,7 @@ func AggregateToolUsageExposition(exposition string) ([]ToolUsageAgent, []MCPSta
 				a.tools[key] = st
 			}
 			st.Calls += uint64(value)
-		case name == "ksquad_skill_loads_total":
+		case "ksquad_skill_loads_total":
 			a := agentOf(labels["agent"])
 			st, seen := a.skills[labels["skill"]]
 			if !seen {
@@ -224,7 +224,7 @@ func AggregateToolUsageExposition(exposition string) ([]ToolUsageAgent, []MCPSta
 				a.skills[labels["skill"]] = st
 			}
 			st.Loads += uint64(value)
-		case name == "ksquad_mcp_call_duration_seconds_count":
+		case "ksquad_mcp_call_duration_seconds_count":
 			key := labels["server"] + "\x00" + labels["tool"]
 			st, seen := mcp[key]
 			if !seen {
@@ -232,7 +232,7 @@ func AggregateToolUsageExposition(exposition string) ([]ToolUsageAgent, []MCPSta
 				mcp[key] = st
 			}
 			st.Calls += uint64(value)
-		case name == "ksquad_mcp_call_duration_seconds_sum":
+		case "ksquad_mcp_call_duration_seconds_sum":
 			mcpSums[labels["server"]+"\x00"+labels["tool"]] += value
 		}
 	}

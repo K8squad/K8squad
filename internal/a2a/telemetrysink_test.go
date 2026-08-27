@@ -140,10 +140,7 @@ func TestTelemetrySinkSpansReachOTLPCollector(t *testing.T) {
 	// The batch exporter flushes asynchronously — poll the collector with a
 	// bounded wait (D1 AC2 asserts presence, not latency).
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if len(col.query("skill.load", "", "")) > 0 {
-			break
-		}
+	for len(col.query("skill.load", "", "")) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("no spans reached the collector within 5s")
 		}

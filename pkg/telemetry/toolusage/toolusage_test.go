@@ -45,7 +45,7 @@ func newTestMapper(t *testing.T) (*Mapper, *tracetest.SpanRecorder, *prometheus.
 func attrMap(kv []attribute.KeyValue) map[string]string {
 	m := map[string]string{}
 	for _, a := range kv {
-		m[string(a.Key)] = a.Value.Emit()
+		m[string(a.Key)] = a.Value.String()
 	}
 	return m
 }
