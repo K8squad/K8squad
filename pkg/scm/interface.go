@@ -62,6 +62,14 @@ type SourceProvider interface {
 	// Returns the created comment ID.
 	CreateComment(ctx context.Context, repoURL string, kind string, externalID string, comment string) (string, error)
 
+	// UpdateIssue applies a partial update to one provider issue (story
+	// 11.2: the outbound half of issue⇄work-item sync). The wire shape of
+	// the edit — one PATCH carrying state and labels, a state_event
+	// toggle, whatever the provider speaks — stays inside the provider.
+	// Writes made here are origin-marked upstream by the bot credential
+	// so the inbound mirror can echo-suppress them (OQ13).
+	UpdateIssue(ctx context.Context, repoURL string, externalID string, update IssueUpdate) error
+
 	// CreateStatus creates a status on a commit or PR.
 	// Used for outbound reflection when reflectOutbound is enabled.
 	CreateStatus(ctx context.Context, repoURL string, sha string, status Status) error
@@ -200,6 +208,21 @@ type NormalizedRecord struct {
 
 	// Provider-specific raw data (for debugging)
 	Raw map[string]interface{} `json:"raw,omitempty"`
+}
+
+// IssueUpdate is the provider-agnostic partial mutation of one issue
+// (story 11.2). Each field is three-valued: a set value commands a change,
+// an empty State / nil Labels commands "leave unchanged". Labels are a FULL
+// replacement set — providers that only support add/remove approximate the
+// replacement internally; the seam never exposes incremental semantics.
+type IssueUpdate struct {
+	// State is the target normalized issue state: "open" or "closed".
+	// Empty means leave the state unchanged.
+	State string
+
+	// Labels is the full replacement label set. Nil means leave labels
+	// unchanged; an empty non-nil slice means "remove all labels".
+	Labels []string
 }
 
 // Status represents a commit or PR status.

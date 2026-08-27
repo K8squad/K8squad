@@ -52,6 +52,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
@@ -70,6 +71,7 @@ const (
 	reasonNoCredential = "CredentialMissing"
 	reasonProviderFail = "ProviderError"
 	reasonMirrorFail   = "MirrorWriteError"
+	reasonIssueSync    = "IssueSyncError"
 )
 
 // DefaultPollIntervalSeconds is used when spec.repo.sync.pollIntervalSeconds
@@ -110,6 +112,13 @@ type Reconciler struct {
 
 	// Store is the scm mirror the snapshot is upserted into. Required.
 	Store scm.MirrorStore
+
+	// IssueSync is the story-11.2 issue⇄work-item engine. Nil disables the
+	// link pass (no links configured / unit tests); when wired, the SAME
+	// reconcile pass that upserts the mirror also drives status/labels
+	// across the seam for every scm.issue_link of this Project, per the
+	// configured direction (spec.repo.sync.issueSync.direction).
+	IssueSync *issuesync.Syncer
 
 	// BotActor is the echo-suppression identity (default scm.DefaultBotActor):
 	// provider records authored by this actor are OUR reflected writes and are
@@ -184,6 +193,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		logger.Error(err, "repo-sync: mirror upsert failed", "project", req.NamespacedName)
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})
 		return ctrl.Result{}, err
+	}
+
+	// ── the story-11.2 link pass: mirror rows → linked work items ──
+	// Same pass, same triggers (webhook + poll), same level-triggered
+	// discipline: the engine diffs the JUST-APPLIED snapshot against the
+	// link bookkeeping and applies LWW with audited conflicts. A failure
+	// here fails the reconcile (the mirror itself already applied — the
+	// next pass re-applies it idempotently and retries the link pass).
+	if r.IssueSync != nil {
+		if _, err := r.IssueSync.SyncProject(ctx, project.Namespace, project.Name,
+			provider, project.Spec.Repo.URL, sync.EffectiveIssueSyncDirection(), rows); err != nil {
+			logger.Error(err, "repo-sync: issue link pass failed", "project", req.NamespacedName)
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonIssueSync, err.Error())})
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Status is a downstream observation only (§5.1 status discipline):

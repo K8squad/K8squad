@@ -102,6 +102,12 @@ type Options struct {
 	// the routes answer the documented 501 (a cluster-less dev run without a writer
 	// client), exactly like the read models.
 	ComposeCRD *ComposeService
+	// IssueLinks is the story-11.2 issue⇄work-item linkage API (ISI-2738):
+	// GET/POST/DELETE /api/projects/{projectId}/issue-links over
+	// issuesync.SQLStore (scm.issue_link, migration 0013). Nil ⇒ the routes
+	// keep their documented 501 (a DB-less dev run), exactly like the other
+	// seams. The sync loop itself lives in the repo-sync reconciler.
+	IssueLinks *IssueLinkService
 }
 
 // NewServer assembles the root router from opts.
@@ -292,6 +298,29 @@ func (s *Server) routes(opts Options) {
 		// ComposeService. A nil service (cluster-less dev run) keeps the documented
 		// 501 so the console contract stays honest.
 		s.mountComposeRoutes(authz, opts)
+
+		// 11.2 issue⇄work-item linkage (ISI-2738): the write/read surface over
+		// scm.issue_link behind the same choke point. Tenancy is resolved the
+		// 8.8a way (Team UID → namespace, foreign Project 404). A nil service
+		// (DB-less dev run) keeps the documented 501.
+		if opts.IssueLinks != nil {
+			links := s.router.Path("/api/projects/{projectId}/issue-links").Subrouter()
+			links.Use(authz)
+			links.HandleFunc("", opts.IssueLinks.List).Methods(http.MethodGet)
+			links.HandleFunc("", opts.IssueLinks.Establish).Methods(http.MethodPost)
+			one := s.router.Path("/api/projects/{projectId}/issue-links/{externalId}").Subrouter()
+			one.Use(authz)
+			one.HandleFunc("", opts.IssueLinks.Remove).Methods(http.MethodDelete)
+		} else {
+			links := s.router.Path("/api/projects/{projectId}/issue-links").Subrouter()
+			links.Use(authz)
+			links.HandleFunc("", notImplemented("issue-link API", "ISI-2738: wire an IssueLinkService (issuesync.SQLStore + informer reader) to enable")).
+				Methods(http.MethodGet, http.MethodPost)
+			one := s.router.Path("/api/projects/{projectId}/issue-links/{externalId}").Subrouter()
+			one.Use(authz)
+			one.HandleFunc("", notImplemented("issue-link API", "ISI-2738: wire an IssueLinkService (issuesync.SQLStore + informer reader) to enable")).
+				Methods(http.MethodDelete)
+		}
 
 		// 3.3 run kill (ISI-2884): the ≤2-click kill (8.4) lands here. Keyed
 		// by the work item — the coord claim key every read model already
