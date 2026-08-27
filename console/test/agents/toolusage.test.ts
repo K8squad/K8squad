@@ -91,6 +91,7 @@ describe("fetchToolUsage", () => {
       mcp: [
         { server: "github", tool: "create_issue", calls: 5, avgSeconds: 0.42 },
       ],
+      reporting: true,
     };
     globalThis.fetch = vi.fn(async () =>
       jsonResponse(200, payload),

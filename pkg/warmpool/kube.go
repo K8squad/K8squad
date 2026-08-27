@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
@@ -117,10 +118,17 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 					// stamping it into the sandbox env carries the toggle to
 					// the shim process (cmd/shim reads it, default-on when
 					// absent — plan §5.4 opt-out).
-					Env: []corev1.EnvVar{{
-						Name:  "KSQUAD_TOOL_USAGE_ENABLED",
-						Value: strconv.FormatBool(toolusage.Enabled()),
-					}},
+					//
+					// Epic D / D1 (ISI-3348 finding 3): the W3C trace
+					// carrier. telemetry.Inject writes the current span's
+					// traceparent/tracestate into the carrier when Boot rides
+					// a traced context (the run-drive pass opens run.reconcile
+					// per pass), and those env vars join the shim's spans onto
+					// the Run's distributed trace (cmd/shim Extracts them at
+					// startup). A carrier-less context (pool warm-boot, no
+					// live Run) stamps nothing — the next span roots a fresh
+					// trace, honestly.
+					Env: sandboxEnv(ctx, toolusage.Enabled()),
 					Resources: corev1.ResourceRequirements{
 						// Requests match limits for guaranteed QoS.
 						Limits:   limits,
@@ -164,6 +172,27 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 	}
 
 	return nil
+}
+
+// sandboxEnv renders the sandbox container env: the Epic D tool-usage gate
+// plus, when Boot rides a traced context, the W3C trace-context carrier the
+// shim Extracts to continue the Run's distributed trace (D1). The carrier is
+// stamped per pod boot, so every task the sandbox serves continues the trace
+// the booting Run pass was in. Carrier keys are lowercase (W3C via
+// propagation.MapCarrier); the env vars follow the TRACEPARENT convention.
+func sandboxEnv(ctx context.Context, toolUsageEnabled bool) []corev1.EnvVar {
+	env := []corev1.EnvVar{{
+		Name:  "KSQUAD_TOOL_USAGE_ENABLED",
+		Value: strconv.FormatBool(toolUsageEnabled),
+	}}
+	carrier := map[string]string{}
+	telemetry.Inject(ctx, carrier)
+	for envName, carrierKey := range map[string]string{"TRACEPARENT": "traceparent", "TRACESTATE": "tracestate"} {
+		if v := carrier[carrierKey]; v != "" {
+			env = append(env, corev1.EnvVar{Name: envName, Value: v})
+		}
+	}
+	return env
 }
 
 // TearDown deletes the sandbox pod with the given sandboxID (§9.3

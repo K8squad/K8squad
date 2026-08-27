@@ -74,11 +74,24 @@ type ToolUsageAgent struct {
 	MCP        []MCPStat       `json:"mcp"`
 }
 
+// ToolUsageReport is the D3 read model's answer: the per-agent aggregates,
+// the platform MCP table, and whether the operator's exposition actually
+// carries the Epic D pipeline (the ksquad_tool_usage_pipeline_up marker the
+// operator seeds at registration). Reporting=false on a successful scrape
+// means the instrumentation pipeline is not exporting — the panel renders an
+// explicit degraded state instead of a quiet "no activity yet" (review
+// ISI-3348 finding 1: an OK-state must never mask a dead pipeline).
+type ToolUsageReport struct {
+	Agents    []ToolUsageAgent `json:"agents"`
+	MCP       []MCPStat        `json:"mcp"`
+	Reporting bool             `json:"reporting"`
+}
+
 // ToolUsageReader is the D3 read-model seam. Nil ⇒ GET /api/telemetry/tool-usage
 // keeps its documented 501 (a dev run without the metrics URL wired), exactly
 // like the other read models.
 type ToolUsageReader interface {
-	ToolUsage(ctx context.Context) ([]ToolUsageAgent, []MCPStat, error)
+	ToolUsage(ctx context.Context) (ToolUsageReport, error)
 }
 
 // operatorMetricsToolUsage scrapes the operator's Prometheus exposition and
@@ -107,25 +120,52 @@ func NewOperatorMetricsToolUsage(metricsURL string) ToolUsageReader {
 	}
 }
 
-func (s *operatorMetricsToolUsage) ToolUsage(ctx context.Context) ([]ToolUsageAgent, []MCPStat, error) {
+func (s *operatorMetricsToolUsage) ToolUsage(ctx context.Context) (ToolUsageReport, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("tool-usage: build scrape request: %w", err)
+		return ToolUsageReport{}, fmt.Errorf("tool-usage: build scrape request: %w", err)
 	}
 	res, err := s.client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("tool-usage: scrape operator metrics: %w", err)
+		return ToolUsageReport{}, fmt.Errorf("tool-usage: scrape operator metrics: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("tool-usage: operator metrics returned %s", res.Status)
+		return ToolUsageReport{}, fmt.Errorf("tool-usage: operator metrics returned %s", res.Status)
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20)) // 8 MiB: a bounded exposition
 	if err != nil {
-		return nil, nil, fmt.Errorf("tool-usage: read exposition: %w", err)
+		return ToolUsageReport{}, fmt.Errorf("tool-usage: read exposition: %w", err)
 	}
 	agents, mcp := AggregateToolUsageExposition(string(body))
-	return agents, mcp, nil
+	return ToolUsageReport{
+		Agents:    agents,
+		MCP:       mcp,
+		Reporting: ExpositionReportsToolUsage(string(body)),
+	}, nil
+}
+
+// pipelineMarker is the exposition sample name the operator's registered
+// mapper seeds at startup (toolusage.Instruments.PipelineUp). Its presence in
+// a scraped exposition proves the D2 pipeline is exported on that surface.
+const pipelineMarker = "ksquad_tool_usage_pipeline_up"
+
+// ExpositionReportsToolUsage reports whether a Prometheus exposition carries
+// the Epic D pipeline-liveness marker. Pure — the unit-test seam.
+func ExpositionReportsToolUsage(exposition string) bool {
+	for _, line := range strings.Split(exposition, "\n") {
+		line = strings.TrimSpace(line)
+		// A sample line starts with the family name; HELP/TYPE comment
+		// headers are skipped (comments alone would not prove a live
+		// gauge child).
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if name, _, _, ok := parseSample(line); ok && name == pipelineMarker {
+			return true
+		}
+	}
+	return false
 }
 
 // labelSet is the parsed label block of one exposition sample.
@@ -244,6 +284,16 @@ func parseSample(line string) (string, labelSet, float64, bool) {
 		}
 		valueStr = strings.TrimSpace(line[end+1:])
 		line = line[:i]
+	} else {
+		// Unlabeled sample ("name value"): split the leading metric name —
+		// a bare line is name+value, never name-only (a sample always
+		// carries a value). Found by the pipeline marker, which exports
+		// label-less (ISI-3348).
+		fields := strings.Fields(valueStr)
+		if len(fields) != 2 {
+			return "", nil, 0, false
+		}
+		line, valueStr = fields[0], fields[1]
 	}
 	fields := strings.Fields(valueStr)
 	if len(fields) == 0 {
@@ -297,23 +347,23 @@ func parseLabels(s string) (labelSet, error) {
 // platform-scoped MCP table rides every response).
 func toolUsageHandler(reader ToolUsageReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		agents, mcp, err := reader.ToolUsage(r.Context())
+		report, err := reader.ToolUsage(r.Context())
 		if err != nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "tool-usage read model unavailable: "+err.Error())
 			return
 		}
 		if agent := r.URL.Query().Get("agent"); agent != "" {
 			scoped := make([]ToolUsageAgent, 0, 1)
-			for _, a := range agents {
+			for _, a := range report.Agents {
 				if a.Agent == agent {
 					scoped = append(scoped, a)
 				}
 			}
-			agents = scoped
+			report.Agents = scoped
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if err := json.NewEncoder(w).Encode(map[string]any{"agents": agents, "mcp": mcp}); err != nil {
+		if err := json.NewEncoder(w).Encode(report); err != nil {
 			// Body already committed; nothing further to do.
 			_ = err
 		}

@@ -42,6 +42,13 @@ type Progress struct {
 	Artifact    *a2a.ArtifactRef
 	Auth        *a2a.AuthRequiredPayload
 	RateLimited *a2a.RateLimitedPayload
+	// ToolArgs is the INTERNAL raw-arguments seam for a Kind==EventTool
+	// progress (Epic D, plan §2.4): the runtime adapter hands the raw tool
+	// call arguments here, and the engine's funnel hashes them onto
+	// Tool.ArgsSHA256 before the event is funneled any further — raw args
+	// never reach the wire payload, the SSE log, or the telemetry mapper.
+	// +optional
+	ToolArgs string
 }
 
 // Outcome is the terminal result of a runtime process (spec §3.1). State is

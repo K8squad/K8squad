@@ -22,6 +22,7 @@ import {
 type LoadState =
   | { kind: "loading" }
   | { kind: "unavailable"; reason: string }
+  | { kind: "pipeline-down" }
   | { kind: "ok"; agent: ToolUsageAgent | null; mcp: MCPStat[] };
 
 export function ToolUsagePanel({ agentId }: { agentId: string }) {
@@ -32,6 +33,14 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
     fetchToolUsage(agentId)
       .then((payload) => {
         if (cancelled) return;
+        if (!payload.reporting) {
+          // Scrape succeeded but the exposition carries no Epic D pipeline
+          // marker — the instrumentation is not reporting on the operator
+          // metrics surface. That is a degraded state, never a quiet
+          // "no activity yet" (ISI-3348 finding 1).
+          setState({ kind: "pipeline-down" });
+          return;
+        }
         const agent = payload.agents.find((a) => a.agent === agentId) ?? null;
         setState({ kind: "ok", agent, mcp: payload.mcp });
       })
@@ -61,6 +70,18 @@ export function ToolUsagePanel({ agentId }: { agentId: string }) {
         <h2>Tool usage</h2>
         <p className="muted">
           Tool usage is not available ({state.reason} not reachable).
+        </p>
+      </section>
+    );
+
+  if (state.kind === "pipeline-down")
+    return (
+      <section className="card tool-usage" aria-label="Tool usage">
+        <h2>Tool usage</h2>
+        <p className="muted">
+          Tool-usage instrumentation is not reporting on the operator metrics
+          surface. Counts may be missing or stale — this is not “no
+          activity”.
         </p>
       </section>
     );
