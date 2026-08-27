@@ -79,20 +79,27 @@ func TestOperatorMetricsToolUsageScrape(t *testing.T) {
 	defer srv.Close()
 
 	r := NewOperatorMetricsToolUsage(srv.URL)
-	agents, mcp, err := r.ToolUsage(context.Background())
+	report, err := r.ToolUsage(context.Background())
 	require.NoError(t, err)
-	require.Empty(t, mcp)
-	require.Len(t, agents, 1)
-	require.Equal(t, "a", agents[0].Agent)
+	require.Empty(t, report.MCP)
+	require.Len(t, report.Agents, 1)
+	require.Equal(t, "a", report.Agents[0].Agent)
+	// The test exposition carries no pipeline marker — a successful scrape
+	// of a markerless exposition must report reporting=false (the degraded
+	// signal, ISI-3348 finding 1).
+	require.False(t, report.Reporting)
+	require.True(t, ExpositionReportsToolUsage("ksquad_tool_usage_pipeline_up 1\n"))
+	require.False(t, ExpositionReportsToolUsage("# HELP ksquad_tool_usage_pipeline_up commentary only\nksquad_other 1\n"))
 
 	dead := NewOperatorMetricsToolUsage("http://127.0.0.1:1/metrics")
-	_, _, err = dead.ToolUsage(context.Background())
+	_, err = dead.ToolUsage(context.Background())
 	require.Error(t, err)
 }
 
 // The HTTP surface: JSON shape + ?agent= scoping + the degraded 503.
 func TestToolUsageHandler(t *testing.T) {
 	fake := &stubToolUsageReader{
+		reporting: true,
 		agents: []ToolUsageAgent{{
 			Agent:      "coder",
 			ToolCalls:  []ToolCallStat{{Tool: "shell", Calls: 5}},
@@ -106,12 +113,14 @@ func TestToolUsageHandler(t *testing.T) {
 	toolUsageHandler(fake).ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 	var body struct {
-		Agents []ToolUsageAgent `json:"agents"`
-		MCP    []MCPStat        `json:"mcp"`
+		Agents    []ToolUsageAgent `json:"agents"`
+		MCP       []MCPStat        `json:"mcp"`
+		Reporting bool             `json:"reporting"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Len(t, body.Agents, 1)
 	require.Len(t, body.MCP, 1)
+	require.True(t, body.Reporting)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/telemetry/tool-usage?agent=coder", nil)
@@ -136,13 +145,14 @@ func TestToolUsageHandler(t *testing.T) {
 }
 
 type stubToolUsageReader struct {
-	agents []ToolUsageAgent
-	mcp    []MCPStat
-	err    error
+	agents    []ToolUsageAgent
+	mcp       []MCPStat
+	reporting bool
+	err       error
 }
 
-func (s *stubToolUsageReader) ToolUsage(context.Context) ([]ToolUsageAgent, []MCPStat, error) {
-	return s.agents, s.mcp, s.err
+func (s *stubToolUsageReader) ToolUsage(context.Context) (ToolUsageReport, error) {
+	return ToolUsageReport{Agents: s.agents, MCP: s.mcp, Reporting: s.reporting}, s.err
 }
 
 type errString string

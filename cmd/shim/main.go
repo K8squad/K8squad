@@ -43,6 +43,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/expfmt"
+
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim"
@@ -91,16 +94,30 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	// rendered by the operator from the OTelConfig CRD tool-usage pipeline
 	// (D2); default ON. The trace carrier (traceparent/tracestate) joins
 	// this shim's spans onto the Run's distributed trace when the
-	// reconciler propagated one.
+	// reconciler propagated one (warmpool Boot stamps it into the sandbox
+	// env via telemetry.Inject).
 	toolusage.SetEnabled(env("KSQUAD_TOOL_USAGE_ENABLED", "true") != "false")
 	ctx := telemetry.Extract(context.Background(), traceCarrierFromEnv())
-	_, otelShutdown, terr := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-shim"})
+	// Telemetry writes to STDERR, never stdout: `shim run`'s stdout IS the
+	// SSE JSONL wire (spec §4) — span/log records on stdout would corrupt
+	// the event stream (ISI-3348 review).
+	_, otelShutdown, terr := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-shim", Writer: os.Stderr})
 	if terr == nil {
 		defer func() { _ = otelShutdown(context.Background()) }()
 	}
 
+	// The mapper rides a REAL registry (ISI-3348 finding 1): the shim is a
+	// one-shot process (spawn-per-task), so pull-model scraping does not fit
+	// it — instead the final exposition is exported at process exit to the
+	// textfile path (KSQUAD_PROM_TEXTFILE, the node-exporter textfile
+	// convention) for whatever surface collects it in the deployment
+	// topology. Unset (default) skips the write; spans still flow via the
+	// telemetry spine.
+	metricsReg := prometheus.NewRegistry()
+	mapper := toolusage.NewMapper(telemetry.Tracer(), metricsReg)
+
 	engine := shim.New(rt, shim.NewOSRunner(), cfg)
-	engine.SetTelemetry(toolusage.NewMapper(telemetry.Tracer(), nil))
+	engine.SetTelemetry(mapper)
 
 	switch cmd {
 	case "card":
@@ -108,9 +125,39 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(engine.AgentCard())
 	case "run":
-		return driveRun(engine, stdin, stdout)
+		err := driveRun(engine, stdin, stdout)
+		writeMetricsTextfile(metricsReg)
+		return err
 	default:
 		return fmt.Errorf("unknown subcommand %q (want: card | run | read)", cmd)
+	}
+}
+
+// writeMetricsTextfile exports the shim's ksquad_* exposition (D2) to the
+// KSQUAD_PROM_TEXTFILE path when set. Best-effort and never fatal: telemetry
+// is observational; a failed export must not flip the task's exit code.
+func writeMetricsTextfile(reg *prometheus.Registry) {
+	path := os.Getenv("KSQUAD_PROM_TEXTFILE")
+	if path == "" {
+		return
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "shim: gather metrics: %v\n", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "shim: open metrics textfile: %v\n", err)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	enc := expfmt.NewEncoder(f, expfmt.NewFormat(expfmt.TypeTextPlain))
+	for _, mf := range mfs {
+		if err := enc.Encode(mf); err != nil {
+			fmt.Fprintf(os.Stderr, "shim: encode metrics: %v\n", err)
+			return
+		}
 	}
 }
 
@@ -185,12 +232,14 @@ func env(key, fallback string) string {
 
 // traceCarrierFromEnv lifts W3C trace-context headers out of the process env
 // so the shim's spans continue the trace the reconciler started (the spine's
-// Inject wrote them when rendering the sandbox env).
+// Inject wrote them when rendering the sandbox env — warmpool Boot). The
+// carrier keys are lowercase per propagation.MapCarrier/W3C; the env vars
+// follow the UPPERCASE TRACEPARENT/TRACESTATE convention.
 func traceCarrierFromEnv() map[string]string {
 	carrier := map[string]string{}
-	for _, k := range []string{"TRACEPARENT", "TRACESTATE"} {
-		if v := os.Getenv(k); v != "" {
-			carrier[k] = v
+	for envName, carrierKey := range map[string]string{"TRACEPARENT": "traceparent", "TRACESTATE": "tracestate"} {
+		if v := os.Getenv(envName); v != "" {
+			carrier[carrierKey] = v
 		}
 	}
 	return carrier

@@ -129,6 +129,37 @@ type Instruments struct {
 	ToolCalls  *prometheus.CounterVec
 	SkillLoads *prometheus.CounterVec
 	MCPDur     *prometheus.HistogramVec
+	// PipelineUp is the D2 pipeline-liveness marker: a childless CounterVec
+	// never appears in a Prometheus exposition, so an operator that registered
+	// the ksquad_* set but has not yet mapped a single event would be
+	// indistinguishable from one whose instrumentation is dead. The marker
+	// reports 1 while the pipeline gate is on and exports NOTHING while it
+	// is off (the D2 gate contract: no samples at all), so its presence in
+	// an exposition proves the pipeline is wired, gate on, and scrapeable;
+	// its absence lets the D3 read model render an explicit degraded state
+	// instead of a quiet "no activity yet" (review ISI-3348 finding 1).
+	PipelineUp prometheus.Collector
+}
+
+// pipelineUpDesc is the marker's descriptor (shared by Describe/Collect).
+var pipelineUpDesc = prometheus.NewDesc(
+	"ksquad_tool_usage_pipeline_up",
+	"1 while this process carries the Epic D tool-usage pipeline with its gate ON and exports it on its metrics surface; absence means the pipeline is not reporting (D3 degraded-state signal).",
+	nil, nil,
+)
+
+// pipelineUp is the gate-aware marker collector: Collect emits the constant 1
+// only while the process-wide gate is enabled — disabled, it emits no sample
+// at all, keeping the D2 gate contract (nothing exported).
+type pipelineUp struct{}
+
+func (pipelineUp) Describe(ch chan<- *prometheus.Desc) { ch <- pipelineUpDesc }
+
+func (pipelineUp) Collect(ch chan<- prometheus.Metric) {
+	if !enabled.Load() {
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(pipelineUpDesc, prometheus.GaugeValue, 1)
 }
 
 // newInstruments builds the metric set. reg nil → instruments exist but are
@@ -137,7 +168,7 @@ func newInstruments(reg prometheus.Registerer) *Instruments {
 	ins := &Instruments{
 		ToolCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ksquad_tool_calls_total",
-			Help: "Tool calls mapped from A2A EventTool events (Epic D, plan §2.4). Bounded labels {tool,agent,skill}; run.id is a span attribute, never a label.",
+			Help: "Tool calls mapped from A2A EventTool events (Epic D, plan §2.4). Local/CLI tool calls only — MCP-served calls ride ksquad_mcp_call_duration_seconds instead. Bounded labels {tool,agent,skill}; run.id is a span attribute, never a label.",
 		}, []string{"tool", "agent", "skill"}),
 		SkillLoads: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "ksquad_skill_loads_total",
@@ -148,9 +179,10 @@ func newInstruments(reg prometheus.Registerer) *Instruments {
 			Help:    "Duration of tool calls served by MCPServers (Epic D, plan §2.4).",
 			Buckets: prometheus.ExponentialBuckets(0.005, 2, 14), // 5ms .. ~80s
 		}, []string{"server", "tool"}),
+		PipelineUp: pipelineUp{},
 	}
 	if reg != nil {
-		reg.MustRegister(ins.ToolCalls, ins.SkillLoads, ins.MCPDur)
+		reg.MustRegister(ins.ToolCalls, ins.SkillLoads, ins.MCPDur, ins.PipelineUp)
 	}
 	return ins
 }

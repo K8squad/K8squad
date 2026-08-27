@@ -40,6 +40,13 @@ export type ToolUsageAgent = {
 export type ToolUsagePayload = {
   agents: ToolUsageAgent[];
   mcp: MCPStat[];
+  /**
+   * Whether the scraped operator exposition actually carries the Epic D
+   * pipeline (ksquad_tool_usage_pipeline_up). false on a successful scrape
+   * means the instrumentation pipeline is not exporting — render the
+   * degraded state, never a quiet "no activity yet" (ISI-3348 finding 1).
+   */
+  reporting: boolean;
 };
 
 /**

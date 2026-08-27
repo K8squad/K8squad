@@ -26,6 +26,8 @@ package shim
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -186,18 +188,21 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	// Epic D (plan §2.4): each granted skill entering the session is a
 	// skill.load activity. The engine knows the granted refs at launch; the
 	// source SHA travels on the payload when the reconciler pinned one
-	// (git-sourced skills, arch §5.3.6).
+	// (git-sourced skills, arch §5.3.6). Outcome is deliberately absent
+	// (unknown): "granted" is not "loaded successfully" — no runtime has
+	// actually loaded anything yet, so the span never claims success it
+	// cannot know (review ISI-3348, non-blocking note).
 	if e.telemetry != nil {
 		for _, s := range e.cfg.Skills {
 			e.telemetry.SkillEvent(ctx, e.labels(), a2a.SkillLoadPayload{
 				Name:   s,
 				SHA256: e.cfg.SkillSHAs[s],
-				OK:     boolPtr(true),
 			})
 		}
 	}
 
 	outcome, err := e.runner.Run(ctx, spec, func(p Progress) {
+		hashToolArgs(p)
 		tk.emitProgress(p)
 		if e.telemetry != nil {
 			switch p.Kind {
@@ -228,6 +233,21 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// hashToolArgs stamps the tool-call arguments hash at the shim's tool-call
+// boundary — BEFORE the event leaves the process (Epic D, plan §2.4: args are
+// hashed, never transported raw — they may carry secrets). Raw args ride the
+// internal Progress.ToolArgs seam only; by the time the event is funneled
+// into the SSE log and the telemetry mapper it carries ArgsSHA256 and no raw
+// argument text. An emitter that already computed the hash is respected
+// (idempotent); no args means no hash (the acceptance attribute is optional).
+func hashToolArgs(p Progress) {
+	if p.Tool == nil || p.Tool.ArgsSHA256 != "" || p.ToolArgs == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(p.ToolArgs))
+	p.Tool.ArgsSHA256 = hex.EncodeToString(sum[:])
+}
 
 // StreamEvents (V2) returns an SSE-style channel of this task's events with
 // seq > fromSeq, replaying the buffered log then tailing live events until the
