@@ -54,6 +54,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
+	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
@@ -249,6 +250,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The MCPServer discovery controller (story A3 / ADR-042): control-plane
+	// tool discovery. streamable-http servers are probed directly
+	// (initialize → tools/list, credentials in-memory only); stdio servers
+	// via a short-lived probe Job in the server's namespace writing a
+	// well-known ConfigMap. status.observedTools + the Ready/Credentials/
+	// Egress/ToolsDiscovered conditions are what Run assembly's fail-closed
+	// dangling-tool checks consume. Needs no coordination DB.
+	if err := (&mcpserverctrl.Reconciler{}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up MCPServer discovery reconciler")
+		os.Exit(1)
+	}
+
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
 
@@ -283,7 +296,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "workspace", "networkpolicy"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "mcpserver-discovery", "workspace", "networkpolicy"})
 	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
