@@ -236,10 +236,9 @@ func SetupAttributionWebhookWithManager(mgr manager.Manager, objs ...client.Obje
 		if secondary := cross.For(obj); secondary != nil {
 			validator = chainValidator{attribution: w, secondary: secondary}
 		}
-		if err := ctrl.WebhookManagedBy(mgr).
-			For(obj).
-			WithDefaulter(w).
-			WithValidator(validator).
+		if err := ctrl.WebhookManagedBy(mgr, obj).
+			WithCustomDefaulter(w).
+			WithCustomValidator(validator).
 			Complete(); err != nil {
 			return fmt.Errorf("registering attribution webhook for %T: %w", obj, err)
 		}
