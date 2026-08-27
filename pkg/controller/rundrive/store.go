@@ -315,7 +315,10 @@ func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects,
 // defaults (gvisor/interactive) applied read-side, so the classifier is
 // correct even for Runs admitted before defaulting landed. The image dimension
 // stays "" until the Agent-runtime image resolution lands (ISI-2889) — the
-// single-key pool regime warmpool.DefaultClassifier also pins.
+// single-key pool regime warmpool.DefaultClassifier also pins. The namespace
+// and capability-hash dimensions are the Epic C tenancy/pooling fix
+// (ADR-044 steps 7 and 9): warm pods boot in the Run's team namespace and
+// identical capability envelopes share pool stock.
 func SpecClassifier(reader client.Reader) warmpool.RunClassifier {
 	return func(ctx context.Context, runID string) (warmpool.PoolKey, warmpool.RunClass, error) {
 		key := warmpool.PoolKey{RuntimeClass: "gvisor"}
@@ -330,11 +333,15 @@ func SpecClassifier(reader client.Reader) warmpool.RunClassifier {
 			if string(runs.Items[i].UID) != runID {
 				continue
 			}
+			key.Namespace = runs.Items[i].Namespace
 			if rc := runs.Items[i].Spec.SandboxPolicy.RuntimeClass; rc != "" {
 				key.RuntimeClass = rc
 			}
 			if runs.Items[i].Spec.SandboxPolicy.Class == "batch" {
 				class = warmpool.ClassBatch
+			}
+			if m := runs.Items[i].Status.CapabilityManifest; m != nil {
+				key.CapabilityHash = m.CapabilityHash
 			}
 			return key, class, nil
 		}

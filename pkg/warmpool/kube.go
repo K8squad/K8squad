@@ -67,8 +67,17 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 // The pod carries the key's RuntimeClass and AgentRuntime image. It returns
 // WITHOUT waiting for readiness — readiness is reported to the pool via the
 // pod watch (Provisioner contract, pool.go).
+//
+// The pod boots in the key's Namespace when set (ADR-044 step 9: sandbox
+// tenancy — per-Run RBAC, NetworkPolicy and quota are namespace-scoped,
+// §12.1); the sandboxNamespace default remains only for callers that have
+// not migrated to classified keys.
 func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string) error {
 	runtimeClass := key.RuntimeClass
+	namespace := key.Namespace
+	if namespace == "" {
+		namespace = sandboxNamespace
+	}
 	limits := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse(k.cpuLimit),
 		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
@@ -77,7 +86,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxID,
-			Namespace: sandboxNamespace,
+			Namespace: namespace,
 			Labels: map[string]string{
 				"app":     "k8squad-sandbox",
 				"sandbox": sandboxID,

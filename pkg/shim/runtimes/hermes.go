@@ -19,6 +19,7 @@ package runtimes
 import (
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // hermes is the Hermes shim adapter (story 5.5). Hermes runs autonomously with
@@ -55,6 +56,15 @@ func (r hermes) Command(lc LaunchContext) (ExecSpec, error) {
 		env = append(env, "HERMES_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
+	// Epic C (ADR-044 step 6): hermes consumes the normalized IR
+	// directly — passthrough, no native render.
+	if len(lc.MCPEndpoints) > 0 {
+		if raw, err := capability.RenderHermes(lc.MCPEndpoints); err != nil {
+			return ExecSpec{}, err
+		} else {
+			env = append(env, "HERMES_MCP_CONFIG="+string(raw))
+		}
+	}
 	return ExecSpec{
 		Path:    "hermes",
 		Args:    []string{"agent", "--output=json", "--model", resolveModel(r, lc)},

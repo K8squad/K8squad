@@ -129,13 +129,27 @@ func zFromServiceLevel(sl float64) float64 {
 		((((d[0]*q+d[1])*q+d[2])*q+d[3])*q + 1)
 }
 
-// PoolKey is the one-dimensional §9.2 warm-pool key: (RuntimeClass ×
-// AgentRuntime image). Every key is sized by its OWN measured replenish
-// time; sharing one R across keys under-sizes slow runtimes (Kata) or
-// over-sizes fast ones (gVisor).
+// PoolKey is the §9.2 warm-pool key: (RuntimeClass × AgentRuntime image ×
+// team namespace × capabilityHash). Every key is sized by its OWN measured
+// replenish time; sharing one R across keys under-sizes slow runtimes
+// (Kata) or over-sizes fast ones (gVisor).
+//
+// The namespace dimension is the ADR-044 step-9 tenancy fix: sandbox pods
+// boot in the RUN'S TEAM NAMESPACE so per-Run Role binding, pod-level
+// NetworkPolicy and quota all hold (§12.1) — pool inventory is therefore
+// per-namespace by construction. The capabilityHash dimension (step 7)
+// keeps identical capability envelopes sharing stock while a changed
+// envelope (new toolchain pin, MCP filter) cold-starts fresh.
 type PoolKey struct {
 	RuntimeClass string
 	Image        string
+	// Namespace is the team namespace warm pods boot in. Empty falls back
+	// to the provisioner default (pre-Epic-C callers only; classified
+	// Runs always carry it).
+	Namespace string
+	// CapabilityHash is the Run's resolved capability-manifest hash
+	// (ADR-044 step 5/7); empty = the bare, capability-free posture.
+	CapabilityHash string
 }
 
 // RunClass routes the §9.2 hybrid regime: interactive Runs draw from the
