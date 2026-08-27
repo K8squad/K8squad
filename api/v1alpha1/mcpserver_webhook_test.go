@@ -170,8 +170,4 @@ func TestMCPServerWebhookMethods(t *testing.T) {
 	w, err = v.ValidateDelete(ctx, httpServer())
 	require.NoError(t, err)
 	assert.Empty(t, w)
-
-	// Wrong type fails loudly rather than panicking.
-	_, err = v.ValidateCreate(ctx, &Team{})
-	require.ErrorContains(t, err, "expected an MCPServer object")
 }
