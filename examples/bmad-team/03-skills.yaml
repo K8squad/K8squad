@@ -7,9 +7,20 @@
 # observability gets `dynatrace`; graphical-designer gets `graphical`.
 #
 # `bmad` is inline (self-contained, no fetch). The tool skills are git-sourced
-# and PINNED to a commit SHA so a force-push cannot silently alter behavior
-# mid-Run (§5.3.6). RepoRefs/SHAs below are illustrative placeholders — repoint
+# from the canonical catalog (K8squad/k8squad-skills, ISI-3274) and PINNED to
+# a commit SHA so a force-push cannot silently alter behavior mid-Run
+# (§5.3.6). RepoRefs/SHAs below are illustrative placeholders — repoint
 # them at your own skill repo before use.
+#
+# Capability plane wiring (ISI-3280, Epics A-C):
+# - mcpToolRefs resolve against the MCPServer objects in 02b-mcpservers.yaml
+#   (fail-closed at Run admission on a dangling ref; the skill may only
+#   narrow the server's toolFilter, never widen it — D8).
+# - requires.toolchains resolve name@version against the cluster Toolchain
+#   catalog (ksquad-system). Enable the chart's default catalog with
+#   tools.defaultCatalog.enabled=true — it ships gh@2.62, dtctl@1.0 and
+#   node@22, the exact versions referenced below. Unknown name/version
+#   rejects the Run at admission with an actionable message.
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Skill
@@ -47,7 +58,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       # Pin to an immutable commit SHA (never a floating branch), §5.3.6.
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/github
@@ -71,7 +82,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/dynatrace
   mcpToolRefs:
@@ -92,7 +103,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/graphical
   permissions:

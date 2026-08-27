@@ -5,9 +5,10 @@
 # (CRDs must already be installed by the K8squad Helm chart.)
 #
 # Edit the numbered source files, not this file; regenerate with:
-#   awk 'FNR==1 && NR!=1{print "---"}1' 0*.yaml > squad.yaml
----
+#   for f in 0*.yaml; do printf "\n# =====  =====\n---\n" "$f"; cat "$f"; done > squad.yaml
+
 # ===== 00-namespace.yaml =====
+---
 # BMAD squad namespace. Everything in this example lives here so a single
 # `kubectl delete namespace bmad-squad` tears the whole demo down.
 apiVersion: v1
@@ -18,8 +19,9 @@ metadata:
     app.kubernetes.io/part-of: k8squad
     app.kubernetes.io/managed-by: bmad-team-example
     ksquad.io/example: bmad-team
----
+
 # ===== 01-credentials.yaml =====
+---
 # Model credential every Agent authenticates with (BYO, arch §11 / ADR-010).
 #
 # Replace REPLACE_ME with a real provider token before pointing the squad at
@@ -36,7 +38,104 @@ type: Opaque
 stringData:
   token: "REPLACE_ME"
 ---
+# MCP server credentials (ADR-045: BYO tokens, never literal in the CRD).
+# Referenced by 02b-mcpservers.yaml via spec.credentialSecretRef; the
+# discovery controller reports resolution as the CredentialsValid condition
+# (ADR-042) — a missing Secret degrades the MCPServer to Ready=False, it
+# does not block the apply. Same REPLACE_ME rule: swap before real use.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-mcp-token
+  namespace: bmad-squad
+type: Opaque
+stringData:
+  token: "REPLACE_ME"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dynatrace-mcp-token
+  namespace: bmad-squad
+type: Opaque
+stringData:
+  token: "REPLACE_ME"
+
+# ===== 02b-mcpservers.yaml =====
+---
+# MCP servers the squad's tool Skills reach (ADR-042, Epic A / ISI-3285).
+#
+# Skill.spec.mcpToolRefs in 03-skills.yaml resolve against these MCPServer
+# objects — fail-closed: a dangling ref rejects the Run at admission.
+# Each server is data-only (transport + endpoint/command + credential +
+# tool envelope + egress linkage); Skills may only NARROW toolFilter, never
+# widen it (trust boundary D8).
+#
+# The discovery controller probes each server from the control plane
+# (initialize → tools/list) and records status.observedTools plus the
+# Ready / CredentialsValid / EgressAllowed / ToolsDiscovered conditions.
+# Runs never admit against a server whose tool surface is unknown
+# (empty observedTools ⇒ fail-closed staleness, ADR-042) — so expect a
+# short delay after the first apply before Runs referencing these servers
+# go through.
+#
+# Endpoints/tokens below are illustrative — repoint them at your own
+# GitHub Copilot MCP / Dynatrace tenant before use, and swap the
+# REPLACE_ME tokens in 01-credentials.yaml.
+---
+# GitHub MCP over the Streamable HTTP transport (spike A.2/A.3: one
+# endpoint, POST for messages, Mcp-Session-Id header echo; SSE is not a
+# v1alpha1 transport). Credential rides the Secret, projected per-Run as
+# an env var — never into any file the agent runtime reads (ADR-045 D5).
+apiVersion: ksquad.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-mcp
+  namespace: bmad-squad
+spec:
+  transport: streamable-http
+  endpoint: https://api.githubcopilot.com/mcp/
+  credentialSecretRef:
+    name: github-mcp-token
+    key: token
+  # The granted tool envelope: allow globs minus deny globs. Empty allow
+  # would grant everything observed; this envelope keeps PR/issue work
+  # and subtracts the destructive corners.
+  toolFilter:
+    allow:
+      - "*"
+    deny:
+      - "delete_*"
+  # egressRef: { name: github-egress }   # optional: tie to an EgressPolicy
+  # covering this endpoint (R1 — MCP rides the existing egress story).
+  discovery:
+    intervalMinutes: 10
+---
+# Dynatrace MCP over stdio, packaged as an image: Run assembly stages it
+# as a sidecar container in pods of Runs whose skills reference it
+# (ADR-044 step 6), and the discovery probe Job runs the same image.
+# Pin the digest in real use.
+apiVersion: ksquad.io/v1alpha1
+kind: MCPServer
+metadata:
+  name: dynatrace-mcp
+  namespace: bmad-squad
+spec:
+  transport: stdio
+  command: /usr/local/bin/dynatrace-mcp
+  args: ["--stdio"]
+  image: ghcr.io/k8squad/mcp/dynatrace:1.0
+  credentialSecretRef:
+    name: dynatrace-mcp-token
+    key: token
+  toolFilter:
+    allow:
+      - "query_*"
+      - "list_*"
+      - "get_*"
+
 # ===== 02-runtimes.yaml =====
+---
 # AgentRuntime = the coding-agent flavor + CLI version policy an Agent points
 # at via spec.runtimeRef (arch §5.3). This squad runs one flavor, claude-code,
 # so every Agent references the same runtime. Pin cliVersion to an immutable
@@ -49,8 +148,9 @@ metadata:
   namespace: bmad-squad
 spec:
   type: claude-code
----
+
 # ===== 03-skills.yaml =====
+---
 # The four default Skills granted to this squad (arch §5.3.6). A Skill is the
 # CRD-authorized capability envelope: it is registered here by the operator/
 # admin and never self-widened by the fetched body (trust boundary D8).
@@ -60,9 +160,20 @@ spec:
 # observability gets `dynatrace`; graphical-designer gets `graphical`.
 #
 # `bmad` is inline (self-contained, no fetch). The tool skills are git-sourced
-# and PINNED to a commit SHA so a force-push cannot silently alter behavior
-# mid-Run (§5.3.6). RepoRefs/SHAs below are illustrative placeholders — repoint
+# from the canonical catalog (K8squad/k8squad-skills, ISI-3274) and PINNED to
+# a commit SHA so a force-push cannot silently alter behavior mid-Run
+# (§5.3.6). RepoRefs/SHAs below are illustrative placeholders — repoint
 # them at your own skill repo before use.
+#
+# Capability plane wiring (ISI-3280, Epics A-C):
+# - mcpToolRefs resolve against the MCPServer objects in 02b-mcpservers.yaml
+#   (fail-closed at Run admission on a dangling ref; the skill may only
+#   narrow the server's toolFilter, never widen it — D8).
+# - requires.toolchains resolve name@version against the cluster Toolchain
+#   catalog (ksquad-system). Enable the chart's default catalog with
+#   tools.defaultCatalog.enabled=true — it ships gh@2.62, dtctl@1.0 and
+#   node@22, the exact versions referenced below. Unknown name/version
+#   rejects the Run at admission with an actionable message.
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Skill
@@ -100,7 +211,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       # Pin to an immutable commit SHA (never a floating branch), §5.3.6.
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/github
@@ -124,7 +235,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/dynatrace
   mcpToolRefs:
@@ -145,7 +256,7 @@ spec:
   source:
     type: git
     git:
-      repoRef: github.com/K8squad/squad-skills
+      repoRef: github.com/K8squad/k8squad-skills
       ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
       path: skills/graphical
   permissions:
@@ -154,8 +265,9 @@ spec:
   requires:
     toolchains:
       - node@22
----
+
 # ===== 04-prompts.yaml =====
+---
 # Prompt / behavior ConfigMaps, one per Role (referenced by Role.spec.promptRef).
 #
 # No manager/reportsTo edge exists in the CRD model — Team.spec.agents is flat.
@@ -413,8 +525,9 @@ data:
     Execute the UX Designer's direction into concrete visuals. Keep to the
     brand system. Deliver accessible, production-ready assets. You have the
     `graphical` skill (SVG rendering + asset toolchain).
----
+
 # ===== 05-roles.yaml =====
+---
 # One Role per BMAD function (arch §5.1). Each carries:
 #   - promptRef      → its behavior ConfigMap (04-prompts.yaml)
 #   - defaultSkills  → Skills granted to any Agent assuming the role
@@ -614,8 +727,9 @@ spec:
   defaultSkills:
     - name: bmad
     - name: graphical
----
+
 # ===== 06-agents.yaml =====
+---
 # One Agent per Role — the concrete squad members. Each Agent binds a model +
 # credential to a Role and Runtime. Skills are inherited from the Role's
 # spec.defaultSkills (05-roles.yaml); an Agent could override with its own
@@ -856,8 +970,9 @@ spec:
   credentialSecretRef:
     name: model-credentials
     key: token
----
+
 # ===== 07-project.yaml =====
+---
 # The repository this squad works on (arch §5.4). Point repo.url at your own
 # project and set repo.ref to the branch you want tracked. Goals are injected
 # into every Run's context envelope (§8.5).
@@ -873,8 +988,9 @@ spec:
   goals:
     - "Ship the BMAD-method demo following the phased workflow."
     - "Keep every change small, tested, and reviewable."
----
+
 # ===== 08-team.yaml =====
+---
 # The Team composes the flat list of Agents and Projects into one squad
 # (arch §5.1, §12.1 — a squad is a namespace). Team.spec.agents is intentionally
 # flat: the BMAD reporting hierarchy lives in the role prompts and labels, not
