@@ -106,3 +106,44 @@ func TestDispatcherRequiresClientAndBuilder(t *testing.T) {
 		t.Fatalf("Submit with no Builder must error")
 	}
 }
+
+// TestDispatcherSinkForResolvesPerRun: the operator decorates the run-event
+// path with per-Run labels (TelemetrySink), so SinkFor must be the sink the
+// follow uses — one per Run, not the static Sink (ISI-3352).
+func TestDispatcherSinkForResolvesPerRun(t *testing.T) {
+	fs := &fakeShim{
+		autoClose: true,
+		events:    []wire.Event{statusEvent(1, wire.TaskCompleted)},
+	}
+	byRun := map[string][]wire.Event{}
+	static := &collectSink{}
+	d := &clienta2a.Dispatcher{
+		Client: clienta2a.New(clienta2a.NewEngineTransport(fs)),
+		Builder: func(_ context.Context, a2aTaskID, _ string) (wire.Task, error) {
+			return wire.Task{A2ATaskID: a2aTaskID}, nil
+		},
+		Sink: static, // must stay untouched when SinkFor is set
+		SinkFor: func(runID string) clienta2a.EventSink {
+			return clienta2a.SinkFunc(func(_ context.Context, ev wire.Event) error {
+				byRun[runID] = append(byRun[runID], ev)
+				return nil
+			})
+		},
+	}
+	if err := d.Submit(context.Background(), "run-1", "run-1"); err != nil {
+		t.Fatalf("Submit run-1: %v", err)
+	}
+	if err := d.Submit(context.Background(), "run-2", "run-2"); err != nil {
+		t.Fatalf("Submit run-2: %v", err)
+	}
+	d.Wait()
+
+	if len(static.events) != 0 {
+		t.Fatalf("static Sink saw %d events, want 0 when SinkFor is set", len(static.events))
+	}
+	for _, run := range []string{"run-1", "run-2"} {
+		if len(byRun[run]) != 1 {
+			t.Fatalf("SinkFor(%q) saw %d events, want 1", run, len(byRun[run]))
+		}
+	}
+}

@@ -50,6 +50,12 @@ type Dispatcher struct {
 	Builder TaskBuilder
 	// Sink receives the followed task's SSE events (run_events). Nil discards.
 	Sink EventSink
+	// SinkFor, when set, resolves the event sink per followed Run instead of
+	// the static Sink. The operator's TelemetrySink decorates the run-event
+	// path with per-Run labels (Run/Agent — plan §2.4), which one process-wide
+	// Sink cannot carry: set SinkFor to wrap each Run's sink with its own
+	// labels. Nil falls back to Sink for every Run.
+	SinkFor func(runID string) EventSink
 	// OnDone, if set, is invoked with the terminal Result (or follow error) when
 	// a background follow completes — the seam for run-status settlement and
 	// usage metering. It runs on the follow goroutine.
@@ -87,7 +93,7 @@ func (d *Dispatcher) Submit(ctx context.Context, a2aTaskID, runID string) error 
 	d.follows.Add(1)
 	go func() {
 		defer d.follows.Done()
-		res, ferr := d.Client.Follow(bg, sess, d.sink())
+		res, ferr := d.Client.Follow(bg, sess, d.sinkFor(runID))
 		if d.OnDone != nil {
 			d.OnDone(runID, res, ferr)
 		}
@@ -105,4 +111,13 @@ func (d *Dispatcher) sink() EventSink {
 		return DiscardSink
 	}
 	return d.Sink
+}
+
+// sinkFor resolves the follow sink for one Run: SinkFor when set (per-Run
+// labels), else the static sink()/DiscardSink default.
+func (d *Dispatcher) sinkFor(runID string) EventSink {
+	if d.SinkFor != nil {
+		return d.SinkFor(runID)
+	}
+	return d.sink()
 }

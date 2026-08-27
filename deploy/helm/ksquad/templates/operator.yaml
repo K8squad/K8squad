@@ -54,6 +54,20 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- /* ISI-3352: the operator-side A2A dispatch feed. The operator
+                   image ships the shim binary (/usr/local/bin/shim); the drive
+                   loop spawns `shim run` per dispatched Run (operator-spawned
+                   v1 topology, §10.1) and maps its SSE tool/skill events onto
+                   the ksquad_* metrics scraped off this pod's /metrics.
+                   KSQUAD_RUNTIME_TYPE selects the shim runtime flavor and is
+                   required for a driven Run to execute (unset = dispatch fails
+                   loudly, ledger stays honest). */}}
+            - name: KSQUAD_SHIM_BIN
+              value: /usr/local/bin/shim
+            {{- with .Values.operator.shimRuntimeType }}
+            - name: KSQUAD_RUNTIME_TYPE
+              value: {{ . | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
