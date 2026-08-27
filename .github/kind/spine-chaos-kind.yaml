@@ -1,0 +1,24 @@
+# kind cluster config for the coordination-spine chaos suite (ISI-3247).
+#
+# The chaos Go test needs a STABLE Postgres endpoint on the runner's localhost.
+# The previous exposure used `kubectl port-forward`, which tunnels every TCP
+# connection over a single SPDY channel; under the suite's concurrent `-race`
+# load that channel dropped mid-run (tls error: EOF -> connection refused) and
+# the remaining C/P/D cases failed fast. See ISI-3238 / ISI-3247.
+#
+# This maps the control-plane node's NodePort 30432 to the runner's
+# 127.0.0.1:5432. A NodePort Service (created in the workflow from CNPG's own
+# `-rw` selector) routes that port straight to the primary Postgres pod through
+# the kube-proxy datapath — no SPDY tunnel, no supervisor respawn loop. The DSN
+# the test consumes stays `postgres://...@127.0.0.1:5432/...` (unchanged).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # containerPort must equal the NodePort we pin on the Service (30432);
+      # hostPort 5432 keeps DATABASE_URL identical to the port-forward era.
+      - containerPort: 30432
+        hostPort: 5432
+        listenAddress: "127.0.0.1"
+        protocol: TCP
