@@ -176,4 +176,12 @@ func TestMCPServerWebhookMethods(t *testing.T) {
 	// *MCPServer); a nil object still fails loudly rather than panicking.
 	_, err = v.ValidateCreate(ctx, nil)
 	require.ErrorContains(t, err, "expected an MCPServer object")
+
+	// Update validates its new object like create does.
+	_, err = v.ValidateUpdate(ctx, nil, func() *MCPServer {
+		s := httpServer()
+		s.Spec.Endpoint = "ftp://wrong-scheme"
+		return s
+	}())
+	require.ErrorContains(t, err, "must use the http or https scheme")
 }
