@@ -236,6 +236,18 @@ type RunStatus struct {
 	// +optional
 	GrantedToolchainRBAC *ToolchainRBACGrant `json:"grantedToolchainRBAC,omitempty"`
 
+	// CapabilityManifest is the resolved capability envelope this Run was
+	// dispatched with (plan §2.3, ADR-044 step 5): resolved toolchain
+	// images, resolved MCP endpoints with their EFFECTIVE tool filters,
+	// and the capabilityHash that keys warm-pool inventory. Computed
+	// pre-dispatch and IMMUTABLE for the life of the Run — mid-flight
+	// changes to Skills/Toolchains/MCPServers never widen a running
+	// sandbox; they apply to the next Run. Unlike GrantedToolchainRBAC it
+	// is NOT cleared at terminal: it is the reproducibility record of
+	// what the sandbox actually ran with (ADR-017 discipline).
+	// +optional
+	CapabilityManifest *CapabilityManifest `json:"capabilityManifest,omitempty"`
+
 	// ObservedGeneration is the generation most recently observed by the
 	// Run reconciler (§5.2).
 	// +optional
@@ -299,6 +311,105 @@ type ResolvedToolchainRef struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	SourceNamespace string `json:"sourceNamespace"`
+}
+
+// CapabilityManifest is the resolved capability envelope of a Run (ADR-044
+// step 5): what the sandbox was actually assembled with. It carries NO
+// credential material — credentials are recorded as Secret NAMES only
+// (ADR-045: never literal in status).
+type CapabilityManifest struct {
+	// Toolchains is the resolved, pinned toolchain set staged as init
+	// containers (sorted by name for stable bytes).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=64
+	Toolchains []ResolvedToolchainRef `json:"toolchains,omitempty"`
+
+	// MCPEndpoints is the resolved MCP server set with each server's
+	// EFFECTIVE tool filter (server envelope − deny globs, computed
+	// fail-closed at assembly — ADR-042/044).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=32
+	MCPEndpoints []ResolvedMCPEndpoint `json:"mcpEndpoints,omitempty"`
+
+	// CapabilityHash is sha256 of the manifest's canonical JSON. It keys
+	// warm-pool inventory (ADR-044 step 7: identical capability envelopes
+	// share pool stock) and gives consoles/audits a cheap equality handle.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	CapabilityHash string `json:"capabilityHash,omitempty"`
+}
+
+// ResolvedMCPEndpoint is one MCP server a Run resolved, recorded without
+// credential material: the transport and endpoint/command, the effective
+// allow/deny tool globs, the sidecar flag, and the Secret/EgressPolicy
+// NAMES involved (provenance, never contents — ADR-045).
+type ResolvedMCPEndpoint struct {
+	// Name is the MCPServer object's name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Transport is the server's transport (stdio | streamable-http).
+	// +kubebuilder:validation:Required
+	Transport MCPTransport `json:"transport"`
+
+	// URL is the streamable-http endpoint (empty for stdio).
+	// +optional
+	URL string `json:"url,omitempty"`
+
+	// Headers are the static non-secret HTTP headers sent to a
+	// streamable-http endpoint (secret-bearing header names are rejected
+	// at MCPServer admission — nothing sensitive is recorded here).
+	// +optional
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Command is the stdio server executable (empty for streamable-http).
+	// +optional
+	Command string `json:"command,omitempty"`
+
+	// Args are the stdio command arguments.
+	// +optional
+	// +listType=atomic
+	Args []string `json:"args,omitempty"`
+
+	// Image is the stdio server's packaged image; when set, Run assembly
+	// stages it as a native sidecar container (ADR-044 step 6). Empty for
+	// streamable-http, or stdio servers whose command must exist inside
+	// the runtime image.
+	// +optional
+	Image string `json:"image,omitempty"`
+
+	// Sidecar records whether assembly staged a dedicated sidecar
+	// container for this endpoint (stdio with image).
+	// +optional
+	Sidecar bool `json:"sidecar,omitempty"`
+
+	// AllowTools is the EFFECTIVE allow set after the server envelope was
+	// intersected with observed tools and deny globs subtracted
+	// (fail-closed on empty — ADR-044 step 4).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=256
+	AllowTools []string `json:"allowTools,omitempty"`
+
+	// DenyTools is the deny-glob set recorded verbatim from the server
+	// envelope (already subtracted from AllowTools).
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=256
+	DenyTools []string `json:"denyTools,omitempty"`
+
+	// CredentialSecretRef names the BYO Secret backing this server's
+	// credential (name only — never material; ADR-045 D5).
+	// +optional
+	CredentialSecretRef *SecretRef `json:"credentialSecretRef,omitempty"`
+
+	// EgressPolicyRef names the EgressPolicy covering a streamable-http
+	// endpoint's egress (R1: MCP rides the existing egress story).
+	// +optional
+	EgressPolicyRef *ObjectRef `json:"egressPolicyRef,omitempty"`
 }
 
 // ModelSegment is one portion of a Run served by one model (5.11

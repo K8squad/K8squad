@@ -19,6 +19,7 @@ package runtimes
 import (
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // openCode is the opencode shim adapter (story 5.8). opencode is a
@@ -55,12 +56,20 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		env = append(env, "OPENCODE_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
-	return ExecSpec{
+	spec := ExecSpec{
 		Path:    "opencode",
 		Args:    []string{"run", "--print-logs", "--format=json", "--model", resolveModel(r, lc)},
 		Env:     env,
 		WorkDir: lc.WorkDir,
-	}, nil
+	}
+	// Epic C (ADR-044 step 6): opencode.json's mcp section, rendered from
+	// the projected IR at start (native tools.enable scoping).
+	if f, err := mcpWorkDirFile("opencode.json", capability.RenderOpenCode, lc.MCPEndpoints); err != nil {
+		return ExecSpec{}, err
+	} else if f != nil {
+		spec.WorkDirFiles = append(spec.WorkDirFiles, *f)
+	}
+	return spec, nil
 }
 
 func init() { Register(openCode{}) }
