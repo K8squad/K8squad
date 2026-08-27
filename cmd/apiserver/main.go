@@ -307,7 +307,12 @@ func main() {
 		IssueLinks:   issueLinks,
 		Killer:       apiserver.NewProdRunKiller(db),
 		AuditLog:     auditLog,
-		Hub:          hub,
+		// Epic D tool-usage panel read model (ISI-3288, D3): aggregates the
+		// operator's ksquad_* tool metrics. Unset takes the in-cluster
+		// operator metrics default; a scrape that cannot reach it answers
+		// 503 with the reason (the panel renders a degraded state).
+		ToolUsage: apiserver.NewOperatorMetricsToolUsage(os.Getenv("KSQUAD_OPERATOR_METRICS_URL")),
+		Hub:       hub,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,

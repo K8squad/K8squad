@@ -123,6 +123,29 @@ type SignalRouting struct {
 	Sampling *SamplingConfig `json:"sampling,omitempty"`
 }
 
+// ToolUsageConfig gates the Epic D tool-usage instrumentation pipeline
+// (plan §2.4, story D2): the GenAI-semconv spans (gen_ai.tool.call,
+// skill.load, mcp.call) and the ksquad_tool_calls_total /
+// ksquad_skill_loads_total / ksquad_mcp_call_duration_seconds metrics. It is
+// independent of the signal routings above — tool-usage telemetry rides
+// whatever traces/metrics routing is configured, and disabling it only stops
+// the tool/skill/MCP instrumentation, not the platform's own telemetry.
+type ToolUsageConfig struct {
+	// Enabled turns the tool-usage pipeline on or off platform-wide.
+	// Absent defaults to true (opt-out, plan §5.4): tool-usage telemetry
+	// ships unless explicitly disabled.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// EnabledOrDefault resolves the effective gate value: absent = enabled.
+func (t *ToolUsageConfig) EnabledOrDefault() bool {
+	if t == nil || t.Enabled == nil {
+		return true
+	}
+	return *t.Enabled
+}
+
 // OTelConfigSpec defines the desired state of OTelConfig. At least one signal
 // must be configured; a spec with no signals is rejected as meaningless.
 type OTelConfigSpec struct {
@@ -150,6 +173,12 @@ type OTelConfigSpec struct {
 	// +kubebuilder:validation:XValidation:rule=`!has(self) || !self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
 	// +kubebuilder:validation:XValidation:rule=`!has(self) || !has(self.sampling)`,message="sampling is only valid on traces"
 	Logs *SignalRouting `json:"logs,omitempty"`
+
+	// ToolUsage gates the Epic D tool-usage instrumentation pipeline
+	// (gen_ai.tool.call / skill.load / mcp.call spans and the ksquad_* tool
+	// metrics). Absent = enabled (opt-out, plan §5.4).
+	// +optional
+	ToolUsage *ToolUsageConfig `json:"toolUsage,omitempty"`
 }
 
 // OTelConfigStatus defines the observed state of OTelConfig.

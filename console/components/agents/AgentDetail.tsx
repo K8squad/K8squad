@@ -14,6 +14,7 @@ import type { OrgAgent, RunSummary } from "@/lib/agents/types";
 import { createAgentsClient, AgentsApiError } from "@/lib/agents/api";
 import { StatusChip } from "./StatusChip";
 import { RunLogs } from "./RunLogs";
+import { ToolUsagePanel } from "./ToolUsagePanel";
 
 type LoadState =
   | { kind: "loading" }
@@ -164,6 +165,10 @@ export function AgentDetail({ agentId }: { agentId: string }) {
           </table>
         )}
       </div>
+
+      {/* Epic D (ISI-3288, plan §2.4 story D3): per-agent tool-usage panel —
+          the D2 ksquad_* metrics aggregate. Degraded states render honestly. */}
+      <ToolUsagePanel agentId={agent.name} />
     </section>
   );
 }

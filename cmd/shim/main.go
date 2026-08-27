@@ -47,6 +47,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
+	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
 // version is stamped at build time (-ldflags "-X main.version=...").
@@ -84,7 +86,21 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+
+	// Epic D (plan §2.4): the tool-usage telemetry spine. The toggle env is
+	// rendered by the operator from the OTelConfig CRD tool-usage pipeline
+	// (D2); default ON. The trace carrier (traceparent/tracestate) joins
+	// this shim's spans onto the Run's distributed trace when the
+	// reconciler propagated one.
+	toolusage.SetEnabled(env("KSQUAD_TOOL_USAGE_ENABLED", "true") != "false")
+	ctx := telemetry.Extract(context.Background(), traceCarrierFromEnv())
+	_, otelShutdown, terr := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-shim"})
+	if terr == nil {
+		defer func() { _ = otelShutdown(context.Background()) }()
+	}
+
 	engine := shim.New(rt, shim.NewOSRunner(), cfg)
+	engine.SetTelemetry(toolusage.NewMapper(telemetry.Tracer(), nil))
 
 	switch cmd {
 	case "card":
@@ -141,6 +157,7 @@ func configFromEnv() (shim.Config, error) {
 			Project: os.Getenv("KSQUAD_PROJECT"),
 		},
 		Skills:              splitList(os.Getenv("KSQUAD_SKILLS")),
+		SkillSHAs:           parseSkillSHAs(os.Getenv("KSQUAD_SKILL_SHAS")),
 		Model:               os.Getenv("KSQUAD_MODEL"),
 		Credential:          os.Getenv("KSQUAD_CREDENTIAL"),
 		CredentialSecretRef: os.Getenv("KSQUAD_CREDENTIAL_SECRET_REF"),
@@ -164,6 +181,39 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// traceCarrierFromEnv lifts W3C trace-context headers out of the process env
+// so the shim's spans continue the trace the reconciler started (the spine's
+// Inject wrote them when rendering the sandbox env).
+func traceCarrierFromEnv() map[string]string {
+	carrier := map[string]string{}
+	for _, k := range []string{"TRACEPARENT", "TRACESTATE"} {
+		if v := os.Getenv(k); v != "" {
+			carrier[k] = v
+		}
+	}
+	return carrier
+}
+
+// parseSkillSHAs parses "name=sha256,name=sha256" — the reconciler-rendered
+// pin map for git-sourced skills (Epic D: the SHA rides skill.load spans).
+// Malformed entries are skipped, never fatal: telemetry is observational.
+func parseSkillSHAs(s string) map[string]string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	m := map[string]string{}
+	for _, part := range strings.Split(s, ",") {
+		name, sha, found := strings.Cut(strings.TrimSpace(part), "=")
+		if found && name != "" && sha != "" {
+			m[name] = sha
+		}
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 func splitList(s string) []string {

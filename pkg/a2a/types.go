@@ -141,6 +141,11 @@ const (
 	EventMessage EventType = "message"
 	// EventTool is a tool-call start/result activity event.
 	EventTool EventType = "tool"
+	// EventSkillLoad is a skill-load activity event (Epic D, plan §2.4):
+	// the runtime/shim reports a skill being loaded into the session so the
+	// telemetry spine can turn it into a skill.load span + counter. Payload
+	// is SkillLoadPayload.
+	EventSkillLoad EventType = "skill-load"
 	// EventArtifactRef points to a §5 artifact already committed to coord.
 	EventArtifactRef EventType = "artifact-ref"
 	// EventUsage is best-effort token counts for metering (spec §11).
@@ -187,8 +192,40 @@ type MessagePayload struct {
 type ToolPayload struct {
 	Name    string `json:"name"`
 	Phase   string `json:"phase"`
-	OK      bool   `json:"ok,omitempty"`
+	// OK is tri-state on the wire (Epic D): true = success, false = error,
+	// absent = the emitter could not tell (mapped to outcome "unknown" by
+	// the telemetry spine — never guessed, D1 AC).
+	OK      *bool `json:"ok,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	// ArgsSHA256 is the hex SHA-256 of the tool-call arguments, computed by
+	// the emitter BEFORE the event leaves the process (Epic D, plan §2.4:
+	// args are hashed, never transported raw — they may carry secrets).
+	// +optional
+	ArgsSHA256 string `json:"argsSHA256,omitempty"`
+	// Skill attributes the call to the skill that requested it, when known
+	// (labels ksquad_tool_calls_total{skill}). +optional
+	Skill string `json:"skill,omitempty"`
+	// Server names the MCP server serving this tool when the call rode an
+	// MCPServer (Epic A/C); empty for local/CLI tool calls. A set Server
+	// makes the telemetry mapping emit an mcp.call span instead of
+	// gen_ai.tool.call and observe the MCP duration histogram. +optional
+	Server string `json:"server,omitempty"`
+}
+
+// SkillLoadPayload is the payload of an EventSkillLoad event (Epic D, plan
+// §2.4). It reports one skill entering the runtime session: which skill, the
+// immutable source it came from (git commit SHA when git-sourced; empty for
+// inline bodies), and whether the load succeeded.
+type SkillLoadPayload struct {
+	// Name is the Skill object name (ns/name when cross-namespace).
+	Name string `json:"name"`
+	// SHA256 is the pinned git commit the body was fetched at (git-sourced
+	// skills, arch §5.3.6); empty for inline skill bodies.
+	SHA256 string `json:"sha256,omitempty"`
+	// OK is tri-state like ToolPayload.OK: true = loaded, false = load
+	// failed (Err carries why), absent = unknown. +optional
+	OK  *bool  `json:"ok,omitempty"`
+	Err string `json:"err,omitempty"`
 }
 
 // ArtifactRef is the payload of an EventArtifactRef event (spec §4): a pointer

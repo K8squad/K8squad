@@ -67,6 +67,7 @@ rules:
   - agents
   - egresspolicies
   - mcpservers
+  - otelconfigs
   - roles
   - skills
   verbs:
@@ -77,6 +78,7 @@ rules:
   - ksquad.io
   resources:
   - mcpservers/status
+  - otelconfigs/status
   - projects/status
   - teams/status
   verbs:
