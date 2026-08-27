@@ -365,7 +365,10 @@ func (r *Reconciler) teardown(ctx context.Context, teamObj *api.Team) (ctrl.Resu
 	if err := r.Status().Update(ctx, teamObj); err != nil {
 		return ctrl.Result{}, fmt.Errorf("update team status during teardown: %w", err)
 	}
-	return ctrl.Result{Requeue: true}, nil
+	// Deprecated Result.Requeue (controller-runtime 0.24) → a fixed-interval
+	// RequeueAfter with the same terminatingRequeue used by the provision-side
+	// wait (line ~186): both poll a Terminating namespace until it is gone.
+	return ctrl.Result{RequeueAfter: terminatingRequeue}, nil
 }
 
 func (r *Reconciler) removeFinalizer(ctx context.Context, teamObj *api.Team) error {
