@@ -171,7 +171,8 @@ func TestMCPServerWebhookMethods(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, w)
 
-	// Wrong type fails loudly rather than panicking.
-	_, err = v.ValidateCreate(ctx, &Team{})
+	// Nil fails loudly rather than panicking (the typed Validator API
+	// makes wrong object types a compile error now).
+	_, err = v.ValidateCreate(ctx, nil)
 	require.ErrorContains(t, err, "expected an MCPServer object")
 }

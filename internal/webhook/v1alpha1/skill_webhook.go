@@ -22,6 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
+	builder "sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -33,9 +34,8 @@ import (
 // failurePolicy=fail.
 func SetupSkillWebhookWithManager(mgr ctrl.Manager) error {
 	v := &SkillCustomValidator{Validator: &CrossRefValidator{Reader: mgr.GetClient()}}
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&ksquadv1alpha1.Skill{}).
-		WithValidator(v).
+	return builder.WebhookManagedBy(mgr, &ksquadv1alpha1.Skill{}).
+		WithCustomValidator(v).
 		Complete()
 }
 
