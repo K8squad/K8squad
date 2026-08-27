@@ -23,12 +23,15 @@ package warmpool
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
 // sandboxNamespace is the namespace sandbox pods are created in. It is a
@@ -108,6 +111,16 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 				{
 					Name:  "sandbox",
 					Image: key.Image,
+					// Epic D (ISI-3288, plan §2.4): the tool-usage gate as of
+					// pod boot. The operator's otelgate reconciler keeps
+					// toolusage.Enabled() synced with OTelConfig.spec.toolUsage;
+					// stamping it into the sandbox env carries the toggle to
+					// the shim process (cmd/shim reads it, default-on when
+					// absent — plan §5.4 opt-out).
+					Env: []corev1.EnvVar{{
+						Name:  "KSQUAD_TOOL_USAGE_ENABLED",
+						Value: strconv.FormatBool(toolusage.Enabled()),
+					}},
 					Resources: corev1.ResourceRequirements{
 						// Requests match limits for guaranteed QoS.
 						Limits:   limits,

@@ -106,7 +106,7 @@ func conformantPlan(workItemID string, artifactKinds []string) []shim.Progress {
 	plan := []shim.Progress{
 		{Kind: a2a.EventMessage, Message: &a2a.MessagePayload{Role: "agent", Text: "starting run", Trust: "untrusted"}},
 		{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "shell", Phase: "start"}},
-		{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "shell", Phase: "result", OK: true, Summary: "ok"}},
+		{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "shell", Phase: "result", OK: ptr(true), Summary: "ok"}},
 		{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{Model: "conformance", Input: 100, Output: 42}},
 	}
 	for _, kind := range artifactKinds {
@@ -122,3 +122,7 @@ func conformantPlan(workItemID string, artifactKinds []string) []shim.Progress {
 	}
 	return plan
 }
+
+// ptr is the tri-state OK helper for the tool-result fixture (Epic D made
+// ToolPayload.OK a *bool: nil = unknown outcome).
+func ptr[T any](v T) *T { return &v }

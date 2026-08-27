@@ -815,3 +815,58 @@ a:hover {
   align-items: center;
   margin-top: 12px;
 }
+
+/* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
+.tool-usage__note {
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.tool-usage__kpis {
+  display: flex;
+  gap: 24px;
+  margin: 0 0 16px;
+}
+.tool-usage__kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tool-usage__kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+.tool-usage__kpi-label {
+  color: var(--text-2);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tool-usage__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin: 0 0 16px;
+}
+.tool-usage__table th,
+.tool-usage__table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.tool-usage__table th {
+  color: var(--text-2);
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.tool-usage__table td.num,
+.tool-usage__table th.num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.tool-usage__mcp-title {
+  font-size: 13px;
+  margin: 8px 0 8px;
+}

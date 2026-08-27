@@ -120,6 +120,8 @@ func (t *task) emitProgress(p Progress) {
 		payload = deref(p.Message)
 	case a2a.EventTool:
 		payload = deref(p.Tool)
+	case a2a.EventSkillLoad:
+		payload = deref(p.SkillLoad)
 	case a2a.EventUsage:
 		payload = deref(p.Usage)
 	case a2a.EventArtifactRef:

@@ -37,6 +37,7 @@ type Progress struct {
 	Kind        a2a.EventType
 	Message     *a2a.MessagePayload
 	Tool        *a2a.ToolPayload
+	SkillLoad   *a2a.SkillLoadPayload
 	Usage       *a2a.UsagePayload
 	Artifact    *a2a.ArtifactRef
 	Auth        *a2a.AuthRequiredPayload

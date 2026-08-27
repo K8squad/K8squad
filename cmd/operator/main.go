@@ -50,20 +50,23 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
+	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
-	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/issuesync"
+	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
 	workspacepkg "github.com/K8squad/K8squad/pkg/workspace"
@@ -274,6 +277,21 @@ func main() {
 	// dangling-tool checks consume. Needs no coordination DB.
 	if err := (&mcpserverctrl.Reconciler{}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up MCPServer discovery reconciler")
+		os.Exit(1)
+	}
+
+	// Epic D (ISI-3288, plan §2.4): the tool-usage instrumentation spine.
+	// Constructing the Mapper registers its ksquad_* instruments on the
+	// controller-runtime metrics registry (the operator's /metrics endpoint),
+	// so ksquad_tool_calls_total, ksquad_skill_loads_total and
+	// ksquad_mcp_call_duration_seconds are scrapeable alongside the
+	// controller metrics. The otelgate reconciler watches OTelConfig and
+	// applies spec.toolUsage onto the process-wide gate: flipping the CRD
+	// field stops and resumes tool-usage spans + metrics mid-process, no
+	// restart (story D2).
+	_ = toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
+	if err := (&otelgate.Reconciler{}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up otelgate reconciler")
 		os.Exit(1)
 	}
 
