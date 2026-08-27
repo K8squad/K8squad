@@ -1,0 +1,288 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: mcpservers.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: MCPServer
+    listKind: MCPServerList
+    plural: mcpservers
+    shortNames:
+    - mcp
+    - mcps
+    singular: mcpserver
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.transport
+      name: Transport
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .status.observedTools
+      name: Tools
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          MCPServer is the Schema for the mcpservers API (ADR-042): a declared MCP
+          server — transport, endpoint/command, credentials, tool envelope, egress
+          linkage — that Skill.spec.mcpToolRefs resolve against.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              MCPServerSpec defines the desired state of MCPServer (ADR-042).
+
+              Data-only and validated: an MCPServer authorizes a data-plane egress point
+              (transport + endpoint/command), its credentials, its tool envelope, and
+              its egress policy linkage. It never carries trust decisions itself —
+              skills only narrow the envelope (D8).
+            properties:
+              args:
+                description: Args are the command's arguments (stdio only).
+                items:
+                  type: string
+                type: array
+              command:
+                description: |-
+                  Command is the executable to launch for transport=stdio. Required iff
+                  transport=stdio; forbidden for streamable-http (CEL pairing rule).
+                  When Image is absent the command must exist inside the runtime image.
+                type: string
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef references the BYO Secret (same namespace) holding
+                  the server's credential. Existence is enforced as the CredentialsValid
+                  status condition, not admission, so credential rotation never requires
+                  re-apply (ADR-042).
+                properties:
+                  key:
+                    description: Key inside the Secret; empty means the consumer-defined
+                      default key.
+                    type: string
+                  name:
+                    description: Name of the referenced Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              discovery:
+                description: Discovery tunes the control-plane probe cadence.
+                properties:
+                  intervalMinutes:
+                    default: 10
+                    description: |-
+                      IntervalMinutes is the periodic re-probe cadence in minutes. Default
+                      10; 0 disables the periodic re-probe (create/spec-change probes still
+                      fire).
+                    format: int32
+                    maximum: 1440
+                    minimum: 0
+                    type: integer
+                type: object
+              egressRef:
+                description: |-
+                  EgressRef optionally names the EgressPolicy covering this server's
+                  endpoint (R1: MCP rides the existing egress story, no new trust).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              endpoint:
+                description: |-
+                  Endpoint is the streamable-http MCP endpoint URL. Required iff
+                  transport=streamable-http; forbidden for stdio (CEL pairing rule).
+                type: string
+              headers:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Headers are static, NON-secret headers sent on streamable-http
+                  requests. Secret-bearing header names (Authorization, Cookie, ...) are
+                  rejected at admission — use credentialSecretRef so secret material
+                  never lands in the CRD (ADR-045).
+                type: object
+              image:
+                description: |-
+                  Image optionally packages the stdio server. When set, Run assembly
+                  stages it as a sidecar container (ADR-044 step 6); the discovery
+                  controller's stdio probe Job runs the same image.
+                type: string
+              toolFilter:
+                description: |-
+                  ToolFilter scopes the granted tool envelope (allow globs minus deny
+                  globs). Skills may only narrow it (D8).
+                properties:
+                  allow:
+                    description: |-
+                      Allow lists tool-name globs to grant. Empty (or absent) grants all of
+                      the server's observed tools.
+                    items:
+                      type: string
+                    type: array
+                  deny:
+                    description: |-
+                      Deny lists tool-name globs subtracted from the effective allow set.
+                      Exact-string overlap with allow is rejected at admission (CEL);
+                      glob overlap is caught at Run assembly where an empty effective set
+                      fails closed (ADR-042).
+                    items:
+                      type: string
+                    type: array
+                type: object
+              transport:
+                description: |-
+                  Transport selects the MCP transport: stdio or streamable-http
+                  (spike A.3 closed enum; SSE is not a v1alpha1 transport).
+                enum:
+                - stdio
+                - streamable-http
+                type: string
+            required:
+            - transport
+            type: object
+            x-kubernetes-validations:
+            - message: 'transport pairing: streamable-http requires endpoint and must
+                not set command/args; use spec.endpoint and transport=streamable-http'
+              rule: (self.transport != 'streamable-http') || (has(self.endpoint) &&
+                self.endpoint != '' && !has(self.command))
+            - message: 'transport pairing: stdio requires command and must not set
+                endpoint; use spec.command and transport=stdio'
+              rule: (self.transport != 'stdio') || (has(self.command) && self.command
+                != '' && !has(self.endpoint))
+            - message: 'toolFilter: allow and deny must not overlap on the same exact
+                tool name; remove the overlap or use a glob'
+              rule: '!has(self.toolFilter) || !has(self.toolFilter.allow) || !has(self.toolFilter.deny)
+                || self.toolFilter.allow.all(a, !self.toolFilter.deny.contains(a))'
+          status:
+            description: |-
+              MCPServerStatus is the observed state of MCPServer, written only by the
+              discovery controller (status subresource).
+            properties:
+              conditions:
+                description: |-
+                  Conditions carry Ready, CredentialsValid, EgressAllowed,
+                  ToolsDiscovered (ADR-042).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastProbedAt:
+                description: |-
+                  LastProbedAt is the time of the last completed probe attempt
+                  (successful or not).
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the spec.generation the last probe ran against.
+                  A generation bump (spec change) triggers one fresh probe even when
+                  discovery.intervalMinutes=0 disables the periodic cadence.
+                format: int64
+                type: integer
+              observedTools:
+                description: |-
+                  ObservedTools is the tool list from the last successful discovery
+                  probe (initialize → tools/list). Runs fail closed while it is empty
+                  and ToolsDiscovered=False (ADR-042 staleness).
+                items:
+                  type: string
+                type: array
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

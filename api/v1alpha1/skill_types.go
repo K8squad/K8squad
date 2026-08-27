@@ -140,6 +140,7 @@ type SkillRequires struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=skill,categories=ksquad
+// +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-skill,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=skills,verbs=create;update,versions=v1alpha1,name=vskill-crossrefs.ksquad.io,admissionReviewVersions=v1
 
 // Skill is the Schema for the skills API — a granted tool/capability
 // (arch §5.1). It is namespaced by default.
