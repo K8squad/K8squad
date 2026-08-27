@@ -103,7 +103,7 @@ type ToolchainRBAC struct {
 // is the authority; a team-namespace Toolchain with the same name is an
 // override that may only NARROW — subset rules, no scope widening, no new
 // versions/images — enforced fail-closed at admission.
-// +kubebuilder:validation:XValidation:message="toolchain versions: every version entry must set a non-empty image",rule="self.versions.all(v, has(v.image) && v.image != ”)"
+// +kubebuilder:validation:XValidation:message="toolchain versions: every version entry must set a non-empty image",rule="self.versions.all(v, has(v.image) && v.image != '')"
 // +kubebuilder:validation:XValidation:message="toolchain versions: version strings must be unique; two entries with different content cannot share a version",rule="self.versions.all(v, self.versions.all(w, w == v || w.version != v.version))"
 // +kubebuilder:validation:XValidation:message="toolchain rbac: every rule must declare at least one verb",rule="!has(self.rbac) || !has(self.rbac.rules) || self.rbac.rules.all(r, has(r.verbs) && r.verbs.size() > 0)"
 type ToolchainSpec struct {
