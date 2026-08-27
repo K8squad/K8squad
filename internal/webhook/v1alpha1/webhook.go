@@ -42,9 +42,9 @@ import (
 // TeamCustomValidator validates Team admission (story 1.3).
 type TeamCustomValidator struct{ Validator *CrossRefValidator }
 
-var _ admission.CustomValidator = &TeamCustomValidator{}
+var _ admission.Validator[runtime.Object] = &TeamCustomValidator{}
 
-// ValidateCreate implements admission.CustomValidator.
+// ValidateCreate implements admission.Validator.
 func (v *TeamCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	team, ok := obj.(*ksquadv1alpha1.Team)
 	if !ok {
@@ -53,12 +53,12 @@ func (v *TeamCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Ob
 	return nil, toInvalid("Team", team.Name, v.Validator.ValidateTeam(ctx, team))
 }
 
-// ValidateUpdate implements admission.CustomValidator.
+// ValidateUpdate implements admission.Validator.
 func (v *TeamCustomValidator) ValidateUpdate(ctx context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
 	return v.ValidateCreate(ctx, newObj)
 }
 
-// ValidateDelete implements admission.CustomValidator (Teams delete freely).
+// ValidateDelete implements admission.Validator (Teams delete freely).
 func (v *TeamCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
@@ -66,9 +66,9 @@ func (v *TeamCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object
 // AgentCustomValidator validates Agent admission (story 1.3).
 type AgentCustomValidator struct{ Validator *CrossRefValidator }
 
-var _ admission.CustomValidator = &AgentCustomValidator{}
+var _ admission.Validator[runtime.Object] = &AgentCustomValidator{}
 
-// ValidateCreate implements admission.CustomValidator.
+// ValidateCreate implements admission.Validator.
 func (v *AgentCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	agent, ok := obj.(*ksquadv1alpha1.Agent)
 	if !ok {
@@ -77,12 +77,12 @@ func (v *AgentCustomValidator) ValidateCreate(ctx context.Context, obj runtime.O
 	return nil, toInvalid("Agent", agent.Name, v.Validator.ValidateAgent(ctx, agent))
 }
 
-// ValidateUpdate implements admission.CustomValidator.
+// ValidateUpdate implements admission.Validator.
 func (v *AgentCustomValidator) ValidateUpdate(ctx context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
 	return v.ValidateCreate(ctx, newObj)
 }
 
-// ValidateDelete implements admission.CustomValidator (Agents delete freely).
+// ValidateDelete implements admission.Validator (Agents delete freely).
 func (v *AgentCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
 }
@@ -91,9 +91,9 @@ func (v *AgentCustomValidator) ValidateDelete(_ context.Context, _ runtime.Objec
 // trusted-dev escape gate).
 type RunCustomValidator struct{ Validator *CrossRefValidator }
 
-var _ admission.CustomValidator = &RunCustomValidator{}
+var _ admission.Validator[runtime.Object] = &RunCustomValidator{}
 
-// ValidateCreate implements admission.CustomValidator.
+// ValidateCreate implements admission.Validator.
 func (v *RunCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	run, ok := obj.(*ksquadv1alpha1.Run)
 	if !ok {
@@ -104,7 +104,7 @@ func (v *RunCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Obj
 	return nil, toInvalid("Run", run.Name, errs)
 }
 
-// ValidateUpdate implements admission.CustomValidator.
+// ValidateUpdate implements admission.Validator.
 func (v *RunCustomValidator) ValidateUpdate(ctx context.Context, old, newObj runtime.Object) (admission.Warnings, error) {
 	newRun, ok := newObj.(*ksquadv1alpha1.Run)
 	if !ok {
@@ -127,7 +127,7 @@ func requesterFrom(ctx context.Context) authenticationv1.UserInfo {
 	return authenticationv1.UserInfo{}
 }
 
-// ValidateDelete implements admission.CustomValidator (kills are FR-A6, not
+// ValidateDelete implements admission.Validator (kills are FR-A6, not
 // admission's business).
 func (v *RunCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
@@ -153,9 +153,9 @@ func toInvalid(kind, name string, errs field.ErrorList) error {
 // them onto the shared validating paths instead of registering duplicate
 // webhook entries for the same resources.
 type CrossRefValidators struct {
-	Team  admission.CustomValidator
-	Agent admission.CustomValidator
-	Run   admission.CustomValidator
+	Team  admission.Validator[runtime.Object]
+	Agent admission.Validator[runtime.Object]
+	Run   admission.Validator[runtime.Object]
 }
 
 // NewCrossRefValidators builds the three story 1.3 validators over reader.
@@ -172,7 +172,7 @@ func NewCrossRefValidators(reader client.Reader) *CrossRefValidators {
 
 // For returns the cross-ref validator for obj's concrete type, or nil when
 // the type carries no story 1.3 guards (e.g. Project).
-func (c *CrossRefValidators) For(obj runtime.Object) admission.CustomValidator {
+func (c *CrossRefValidators) For(obj runtime.Object) admission.Validator[runtime.Object] {
 	switch obj.(type) {
 	case *ksquadv1alpha1.Team:
 		return c.Team
