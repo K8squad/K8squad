@@ -146,6 +146,8 @@ func TestGitLabDataPlaneFailsClosed(t *testing.T) {
 	assertNotImplemented("CreateComment", err)
 	err = p.CreateStatus(ctx, "gitlab.com/acme/app", "deadbeef", Status{})
 	assertNotImplemented("CreateStatus", err)
+	err = p.UpdateIssue(ctx, "gitlab.com/acme/app", "1", IssueUpdate{State: IssueStateClosed})
+	assertNotImplemented("UpdateIssue", err)
 	_, err = p.GetRepo(ctx, "gitlab.com/acme/app")
 	assertNotImplemented("GetRepo", err)
 }

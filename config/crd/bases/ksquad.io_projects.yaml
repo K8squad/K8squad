@@ -158,6 +158,25 @@ spec:
                     description: Sync configures the repo-sync reconciler (§5.4).
                       Nil disables sync.
                     properties:
+                      issueSync:
+                        description: |-
+                          IssueSync configures the story-11.2 GitHub-issues ⇄ work-items sync
+                          for this Project. Nil keeps the default: inbound-only sync for any
+                          issue links that exist (§5.4, FR-H1).
+                        properties:
+                          direction:
+                            default: inbound
+                            description: |-
+                              Direction governs which way changes flow for this Project's issue
+                              links: inbound mirrors provider issue status/labels into the linked
+                              work item only; bidirectional also reflects KSquad work-item status
+                              changes back to the provider issue through the SourceProvider seam
+                              (origin-marked for echo suppression, §5.4).
+                            enum:
+                            - inbound
+                            - bidirectional
+                            type: string
+                        type: object
                       mirror:
                         description: |-
                           Mirror selects what the inbound reconciler mirrors into the scm

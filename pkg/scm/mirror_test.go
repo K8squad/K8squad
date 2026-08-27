@@ -59,6 +59,10 @@ func (s *stubProvider) CreateComment(_ context.Context, _, _, _, _ string) (stri
 	return "", fmt.Errorf("not implemented in stub")
 }
 
+func (s *stubProvider) UpdateIssue(_ context.Context, _, _ string, _ IssueUpdate) error {
+	return fmt.Errorf("not implemented in stub")
+}
+
 func (s *stubProvider) CreateStatus(_ context.Context, _, _ string, _ Status) error {
 	return fmt.Errorf("not implemented in stub")
 }

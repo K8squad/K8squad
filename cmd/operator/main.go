@@ -61,6 +61,7 @@ import (
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
+	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
@@ -188,9 +189,20 @@ func main() {
 		// triggers are the webhook-ingress annotation bump (cmd/scm-webhook,
 		// HMAC-verified before parse) and the spec's poll-interval requeue;
 		// every pass is the same idempotent provider-snapshot upsert.
+		//
+		// The story-11.2 issue⇄work-item engine rides the SAME pass: for
+		// every scm.issue_link of the Project it drives status/labels
+		// across the provider seam (LWW, audited conflicts) — one loop,
+		// two triggers, no third path (ISI-2738).
+		issueLinkStore, err := issuesync.NewSQLStore(db)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind issue-link store")
+			os.Exit(1)
+		}
 		if err := (&reposync.Reconciler{
 			Store:     scm.NewSQLMirrorStore(db),
 			Providers: scm.NewProviderRegistry(),
+			IssueSync: issuesync.NewSyncer(issueLinkStore),
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
 			os.Exit(1)
