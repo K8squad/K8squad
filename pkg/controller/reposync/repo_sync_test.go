@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr/funcr"
 	corev1 "k8s.io/api/core/v1"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
 )
 
@@ -81,6 +83,9 @@ func (p *sequenceProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _
 func (p *sequenceProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
 }
+func (p *sequenceProvider) UpdateIssue(_ context.Context, _, _ string, _ scm.IssueUpdate) error {
+	return fmt.Errorf("unused")
+}
 func (p *sequenceProvider) CreateStatus(_ context.Context, _, _ string, _ scm.Status) error {
 	return fmt.Errorf("unused")
 }
@@ -96,6 +101,9 @@ func (p *fakeProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []b
 }
 func (p *fakeProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
+}
+func (p *fakeProvider) UpdateIssue(_ context.Context, _, _ string, _ scm.IssueUpdate) error {
+	return fmt.Errorf("unused")
 }
 func (p *fakeProvider) CreateStatus(_ context.Context, _, _ string, _ scm.Status) error {
 	return fmt.Errorf("unused")
@@ -434,5 +442,115 @@ func TestCredentialsProjectFailingCondition(t *testing.T) {
 	}
 	if cond.Reason != reasonProviderFail {
 		t.Fatalf("reason %q, want %q", cond.Reason, reasonProviderFail)
+	}
+}
+
+// recordingIssueStore is the story-11.2 engine's Store double: it records
+// the pass's inputs (project ref, direction via the Observation it is asked
+// to persist) and can be made to fail on demand.
+type recordingIssueStore struct {
+	listErr    error
+	links      []issuesync.Link
+	observed   []issuesync.Observation
+	listedNS   string
+	listedName string
+}
+
+func (s *recordingIssueStore) ListLinks(_ context.Context, ns, name string) ([]issuesync.Link, error) {
+	s.listedNS, s.listedName = ns, name
+	return s.links, s.listErr
+}
+func (s *recordingIssueStore) ReadWorkItem(_ context.Context, _ string) (issuesync.WorkItemSnapshot, error) {
+	return issuesync.WorkItemSnapshot{State: "todo", UpdatedAt: time.Unix(0, 0)}, nil
+}
+func (s *recordingIssueStore) ApplyInbound(_ context.Context, _ issuesync.Link, _ issuesync.InboundApply) error {
+	return nil
+}
+func (s *recordingIssueStore) ApplyOutbound(_ context.Context, _ issuesync.Link, _ issuesync.OutboundApply) error {
+	return nil
+}
+func (s *recordingIssueStore) Observe(_ context.Context, _ issuesync.Link, obs issuesync.Observation) error {
+	s.observed = append(s.observed, obs)
+	return nil
+}
+
+// The story-11.2 pass rides the SAME reconcile: the engine sees the
+// project ref, the JUST-APPLIED mirror rows flow through the link
+// bookkeeping, and the direction comes from the spec (default inbound).
+func TestIssueSyncPassRidesTheReconcile(t *testing.T) {
+	store := &recordingIssueStore{
+		links: []issuesync.Link{{
+			ID: "l1", ProjectNamespace: testNamespace, ProjectName: testProject,
+			WorkItemID: "00000000-0000-0000-0000-000000000001",
+			Provider:   "github", Repo: "github.com/acme/app", ExternalID: "7",
+			Direction: issuesync.DirectionInbound, Provenance: issuesync.ProvenanceExternalSourced,
+			LastWriter: issuesync.WriterExternal, ExternalLabels: []string{},
+		}},
+	}
+	r, mirror := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.IssueSync = issuesync.NewSyncer(store)
+
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if store.listedNS != testNamespace || store.listedName != testProject {
+		t.Fatalf("engine listed %s/%s, want %s/%s", store.listedNS, store.listedName, testNamespace, testProject)
+	}
+	if len(store.observed) != 1 {
+		t.Fatalf("observations = %d, want 1 (mirror issue #7 observed, PRs/checks ignored)", len(store.observed))
+	}
+	if got := store.observed[0].Direction; got != issuesync.DirectionInbound {
+		t.Fatalf("observed direction = %q, want inbound default", got)
+	}
+	// The mirror pass itself still applied (the link pass is additive).
+	if rows := mirror.Rows(); len(rows) != 3 {
+		t.Fatalf("mirror rows = %d, want 3 (echo-suppressed bot PR dropped)", len(rows))
+	}
+}
+
+// spec.repo.sync.issueSync.direction flows through to the engine's
+// bookkeeping (bidirectional), and an unset spec keeps the inbound default.
+func TestIssueSyncDirectionFromSpec(t *testing.T) {
+	store := &recordingIssueStore{
+		links: []issuesync.Link{{
+			ID: "l1", ProjectNamespace: testNamespace, ProjectName: testProject,
+			WorkItemID: "00000000-0000-0000-0000-000000000001",
+			Provider:   "github", Repo: "github.com/acme/app", ExternalID: "7",
+			Direction: issuesync.DirectionInbound, Provenance: issuesync.ProvenanceKSquadNative,
+			LastWriter: issuesync.WriterExternal, ExternalLabels: []string{},
+		}},
+	}
+	p := syncProject(0)
+	p.Spec.Repo.Sync.IssueSync = &ksquadapi.RepoIssueSyncSpec{Direction: "bidirectional"}
+	r, _ := newHarness(t, p, &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.IssueSync = issuesync.NewSyncer(store)
+
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.observed) != 1 || store.observed[0].Direction != issuesync.DirectionBidirectional {
+		t.Fatalf("observed = %+v, want bidirectional bookkeeping", store.observed)
+	}
+}
+
+// A failing link pass fails the reconcile with its own condition reason —
+// the mirror pass already applied, and the level-triggered retry re-applies
+// it idempotently.
+func TestIssueSyncFailureSurfacesOwnReason(t *testing.T) {
+	store := &recordingIssueStore{listErr: fmt.Errorf("link store down")}
+	r, _ := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.IssueSync = issuesync.NewSyncer(store)
+
+	_, err := r.Reconcile(context.Background(), request())
+	if err == nil {
+		t.Fatal("issue-sync failure swallowed")
+	}
+	updated := &ksquadapi.Project{}
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testProject}, updated); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionSyncReady)
+	if cond == nil || cond.Reason != reasonIssueSync {
+		t.Fatalf("SyncReady reason = %+v, want %q", cond, reasonIssueSync)
 	}
 }

@@ -362,3 +362,67 @@ func TestSnapshotTargetsParsedOwnerRepo(t *testing.T) {
 		t.Fatalf("snapshot against parsed owner/repo: %v", err)
 	}
 }
+
+// UpdateIssue sends ONE PATCH carrying state and/or the replacement labels
+// (story 11.2 outbound sync), refuses empty updates (a no-op write would
+// bump updated_at upstream and echo back as a phantom external change), and
+// rejects non-normalized states before any wire call.
+func TestUpdateIssueSinglePatchStateAndLabels(t *testing.T) {
+	var gotBody map[string]interface{}
+	var gotMethod, gotPath string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode PATCH body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, issueJSON(7, "closed", "t", "dev", false))
+	})
+
+	p, _ := newTestGitHubProvider(t, mux)
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{State: IssueStateClosed, Labels: []string{"bug", "synced"}}); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPatch {
+		t.Fatalf("method = %s, want PATCH (one edit call, not add+remove)", gotMethod)
+	}
+	if gotPath != "/repos/acme/app/issues/7" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotBody["state"] != "closed" {
+		t.Fatalf("state = %v, want closed", gotBody["state"])
+	}
+	labels, _ := gotBody["labels"].([]interface{})
+	if len(labels) != 2 || labels[0] != "bug" || labels[1] != "synced" {
+		t.Fatalf("labels = %v, want full replacement set [bug synced]", gotBody["labels"])
+	}
+
+	// Labels-only update: state key absent from the wire body.
+	gotBody = nil
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{Labels: []string{"x"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := gotBody["state"]; present {
+		t.Fatalf("state leaked into labels-only update: %v", gotBody)
+	}
+}
+
+// Empty and malformed updates never reach the wire.
+func TestUpdateIssueRefusesEmptyAndBadState(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("provider made a wire call for a refused update")
+		w.WriteHeader(http.StatusTeapot)
+	})
+	p, _ := newTestGitHubProvider(t, mux)
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7", IssueUpdate{}); err == nil {
+		t.Fatal("empty update accepted")
+	}
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{State: "half-open"}); err == nil {
+		t.Fatal("non-normalized state accepted")
+	}
+}
