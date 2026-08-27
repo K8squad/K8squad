@@ -86,11 +86,29 @@ func TestCRDHasSandboxDefaults(t *testing.T) {
 }
 
 // RetryPolicy sanity: negative retry counts and zero/negative backoff are
-// rejected fail-closed.
+// rejected fail-closed, and the retry loop is bounded (maxRetries <= 20,
+// backoffSeconds <= 3600 — the run_types.go markers, ISI-3297 resync).
 func TestCRDHasRetryPolicyRules(t *testing.T) {
 	yaml := squashed(loadCRD(t, "../../config/crd/bases/ksquad.io_runs.yaml"))
-	assert.Contains(t, yaml, squashed("!has(self.maxRetries) || self.maxRetries >= 0"))
-	assert.Contains(t, yaml, squashed("!has(self.backoffSeconds) || self.backoffSeconds >= 1"))
+	assert.Contains(t, yaml, squashed("!has(self.maxRetries) || (self.maxRetries >= 0 && self.maxRetries <= 20)"))
+	assert.Contains(t, yaml, squashed("!has(self.backoffSeconds) || (self.backoffSeconds >= 1 && self.backoffSeconds <= 3600)"))
+}
+
+// Structural defaulting for the retry loop (ISI-3297): the documented
+// MaxRetries=5 / BackoffSeconds=60 defaults apply at admission, server-side.
+func TestCRDHasRetryPolicyDefaults(t *testing.T) {
+	yaml := loadCRD(t, "../../config/crd/bases/ksquad.io_runs.yaml")
+	for _, field := range []string{"maxRetries:", "backoffSeconds:"} {
+		idx := strings.Index(yaml, field)
+		require.NotEqual(t, -1, idx, field+" must be in the Run CRD")
+		section := yaml[idx : idx+400]
+		switch field {
+		case "maxRetries:":
+			assert.Contains(t, section, "default: 5", "maxRetries must default to 5 (anti-infinite-loop safety default)")
+		case "backoffSeconds:":
+			assert.Contains(t, section, "default: 60", "backoffSeconds must default to 60s (§8 backoff base)")
+		}
+	}
 }
 
 // ContextBudget tiers are non-negative wherever the budget appears
@@ -108,8 +126,9 @@ func TestCRDHasContextBudgetRule(t *testing.T) {
 // The admission manifests must fail closed (a broken webhook denies,
 // never admits) for every guarded kind. Story 1.6 unified the attribution
 // wiring — each of the four attributed kinds (Team, Project, Agent, Run)
-// has exactly one mutating and one validating entry — and story 1.5 adds
-// the OTelConfig validating webhook on top.
+// has exactly one mutating and one validating entry — story 1.5 adds
+// the OTelConfig validating webhook, and Epic A (ISI-3285) adds the
+// MCPServer and Skill validating webhooks.
 func TestWebhookManifestsFailClosed(t *testing.T) {
 	yaml := loadCRD(t, "../../config/webhook/manifests.yaml")
 	for _, name := range []string{
@@ -118,6 +137,8 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 		"magent-attribution.ksquad.io", "vagent-attribution.ksquad.io",
 		"mrun-attribution.ksquad.io", "vrun-attribution.ksquad.io",
 		"votelconfig-v1alpha1.ksquad.io",
+		"vmcpserver-v1alpha1.ksquad.io",
+		"vskill-crossrefs.ksquad.io",
 	} {
 		assert.Contains(t, yaml, "name: "+name)
 	}
@@ -126,6 +147,6 @@ func TestWebhookManifestsFailClosed(t *testing.T) {
 	assert.NotContains(t, yaml, "name: vteam.kb.io")
 	assert.NotContains(t, yaml, "name: vagent.kb.io")
 	assert.NotContains(t, yaml, "name: vrun.kb.io")
-	assert.Equal(t, 9, strings.Count(yaml, "failurePolicy: Fail"),
+	assert.Equal(t, 11, strings.Count(yaml, "failurePolicy: Fail"),
 		"every mutating and validating webhook must fail closed")
 }

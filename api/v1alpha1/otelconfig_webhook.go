@@ -23,7 +23,6 @@ import (
 	"regexp"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
@@ -34,36 +33,27 @@ import (
 // checks CEL cannot express: URL parseability, reserved resource-attribute
 // keys, and attribute-key syntax.
 func SetupOTelConfigWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&OTelConfig{}).
+	return ctrl.NewWebhookManagedBy(mgr, &OTelConfig{}).
 		WithValidator(&OTelConfig{}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-otelconfig,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=otelconfigs,verbs=create;update,versions=v1alpha1,name=votelconfig-v1alpha1.ksquad.io,admissionReviewVersions=v1
 
-var _ admission.CustomValidator = &OTelConfig{}
+var _ admission.Validator[*OTelConfig] = &OTelConfig{}
 
-// ValidateCreate implements admission.CustomValidator.
-func (r *OTelConfig) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	cfg, ok := obj.(*OTelConfig)
-	if !ok {
-		return nil, fmt.Errorf("expected an OTelConfig object but got %T", obj)
-	}
-	return validateOTelConfig(cfg)
+// ValidateCreate implements admission.Validator.
+func (r *OTelConfig) ValidateCreate(_ context.Context, obj *OTelConfig) (admission.Warnings, error) {
+	return validateOTelConfig(obj)
 }
 
-// ValidateUpdate implements admission.CustomValidator.
-func (r *OTelConfig) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	cfg, ok := newObj.(*OTelConfig)
-	if !ok {
-		return nil, fmt.Errorf("expected an OTelConfig object but got %T", newObj)
-	}
-	return validateOTelConfig(cfg)
+// ValidateUpdate implements admission.Validator.
+func (r *OTelConfig) ValidateUpdate(_ context.Context, _, newObj *OTelConfig) (admission.Warnings, error) {
+	return validateOTelConfig(newObj)
 }
 
-// ValidateDelete implements admission.CustomValidator.
-func (r *OTelConfig) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator.
+func (r *OTelConfig) ValidateDelete(_ context.Context, _ *OTelConfig) (admission.Warnings, error) {
 	// Deletion is always allowed.
 	return nil, nil
 }
