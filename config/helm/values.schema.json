@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "k8squad chart values",
+  "description": "Validated values for the k8squad control-plane chart. The tools block is the Epic B (ISI-3286) toolchain capability plane: a curated default catalog behind one flag, plus the cluster-scope RBAC opt-in that must never default on.",
+  "type": "object",
+  "properties": {
+    "namespace": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "workspacePVC": {
+      "type": "object",
+      "properties": {
+        "defaultClass": { "type": "string" },
+        "defaultSize": { "type": "string" },
+        "defaultAccessModes": { "type": "array", "items": { "type": "string" } },
+        "supportedClasses": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "tools": {
+      "type": "object",
+      "description": "Toolchain capability plane (plan §2.2/§2.2b).",
+      "additionalProperties": false,
+      "properties": {
+        "defaultCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Render the curated cluster catalog as Toolchain objects in the control-plane namespace. Default false."
+            },
+            "entries": {
+              "type": "object",
+              "description": "Catalog entries keyed by toolchain name. Defaults are the curated seven (kubectl, git, gh, go, node, dtctl, helm) with least-privilege RBAC (kubectl only, read-only core+apps).",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["versions"],
+                "properties": {
+                  "versions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["version", "image"],
+                      "properties": {
+                        "version": { "type": "string", "minLength": 1, "maxLength": 64 },
+                        "image": { "type": "string", "minLength": 1 },
+                        "provides": { "type": "array", "items": { "type": "string" } }
+                      }
+                    }
+                  },
+                  "rbac": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "scope": { "type": "string", "enum": ["namespace", "cluster"], "default": "namespace" },
+                      "rules": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "required": ["verbs"],
+                          "properties": {
+                            "apiGroups": { "type": "array", "items": { "type": "string" } },
+                            "resources": { "type": "array", "items": { "type": "string" } },
+                            "verbs": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                            "resourceNames": { "type": "array", "items": { "type": "string" } },
+                            "nonResourceURLs": { "type": "array", "items": { "type": "string" } }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "rbac": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clusterScopeEnabled": {
+              "type": "boolean",
+              "description": "Explicit platform opt-in for cluster-scope toolchain RBAC (rbac.scope=cluster on a cluster-catalog Toolchain). Injected as KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED on the webhook and operator. Never default-on.",
+              "default": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

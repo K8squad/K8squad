@@ -45,11 +45,17 @@ var _ admission.Validator[*MCPServer] = &MCPServer{}
 
 // ValidateCreate implements admission.Validator.
 func (r *MCPServer) ValidateCreate(_ context.Context, srv *MCPServer) (admission.Warnings, error) {
+	if srv == nil {
+		return nil, fmt.Errorf("expected an MCPServer object but got %T", srv)
+	}
 	return validateMCPServer(srv)
 }
 
 // ValidateUpdate implements admission.Validator.
 func (r *MCPServer) ValidateUpdate(_ context.Context, _, newObj *MCPServer) (admission.Warnings, error) {
+	if newObj == nil {
+		return nil, fmt.Errorf("expected an MCPServer object but got %T", newObj)
+	}
 	return validateMCPServer(newObj)
 }
 
