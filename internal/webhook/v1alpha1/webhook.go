@@ -144,7 +144,7 @@ func toInvalid(kind, name string, errs field.ErrorList) error {
 		ksquadv1alpha1.GroupVersion.WithKind(kind).GroupKind(), name, errs)
 }
 
-// +kubebuilder:rbac:groups=ksquad.io,resources=teams;agents;agentruntimes;roles;skills;projects,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ksquad.io,resources=teams;agents;agentruntimes;roles;skills;projects;mcpservers,verbs=get;list;watch
 
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 

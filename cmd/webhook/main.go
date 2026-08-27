@@ -47,6 +47,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	attrwebhook "github.com/K8squad/K8squad/internal/webhook"
+	crossrefs "github.com/K8squad/K8squad/internal/webhook/v1alpha1"
 )
 
 var scheme = runtime.NewScheme()
@@ -94,7 +95,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs"})
+	// Epic A (ISI-3285): MCPServer admission (transport pairing mirror,
+	// secret-looking headers, reserved runtime names) and the Skill
+	// dangling mcpToolRefs fail-closed guard (story A2, ADR-042). Both
+	// deploy failurePolicy=fail.
+	if err := ksquadv1alpha1.SetupMCPServerWebhookWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up MCPServer webhook")
+		os.Exit(1)
+	}
+	if err := crossrefs.SetupSkillWebhookWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Skill webhook")
+		os.Exit(1)
+	}
+
+	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs", "mcpservers", "skills"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "webhook server exited with error")
 		os.Exit(1)
