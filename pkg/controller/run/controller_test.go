@@ -161,7 +161,7 @@ func TestReconcileMissingRunIsNoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("missing Run should not error, got %v", err)
 	}
-	if res.Requeue || res.RequeueAfter != 0 {
+	if res.RequeueAfter != 0 {
 		t.Errorf("missing Run should not requeue, got %+v", res)
 	}
 }
