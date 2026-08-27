@@ -1,0 +1,199 @@
+# One Role per BMAD function (arch §5.1). Each carries:
+#   - promptRef      → its behavior ConfigMap (04-prompts.yaml)
+#   - defaultSkills  → Skills granted to any Agent assuming the role
+#   - labels         → the reporting hierarchy (ksquad.io/reports-to), since the
+#                      CRD model has no manager edge
+#   - runtimeClassHint → sandbox posture for execution-heavy roles (gvisor)
+#
+# Skill wiring: every role gets `bmad`; coder/devops/code-reviewer add `github`;
+# observability-engineer adds `dynatrace`; graphical-designer adds `graphical`.
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: ceo
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: ceo
+spec:
+  promptRef:
+    name: ceo-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: product-manager
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: product-manager
+    ksquad.io/reports-to: ceo
+spec:
+  promptRef:
+    name: product-manager-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: architect
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: architect
+    ksquad.io/reports-to: ceo
+spec:
+  promptRef:
+    name: architect-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: ux-designer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: ux-designer
+    ksquad.io/reports-to: ceo
+spec:
+  promptRef:
+    name: ux-designer-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: brainstormer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: brainstormer
+    ksquad.io/reports-to: product-manager
+spec:
+  promptRef:
+    name: brainstormer-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: challenger
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: challenger
+    ksquad.io/reports-to: product-manager
+spec:
+  promptRef:
+    name: challenger-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: content-writer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: content-writer
+    ksquad.io/reports-to: product-manager
+spec:
+  promptRef:
+    name: content-writer-prompt
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: code-reviewer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: code-reviewer
+    ksquad.io/reports-to: architect
+spec:
+  promptRef:
+    name: code-reviewer-prompt
+  runtimeClassHint: gvisor
+  defaultSkills:
+    - name: bmad
+    - name: github
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: test-architect
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: test-architect
+    ksquad.io/reports-to: architect
+spec:
+  promptRef:
+    name: test-architect-prompt
+  runtimeClassHint: gvisor
+  defaultSkills:
+    - name: bmad
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: coder
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: coder
+    ksquad.io/reports-to: architect
+spec:
+  promptRef:
+    name: coder-prompt
+  runtimeClassHint: gvisor
+  defaultSkills:
+    - name: bmad
+    - name: github
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: devops-engineer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: devops-engineer
+    ksquad.io/reports-to: architect
+spec:
+  promptRef:
+    name: devops-engineer-prompt
+  runtimeClassHint: gvisor
+  defaultSkills:
+    - name: bmad
+    - name: github
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: observability-engineer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: observability-engineer
+    ksquad.io/reports-to: architect
+spec:
+  promptRef:
+    name: observability-engineer-prompt
+  defaultSkills:
+    - name: bmad
+    - name: dynatrace
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: graphical-designer
+  namespace: bmad-squad
+  labels:
+    ksquad.io/bmad-role: graphical-designer
+    ksquad.io/reports-to: ux-designer
+spec:
+  promptRef:
+    name: graphical-designer-prompt
+  defaultSkills:
+    - name: bmad
+    - name: graphical
