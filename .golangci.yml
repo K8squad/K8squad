@@ -128,39 +128,6 @@ linters:
           - gosec
         text: "G202"
         path: ^internal/apiserver/audit\.go
-      # SA1019 controller-runtime 0.24 / k8s 0.36 deprecation wave (ISI-3238 dep
-      # bump). The bumped libraries deprecate APIs still in wide use here —
-      # admission.Custom{Validator,Defaulter} (untyped aliases), scheme.Builder,
-      # Result.Requeue, WithCustomValidator. The code is CORRECT and compiles;
-      # only the symbols are marked deprecated. Migrating the admission webhooks
-      # to the typed Validator[T]/Defaulter[T] builders (and the scheme/Result
-      # changes) is a deliberate follow-up (tracked separately), not a hasty
-      # edit inside a dependency bump — a rushed webhook rewrite risks admission
-      # bypass. Silence the deprecation notices in the files that carry them
-      # until that migration lands.
-      #
-      # NOTE: staticcheck's SA1019 message for a chained builder call spans
-      # multiple lines (`SA1019: ctrl.WebhookManagedBy(...).\n  WithCustom... is
-      # deprecated`). golangci matches `text` with Go's regexp, whose `.` does
-      # not cross newlines, so a single `SA1019.*WithCustom...` pattern never
-      # matched and the deprecations leaked through. Scope by `path` instead —
-      # `text: SA1019` matches the leading token on the message's first line,
-      # so it is robust to the multiline / variable-name-dependent tail.
-      - linters:
-          - staticcheck
-        text: "SA1019"
-        path: ^internal/webhook/attribution\.go
-      - linters:
-          - staticcheck
-        text: "SA1019"
-        path: ^pkg/controller/run/controller_test\.go
-      # kept for other files that hit the same single-line deprecation wave
-      - linters:
-          - staticcheck
-        text: "SA1019.*admission\\.(Custom)?(Validator|Defaulter) is deprecated"
-      - linters:
-          - staticcheck
-        text: "SA1019.*scheme\\.Builder is deprecated"
     paths:
       - third_party$
       - builtin$
