@@ -15,6 +15,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/operator ./cmd/operator
+# Build shim binary for A2A dispatch in operator image
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/shim ./cmd/shim
 
 FROM gcr.io/distroless/static-debian12:nonroot
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
@@ -23,5 +28,6 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /
 COPY --from=build /out/operator /usr/local/bin/operator
+COPY --from=build /out/shim /usr/local/bin/shim
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/operator"]
