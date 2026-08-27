@@ -38,6 +38,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx" for the coord pool
@@ -54,6 +55,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
+	clienta2a "github.com/K8squad/K8squad/internal/a2a"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
@@ -138,6 +140,9 @@ func main() {
 	// the reconciler has no source and would panic on the first Run event, so the
 	// operator still elects and serves probes but does not register the controller
 	// (e.g. a probe-only smoke deploy before the DB is provisioned).
+	// The A2A dispatch feed (ISI-3352) is built inside the coord-DSN branch
+	// below; the shutdown drain at the tail needs it in this scope.
+	var a2aDispatcher *clienta2a.Dispatcher
 	if coordDSN == "" {
 		ctrl.Log.Info("Run reconciler not registered: no coord DSN (set --coord-dsn or $DATABASE_URL)")
 	} else {
@@ -184,11 +189,42 @@ func main() {
 		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution)
 		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi")
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
+
+		// Epic D follow-up (ISI-3352): the physical A2A dispatch feed — the
+		// production caller the ISI-3348 review demanded. The mapper (Epic D,
+		// plan §2.4) registers the ksquad_* instruments on the
+		// controller-runtime metrics registry (the operator's /metrics
+		// endpoint); the dispatcher is what FEEDS it: TaskBuilder (coord
+		// schema + Run CR → wire.Task) → StdioTransport (`shim run`
+		// subprocess — operator-spawned, the §10.1 v1 topology) → per-Run
+		// TelemetrySink mapping tool/skill events onto the mapper. With the
+		// shim binary absent the constructor errors and the drive loop keeps
+		// its ledger-only dispatcher — an honest, loudly-logged degraded
+		// state, never a silently broken dispatch.
+		mapper := toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
+		var a2aErr error
+		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
+			DB:     db,
+			Client: mgr.GetClient(),
+			Mapper: mapper,
+			ShimBin: func() string {
+				if v := os.Getenv("KSQUAD_SHIM_BIN"); v != "" {
+					return v
+				}
+				return "shim" // the operator image ships it at /usr/local/bin/shim
+			}(),
+			RuntimeType: os.Getenv("KSQUAD_RUNTIME_TYPE"),
+			Stderr:      shimLogWriter{},
+		})
+		if a2aErr != nil {
+			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
+		}
+
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
 			rundrive.NewProdPauses(resumeStore),
 			rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-				kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), nil))
+				kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher))
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
@@ -281,15 +317,15 @@ func main() {
 	}
 
 	// Epic D (ISI-3288, plan §2.4): the tool-usage instrumentation spine.
-	// Constructing the Mapper registers its ksquad_* instruments on the
-	// controller-runtime metrics registry (the operator's /metrics endpoint),
-	// so ksquad_tool_calls_total, ksquad_skill_loads_total and
-	// ksquad_mcp_call_duration_seconds are scrapeable alongside the
-	// controller metrics. The otelgate reconciler watches OTelConfig and
+	// The mapper itself is constructed at the Run drive loop (above) — the
+	// dispatch feed and the instruments register in one place, so the
+	// ksquad_tool_calls_total / ksquad_skill_loads_total /
+	// ksquad_mcp_call_duration_seconds series are scrapeable on the
+	// controller-runtime registry (the operator's /metrics endpoint) AND fed
+	// by live dispatches. The otelgate reconciler watches OTelConfig and
 	// applies spec.toolUsage onto the process-wide gate: flipping the CRD
 	// field stops and resumes tool-usage spans + metrics mid-process, no
 	// restart (story D2).
-	_ = toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
 	if err := (&otelgate.Reconciler{}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up otelgate reconciler")
 		os.Exit(1)
@@ -334,6 +370,22 @@ func main() {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
+	// Drain in-flight A2A follows so a Run's SSE stream is fully flushed to
+	// the run-event sink + telemetry mapper before the process exits (the
+	// Dispatcher's graceful-shutdown barrier, ISI-3352).
+	if a2aDispatcher != nil {
+		a2aDispatcher.Wait()
+	}
+}
+
+// shimLogWriter routes the shim subprocess's diagnostic stream (the
+// StdioTransport's Stderr — NEVER the SSE channel) into the operator's
+// structured log.
+type shimLogWriter struct{}
+
+func (shimLogWriter) Write(p []byte) (int, error) {
+	ctrl.Log.Info(strings.TrimRight(string(p), "\n"), "src", "shim")
+	return len(p), nil
 }
 
 // timerRunnable adapts the 3.7 resume timer to the manager's Runnable surface:
