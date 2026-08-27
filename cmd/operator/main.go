@@ -64,6 +64,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/toolchain"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
 	workspacepkg "github.com/K8squad/K8squad/pkg/workspace"
 )
@@ -144,7 +145,16 @@ func main() {
 		}
 		// sql.Open is lazy; per-reconcile read failures surface through the
 		// StepSource error and requeue rather than crashing the manager.
-		if err := (&runctrl.Reconciler{Source: coord.NewReconcileStepReader(db)}).SetupWithManager(mgr); err != nil {
+		// Epic B (ISI-3286): the Run reconciler also converges the per-Run
+		// toolchain RBAC union (per-Run Role bound to the managed
+		// ksquad-agent SA, released at terminal phase) and records the
+		// grant on Run.status. Platform config (cluster-catalog namespace,
+		// cluster-scope opt-in) comes from the deployment env the Helm
+		// chart sets.
+		if err := (&runctrl.Reconciler{
+			Source: coord.NewReconcileStepReader(db),
+			RBAC:   runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
 		}
