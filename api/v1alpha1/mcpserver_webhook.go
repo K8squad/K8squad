@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
@@ -35,36 +34,27 @@ import (
 // credentialSecretRef, never the CRD — ADR-045), and reserved runtime
 // server names (spike B.1/B.2: names the runtime clients own).
 func SetupMCPServerWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&MCPServer{}).
+	return ctrl.NewWebhookManagedBy(mgr, &MCPServer{}).
 		WithValidator(&MCPServer{}).
 		Complete()
 }
 
 // +kubebuilder:webhook:path=/validate-ksquad-io-v1alpha1-mcpserver,mutating=false,failurePolicy=fail,sideEffects=None,groups=ksquad.io,resources=mcpservers,verbs=create;update,versions=v1alpha1,name=vmcpserver-v1alpha1.ksquad.io,admissionReviewVersions=v1
 
-var _ admission.CustomValidator = &MCPServer{}
+var _ admission.Validator[*MCPServer] = &MCPServer{}
 
-// ValidateCreate implements admission.CustomValidator.
-func (r *MCPServer) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
-	srv, ok := obj.(*MCPServer)
-	if !ok {
-		return nil, fmt.Errorf("expected an MCPServer object but got %T", obj)
-	}
-	return validateMCPServer(srv)
+// ValidateCreate implements admission.Validator.
+func (r *MCPServer) ValidateCreate(_ context.Context, obj *MCPServer) (admission.Warnings, error) {
+	return validateMCPServer(obj)
 }
 
-// ValidateUpdate implements admission.CustomValidator.
-func (r *MCPServer) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
-	srv, ok := newObj.(*MCPServer)
-	if !ok {
-		return nil, fmt.Errorf("expected an MCPServer object but got %T", newObj)
-	}
-	return validateMCPServer(srv)
+// ValidateUpdate implements admission.Validator.
+func (r *MCPServer) ValidateUpdate(_ context.Context, _, newObj *MCPServer) (admission.Warnings, error) {
+	return validateMCPServer(newObj)
 }
 
-// ValidateDelete implements admission.CustomValidator.
-func (r *MCPServer) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+// ValidateDelete implements admission.Validator.
+func (r *MCPServer) ValidateDelete(_ context.Context, _ *MCPServer) (admission.Warnings, error) {
 	// Deletion is always allowed; the discovery controller stops probing.
 	return nil, nil
 }

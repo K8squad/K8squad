@@ -104,9 +104,6 @@ func TestSkillCustomValidatorSurface(t *testing.T) {
 	w, err = v.ValidateDelete(ctx, skillWithRefs())
 	require.NoError(t, err)
 	assert.Nil(t, w)
-
-	_, err = v.ValidateCreate(ctx, &ksquadv1alpha1.Team{})
-	require.ErrorContains(t, err, "expected a Skill")
 }
 
 // failingReader always errors: simulates apiserver read trouble so the
