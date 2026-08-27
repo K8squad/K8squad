@@ -19,8 +19,6 @@ package webhook
 import (
 	"context"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -33,8 +31,7 @@ import (
 // failurePolicy=fail.
 func SetupSkillWebhookWithManager(mgr ctrl.Manager) error {
 	v := &SkillCustomValidator{Validator: &CrossRefValidator{Reader: mgr.GetClient()}}
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&ksquadv1alpha1.Skill{}).
+	return ctrl.NewWebhookManagedBy(mgr, &ksquadv1alpha1.Skill{}).
 		WithValidator(v).
 		Complete()
 }
@@ -43,24 +40,20 @@ func SetupSkillWebhookWithManager(mgr ctrl.Manager) error {
 // mcpToolRefs fail closed; ADR-042 webhook contract).
 type SkillCustomValidator struct{ Validator *CrossRefValidator }
 
-var _ admission.CustomValidator = &SkillCustomValidator{}
+var _ admission.Validator[*ksquadv1alpha1.Skill] = &SkillCustomValidator{}
 
-// ValidateCreate implements admission.CustomValidator.
-func (v *SkillCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	skill, ok := obj.(*ksquadv1alpha1.Skill)
-	if !ok {
-		return nil, apierrors.NewBadRequest("expected a Skill but got " + obj.GetObjectKind().GroupVersionKind().String())
-	}
+// ValidateCreate implements admission.Validator.
+func (v *SkillCustomValidator) ValidateCreate(ctx context.Context, skill *ksquadv1alpha1.Skill) (admission.Warnings, error) {
 	return nil, toInvalid("Skill", skill.Name, v.Validator.ValidateSkill(ctx, skill))
 }
 
-// ValidateUpdate implements admission.CustomValidator.
-func (v *SkillCustomValidator) ValidateUpdate(ctx context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
+// ValidateUpdate implements admission.Validator.
+func (v *SkillCustomValidator) ValidateUpdate(ctx context.Context, _, newObj *ksquadv1alpha1.Skill) (admission.Warnings, error) {
 	return v.ValidateCreate(ctx, newObj)
 }
 
-// ValidateDelete implements admission.CustomValidator (Skills delete freely;
+// ValidateDelete implements admission.Validator (Skills delete freely;
 // Runs re-check their MCP refs at assembly).
-func (v *SkillCustomValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
+func (v *SkillCustomValidator) ValidateDelete(_ context.Context, _ *ksquadv1alpha1.Skill) (admission.Warnings, error) {
 	return nil, nil
 }
