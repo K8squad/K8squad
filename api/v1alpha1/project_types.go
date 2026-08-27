@@ -130,6 +130,12 @@ type RepoSyncSpec struct {
 	// +optional
 	Mirror *RepoMirrorSpec `json:"mirror,omitempty"`
 
+	// IssueSync configures the story-11.2 GitHub-issues ⇄ work-items sync
+	// for this Project. Nil keeps the default: inbound-only sync for any
+	// issue links that exist (§5.4, FR-H1).
+	// +optional
+	IssueSync *RepoIssueSyncSpec `json:"issueSync,omitempty"`
+
 	// PollIntervalSeconds is the periodic poll-fallback cadence (§5.4,
 	// story 11.1 AC3): the level-triggered reconcile re-runs at this
 	// interval so a lost webhook is never permanent drift. It comes from
@@ -165,6 +171,32 @@ type RepoMirrorSpec struct {
 	// Artifacts mirrors release/build artifacts by URI + sha (FR-H2).
 	// +optional
 	Artifacts *bool `json:"artifacts,omitempty"`
+}
+
+// RepoIssueSyncSpec configures the issue⇄work-item sync loop (story 11.2,
+// FR-H1): given issue links in scm.issue_link, the repo-sync reconciler's
+// level-triggered pass drives status/labels across the seam per this
+// direction, with last-writer-wins conflicts audited (§6.5).
+type RepoIssueSyncSpec struct {
+	// Direction governs which way changes flow for this Project's issue
+	// links: inbound mirrors provider issue status/labels into the linked
+	// work item only; bidirectional also reflects KSquad work-item status
+	// changes back to the provider issue through the SourceProvider seam
+	// (origin-marked for echo suppression, §5.4).
+	// +optional
+	// +kubebuilder:validation:Enum=inbound;bidirectional
+	// +kubebuilder:default=inbound
+	Direction string `json:"direction,omitempty"`
+}
+
+// EffectiveIssueSyncDirection resolves the configured issue-sync direction,
+// applying the inbound default when unset (story 11.2 AC1: the direction is
+// configured per Project, never hardcoded in the loop).
+func (s *RepoSyncSpec) EffectiveIssueSyncDirection() string {
+	if s == nil || s.IssueSync == nil || s.IssueSync.Direction == "" {
+		return "inbound"
+	}
+	return s.IssueSync.Direction
 }
 
 // PVCSpec sizes and classes a workspace PVC (arch §5.1 — "workspacePVC
