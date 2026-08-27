@@ -224,6 +224,13 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		// declarative grant data, never embedded coordination rows.
 		reflect.TypeOf(ToolchainRBACGrant{}):   true,
 		reflect.TypeOf(ResolvedToolchainRef{}): true,
+		// CapabilityManifest (Epic C, ISI-3287, plan §2.3/ADR-044) is
+		// the resolved capability envelope: pinned images, MCP endpoint
+		// IR with effective tool filters, and Secret/EgressPolicy NAME
+		// refs — reproducibility data with no credential material and
+		// no embedded coordination rows.
+		reflect.TypeOf(CapabilityManifest{}):  true,
+		reflect.TypeOf(ResolvedMCPEndpoint{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {

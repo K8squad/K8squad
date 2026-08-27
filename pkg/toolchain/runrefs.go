@@ -38,11 +38,17 @@ type RunRequirements struct {
 	Sources map[string]string
 }
 
-// RefsForRun walks Run → Agents → Skills and collects the toolchain refs.
-// Missing agents/skills are NOT errors here: the story 1.3 cross-ref
+// RefsForRun walks Run → Agents (spec.skillRefs ∪ Role.spec.defaultSkills,
+// ADR-044 step 1) → Skills and collects the toolchain refs. Missing
+// agents/skills/roles are NOT errors here: the story 1.3 cross-ref
 // guards already reject dangling Run agents and Agent skillRefs at
 // admission, and the renderer only needs the toolchain demand of what
 // resolves. Read failures are errors (fail-closed).
+//
+// Epic C note (ISI-3287): the Role's defaultSkills joined the walk so
+// Run admission, the RBAC renderer and the capability manifest resolve
+// the SAME demand set — the grant admission proved is exactly the grant
+// dispatch assumes (one code path, ADR-044).
 func (r *Resolver) RefsForRun(ctx context.Context, run *api.Run) (*RunRequirements, error) {
 	reqs := &RunRequirements{Sources: map[string]string{}}
 	seenSkills := map[string]bool{}
@@ -60,7 +66,23 @@ func (r *Resolver) RefsForRun(ctx context.Context, run *api.Run) (*RunRequiremen
 			return nil, fmt.Errorf("read agent %s/%s for toolchain resolution (fail-closed): %w", agentNS, agentRef.Name, err)
 		}
 
-		for _, skillRef := range agent.Spec.SkillRefs {
+		skillRefs := append([]api.ObjectRef(nil), agent.Spec.SkillRefs...)
+		if roleRef := agent.Spec.RoleRef; roleRef.Name != "" {
+			roleNS := roleRef.Namespace
+			if roleNS == "" {
+				roleNS = agent.Namespace
+			}
+			var role api.Role
+			if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: roleNS, Name: roleRef.Name}, &role); err != nil {
+				if !isNotFound(err) {
+					return nil, fmt.Errorf("read role %s/%s for toolchain resolution (fail-closed): %w", roleNS, roleRef.Name, err)
+				}
+			} else {
+				skillRefs = append(skillRefs, role.Spec.DefaultSkills...)
+			}
+		}
+
+		for _, skillRef := range skillRefs {
 			skillNS := skillRef.Namespace
 			if skillNS == "" {
 				skillNS = agent.Namespace

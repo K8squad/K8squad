@@ -151,9 +151,14 @@ func main() {
 		// grant on Run.status. Platform config (cluster-catalog namespace,
 		// cluster-scope opt-in) comes from the deployment env the Helm
 		// chart sets.
+		// Epic C (ISI-3287): the Run reconciler also resolves the Run's
+		// capability envelope pre-dispatch, stamps the immutable
+		// Run.status.capabilityManifest and projects the MCP IR ConfigMap
+		// the runtime adapters consume (ADR-044).
 		if err := (&runctrl.Reconciler{
-			Source: coord.NewReconcileStepReader(db),
-			RBAC:   runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Source:    coord.NewReconcileStepReader(db),
+			RBAC:      runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Assembler: runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)

@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // CredentialShape is the runtime-native form a generic per-user Secret is
@@ -69,6 +70,20 @@ type LaunchContext struct {
 	Credential string
 	// WorkDir is the sandbox working directory the CLI runs in.
 	WorkDir string
+	// MCPEndpoints is the Run's resolved MCP IR (Epic C, ADR-044 step 6:
+	// projected into the sandbox as K8SQUAD_MCP_CONFIG, parsed once at shim
+	// startup). Each adapter renders its native config from it via the
+	// pkg/capability renderers — one IR, four renderers. Empty when the Run
+	// demanded no MCP servers.
+	MCPEndpoints []capability.Endpoint
+}
+
+// WorkDirFile is a file the runner materializes in ExecSpec.WorkDir before
+// launching the CLI — the delivery mechanism for rendered native MCP
+// configs (files, because the runtimes read config from their workdir).
+type WorkDirFile struct {
+	Name    string
+	Content []byte
 }
 
 // ExecSpec is the native process a shim launches for one Run. Env carries the
@@ -80,6 +95,9 @@ type ExecSpec struct {
 	// WorkDir is the sandbox working directory the CLI runs in (from
 	// LaunchContext.WorkDir); empty means the process's current directory.
 	WorkDir string
+	// WorkDirFiles are written into WorkDir before launch (rendered native
+	// MCP configs — credentials referenced as env names, never literal).
+	WorkDirFiles []WorkDirFile
 }
 
 // Runtime is the adapter contract every conformant coding-agent flavor
@@ -192,4 +210,20 @@ func modelRouteEnv(mr a2a.ModelRoute) []string {
 		"OPENAI_BASE_URL=" + mr.Endpoint,
 		"OPENAI_API_KEY=" + key,
 	}
+}
+
+// mcpWorkDirFile renders the endpoints with the given per-runtime renderer
+// into one workdir config file (Epic C, ADR-044 step 6: the native config
+// renders at start from the projected IR — credentials already ride as env
+// NAMES inside the rendered documents, resolved by the CLI process env).
+// Returns nil when the Run demanded no MCP servers.
+func mcpWorkDirFile(name string, render func([]capability.Endpoint) ([]byte, error), endpoints []capability.Endpoint) (*WorkDirFile, error) {
+	if len(endpoints) == 0 {
+		return nil, nil
+	}
+	content, err := render(endpoints)
+	if err != nil {
+		return nil, fmt.Errorf("render mcp config %s: %w", name, err)
+	}
+	return &WorkDirFile{Name: name, Content: content}, nil
 }

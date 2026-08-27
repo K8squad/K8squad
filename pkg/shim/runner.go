@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
@@ -67,6 +69,14 @@ type osRunner struct{}
 func NewOSRunner() Runner { return osRunner{} }
 
 func (osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Progress)) (Outcome, error) {
+	// Epic C: rendered native MCP configs materialize in the workdir
+	// BEFORE the CLI starts (ADR-044: race-free — the runtime reads its
+	// config at start, the files exist by then). Credentials inside the
+	// rendered documents are env-NAME references, resolved by the CLI
+	// process env; nothing secret is written here.
+	if err := materializeWorkDirFiles(spec.WorkDir, spec.WorkDirFiles); err != nil {
+		return Outcome{}, err
+	}
 	// #nosec G204 -- spec.Path and spec.Args are constructed entirely by the
 	// registered runtime adapter from fixed binary names + constant flags
 	// (pkg/shim/runtimes); the untrusted Run input rides ExecSpec.Env, never
@@ -110,4 +120,29 @@ func (osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Progr
 		return Outcome{State: a2a.TaskFailed, Reason: waitErr.Error()}, nil
 	}
 	return Outcome{State: a2a.TaskCompleted}, nil
+}
+
+// materializeWorkDirFiles writes the adapter-rendered config files into the
+// workdir. Path-traversal safe: file names are adapter constants, never Run
+// input; the guard keeps that invariant fail-closed against future adapters
+// (hidden files like .mcp.json are legal; separators and traversal are not).
+func materializeWorkDirFiles(workDir string, files []runtimes.WorkDirFile) error {
+	for _, f := range files {
+		if f.Name == "" || strings.ContainsAny(f.Name, "/\\") || strings.Contains(f.Name, "..") {
+			return fmt.Errorf("shim: refusing workdir file %q: adapter file names must be plain names", f.Name)
+		}
+		if workDir != "" {
+			if err := os.MkdirAll(workDir, 0o750); err != nil {
+				return fmt.Errorf("shim: mkdir workdir: %w", err)
+			}
+			if err := os.WriteFile(filepath.Join(workDir, f.Name), f.Content, 0o600); err != nil {
+				return fmt.Errorf("shim: write %s: %w", f.Name, err)
+			}
+			continue
+		}
+		if err := os.WriteFile(f.Name, f.Content, 0o600); err != nil {
+			return fmt.Errorf("shim: write %s: %w", f.Name, err)
+		}
+	}
+	return nil
 }
