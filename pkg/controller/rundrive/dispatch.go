@@ -317,6 +317,10 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	}
 	env = append(env, d.cfg.ExtraEnv...)
 
+	// #nosec G204 -- d.shimBin is the operator's own pod-spec env/config
+	// (cfg.ShimBin, default "shim"), validated via exec.LookPath at
+	// construction and never derived from Run or request input; argv is the
+	// constant "run". Spawning the shim is this dispatcher's job.
 	cmd := exec.CommandContext(ctx, d.shimBin, "run")
 	cmd.Env = env
 	return cmd, nil
