@@ -15,7 +15,7 @@ them.
     pinned release artifact; go, node, uv: `COPY --from` the official image)
   - **apk package on alpine 3.21** (git, jq, curl, make)
   - **rebase of an official minimal image** (python → `python:3.12-alpine`,
-    docker-cli → `docker:27-cli`)
+    docker-cli → `docker:29-cli`)
 - **`images/toolchains/matrix.json`** (this directory) — build detail per tool:
   Dockerfile path, context, and pinned upstream patch (`buildArgs`). The canonical
   tool **list** (name + catalog tag) is declared in
@@ -29,8 +29,8 @@ them.
 ## Tag semantics
 
 `ghcr.io/k8squad/toolchains/<tool>:<version>` — `<version>` is the **catalog tag** from
-`values.yaml` and tracks an upstream *minor line* (e.g. `kubectl:1.31`); the exact patch
-is pinned in `matrix.json` `buildArgs` (e.g. `KUBECTL_VERSION=v1.31.14`). apk-based tools
+`values.yaml` and tracks an upstream *minor line* (e.g. `kubectl:1.36`); the exact patch
+is pinned in `matrix.json` `buildArgs` (e.g. `KUBECTL_VERSION=v1.36.4`). apk-based tools
 track the alpine 3.21 package (a floor for the catalog minor). A `sha-<commit>` tag is
 published alongside for traceability; the ADR (ISI-3283) reproducibility form is the
 digest pin in `values.yaml`, applied after each publish.

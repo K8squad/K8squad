@@ -57,8 +57,8 @@ tools:
     entries:
       kubectl:
         versions:
-        - version: "1.31"
-          image: ghcr.io/k8squad/toolchains/kubectl:1.31
+        - version: "1.36"
+          image: ghcr.io/k8squad/toolchains/kubectl:1.36
           provides: [kubectl]
         rbac:
           scope: namespace
@@ -76,13 +76,13 @@ tools:
           provides: [git]
       gh:
         versions:
-        - version: "2.62"
-          image: ghcr.io/k8squad/toolchains/gh:2.62
+        - version: "2.98"
+          image: ghcr.io/k8squad/toolchains/gh:2.98
           provides: [gh]
       go:
         versions:
-        - version: "1.23"
-          image: ghcr.io/k8squad/toolchains/go:1.23
+        - version: "1.26"
+          image: ghcr.io/k8squad/toolchains/go:1.26
           provides: [go]
       node:
         versions:
@@ -96,8 +96,8 @@ tools:
           provides: [dtctl]
       helm:
         versions:
-        - version: "3.16"
-          image: ghcr.io/k8squad/toolchains/helm:3.16
+        - version: "3.21"
+          image: ghcr.io/k8squad/toolchains/helm:3.21
           provides: [helm]
       # AI-agent toolset (ISI-3400, approved on ISI-3387 card b72964f6).
       # All seven are PATH-staged with zero Kubernetes grants — no rbac
@@ -111,8 +111,8 @@ tools:
           provides: [python, python3, pip]
       docker-cli:
         versions:
-        - version: "27"
-          image: ghcr.io/k8squad/toolchains/docker-cli:27
+        - version: "29"
+          image: ghcr.io/k8squad/toolchains/docker-cli:29
           provides: [docker]
       uv:
         versions:

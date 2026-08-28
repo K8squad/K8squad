@@ -40,7 +40,7 @@ namespace is fine.
 ## Toolchains & the default catalog
 
 Skills declare their CLI needs as `name@version` refs
-(`Skill.spec.requires.toolchains`, e.g. `gh@2.62`). Those refs resolve against
+(`Skill.spec.requires.toolchains`, e.g. `gh@2.98`). Those refs resolve against
 `Toolchain` objects — the **cluster catalog** lives in the control-plane
 namespace, and team namespaces may only *narrow* it (subset versions/rules),
 never widen it. Enable the curated default catalog with one flag:
@@ -57,15 +57,15 @@ What you get (`kubectl get toolchains -n k8squad-system`):
 
 | Tool | Version | RBAC granted |
 | --- | --- | --- |
-| `kubectl` | `1.31` | read-only core + apps (get/list/watch) |
+| `kubectl` | `1.36` | read-only core + apps (get/list/watch) |
 | `git` | `2.45` | none (staged onto PATH only) |
-| `gh` | `2.62` | none |
-| `go` | `1.23` | none |
+| `gh` | `2.98` | none |
+| `go` | `1.26` | none |
 | `node` | `22` | none |
 | `dtctl` | `1.0` | none |
-| `helm` | `3.16` | none |
+| `helm` | `3.21` | none |
 | `python` | `3.12` | none |
-| `docker-cli` | `27` | none (client only; daemon stays the `dockerd` sidecar) |
+| `docker-cli` | `29` | none (client only; daemon stays the `dockerd` sidecar) |
 | `uv` | `0.5` | none |
 | `jq` | `1.7` | none |
 | `yq` | `4` | none |
