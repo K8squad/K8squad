@@ -246,7 +246,16 @@ func AggregateToolUsageExposition(exposition string) ([]ToolUsageAgent, []MCPSta
 		for _, st := range a.skills {
 			agg.SkillLoads = append(agg.SkillLoads, *st)
 		}
-		sort.Slice(agg.ToolCalls, func(i, j int) bool { return agg.ToolCalls[i].Tool < agg.ToolCalls[j].Tool })
+		// Sort by (Tool, Skill): the same tool can appear under several
+		// skills, and console output must be deterministic across map
+		// iterations (sort.Slice is not stable, so ties on Tool alone
+		// would order randomly).
+		sort.Slice(agg.ToolCalls, func(i, j int) bool {
+			if agg.ToolCalls[i].Tool != agg.ToolCalls[j].Tool {
+				return agg.ToolCalls[i].Tool < agg.ToolCalls[j].Tool
+			}
+			return agg.ToolCalls[i].Skill < agg.ToolCalls[j].Skill
+		})
 		sort.Slice(agg.SkillLoads, func(i, j int) bool { return agg.SkillLoads[i].Skill < agg.SkillLoads[j].Skill })
 		if len(agg.ToolCalls) == 0 && len(agg.SkillLoads) == 0 {
 			continue
