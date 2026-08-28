@@ -1,0 +1,109 @@
+{
+  "$comment": "Single source of truth for the K8squad toolchain image factory (ISI-3413). The toolchain-images.yml workflow fans out over `tools` and publishes ghcr.io/k8squad/toolchains/<tool>:<version>. `version` is the CATALOG TAG referenced by config/helm/values.yaml tools.defaultCatalog.entries — it tracks an upstream minor line; `buildArgs` pin the exact upstream patch/release used at build time. Adding a tool = add one row here + images/toolchains/<tool>/Dockerfile.",
+  "tools": [
+    {
+      "tool": "kubectl",
+      "version": "1.31",
+      "dockerfile": "images/toolchains/kubectl/Dockerfile",
+      "context": "images/toolchains/kubectl",
+      "buildArgs": { "KUBECTL_VERSION": "v1.31.14" }
+    },
+    {
+      "tool": "git",
+      "version": "2.45",
+      "dockerfile": "images/toolchains/git/Dockerfile",
+      "context": "images/toolchains/git",
+      "buildArgs": {},
+      "note": "apk git on alpine 3.21 (2.47 at authoring) — tracks >= 2.45."
+    },
+    {
+      "tool": "gh",
+      "version": "2.62",
+      "dockerfile": "images/toolchains/gh/Dockerfile",
+      "context": "images/toolchains/gh",
+      "buildArgs": { "GH_VERSION": "v2.62.0" }
+    },
+    {
+      "tool": "go",
+      "version": "1.23",
+      "dockerfile": "images/toolchains/go/Dockerfile",
+      "context": "images/toolchains/go",
+      "buildArgs": { "GO_IMAGE": "golang:1.23-alpine" }
+    },
+    {
+      "tool": "node",
+      "version": "22",
+      "dockerfile": "images/toolchains/node/Dockerfile",
+      "context": "images/toolchains/node",
+      "buildArgs": { "NODE_IMAGE": "node:22-alpine" }
+    },
+    {
+      "tool": "dtctl",
+      "version": "1.0",
+      "dockerfile": "images/toolchains/dtctl/Dockerfile",
+      "context": "images/toolchains/dtctl",
+      "buildArgs": { "DTCTL_VERSION": "v0.38.0" },
+      "note": "Catalog tag 1.0 tracks the upstream dynatrace-oss/dtctl 0.x line — upstream has not cut a 1.0 release (v0.38.0 latest at authoring). Revisit the catalog tag when upstream ships 1.0."
+    },
+    {
+      "tool": "helm",
+      "version": "3.16",
+      "dockerfile": "images/toolchains/helm/Dockerfile",
+      "context": "images/toolchains/helm",
+      "buildArgs": { "HELM_VERSION": "v3.16.4" }
+    },
+    {
+      "tool": "python",
+      "version": "3.12",
+      "dockerfile": "images/toolchains/python/Dockerfile",
+      "context": "images/toolchains/python",
+      "buildArgs": { "PYTHON_IMAGE": "python:3.12-alpine" }
+    },
+    {
+      "tool": "docker-cli",
+      "version": "27",
+      "dockerfile": "images/toolchains/docker-cli/Dockerfile",
+      "context": "images/toolchains/docker-cli",
+      "buildArgs": { "DOCKER_IMAGE": "docker:27-cli" },
+      "note": "CLI only — no daemon. The daemon stays the existing dockerd sidecar (see values.yaml tools comment)."
+    },
+    {
+      "tool": "uv",
+      "version": "0.5",
+      "dockerfile": "images/toolchains/uv/Dockerfile",
+      "context": "images/toolchains/uv",
+      "buildArgs": { "UV_VERSION": "0.5.31" }
+    },
+    {
+      "tool": "jq",
+      "version": "1.7",
+      "dockerfile": "images/toolchains/jq/Dockerfile",
+      "context": "images/toolchains/jq",
+      "buildArgs": {},
+      "note": "apk jq on alpine 3.21 (1.7.1 at authoring)."
+    },
+    {
+      "tool": "yq",
+      "version": "4",
+      "dockerfile": "images/toolchains/yq/Dockerfile",
+      "context": "images/toolchains/yq",
+      "buildArgs": { "YQ_VERSION": "v4.53.6" }
+    },
+    {
+      "tool": "curl",
+      "version": "8",
+      "dockerfile": "images/toolchains/curl/Dockerfile",
+      "context": "images/toolchains/curl",
+      "buildArgs": {},
+      "note": "apk curl on alpine 3.21 (8.x at authoring)."
+    },
+    {
+      "tool": "make",
+      "version": "4",
+      "dockerfile": "images/toolchains/make/Dockerfile",
+      "context": "images/toolchains/make",
+      "buildArgs": {},
+      "note": "apk make on alpine 3.21 (4.4.x at authoring)."
+    }
+  ]
+}
