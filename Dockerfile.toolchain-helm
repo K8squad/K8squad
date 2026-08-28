@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1
+# Helm toolchain image (ISI-3413). Static upstream release binary from get.helm.sh.
+FROM alpine:3.21 AS fetch
+ARG HELM_VERSION=v3.16.4
+ARG TARGETARCH
+RUN apk add --no-cache curl tar \
+ && curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      -o /tmp/helm.tgz \
+ && tar -xzf /tmp/helm.tgz -C /tmp \
+ && install -m 0755 "/tmp/linux-${TARGETARCH}/helm" /usr/local/bin/helm
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: helm"
+RUN apk add --no-cache ca-certificates
+COPY --from=fetch /usr/local/bin/helm /usr/local/bin/helm
+ENTRYPOINT ["/usr/local/bin/helm"]
