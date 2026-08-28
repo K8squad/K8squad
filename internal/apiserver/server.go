@@ -108,6 +108,12 @@ type Options struct {
 	// keep their documented 501 (a DB-less dev run), exactly like the other
 	// seams. The sync loop itself lives in the repo-sync reconciler.
 	IssueLinks *IssueLinkService
+	// ToolUsage is the Epic D per-agent tool-usage read model (ISI-3288, plan
+	// §2.4 story D3): the aggregate of the operator's ksquad_* tool metrics
+	// behind the §13 choke point. Nil ⇒ GET /api/telemetry/tool-usage keeps
+	// its documented 501 (a dev run without the operator metrics URL wired),
+	// exactly like the other read models.
+	ToolUsage ToolUsageReader
 }
 
 // NewServer assembles the root router from opts.
@@ -209,6 +215,19 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", s.squadOverview(opts.Overview)).Methods(http.MethodGet)
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
+				Methods(http.MethodGet)
+		}
+
+		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the
+		// per-agent aggregate of the operator's ksquad_* tool metrics (D2).
+		// Absent a reader (no operator metrics URL wired) it keeps the
+		// documented 501, exactly like the other read models.
+		toolUsage := s.router.Path("/api/telemetry/tool-usage").Subrouter()
+		toolUsage.Use(authz)
+		if opts.ToolUsage != nil {
+			toolUsage.HandleFunc("", toolUsageHandler(opts.ToolUsage)).Methods(http.MethodGet)
+		} else {
+			toolUsage.HandleFunc("", notImplemented("tool-usage read model", "ISI-3288: wire NewOperatorMetricsToolUsage (KSQUAD_OPERATOR_METRICS_URL) to enable")).
 				Methods(http.MethodGet)
 		}
 

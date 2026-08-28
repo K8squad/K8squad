@@ -26,6 +26,8 @@ package shim
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -34,6 +36,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
+	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
 // Identity is the Agent identity block the shim stamps onto every Agent Card
@@ -51,6 +54,11 @@ type Config struct {
 	Identity Identity
 	// Skills are the Skill refs granted to the Agent (Agent.spec.skillRefs).
 	Skills []string
+	// SkillSHAs maps granted skill names to their pinned git source commit
+	// (arch §5.3.6), when the reconciler knows one — it rides the skill.load
+	// telemetry as the source SHA (Epic D, plan §2.4). Inline bodies have no
+	// entry. +optional
+	SkillSHAs map[string]string
 	// Model overrides the runtime's default model id (Agent.spec.model). The
 	// context window remains the runtime's declared authority (spec §6.2).
 	Model string
@@ -81,6 +89,12 @@ type Engine struct {
 	runner Runner
 	cfg    Config
 	now    func() time.Time
+	// telemetry is the optional Epic D tool-usage hook: when set, tool and
+	// skill activity flowing through the engine's event funnel is mapped
+	// onto OTel GenAI-semconv spans + ksquad_* metrics in-process (plan
+	// §2.4) — the shim is where tool events are born, so it is the first
+	// telemetry hop. Nil = no telemetry (tests, card-only invocations).
+	telemetry *toolusage.Mapper
 
 	mu    sync.Mutex
 	tasks map[string]*task
@@ -101,6 +115,17 @@ func New(rt runtimes.Runtime, runner Runner, cfg Config) *Engine {
 		now:    now,
 		tasks:  map[string]*task{},
 	}
+}
+
+// SetTelemetry attaches the Epic D tool-usage mapper (plan §2.4). The
+// engine's labels come from its Identity (agent/project) — run correlation
+// rides the task id, which IS the run id (spec §3 V1). Calling it after
+// tasks started is legal: events emitted before the call were simply not
+// mapped (telemetry is strictly observational, never load-bearing).
+func (e *Engine) SetTelemetry(m *toolusage.Mapper) { e.telemetry = m }
+
+func (e *Engine) labels() toolusage.Labels {
+	return toolusage.Labels{Agent: e.cfg.Identity.Name}
 }
 
 // Runtime returns the runtime this engine serves.
@@ -153,12 +178,44 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 }
 
 // drive runs the runtime to completion, funneling progress into the task's
-// sequenced SSE log and settling on a terminal state exactly once.
+// sequenced SSE log and settling on a terminal state exactly once. Tool and
+// skill activity is additionally mapped onto the Epic D telemetry spine
+// (when attached) — in the same funnel, so the wire events and the spans
+// agree by construction.
 func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	tk.setState(a2a.TaskWorking, "")
 
+	// Epic D (plan §2.4): each granted skill entering the session is a
+	// skill.load activity. The engine knows the granted refs at launch; the
+	// source SHA travels on the payload when the reconciler pinned one
+	// (git-sourced skills, arch §5.3.6). Outcome is deliberately absent
+	// (unknown): "granted" is not "loaded successfully" — no runtime has
+	// actually loaded anything yet, so the span never claims success it
+	// cannot know (review ISI-3348, non-blocking note).
+	if e.telemetry != nil {
+		for _, s := range e.cfg.Skills {
+			e.telemetry.SkillEvent(ctx, e.labels(), a2a.SkillLoadPayload{
+				Name:   s,
+				SHA256: e.cfg.SkillSHAs[s],
+			})
+		}
+	}
+
 	outcome, err := e.runner.Run(ctx, spec, func(p Progress) {
+		hashToolArgs(p)
 		tk.emitProgress(p)
+		if e.telemetry != nil {
+			switch p.Kind {
+			case a2a.EventTool:
+				if p.Tool != nil {
+					e.telemetry.ToolEvent(ctx, e.labels(), tk.id, *p.Tool)
+				}
+			case a2a.EventSkillLoad:
+				if p.SkillLoad != nil {
+					e.telemetry.SkillEvent(ctx, e.labels(), *p.SkillLoad)
+				}
+			}
+		}
 	})
 
 	switch {
@@ -170,6 +227,24 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	default:
 		tk.terminate(outcome.State, outcome.Reason)
 	}
+	if e.telemetry != nil {
+		e.telemetry.FinishTask(ctx, tk.id)
+	}
+}
+
+// hashToolArgs stamps the tool-call arguments hash at the shim's tool-call
+// boundary — BEFORE the event leaves the process (Epic D, plan §2.4: args are
+// hashed, never transported raw — they may carry secrets). Raw args ride the
+// internal Progress.ToolArgs seam only; by the time the event is funneled
+// into the SSE log and the telemetry mapper it carries ArgsSHA256 and no raw
+// argument text. An emitter that already computed the hash is respected
+// (idempotent); no args means no hash (the acceptance attribute is optional).
+func hashToolArgs(p Progress) {
+	if p.Tool == nil || p.Tool.ArgsSHA256 != "" || p.ToolArgs == "" {
+		return
+	}
+	sum := sha256.Sum256([]byte(p.ToolArgs))
+	p.Tool.ArgsSHA256 = hex.EncodeToString(sum[:])
 }
 
 // StreamEvents (V2) returns an SSE-style channel of this task's events with

@@ -248,6 +248,19 @@ spec:
                   rule: '!has(self) || !self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
                 - message: sampling is only valid on traces
                   rule: '!has(self) || !has(self.sampling)'
+              toolUsage:
+                description: |-
+                  ToolUsage gates the Epic D tool-usage instrumentation pipeline
+                  (gen_ai.tool.call / skill.load / mcp.call spans and the ksquad_* tool
+                  metrics). Absent = enabled (opt-out, plan §5.4).
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled turns the tool-usage pipeline on or off platform-wide.
+                      Absent defaults to true (opt-out, plan §5.4): tool-usage telemetry
+                      ships unless explicitly disabled.
+                    type: boolean
+                type: object
               traces:
                 description: Traces routing. Optional — omit to not export traces.
                 properties:
