@@ -64,6 +64,13 @@ What you get (`kubectl get toolchains -n k8squad-system`):
 | `node` | `22` | none |
 | `dtctl` | `1.0` | none |
 | `helm` | `3.16` | none |
+| `python` | `3.12` | none |
+| `docker-cli` | `27` | none (client only; daemon stays the `dockerd` sidecar) |
+| `uv` | `0.5` | none |
+| `jq` | `1.7` | none |
+| `yq` | `4` | none |
+| `curl` | `8` | none |
+| `make` | `4` | none |
 
 Design notes (plan §2.2/§2.2b, ISI-3280):
 

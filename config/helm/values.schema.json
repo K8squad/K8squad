@@ -37,7 +37,7 @@
             },
             "entries": {
               "type": "object",
-              "description": "Catalog entries keyed by toolchain name. Defaults are the curated seven (kubectl, git, gh, go, node, dtctl, helm) with least-privilege RBAC (kubectl only, read-only core+apps).",
+              "description": "Catalog entries keyed by toolchain name. Defaults are the curated fourteen (kubectl, git, gh, go, node, dtctl, helm, python, docker-cli, uv, jq, yq, curl, make) with least-privilege RBAC (kubectl only, read-only core+apps; the rest are PATH-staged with no grant).",
               "additionalProperties": {
                 "type": "object",
                 "additionalProperties": false,

@@ -42,13 +42,14 @@ workspacePVC:
 tools:
   # defaultCatalog ships the curated cluster catalog as chart-rendered
   # Toolchain objects in the control-plane namespace. One flag deploys
-  # the seven-tool set Skills reference (kubectl, git, gh, go, node,
-  # dtctl, helm); the operator owns all per-Run RBAC rendering.
+  # the fourteen-tool set Skills reference (kubectl, git, gh, go, node,
+  # dtctl, helm, python, docker-cli, uv, jq, yq, curl, make); the
+  # operator owns all per-Run RBAC rendering.
   defaultCatalog:
     # +optional
     enabled: false
     # Catalog entries. The defaults are the curated least-privilege set:
-    # kubectl → read-only core+apps RBAC, everything else → no RBAC
+    # kubectl → read-only core+apps RBAC, the other thirteen → no RBAC
     # (staged onto PATH, no Kubernetes API grant). Override versions or
     # images per tool; add entries to extend the catalog (cluster scope
     # additionally needs tools.rbac.clusterScopeEnabled).
@@ -98,6 +99,46 @@ tools:
         - version: "3.16"
           image: ghcr.io/k8squad/toolchains/helm:3.16
           provides: [helm]
+      # AI-agent toolset (ISI-3400, approved on ISI-3387 card b72964f6).
+      # All seven are PATH-staged with zero Kubernetes grants — no rbac
+      # blocks, same posture as git/go/node above. docker-cli is the
+      # client only; the daemon stays the existing dockerd sidecar
+      # (requires.sidecars: [dockerd]), never shipped in this image.
+      python:
+        versions:
+        - version: "3.12"
+          image: ghcr.io/k8squad/toolchains/python:3.12
+          provides: [python, python3, pip]
+      docker-cli:
+        versions:
+        - version: "27"
+          image: ghcr.io/k8squad/toolchains/docker-cli:27
+          provides: [docker]
+      uv:
+        versions:
+        - version: "0.5"
+          image: ghcr.io/k8squad/toolchains/uv:0.5
+          provides: [uv, uvx]
+      jq:
+        versions:
+        - version: "1.7"
+          image: ghcr.io/k8squad/toolchains/jq:1.7
+          provides: [jq]
+      yq:
+        versions:
+        - version: "4"
+          image: ghcr.io/k8squad/toolchains/yq:4
+          provides: [yq]
+      curl:
+        versions:
+        - version: "8"
+          image: ghcr.io/k8squad/toolchains/curl:8
+          provides: [curl]
+      make:
+        versions:
+        - version: "4"
+          image: ghcr.io/k8squad/toolchains/make:4
+          provides: [make]
   # rbac gates the cluster-scope escape (plan §2.2b): when true, a
   # cluster-catalog Toolchain may declare rbac.scope=cluster (rendered as
   # a per-Run ClusterRole). Injected as KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED

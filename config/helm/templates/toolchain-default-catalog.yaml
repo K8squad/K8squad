@@ -8,8 +8,10 @@ tool for squads stays "flip one flag": the operator owns the per-Run RBAC
 rendering, so there is no Role/RoleBinding/SA plumbing to hand-write.
 
 The curated defaults are least-privilege (plan §2.2b): kubectl gets
-read-only core+apps; git, gh, go, node, dtctl and helm declare no RBAC at
-all — they are staged onto PATH without any Kubernetes API grant.
+read-only core+apps; the other thirteen (git, gh, go, node, dtctl, helm,
+python, docker-cli, uv, jq, yq, curl, make) declare no RBAC at all — they
+are staged onto PATH without any Kubernetes API grant. docker-cli is the
+client only; the daemon stays the existing dockerd sidecar.
 */}}
 {{- if .Values.tools.defaultCatalog.enabled }}
 {{- $catalogNS := .Values.namespace.name }}

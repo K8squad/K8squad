@@ -82,10 +82,12 @@ the cluster:
     --set tools.defaultCatalog.enabled=true
   ```
 
-  That renders the curated seven-tool catalog (`kubectl`, `git`, `gh`, `go`,
-  `node`, `dtctl`, `helm`) as `Toolchain` objects in `k8squad-system`, with
+  That renders the curated fourteen-tool catalog (`kubectl`, `git`, `gh`,
+  `go`, `node`, `dtctl`, `helm`, `python`, `docker-cli`, `uv`, `jq`, `yq`,
+  `curl`, `make`) as `Toolchain` objects in `k8squad-system`, with
   least-privilege RBAC per tool (kubectl: read-only core+apps; the rest:
-  staged onto PATH with no Kubernetes API grant). Run assembly stages each
+  staged onto PATH with no Kubernetes API grant). `docker-cli` is the
+  client only — the daemon stays the `dockerd` sidecar. Run assembly stages each
   resolved toolchain as an init container and unions its RBAC into a per-Run
   `Role` bound to the squad ServiceAccount — garbage-collected with the Run.
   Unknown name/version fails Run admission with an actionable message.
