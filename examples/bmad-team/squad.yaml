@@ -172,7 +172,7 @@ spec:
 #   narrow the server's toolFilter, never widen it — D8).
 # - requires.toolchains resolve name@version against the cluster Toolchain
 #   catalog (ksquad-system). Enable the chart's default catalog with
-#   tools.defaultCatalog.enabled=true — it ships gh@2.62, dtctl@1.0 and
+#   tools.defaultCatalog.enabled=true — it ships gh@2.98, dtctl@1.0 and
 #   node@22, the exact versions referenced below. Unknown name/version
 #   rejects the Run at admission with an actionable message.
 ---
@@ -225,7 +225,7 @@ spec:
     - issue:write
   requires:
     toolchains:
-      - gh@2.62
+      - gh@2.98
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Skill

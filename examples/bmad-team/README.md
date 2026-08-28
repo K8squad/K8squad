@@ -73,7 +73,7 @@ The tool Skills are not self-contained — their `requires.toolchains` and
 `mcpToolRefs` resolve against two more object kinds this example expects on
 the cluster:
 
-- **`Toolchain` (the cluster catalog)** — `03-skills.yaml` requires `gh@2.62`,
+- **`Toolchain` (the cluster catalog)** — `03-skills.yaml` requires `gh@2.98`,
   `dtctl@1.0` and `node@22` as `name@version` refs. Enable the Helm chart's
   default catalog when installing the operator:
 

@@ -3,12 +3,13 @@
   "tools": [
     {
       "tool": "kubectl",
-      "version": "1.31",
+      "version": "1.36",
       "dockerfile": "Dockerfile.toolchain-kubectl",
       "context": ".",
       "buildArgs": {
-        "KUBECTL_VERSION": "v1.31.14"
-      }
+        "KUBECTL_VERSION": "v1.36.4"
+      },
+      "note": "ISI-3444: 1.31 line is built with Go < 1.24.13 (stdlib CVE-2025-68121, fixable → gate). v1.36.4 is built on the Go 1.26 line and drops moby/spdystream v0.4.0 for v0.5.1 (CVE-2026-35469)."
     },
     {
       "tool": "git",
@@ -20,21 +21,23 @@
     },
     {
       "tool": "gh",
-      "version": "2.62",
+      "version": "2.98",
       "dockerfile": "Dockerfile.toolchain-gh",
       "context": ".",
       "buildArgs": {
-        "GH_VERSION": "v2.62.0"
-      }
+        "GH_VERSION": "v2.98.0"
+      },
+      "note": "ISI-3444: v2.62.0 gated on CVE-2026-48501 (fixed 2.93.0) + grpc CVE-2026-33186 + stdlib CVE-2025-68121. v2.98.0 is built on Go 1.26 with grpc v1.83.0."
     },
     {
       "tool": "go",
-      "version": "1.23",
+      "version": "1.26",
       "dockerfile": "Dockerfile.toolchain-go",
       "context": ".",
       "buildArgs": {
-        "GO_IMAGE": "golang:1.23-alpine"
-      }
+        "GO_IMAGE": "golang:1.26-alpine"
+      },
+      "note": "ISI-3444: golang:1.23-alpine is EOL and gated on stdlib CVE-2025-68121 / CVE-2025-61726 (fixed in Go 1.24.13 / 1.25.7 / 1.26.x). Track the supported 1.26 line."
     },
     {
       "tool": "node",
@@ -42,8 +45,10 @@
       "dockerfile": "Dockerfile.toolchain-node",
       "context": ".",
       "buildArgs": {
-        "NODE_IMAGE": "node:22-alpine"
-      }
+        "NODE_IMAGE": "node:22-alpine",
+        "NPM_VERSION": "12.0.2"
+      },
+      "note": "ISI-3444: the npm bundled in node:22-alpine ships tar 7.5.11 / brace-expansion 2.0.2 (CRITICAL CVE-2026-59873 / HIGH CVE-2026-13149). The Dockerfile upgrades the bundled npm to NPM_VERSION (12.0.2 declares tar ^7.5.19)."
     },
     {
       "tool": "dtctl",
@@ -57,12 +62,13 @@
     },
     {
       "tool": "helm",
-      "version": "3.16",
+      "version": "3.21",
       "dockerfile": "Dockerfile.toolchain-helm",
       "context": ".",
       "buildArgs": {
-        "HELM_VERSION": "v3.16.4"
-      }
+        "HELM_VERSION": "v3.21.4"
+      },
+      "note": "ISI-3444: v3.16.4 gated on stdlib CVE-2025-68121 (Go 1.22.7), grpc CVE-2026-33186, containerd CVE-2024-25621. v3.21.4 is built on Go 1.26 with grpc v1.82.1 and no containerd dep. Stays on the helm 3.x line (helm 4 is a separate major bump decision)."
     },
     {
       "tool": "python",
@@ -71,17 +77,18 @@
       "context": ".",
       "buildArgs": {
         "PYTHON_IMAGE": "python:3.12-alpine"
-      }
+      },
+      "note": "ISI-3444: the Dockerfile runs `apk upgrade libcrypto3 libssl3` so the openssl fix (libcrypto3 3.5.8-r0, CVE-2026-14456) is deterministic instead of depending on the rolling base ref."
     },
     {
       "tool": "docker-cli",
-      "version": "27",
+      "version": "29",
       "dockerfile": "Dockerfile.toolchain-docker-cli",
       "context": ".",
       "buildArgs": {
-        "DOCKER_IMAGE": "docker:27-cli"
+        "DOCKER_IMAGE": "docker:29-cli"
       },
-      "note": "CLI only \u2014 no daemon. The daemon stays the existing dockerd sidecar (see values.yaml tools comment)."
+      "note": "CLI only \u2014 no daemon. The daemon stays the existing dockerd sidecar (see values.yaml tools comment). ISI-3444: docker:27-cli (alpine 3.21.3) gated on c-ares CVE-2026-33630 + stdlib/grpc/containerd CVEs in the docker/buildx/compose binaries; docker:29-cli carries the rebuilt binaries on a newer alpine."
     },
     {
       "tool": "uv",
