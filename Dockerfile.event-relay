@@ -4,7 +4,7 @@
 # Decoupled from the write path: NATS-down never blocks Run/claim/memory writes.
 # Multi-arch cross-compile → static non-root distroless (same shape as operator).
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

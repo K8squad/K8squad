@@ -4,7 +4,7 @@
 # Multi-arch cross-compile → static non-root distroless. See Dockerfile.operator for the
 # cache/cross-compile rationale (shared build shape across the Go components).
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src
