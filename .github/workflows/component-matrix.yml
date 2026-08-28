@@ -79,7 +79,7 @@ jobs:
           set -euo pipefail
           # Compact single-line JSON so `fromJSON()` in the calling lane stays trivial.
           {
-            echo 'go=[{"component":"operator","path":"cmd/operator"},{"component":"apiserver","path":"cmd/apiserver"},{"component":"memory","path":"cmd/memory"}]'
+            echo 'go=[{"component":"operator","path":"cmd/operator"},{"component":"apiserver","path":"cmd/apiserver"},{"component":"memory","path":"cmd/memory"},{"component":"event-relay","path":"cmd/event-relay"},{"component":"scm-webhook","path":"cmd/scm-webhook"}]'
             echo 'shims=[{"runtime":"claude","path":"cmd/shim-claude"},{"runtime":"openclaw","path":"cmd/shim-openclaw"},{"runtime":"hermes","path":"cmd/shim-hermes"},{"runtime":"opencode","path":"cmd/shim-opencode"}]'
             echo 'helm=[{"chart":"k8squad","path":"config/helm"}]'
             echo 'node=[{"component":"console","path":"console"}]'
