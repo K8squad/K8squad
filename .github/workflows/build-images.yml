@@ -15,8 +15,8 @@ name: Build Images
 # the default Toolchain catalog (config/helm/values.yaml tools.defaultCatalog.entries)
 # references. Per-tool build detail (pinned upstream patch buildArgs) is read from
 # images/toolchains/matrix.json and cross-validated against the component-matrix list.
-# On main pushes the toolchain lane only runs legs when images/toolchains/** (or this
-# file / the matrix) changed — 14 multi-arch legs on every unrelated main push would
+# On main pushes the toolchain lane only runs legs when a Dockerfile.toolchain-*,
+# images/toolchains/matrix.json (or this file / component-matrix.yml) changed — 14 multi-arch legs on every unrelated main push would
 # starve the 2-runner homelab fleet (ISI-2602/ISI-2748 R1). Tags and dispatch always
 # build the full set. Same supply-chain posture as the platform lane, with one
 # deliberate deviation: sign/attest on EVERY publish (not just v* tags) because the
@@ -114,7 +114,8 @@ jobs:
           # Tags (releases) and workflow_dispatch always build the full set.
           if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
             CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
-              'images/toolchains/**' \
+              'Dockerfile.toolchain-*' \
+              'images/toolchains/matrix.json' \
               '.github/workflows/build-images.yml' \
               '.github/workflows/component-matrix.yml')
             if [ -z "$CHANGED" ]; then
