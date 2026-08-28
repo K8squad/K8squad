@@ -94,6 +94,21 @@ If you would rather build from source, see
 
 ---
 
+## The capability-plane checklist
+
+The squad's tool Skills resolve against more than the folder you apply. Four
+requirements, each covered in its step below, decide whether your first Run
+admits:
+
+| # | Requirement | Where |
+|---|-------------|-------|
+| 1 | **Toolchain catalog enabled** — the Skills' `requires.toolchains` (`gh@2.62`, `dtctl@1.0`, `node@22`) resolve `name@version` against `Toolchain` objects. Install the operator with `--set tools.defaultCatalog.enabled=true` or Runs fail admission naming the missing toolchain. | [Prerequisites](#prerequisites) |
+| 2 | **`02b-mcpservers.yaml` applied + real tokens** — the `github` and `dynatrace` Skills' `mcpToolRefs` resolve against the two `MCPServer` CRs; their credential Secrets must not hold `REPLACE_ME`. | [Step 1](#step-1--apply-the-bmad-squad), [Step 3](#step-3--set-the-credentials-model--mcp-servers) |
+| 3 | **Discovery has run** — the control plane probes each server (`initialize` → `tools/list`) before `status.observedTools` is populated. Until then Runs referencing the server **fail closed** (stay `Pending`); expect one probe cycle (~up to 10 min at the default interval) after the first apply. | [Step 3](#step-3--set-the-credentials-model--mcp-servers) |
+| 4 | **Skill sources SHA-pinned** — git-sourced Skills must carry an immutable commit `ref`, not a floating branch. The bundled SHAs are placeholders; repoint them at the catalog's published SHAs. | [Step 4](#sha-pinned-skill-sources) |
+
+---
+
 ## Step 1 — Apply the BMAD squad
 
 The predefined team is a `kubectl apply`-able bundle:
@@ -286,6 +301,36 @@ declare `mcpToolRefs` that resolve against the two `MCPServer` CRs from
 `02b-mcpservers.yaml` (see Step 3). Beyond these four, the catalog carries a
 **dev/debug set** (code-search, kubectl-debug, go-build-test, and more — see
 Step 2) you can layer on per role or per agent.
+
+### SHA-pinned skill sources
+
+The three tool Skills are **git-sourced**, and their `source.git.ref` is
+pinned to an immutable **commit SHA** — never a floating branch:
+
+```yaml
+source:
+  git:
+    repoRef: github.com/K8squad/k8squad-skills
+    ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"   # 40-hex commit SHA
+    path: skills/github
+```
+
+This is deliberate: a `ref` that floats (a branch name) lets a force-push
+silently change what a skill does between one Run and the next, or worse,
+mid-Run. A pinned SHA means the exact bytes the operator stages are the exact
+bytes you reviewed. It is the same reproducibility discipline as the
+digest-pinned toolchain images.
+
+The SHAs shipped in `03-skills.yaml` are **illustrative placeholders**. Before
+pointing the squad at anything real, repoint each `ref` at:
+
+- the published SHA of the corresponding skill revision in the
+  [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)
+  catalog (the catalog's README carries the current pinned SHAs), **or**
+- a commit SHA from your own skill repository.
+
+Bump the SHA deliberately — pin, review, advance — the same way you would
+bump a dependency version.
 
 ---
 
