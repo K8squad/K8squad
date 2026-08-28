@@ -46,6 +46,12 @@ operator:
   database:
     existingSecret: "" # empty → derived CNPG app secret <fullname>-pg-app
     existingSecretKey: uri
+  # shimRuntimeType selects the A2A shim runtime flavor (KSQUAD_RUNTIME_TYPE,
+  # one of the registered v1 set: openclaw | hermes | opencode) the operator
+  # spawns per dispatched Run (ISI-3352). Empty = dispatch fails loudly with
+  # "no runtime selected" — set it once the runtime CLI is reachable in the
+  # operator image/topology (the pod-side supervisor ADR tracks the endgame).
+  shimRuntimeType: ""
   resources:
     requests:
       cpu: 50m
