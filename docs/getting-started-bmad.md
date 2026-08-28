@@ -76,7 +76,8 @@ kubectl -n k8squad-system rollout status deploy/ksquad-operator
 ```
 
 That one flag renders the curated catalog — `kubectl`, `git`, `gh`, `go`,
-`node`, `dtctl`, `helm` — as `Toolchain` objects in `k8squad-system`, each a
+`node`, `dtctl`, `helm`, `python`, `docker-cli`, `uv`, `jq`, `yq`, `curl`,
+`make` — as `Toolchain` objects in `k8squad-system`, each a
 pinned image plus a least-privilege RBAC declaration (kubectl gets read-only
 core+apps; the rest get staged onto `PATH` with no Kubernetes API grant at
 all). Verify it landed:
