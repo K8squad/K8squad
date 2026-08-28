@@ -8,13 +8,20 @@ name: Component Matrix
 # workflow and derives its per-component matrix from the outputs below, so the component
 # list is declared in exactly ONE place and can never drift lane-to-lane.
 #
-# It is invoked with `uses: ./.github/workflows/component-matrix.yml` and exposes four
+# It is invoked with `uses: ./.github/workflows/component-matrix.yml` and exposes five
 # typed JSON outputs, one per toolchain family:
 #
-#   go     — deployable Go binaries        (operator, apiserver, memory)
-#   shims  — per-runtime A2A shim images   (claude, openclaw, hermes, opencode)
-#   helm   — Helm charts                    (k8squad)
-#   node   — Node/TypeScript surfaces       (console)
+#   go         — deployable Go binaries        (operator, apiserver, memory)
+#   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode)
+#   helm       — Helm charts                    (k8squad)
+#   node       — Node/TypeScript surfaces       (console)
+#   toolchains — catalog toolchain images       (Dockerfile.toolchain-<tool>, ISI-3413)
+#
+# The `toolchains` family declares WHICH tools the image factory fans out over
+# ({tool, version, path}); per-tool build detail (pinned upstream patch buildArgs,
+# notes) lives in images/toolchains/matrix.json, which the build-images.yml plan job
+# reads and cross-validates against this list (drift in either direction fails the
+# plan leg). Toolchain images publish as ghcr.io/<owner>/toolchains/<tool>:<version>.
 #
 # coord (the coordination spine, pkg/coord) is intentionally NOT a go leg here: it is
 # exercised by every go leg's `go test ./...` and its correctness-critical concurrency /
@@ -44,6 +51,9 @@ on:
       node:
         description: "JSON array of Node/TS surfaces: {component, path}."
         value: ${{ jobs.emit.outputs.node }}
+      toolchains:
+        description: "JSON array of catalog toolchain images: {tool, version, path}."
+        value: ${{ jobs.emit.outputs.toolchains }}
 
 permissions:
   contents: read
@@ -61,6 +71,7 @@ jobs:
       shims: ${{ steps.set.outputs.shims }}
       helm: ${{ steps.set.outputs.helm }}
       node: ${{ steps.set.outputs.node }}
+      toolchains: ${{ steps.set.outputs.toolchains }}
     steps:
       - name: Declare the canonical KSquad component matrix
         id: set
@@ -72,6 +83,12 @@ jobs:
             echo 'shims=[{"runtime":"claude","path":"cmd/shim-claude"},{"runtime":"openclaw","path":"cmd/shim-openclaw"},{"runtime":"hermes","path":"cmd/shim-hermes"},{"runtime":"opencode","path":"cmd/shim-opencode"}]'
             echo 'helm=[{"chart":"k8squad","path":"config/helm"}]'
             echo 'node=[{"component":"console","path":"console"}]'
+            # Toolchain image family (ISI-3413). `version` is the CATALOG TAG referenced by
+            # config/helm/values.yaml tools.defaultCatalog.entries (tracks an upstream minor
+            # line); the exact upstream patch is pinned in images/toolchains/matrix.json
+            # buildArgs. Keep this list in lockstep with matrix.json — the build-images.yml
+            # plan leg fails on drift in either direction.
+            echo 'toolchains=[{"tool":"kubectl","version":"1.31","path":"Dockerfile.toolchain-kubectl"},{"tool":"git","version":"2.45","path":"Dockerfile.toolchain-git"},{"tool":"gh","version":"2.62","path":"Dockerfile.toolchain-gh"},{"tool":"go","version":"1.23","path":"Dockerfile.toolchain-go"},{"tool":"node","version":"22","path":"Dockerfile.toolchain-node"},{"tool":"dtctl","version":"1.0","path":"Dockerfile.toolchain-dtctl"},{"tool":"helm","version":"3.16","path":"Dockerfile.toolchain-helm"},{"tool":"python","version":"3.12","path":"Dockerfile.toolchain-python"},{"tool":"docker-cli","version":"27","path":"Dockerfile.toolchain-docker-cli"},{"tool":"uv","version":"0.5","path":"Dockerfile.toolchain-uv"},{"tool":"jq","version":"1.7","path":"Dockerfile.toolchain-jq"},{"tool":"yq","version":"4","path":"Dockerfile.toolchain-yq"},{"tool":"curl","version":"8","path":"Dockerfile.toolchain-curl"},{"tool":"make","version":"4","path":"Dockerfile.toolchain-make"}]'
           } >> "$GITHUB_OUTPUT"
 
       - name: Echo matrix (audit trail)
@@ -80,3 +97,4 @@ jobs:
           echo "shims=${{ steps.set.outputs.shims }}"
           echo "helm=${{ steps.set.outputs.helm }}"
           echo "node=${{ steps.set.outputs.node }}"
+          echo "toolchains=${{ steps.set.outputs.toolchains }}"

@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# kubectl toolchain image (ISI-3413).
+# Minimal binary-staging image: the K8squad operator copies the binary onto the
+# skill sandbox PATH; the image is also usable standalone (ENTRYPOINT = kubectl).
+# Multi-arch: linux/amd64 + linux/arm64 via TARGETARCH (buildx).
+FROM alpine:3.21 AS fetch
+ARG KUBECTL_VERSION=v1.31.14
+ARG TARGETARCH
+RUN apk add --no-cache curl \
+ && curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+      -o /usr/local/bin/kubectl \
+ && chmod 0755 /usr/local/bin/kubectl
+
+FROM alpine:3.21
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="k8squad toolchain: kubectl"
+COPY --from=fetch /usr/local/bin/kubectl /usr/local/bin/kubectl
+ENTRYPOINT ["/usr/local/bin/kubectl"]
