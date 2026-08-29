@@ -14,9 +14,12 @@
 # repoint them at your own skill repo if you fork the catalog.
 #
 # Capability plane wiring (ISI-3280, Epics A-C):
-# - mcpToolRefs resolve against the MCPServer objects in 02b-mcpservers.yaml
-#   (fail-closed at Run admission on a dangling ref; the skill may only
-#   narrow the server's toolFilter, never widen it — D8).
+# - These default skills reach their tools through CLI TOOLCHAINS, not MCP:
+#   `github` drives the `gh` CLI, `dynatrace` drives `dtctl`, `graphical`
+#   drives `node`. A CLI tool does not need an MCPServer, so none of these
+#   skills carries an mcpToolRefs. (mcpToolRefs is for a tool surface that is
+#   reachable ONLY over MCP — an optional advanced path shown, unused, in
+#   02b-mcpservers.yaml.)
 # - requires.toolchains resolve name@version against the cluster Toolchain
 #   catalog (ksquad-system). Enable the chart's default catalog with
 #   tools.defaultCatalog.enabled=true — it ships gh@2.98, dtctl@1.0 and
@@ -63,8 +66,6 @@ spec:
       # Pin to an immutable commit SHA (never a floating branch), §5.3.6.
       ref: "bf3bc86b338d488fe751c289943db194ce8102c7"
       path: skills/github
-  mcpToolRefs:
-    - name: github-mcp
   permissions:
     - scm:read
     - scm:write
@@ -86,8 +87,6 @@ spec:
       repoRef: github.com/K8squad/k8squad-skills
       ref: "bf3bc86b338d488fe751c289943db194ce8102c7"
       path: skills/dynatrace
-  mcpToolRefs:
-    - name: dynatrace-mcp
   permissions:
     - observability:read
     - telemetry:query
