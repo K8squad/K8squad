@@ -146,3 +146,35 @@ fix. (Merge train: ISI-2609.)
   `Runner.Listener` is absent for > N minutes closes the "silent death" gap that caused ISI-2612.
 - **Resource guard:** ensure the host has disk headroom for `_work/`; a full `_work` disk also
   presents as jobs that never start.
+
+---
+
+## 7. Self-heal watchdog + disk-fill cap (ISI-2577 / ISI-3475 / ISI-3489)
+
+The runners run two systemd timers, provisioned from **`scripts/runner/`** in this repo
+(previously hand-installed out-of-band — ISI-3475 found a host patch a re-provision would have
+silently reverted). Install / re-provision on each host:
+
+```bash
+sudo scripts/runner/install.sh      # idempotent; run on gitrunner and gitrunner-2
+```
+
+- **`runner-watchdog.sh`** (every ~8 min) — reactive self-heal:
+  disk `>=90%` → prune, wedged/half-connected listener → restart, `failed` unit → recover.
+  - **ISI-3475:** the disk branch used to run an **unconditional `systemctl restart`**, which
+    cancels the in-flight CI job ("runner has received a shutdown signal"). `gitrunner-2` refilled
+    to `>=90%` every ~10 min under load, so the watchdog fired **~11×/day** and rolling-killed long
+    `go/operator` + `go/apiserver` jobs on PRs and `main`. The restart is now **deferred while a
+    `Runner.Worker` job is live**.
+  - **ISI-3489:** the reactive `rm -rf go-build/*` is likewise gated on idle so it can't wipe the
+    cache under a running `go test`. Docker/diag pruning stays unconditional (frees space without
+    touching a live job). The unit auto-detects the `actions.runner.*` service, so one artifact
+    serves every host.
+
+- **`runner-cache-gc.sh`** (every 20 min) — proactive disk-fill **cap** (root-cause fix):
+  bounds `GOCACHE` (default 8 GB; `GOCACHE` had grown to ~17 GB on `gitrunner`) and prunes
+  `>24h` docker layers, keeping the disk **below** the reactive 90% threshold so the watchdog's
+  disk branch is a rare last resort rather than the ~11×/day norm. The `GOCACHE` trim is skipped
+  while a job is live; docker prune only touches dangling / aged layers.
+
+Verify: `systemctl list-timers 'runner-*'` and `journalctl -t runner-watchdog -t runner-cache-gc`.

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run runner-cache-gc every 20 min (ISI-3489)
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=20min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

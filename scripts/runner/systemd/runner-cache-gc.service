@@ -1,0 +1,7 @@
+[Unit]
+Description=Proactive GOCACHE/docker GC for the self-hosted runner (ISI-3489)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/runner-cache-gc.sh
+# Tunables: GOCACHE_MAX_GB (default 8), GOCACHE_DIR (default /home/ubuntu/.cache/go-build)

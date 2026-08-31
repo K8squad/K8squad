@@ -1,0 +1,10 @@
+[Unit]
+Description=Run runner-watchdog every ~8 min (ISI-2577)
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=8min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

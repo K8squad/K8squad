@@ -1,0 +1,9 @@
+[Unit]
+Description=Self-heal the self-hosted Actions runner (ISI-2577/ISI-3475/ISI-3489)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/runner-watchdog.sh
+# Auto-detects the actions.runner.* unit; override SVC=... only to pin one.
