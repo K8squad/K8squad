@@ -151,27 +151,27 @@ func (t *ToolUsageConfig) EnabledOrDefault() bool {
 type OTelConfigSpec struct {
 	// Traces routing. Optional — omit to not export traces.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !has(self.sampling) || self.sampling.type != 'probabilistic' || (has(self.sampling.ratio) && self.sampling.ratio > 0)`,message="sampling.ratio is required and must be > 0 when sampling.type is probabilistic"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !has(self.sampling) || self.sampling.type == 'probabilistic' || !has(self.sampling.ratio)`,message="sampling.ratio must only be set when sampling.type is probabilistic"
+	// +kubebuilder:validation:XValidation:rule=`self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
+	// +kubebuilder:validation:XValidation:rule=`self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
+	// +kubebuilder:validation:XValidation:rule=`!self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
+	// +kubebuilder:validation:XValidation:rule=`!has(self.sampling) || self.sampling.type != 'probabilistic' || (has(self.sampling.ratio) && self.sampling.ratio > 0)`,message="sampling.ratio is required and must be > 0 when sampling.type is probabilistic"
+	// +kubebuilder:validation:XValidation:rule=`!has(self.sampling) || self.sampling.type == 'probabilistic' || !has(self.sampling.ratio)`,message="sampling.ratio must only be set when sampling.type is probabilistic"
 	Traces *SignalRouting `json:"traces,omitempty"`
 
 	// Metrics routing. Optional — omit to not export metrics.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !has(self.sampling)`,message="sampling is only valid on traces"
+	// +kubebuilder:validation:XValidation:rule=`self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
+	// +kubebuilder:validation:XValidation:rule=`self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
+	// +kubebuilder:validation:XValidation:rule=`!self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
+	// +kubebuilder:validation:XValidation:rule=`!has(self.sampling)`,message="sampling is only valid on traces"
 	Metrics *SignalRouting `json:"metrics,omitempty"`
 
 	// Logs routing. Optional — omit to not export logs.
 	// +optional
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
-	// +kubebuilder:validation:XValidation:rule=`!has(self) || !has(self.sampling)`,message="sampling is only valid on traces"
+	// +kubebuilder:validation:XValidation:rule=`self.endpoint.matches('^[^[:space:]]+$')`,message="endpoint must not contain whitespace"
+	// +kubebuilder:validation:XValidation:rule=`self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')`,message="grpc endpoint must be host[:port] with an optional http(s) scheme and no path"
+	// +kubebuilder:validation:XValidation:rule=`!self.protocol.startsWith('http/') || self.endpoint.matches('^https?://[^[:space:]]+$')`,message="http/protobuf and http/json endpoints must be full http(s) URLs"
+	// +kubebuilder:validation:XValidation:rule=`!has(self.sampling)`,message="sampling is only valid on traces"
 	Logs *SignalRouting `json:"logs,omitempty"`
 
 	// ToolUsage gates the Epic D tool-usage instrumentation pipeline

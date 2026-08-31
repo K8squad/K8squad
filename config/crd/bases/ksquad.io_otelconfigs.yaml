@@ -146,15 +146,15 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: endpoint must not contain whitespace
-                  rule: '!has(self) || self.endpoint.matches(''^[^[:space:]]+$'')'
+                  rule: self.endpoint.matches('^[^[:space:]]+$')
                 - message: grpc endpoint must be host[:port] with an optional http(s)
                     scheme and no path
-                  rule: '!has(self) || self.protocol != ''grpc'' || self.endpoint.matches(''^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$'')'
+                  rule: self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')
                 - message: http/protobuf and http/json endpoints must be full http(s)
                     URLs
-                  rule: '!has(self) || !self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
+                  rule: '!self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
                 - message: sampling is only valid on traces
-                  rule: '!has(self) || !has(self.sampling)'
+                  rule: '!has(self.sampling)'
               metrics:
                 description: Metrics routing. Optional — omit to not export metrics.
                 properties:
@@ -239,15 +239,15 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: endpoint must not contain whitespace
-                  rule: '!has(self) || self.endpoint.matches(''^[^[:space:]]+$'')'
+                  rule: self.endpoint.matches('^[^[:space:]]+$')
                 - message: grpc endpoint must be host[:port] with an optional http(s)
                     scheme and no path
-                  rule: '!has(self) || self.protocol != ''grpc'' || self.endpoint.matches(''^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$'')'
+                  rule: self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')
                 - message: http/protobuf and http/json endpoints must be full http(s)
                     URLs
-                  rule: '!has(self) || !self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
+                  rule: '!self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
                 - message: sampling is only valid on traces
-                  rule: '!has(self) || !has(self.sampling)'
+                  rule: '!has(self.sampling)'
               toolUsage:
                 description: |-
                   ToolUsage gates the Epic D tool-usage instrumentation pipeline
@@ -345,21 +345,20 @@ spec:
                 type: object
                 x-kubernetes-validations:
                 - message: endpoint must not contain whitespace
-                  rule: '!has(self) || self.endpoint.matches(''^[^[:space:]]+$'')'
+                  rule: self.endpoint.matches('^[^[:space:]]+$')
                 - message: grpc endpoint must be host[:port] with an optional http(s)
                     scheme and no path
-                  rule: '!has(self) || self.protocol != ''grpc'' || self.endpoint.matches(''^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$'')'
+                  rule: self.protocol != 'grpc' || self.endpoint.matches('^(https?://)?[^/[:space:]]+(:[[:digit:]]+)?$')
                 - message: http/protobuf and http/json endpoints must be full http(s)
                     URLs
-                  rule: '!has(self) || !self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
+                  rule: '!self.protocol.startsWith(''http/'') || self.endpoint.matches(''^https?://[^[:space:]]+$'')'
                 - message: sampling.ratio is required and must be > 0 when sampling.type
                     is probabilistic
-                  rule: '!has(self) || !has(self.sampling) || self.sampling.type !=
-                    ''probabilistic'' || (has(self.sampling.ratio) && self.sampling.ratio
-                    > 0)'
+                  rule: '!has(self.sampling) || self.sampling.type != ''probabilistic''
+                    || (has(self.sampling.ratio) && self.sampling.ratio > 0)'
                 - message: sampling.ratio must only be set when sampling.type is probabilistic
-                  rule: '!has(self) || !has(self.sampling) || self.sampling.type ==
-                    ''probabilistic'' || !has(self.sampling.ratio)'
+                  rule: '!has(self.sampling) || self.sampling.type == ''probabilistic''
+                    || !has(self.sampling.ratio)'
             type: object
             x-kubernetes-validations:
             - message: at least one signal (traces, metrics, logs) must be configured
