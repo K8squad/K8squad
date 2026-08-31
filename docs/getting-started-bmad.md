@@ -465,6 +465,10 @@ the squad's `requires.toolchains` refs resolve against.
 - Read the [architecture overview](../README.md#-architecture).
 - Explore the [quickstart squad](../hack/quickstart/squad.yaml) — the minimal
   one-agent version this squad extends.
+- **Add your own tool** — when a skill needs a CLI the default catalog does not
+  ship, follow [Adding a toolchain](https://github.com/K8squad/k8squad-skills/blob/main/docs/adding-a-toolchain.md):
+  build the tool image, wire it into the catalog (or your team namespace), and
+  pin `name@version` so `requires.toolchains` resolves.
 - Full CRD and API reference: <https://k8squad.io/docs>.
 
 Clean up when you are done:
