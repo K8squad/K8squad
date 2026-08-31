@@ -20,5 +20,20 @@ in lockstep:
 
   make helm-sync-crds   # config/crd/bases/*.yaml -> config/helm/crds/
 
-Services (apiserver, operator, console, memory, shim) are wired by later
-epics; this release intentionally ships only the CRD group + namespace.
+Control plane (operator/apiserver/console/memory/scm-webhook):
+{{- if .Values.controlPlane.enabled }}
+  ENABLED. Deployments + Services + RBAC are installed in
+  {{ include "k8squad.namespace" . }}. Check rollout:
+
+    kubectl -n {{ include "k8squad.namespace" . }} get deploy,svc
+
+  Images: {{ .Values.controlPlane.image.registry }}/ksquad-<component>:{{ .Values.controlPlane.image.tag | default .Chart.AppVersion }}
+  OTLP  : {{ if .Values.controlPlane.otel.enabled }}{{ .Values.controlPlane.otel.endpoint }}{{ else }}(disabled){{ end }}
+{{- else }}
+  OFF (controlPlane.enabled=false). This release ships only the CRD group +
+  namespace. To run the control plane, supply a Postgres DSN and enable it:
+
+    helm upgrade {{ .Release.Name }} <chart> \
+      --set controlPlane.enabled=true \
+      --set controlPlane.database.existingSecret=<your-db-secret>
+{{- end }}

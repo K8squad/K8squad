@@ -1,0 +1,132 @@
+{{- if .Values.controlPlane.enabled }}
+{{- $ns := include "k8squad.namespace" . }}
+# Operator manager ClusterRole. Mirrors config/rbac/role.yaml (kubebuilder
+# marker output); keep the two in lockstep — CI RBAC gen writes role.yaml, this
+# is the Helm-installed copy applied to the release.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8squad.fullname" . }}-operator
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [create, delete, get, list, update, watch]
+- apiGroups: [""]
+  resources: [limitranges, resourcequotas, serviceaccounts]
+  verbs: [create, get, list, patch, update, watch]
+- apiGroups: [""]
+  resources: [namespaces]
+  verbs: [create, delete, get, list, patch, update, watch]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get, list, patch, update, watch]
+- apiGroups: [batch]
+  resources: [jobs]
+  verbs: [create, delete, get, list, watch]
+- apiGroups: [ksquad.io]
+  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, skills]
+  verbs: [get, list, watch]
+- apiGroups: [ksquad.io]
+  resources: [mcpservers/status, otelconfigs/status, projects/status, teams/status]
+  verbs: [get, patch, update]
+- apiGroups: [ksquad.io]
+  resources: [projects]
+  verbs: [get, list, patch, watch]
+- apiGroups: [ksquad.io]
+  resources: [teams]
+  verbs: [get, list, patch, update, watch]
+- apiGroups: [ksquad.io]
+  resources: [teams/finalizers]
+  verbs: [patch, update]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [create, get, list, patch, update, watch]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [clusterrolebindings, clusterroles, rolebindings, roles]
+  verbs: [create, delete, get, list, patch, update, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-operator
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8squad.fullname" . }}-operator
+subjects:
+- kind: ServiceAccount
+  name: ksquad-operator
+  namespace: {{ $ns }}
+---
+# Leader-election: the manager coordinates on a Lease/ConfigMap in its own
+# namespace (leaderElectionID ksquad-operator.ksquad.io).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "k8squad.fullname" . }}-operator-leader-election
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-operator-leader-election
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "k8squad.fullname" . }}-operator-leader-election
+subjects:
+- kind: ServiceAccount
+  name: ksquad-operator
+  namespace: {{ $ns }}
+---
+# scm-webhook (cmd/scm-webhook) reads Project CRs + their HMAC webhook Secrets
+# across namespaces and patches the ingress-trigger annotation. Least-privilege:
+# no write on secrets, no reconcile of other CRs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8squad.fullname" . }}-scm-webhook
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "scm-webhook") | nindent 4 }}
+rules:
+- apiGroups: [ksquad.io]
+  resources: [projects]
+  verbs: [get, list, watch, patch]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-scm-webhook
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "scm-webhook") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8squad.fullname" . }}-scm-webhook
+subjects:
+- kind: ServiceAccount
+  name: ksquad-scm-webhook
+  namespace: {{ $ns }}
+{{- end }}
