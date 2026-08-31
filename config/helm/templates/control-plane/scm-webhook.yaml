@@ -35,13 +35,17 @@ spec:
         {{- with .Values.controlPlane.scmWebhook.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        # scm-webhook exposes only /healthz (stateless webhook fan-in, no DB gate),
+        # so both probes target it for parity with the other control-plane Deployments.
         livenessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: http
           initialDelaySeconds: 10
           periodSeconds: 20
         readinessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: http
           initialDelaySeconds: 5
           periodSeconds: 10

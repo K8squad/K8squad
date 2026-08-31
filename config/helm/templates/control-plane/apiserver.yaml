@@ -38,13 +38,17 @@ spec:
         {{- with .Values.controlPlane.apiserver.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+        # /healthz is liveness-only (never DB-gated); /readyz gates on a DB ping so
+        # a Postgres-down pod is pulled from Service endpoints instead of routed traffic.
         livenessProbe:
-          tcpSocket:
+          httpGet:
+            path: /healthz
             port: http
           initialDelaySeconds: 10
           periodSeconds: 20
         readinessProbe:
-          tcpSocket:
+          httpGet:
+            path: /readyz
             port: http
           initialDelaySeconds: 5
           periodSeconds: 10
