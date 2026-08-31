@@ -1,0 +1,76 @@
+{{- if .Values.controlPlane.enabled }}
+{{- $ns := include "k8squad.namespace" . }}
+{{- $c := "scm-webhook" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ksquad-scm-webhook
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.scmWebhook.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 8 }}
+    spec:
+      serviceAccountName: ksquad-scm-webhook
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: scm-webhook
+        image: {{ include "k8squad.image" (dict "root" $ "component" $c) }}
+        imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy | default "IfNotPresent" }}
+        args:
+        - --listen-address=:8080
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        {{- include "k8squad.otelEnv" . | nindent 8 }}
+        {{- with .Values.controlPlane.scmWebhook.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        # scm-webhook exposes only /healthz (stateless webhook fan-in, no DB gate),
+        # so both probes target it for parity with the other control-plane Deployments.
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          {{- toYaml (.Values.controlPlane.scmWebhook.resources | default dict) | nindent 10 }}
+---
+# TLS terminates at the gateway; this Service exposes plaintext ingress. Route a
+# HTTPRoute/Ingress to it out-of-band (per Project spec.repo.sync webhook URL).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-scm-webhook
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+{{- end }}

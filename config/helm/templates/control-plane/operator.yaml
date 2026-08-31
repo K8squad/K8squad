@@ -1,0 +1,80 @@
+{{- if .Values.controlPlane.enabled }}
+{{- $ns := include "k8squad.namespace" . }}
+{{- $c := "operator" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ksquad-operator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.operator.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 8 }}
+    spec:
+      serviceAccountName: ksquad-operator
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: operator
+        image: {{ include "k8squad.image" (dict "root" $ "component" $c) }}
+        imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy | default "IfNotPresent" }}
+        args:
+        - --metrics-bind-address=:8080
+        - --health-probe-bind-address=:8081
+        - --leader-elect={{ .Values.controlPlane.operator.leaderElect | default true }}
+        ports:
+        - name: metrics
+          containerPort: 8080
+        - name: health
+          containerPort: 8081
+        env:
+        {{- include "k8squad.databaseEnv" . | nindent 8 }}
+        {{- include "k8squad.otelEnv" . | nindent 8 }}
+        - name: KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED
+          value: {{ .Values.tools.rbac.clusterScopeEnabled | default false | quote }}
+        {{- with .Values.controlPlane.operator.extraEnv }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: [ALL]
+        resources:
+          {{- toYaml (.Values.controlPlane.operator.resources | default dict) | nindent 10 }}
+---
+# Metrics Service for OTel/Prometheus scrape of the manager (:8080).
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-operator-metrics
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+  - name: metrics
+    port: 8080
+    targetPort: metrics
+{{- end }}
