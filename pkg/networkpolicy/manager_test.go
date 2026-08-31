@@ -88,7 +88,9 @@ func TestReconcileCreatesAllThreePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.Requeue || res.RequeueAfter != 0 {
+	// Result.Requeue was deprecated in controller-runtime v0.24; a steady-state
+	// reconcile returns a zero Result, so RequeueAfter==0 is the full assertion.
+	if res.RequeueAfter != 0 {
 		t.Errorf("unexpected requeue result: %+v", res)
 	}
 
