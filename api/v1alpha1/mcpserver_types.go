@@ -66,6 +66,8 @@ type MCPToolFilter struct {
 	// Allow lists tool-name globs to grant. Empty (or absent) grants all of
 	// the server's observed tools.
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +kubebuilder:validation:items:MaxLength=253
 	Allow []string `json:"allow,omitempty"`
 
 	// Deny lists tool-name globs subtracted from the effective allow set.
@@ -73,6 +75,8 @@ type MCPToolFilter struct {
 	// glob overlap is caught at Run assembly where an empty effective set
 	// fails closed (ADR-042).
 	// +optional
+	// +kubebuilder:validation:MaxItems=256
+	// +kubebuilder:validation:items:MaxLength=253
 	Deny []string `json:"deny,omitempty"`
 }
 
@@ -97,7 +101,7 @@ type MCPServerDiscovery struct {
 // skills only narrow the envelope (D8).
 // +kubebuilder:validation:XValidation:message="transport pairing: streamable-http requires endpoint and must not set command/args; use spec.endpoint and transport=streamable-http",rule="(self.transport != 'streamable-http') || (has(self.endpoint) && self.endpoint != '' && !has(self.command))"
 // +kubebuilder:validation:XValidation:message="transport pairing: stdio requires command and must not set endpoint; use spec.command and transport=stdio",rule="(self.transport != 'stdio') || (has(self.command) && self.command != '' && !has(self.endpoint))"
-// +kubebuilder:validation:XValidation:message="toolFilter: allow and deny must not overlap on the same exact tool name; remove the overlap or use a glob",rule="!has(self.toolFilter) || !has(self.toolFilter.allow) || !has(self.toolFilter.deny) || self.toolFilter.allow.all(a, !self.toolFilter.deny.contains(a))"
+// +kubebuilder:validation:XValidation:message="toolFilter: allow and deny must not overlap on the same exact tool name; remove the overlap or use a glob",rule="!has(self.toolFilter) || !has(self.toolFilter.allow) || !has(self.toolFilter.deny) || self.toolFilter.allow.all(a, !(a in self.toolFilter.deny))"
 type MCPServerSpec struct {
 	// Transport selects the MCP transport: stdio or streamable-http
 	// (spike A.3 closed enum; SSE is not a v1alpha1 transport).

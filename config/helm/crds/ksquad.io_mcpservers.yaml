@@ -156,7 +156,9 @@ spec:
                       Allow lists tool-name globs to grant. Empty (or absent) grants all of
                       the server's observed tools.
                     items:
+                      maxLength: 253
                       type: string
+                    maxItems: 256
                     type: array
                   deny:
                     description: |-
@@ -165,7 +167,9 @@ spec:
                       glob overlap is caught at Run assembly where an empty effective set
                       fails closed (ADR-042).
                     items:
+                      maxLength: 253
                       type: string
+                    maxItems: 256
                     type: array
                 type: object
               transport:
@@ -191,7 +195,7 @@ spec:
             - message: 'toolFilter: allow and deny must not overlap on the same exact
                 tool name; remove the overlap or use a glob'
               rule: '!has(self.toolFilter) || !has(self.toolFilter.allow) || !has(self.toolFilter.deny)
-                || self.toolFilter.allow.all(a, !self.toolFilter.deny.contains(a))'
+                || self.toolFilter.allow.all(a, !(a in self.toolFilter.deny))'
           status:
             description: |-
               MCPServerStatus is the observed state of MCPServer, written only by the
