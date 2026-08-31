@@ -248,7 +248,7 @@ jobs:
 
       - name: Generate SBOM (Syft)
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           format: spdx-json
@@ -281,7 +281,7 @@ jobs:
         # §6.1/§6.6: Trivy is the primary gate on every image; Grype is an independent
         # second-scanner cross-check on release images so a single scanner's DB gap doesn't
         # silently ship a known-vulnerable release. Same fixable-only posture as Trivy.
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           severity-cutoff: high
@@ -373,7 +373,7 @@ jobs:
 
       - name: Generate SBOM (Syft)
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           format: spdx-json
@@ -403,7 +403,7 @@ jobs:
         if: github.event_name != 'pull_request'
         # Toolchain images have no git release tags, so the second-scanner cross-check
         # runs on every publish (the platform lane gates it on refs/tags/v).
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           severity-cutoff: high
