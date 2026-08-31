@@ -111,7 +111,9 @@ resolve_toolchain() { # name@version
 
 echo "-- Agent → roleRef / runtimeRef / credentialSecretRef"
 while IFS=$'\t' read -r a role rt sec; do
-  [ -n "$role" ] && resolve role "$role" "$SQUAD_NS"
+  # NB: qualify to roles.ksquad.io — the bare "role" short name resolves to
+  # rbac.authorization.k8s.io/Role, which would false-MISS every ksquad Role.
+  [ -n "$role" ] && resolve roles.ksquad.io "$role" "$SQUAD_NS"
   [ -n "$rt" ]   && resolve agentruntime "$rt" "$SQUAD_NS"
   [ -n "$sec" ]  && resolve secret "$sec" "$SQUAD_NS"
 done < <(kubectl get agents -n "$SQUAD_NS" -o json \
@@ -121,7 +123,7 @@ echo "-- Role → promptRef (ConfigMap) / defaultSkills[] (Skill)"
 while IFS=$'\t' read -r r prompt skills; do
   [ -n "$prompt" ] && resolve configmap "$prompt" "$SQUAD_NS"
   for s in $skills; do [ -n "$s" ] && resolve skill "$s" "$SQUAD_NS"; done
-done < <(kubectl get roles -n "$SQUAD_NS" -o json \
+done < <(kubectl get roles.ksquad.io -n "$SQUAD_NS" -o json \
   | jq -r '.items[] | [.metadata.name, (.spec.promptRef.name // ""), ([.spec.defaultSkills[]?.name] | join(" "))] | @tsv')
 
 echo "-- Skill → requires.toolchains[] (cluster catalog, name@version)"
