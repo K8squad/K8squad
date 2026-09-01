@@ -1,0 +1,30 @@
+apiVersion: v2
+name: k8squad-crds
+description: |
+  K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
+  (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy,
+  OtelConfig, MCPServer, Toolchain), delivered as an independently
+  versioned, upgrade-safe Helm chart (ADR-0002, Option B).
+
+  Install this chart BEFORE the k8squad control-plane chart, and upgrade it
+  independently to roll CRD schema changes forward on their own cadence.
+  CRDs carry helm.sh/resource-policy: keep, so uninstalling never deletes
+  the CRDs or the user's custom resources.
+type: application
+# Own version line — bump on ANY CRD schema change (ADR-0002 §1/§4). This is
+# the version operators pin and roll independently of the control plane.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://k8squad.io
+sources:
+  - https://github.com/K8squad/K8squad
+icon: https://k8squad.io/img/banner-on-dark.png
+keywords:
+  - agents
+  - orchestration
+  - kubernetes
+  - crds
+maintainers:
+  - name: K8squad Authors
+    url: https://k8squad.io
