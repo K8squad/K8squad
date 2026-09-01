@@ -29,6 +29,17 @@ Control plane (operator/apiserver/console/memory/scm-webhook):
 
   Images: {{ .Values.controlPlane.image.registry }}/ksquad-<component>:{{ .Values.controlPlane.image.tag | default .Chart.AppVersion }}
   OTLP  : {{ if .Values.controlPlane.otel.enabled }}{{ .Values.controlPlane.otel.endpoint }}{{ else }}(disabled){{ end }}
+  Event bus (NATS/JetStream):
+{{- if .Values.controlPlane.nats.enabled }}
+    BUNDLED — ksquad-nats StatefulSet ({{ include "k8squad.nats.replicas" . }} replica(s)) + event-relay
+    auto-wired to {{ include "k8squad.nats.url" . }}
+{{- else if (eq (include "k8squad.eventRelay.enabled" .) "true") }}
+    EXTERNAL — event-relay draining to {{ include "k8squad.nats.url" . }}
+{{- else }}
+    OFF — plugin event streaming/replay is degraded (core is unaffected: the
+    outbox buffers and NATS-down never blocks a Run/claim/write). Enable with
+    --set controlPlane.nats.enabled=true --set controlPlane.nats.persistence.storageClassName=<class>
+{{- end }}
 {{- else }}
   OFF (controlPlane.enabled=false). This release ships only the CRD group +
   namespace. To run the control plane, supply a Postgres DSN and enable it:

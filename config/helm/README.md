@@ -36,6 +36,15 @@ namespace is fine.
 | `tools.defaultCatalog.enabled` | `false` | Render the curated toolchain catalog as `Toolchain` objects in the control-plane namespace. |
 | `tools.defaultCatalog.entries` | curated set | Per-tool catalog entries (versions, images, RBAC) — override or extend. |
 | `tools.rbac.clusterScopeEnabled` | `false` | Allow cluster-catalog Toolchains to declare `rbac.scope: cluster`. Never default-on. |
+| `controlPlane.nats.enabled` | `true` | Bundle the NATS/JetStream event bus (§16/§17.4/ADR-023). ON by default so `controlPlane.enabled=true` yields a complete plane; auto-enables `eventRelay` and derives its `natsUrl`. |
+| `controlPlane.nats.persistence.storageClassName` | `""` | **Required** when the bundled bus is on — the JetStream PVC never uses the cluster-default class (§16.2). |
+| `controlPlane.nats.persistence.size` | `4Gi` | JetStream file-store PVC size. |
+| `controlPlane.nats.ha.enabled` / `.replicas` | `false` / `3` | Clustered JetStream RAFT quorum (replicas must be odd, ≥3). |
+| `controlPlane.eventRelay.natsUrl` | `""` | Point the relay at an EXTERNAL NATS instead of the bundled bus (takes precedence; set `controlPlane.nats.enabled=false`). |
+
+The event bus is best-effort: Postgres/CNPG is the sole source of truth
+(ADR-001), the write path uses a transactional outbox, and NATS-down never
+blocks a Run/claim/write — only live plugin event streaming/replay is degraded.
 
 ## Toolchains & the default catalog
 

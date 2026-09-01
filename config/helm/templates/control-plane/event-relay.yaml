@@ -1,8 +1,9 @@
-{{- if and .Values.controlPlane.enabled .Values.controlPlane.eventRelay.enabled }}
+{{- if and .Values.controlPlane.enabled (eq (include "k8squad.eventRelay.enabled" .) "true") }}
 {{- $ns := include "k8squad.namespace" . }}
 {{- $c := "event-relay" }}
-{{- if not .Values.controlPlane.eventRelay.natsUrl }}
-{{- fail "controlPlane.eventRelay.enabled=true requires controlPlane.eventRelay.natsUrl (the relay fails closed without NATS + DATABASE_URL)." }}
+{{- $natsUrl := include "k8squad.nats.url" . }}
+{{- if not $natsUrl }}
+{{- fail "event-relay is enabled but has no NATS URL: set controlPlane.eventRelay.natsUrl for an external bus, or controlPlane.nats.enabled=true for the bundled one (the relay fails closed without NATS + DATABASE_URL)." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
@@ -34,7 +35,7 @@ spec:
         env:
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         - name: RELAY_NATS_URL
-          value: {{ .Values.controlPlane.eventRelay.natsUrl | quote }}
+          value: {{ $natsUrl | quote }}
         - name: RELAY_METRICS_ADDR
           value: ":9090"
         {{- include "k8squad.otelEnv" . | nindent 8 }}

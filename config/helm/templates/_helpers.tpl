@@ -77,6 +77,44 @@ the chart appVersion so a bare `controlPlane.enabled=true` pins a real image.
 {{- end -}}
 
 {{/*
+NATS JetStream replicas — single-replica default; nats.ha.enabled flips to a
+clustered RAFT quorum.
+*/}}
+{{- define "k8squad.nats.replicas" -}}
+{{- if .Values.controlPlane.nats.ha.enabled -}}{{ .Values.controlPlane.nats.ha.replicas }}{{- else -}}1{{- end -}}
+{{- end -}}
+
+{{/*
+StorageClass for the JetStream file-store PVC. Its own knob (§16.2) — no silent
+cluster-default fallback; nats.yaml fails fast when this is empty.
+*/}}
+{{- define "k8squad.storageClass.nats" -}}
+{{- .Values.controlPlane.nats.persistence.storageClassName -}}
+{{- end -}}
+
+{{/*
+NATS client URL for the relay. Precedence: an explicit eventRelay.natsUrl
+(external bus) wins; else, when the bundled bus is on, derive it from the
+chart-owned Service; else empty (event-relay fails closed on empty).
+*/}}
+{{- define "k8squad.nats.url" -}}
+{{- if .Values.controlPlane.eventRelay.natsUrl -}}
+{{- .Values.controlPlane.eventRelay.natsUrl -}}
+{{- else if .Values.controlPlane.nats.enabled -}}
+{{- printf "nats://ksquad-nats.%s.svc:%v" (include "k8squad.namespace" .) (.Values.controlPlane.nats.port | default 4222) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Effective event-relay enablement — explicitly on, OR implied by the bundled bus
+(controlPlane.nats.enabled auto-wires the relay so `controlPlane.enabled` alone
+yields a complete event plane).
+*/}}
+{{- define "k8squad.eventRelay.enabled" -}}
+{{- if or .Values.controlPlane.eventRelay.enabled .Values.controlPlane.nats.enabled -}}true{{- end -}}
+{{- end -}}
+
+{{/*
 OTLP exporter env block, shared by every control-plane workload. Emits the
 standard OTEL_EXPORTER_OTLP_* vars pointing at the observability gateway
 collector (live since ISI-3484). Binaries currently log via pkg/telemetry
