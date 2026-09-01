@@ -1,0 +1,13 @@
+# Values for the k8squad-crds chart (ADR-0002, Option B).
+#
+# This chart owns the eleven ksquad.io CRDs. Installing it is the opt-in;
+# not installing it (or uninstalling with keep=false) is the opt-out — there
+# is deliberately no crds.install toggle here (ADR-0002 §2).
+
+# keep annotates every CRD with `helm.sh/resource-policy: keep` so a
+# `helm uninstall k8squad-crds` (or a release deletion / rollback) leaves the
+# CRDs — and therefore every user-created CR of those kinds — in place. Leave
+# true in production; set false only on throwaway/test clusters where you want
+# uninstall to remove the CRDs (which cascade-deletes ALL ksquad.io CRs
+# cluster-wide).
+keep: true

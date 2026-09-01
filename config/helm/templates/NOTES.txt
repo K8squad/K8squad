@@ -6,19 +6,24 @@ Installed:
 {{- if .Values.namespace.create }}
   - Control-plane namespace: {{ .Values.namespace.name }}
 {{- end }}
-  - CRDs: {{ range $path, $_ := .Files.Glob "crds/*.yaml" }}{{ base $path }} {{ end }}
-    (cluster-scoped, installed from the chart's crds/ directory by Helm on
-    first install; Helm does not upgrade or delete them on subsequent runs)
+  - CRDs: NOT shipped by this chart. The ksquad.io CRDs are owned by the
+    standalone k8squad-crds chart (ADR-0002, Option B), which MUST be
+    installed/upgraded BEFORE this release.
 
-Discover the API group:
+REQUIRED: k8squad-crds chart >= {{ index .Chart.Annotations "k8squad.io/min-crds-version" | default "0.1.0" }}
 
+Self-check — confirm the CRDs are present and established before creating CRs:
+
+  kubectl get crd -l app.kubernetes.io/part-of=k8squad
   kubectl api-resources --api-group=ksquad.io
 
-The CRD set covers the squad-composition kinds (Team, Agent, Role, Skill,
-Project, Run) plus AgentRuntime. After regenerating manifests, keep the chart
-in lockstep:
+If the ksquad.io API group is missing, install the CRD chart first:
 
-  make helm-sync-crds   # config/crd/bases/*.yaml -> config/helm/crds/
+  helm upgrade --install k8squad-crds config/helm-crds --wait
+
+The CRD set covers the squad-composition kinds (Team, Agent, Role, Skill,
+Project, Run) plus AgentRuntime, EgressPolicy, OtelConfig, MCPServer, and
+Toolchain.
 
 Control plane (operator/apiserver/console/memory/scm-webhook):
 {{- if .Values.controlPlane.enabled }}

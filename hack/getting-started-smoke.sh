@@ -28,7 +28,14 @@ set -euo pipefail
 RELEASE="${RELEASE:-k8squad}"
 CP_NS="${CP_NS:-k8squad-system}"                 # control-plane / catalog namespace (chart default)
 SQUAD_NS="${SQUAD_NS:-bmad-squad}"               # example squad namespace
-CHART="${CHART:-config/helm}"                    # the CRD + toolchain-catalog chart
+CHART="${CHART:-config/helm}"                    # control-plane / toolchain-catalog chart
+CRDS_CHART="${CRDS_CHART:-config/helm-crds}"      # standalone CRD chart (ADR-0002 Option B)
+CRDS_RELEASE="${CRDS_RELEASE:-k8squad-crds}"
+CRDS_NS="${CRDS_NS:-k8squad-crds}"               # CRD chart's own release namespace — kept SEPARATE
+                                                 # from CP_NS so it never pre-creates (unowned) the
+                                                 # control-plane namespace the CP chart must own.
+                                                 # CRDs are cluster-scoped, so this ns only holds the
+                                                 # CRD release secret.
 SQUAD="${SQUAD:-examples/bmad-team/squad.yaml}"  # the published single-file squad manifest
 CRD_TIMEOUT="${CRD_TIMEOUT:-120s}"
 
@@ -43,15 +50,20 @@ command -v helm    >/dev/null || fail "helm not on PATH"
 command -v jq      >/dev/null || fail "jq not on PATH"
 kubectl cluster-info >/dev/null 2>&1 || fail "no reachable cluster on the current kube-context"
 [ -d "$CHART" ]  || fail "chart not found: $CHART (run from repo root)"
+[ -d "$CRDS_CHART" ] || fail "CRD chart not found: $CRDS_CHART (run from repo root)"
 [ -f "$SQUAD" ]  || fail "squad manifest not found: $SQUAD (run from repo root)"
 
-echo "getting-started smoke: release=$RELEASE cp-ns=$CP_NS squad-ns=$SQUAD_NS chart=$CHART"
+echo "getting-started smoke: release=$RELEASE cp-ns=$CP_NS squad-ns=$SQUAD_NS chart=$CHART crds-chart=$CRDS_CHART"
 
 # ============================================================ STEP 1 — helm install (docs step 1)
-group "STEP 1 — helm install $RELEASE (chart=$CHART, defaultCatalog.enabled=true)"
+# ADR-0002 Option B: CRDs ship in the standalone k8squad-crds chart, installed
+# FIRST (before the control-plane chart, whose catalog creates Toolchain CRs).
+group "STEP 1 — helm install $CRDS_RELEASE (chart=$CRDS_CHART) then $RELEASE (chart=$CHART, defaultCatalog.enabled=true)"
 # `upgrade --install` so the lane is idempotent on a re-run against the same cluster;
-# a fresh cluster takes the install path. This is the documented command with the
-# documented catalog flag.
+# a fresh cluster takes the install path. These are the documented commands.
+helm upgrade --install "$CRDS_RELEASE" "$CRDS_CHART" \
+  --namespace "$CRDS_NS" --create-namespace \
+  --wait --timeout "$CRD_TIMEOUT"
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" --create-namespace \
   --set tools.defaultCatalog.enabled=true \
@@ -59,8 +71,9 @@ helm upgrade --install "$RELEASE" "$CHART" \
 endgroup
 
 group "STEP 1b — wait for the ksquad.io CRDs to be Established"
-# The chart installs CRDs as Helm `crds/`; block until the API server has them
-# Established before applying CRs (avoids a race where apply races CRD registration).
+# The k8squad-crds chart installs the CRDs as templates; block until the API
+# server has them Established before applying CRs (avoids a race where apply
+# races CRD registration).
 mapfile -t CRDS < <(kubectl get crd -o name | grep 'ksquad.io$' || true)
 [ "${#CRDS[@]}" -gt 0 ] || fail "no ksquad.io CRDs registered after helm install — chart drift"
 for crd in "${CRDS[@]}"; do

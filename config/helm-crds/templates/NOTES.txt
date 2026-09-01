@@ -1,0 +1,25 @@
+{{ include "k8squad-crds.name" . }} {{ .Chart.Version }} installed — the ksquad.io CRDs are registered.
+
+CRDs (cluster-scoped):
+{{- range $path, $_ := .Files.Glob "templates/ksquad.io_*.yaml" }}
+  - {{ base $path | trimSuffix ".yaml" | replace "ksquad.io_" "" }}.ksquad.io
+{{- end }}
+
+{{ if .Values.keep -}}
+These CRDs are annotated helm.sh/resource-policy: keep — `helm uninstall
+{{ .Release.Name }}` will leave them (and all your custom resources) in place.
+{{- else -}}
+WARNING: keep=false — `helm uninstall {{ .Release.Name }}` will DELETE these
+CRDs and cascade-delete ALL ksquad.io custom resources cluster-wide.
+{{- end }}
+
+Next steps (ADR-0002 §3 — CRDs first, control plane second):
+
+  1. Verify the CRDs are established:
+       kubectl get crd -l app.kubernetes.io/part-of=k8squad
+  2. Install / upgrade the control-plane chart AFTER this one:
+       helm upgrade --install k8squad config/helm --wait
+
+To roll CRD schema forward later, upgrade THIS chart independently:
+
+  helm upgrade {{ .Release.Name }} config/helm-crds --wait

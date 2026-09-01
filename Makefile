@@ -31,41 +31,57 @@ generate: controller-gen ## Generate DeepCopy method implementations (zz_generat
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
 # ISI-3297: codegen-drift gate. Regenerates everything codegen owns
-# (zz_generated.deepcopy.go, config/crd/bases, config/helm/crds) and fails if
+# (zz_generated.deepcopy.go, config/crd/bases, config/helm-crds/templates) and fails if
 # the result differs from what is committed — the markers in api/v1alpha1 are
 # the source of truth, the YAML/deepcopy artifacts must never lag them.
 # This is what .github/workflows/ci.yml (codegen-drift job) runs on every
 # PR/push to main; run it locally after editing any +kubebuilder marker.
 .PHONY: verify-codegen
 verify-codegen: generate manifests ## Fail when generated code/manifests drift from the committed state (ISI-3297).
-	@git diff --exit-code -- api/ config/crd/bases/ config/helm/crds/ || { \
+	@git diff --exit-code -- api/ config/crd/bases/ config/helm-crds/templates/ || { \
 		echo ""; \
 		echo "CODEGEN DRIFT (ISI-3297): generated artifacts do not match the committed state."; \
 		echo "The api/v1alpha1 +kubebuilder markers are the source of truth. Run:"; \
-		echo "  make generate manifests && git add api/ config/crd/bases/ config/helm/crds/"; \
+		echo "  make generate manifests && git add api/ config/crd/bases/ config/helm-crds/templates/"; \
 		echo "and commit the result alongside your marker changes."; \
 		exit 1; }
-	@echo "OK: no codegen drift (api/ config/crd/bases/ config/helm/crds/ in sync)."
+	@echo "OK: no codegen drift (api/ config/crd/bases/ config/helm-crds/templates/ in sync)."
 
 HELM ?= $(shell command -v helm 2>/dev/null)
 CHART_DIR ?= config/helm
+CRDS_CHART_DIR ?= config/helm-crds
 
+# ISI-3518 / ADR-0002 (Option B): the 11 ksquad.io CRDs live as guarded Helm
+# templates in the standalone k8squad-crds chart (config/helm-crds/templates/),
+# NOT in the control-plane chart and NOT in Helm's install-only crds/ dir — so
+# `helm upgrade k8squad-crds` propagates schema changes independently of the
+# control plane. This target keeps the CRD chart in lockstep with the
+# controller-gen source of truth (config/crd/bases): each base CRD is wrapped by
+# hack/wrap-crd-template.sh (helm.sh/resource-policy: keep gated by .Values.keep,
+# schema body verbatim). It removes stale CRD templates first (but preserves the
+# chart's _helpers.tpl / NOTES.txt) so a removed CRD does not linger.
 .PHONY: helm-sync-crds
-helm-sync-crds: ## Sync generated CRDs (config/crd/bases) into the Helm chart's crds/ dir.
-	mkdir -p $(CHART_DIR)/crds
-	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
+helm-sync-crds: ## Sync generated CRDs (config/crd/bases) into config/helm-crds/templates/ as upgrade-safe templates.
+	rm -f $(CRDS_CHART_DIR)/templates/ksquad.io_*.yaml
+	mkdir -p $(CRDS_CHART_DIR)/templates
+	@for f in config/crd/bases/*.yaml; do \
+		bash hack/wrap-crd-template.sh "$$f" > "$(CRDS_CHART_DIR)/templates/$$(basename $$f)"; \
+	done
 
 .PHONY: helm-lint
-helm-lint: ## Lint the control-plane Helm chart.
+helm-lint: ## Lint both Helm charts (control plane + CRDs).
+	$(HELM) lint $(CRDS_CHART_DIR)
 	$(HELM) lint $(CHART_DIR)
 
 .PHONY: helm-template
-helm-template: ## Render the control-plane Helm chart locally (CRDs included, no cluster needed).
-	$(HELM) template k8squad $(CHART_DIR) --include-crds
+helm-template: ## Render both Helm charts locally (no cluster needed).
+	$(HELM) template k8squad-crds $(CRDS_CHART_DIR)
+	$(HELM) template k8squad $(CHART_DIR)
 
 .PHONY: helm-package
-helm-package: helm-sync-crds ## Package the chart into .cr-release-packages/ (what CI publishes to charts.k8squad.io).
+helm-package: helm-sync-crds ## Package both charts into .cr-release-packages/ (what CI publishes to charts.k8squad.io).
 	mkdir -p .cr-release-packages
+	$(HELM) package $(CRDS_CHART_DIR) -d .cr-release-packages
 	$(HELM) package $(CHART_DIR) -d .cr-release-packages
 
 .PHONY: quickstart

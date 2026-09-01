@@ -2,20 +2,26 @@
 
 Installs the K8squad control-plane API surface on a cluster:
 
-- the `ksquad.io` CRD group from `crds/` (`Team`, `Agent`, `AgentRuntime`,
-  `Role`, `Skill`, `Project`, `Run`, `EgressPolicy`, `OtelConfig`,
-  `MCPServer`, `Toolchain` — Helm installs CRDs on first install and never
-  upgrades or deletes them — see *CRD lifecycle* below),
-- the control-plane namespace (`k8squad-system` by default), and
+- the control-plane namespace (`k8squad-system` by default),
+- the control-plane services (apiserver, operator, console, memory,
+  scm-webhook, event bus) when `controlPlane.enabled=true`, and
 - optionally, the **default toolchain catalog** (see *Toolchains & the
   default catalog* below).
+
+This chart ships **no CRDs**. The eleven `ksquad.io` CRDs are owned by the
+standalone [`k8squad-crds`](../helm-crds/README.md) chart, which must be
+installed/upgraded **first** so the control plane and the CRD schema roll on
+independent cadences (ADR-0002, Option B — see *CRD lifecycle* below).
 
 This is the chart CI publishes to <https://charts.k8squad.io>
 (`make helm-package` / `.github/workflows/helm-release.yml`).
 
 ## Install
 
+CRDs first, control plane second (ADR-0002 §3):
+
 ```sh
+helm install k8squad-crds config/helm-crds --wait
 helm install k8squad config/helm -n k8squad-system --create-namespace
 kubectl api-resources --api-group=ksquad.io
 ```
@@ -167,27 +173,37 @@ cluster-user-authored CRDs, not chart-rendered — see the BMAD squad example in
 [`examples/bmad-team/02b-mcpservers.yaml`](../../examples/bmad-team/02b-mcpservers.yaml)
 and the [getting-started guide](../../docs/getting-started-bmad.md).
 
-## CRD lifecycle
+## CRD lifecycle (owned by the k8squad-crds chart)
 
-Files under `crds/` are **generated artifacts**, byte-identical copies of
-`config/crd/bases/*.yaml` produced by `make manifests`. Never edit them by
-hand. After regenerating manifests, sync them into the chart:
+This chart ships **zero** CRDs. Per
+[ADR-0002](../../docs/adr/ADR-0002-crd-lifecycle-via-helm.md) (Option B), the
+eleven `ksquad.io` CRDs live in the standalone, independently-versioned
+[`k8squad-crds`](../helm-crds/README.md) chart, so CRD schema rolls forward — or
+holds back — on its own cadence, decoupled from control-plane upgrades. That
+chart renders the CRDs as ordinary templates (not Helm's install-only `crds/`
+dir), so `helm upgrade k8squad-crds` reconciles their schema; and it annotates
+them `helm.sh/resource-policy: keep`, so uninstalling never deletes user CRs.
 
-```sh
-make helm-sync-crds
-```
+**Ordering:** install/upgrade `k8squad-crds` **before** this chart (§3), so the
+API server has the CRDs established before the control plane creates any CR
+(e.g. the toolchain catalog `Toolchain`).
 
-Helm semantics for the `crds/` directory:
+**Version skew (§4):** this chart declares the minimum CRD-chart version it
+needs as `annotations."k8squad.io/min-crds-version"` in `Chart.yaml`, echoed in
+`NOTES.txt` with a `kubectl get crd` self-check. A newer CRD chart is always
+safe (additive-only); older than the minimum is unsupported.
 
-- CRDs are installed before templates on **first** install of the release.
-- `helm upgrade` does **not** update CRDs in `crds/`; upgrades of the CRD
-  contract are applied via `kubectl apply -f config/crd/bases/` (or
-  `kubectl apply -k config/crd`) until the CRDs stabilize post-1.0.
-- `helm uninstall` does not delete CRDs (by design, to protect CR data).
+The CRD source of truth is `config/crd/bases/*.yaml` (from `make manifests`),
+synced into the CRD chart by `make helm-sync-crds`; `make verify-codegen` fails
+CI on drift. See the [`k8squad-crds` README](../helm-crds/README.md) for its
+values and the kind CI propagation test.
+
+> The other chart, `deploy/helm/ksquad`, also ships no CRDs (services only) and
+> likewise depends on `k8squad-crds` being installed first (ADR-0002 §8).
 
 ## Verification
 
 ```sh
-make helm-lint      # helm lint config/helm
-make helm-template  # helm template --include-crds (local render, no cluster)
+make helm-lint      # helm lint both charts (config/helm + config/helm-crds)
+make helm-template  # helm template both charts (local render, no cluster)
 ```

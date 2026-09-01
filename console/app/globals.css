@@ -870,3 +870,197 @@ a:hover {
   font-size: 13px;
   margin: 8px 0 8px;
 }
+
+/* ── Welcome + sign-in screen (ISI-3523 / parent ISI-3520) ────────────────────
+ * The shell-free first impression for unauthenticated visitors. Rendered OUTSIDE
+ * <ConsoleShell> by the login route group's bare layout (Architect child 7021f975).
+ * Split layout: a branded welcome hero (left) + the sign-in card (right); it
+ * collapses to a single, form-first column below 860px. Every color rides the SAME
+ * token roles the shell uses — no new hues, azure accent invariant across themes. */
+.login {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  background: var(--canvas);
+  color: var(--text-1);
+}
+
+/* Brand panel — a subtle azure-into-canvas wash anchored on the theme accent so the
+ * gradient never drifts off-brand. Decorative only (aria-hidden in the markup). */
+.login__brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 48px;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      120% 100% at 0% 0%,
+      color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+      transparent 55%
+    ),
+    var(--surface);
+  border-right: 1px solid var(--border);
+}
+.login__brand::after {
+  /* faint hairline grid — reads as "infrastructure" without competing for contrast. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(120% 90% at 10% 10%, #000 0%, transparent 70%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.login__brand-inner {
+  position: relative;
+  max-width: 460px;
+}
+.login__eyebrow {
+  margin: 20px 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.login__hero {
+  margin: 0 0 16px;
+  font-size: clamp(28px, 3.2vw, 40px);
+  line-height: 1.12;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.login__lede {
+  margin: 0 0 24px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.login__points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.login__points li {
+  position: relative;
+  padding-left: 22px;
+  font-size: 14px;
+  color: var(--text-1);
+}
+.login__points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Form panel */
+.login__panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 48px 24px;
+}
+.login__card {
+  width: 100%;
+  max-width: 380px;
+  margin-bottom: 0;
+  padding: 28px 26px 24px;
+}
+.login__wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.login__brandname {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.login__title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+.login__subtitle {
+  margin: 0 0 20px;
+  font-size: 14px;
+}
+.login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.login__field input {
+  min-height: 44px;
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font: inherit;
+}
+.login__field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.login__field input:disabled {
+  opacity: 0.6;
+}
+.login__submit {
+  width: 100%;
+  margin-top: 4px;
+}
+.login__error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--status-blocked);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--status-blocked) 12%, transparent);
+  color: var(--text-1);
+  font-size: 13px;
+}
+.login__sso {
+  margin: 18px 0 0;
+  font-size: 12.5px;
+  text-align: center;
+}
+.login__legal {
+  font-size: 12px;
+}
+
+/* Below 860px: drop the brand panel, lead with the form (mobile-first sign-in). */
+@media (max-width: 860px) {
+  .login {
+    grid-template-columns: 1fr;
+  }
+  .login__brand {
+    display: none;
+  }
+  .login__panel {
+    padding: 32px 20px;
+    min-height: 100vh;
+  }
+}
