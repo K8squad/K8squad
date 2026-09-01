@@ -8,7 +8,7 @@
 import { AuditTrailScreen } from "@/components/audit/AuditTrailScreen";
 
 export const metadata = {
-  title: "Audit trail — KSquad Console",
+  title: "Audit trail — K8squad Console",
 };
 
 export default function AuditPage() {

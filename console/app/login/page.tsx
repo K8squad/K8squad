@@ -10,7 +10,7 @@
 // Design system: reuses the token contract in app/globals.css verbatim — dark canvas #0b1220,
 // surface #111a2e, theme-invariant azure accent #3D7DFF (--accent), 10px radius, the .btn/.field-*
 // idioms — so this screen re-tints with the rest of the console and invents no new colors. The
-// 8-Crest gradient-ring mark is the shared <Logo> lockup (components/Logo.tsx, ISI-2137).
+// 8-Crest coordinator-node mark is the shared <Logo> lockup (components/Logo.tsx, ISI-2137/ISI-3529).
 //
 // Auth contract (verified against internal/apiserver/authroutes.go): the live method is username +
 // password. The form POSTs same-origin JSON {username, password} to the BFF at /api/session, which
