@@ -1,15 +1,19 @@
-// app/layout.tsx — the console shell (App Router root layout, stories 8.13 + 8.20).
+// app/layout.tsx — the BARE App Router root layout (ISI-3522).
 //
-// The root layout stays a server component and mounts the ONE adaptive nav shell (ConsoleShell,
-// a client component that reads the pathname) so the project-rooted, responsive nav wraps every
-// page: desktop/tablet rail, mobile bottom nav + drawer, Project selector, and breadcrumb.
+// The root layout is deliberately MINIMAL: html/body + ThemeProvider only. It mounts NO nav shell,
+// so pages that must render pre-auth — the `/login` route (auth route group) and the root
+// `not-found.tsx` — do NOT leak the operator `<ConsoleShell>` rail (the ISI-3520 bug: a 404 rendered
+// inside the shell because the shell used to live here).
+//
+// The authenticated app now lives under the `(app)` route group, whose own layout
+// (app/(app)/layout.tsx) mounts ConsoleShell + resolves the viewer's role. Route groups do not
+// affect URLs, so `/overview`, `/agents`, … are unchanged. Pre-auth pages live under `(auth)`.
+// ThemeProvider stays at the root so dark/light theming applies to every surface, login included.
 
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
-import { ConsoleShell } from "@/components/nav/ConsoleShell";
-import { viewerAccess } from "@/lib/session";
 import { DEFAULT_THEME } from "@/lib/theme";
 
 export const metadata: Metadata = {
@@ -18,16 +22,11 @@ export const metadata: Metadata = {
     "Operator console — legibility + composition surface for KSquad squads.",
 };
 
-export default async function RootLayout({ children }: { children: ReactNode }) {
-  // Story 8.16: resolve the viewer's global role server-side so the shell renders the role-adapted
-  // nav (admin-only nodes present only for admins). Fails closed to "user" (lib/session.ts).
-  const access = await viewerAccess();
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" data-theme={DEFAULT_THEME} suppressHydrationWarning>
       <body>
-        <ThemeProvider>
-          <ConsoleShell access={access}>{children}</ConsoleShell>
-        </ThemeProvider>
+        <ThemeProvider>{children}</ThemeProvider>
       </body>
     </html>
   );
