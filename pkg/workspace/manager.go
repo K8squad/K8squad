@@ -62,6 +62,14 @@ func NewWorkspaceManager(kubeClient client.Client) *Manager {
 	}
 }
 
+// This controller does For(&Run{}).Owns(&PersistentVolumeClaim{}) (see
+// cmd/operator/main.go), so its cache watches both types cluster-wide; without
+// these RBAC rules the reflector floods the log with "Failed to watch" errors
+// (ISI-3521).
+//+kubebuilder:rbac:groups=ksquad.io,resources=runs,verbs=get;list;watch
+//+kubebuilder:rbac:groups=ksquad.io,resources=runs/status,verbs=get
+//+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
+
 // Reconcile ensures a workspace PVC exists for each Run. PVC teardown is handled
 // by the owner reference set in createWorkspacePVC, so a deleted/absent Run is a
 // no-op here.
