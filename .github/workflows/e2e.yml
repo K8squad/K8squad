@@ -82,6 +82,12 @@ jobs:
           # fails with "[setup failed]" on the missing path rather than skipping — so we
           # skip-with-reason to keep the nightly green (same pattern as the go/shim/console
           # skeleton guards). No lane is ever silently dropped.
+          #
+          # ISI-3475: the test/e2e conformance harness (TestSquadSmoke) has LANDED, so its
+          # half of `missing` now clears the moment this dir exists. present=true still awaits
+          # the opencode shim (Story 5.8). Note the harness itself skips-with-reason on its
+          # OWN preconditions (operator Deployment not chart-deployed yet, default catalog,
+          # a live sandbox) so it runs green-and-partial the instant present flips true.
           missing=""
           [ -f go.mod ] || missing="$missing go.mod"
           [ -d "${{ steps.shim.outputs.path }}" ] || [ -d "pkg/shim/opencode" ] || missing="$missing opencode-shim(5.8)"
@@ -125,6 +131,27 @@ jobs:
         with:
           wait: 120s
 
+      - name: Install Helm
+        if: steps.guard.outputs.present == 'true'
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Install ksquad CRDs + default toolchain catalog (Helm)
+        if: steps.guard.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          # ISI-3475: the harness (TestSquadSmoke) needs the ksquad.io CRD group registered
+          # and the default toolchain catalog (kubectl@1.31 ...) present, or it skips-with-reason.
+          # config/helm is the Story 1.4 skeleton chart: CRDs + control-plane namespace + the
+          # default toolchain catalog. It does NOT yet ship the operator/apiserver Deployments
+          # (wired in later epics) — until the operator lands and is chart-deployed here, the
+          # harness's sandbox/telemetry assertions skip-with-reason while its capability-manifest
+          # assertions run against whatever the operator resolves. Nothing is silently dropped.
+          helm install ksquad-e2e config/helm \
+            --namespace ksquad-system --create-namespace \
+            --include-crds --wait --timeout 120s
+          echo "Installed toolchains in the default catalog:"
+          kubectl get toolchains.ksquad.io -A -o custom-columns=NAME:.metadata.name,VERSIONS:.spec.versions[*].version || true
+
       - name: Run squad smoke scenario (claim -> dispatch -> shim -> agent -> artifact -> complete)
         if: steps.guard.outputs.present == 'true'
         env:
@@ -132,6 +159,10 @@ jobs:
           # local Ollama base URL — no ANTHROPIC/OPENAI keys are set anywhere in this lane.
           OLLAMA_BASE_URL: http://localhost:11434
           OLLAMA_MODEL: ${{ env.OLLAMA_MODEL }}
+          # kind-action exports KUBECONFIG; the harness resolves it via controller-runtime.
+          # OTEL_SINK_* stay unset until the operator's OTel sink is chart-deployed — the
+          # telemetry subtest skips-with-reason until then (AC-4 in-Run half, wired to land
+          # with the operator install above).
         run: |
           go test -tags=e2e -run 'TestSquadSmoke' ./test/e2e/... -v
 
