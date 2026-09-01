@@ -4,10 +4,10 @@ How K8squad's `ksquad.io` CustomResourceDefinitions (CRDs) are installed,
 upgraded, and — when a release makes a breaking schema change — migrated
 without losing your custom resources (CRs).
 
-> **Contract:** the CRD lifecycle behaviour described here is set by
-> [ADR-0002 — CRD lifecycle management via Helm](adr/ADR-0002-crd-lifecycle-via-helm.md).
-> The Helm value keys and commands must match the CRD chart README
-> (`config/helm-crds/README.md`) exactly.
+> **Contract:** the CRD lifecycle behaviour described here follows the
+> board-locked "Option B" architecture decision (standalone `k8squad-crds`
+> chart; tracked in ISI-3517 / ISI-3516). The Helm value keys and commands
+> must match the CRD chart README (`config/helm-crds/README.md`) exactly.
 
 ## 1. How CRDs are delivered
 
@@ -104,7 +104,7 @@ skew window:
 
 ## 4. CRD versioning & deprecation policy
 
-Summarised from [ADR-0002 §5](adr/ADR-0002-crd-lifecycle-via-helm.md#5-crd-versioning--deprecation-policy).
+The project's CRD versioning/deprecation policy (design decision ISI-3517).
 Current served/storage version for all kinds is **`v1alpha1`** (single
 version).
 
@@ -182,6 +182,6 @@ are scheduled for removal, per the versioning/deprecation policy in §4.
   value, install-first ordering, and skew policy.
 - [Chart README — control plane](../config/helm/README.md) — the `k8squad`
   chart; owns no CRDs, declares `k8squad.io/min-crds-version`.
-- [ADR-0002 — CRD lifecycle management via Helm](adr/ADR-0002-crd-lifecycle-via-helm.md)
-  — the decision, invariants, and versioning policy.
+- Architecture decision (standalone `k8squad-crds` chart, invariants, and
+  versioning policy): tracked in ISI-3517 / parent ISI-3516.
 - [Getting started](getting-started-bmad.md) — first install of the charts.
