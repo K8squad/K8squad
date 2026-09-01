@@ -43,6 +43,16 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - get
@@ -69,6 +79,7 @@ rules:
   - mcpservers
   - otelconfigs
   - roles
+  - runs
   - skills
   verbs:
   - get
@@ -80,6 +91,7 @@ rules:
   - mcpservers/status
   - otelconfigs/status
   - projects/status
+  - runs/status
   - teams/status
   verbs:
   - get
