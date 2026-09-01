@@ -1,20 +1,14 @@
 {{- if .Values.exposure.gateway.enabled -}}
 {{- $g := .Values.exposure.gateway -}}
 {{- $ns := include "k8squad.namespace" . -}}
-{{- /* Fail-fast pre-flight — the chart REFERENCES a GatewayClass, never
-       creates one, and routes by host, so the class + both hostnames are
-       mandatory once exposure is turned on (ISI-3515). */ -}}
+{{- /* Fail-fast pre-flight — the chart REFERENCES a GatewayClass, never creates
+       one, so the class is mandatory once exposure is turned on. Hostnames are
+       OPTIONAL: omit them to expose by IP address (ISI-3515). */ -}}
 {{- if not .Values.controlPlane.enabled -}}
 {{- fail "exposure.gateway.enabled=true requires controlPlane.enabled=true — the HTTPRoutes target the console/apiserver Services, which only exist when the control plane is running" -}}
 {{- end -}}
 {{- if not $g.gatewayClassName -}}
 {{- fail "exposure.gateway.gatewayClassName is REQUIRED when exposure.gateway.enabled=true (e.g. kgateway|cilium|envoy|istio|traefik) — the chart references, never creates, a GatewayClass" -}}
-{{- end -}}
-{{- if not $g.hostnames.console -}}
-{{- fail "exposure.gateway.hostnames.console is REQUIRED when exposure.gateway.enabled=true" -}}
-{{- end -}}
-{{- if not $g.hostnames.apiserver -}}
-{{- fail "exposure.gateway.hostnames.apiserver is REQUIRED when exposure.gateway.enabled=true (the SSE endpoint, §13)" -}}
 {{- end -}}
 {{- if and $g.listeners.https.enabled (not $g.listeners.https.certSecretName) -}}
 {{- fail "exposure.gateway.listeners.https.certSecretName is REQUIRED when the https listener is enabled (TLS terminates at the Gateway)" -}}

@@ -51,17 +51,25 @@ Control plane (operator/apiserver/console/memory/scm-webhook):
 
 Exposure (Gateway API):
 {{- if .Values.exposure.gateway.enabled }}
+{{- $scheme := ternary "https" "http" .Values.exposure.gateway.listeners.https.enabled }}
   ENABLED — a Gateway `ksquad` (gatewayClassName: {{ .Values.exposure.gateway.gatewayClassName }})
   plus HTTPRoutes for the console + apiserver are installed in
   {{ include "k8squad.namespace" . }}. Check status (wait for a PROGRAMMED Gateway
   and an address from your controller):
 
     kubectl -n {{ include "k8squad.namespace" . }} get gateway,httproute
+    GW=$(kubectl -n {{ include "k8squad.namespace" . }} get gateway ksquad -o jsonpath='{.status.addresses[0].value}')
 
-  Console  : http{{ if .Values.exposure.gateway.listeners.https.enabled }}s{{ end }}://{{ .Values.exposure.gateway.hostnames.console }}
-  API (SSE): http{{ if .Values.exposure.gateway.listeners.https.enabled }}s{{ end }}://{{ .Values.exposure.gateway.hostnames.apiserver }}
-
-  Point both hostnames' DNS at the Gateway's assigned address.
+{{- if .Values.exposure.gateway.hostnames.console }}
+  Console  : {{ $scheme }}://{{ .Values.exposure.gateway.hostnames.console }}   (point its DNS at $GW)
+{{- else }}
+  Console  : {{ $scheme }}://$GW/         (exposed by IP — no DNS needed)
+{{- end }}
+{{- if .Values.exposure.gateway.hostnames.apiserver }}
+  API (SSE): {{ $scheme }}://{{ .Values.exposure.gateway.hostnames.apiserver }}   (point its DNS at $GW)
+{{- else }}
+  API (SSE): {{ $scheme }}://$GW/api      (exposed by IP under the /api prefix)
+{{- end }}
 {{- else }}
   OFF (exposure.gateway.enabled=false). The console/apiserver are ClusterIP
   Services — reach the console via port-forward:
@@ -69,11 +77,10 @@ Exposure (Gateway API):
     kubectl -n {{ include "k8squad.namespace" . }} port-forward svc/ksquad-console 8080:80
 
   To have the chart render a Gateway + HTTPRoutes against an EXISTING
-  GatewayClass (the chart never creates one), enable it:
+  GatewayClass (the chart never creates one), enable it. The GatewayClass is
+  the only required knob — omit hostnames to expose by IP:
 
     helm upgrade {{ .Release.Name }} <chart> \
       --set exposure.gateway.enabled=true \
-      --set exposure.gateway.gatewayClassName=kgateway \
-      --set exposure.gateway.hostnames.console=ksquad.example.com \
-      --set exposure.gateway.hostnames.apiserver=api.ksquad.example.com
+      --set exposure.gateway.gatewayClassName=kgateway
 {{- end }}

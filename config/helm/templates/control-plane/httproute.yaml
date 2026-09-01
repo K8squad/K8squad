@@ -3,6 +3,13 @@
 {{- $ns := include "k8squad.namespace" . -}}
 {{- /* Serving listener: prefer https when enabled, else http. */ -}}
 {{- $serveSection := ternary "https" "http" $g.listeners.https.enabled -}}
+{{- /* Hostnames are OPTIONAL (ISI-3515): omit `hostnames` to expose by IP. To
+       let console + apiserver coexist on ONE address the apiserver is matched
+       on its natural `/api` prefix when it has no hostname of its own; with a
+       dedicated hostname it takes `/`. Gateway API precedence (hostname
+       specificity first, then path length) keeps every combination correct. */ -}}
+{{- $apiHasHost := not (empty $g.hostnames.apiserver) -}}
+{{- $apiPath := ternary "/" "/api" $apiHasHost -}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -14,8 +21,10 @@ spec:
   parentRefs:
     - name: ksquad
       sectionName: {{ $serveSection }}
+  {{- if $g.hostnames.console }}
   hostnames:
     - {{ $g.hostnames.console | quote }}
+  {{- end }}
   rules:
     - matches:
         - path:
@@ -36,13 +45,15 @@ spec:
   parentRefs:
     - name: ksquad
       sectionName: {{ $serveSection }}
+  {{- if $apiHasHost }}
   hostnames:
     - {{ $g.hostnames.apiserver | quote }}
+  {{- end }}
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: {{ $apiPath | quote }}
       # SSE PRESERVATION (§13): request timeout 0s disables the route timeout so
       # a long-lived progress stream is never cut. HTTPRoute.timeouts is Extended
       # conformance — kgateway/Envoy-based classes honor 0s; verify per class.
@@ -54,7 +65,8 @@ spec:
           port: 8080
 {{- if and $g.httpsRedirect $g.listeners.http.enabled $g.listeners.https.enabled }}
 ---
-{{/* Edge http→https redirect on the http listener (values-driven). */}}
+{{/* Edge http→https redirect on the http listener (values-driven). Hostnames
+     are optional here too — omitted → redirect every host reaching the IP. */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -66,9 +78,15 @@ spec:
   parentRefs:
     - name: ksquad
       sectionName: http
+  {{- if or $g.hostnames.console $g.hostnames.apiserver }}
   hostnames:
-    - {{ $g.hostnames.console | quote }}
-    - {{ $g.hostnames.apiserver | quote }}
+    {{- with $g.hostnames.console }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- with $g.hostnames.apiserver }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
   rules:
     - filters:
         - type: RequestRedirect
