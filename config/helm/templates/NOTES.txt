@@ -70,7 +70,7 @@ Exposure (Gateway API):
 {{- else }}
   API (SSE): {{ $scheme }}://$GW/api      (exposed by IP under the /api prefix)
 {{- end }}
-{{- else }}
+{{- else if .Values.controlPlane.enabled }}
   OFF (exposure.gateway.enabled=false). The console/apiserver are ClusterIP
   Services — reach the console via port-forward:
 
@@ -83,4 +83,9 @@ Exposure (Gateway API):
     helm upgrade {{ .Release.Name }} <chart> \
       --set exposure.gateway.enabled=true \
       --set exposure.gateway.gatewayClassName=kgateway
+{{- else }}
+  OFF (exposure.gateway.enabled=false). This release ships only the CRD group +
+  namespace — the console/apiserver Services do not exist yet, so there is
+  nothing to reach. Enable the control plane first (see above), then optionally
+  turn on Gateway exposure (--set exposure.gateway.enabled=true ...).
 {{- end }}

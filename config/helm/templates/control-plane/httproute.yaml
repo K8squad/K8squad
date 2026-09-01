@@ -92,6 +92,10 @@ spec:
         - type: RequestRedirect
           requestRedirect:
             scheme: https
+            # Pin the target port to the configured https listener. Omitting it
+            # makes Gateway API derive the well-known 443, which sends clients to
+            # the wrong port whenever the https listener runs on e.g. 8443.
+            port: {{ $g.listeners.https.port }}
             statusCode: 301
 {{- end }}
 {{- end }}

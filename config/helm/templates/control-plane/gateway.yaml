@@ -13,6 +13,13 @@
 {{- if and $g.listeners.https.enabled (not $g.listeners.https.certSecretName) -}}
 {{- fail "exposure.gateway.listeners.https.certSecretName is REQUIRED when the https listener is enabled (TLS terminates at the Gateway)" -}}
 {{- end -}}
+{{- /* Reject IDENTICAL non-empty hostnames: both routes would share parent +
+       hostname + `/` match, so Gateway API conflict resolution silently drops
+       one backend and either the console or the API becomes unreachable. Distinct
+       hosts, or one host + one IP-prefix, are fine. */ -}}
+{{- if and $g.hostnames.console $g.hostnames.apiserver (eq $g.hostnames.console $g.hostnames.apiserver) -}}
+{{- fail "exposure.gateway.hostnames.console and .apiserver are identical — the two HTTPRoutes would collide on the same host+path and Gateway API would drop one backend. Give them distinct hostnames, or leave apiserver empty so it is routed under the /api prefix on the console host." -}}
+{{- end -}}
 {{- if and (not $g.listeners.http.enabled) (not $g.listeners.https.enabled) -}}
 {{- fail "at least one exposure.gateway.listeners.{http,https}.enabled must be true — a Gateway with zero listeners is invalid and leaves the HTTPRoutes' sectionName dangling" -}}
 {{- end -}}

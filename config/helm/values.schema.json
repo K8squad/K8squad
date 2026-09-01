@@ -31,7 +31,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "enabled": { "type": "boolean", "description": "Render a Gateway + HTTPRoutes. Requires gatewayClassName + both hostnames." },
+            "enabled": { "type": "boolean", "description": "Render a Gateway + HTTPRoutes. Requires gatewayClassName; hostnames are optional (omit to expose by IP)." },
             "gatewayClassName": { "type": "string", "description": "Existing GatewayClass to reference (e.g. kgateway). REQUIRED when enabled." },
             "hostnames": {
               "type": "object",
@@ -65,8 +65,8 @@
               }
             },
             "httpsRedirect": { "type": "boolean" },
-            "annotations": { "type": "object" },
-            "labels": { "type": "object" }
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
           }
         }
       }
