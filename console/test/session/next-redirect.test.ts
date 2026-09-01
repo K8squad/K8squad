@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeNext } from "@/app/login/page";
+import { sanitizeNext } from "@/app/login/safeNext";
 
 // Copilot review of PR #215: the post-login `?next=` redirect guard let a backslash bypass slip
 // through — `?next=/\evil.example` passed the "starts with / but not //" check, yet the browser

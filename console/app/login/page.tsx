@@ -20,33 +20,16 @@
 
 import { useState, type FormEvent } from "react";
 import { Logo } from "@/components/Logo";
+import { sanitizeNext } from "./safeNext";
 
 // Same-origin BFF endpoint the login form submits to. The Architect child adds the POST handler on
 // console/app/api/session/route.ts (today it is GET-only → /api/me). Kept as a const so the seam is
 // obvious and easy to repoint.
 const SESSION_ENDPOINT = "/api/session";
 
-// sanitizeNext keeps the post-login redirect on THIS origin only — an open-redirect guard. We accept
-// a root-relative path ("/…") and reject anything the browser could resolve OFF-origin: a scheme
-// URL, protocol-relative "//host", or the backslash variant "/\host" — browsers normalize "\" to
-// "/", so `/\evil.example` resolves as `https://evil.example/` (Copilot review of PR #215). After the
-// cheap rejects we resolve against our own origin and require the result to STAY same-origin, so any
-// exotic authority that slips through the string checks is caught by the URL parser. Exported (pure,
-// origin-injected) so the bypass cases have a regression test.
-export function sanitizeNext(raw: string | null, origin: string): string {
-  if (!raw) return "/";
-  if (!raw.startsWith("/")) return "/"; // must be root-relative (no scheme, no bare host)
-  if (raw.includes("\\")) return "/"; // "\" == "/" to the browser → "/\evil" is protocol-relative
-  if (raw.startsWith("//")) return "/"; // protocol-relative → off-origin
-  try {
-    const url = new URL(raw, origin);
-    if (url.origin !== origin) return "/"; // defense in depth: authority survived → reject
-    return url.pathname + url.search + url.hash;
-  } catch {
-    return "/";
-  }
-}
-
+// safeNext reads the live ?next= off window and delegates to the pure, testable sanitizeNext
+// (co-located in ./safeNext — kept out of this page.tsx so `next build` doesn't reject an
+// extra named export on a route file).
 function safeNext(): string {
   if (typeof window === "undefined") return "/";
   const raw = new URLSearchParams(window.location.search).get("next");
