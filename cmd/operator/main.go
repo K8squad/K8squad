@@ -340,7 +340,14 @@ func main() {
 	// Register custom controllers for workspace and network management.
 	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
 	// network policies are per-Team.
+	// A dedicated controller name is required: controller-runtime derives the
+	// name from the primary Kind (lowercased) unless overridden, so a bare
+	// For(&Run{}) here collides with the Run drive-loop controller ("run") and
+	// For(&Team{}) collides with the Team reconciler ("team"), tripping the
+	// "controller with name X already exists" uniqueness check at manager start
+	// (surfaced deploying ISI-3488/ISI-3490). Name them for their concern.
 	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("run-workspace").
 		For(&ksquadv1alpha1.Run{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Complete(workspaceManager); err != nil {
@@ -349,6 +356,7 @@ func main() {
 	}
 
 	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("team-networkpolicy").
 		For(&ksquadv1alpha1.Team{}).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(networkPolicyManager); err != nil {

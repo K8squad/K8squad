@@ -247,6 +247,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("project").
 		For(&ksquadapi.Project{}).
 		Complete(r)
 }
