@@ -36,6 +36,7 @@ spec:
           value: "http://ksquad-operator-metrics.{{ $ns }}.svc:8080/metrics"
         {{- include "k8squad.otelEnv" . | nindent 8 }}
         {{- include "k8squad.bootstrapAdminEnv" . | nindent 8 }}
+        {{- include "k8squad.secureCookiesEnv" . | nindent 8 }}
         {{- with .Values.controlPlane.apiserver.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

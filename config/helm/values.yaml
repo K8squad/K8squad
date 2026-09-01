@@ -60,6 +60,17 @@ controlPlane:
     replicas: 1
     resources: {}
     extraEnv: []
+    # Session-cookie `Secure` attribute (ISI-3530). The apiserver defaults to
+    # SecureCookies=true; over a plain-HTTP gateway the browser DROPS the Secure
+    # cookie, so the Console middleware guard bounces every post-login navigation
+    # back to /login. Resolve KSQUAD_SECURE_COOKIES:
+    #   "" (auto, default) → emit false ONLY when exposure.gateway is enabled and
+    #        TLS is NOT terminated at it (http listener, https.enabled=false); in
+    #        every other case emit nothing and keep the apiserver's secure default.
+    #   "true" / "false"   → force that value explicitly (overrides auto).
+    # Prefer terminating TLS at the Gateway (https.enabled + certSecretName) and
+    # leaving this "" so cookies stay Secure end-to-end.
+    secureCookies: ""
     # Seed the first admin (feature 15.2) so the Console `/login` is usable on a
     # fresh install. The apiserver runs this ONCE — only when auth.user is empty —
     # then it is an idempotent no-op on every later start. OFF by default: a

@@ -171,3 +171,34 @@ the seed on without supplying a username and existingSecret.
 {{- end }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Session-cookie Secure attribute (ISI-3530). The apiserver defaults
+SecureCookies=true; over a plain-HTTP gateway the browser drops the Secure
+cookie and the Console middleware guard bounces every post-login navigation
+back to /login. Resolve KSQUAD_SECURE_COOKIES from
+controlPlane.apiserver.secureCookies:
+  "true"/"false" → force that value explicitly.
+  "" (auto)      → emit "false" ONLY when the gateway is enabled and TLS is NOT
+                   terminated at it (http listener, https disabled); otherwise
+                   emit nothing so the apiserver keeps its secure default.
+*/}}
+{{- define "k8squad.secureCookiesEnv" -}}
+{{- $api := .Values.controlPlane.apiserver | default dict -}}
+{{- $sc := $api.secureCookies | toString -}}
+{{- if eq $sc "true" -}}
+- name: KSQUAD_SECURE_COOKIES
+  value: "true"
+{{- else if eq $sc "false" -}}
+- name: KSQUAD_SECURE_COOKIES
+  value: "false"
+{{- else -}}
+{{- $gw := .Values.exposure.gateway | default dict -}}
+{{- $https := false -}}
+{{- if $gw.enabled -}}{{- with $gw.listeners -}}{{- with .https -}}{{- $https = .enabled -}}{{- end -}}{{- end -}}{{- end -}}
+{{- if and $gw.enabled (not $https) }}
+- name: KSQUAD_SECURE_COOKIES
+  value: "false"
+{{- end -}}
+{{- end -}}
+{{- end -}}

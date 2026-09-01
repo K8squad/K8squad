@@ -52,6 +52,7 @@ namespace is fine.
 | `controlPlane.apiserver.bootstrapAdmin.existingSecret` | `""` | Name of an existing Secret holding the bootstrap password. **Required** when enabled — the password is never read from plaintext values. |
 | `controlPlane.apiserver.bootstrapAdmin.passwordKey` | `password` | Key within `existingSecret` holding the plaintext password. |
 | `controlPlane.apiserver.bootstrapAdmin.teamId` | `""` | Optional: pin the admin's tenancy-root team UUID. Empty → auto-minted on first seed. |
+| `controlPlane.apiserver.secureCookies` | `""` | Session-cookie `Secure` attribute. `""` = auto (emit `KSQUAD_SECURE_COOKIES=false` only for an http-only gateway, avoiding a login loop); `"true"`/`"false"` force it. See *Session cookies over plain HTTP*. |
 | `exposure.gateway.enabled` | `false` | Render a `Gateway` + `HTTPRoute`s for the console + apiserver (see *Exposure* below). |
 | `exposure.gateway.gatewayClassName` | `""` | **Required** when enabled — the existing `GatewayClass` to reference (e.g. `kgateway`). The chart never creates one. |
 | `exposure.gateway.hostnames.console` / `.apiserver` | `""` | **Optional** host-based routing. Leave both empty to expose by IP (console owns `/` including the BFF at `/api/*`; no direct apiserver route). Set `hostnames.apiserver` to also expose the apiserver on its own host. |
@@ -122,6 +123,24 @@ Secret, optionally redirecting http→https:
   --set exposure.gateway.listeners.https.certSecretName=ksquad-tls \
   --set exposure.gateway.httpsRedirect=true
 ```
+
+### Session cookies over plain HTTP
+
+The apiserver defaults to **`SecureCookies=true`**, so the session cookie carries
+the `Secure` attribute. Over a **plain-HTTP gateway** the browser silently drops
+that cookie and the Console middleware bounces every post-login navigation back
+to `/login`. To avoid a login loop the chart resolves
+`controlPlane.apiserver.secureCookies`:
+
+| Value | Behaviour |
+| --- | --- |
+| `""` (default, *auto*) | Emit `KSQUAD_SECURE_COOKIES=false` **only** when the gateway is enabled and TLS is **not** terminated at it (`listeners.https.enabled=false`). In every other case nothing is emitted and the apiserver keeps its secure default. |
+| `"true"` / `"false"` | Force the value explicitly, overriding auto. |
+
+The robust production posture is to **terminate TLS at the Gateway**
+(`listeners.https.enabled` + `certSecretName`) and leave `secureCookies: ""` — the
+browser is on HTTPS, the cookie stays `Secure` end-to-end, and no override is
+rendered.
 
 ## First login (bootstrap admin)
 
