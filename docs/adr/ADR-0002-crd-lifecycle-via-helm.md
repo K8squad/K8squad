@@ -1,11 +1,13 @@
 # ADR-0002 — CRD lifecycle management via Helm (upgrade-safe CRDs)
 
-- **Status:** Accepted
-- **Date:** 2026-09-01
+- **Status:** Accepted (Option B) — *supersedes the Option-A revision of 2026-09-01*
+- **Date:** 2026-09-01 (revised)
 - **Author:** Winston (System Architect)
 - **Issue:** ISI-3517 (parent ISI-3516)
 - **Implements via:** ISI-3518 (DevOps) · ISI-3519 (Docs/website)
-- **Applies to chart:** `config/helm` (canonical). See §8 for `deploy/helm/ksquad`.
+- **Decision authority:** board (`local-board`) directive on ISI-3516 — *"the
+  CRDs must be a different helm chart so the k8squad control plane can be
+  upgraded separately from the CRDs."* The A-vs-B question is **closed: B.**
 
 ## Context
 
@@ -25,121 +27,138 @@ annotations, CEL validation rules. Every existing install that came up on an
 older chart is now running a **stale CRD schema**: new fields are silently
 dropped by the API server and CRs that use them are rejected. There is no
 supported Helm path to fix this in place; operators must `kubectl apply` CRDs
-by hand, which defeats the single-`helm upgrade` UX we ship in getting-started.
+by hand.
 
 Generation/sync today: `make manifests` emits `config/crd/bases/*.yaml`;
 `make helm-sync-crds` `cp`s them into `config/helm/crds/`; `make verify-codegen`
-fails CI on drift between `api/`, `config/crd/bases/`, and `config/helm/crds/`.
+fails CI on drift between `api/`, `config/crd/bases/`, and the chart copy.
 
 ## Decision
 
-**Adopt Option A — templated CRDs in-chart, gated and keep-annotated.**
+**Adopt Option B — a standalone `k8squad-crds` Helm chart, independently
+versioned, that owns all CRD lifecycle.** The control-plane chart (`k8squad`,
+`config/helm`) stops shipping CRDs entirely.
 
-Move the 11 CRDs from `config/helm/crds/` into `config/helm/templates/crds/`.
-As ordinary templates they become part of release state, so **`helm upgrade`
-reconciles their schema** via Helm's three-way merge. Guard and annotate:
+Rationale (board directive): the control plane and the CRD schema must be
+**upgradeable independently**. A single chart couples them into one release
+whose upgrade rewrites both at once; the board requires operators (and our
+GitOps/multi-tenant story) to roll the CRD schema forward or hold it back on
+its own cadence. A separate, independently-versioned chart is the standard
+pattern for this (cert-manager's split CRD chart, prometheus-operator CRDs,
+Flux) and is what we build.
 
-- `{{- if .Values.crds.install }}` … `{{- end }}` around each CRD
-  (`crds.install` default **true**).
-- `helm.sh/resource-policy: keep`, emitted only when `.Values.crds.keep` is
-  true (default **true**), so **`helm uninstall` never deletes CRDs or the
-  user's CRs**.
+Two properties make it upgrade-safe:
 
-This matches cert-manager v1.15+ and most modern operators, and preserves our
-single-chart `helm install` / `helm upgrade` getting-started UX.
+- CRDs live as **ordinary templates** in the CRD chart, so
+  `helm upgrade k8squad-crds` reconciles their schema via three-way merge —
+  the whole point of the ticket, now decoupled from the control-plane release.
+- Every CRD template carries `helm.sh/resource-policy: keep` (gated by
+  `.Values.keep`, default **true**), so `helm uninstall k8squad-crds` never
+  deletes the CRDs or the user's CRs.
 
-### Why not Option B (separate `k8squad-crds` chart)
+### Why not Option A (templated CRDs inside the control-plane chart)
 
-Option B (a dedicated CRD chart applied before the app chart, Flux /
-prometheus-operator style) gives cleaner GitOps and multi-tenant separation,
-but costs us a **two-chart install/upgrade UX** and release-coordination
-burden that contradicts the one-command getting-started story we ship today.
-It stays a documented future option **if and when** a GitOps/multi-tenant
-distribution becomes a near-term goal — the migration from A→B is additive
-(publish the CRD chart, point `crds.install=false` at the app chart). We are
-not paying that complexity now for a need we do not yet have. **Boring,
-single-chart, upgrade-safe wins.**
+Option A (the prior revision of this ADR) kept everything in one chart and made
+`helm upgrade` of the control-plane chart reconcile CRD schema. It preserves a
+one-command install but **couples** CRD-schema changes to every control-plane
+upgrade and vice-versa — precisely the coupling the board ruled out. Superseded.
 
 ### Why not a subchart
 
-A `config/helm/charts/k8squad-crds` subchart was considered as a middle
-ground. It adds a chart boundary but **no ordering guarantee** over the
-parent's CRs (subchart resources are merged into the same release and sorted
-by Helm's kind order alongside parent resources — see §3), so it buys
-indirection without solving the one real trade-off. Rejected for simplicity.
+A `config/helm/charts/k8squad-crds` **subchart** would satisfy "different
+`Chart.yaml`" on paper but is installed and upgraded as part of the **same
+parent release** — you cannot `helm upgrade` the subchart independently of the
+parent. That fails the board's core requirement (separate upgrade cadence).
+Rejected. The CRD chart is a **standalone, independently-releasable** chart.
 
-## 1. Chart layout changes (`config/helm`)
+## 1. Chart layout changes
+
+New standalone chart, sibling to the canonical control-plane chart:
 
 ```
-config/helm/
-  crds/                      # REMOVED (Helm special dir, install-only)
-  templates/
-    crds/                    # NEW — 11 CRDs as guarded templates
-      ksquad.io_agents.yaml
-      ... (11 files)
-    toolchain-default-catalog.yaml   # existing CR-creating template (see §3)
-  values.yaml                # + crds.install / crds.keep
-  values.schema.json         # + crds object schema
+config/
+  helm/                         # control-plane chart (name: k8squad)
+    crds/                       # REMOVED — CP chart ships NO CRDs
+    templates/…                 # unchanged (services, catalog CR, namespace)
+  helm-crds/                    # NEW standalone chart (name: k8squad-crds)
+    Chart.yaml                  # name: k8squad-crds, OWN version line
+    values.yaml                 # keep: true
+    values.schema.json          # { keep: bool } additionalProperties:false
+    README.md                   # install-first ordering + skew policy
+    templates/
+      _helpers.tpl
+      ksquad.io_agents.yaml     # 11 CRDs as guarded templates
+      … (11 files)
 ```
 
-The generated CRD YAML is **unchanged**; only its location and a small
-Helm header/footer wrapper differ. `make helm-sync-crds` retargets to
-`templates/crds/` and injects the guard+annotation wrapper on sync so the
-files stay round-trippable and `verify-codegen` still fails on drift.
+- The generated CRD YAML is **unchanged**; only its home and a small
+  keep-annotation wrapper differ.
+- `k8squad-crds/Chart.yaml` carries its **own `version`** (start `0.1.0`),
+  bumped whenever any CRD schema changes — this is the version operators pin
+  and roll independently.
+- The control-plane chart's `config/helm/crds/` directory is **deleted**; the
+  `k8squad` chart no longer installs CRDs by any path.
 
-## 2. Values keys
+## 2. Values keys (`k8squad-crds` chart)
 
 ```yaml
-crds:
-  # Install/upgrade the ksquad.io CRDs as part of this release.
-  # Set false when CRDs are managed out-of-band (GitOps, a separate CRD
-  # chart, or cluster-admin-applied). Applies to BOTH install and upgrade.
-  install: true
-  # Annotate CRDs with helm.sh/resource-policy: keep so `helm uninstall`
-  # never deletes them or the user's custom resources. Leave true in
-  # production; set false only for throwaway/test clusters.
-  keep: true
+# k8squad-crds/values.yaml
+# Annotate CRDs with helm.sh/resource-policy: keep so `helm uninstall`
+# never deletes the CRDs or the user's custom resources. Leave true in
+# production; set false only for throwaway/test clusters.
+keep: true
 ```
 
-`values.schema.json` gains a `crds` object with two booleans (both default
-true, `additionalProperties: false`).
+No `crds.install` toggle is needed on this chart — installing the CRD chart *is*
+the opt-in; not installing it (or `helm uninstall k8squad-crds --set keep=false`)
+is the opt-out. The **control-plane** chart gains no CRD values keys (it owns no
+CRDs). `values.schema.json` for the CRD chart is a single `keep` boolean,
+default true, `additionalProperties: false`.
 
-## 3. Install / upgrade ordering
+## 3. Install / upgrade ordering (two charts)
 
-Helm's kind sorter installs `CustomResourceDefinition` (a known kind, early in
-`installOrder`) **before** custom resources — `Toolchain`, `Skill`, etc. are
-unknown kinds and sort to the **end**. So within our single release the
-templated CRDs are applied before `templates/toolchain-default-catalog.yaml`
-creates its `Toolchain` CR. Ordering on first install is therefore correct by
-construction; no hook is required for the create order itself.
+**CRDs first, control plane second** — always.
 
-The one residual risk is **API-registration latency**: the API server must
-finish establishing the CRD before it will admit the CR. On a busy first
-install this can flake. Mitigations, in order of preference:
+```bash
+# install
+helm install k8squad-crds oci://charts.k8squad.io/k8squad-crds --wait
+helm install k8squad      oci://charts.k8squad.io/k8squad      --wait
 
-1. **Recommended:** getting-started already runs `helm install --wait`; keep
-   that. For the CR catalog specifically, DevOps should confirm the catalog CR
-   applies cleanly in the CI propagation test (§7 AC-6). If a flake is
-   observed, escalate to (2).
-2. Gate `toolchain-default-catalog.yaml` behind a `post-install,post-upgrade`
-   Helm hook (hook-weight after CRD establishment). Only adopt if a real flake
-   appears — do not add the hook speculatively.
+# upgrade (roll CRD schema forward before the control plane that uses it)
+helm upgrade k8squad-crds oci://charts.k8squad.io/k8squad-crds --wait
+helm upgrade k8squad      oci://charts.k8squad.io/k8squad      --wait
+```
 
-On **upgrade**, CRDs and CRs already exist; Helm's three-way merge updates the
-CRD schema in place. Adding a served field is additive and safe. Removing or
-narrowing a field is governed by §5.
+Rationale: the API server must have the CRDs **established** before the
+control-plane chart creates any CR (e.g. `toolchain-default-catalog.yaml`'s
+`Toolchain`). Installing/upgrading `k8squad-crds` first with `--wait` guarantees
+registration ordering across the two releases; within the CRD chart, all
+resources are the same kind so intra-release ordering is trivial.
 
-## 4. `--skip-crds` behavior (breaking UX change — document it)
+Getting-started (ISI-3519) documents both as an explicit two-step, and MAY offer
+a convenience wrapper (`Makefile`/script) that runs them in order — but the two
+charts stay independently installable and upgradeable.
 
-`--skip-crds` is a Helm flag that **only** affects the special `crds/`
-directory. Once CRDs are templates, `--skip-crds` **no longer has any effect
-on them.** The replacement knob is `--set crds.install=false`, which is
-strictly better: it is honored on **both install and upgrade** (unlike
-`--skip-crds`, which is install-only) and is declarable in a values file for
-GitOps.
+## 4. Version-skew policy between the two charts
 
-Docs (ISI-3519) must call this out explicitly: anyone scripting `--skip-crds`
-migrates to `crds.install=false`.
+- **Contract:** the control-plane chart declares the **minimum `k8squad-crds`
+  version** it requires. Record it as `annotations."k8squad.io/min-crds-version"`
+  in `config/helm/Chart.yaml` and in the CP chart README/NOTES.
+- **Enforcement (best-effort, non-fatal):** CP chart NOTES.txt prints the
+  required CRD-chart version and a `kubectl get crd` hint so operators can
+  self-check. A hard preflight (fail the CP release if CRDs are older) is
+  **out of scope** for this ADR — it needs a lookup the board hasn't asked for;
+  DevOps MAY add a `helm.sh/hook` preflight later if skew bites in practice.
+- **Skew tolerance, grounded in §5's additive-only rule:**
+  - **CRD chart newer than CP requires → always safe.** New CRD fields are
+    optional/additive; an older control plane simply doesn't populate them.
+    This is what makes "upgrade CRDs first" correct.
+  - **CRD chart older than CP requires → unsupported.** A control plane that
+    writes a field whose CRD schema predates it will have that field rejected.
+    Operators must roll `k8squad-crds` to at least `min-crds-version` first.
+- **Bump discipline:** any CRD schema change bumps `k8squad-crds` `version`; a CP
+  change that *depends* on a new CRD field bumps
+  `k8squad.io/min-crds-version` to match.
 
 ## 5. CRD versioning / deprecation policy
 
@@ -148,82 +167,85 @@ Current served/storage version for all kinds: **`v1alpha1`** (single version).
 While pre-1.0 (`v1alphaN`):
 
 - **Additive-only within a version.** New optional fields, new enum values,
-  relaxed validation → ship in `v1alpha1`; `helm upgrade` propagates them.
-  This is the common case and needs no version bump.
+  relaxed validation → ship in `v1alpha1`; `helm upgrade k8squad-crds`
+  propagates them. This is the common case; bump only the CRD chart `version`.
 - **Breaking changes** (remove/rename a field, tighten validation that would
   reject stored objects, change a field's type/semantics) require a **new API
-  version** (`v1alpha2` or `v1beta1`), served alongside the old one, with a
+  version** (`v1alpha2`/`v1beta1`), served alongside the old one, with a
   **conversion path** (none/webhook) before the old version is deprecated.
 - **Deprecation:** mark the outgoing version `deprecated: true` with a
   `deprecationWarning` in the CRD `versions[]` entry. Keep it **served** until
   no client uses it.
-- **Storage version migration:** never drop a version that is still the
-  `storage: true` version or that still has stored objects. Promote the new
-  version to storage, migrate stored objects (re-write / storage-version
-  migrator), *then* drop the old version in a later release.
-- **Never** shrink schema on `helm upgrade` in a way that would orphan or
-  reject existing CRs. The invariant below is absolute.
-
-Graduation to `v1` follows the same additive/conversion discipline.
+- **Storage version migration:** never drop a version that is still
+  `storage: true` or that still has stored objects. Promote the new version to
+  storage, migrate stored objects, *then* drop the old version in a later CRD
+  chart release.
+- **Never** shrink schema on `helm upgrade` in a way that would orphan or reject
+  existing CRs. The invariant below is absolute.
 
 ## 6. Invariants (non-negotiable)
 
-1. `helm upgrade` **must** propagate CRD schema changes to existing installs.
-2. **No path** — upgrade, uninstall, rollback, `crds.install=false` — may
-   **delete a user's custom resources**. `resource-policy: keep` + never
-   removing a stored/served version enforce this.
+1. `helm upgrade k8squad-crds` **must** propagate CRD schema changes to existing
+   installs, **independently** of the control-plane chart's release cadence.
+2. **No path** — upgrade, uninstall, rollback of either chart — may **delete a
+   user's custom resources**. `resource-policy: keep` + never removing a
+   stored/served version enforce this. Uninstalling the *control-plane* chart
+   leaves CRDs and CRs untouched because it owns neither.
 3. Generated CRD YAML remains the single source of truth
-   (`config/crd/bases/`); `verify-codegen` keeps the chart copy in lockstep.
+   (`config/crd/bases/`); `verify-codegen` keeps the CRD chart copy in lockstep.
+4. Install/upgrade order is **CRDs-first**; the version-skew contract (§4) holds.
 
 ## 7. Acceptance criteria for DevOps implementation (ISI-3518)
 
-- **AC-1** 11 CRDs relocated `config/helm/crds/` → `config/helm/templates/crds/`;
-  `config/helm/crds/` removed. Each file wrapped with
-  `{{- if .Values.crds.install }}` / `{{- end }}` and, gated by
-  `{{- if .Values.crds.keep }}`, the literal annotation
-  `helm.sh/resource-policy: keep`.
-- **AC-2** `values.yaml` gains `crds: { install: true, keep: true }`;
-  `values.schema.json` gains the matching object (booleans, defaults true,
-  `additionalProperties: false`).
-- **AC-3** `make helm-sync-crds` retargets to `templates/crds/` and injects the
-  guard/annotation wrapper on sync; `make verify-codegen` updated to check the
+- **AC-1** New standalone chart `config/helm-crds` (name `k8squad-crds`) created
+  with its own `Chart.yaml` (independent `version`, start `0.1.0`),
+  `values.yaml` (`keep: true`), `values.schema.json` (`keep` boolean, default
+  true, `additionalProperties:false`), and `README.md`.
+- **AC-2** All 11 CRDs live as templates under `config/helm-crds/templates/`,
+  each carrying `helm.sh/resource-policy: keep` gated by `{{- if .Values.keep }}`.
+  `config/helm/crds/` is **removed**; the `k8squad` control-plane chart ships
+  **zero** CRD objects (assert via `helm template config/helm | grep -c
+  CustomResourceDefinition` → 0).
+- **AC-3** `make helm-sync-crds` retargets to `config/helm-crds/templates/` and
+  injects the keep-annotation wrapper on sync; `make verify-codegen` checks the
   new path and passes clean (no drift) after `make manifests`.
-- **AC-4 (the core proof)** CI test: `helm install` an **older** chart revision
-  whose `runs` CRD lacks a recently-added field, then `helm upgrade` to HEAD,
-  then assert `kubectl get crd runs.ksquad.io -o jsonpath=...` shows the new
-  field present. Run on kind. This is the regression that proves the whole ADR.
-- **AC-5** `helm uninstall` with `crds.keep=true` (default) leaves all 11 CRDs
-  **and** any existing CRs intact; with `crds.keep=false` they are removed.
-  Both cases asserted in CI.
-- **AC-6** `helm install --wait` succeeds with the `toolchain-default-catalog`
-  `Toolchain` CR admitted (CRD registered before CR). If flaky, apply §3
-  mitigation (2) and note it.
-- **AC-7** `--set crds.install=false` produces a release with **zero** CRD
-  objects on both install and upgrade (asserted via `helm template` +
-  kind apply).
-- **AC-8** No behavioral regression to existing service templates; `helm lint`
-  and `helm template` clean.
+- **AC-4 (the core proof)** CI test on kind: `helm install k8squad-crds` at an
+  **older** chart revision whose `runs` CRD lacks a recently-added field, then
+  `helm upgrade k8squad-crds` to HEAD **without touching the control-plane
+  chart**, then assert `kubectl get crd runs.ksquad.io -o jsonpath=...` shows
+  the new field. Proves independent CRD upgrade — the whole ADR.
+- **AC-5** `helm uninstall k8squad-crds` with `keep=true` (default) leaves all 11
+  CRDs **and** any existing CRs intact; with `keep=false` the CRDs are removed.
+  Separately assert `helm uninstall k8squad` (control plane) leaves all CRDs/CRs
+  intact regardless. All cases in CI.
+- **AC-6** Ordering test: `helm install k8squad-crds --wait` then
+  `helm install k8squad --wait` succeeds with the `toolchain-default-catalog`
+  `Toolchain` CR admitted. Reversing the order (CP first) fails fast with a
+  clear "no matches for kind" — documented as expected.
+- **AC-7** `config/helm/Chart.yaml` gains
+  `annotations."k8squad.io/min-crds-version"`; CP chart `NOTES.txt` prints the
+  required CRD-chart version and a self-check hint (§4).
+- **AC-8** Both charts publish to `charts.k8squad.io` (gh-pages index) as
+  separate chart entries; `helm lint` + `helm template` clean for both; release
+  tooling bumps `k8squad-crds` `version` on any CRD change.
 
 ## 8. `deploy/helm/ksquad` disposition
 
-`deploy/helm/ksquad` is the **services** chart (apiserver, operator, console,
-NATS, postgres, gateway) and ships **no CRDs**. `config/helm` remains the
-**canonical** chart and the **sole owner of CRD delivery**. Therefore:
-
-- `deploy/helm/ksquad` needs **no** CRD-lifecycle change under this ADR.
-- Its CRD dependency should be documented as "CRDs installed by the canonical
-  `config/helm` chart" (or by a future `k8squad-crds` chart under Option B).
-- Whether `deploy/helm/ksquad` is formally **deprecated** or converged into
-  `config/helm` is **out of scope here** and should be tracked as a separate
-  chart-consolidation decision. This ADR does not bless two divergent charts;
-  it only fixes CRD upgrades in the canonical one.
+`deploy/helm/ksquad` is the **services** chart and ships **no CRDs**. Under
+Option B it depends on the CRDs being installed by the standalone `k8squad-crds`
+chart (documented as a prerequisite), exactly like the canonical `config/helm`
+control-plane chart now does. It needs **no** CRD-lifecycle change. Whether
+`deploy/helm/ksquad` is formally deprecated or converged into `config/helm`
+remains a separate chart-consolidation decision, out of scope here.
 
 ## Consequences
 
-- **Positive:** `helm upgrade` fixes stale schemas fleet-wide; one command;
-  matches modern operator norms; `crds.install`/`crds.keep` give clean
-  GitOps/uninstall control; migration path to Option B stays open and additive.
-- **Negative / accepted:** CRDs join release state (larger release secret,
-  three-way-merge semantics on CRDs); `--skip-crds` muscle memory breaks (§4,
-  documented); a possible first-install API-registration race mitigated by
-  `--wait` (§3).
+- **Positive:** CRD schema rolls forward (or holds) **independently** of the
+  control plane, satisfying the board directive and our GitOps/multi-tenant
+  story; standalone `k8squad-crds` version is the single pin operators track;
+  `resource-policy: keep` guarantees CRs survive any uninstall; matches
+  cert-manager/prometheus-operator/Flux norms.
+- **Negative / accepted:** two charts to install and upgrade (mitigated by a
+  documented two-step + optional wrapper, §3); an ordering contract operators
+  must follow (CRDs-first, §3) and a version-skew contract to honor (§4);
+  release tooling must publish and version two charts.
