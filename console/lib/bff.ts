@@ -121,6 +121,54 @@ export async function proxyJson(
 }
 
 /**
+ * Proxy an AUTH mutation (login/logout) to the apiserver, RELAYING its Set-Cookie (ISI-3522).
+ *
+ * The auth routes are the session cookie's ISSUER: `POST /auth/login` sets the HttpOnly opaque
+ * `ksquad_session`, `POST /auth/logout` expires it. Unlike proxyJson*, this helper copies the
+ * apiserver's Set-Cookie header(s) back to the browser so the cookie actually lands (login) or is
+ * cleared (logout). It still adds NO second authz path — the apiserver is the sole credential
+ * verifier and cookie authority (§13 / ADR-013); the console never mints or reads the token. Status
+ * (401 invalid creds, 429 rate-limited, 200) is surfaced verbatim.
+ */
+export async function proxyAuth(
+  req: NextRequest,
+  upstreamPath: string,
+  method: "POST" | "DELETE",
+): Promise<Response> {
+  const url = apiserverBaseUrl() + upstreamPath;
+  const inboundBody = await req.text();
+  const upstream = await fetch(url, {
+    method,
+    headers: upstreamHeaders(req, {
+      accept: "application/json",
+      "content-type": req.headers.get("content-type") ?? "application/json",
+    }),
+    body: inboundBody.length > 0 ? inboundBody : undefined,
+    cache: "no-store",
+    signal: req.signal,
+  });
+
+  const raw = await upstream.arrayBuffer();
+  const headers = new Headers({
+    "content-type":
+      upstream.headers.get("content-type") ?? "application/json",
+    "cache-control": "no-store",
+  });
+  // Relay every Set-Cookie verbatim (the session cookie lands/clears here, HttpOnly attrs intact).
+  for (const cookie of upstream.headers.getSetCookie()) {
+    headers.append("set-cookie", cookie);
+  }
+  // 204/205/304 are null-body statuses — logout answers 204 — so a non-null body (even a 0-byte
+  // ArrayBuffer) makes the Response constructor throw. Pass null for those.
+  const nullBody = upstream.status === 204 || upstream.status === 205 || upstream.status === 304;
+  return new Response(nullBody ? null : raw, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
+
+/**
  * Proxy a JSON *mutation* (POST/PUT/PATCH/DELETE) to the apiserver, surfacing status VERBATIM.
  *
  * Used by write surfaces that must still traverse the ONE authz choke point (arch §13 / ADR-013):
