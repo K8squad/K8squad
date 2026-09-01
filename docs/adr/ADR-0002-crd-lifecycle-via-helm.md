@@ -1,13 +1,10 @@
 # ADR-0002 — CRD lifecycle management via Helm (upgrade-safe CRDs)
 
-- **Status:** Accepted (Option B) — *supersedes the Option-A revision of 2026-09-01*
-- **Date:** 2026-09-01 (revised)
+- **Status:** Accepted (Option B)
+- **Date:** 2026-09-01
 - **Author:** Winston (System Architect)
-- **Issue:** ISI-3517 (parent ISI-3516)
-- **Implements via:** ISI-3518 (DevOps) · ISI-3519 (Docs/website)
-- **Decision authority:** board (`local-board`) directive on ISI-3516 — *"the
-  CRDs must be a different helm chart so the k8squad control plane can be
-  upgraded separately from the CRDs."* The A-vs-B question is **closed: B.**
+- **Requirement:** the CRDs must be a **separate Helm chart** so the control
+  plane can be upgraded independently of the CRD schema.
 
 ## Context
 
@@ -39,13 +36,12 @@ fails CI on drift between `api/`, `config/crd/bases/`, and the chart copy.
 versioned, that owns all CRD lifecycle.** The control-plane chart (`k8squad`,
 `config/helm`) stops shipping CRDs entirely.
 
-Rationale (board directive): the control plane and the CRD schema must be
-**upgradeable independently**. A single chart couples them into one release
-whose upgrade rewrites both at once; the board requires operators (and our
-GitOps/multi-tenant story) to roll the CRD schema forward or hold it back on
-its own cadence. A separate, independently-versioned chart is the standard
-pattern for this (cert-manager's split CRD chart, prometheus-operator CRDs,
-Flux) and is what we build.
+Rationale: the control plane and the CRD schema must be **upgradeable
+independently**. A single chart couples them into one release whose upgrade
+rewrites both at once; operators (and our GitOps/multi-tenant story) need to
+roll the CRD schema forward or hold it back on its own cadence. A separate,
+independently-versioned chart is the standard pattern for this (cert-manager's
+split CRD chart, prometheus-operator CRDs, Flux) and is what we build.
 
 Two properties make it upgrade-safe:
 
@@ -61,14 +57,14 @@ Two properties make it upgrade-safe:
 Option A (the prior revision of this ADR) kept everything in one chart and made
 `helm upgrade` of the control-plane chart reconcile CRD schema. It preserves a
 one-command install but **couples** CRD-schema changes to every control-plane
-upgrade and vice-versa — precisely the coupling the board ruled out. Superseded.
+upgrade and vice-versa — precisely the coupling this design rejects. Superseded.
 
 ### Why not a subchart
 
 A `config/helm/charts/k8squad-crds` **subchart** would satisfy "different
 `Chart.yaml`" on paper but is installed and upgraded as part of the **same
 parent release** — you cannot `helm upgrade` the subchart independently of the
-parent. That fails the board's core requirement (separate upgrade cadence).
+parent. That fails the core requirement (separate upgrade cadence).
 Rejected. The CRD chart is a **standalone, independently-releasable** chart.
 
 ## 1. Chart layout changes
@@ -143,7 +139,7 @@ kind. The two phases are **required and ordered**, not an optional fallback.
 Within the CRD chart all resources are the same kind, so intra-release ordering
 is trivial.
 
-Getting-started (ISI-3519) documents both as an explicit two-step, and MAY offer
+Getting-started docs document both as an explicit two-step, and MAY offer
 a convenience wrapper (`Makefile`/script) that runs them in order — but the two
 charts stay independently installable and upgradeable.
 
@@ -155,8 +151,8 @@ charts stay independently installable and upgradeable.
 - **Enforcement (best-effort, non-fatal):** CP chart NOTES.txt prints the
   required CRD-chart version and a `kubectl get crd` hint so operators can
   self-check. A hard preflight (fail the CP release if CRDs are older) is
-  **out of scope** for this ADR — it needs a lookup the board hasn't asked for;
-  DevOps MAY add a `helm.sh/hook` preflight later if skew bites in practice.
+  **out of scope** for this ADR — it needs a lookup we do not require today;
+  implementers MAY add a `helm.sh/hook` preflight later if skew bites in practice.
 - **Skew tolerance, grounded in §5's additive-only rule:**
   - **CRD chart newer than CP requires → always safe.** New CRD fields are
     optional/additive; an older control plane simply doesn't populate them.
@@ -212,7 +208,7 @@ While pre-1.0 (`v1alphaN`):
    (`config/crd/bases/`); `verify-codegen` keeps the CRD chart copy in lockstep.
 4. Install/upgrade order is **CRDs-first**; the version-skew contract (§4) holds.
 
-## 7. Acceptance criteria for DevOps implementation (ISI-3518)
+## 7. Acceptance criteria for implementation
 
 - **AC-1** New standalone chart `config/helm-crds` (name `k8squad-crds`) created
   with its own `Chart.yaml` (independent `version`, start `0.1.0`),
@@ -260,7 +256,7 @@ remains a separate chart-consolidation decision, out of scope here.
 ## Consequences
 
 - **Positive:** CRD schema rolls forward (or holds) **independently** of the
-  control plane, satisfying the board directive and our GitOps/multi-tenant
+  control plane, satisfying the independent-upgrade requirement and our GitOps/multi-tenant
   story; standalone `k8squad-crds` version is the single pin operators track;
   `resource-policy: keep` guarantees CRs survive any uninstall; matches
   cert-manager/prometheus-operator/Flux norms.
