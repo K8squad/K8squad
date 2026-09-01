@@ -18,6 +18,15 @@ import { ACCENT } from "@/lib/theme";
 const LEAD = "#93B7FF"; // lead / highlight tint
 const RECEDE = "#2E4E8C"; // recede depth mid
 
+// Canonical 8-Crest geometry (100-unit design space), copied verbatim from
+// mark-8crest-on-dark.svg. Centralised as named constants so the two crests / member nodes stay
+// consistent and a brand tweak is a one-line edit rather than a hunt through inline literals.
+const CREST = { x: 29, size: 42, rx: 13, strokeWidth: 9 } as const; // the two stacked squad-containers
+const CREST_Y = { top: 13, bottom: 45 } as const;
+const MEMBER = { x: 44.5, size: 11, rx: 3 } as const; // top/bottom squad-member nodes
+const MEMBER_Y = { top: 9.5, bottom: 79.5 } as const;
+const NODE = { x: 41, y: 41, size: 18, rx: 5 } as const; // bright coordinator pinch fusing the crests
+
 export function Logo({
   size = 28,
   withWordmark = true,
@@ -29,17 +38,18 @@ export function Logo({
   const ringTop = `ringTop-${uid}`;
   const ringBot = `ringBot-${uid}`;
   return (
-    <span
-      className="brand-lockup"
-      style={{ display: "inline-flex", alignItems: "center", gap: 10 }}
-    >
+    <span className="brand-lockup">
       <svg
         width={size}
         height={size}
         viewBox="0 0 100 100"
-        role="img"
-        aria-label="K8squad 8-Crest logo"
         fill="none"
+        // When the wordmark is shown it supplies the single accessible name ("K8squad"); the mark
+        // is then decorative, so hide it from AT to avoid a duplicate announcement. Standalone, the
+        // SVG carries the name itself.
+        role={withWordmark ? undefined : "img"}
+        aria-hidden={withWordmark || undefined}
+        aria-label={withWordmark ? undefined : "K8squad 8-Crest logo"}
       >
         <defs>
           <linearGradient id={ringTop} x1="0" y1="0" x2="0" y2="1">
@@ -53,35 +63,35 @@ export function Logo({
         </defs>
         {/* lower crest (recedes) */}
         <rect
-          x="29"
-          y="45"
-          width="42"
-          height="42"
-          rx="13"
+          x={CREST.x}
+          y={CREST_Y.bottom}
+          width={CREST.size}
+          height={CREST.size}
+          rx={CREST.rx}
           fill="none"
           stroke={`url(#${ringBot})`}
-          strokeWidth="9"
+          strokeWidth={CREST.strokeWidth}
         />
         {/* upper crest (leads) */}
         <rect
-          x="29"
-          y="13"
-          width="42"
-          height="42"
-          rx="13"
+          x={CREST.x}
+          y={CREST_Y.top}
+          width={CREST.size}
+          height={CREST.size}
+          rx={CREST.rx}
           fill="none"
           stroke={`url(#${ringTop})`}
-          strokeWidth="9"
+          strokeWidth={CREST.strokeWidth}
         />
         {/* coordinator node — the bright pinch that fuses the two crests */}
-        <rect x="41" y="41" width="18" height="18" rx="5" fill={LEAD} />
+        <rect x={NODE.x} y={NODE.y} width={NODE.size} height={NODE.size} rx={NODE.rx} fill={LEAD} />
         {/* squad member nodes */}
-        <rect x="44.5" y="9.5" width="11" height="11" rx="3" fill={LEAD} />
-        <rect x="44.5" y="79.5" width="11" height="11" rx="3" fill={RECEDE} />
+        <rect x={MEMBER.x} y={MEMBER_Y.top} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={LEAD} />
+        <rect x={MEMBER.x} y={MEMBER_Y.bottom} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={RECEDE} />
       </svg>
       {withWordmark && (
         <strong className="brand-wordmark">
-          K<span style={{ color: ACCENT }}>8</span>squad
+          K<span className="brand-wordmark__accent">8</span>squad
         </strong>
       )}
     </span>
