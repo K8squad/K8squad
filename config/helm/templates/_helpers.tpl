@@ -163,8 +163,8 @@ the seed on without supplying a username and existingSecret.
 - name: KSQUAD_BOOTSTRAP_ADMIN_PASSWORD
   valueFrom:
     secretKeyRef:
-      name: {{ $ba.existingSecret }}
-      key: {{ $ba.passwordKey | default "password" }}
+      name: {{ $ba.existingSecret | quote }}
+      key: {{ ($ba.passwordKey | default "password") | quote }}
 {{- with $ba.teamId }}
 - name: KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID
   value: {{ . | quote }}

@@ -140,7 +140,7 @@ kubectl -n k8squad-system create secret generic ksquad-bootstrap-admin \
   --from-literal=password="$(openssl rand -base64 18)"
 
 # 2) Enable the seed and point the apiserver at that Secret.
-helm upgrade k8squad config/helm -n k8squad-system \
+helm upgrade --install k8squad config/helm -n k8squad-system \
   --set controlPlane.enabled=true \
   --set controlPlane.apiserver.bootstrapAdmin.enabled=true \
   --set controlPlane.apiserver.bootstrapAdmin.username=admin \
@@ -156,7 +156,7 @@ first successful login, remove the bootstrap credential** — the seed has alrea
 run and no longer needs it:
 
 ```sh
-helm upgrade k8squad config/helm -n k8squad-system \
+helm upgrade --install k8squad config/helm -n k8squad-system \
   --set controlPlane.apiserver.bootstrapAdmin.enabled=false   # …and your other values
 kubectl -n k8squad-system delete secret ksquad-bootstrap-admin
 ```
