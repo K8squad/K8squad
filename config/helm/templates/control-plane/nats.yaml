@@ -14,7 +14,7 @@
 {{- $c := "nats" -}}
 {{- $sc := .Values.controlPlane.nats.storage.storageClassName -}}
 {{- if not $sc -}}
-{{- fail "controlPlane.nats.enabled=true requires controlPlane.nats.storage.storageClassName — the JetStream PVC never relies on the cluster-default StorageClass (§16.2). Set it (csi-nfs on k8squad-test) or disable the bus with controlPlane.nats.enabled=false." -}}
+{{- fail "controlPlane.nats.enabled=true requires controlPlane.nats.storage.storageClassName — the JetStream PVC never relies on the cluster-default StorageClass (§16.2). Set it (nfs-csi on k8squad-test) or disable the bus with controlPlane.nats.enabled=false." -}}
 {{- end -}}
 {{- $port := .Values.controlPlane.nats.port | default 4222 -}}
 apiVersion: v1

@@ -101,7 +101,7 @@ controlPlane:
       maxFileStore: 4GB
     storage:
       # REQUIRED when nats.enabled — no cluster-default fallback (§16.2). On
-      # k8squad-test this is the csi-nfs class.
+      # k8squad-test this is the nfs-csi class.
       storageClassName: ""
       size: 5Gi
     resources:
