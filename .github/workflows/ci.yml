@@ -338,9 +338,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: |
           set -euo pipefail
-          # Render with defaults; fail closed on any template/schema error. CRDs live under
-          # crds/ and are installed by Helm out-of-band, so --include-crds keeps the render
-          # representative of an install.
+          # Render with defaults; fail closed on any template/schema error. CRDs are their
+          # own chart (config/helm-crds, ADR-0002 Option B) rendered as ordinary templates;
+          # the control-plane chart ships none. --include-crds is a harmless no-op here
+          # (neither chart uses Helm's special crds/ dir) but kept for forward-compat.
           helm template ksquad-ci "${{ matrix.path }}" --include-crds > /dev/null
           echo "chart '${{ matrix.chart }}' renders clean"
 

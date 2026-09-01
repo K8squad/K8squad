@@ -2,13 +2,21 @@ apiVersion: v2
 name: k8squad
 description: |
   K8squad control plane — Kubernetes-native AI agent squad orchestration.
-  Story 1.4 skeleton: installs the ksquad.io CRD group and the control-plane
-  namespace. Services (apiserver, operator, console, memory, shim) are wired
-  in later epics.
+  Installs the control-plane namespace and (when enabled) the control-plane
+  services (apiserver, operator, console, memory, scm-webhook, event bus).
+  This chart ships NO CRDs: the ksquad.io CRDs are owned by the standalone,
+  independently-versioned k8squad-crds chart (config/helm-crds), which must be
+  installed/upgraded first (ADR-0002, Option B).
 type: application
 version: 0.1.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.29.0-0"
+annotations:
+  # Minimum k8squad-crds chart version this control plane requires (ADR-0002
+  # §4). Bump when a control-plane change depends on a newly added CRD field.
+  # The CRD chart must be at least this version (newer is always safe;
+  # additive-only). Best-effort/non-fatal — surfaced in NOTES.txt.
+  k8squad.io/min-crds-version: "0.1.0"
 home: https://k8squad.io
 sources:
   - https://github.com/K8squad/K8squad

@@ -195,6 +195,11 @@ namespace:
 nameOverride: ""
 fullnameOverride: ""
 
+# NOTE: this chart ships NO CRDs (ADR-0002, Option B). The eleven ksquad.io
+# CRDs are owned by the standalone, independently-versioned `k8squad-crds`
+# chart (config/helm-crds), which MUST be installed/upgraded first. There are
+# deliberately no crds.* values here — CRD lifecycle is that chart's concern.
+
 # Workspace PVC configuration for Projects (story 4.3, §9.4)
 workspacePVC:
   # Default storage class for workspace PVCs. Empty means the cluster default,

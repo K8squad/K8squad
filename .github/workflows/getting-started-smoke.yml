@@ -20,6 +20,7 @@ on:
     paths:
       - 'examples/bmad-team/**'
       - 'config/helm/**'
+      - 'config/helm-crds/**'
       - 'deploy/helm/**'
       - 'hack/getting-started-smoke.sh'
       - '.github/workflows/getting-started-smoke.yml'

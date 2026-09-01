@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "k8squad-crds chart values",
+  "description": "Validated values for the standalone k8squad-crds chart (ADR-0002 Option B). The chart owns the eleven ksquad.io CRDs; installing it is the opt-in, so the only value is the uninstall keep policy.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "keep": {
+      "type": "boolean",
+      "description": "Annotate CRDs with helm.sh/resource-policy: keep so helm uninstall never deletes CRDs or their CRs. Default true.",
+      "default": true
+    }
+  }
+}
