@@ -63,7 +63,11 @@ describe("POST /api/session — the login proxy", () => {
     ) as unknown) as typeof fetch;
 
     const res = await sessionPOST(
-      makeReq("/api/session", { method: "POST", body: JSON.stringify({ username: "x", password: "y" }) }),
+      makeReq("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "x", password: "y" }),
+      }),
     );
     expect(res.status).toBe(401);
     expect(res.headers.get("set-cookie")).toBeNull();
@@ -85,5 +89,109 @@ describe("DELETE /api/session — the logout proxy", () => {
     expect((fetchMock.mock.calls[0] as unknown[])[0]).toContain("/auth/logout");
     expect(res.status).toBe(204);
     expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+  });
+});
+
+// Copilot review of PR #215: POST /api/session sets the session cookie, so it is a login-CSRF sink.
+// The BFF must reject cross-site submissions and non-JSON bodies BEFORE proxying upstream.
+describe("POST /api/session — login-CSRF guard (Copilot PR #215)", () => {
+  it("rejects a cross-site fetch-metadata request without hitting the apiserver (403)", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await sessionPOST(
+      makeReq("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
+        body: JSON.stringify({ username: "op", password: "pw" }),
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled(); // fail closed — no upstream login attempt
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("rejects a cross-origin Origin even when fetch metadata is absent (403)", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await sessionPOST(
+      makeReq("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://evil.example" },
+        body: JSON.stringify({ username: "op", password: "pw" }),
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a text/plain body — the classic simple-request CSRF vector (403)", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await sessionPOST(
+      makeReq("/api/session", {
+        method: "POST",
+        headers: { "content-type": "text/plain;charset=UTF-8" },
+        body: JSON.stringify({ username: "op", password: "pw" }),
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows a same-origin JSON login through to the apiserver", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "set-cookie": "ksquad_session=t; Path=/; HttpOnly",
+        },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await sessionPOST(
+      makeReq("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json", "sec-fetch-site": "same-origin" },
+        body: JSON.stringify({ username: "op", password: "pw" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(res.headers.get("set-cookie")).toContain("ksquad_session=t");
+  });
+});
+
+// Copilot review of PR #215: the login proxy dropped X-Forwarded-For, so the apiserver's per-IP
+// login limiter saw every user as the BFF pod. The BFF must relay the client-address chain upstream.
+describe("POST /api/session — forwards the client-address chain (Copilot PR #215)", () => {
+  it("relays X-Forwarded-For / X-Real-IP to the apiserver so the per-IP limiter sees the real caller", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    await sessionPOST(
+      makeReq("/api/session", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "sec-fetch-site": "same-origin",
+          "x-forwarded-for": "203.0.113.7",
+          "x-real-ip": "203.0.113.7",
+        },
+        body: JSON.stringify({ username: "op", password: "pw" }),
+      }),
+    );
+
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { headers: Headers };
+    expect(init.headers.get("x-forwarded-for")).toBe("203.0.113.7");
+    expect(init.headers.get("x-real-ip")).toBe("203.0.113.7");
   });
 });

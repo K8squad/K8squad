@@ -104,6 +104,34 @@ envoy, but envoy did not author it. The contract is therefore:
 bounces an anonymous request; `/login` reads it and navigates there post-login
 (sanitized). The gateway is never involved in the round-trip.
 
+## Auth-endpoint hardening (Copilot review of PR #215)
+
+The `POST /api/session` handler *sets the session cookie*, so it is a state-changing
+endpoint that acts on the ambient cookie — i.e. a CSRF/login-CSRF sink and a
+rate-limit relay. Three guards close that surface; all live in `console/lib/bff.ts`
+so every auth mutation inherits them:
+
+1. **Login-CSRF guard (`crossSiteReject`, applied in `proxyAuth`).** Before the
+   apiserver is touched, the BFF fails closed on any of: `Sec-Fetch-Site` ∉
+   {same-origin, same-site, none}; an `Origin` whose host ≠ the request host; or a
+   declared `Content-Type` that is not `application/json`. This blocks the classic
+   cross-origin `text/plain`/form-encoded "simple request" that carries valid JSON
+   into a login and pins the victim to an attacker account. A rejected request never
+   reaches `/auth/login` and never receives a `Set-Cookie` (403).
+2. **Open-redirect guard (`sanitizeNext`, `app/login/page.tsx`).** The post-login
+   `?next=` target must be root-relative AND resolve same-origin. In addition to
+   rejecting `//host` and scheme URLs, it rejects the **backslash bypass**
+   (`/\host` — browsers normalize `\`→`/`, so it is protocol-relative) and then
+   re-checks the parsed origin as defense in depth.
+3. **Client-address preservation (`upstreamHeaders`).** The BFF now relays
+   `X-Forwarded-For` / `X-Real-IP` upstream, so the apiserver's per-IP login limiter
+   (`internal/apiserver/authroutes.go` → `auth.ClientIP`) attributes attempts to the
+   real caller instead of the shared BFF pod address — otherwise five failed logins
+   would lock every user behind that pod. **Deployment requirement:** the apiserver's
+   `trustedProxies` (config.go) MUST be set to the BFF pod/Service CIDR only, so a
+   client-forged `X-Forwarded-For` cannot poison another user's bucket. This is an
+   ops/Helm-values concern tracked as a follow-up, not a code change in this PR.
+
 ## Consequences
 
 - ✅ `/login` is a real, shell-free route; the 404 no longer leaks the operator
@@ -114,8 +142,9 @@ bounces an anonymous request; `/login` reads it and navigates there post-login
   to get the shell. A page added at the app root would render shell-free (that is
   now the pre-auth surface).
 - 📌 Verified: `next build` (all authed URLs unchanged, `/login` static), console
-  vitest suite (254 passing) + a new `test/session/login.test.ts` proving the
-  Set-Cookie relay and the 204 logout path.
+  vitest suite + `test/session/login.test.ts` (Set-Cookie relay, 204 logout,
+  login-CSRF rejection, XFF forwarding) and `test/session/next-redirect.test.ts`
+  (open-redirect / backslash-bypass regression).
 
 ## Files
 
@@ -123,5 +152,5 @@ bounces an anonymous request; `/login` reads it and navigates there post-login
   `console/app/not-found.tsx`
 - `console/app/login/page.tsx` (branded markup owned by ISI-3523)
 - `console/app/api/session/route.ts` (POST/DELETE added), `console/lib/bff.ts`
-  (`proxyAuth`)
-- `console/test/session/login.test.ts`
+  (`proxyAuth`, `crossSiteReject`, XFF forwarding)
+- `console/test/session/login.test.ts`, `console/test/session/next-redirect.test.ts`

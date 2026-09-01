@@ -42,8 +42,68 @@ function upstreamHeaders(
   if (lastEventId) h.set("last-event-id", lastEventId);
   const accept = req.headers.get("accept");
   if (accept) h.set("accept", accept);
+  // Preserve the client-address chain so the apiserver's per-IP limiter (login brute-force guard,
+  // authroutes.go `auth.ClientIP`) attributes each request to the REAL caller, not the shared BFF
+  // pod address (Copilot review of PR #215). Envoy stamps X-Forwarded-For on the hop into the BFF;
+  // we relay it (+ X-Real-IP) upstream. The apiserver honors it ONLY for hops inside its
+  // `trustedProxies` CIDR set (config.go), so a client-forged XFF cannot poison another user's
+  // bucket — the BFF pod IP must be the sole trusted proxy (see ADR-0003).
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) h.set("x-forwarded-for", xff);
+  const xRealIp = req.headers.get("x-real-ip");
+  if (xRealIp) h.set("x-real-ip", xRealIp);
   if (extra) for (const [k, v] of Object.entries(extra)) h.set(k, v);
   return h;
+}
+
+/**
+ * Reject cross-site state-changing requests to the auth endpoints — a login-CSRF guard (Copilot
+ * review of PR #215). `POST /api/session` sets the HttpOnly session cookie, so an unguarded handler
+ * is a login-CSRF sink: a cross-origin `text/plain` HTML form can submit syntactically valid JSON
+ * (the Go decoder tolerates unknown fields and ignores Content-Type) and sign the victim into an
+ * ATTACKER-controlled account. We fail closed on three independent signals — a match on any reject
+ * short-circuits with 403, otherwise the request proceeds:
+ *   1. Fetch metadata — reject unless Sec-Fetch-Site is same-origin/same-site (a page cannot forge
+ *      it; browsers stamp it). `none` (direct nav/bookmark) and a missing header fall through.
+ *   2. Origin allow-list — when an Origin header is present it MUST match the request Host; any
+ *      cross-origin Origin is rejected outright.
+ *   3. Content-Type — a declared body MUST be application/json, blocking the classic
+ *      form-encoded/`text/plain` "simple request" CSRF that never trips a CORS preflight.
+ * Returns a 403 Response to short-circuit, or null to proceed.
+ */
+export function crossSiteReject(req: NextRequest): Response | null {
+  const deny = (msg: string) =>
+    new Response(JSON.stringify({ error: msg }), {
+      status: 403,
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
+    });
+
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "same-site" && site !== "none") {
+    return deny("cross-site request rejected");
+  }
+
+  const origin = req.headers.get("origin");
+  if (origin) {
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return deny("malformed Origin");
+    }
+    // Prefer the forwarded Host header; fall back to the request URL's own host so the check holds
+    // even when a caller omits Host (the apiserver/gateway always sets it in production).
+    const host = req.headers.get("host") ?? req.nextUrl.host;
+    if (host && originHost !== host) return deny("cross-origin request rejected");
+  }
+
+  const ct = req.headers.get("content-type");
+  // Login declares a JSON body; logout declares none. Reject only a present, non-JSON content-type.
+  if (ct && !ct.toLowerCase().includes("application/json")) {
+    return deny("unsupported content-type");
+  }
+
+  return null;
 }
 
 /**
@@ -135,6 +195,11 @@ export async function proxyAuth(
   upstreamPath: string,
   method: "POST" | "DELETE",
 ): Promise<Response> {
+  // Login/logout mutate session state on the strength of the ambient cookie, so they are the
+  // classic CSRF sinks — gate them same-origin BEFORE touching the apiserver (Copilot PR #215).
+  const rejected = crossSiteReject(req);
+  if (rejected) return rejected;
+
   const url = apiserverBaseUrl() + upstreamPath;
   const inboundBody = await req.text();
   const upstream = await fetch(url, {
