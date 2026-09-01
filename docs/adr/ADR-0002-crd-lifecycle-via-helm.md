@@ -131,9 +131,17 @@ helm upgrade k8squad      oci://charts.k8squad.io/k8squad      --wait
 
 Rationale: the API server must have the CRDs **established** before the
 control-plane chart creates any CR (e.g. `toolchain-default-catalog.yaml`'s
-`Toolchain`). Installing/upgrading `k8squad-crds` first with `--wait` guarantees
-registration ordering across the two releases; within the CRD chart, all
-resources are the same kind so intra-release ordering is trivial.
+`Toolchain`). This is exactly why the two-chart split — not Helm's intra-release
+kind-sorter — is the mechanism. Helm builds and validates a release's **entire**
+manifest (including REST-mapping every object's `apiVersion/kind`) **before** it
+creates any resource, so a CR and its own CRD **cannot** coexist in one release:
+the CR's REST mapping fails at build time, before the sorter or `--wait` ever
+runs. Putting the CRDs in a *separate release* that completes first
+(`k8squad-crds --wait` → CRDs Established cluster-wide) means the control-plane
+release is rendered against an API server that already knows the `Toolchain`
+kind. The two phases are **required and ordered**, not an optional fallback.
+Within the CRD chart all resources are the same kind, so intra-release ordering
+is trivial.
 
 Getting-started (ISI-3519) documents both as an explicit two-step, and MAY offer
 a convenience wrapper (`Makefile`/script) that runs them in order — but the two
@@ -172,7 +180,11 @@ While pre-1.0 (`v1alphaN`):
 - **Breaking changes** (remove/rename a field, tighten validation that would
   reject stored objects, change a field's type/semantics) require a **new API
   version** (`v1alpha2`/`v1beta1`), served alongside the old one, with a
-  **conversion path** (none/webhook) before the old version is deprecated.
+  **conversion webhook** before the old version is deprecated. `conversion.strategy: None`
+  is **not** a valid path for these: `None` only relabels `apiVersion` and is
+  correct **only** when the two versions are wire-compatible (identical schema,
+  a pure rename with no representational change). Any rename, type change, or
+  semantic transformation of a field requires the webhook.
 - **Deprecation:** mark the outgoing version `deprecated: true` with a
   `deprecationWarning` in the CRD `versions[]` entry. Keep it **served** until
   no client uses it.
@@ -187,10 +199,15 @@ While pre-1.0 (`v1alphaN`):
 
 1. `helm upgrade k8squad-crds` **must** propagate CRD schema changes to existing
    installs, **independently** of the control-plane chart's release cadence.
-2. **No path** — upgrade, uninstall, rollback of either chart — may **delete a
-   user's custom resources**. `resource-policy: keep` + never removing a
-   stored/served version enforce this. Uninstalling the *control-plane* chart
-   leaves CRDs and CRs untouched because it owns neither.
+2. **No default or implicit path** — `helm upgrade`, `helm rollback`, the
+   default `helm uninstall` (`keep=true`), or uninstalling the *control-plane*
+   chart — may **delete a user's custom resources**. `resource-policy: keep`
+   (default) + never removing a stored/served version enforce this. The **sole**
+   destructive path is the explicit, non-default opt-in
+   `helm uninstall k8squad-crds --set keep=false` (§2, AC-5): it removes the
+   CRDs, which cascades to their CRs, and exists only for throwaway/test
+   clusters. It is deliberately loud, off by default, and never reachable
+   without an operator explicitly setting `keep=false`.
 3. Generated CRD YAML remains the single source of truth
    (`config/crd/bases/`); `verify-codegen` keeps the CRD chart copy in lockstep.
 4. Install/upgrade order is **CRDs-first**; the version-skew contract (§4) holds.
@@ -215,7 +232,9 @@ While pre-1.0 (`v1alphaN`):
   chart**, then assert `kubectl get crd runs.ksquad.io -o jsonpath=...` shows
   the new field. Proves independent CRD upgrade — the whole ADR.
 - **AC-5** `helm uninstall k8squad-crds` with `keep=true` (default) leaves all 11
-  CRDs **and** any existing CRs intact; with `keep=false` the CRDs are removed.
+  CRDs **and** any existing CRs intact; with the explicit, non-default
+  `--set keep=false` the CRDs are removed and their CRs cascade-deleted — the
+  single documented destructive path (§6), CI-asserted as opt-in only.
   Separately assert `helm uninstall k8squad` (control plane) leaves all CRDs/CRs
   intact regardless. All cases in CI.
 - **AC-6** Ordering test: `helm install k8squad-crds --wait` then
