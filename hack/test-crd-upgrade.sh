@@ -95,7 +95,15 @@ bash "${ROOT}/hack/wrap-crd-template.sh" "$STRIPPED" > "${OLD_CRDS}/templates/ks
 echo "== AC-6 forward: install k8squad-crds (old) then CP chart =="
 helm install "$CRDS_REL" "$OLD_CRDS" -n "$CRDS_NS" --create-namespace --wait --timeout 120s
 [ "$(crd_count)" = "11" ] || fail "expected 11 CRDs after installing k8squad-crds, got $(crd_count)"
+# namespace.create=false: the CP chart otherwise renders+OWNS Namespace/$CP_NS, and
+# its own Helm release-storage secret lives in $CP_NS — so `helm uninstall` would
+# delete the namespace and cascade-delete that secret out from under Helm, failing
+# the final history purge ("release: not found", exit 1) even though resources were
+# removed. --create-namespace still provides the (unowned) namespace for storage.
+# This isolates the CRD-survival assertion from that config/helm namespace-ownership
+# quirk; it does not affect CRD delivery (CRDs live in the separate k8squad-crds chart).
 helm install "$CP_REL" "$CP_CHART" -n "$CP_NS" --create-namespace \
+  --set namespace.create=false \
   --set controlPlane.enabled=false --set tools.defaultCatalog.enabled=true \
   --wait --timeout 120s
 kubectl get toolchain -n "$CP_NS" kubectl >/dev/null 2>&1 \
