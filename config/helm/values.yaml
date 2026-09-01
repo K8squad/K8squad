@@ -77,12 +77,52 @@ controlPlane:
     extraEnv: []
 
   eventRelay:
-    # Off by default: requires a reachable NATS URL in addition to Postgres.
+    # Off by default UNLESS the bundled bus (controlPlane.nats.enabled) is on —
+    # then the relay is auto-enabled and natsUrl auto-derived (see below). Set
+    # enabled=true + a natsUrl to drain the outbox to an EXTERNAL NATS instead.
     enabled: false
     natsUrl: ""
     replicas: 1
     resources: {}
     extraEnv: []
+
+  # NATS / JetStream — the plugin event bus (§16 / §17.4 / ADR-023; CEO
+  # 2026-08-11 "data in Postgres, events on NATS"). Postgres/CNPG stays the sole
+  # source of truth (ADR-001); NATS holds only in-flight / replayable event
+  # copies drained best-effort by event-relay, so NATS-down NEVER blocks a
+  # Run/claim/write. Bundling it here makes `controlPlane.enabled=true` yield a
+  # complete event plane (5 Deployments + Postgres + NATS + event-relay),
+  # matching the umbrella chart's guarantees.
+  nats:
+    # ON by default (like the umbrella chart) so `controlPlane.enabled=true`
+    # yields a COMPLETE event plane — a JetStream StatefulSet is rendered AND
+    # eventRelay is auto-enabled with natsUrl=nats://ksquad-nats.<ns>.svc:<port>.
+    # Requires persistence.storageClassName (fail-fast, §16.2). Set false to opt
+    # out (e.g. to drain to an EXTERNAL bus via eventRelay.natsUrl, or to run the
+    # core without live plugin event streaming — the outbox buffers regardless).
+    enabled: true
+    image: nats:2.10-alpine
+    port: 4222
+    jetstream:
+      # Bare token — NATS' size lexer rejects a quoted "4GB"/"4Gi" (ISI-2624).
+      maxFileStore: 4GB
+    ha:
+      # false → single JetStream replica. true → clustered RAFT quorum; replicas
+      # must be ODD and >= 3.
+      enabled: false
+      replicas: 3
+    # JetStream file-store PVC. StorageClass is a first-class knob (§16.2): the
+    # PVC NEVER silently relies on the cluster-default class — it is REQUIRED
+    # when nats.enabled (fail-fast), exactly like the umbrella chart.
+    persistence:
+      storageClassName: ""
+      size: 4Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
 
 namespace:
   # Create the control-plane namespace as a chart resource.
