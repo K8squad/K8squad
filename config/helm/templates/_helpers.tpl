@@ -146,3 +146,28 @@ dev secret). Callers that need Postgres include this block.
       key: dsn
       {{- end }}
 {{- end -}}
+
+{{/*
+Bootstrap-admin env (feature 15.2, ISI-3530). Emitted only when
+controlPlane.apiserver.bootstrapAdmin.enabled=true. The password ALWAYS comes
+from a Secret — never plaintext values — so we fail-fast if the operator turned
+the seed on without supplying a username and existingSecret.
+*/}}
+{{- define "k8squad.bootstrapAdminEnv" -}}
+{{- $ba := .Values.controlPlane.apiserver.bootstrapAdmin | default dict -}}
+{{- if $ba.enabled -}}
+{{- if not $ba.username }}{{ fail "controlPlane.apiserver.bootstrapAdmin.enabled=true requires controlPlane.apiserver.bootstrapAdmin.username" }}{{- end }}
+{{- if not $ba.existingSecret }}{{ fail "controlPlane.apiserver.bootstrapAdmin.enabled=true requires controlPlane.apiserver.bootstrapAdmin.existingSecret (the password is never read from plaintext values)" }}{{- end }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_USERNAME
+  value: {{ $ba.username | quote }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $ba.existingSecret }}
+      key: {{ $ba.passwordKey | default "password" }}
+{{- with $ba.teamId }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID
+  value: {{ . | quote }}
+{{- end }}
+{{- end -}}
+{{- end -}}
