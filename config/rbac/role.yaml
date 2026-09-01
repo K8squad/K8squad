@@ -32,7 +32,6 @@ rules:
   - ""
   resources:
   - namespaces
-  - persistentvolumeclaims
   verbs:
   - create
   - delete
@@ -40,6 +39,16 @@ rules:
   - list
   - patch
   - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
   - watch
 - apiGroups:
   - ""
@@ -82,6 +91,7 @@ rules:
   - mcpservers/status
   - otelconfigs/status
   - projects/status
+  - runs/status
   - teams/status
   verbs:
   - get
@@ -96,12 +106,6 @@ rules:
   - list
   - patch
   - watch
-- apiGroups:
-  - ksquad.io
-  resources:
-  - runs/status
-  verbs:
-  - get
 - apiGroups:
   - ksquad.io
   resources:
