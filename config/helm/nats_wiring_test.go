@@ -44,6 +44,31 @@ func TestNatsBundledPlaneComplete(t *testing.T) {
 	}
 }
 
+// TestEventRelaySAOnDefaultPath guards the SA/Deployment gating parity
+// (regression, ISI-3510 ops): on the default Option-B path (nats.enabled=true,
+// eventRelay.enabled left false) the relay Deployment auto-enables, so its
+// ServiceAccount MUST render too — else the pod loses the SA's ghcr-pull
+// imagePullSecrets and lands in ImagePullBackOff. Both the SA and the Deployment
+// gate on the effective helper k8squad.eventRelay.enabled, never the raw value.
+func TestEventRelaySAOnDefaultPath(t *testing.T) {
+	out, err := render(t, "--set", "controlPlane.nats.persistence.storageClassName=nfs-csi")
+	if err != nil {
+		t.Fatalf("render failed: %v\n%s", err, out)
+	}
+	var found bool
+	for _, doc := range strings.Split(out, "\n---") {
+		if strings.Contains(doc, "kind: ServiceAccount") &&
+			strings.Contains(doc, "name: ksquad-event-relay") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("default Option-B path rendered no event-relay ServiceAccount "+
+			"(SA gating must match the Deployment's effective helper):\n%s", out)
+	}
+}
+
 func TestNatsRequiresStorageClass(t *testing.T) {
 	out, err := render(t) // nats.enabled defaults true, no storage class
 	if err == nil {
