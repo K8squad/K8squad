@@ -1,13 +1,18 @@
 apiVersion: v1
 entries:
   k8squad:
-  - apiVersion: v2
+  - annotations:
+      k8squad.io/min-crds-version: 0.1.0
+    apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-01T17:12:45.782445681Z"
+    created: "2026-09-01T20:02:05.743764271Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
-      Story 1.4 skeleton: installs the ksquad.io CRD group and the control-plane namespace.
-      Services (apiserver, operator, console, memory, shim) are wired in later epics. '
-    digest: ab4032cd2e19d1b05916cffab0e175d0f7456f1b9aca55b1e3287dae1ba79ceb
+      Installs the control-plane namespace and (when enabled) the control-plane services
+      (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
+      NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
+      k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
+      (ADR-0002, Option B). '
+    digest: f6269eb033dd3a1adce437fbdbcd912c5f11a796d2ddaf14a3b6b6dc5aac7427
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -26,4 +31,34 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-01T17:12:45.780453752Z"
+  k8squad-crds:
+  - apiVersion: v2
+    appVersion: 0.1.0
+    created: "2026-09-01T20:02:05.744593914Z"
+    description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
+      (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
+      MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
+      Helm chart (ADR-0002, Option B).  Install this chart BEFORE the k8squad control-plane
+      chart, and upgrade it independently to roll CRD schema changes forward on their
+      own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
+      deletes the CRDs or the user''s custom resources. '
+    digest: d5117aaa4e618603df63e29b52609f839c4b443e366b0dcd617aa841d66a5299
+    home: https://k8squad.io
+    icon: https://k8squad.io/img/banner-on-dark.png
+    keywords:
+    - agents
+    - orchestration
+    - kubernetes
+    - crds
+    kubeVersion: '>=1.29.0-0'
+    maintainers:
+    - name: K8squad Authors
+      url: https://k8squad.io
+    name: k8squad-crds
+    sources:
+    - https://github.com/K8squad/K8squad
+    type: application
+    urls:
+    - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
+    version: 0.1.0
+generated: "2026-09-01T20:02:05.741905695Z"
