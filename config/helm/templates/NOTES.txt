@@ -48,3 +48,32 @@ Control plane (operator/apiserver/console/memory/scm-webhook):
       --set controlPlane.enabled=true \
       --set controlPlane.database.existingSecret=<your-db-secret>
 {{- end }}
+
+Exposure (Gateway API):
+{{- if .Values.exposure.gateway.enabled }}
+  ENABLED — a Gateway `ksquad` (gatewayClassName: {{ .Values.exposure.gateway.gatewayClassName }})
+  plus HTTPRoutes for the console + apiserver are installed in
+  {{ include "k8squad.namespace" . }}. Check status (wait for a PROGRAMMED Gateway
+  and an address from your controller):
+
+    kubectl -n {{ include "k8squad.namespace" . }} get gateway,httproute
+
+  Console  : http{{ if .Values.exposure.gateway.listeners.https.enabled }}s{{ end }}://{{ .Values.exposure.gateway.hostnames.console }}
+  API (SSE): http{{ if .Values.exposure.gateway.listeners.https.enabled }}s{{ end }}://{{ .Values.exposure.gateway.hostnames.apiserver }}
+
+  Point both hostnames' DNS at the Gateway's assigned address.
+{{- else }}
+  OFF (exposure.gateway.enabled=false). The console/apiserver are ClusterIP
+  Services — reach the console via port-forward:
+
+    kubectl -n {{ include "k8squad.namespace" . }} port-forward svc/ksquad-console 8080:80
+
+  To have the chart render a Gateway + HTTPRoutes against an EXISTING
+  GatewayClass (the chart never creates one), enable it:
+
+    helm upgrade {{ .Release.Name }} <chart> \
+      --set exposure.gateway.enabled=true \
+      --set exposure.gateway.gatewayClassName=kgateway \
+      --set exposure.gateway.hostnames.console=ksquad.example.com \
+      --set exposure.gateway.hostnames.apiserver=api.ksquad.example.com
+{{- end }}

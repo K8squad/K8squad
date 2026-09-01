@@ -22,6 +22,55 @@
         "supportedClasses": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "exposure": {
+      "type": "object",
+      "description": "Gateway API exposure for the console + apiserver (ISI-3515). OFF by default; the chart references an existing GatewayClass and never creates one.",
+      "additionalProperties": false,
+      "properties": {
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Render a Gateway + HTTPRoutes. Requires gatewayClassName + both hostnames." },
+            "gatewayClassName": { "type": "string", "description": "Existing GatewayClass to reference (e.g. kgateway). REQUIRED when enabled." },
+            "hostnames": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "console": { "type": "string" },
+                "apiserver": { "type": "string" }
+              }
+            },
+            "listeners": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "http": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                  }
+                },
+                "https": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "certSecretName": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "httpsRedirect": { "type": "boolean" },
+            "annotations": { "type": "object" },
+            "labels": { "type": "object" }
+          }
+        }
+      }
+    },
     "tools": {
       "type": "object",
       "description": "Toolchain capability plane (plan §2.2/§2.2b).",

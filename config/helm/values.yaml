@@ -124,6 +124,56 @@ controlPlane:
       limits:
         memory: 256Mi
 
+# ---------------------------------------------------------------------------
+# Exposure (ISI-3515). Gateway API routing for the console + apiserver.
+#
+# OFF by default — a bare `controlPlane.enabled=true` brings the stack up as
+# ClusterIP Services (reach the console via `kubectl port-forward`), so the
+# install needs no Gateway API / GatewayClass to succeed. Turn this on to have
+# the chart render a Gateway + HTTPRoutes automatically:
+#
+#   helm upgrade k8squad config/helm -n k8squad-system \
+#     --set controlPlane.enabled=true \
+#     --set exposure.gateway.enabled=true \
+#     --set exposure.gateway.gatewayClassName=kgateway \
+#     --set exposure.gateway.hostnames.console=ksquad.example.com \
+#     --set exposure.gateway.hostnames.apiserver=api.ksquad.example.com
+#
+# The chart REFERENCES an existing GatewayClass and NEVER creates one — the
+# GatewayClass is owned by the Gateway controller you installed (kgateway,
+# cilium, envoy, istio, traefik…). The install fails fast if `enabled` is set
+# without a gatewayClassName + both hostnames.
+# ---------------------------------------------------------------------------
+exposure:
+  gateway:
+    # Master switch. false → no Gateway/HTTPRoute rendered (ClusterIP only).
+    enabled: false
+    # REQUIRED when enabled. The GatewayClass to reference — must already exist
+    # in the cluster (e.g. `kgateway`). The chart never creates a GatewayClass.
+    gatewayClassName: ""
+    # Host-based routing. BOTH are REQUIRED when enabled — the console and the
+    # apiserver each get their own HTTPRoute keyed by hostname.
+    hostnames:
+      console: "" # e.g. ksquad.example.com
+      apiserver: "" # e.g. api.ksquad.example.com   (the SSE endpoint, §13)
+    listeners:
+      http:
+        enabled: true
+        port: 80
+      https:
+        # Off by default — flip on and supply certSecretName to terminate TLS
+        # at the Gateway.
+        enabled: false
+        port: 443
+        # REQUIRED when https.enabled: the TLS cert Secret (terminate at gateway).
+        certSecretName: ""
+    # Redirect http→https at the Gateway edge (renders a RequestRedirect route
+    # on the http listener). Ignored unless BOTH listeners are enabled.
+    httpsRedirect: false
+    # Extra annotations/labels on the Gateway object (controller-specific tuning).
+    annotations: {}
+    labels: {}
+
 namespace:
   # Create the control-plane namespace as a chart resource.
   create: true

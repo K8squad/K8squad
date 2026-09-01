@@ -1,0 +1,79 @@
+{{- if .Values.exposure.gateway.enabled -}}
+{{- $g := .Values.exposure.gateway -}}
+{{- $ns := include "k8squad.namespace" . -}}
+{{- /* Serving listener: prefer https when enabled, else http. */ -}}
+{{- $serveSection := ternary "https" "http" $g.listeners.https.enabled -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-console
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "console") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: {{ $serveSection }}
+  hostnames:
+    - {{ $g.hostnames.console | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: ksquad-console
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: {{ $serveSection }}
+  hostnames:
+    - {{ $g.hostnames.apiserver | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # SSE PRESERVATION (§13): request timeout 0s disables the route timeout so
+      # a long-lived progress stream is never cut. HTTPRoute.timeouts is Extended
+      # conformance — kgateway/Envoy-based classes honor 0s; verify per class.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - name: ksquad-apiserver
+          port: 8080
+{{- if and $g.httpsRedirect $g.listeners.http.enabled $g.listeners.https.enabled }}
+---
+{{/* Edge http→https redirect on the http listener (values-driven). */}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-https-redirect
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "exposure") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: http
+  hostnames:
+    - {{ $g.hostnames.console | quote }}
+    - {{ $g.hostnames.apiserver | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+{{- end }}
