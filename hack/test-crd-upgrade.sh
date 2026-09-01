@@ -119,7 +119,7 @@ spec:
   promptRef:
     name: survivor-prompt
 EOF
-kubectl get role survivor -n "$CR_NS" >/dev/null || fail "could not create survivor Role CR"
+kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null || fail "could not create survivor Role CR"
 ok "survivor Role CR created"
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ ok "CP chart release untouched by the CRD-chart upgrade (rev $CRDS_REV_AFTER)"
 [ -n "$(kubectl get crd "$CRD" -o jsonpath="$FP" 2>/dev/null || true)" ] \
   || fail "helm upgrade k8squad-crds did NOT propagate spec.${FIELD} to the served schema"
 ok "helm upgrade k8squad-crds propagated spec.${FIELD} independently of the CP chart"
-kubectl get role survivor -n "$CR_NS" >/dev/null || fail "survivor Role CR lost across CRD upgrade"
+kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null || fail "survivor Role CR lost across CRD upgrade"
 ok "survivor Role CR survived the CRD upgrade"
 
 policy="$(kubectl get crd "$CRD" -o jsonpath='{.metadata.annotations.helm\.sh/resource-policy}')"
@@ -150,7 +150,7 @@ ok "CRD annotated helm.sh/resource-policy: keep"
 echo "== AC-5: helm uninstall CP chart leaves CRDs + CRs intact =="
 helm uninstall "$CP_REL" -n "$CP_NS" --wait --timeout 120s
 [ "$(crd_count)" = "11" ] || fail "CP-chart uninstall changed CRD count to $(crd_count)"
-kubectl get role survivor -n "$CR_NS" >/dev/null 2>&1 || fail "CP-chart uninstall deleted a user CR"
+kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null 2>&1 || fail "CP-chart uninstall deleted a user CR"
 ok "CP-chart uninstall left all 11 CRDs and the survivor CR intact"
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ ok "CP-chart uninstall left all 11 CRDs and the survivor CR intact"
 echo "== AC-5: helm uninstall k8squad-crds (keep=true) retains CRDs + CRs =="
 helm uninstall "$CRDS_REL" -n "$CRDS_NS" --wait --timeout 120s
 [ "$(crd_count)" = "11" ] || fail "keep=true uninstall removed CRDs (count now $(crd_count))"
-kubectl get role survivor -n "$CR_NS" >/dev/null 2>&1 || fail "keep=true uninstall deleted a user CR"
+kubectl get roles.ksquad.io survivor -n "$CR_NS" >/dev/null 2>&1 || fail "keep=true uninstall deleted a user CR"
 ok "keep=true uninstall retained all 11 CRDs and the survivor CR"
 
 # ---------------------------------------------------------------------------
