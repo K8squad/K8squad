@@ -29,11 +29,20 @@ Control plane (operator/apiserver/console/memory/scm-webhook):
 
   Images: {{ .Values.controlPlane.image.registry }}/ksquad-<component>:{{ .Values.controlPlane.image.tag | default .Chart.AppVersion }}
   OTLP  : {{ if .Values.controlPlane.otel.enabled }}{{ .Values.controlPlane.otel.endpoint }}{{ else }}(disabled){{ end }}
+  Bus   : {{ if .Values.controlPlane.nats.enabled }}NATS/JetStream single-replica StatefulSet ksquad-nats (SC {{ .Values.controlPlane.nats.storage.storageClassName }}){{ else }}(disabled — event-relay needs an external natsUrl or is off){{ end }}
+  Relay : {{ if .Values.controlPlane.eventRelay.enabled }}event-relay → {{ include "k8squad.nats.url" . }}{{ else }}(disabled){{ end }}
+
+  Verify the bus + relay:
+
+    kubectl -n {{ include "k8squad.namespace" . }} get sts ksquad-nats
+    kubectl -n {{ include "k8squad.namespace" . }} get deploy ksquad-event-relay
 {{- else }}
   OFF (controlPlane.enabled=false). This release ships only the CRD group +
-  namespace. To run the control plane, supply a Postgres DSN and enable it:
+  namespace. To run the control plane, supply a Postgres DSN and a StorageClass
+  for the NATS/JetStream bus (§16.2 — no cluster-default fallback), then enable:
 
     helm upgrade {{ .Release.Name }} <chart> \
       --set controlPlane.enabled=true \
-      --set controlPlane.database.existingSecret=<your-db-secret>
+      --set controlPlane.database.existingSecret=<your-db-secret> \
+      --set controlPlane.nats.storage.storageClassName=<your-storage-class>
 {{- end }}

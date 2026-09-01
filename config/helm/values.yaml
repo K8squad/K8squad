@@ -9,15 +9,17 @@
 # whose images CI publishes to ghcr.io/k8squad/ksquad-<component>.
 #
 # Requires a Postgres backing store — set controlPlane.database.existingSecret
-# (preferred) or controlPlane.database.dsn (dev only) before enabling.
+# (preferred) or controlPlane.database.dsn (dev only) before enabling. Enabling
+# the plane also renders a single-replica NATS/JetStream event bus (ISI-3506),
+# so controlPlane.nats.storage.storageClassName MUST be set — the JetStream PVC
+# never falls back to the cluster-default StorageClass (§16.2). Disable the bus
+# with controlPlane.nats.enabled=false to keep the pre-3506 storage-free plane.
 #
 # NOT covered here (deliberate, documented gaps):
 #  * admission webhook (cmd/webhook) — no image lane exists yet, so the
 #    Mutating/ValidatingWebhookConfiguration is NOT installed. Installing it
 #    without a webhook backend would fail-closed on every Agent/Project/Run/
 #    Team write. Track the image lane before wiring cert-manager + CA inject.
-#  * event-relay — hard-requires NATS + Postgres; gated behind its own
-#    controlPlane.eventRelay.enabled and off until a NATS URL is supplied.
 # ---------------------------------------------------------------------------
 controlPlane:
   # Master switch for the running control plane. false → chart installs only
@@ -76,9 +78,45 @@ controlPlane:
     resources: {}
     extraEnv: []
 
+  # NATS / JetStream — the plugin event bus (§16 / §17.4 / ADR-023). Data lives
+  # in Postgres (sole source of truth, ADR-001); NATS only carries in-flight,
+  # replayable event copies, so NATS-down never blocks a Run/claim/write. The
+  # chart renders it the same way the umbrella chart renders CNPG: PARENT-rendered
+  # (not an upstream subchart) so the JetStream file-store PVC's StorageClass
+  # stays the first-class controlPlane.nats.storage.storageClassName knob and
+  # never the cluster default (§16.2).
+  nats:
+    # On by default so controlPlane.enabled yields a complete event/replay plane.
+    # Turn off to keep the pre-3506, storage-free plane (event-relay then needs
+    # an external controlPlane.eventRelay.natsUrl, or it too must be disabled).
+    enabled: true
+    image: nats:2.10-alpine
+    port: 4222
+    jetstream:
+      # JetStream ON — the plugin replay/catch-up substrate (§17.4).
+      # Max on-disk JetStream file store. Keep <= storage.size below. Emitted
+      # UNQUOTED into nats.conf (see templates/control-plane/nats.yaml): nats'
+      # size lexer needs a bare token — a quoted "4GB"/"4Gi" fails to parse and
+      # JetStream refuses to boot. Bare 4GB == 4Gi == 4*1024^3 bytes.
+      maxFileStore: 4GB
+    storage:
+      # REQUIRED when nats.enabled — no cluster-default fallback (§16.2). On
+      # k8squad-test this is the csi-nfs class.
+      storageClassName: ""
+      size: 5Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
   eventRelay:
-    # Off by default: requires a reachable NATS URL in addition to Postgres.
-    enabled: false
+    # On by default: drains the apiserver's transactional outbox to NATS. When
+    # natsUrl is empty it auto-derives the in-cluster ksquad-nats service (needs
+    # controlPlane.nats.enabled). Set natsUrl to point at an external bus, or set
+    # enabled=false to omit the relay Deployment entirely.
+    enabled: true
     natsUrl: ""
     replicas: 1
     resources: {}

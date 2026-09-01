@@ -108,3 +108,18 @@ dev secret). Callers that need Postgres include this block.
       key: dsn
       {{- end }}
 {{- end -}}
+
+{{/*
+In-cluster NATS client URL for the event-relay. An explicit
+controlPlane.eventRelay.natsUrl always wins (point at any external bus);
+otherwise, when the chart renders its own bus (controlPlane.nats.enabled) the URL
+is derived from the release-local ClusterIP Service. Empty only when neither is
+set — event-relay fails closed in that case (it hard-requires NATS).
+*/}}
+{{- define "k8squad.nats.url" -}}
+{{- if .Values.controlPlane.eventRelay.natsUrl -}}
+{{- .Values.controlPlane.eventRelay.natsUrl -}}
+{{- else if .Values.controlPlane.nats.enabled -}}
+{{- printf "nats://ksquad-nats.%s.svc:%v" (include "k8squad.namespace" .) (.Values.controlPlane.nats.port | default 4222) -}}
+{{- end -}}
+{{- end -}}

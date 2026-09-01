@@ -1,0 +1,149 @@
+{{- /* NATS / JetStream — the plugin event bus (§16 / §17.4 / ADR-023; ISI-3506).
+       Parent-rendered (the same packaging pattern as the umbrella chart's CNPG
+       Cluster CR) so the JetStream file-store PVC's StorageClass stays the
+       first-class controlPlane.nats.storage.storageClassName knob (§16.2) and
+       never the cluster default — an upstream subchart cannot template its PVC
+       class from a parent value, which would break that guarantee. JetStream is
+       ENABLED (the plugin replay/catch-up substrate). SINGLE-REPLICA: NATS holds
+       NO state of record (Postgres is the sole source of truth, ADR-001) — only
+       in-flight/replayable event copies — and NATS-down never blocks the core.
+       HA (clustered JetStream RAFT quorum) is a follow-up; the umbrella chart's
+       nats.yaml already carries the cluster{} routing pattern to port over. */ -}}
+{{- if and .Values.controlPlane.enabled .Values.controlPlane.nats.enabled -}}
+{{- $ns := include "k8squad.namespace" . -}}
+{{- $c := "nats" -}}
+{{- $sc := .Values.controlPlane.nats.storage.storageClassName -}}
+{{- if not $sc -}}
+{{- fail "controlPlane.nats.enabled=true requires controlPlane.nats.storage.storageClassName — the JetStream PVC never relies on the cluster-default StorageClass (§16.2). Set it (csi-nfs on k8squad-test) or disable the bus with controlPlane.nats.enabled=false." -}}
+{{- end -}}
+{{- $port := .Values.controlPlane.nats.port | default 4222 -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksquad-nats-config
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+data:
+  nats.conf: |
+    port: {{ $port }}
+    http: 8222
+    jetstream {
+      store_dir: "/data/jetstream"
+      {{- /* NO quote: nats' size lexer only handles a multi-char suffix (GB/Gi/MB)
+             on a bare token; a quoted "4GB"/"4Gi" fails to parse and JetStream
+             refuses to boot. A bare 4GB == 4Gi == 4*1024^3 bytes. */}}
+      max_file_store: {{ .Values.controlPlane.nats.jetstream.maxFileStore }}
+    }
+---
+{{- /* Headless Service: stable per-pod DNS (reserved for a future HA quorum). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-nats-headless
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ $port }}
+    - name: cluster
+      port: 6222
+    - name: monitor
+      port: 8222
+---
+{{- /* Client Service: what event-relay + plugins connect to (k8squad.nats.url). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-nats
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ $port }}
+      targetPort: client
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ksquad-nats
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: ksquad-nats-headless
+  selector:
+    matchLabels:
+      {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: nats
+          image: {{ .Values.controlPlane.nats.image | quote }}
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy | default "IfNotPresent" }}
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - name: client
+              containerPort: {{ $port }}
+            - name: cluster
+              containerPort: 6222
+            - name: monitor
+              containerPort: 8222
+          {{- /* Probes are LOCAL to NATS (its own monitoring port). They never
+                 gate the apiserver/core — NATS-down never blocks (§17.4). */}}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: monitor
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml (.Values.controlPlane.nats.resources | default dict) | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: jetstream
+              mountPath: /data/jetstream
+      volumes:
+        - name: config
+          configMap:
+            name: ksquad-nats-config
+  volumeClaimTemplates:
+    - metadata:
+        name: jetstream
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $sc | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.controlPlane.nats.storage.size | quote }}
+{{- end }}
