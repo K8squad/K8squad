@@ -41,10 +41,72 @@ namespace is fine.
 | `controlPlane.nats.persistence.size` | `4Gi` | JetStream file-store PVC size. |
 | `controlPlane.nats.ha.enabled` / `.replicas` | `false` / `3` | Clustered JetStream RAFT quorum (replicas must be odd, ≥3). |
 | `controlPlane.eventRelay.natsUrl` | `""` | Point the relay at an EXTERNAL NATS instead of the bundled bus (takes precedence; set `controlPlane.nats.enabled=false`). |
+| `exposure.gateway.enabled` | `false` | Render a `Gateway` + `HTTPRoute`s for the console + apiserver (see *Exposure* below). |
+| `exposure.gateway.gatewayClassName` | `""` | **Required** when enabled — the existing `GatewayClass` to reference (e.g. `kgateway`). The chart never creates one. |
+| `exposure.gateway.hostnames.console` / `.apiserver` | `""` | **Optional** host-based routing. Leave both empty to expose by IP (console at `/`, apiserver at `/api`). |
+| `exposure.gateway.listeners.https.enabled` / `.certSecretName` | `false` / `""` | Terminate TLS at the Gateway; `certSecretName` is required when the https listener is on. |
+| `exposure.gateway.httpsRedirect` | `false` | Render an http→https `RequestRedirect` route (needs both listeners enabled). |
 
 The event bus is best-effort: Postgres/CNPG is the sole source of truth
 (ADR-001), the write path uses a transactional outbox, and NATS-down never
 blocks a Run/claim/write — only live plugin event streaming/replay is degraded.
+
+## Exposure (Gateway API)
+
+By default the control-plane workloads are `ClusterIP` Services — a bare
+`controlPlane.enabled=true` needs no Gateway API to succeed, and you reach the
+console with `kubectl -n k8squad-system port-forward svc/ksquad-console 8080:80`.
+
+To have the chart route ingress traffic automatically, enable the exposure
+layer and name an **existing** `GatewayClass` (the chart *references* a
+GatewayClass and never creates one — the class is owned by whichever Gateway
+controller you installed: kgateway, Cilium, Envoy Gateway, Istio, Traefik…).
+The GatewayClass is the only required knob — **hostnames are optional**:
+
+```sh
+# Expose by IP — no DNS. console at http://<gwIP>/, apiserver at http://<gwIP>/api
+helm upgrade k8squad config/helm -n k8squad-system \
+  --set controlPlane.enabled=true \
+  --set exposure.gateway.enabled=true \
+  --set exposure.gateway.gatewayClassName=kgateway
+
+# …or route by host — set either or both hostnames:
+  --set exposure.gateway.hostnames.console=ksquad.example.com \
+  --set exposure.gateway.hostnames.apiserver=api.ksquad.example.com
+```
+
+This renders, in the control-plane namespace:
+
+- a `Gateway` named `ksquad` referencing your `gatewayClassName`, with an HTTP
+  listener (and an HTTPS listener when `listeners.https.enabled`);
+- an `HTTPRoute` `ksquad-console` → the `ksquad-console` Service (`:80`) at
+  path `/`, keyed on `hostnames.console` when set;
+- an `HTTPRoute` `ksquad-apiserver` → the `ksquad-apiserver` Service (`:8080`),
+  with `timeouts.request: "0s"` so the long-lived SSE progress stream (§13) is
+  never cut. `HTTPRoute.timeouts` is Extended conformance — kgateway/Envoy-based
+  classes honor `0s`; verify per class.
+
+**Hostnames are optional (expose by IP).** Omit `hostnames.*` and the routes
+render without a `hostnames` field, matching any host on the Gateway's assigned
+address. So console and apiserver can share ONE IP without DNS, the apiserver is
+matched on its natural `/api` prefix (console keeps `/`); set a dedicated
+`hostnames.apiserver` and the apiserver instead owns `/` on that host. Gateway
+API precedence (hostname specificity first, then path length) keeps every
+host/IP/mixed combination unambiguous.
+
+The install **fails fast** only if `exposure.gateway.enabled=true` without
+`controlPlane.enabled` or without a `gatewayClassName` — no half-wired Gateway
+with dangling routes. Find the assigned address with
+`kubectl -n k8squad-system get gateway ksquad`; point any hostnames' DNS there.
+
+For TLS termination at the edge, enable the https listener and supply a cert
+Secret, optionally redirecting http→https:
+
+```sh
+  --set exposure.gateway.listeners.https.enabled=true \
+  --set exposure.gateway.listeners.https.certSecretName=ksquad-tls \
+  --set exposure.gateway.httpsRedirect=true
+```
 
 ## Toolchains & the default catalog
 
