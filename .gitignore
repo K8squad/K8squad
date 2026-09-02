@@ -31,3 +31,6 @@ bin/
 # Helm release build output (ISI-2632)
 dist/
 .cr-release-packages/
+
+# platform-e2e harness output (ISI-3560)
+.e2e-out/
