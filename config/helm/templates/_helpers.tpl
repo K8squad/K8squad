@@ -146,3 +146,59 @@ dev secret). Callers that need Postgres include this block.
       key: dsn
       {{- end }}
 {{- end -}}
+
+{{/*
+Bootstrap-admin env (feature 15.2, ISI-3530). Emitted only when
+controlPlane.apiserver.bootstrapAdmin.enabled=true. The password ALWAYS comes
+from a Secret — never plaintext values — so we fail-fast if the operator turned
+the seed on without supplying a username and existingSecret.
+*/}}
+{{- define "k8squad.bootstrapAdminEnv" -}}
+{{- $ba := .Values.controlPlane.apiserver.bootstrapAdmin | default dict -}}
+{{- if $ba.enabled -}}
+{{- if not $ba.username }}{{ fail "controlPlane.apiserver.bootstrapAdmin.enabled=true requires controlPlane.apiserver.bootstrapAdmin.username" }}{{- end }}
+{{- if not $ba.existingSecret }}{{ fail "controlPlane.apiserver.bootstrapAdmin.enabled=true requires controlPlane.apiserver.bootstrapAdmin.existingSecret (the password is never read from plaintext values)" }}{{- end }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_USERNAME
+  value: {{ $ba.username | quote }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $ba.existingSecret | quote }}
+      key: {{ ($ba.passwordKey | default "password") | quote }}
+{{- with $ba.teamId }}
+- name: KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID
+  value: {{ . | quote }}
+{{- end }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Session-cookie Secure attribute (ISI-3530). The apiserver defaults
+SecureCookies=true; over a plain-HTTP gateway the browser drops the Secure
+cookie and the Console middleware guard bounces every post-login navigation
+back to /login. Resolve KSQUAD_SECURE_COOKIES from
+controlPlane.apiserver.secureCookies:
+  "true"/"false" → force that value explicitly.
+  "" (auto)      → emit "false" ONLY when the gateway is enabled and TLS is NOT
+                   terminated at it (http listener, https disabled); otherwise
+                   emit nothing so the apiserver keeps its secure default.
+*/}}
+{{- define "k8squad.secureCookiesEnv" -}}
+{{- $api := .Values.controlPlane.apiserver | default dict -}}
+{{- $sc := $api.secureCookies | toString -}}
+{{- if eq $sc "true" -}}
+- name: KSQUAD_SECURE_COOKIES
+  value: "true"
+{{- else if eq $sc "false" -}}
+- name: KSQUAD_SECURE_COOKIES
+  value: "false"
+{{- else -}}
+{{- $gw := .Values.exposure.gateway | default dict -}}
+{{- $https := false -}}
+{{- if $gw.enabled -}}{{- with $gw.listeners -}}{{- with .https -}}{{- $https = .enabled -}}{{- end -}}{{- end -}}{{- end -}}
+{{- if and $gw.enabled (not $https) }}
+- name: KSQUAD_SECURE_COOKIES
+  value: "false"
+{{- end -}}
+{{- end -}}
+{{- end -}}
