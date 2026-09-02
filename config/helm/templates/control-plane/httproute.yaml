@@ -3,13 +3,15 @@
 {{- $ns := include "k8squad.namespace" . -}}
 {{- /* Serving listener: prefer https when enabled, else http. */ -}}
 {{- $serveSection := ternary "https" "http" $g.listeners.https.enabled -}}
-{{- /* Hostnames are OPTIONAL (ISI-3515): omit `hostnames` to expose by IP. To
-       let console + apiserver coexist on ONE address the apiserver is matched
-       on its natural `/api` prefix when it has no hostname of its own; with a
-       dedicated hostname it takes `/`. Gateway API precedence (hostname
-       specificity first, then path length) keeps every combination correct. */ -}}
+{{- /* Hostnames are OPTIONAL (ISI-3515): omit `hostnames` to expose by IP.
+       IP-only mode: the console owns EVERYTHING at `/` — including the entire
+       BFF surface under `/api/*` (session/login/runs/…), which per ADR-013/§13
+       is the ONLY path the browser ever takes. The apiserver is reached solely
+       through that BFF (ClusterIP, in-cluster), so it gets NO browser-facing
+       HTTPRoute on a shared IP — a `/api` apiserver route would shadow the BFF
+       and break login (ISI-3530). Direct apiserver ingress requires a dedicated
+       hostname, where it owns `/` on its own host and never collides. */ -}}
 {{- $apiHasHost := not (empty $g.hostnames.apiserver) -}}
-{{- $apiPath := ternary "/" "/api" $apiHasHost -}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -33,7 +35,10 @@ spec:
       backendRefs:
         - name: ksquad-console
           port: 80
+{{- if $apiHasHost }}
 ---
+{{/* Direct apiserver ingress ONLY on its own hostname (host-specificity keeps
+     it collision-free with the console BFF). Omitted in IP-only mode. */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -45,15 +50,13 @@ spec:
   parentRefs:
     - name: ksquad
       sectionName: {{ $serveSection }}
-  {{- if $apiHasHost }}
   hostnames:
     - {{ $g.hostnames.apiserver | quote }}
-  {{- end }}
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: {{ $apiPath | quote }}
+            value: /
       # SSE PRESERVATION (§13): request timeout 0s disables the route timeout so
       # a long-lived progress stream is never cut. HTTPRoute.timeouts is Extended
       # conformance — kgateway/Envoy-based classes honor 0s; verify per class.
@@ -63,6 +66,7 @@ spec:
       backendRefs:
         - name: ksquad-apiserver
           port: 8080
+{{- end }}
 {{- if and $g.httpsRedirect $g.listeners.http.enabled $g.listeners.https.enabled }}
 ---
 {{/* Edge http→https redirect on the http listener (values-driven). Hostnames

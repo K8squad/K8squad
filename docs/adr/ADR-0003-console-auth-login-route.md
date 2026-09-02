@@ -69,7 +69,7 @@ bare layout, so stray/unknown routes (and any `notFound()` that bubbles past the
 ```
 
 - The BFF (`console/app/api/session/route.ts`) gains `POST → /auth/login` and
-  `DELETE → /auth/logout`. `GET` still returns `/api/me` (role summary).
+  `DELETE → /auth/logout`. `GET` proxies `/auth/me` (role summary; ISI-3530).
 - New BFF helper `proxyAuth()` (`console/lib/bff.ts`) is the **only** proxy that
   **relays upstream `Set-Cookie`** — the auth routes are the cookie's *issuer*.
   It surfaces status verbatim (401 opaque invalid-creds, 429 rate-limited) and

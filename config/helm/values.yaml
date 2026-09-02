@@ -60,6 +60,40 @@ controlPlane:
     replicas: 1
     resources: {}
     extraEnv: []
+    # Session-cookie `Secure` attribute (ISI-3530). The apiserver defaults to
+    # SecureCookies=true; over a plain-HTTP gateway the browser DROPS the Secure
+    # cookie, so the Console middleware guard bounces every post-login navigation
+    # back to /login. Resolve KSQUAD_SECURE_COOKIES:
+    #   "" (auto, default) → emit false ONLY when exposure.gateway is enabled and
+    #        TLS is NOT terminated at it (http listener, https.enabled=false); in
+    #        every other case emit nothing and keep the apiserver's secure default.
+    #   "true" / "false"   → force that value explicitly (overrides auto).
+    # Prefer terminating TLS at the Gateway (https.enabled + certSecretName) and
+    # leaving this "" so cookies stay Secure end-to-end.
+    secureCookies: ""
+    # Seed the first admin (feature 15.2) so the Console `/login` is usable on a
+    # fresh install. The apiserver runs this ONCE — only when auth.user is empty —
+    # then it is an idempotent no-op on every later start. OFF by default: a
+    # deliberate opt-in for new installs (ISI-3530).
+    #
+    # The password is NEVER read from plaintext values — it must come from a
+    # Secret you create out-of-band, e.g.:
+    #   kubectl -n <ns> create secret generic ksquad-bootstrap-admin \
+    #     --from-literal=password='<chosen-password>'
+    # After the first successful login, delete that Secret (or set enabled=false
+    # and `helm upgrade`) — the seed has already run and no longer needs it.
+    bootstrapAdmin:
+      enabled: false
+      # Admin username to seed (required when enabled=true).
+      username: ""
+      # Name of an existing Secret holding the bootstrap password (required when
+      # enabled=true). Never inline the password in values.
+      existingSecret: ""
+      # Key within existingSecret holding the plaintext password.
+      passwordKey: password
+      # Optional: pin the admin's tenancy-root team UUID. Empty → auto-minted on
+      # first seed (set KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID via this to make it stable).
+      teamId: ""
 
   console:
     replicas: 1
@@ -133,7 +167,9 @@ controlPlane:
 # the chart render a Gateway + HTTPRoutes automatically. The GatewayClass is the
 # only required knob — hostnames are OPTIONAL:
 #
-#   # Expose by IP (no DNS): console at http://<gwIP>/, apiserver at /api
+#   # Expose by IP (no DNS): console owns http://<gwIP>/ INCLUDING the BFF at
+#   # /api/* (login, runs, …). The browser reaches the apiserver only through
+#   # that BFF (ADR-013); direct apiserver ingress needs a hostname (below).
 #   helm upgrade k8squad config/helm -n k8squad-system \
 #     --set controlPlane.enabled=true \
 #     --set exposure.gateway.enabled=true \
@@ -156,9 +192,11 @@ exposure:
     # in the cluster (e.g. `kgateway`). The chart never creates a GatewayClass.
     gatewayClassName: ""
     # OPTIONAL host-based routing. Leave BOTH empty to expose by IP address —
-    # the console then answers at `/` and the apiserver at the `/api` prefix on
-    # the Gateway's assigned address (no DNS needed). Set a hostname to route
-    # that component by host instead (the apiserver then owns `/` on its host).
+    # the console then answers at `/` for EVERYTHING, including the BFF at
+    # `/api/*` (the browser's only path, ADR-013), and NO browser-facing
+    # apiserver route is rendered (it would shadow the BFF and break login,
+    # ISI-3530). Set hostnames.apiserver to also expose the apiserver directly
+    # on its own host (it then owns `/` there — collision-free by host).
     hostnames:
       console: "" # e.g. ksquad.example.com
       apiserver: "" # e.g. api.ksquad.example.com   (the SSE endpoint, §13)
