@@ -12,6 +12,8 @@
 
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import { DEFAULT_THEME } from "@/lib/theme";
@@ -22,9 +24,17 @@ export const metadata: Metadata = {
     "Operator console — legibility + composition surface for K8squad squads.",
 };
 
+// Self-hosted Geist Sans / Geist Mono (visual-system §Typography, ISI-3545/3549). Each `.variable`
+// className exposes a CSS custom property (--font-geist-sans / --font-geist-mono) that globals.css
+// feeds into --font-sans / --font-mono — no build-time Google fetch, so CI builds stay offline-safe.
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" data-theme={DEFAULT_THEME} suppressHydrationWarning>
+    <html
+      lang="en"
+      data-theme={DEFAULT_THEME}
+      className={`${GeistSans.variable} ${GeistMono.variable}`}
+      suppressHydrationWarning
+    >
       <body>
         <ThemeProvider>{children}</ThemeProvider>
       </body>
