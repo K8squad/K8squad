@@ -221,50 +221,60 @@ func stripTemplates(s string) string {
 	return tplAction.ReplaceAllString(s, "TPL")
 }
 
+// clusterRoleName returns the (template-stripped) metadata.name of the
+// ClusterRole document whose name ends in the given suffix, so the binding
+// assertion can require roleRef to point at that EXACT object rather than any
+// name sharing the suffix.
+func clusterRoleName(t *testing.T, chart, suffix string) string {
+	t.Helper()
+	for _, d := range splitChartDocs(chart) {
+		if d.kind == "ClusterRole" && strings.HasSuffix(d.metaName, "-"+suffix) {
+			return stripTemplates(d.metaName)
+		}
+	}
+	t.Fatalf("no ClusterRole with metadata.name ending %q found in rbac.yaml", "-"+suffix)
+	return ""
+}
+
 // assertApiserverBinding finds the ClusterRoleBinding whose metadata.name ends
 // in "-apiserver" and, within that single document, PARSES its roleRef and
-// subjects (not substring-matches) and requires: roleRef → a ClusterRole named
-// "-apiserver"; and the complete subject entry kind=ServiceAccount /
-// name=ksquad-apiserver / namespace set. Parsing the typed entries means a
-// `User` named ksquad-apiserver, an unrelated ServiceAccount, or the right SA
-// in no/blank namespace can't satisfy the guard while the binding stays inert.
+// subjects and requires EXACT matches: roleRef must equal the expected RoleRef
+// (apiGroup rbac.authorization.k8s.io, kind ClusterRole, the exact apiserver
+// ClusterRole name) and the complete subjects slice must equal exactly one
+// expected ServiceAccount subject (kind/name/namespace, empty apiGroup). Exact
+// comparison catches a role-name typo (e.g. other-apiserver), a wrong/blank
+// apiGroup, a wrong namespace, AND any EXTRA subject — an extra subject would be
+// an unintended recipient of these cluster-wide compose-write privileges.
 func assertApiserverBinding(t *testing.T, chart string) {
 	t.Helper()
+	wantRoleRef := rbacv1.RoleRef{
+		APIGroup: "rbac.authorization.k8s.io",
+		Kind:     "ClusterRole",
+		Name:     clusterRoleName(t, chart, "apiserver"),
+	}
+	wantSubjects := []rbacv1.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      "ksquad-apiserver",
+		Namespace: nsMarker, // the chart namespace {{ $ns }}
+	}}
+
 	for _, d := range splitChartDocs(chart) {
 		if d.kind != "ClusterRoleBinding" || !strings.HasSuffix(d.metaName, "-apiserver") {
 			continue
 		}
 
-		var ref struct {
-			RoleRef rbacv1.RoleRef `json:"roleRef"`
-		}
-		if err := yaml.Unmarshal([]byte("roleRef:\n"+stripTemplates(sectionAfter(d.body, "roleRef:"))), &ref); err != nil {
-			t.Fatalf("parse apiserver binding roleRef: %v", err)
-		}
-		if ref.RoleRef.Kind != "ClusterRole" || !strings.HasSuffix(ref.RoleRef.Name, "-apiserver") {
-			t.Fatalf("apiserver ClusterRoleBinding roleRef does not target the -apiserver ClusterRole: %+v", ref.RoleRef)
-		}
-
-		var subs struct {
+		var parsed struct {
+			RoleRef  rbacv1.RoleRef   `json:"roleRef"`
 			Subjects []rbacv1.Subject `json:"subjects"`
 		}
-		if err := yaml.Unmarshal([]byte("subjects:\n"+stripTemplates(sectionAfter(d.body, "subjects:"))), &subs); err != nil {
-			t.Fatalf("parse apiserver binding subjects: %v", err)
+		if err := yaml.Unmarshal([]byte(stripTemplates("roleRef:\n"+sectionAfter(d.body, "roleRef:")+"\nsubjects:\n"+sectionAfter(d.body, "subjects:"))), &parsed); err != nil {
+			t.Fatalf("parse apiserver binding: %v", err)
 		}
-		found := false
-		for _, s := range subs.Subjects {
-			if s.Kind == "ServiceAccount" && s.Name == "ksquad-apiserver" {
-				// Namespace must be the chart namespace `{{ $ns }}` (→ nsMarker),
-				// not blank and not a hardcoded/other namespace — the SA lives in
-				// the release namespace, so a wrong namespace makes the grant inert.
-				if s.Namespace != nsMarker {
-					t.Fatalf("apiserver binding subject ServiceAccount/ksquad-apiserver namespace is %q, want the chart namespace {{ $ns }}: %+v", s.Namespace, s)
-				}
-				found = true
-			}
+		if !reflect.DeepEqual(parsed.RoleRef, wantRoleRef) {
+			t.Fatalf("apiserver ClusterRoleBinding roleRef mismatch.\nwant: %+v\ngot:  %+v", wantRoleRef, parsed.RoleRef)
 		}
-		if !found {
-			t.Fatalf("apiserver ClusterRoleBinding has no complete ServiceAccount/ksquad-apiserver subject: %+v", subs.Subjects)
+		if !reflect.DeepEqual(parsed.Subjects, wantSubjects) {
+			t.Fatalf("apiserver ClusterRoleBinding subjects mismatch (extra/altered subject = unintended grantee).\nwant: %+v\ngot:  %+v", wantSubjects, parsed.Subjects)
 		}
 		return
 	}
