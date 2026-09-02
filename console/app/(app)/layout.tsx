@@ -12,11 +12,16 @@
 
 import type { ReactNode } from "react";
 import { ConsoleShell } from "@/components/nav/ConsoleShell";
-import { viewerAccess } from "@/lib/session";
+import { viewer } from "@/lib/session";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  // Story 8.16: resolve the viewer's global role server-side so the shell renders the role-adapted
-  // nav (admin-only nodes present only for admins). Fails closed to "user" (lib/session.ts).
-  const access = await viewerAccess();
-  return <ConsoleShell access={access}>{children}</ConsoleShell>;
+  // Story 8.16 + ISI-3570: resolve the viewer's global role AND username server-side so the shell
+  // renders the role-adapted nav (admin-only nodes present only for admins) and the account/sign-out
+  // footer shows who is signed in. Fails closed to { access: "user", username: null } (lib/session.ts).
+  const { access, username } = await viewer();
+  return (
+    <ConsoleShell access={access} username={username}>
+      {children}
+    </ConsoleShell>
+  );
 }

@@ -1499,3 +1499,64 @@ a:hover {
     min-height: 100vh;
   }
 }
+
+/* Account footer + sign-out control (ISI-3570) — the nav shell's session-exit affordance.
+   Self-contained (uses only the shared token contract) so it renders correctly whether or not the
+   full rail stylesheet (ISI-3549) is present. The rail foot is pinned to the bottom; the drawer foot
+   sits below the mobile nav list. */
+.rail__foot {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+.drawer__foot {
+  padding: 12px 4px 4px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.usermenu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.usermenu__id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.usermenu__avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.usermenu__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+  font-weight: 600;
+}
+.usermenu__signout {
+  width: 100%;
+}
+.usermenu__signout:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Collapsed icon-rail (tablet, 768–1024): hide the username label; avatar + sign-out stay reachable.
+   The expanded overlay (rail[data-expanded]) restores the full footer. */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .rail:not([data-expanded]) .usermenu__name {
+    display: none;
+  }
+}

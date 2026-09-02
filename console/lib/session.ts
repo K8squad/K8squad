@@ -18,16 +18,28 @@ import { cookies } from "next/headers";
 import { apiserverBaseUrl, sessionCookieName } from "@/lib/bff";
 import type { AccessLevel } from "@/lib/nav";
 
+/** The nav shell's view of the signed-in caller: coarse access level + display username (ISI-3570). */
+export interface Viewer {
+  access: AccessLevel;
+  /** The signed-in username to show in the account/sign-out footer; null when identity is unresolved. */
+  username: string | null;
+}
+
 /**
- * viewerAccess resolves the caller's coarse nav access level from the session cookie by asking the
- * apiserver's /auth/me. Returns "admin" only for globalRole==="admin"; everything else (including
- * any failure) is "user" — deny-by-default for the nav surface.
+ * viewer resolves the caller's coarse nav access level AND display username from the session cookie
+ * by asking the apiserver's /auth/me (a single upstream call — the sign-out footer needs the name,
+ * the nav needs the role). Returns "admin" only for globalRole==="admin"; everything else (including
+ * any failure) is "user" — deny-by-default for the nav surface. On any error / missing cookie / non-200
+ * it FAILS CLOSED to { access: "user", username: null }: an absent /auth/me never widens the visible
+ * surface, and the footer degrades to a generic "Account" label (still fully functional — sign-out
+ * does not depend on the name).
  */
-export async function viewerAccess(): Promise<AccessLevel> {
+export async function viewer(): Promise<Viewer> {
+  const closed: Viewer = { access: "user", username: null };
   try {
     const store = await cookies();
     const token = store.get(sessionCookieName())?.value;
-    if (!token) return "user";
+    if (!token) return closed;
     const res = await fetch(`${apiserverBaseUrl()}/auth/me`, {
       headers: {
         cookie: `${sessionCookieName()}=${token}`,
@@ -35,10 +47,13 @@ export async function viewerAccess(): Promise<AccessLevel> {
       },
       cache: "no-store",
     });
-    if (!res.ok) return "user";
-    const me = (await res.json()) as { globalRole?: string };
-    return me.globalRole === "admin" ? "admin" : "user";
+    if (!res.ok) return closed;
+    const me = (await res.json()) as { globalRole?: string; username?: string };
+    return {
+      access: me.globalRole === "admin" ? "admin" : "user",
+      username: me.username ?? null,
+    };
   } catch {
-    return "user";
+    return closed;
   }
 }

@@ -23,6 +23,7 @@ import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
+import { UserMenu } from "@/components/nav/UserMenu";
 import {
   mobileNav,
   navTree,
@@ -93,10 +94,12 @@ function NodeLink({
 export function ConsoleShell({
   children,
   access = "user",
+  username = null,
   tree = navTree(),
 }: {
   children: ReactNode;
   access?: AccessLevel;
+  username?: string | null;
   tree?: NavNode[];
 }) {
   const pathname = usePathname() ?? "/";
@@ -162,6 +165,10 @@ export function ConsoleShell({
             </div>
           ))}
         </nav>
+        {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
+        <div className="rail__foot">
+          <UserMenu username={username} variant="rail" />
+        </div>
       </aside>
       {railExpanded && (
         <div
@@ -230,6 +237,10 @@ export function ConsoleShell({
                   expanded
                 />
               ))}
+            </div>
+            {/* Sign-out also reachable from the mobile drawer (ISI-3570). */}
+            <div className="drawer__foot">
+              <UserMenu username={username} variant="drawer" />
             </div>
           </div>
           <div
