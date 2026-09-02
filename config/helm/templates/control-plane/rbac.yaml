@@ -142,8 +142,14 @@ subjects:
 # (Team namespaces are provisioned dynamically). Without this the client
 # authenticates but every apply 403s at the kube API — the route logs "write
 # surface ready" yet writes fail, the true blocker behind ISI-3544 ("can't add
-# an agent"). Create/update/patch only — compose never deletes; status is owned
-# by the operator, not this write path.
+# an agent"). Least-privilege, mirrored to the DIRECT (uncached) client the
+# compose path actually uses (internal/apiserver/cache.go NewCRDApplier →
+# client.New): get+create+update on every compose kind (upsert = Get-then-
+# Create-or-Update, composecrd.go:305/321/334); list ONLY on teams, to resolve
+# the target Team namespace (CRDApplier.List over TeamList, composecrd.go:278).
+# No watch (direct client, no informers), no patch (never called), no delete
+# (compose never deletes); status is owned by the operator, not this write path.
+# Kept in lockstep by TestApiserverClusterRoleLeastPrivilege in rbac_lockstep_test.go.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -152,8 +158,11 @@ metadata:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
 rules:
 - apiGroups: [ksquad.io]
-  resources: [teams, projects, agents, roles, skills]
-  verbs: [get, list, watch, create, update, patch]
+  resources: [teams]
+  verbs: [get, list, create, update]
+- apiGroups: [ksquad.io]
+  resources: [projects, agents, roles, skills]
+  verbs: [get, create, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

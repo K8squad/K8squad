@@ -96,3 +96,72 @@ func TestOperatorClusterRoleMatchesGeneratedRole(t *testing.T) {
 			"generated (role.yaml):\n%+v\n\nchart (rbac.yaml):\n%+v", want, got)
 	}
 }
+
+// clusterRoleRulesByName slices the `rules:` block out of the `---`-separated
+// chart document whose ClusterRole metadata name ends in the given suffix (the
+// name is Helm-templated `{{ include "k8squad.fullname" . }}-<suffix>`, so we
+// match on the suffix). The rules block itself is plain YAML — templating only
+// appears in metadata — so it unmarshals on its own without rendering the chart.
+// ClusterRoleBinding documents (same name suffix, no `rules:`) are skipped.
+func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyRule {
+	t.Helper()
+	for _, doc := range strings.Split(chart, "\n---") {
+		if !strings.Contains(doc, "\nkind: ClusterRole\n") {
+			continue // skips ClusterRoleBinding (kind: ClusterRoleBinding) and non-role docs
+		}
+		if !strings.Contains(doc, "-"+suffix+"\n") {
+			continue
+		}
+		lines := strings.Split(doc, "\n")
+		start := -1
+		for i, l := range lines {
+			if l == "rules:" {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			t.Fatalf("ClusterRole %q has no top-level `rules:` block", suffix)
+		}
+		var parsed ruleDoc
+		if err := yaml.Unmarshal([]byte(strings.Join(lines[start:], "\n")), &parsed); err != nil {
+			t.Fatalf("parse %q rules: %v", suffix, err)
+		}
+		return parsed.Rules
+	}
+	t.Fatalf("no ClusterRole with name suffix %q found in rbac.yaml", suffix)
+	return nil
+}
+
+// TestApiserverClusterRoleLeastPrivilege pins the apiserver compose-write grant
+// to exactly the verbs the code exercises. Without this guard the apiserver
+// ClusterRole, its verbs, or a resource could silently regress — the existing
+// lockstep test only inspects the first (operator) rules block — and re-open the
+// kube-layer 403 this change (ISI-3550) fixed. The DIRECT client (client.New)
+// does get+create+update on every compose kind and list only on teams; no
+// watch (no informers), no patch, no delete. Update this expectation only when
+// the compose client's verb usage actually changes (internal/apiserver/composecrd.go).
+func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
+	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
+	if err != nil {
+		t.Fatalf("read chart rbac.yaml: %v", err)
+	}
+	got := clusterRoleRulesByName(t, string(chartYAML), "apiserver")
+
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects", "agents", "roles", "skills"}, Verbs: []string{"get", "create", "update"}},
+	}
+	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
+		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+
+			"If the compose client's verb usage changed, update both the chart and this test in lockstep.\n"+
+			"want:\n%+v\n\ngot:\n%+v", w, g)
+	}
+
+	// The grant is useless without the binding to the apiserver ServiceAccount;
+	// guard that the subject wiring can't silently disappear either.
+	if !strings.Contains(string(chartYAML), "kind: ClusterRoleBinding") ||
+		!strings.Contains(string(chartYAML), "name: ksquad-apiserver") {
+		t.Fatal("apiserver ClusterRoleBinding to ServiceAccount ksquad-apiserver is missing from rbac.yaml")
+	}
+}
