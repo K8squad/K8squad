@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { POST as sessionPOST, DELETE as sessionDELETE } from "@/app/api/session/route";
+import { GET as sessionGET, POST as sessionPOST, DELETE as sessionDELETE } from "@/app/api/session/route";
 
 // ISI-3522: the /login flow's BFF leg. The console form POSTs {username,password} to /api/session,
 // which proxies apiserver POST /auth/login (the ONE authz choke point, §13) and — critically —
@@ -71,6 +71,27 @@ describe("POST /api/session — the login proxy", () => {
     );
     expect(res.status).toBe(401);
     expect(res.headers.get("set-cookie")).toBeNull();
+  });
+});
+
+// ISI-3530: the GET role-summary leg proxies the apiserver's /auth/me — NOT /api/me
+// (there is no /api/me route; the stale path 404'd). Guards against reintroducing it.
+describe("GET /api/session — the role-summary proxy", () => {
+  it("proxies apiserver GET /auth/me (never the stale /api/me)", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ globalRole: "admin" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await sessionGET(makeReq("/api/session", { method: "GET" }));
+
+    const sentUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
+    expect(sentUrl).toContain("/auth/me");
+    expect(sentUrl).not.toContain("/api/me");
+    expect(res.status).toBe(200);
   });
 });
 
