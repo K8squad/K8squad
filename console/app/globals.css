@@ -1241,6 +1241,45 @@ a:hover {
   margin-top: 12px;
 }
 
+/* Story B (ISI-3555): guided model selector + BYO endpoint. */
+.compose__model-custom {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.compose__model-custom input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.btn--ghost {
+  background: transparent;
+  border-color: var(--border);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.compose__byo {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.compose__byo > .btn {
+  align-self: flex-start;
+}
+.compose__byo-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+.compose__byo-note {
+  font-size: 12px;
+  margin: 0;
+}
+
 /* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
 .tool-usage__note {
   font-size: 12px;

@@ -13,6 +13,8 @@
 // revision N" / "updated to revision N".
 
 import { useMemo, useState } from "react";
+import { Field } from "./fields";
+import { ModelSelector } from "./ModelSelector";
 import {
   COMPOSE_KINDS,
   KIND_LABEL,
@@ -192,27 +194,6 @@ export function ComposeScreen() {
 
 // ── Per-kind field sets ───────────────────────────────────────────────────────
 
-function Field({
-  label,
-  hint,
-  error,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  error?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="compose__field">
-      <span>{label}</span>
-      {children}
-      {hint && !error && <em className="field-hint">{hint}</em>}
-      {error && <em className="field-error">{error}</em>}
-    </label>
-  );
-}
-
 function KindFields({
   cf,
   errors,
@@ -313,25 +294,18 @@ function KindFields({
               aria-invalid={!!errors["roleRef.name"]}
             />
           </Field>
-          <Field label="Model" error={errors["model"]}>
-            <input
-              value={f.model}
-              onChange={(e) => patch({ model: e.target.value })}
-              aria-invalid={!!errors["model"]}
-              placeholder="claude-opus-4-8"
-            />
-          </Field>
+          <ModelSelector
+            model={f.model}
+            modelEndpointRef={f.modelEndpointRef}
+            byoEnabled={f.byoEnabled}
+            errors={errors}
+            patch={patch}
+          />
           <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
             <input
               value={f.credentialSecretRef}
               onChange={(e) => patch({ credentialSecretRef: e.target.value })}
               aria-invalid={!!errors["credentialSecretRef.name"]}
-            />
-          </Field>
-          <Field label="Model endpoint Secret ref" hint="optional — name or name/key">
-            <input
-              value={f.modelEndpointRef}
-              onChange={(e) => patch({ modelEndpointRef: e.target.value })}
             />
           </Field>
           <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">

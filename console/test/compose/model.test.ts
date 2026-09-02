@@ -105,6 +105,25 @@ describe("validate mirrors the server field checks", () => {
       expect(errs[f]).toBe("is required");
   });
 
+  it("requires an endpoint Secret ref only when BYO is enabled (Story B / AC3, AC5)", () => {
+    const base = {
+      project: "p",
+      name: "a1",
+      runtimeRef: "rt",
+      roleRef: "r",
+      model: "claude-opus-4-8",
+      credentialSecretRef: "cred/token",
+    };
+    // BYO off (default): a blank endpoint ref is fine.
+    expect(isValid(agent({ ...base }))).toBe(true);
+    // BYO on + empty ref: blocks with a field error.
+    expect(validate(agent({ ...base, byoEnabled: true }))["modelEndpointRef.name"]).toBe("is required");
+    // BYO on + a ref: valid, and the ref still rides through toWire unchanged.
+    const withRef = agent({ ...base, byoEnabled: true, modelEndpointRef: "my-endpoint/url" });
+    expect(isValid(withRef)).toBe(true);
+    expect(toWire(withRef)).toMatchObject({ modelEndpointRef: { name: "my-endpoint", key: "url" } });
+  });
+
   it("enforces skill source inline/git exclusivity requirements", () => {
     expect(validate(skill({ project: "p", name: "s", sourceType: "inline" }))["source.inline"]).toBe(
       "is required",

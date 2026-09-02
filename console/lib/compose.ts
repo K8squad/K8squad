@@ -76,6 +76,11 @@ export type AgentForm = {
   model: string;
   modelEndpointRef: string; // secret "name" or "name/key"; omitted when blank
   credentialSecretRef: string; // secret "name" or "name/key"
+  // UI-only: the "Bring your own endpoint" toggle (Story B, ISI-3555). NOT serialized — toWire
+  // never emits it; the authoritative wire fields are `model` (+ `modelEndpointRef` when BYO is on).
+  // When true, an endpoint Secret ref is required (validate); when false the ref is treated as
+  // absent. On edit-hydration it derives from a non-empty `modelEndpointRef`.
+  byoEnabled: boolean;
 };
 
 export type RoleForm = {
@@ -129,6 +134,7 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
           model: "",
           modelEndpointRef: "",
           credentialSecretRef: "",
+          byoEnabled: false,
         },
       };
     case "roles":
@@ -275,6 +281,10 @@ export function validate(cf: ComposeForm): FieldErrors {
       checkRequired("roleRef.name", parseObjectRef(f.roleRef).name, errs);
       checkRequired("credentialSecretRef.name", parseSecretRef(f.credentialSecretRef).name, errs);
       checkRequired("model", f.model, errs);
+      // BYO endpoint (Story B / AC3, AC5): when the toggle is on, an endpoint Secret ref must be
+      // provided — an enabled-but-empty BYO is a half-configured apply and blocks submit. When the
+      // toggle is off the ref is ignored (treated absent by toWire's blank-omit).
+      if (f.byoEnabled) checkRequired("modelEndpointRef.name", parseSecretRef(f.modelEndpointRef).name, errs);
       break;
     }
     case "roles": {
