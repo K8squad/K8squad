@@ -55,3 +55,51 @@ subjects:
     name: {{ include "ksquad.operator.fullname" . }}
     namespace: {{ .Release.Namespace }}
 {{- end }}
+{{- /* RBAC for ksquad-apiserver (ISI-3546 / ISI-3198).
+       The 8.5 compose write surface (POST/PUT /api/{teams,projects,agents,roles,skills})
+       applies user-authored CRs through the apiserver's OWN controller-runtime client,
+       which runs as this ServiceAccount. In-app authz (contributor tier + team-namespace
+       scoping, ADR-039) is the real user boundary; the SA is the trusted write proxy, so it
+       needs cluster-wide access to the compose kinds (Team namespaces are provisioned
+       dynamically). Without this the client authenticates but every apply 403s at the kube
+       API — the route logs "write surface ready" yet writes fail, which is the true blocker
+       behind ISI-3544's "can't add an agent" report. Create/update only — compose never
+       deletes; status is owned by the operator, not this write path. */ -}}
+{{- if .Values.apiserver.enabled -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+rules:
+  - apiGroups: ["ksquad.io"]
+    resources: ["teams", "projects", "agents", "roles", "skills"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "ksquad.apiserver.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ksquad.apiserver.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
