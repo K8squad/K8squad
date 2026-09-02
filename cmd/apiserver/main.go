@@ -152,6 +152,9 @@ func main() {
 	// this cache is the follow-up once the reconciler writes real Paused conditions (ISI-2898).
 	var overview apiserver.SquadOverviewReader
 	var credentials apiserver.CredentialOverviewReader
+	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
+	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
+	var org apiserver.OrgReader
 	// 8.8a dashboard: the same informer cache that backs overview/credentials
 	// also feeds the dashboard's live-Runs tile, so the cache block below is
 	// the ONE place all three read models get their reader.
@@ -162,8 +165,9 @@ func main() {
 		defer stopCache()
 		overview = apiserver.NewClientOverviewReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
+		org = apiserver.NewClientOrgReader(cacheReader)
 		dashboardReader = cacheReader
-		log.Printf("ksquad-apiserver: squad-overview + credential read models ready (informer cache synced)")
+		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
 	}
 
 	// 11.2 issue⇄work-item linkage API (ISI-2738): GET/POST/DELETE
@@ -294,6 +298,7 @@ func main() {
 		Ready:         dbReady{db},
 		Overview:      overview,
 		Credentials:   credentials,
+		Org:           org,
 		Builds:        builds,
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),

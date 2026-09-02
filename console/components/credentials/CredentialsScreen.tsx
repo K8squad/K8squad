@@ -83,7 +83,7 @@ export function CredentialsScreen({
         const body = await res.json().catch(() => null);
         setConnectMsg(
           body?.detail ??
-            "Connect Claude is not configured yet (story 7.7 — the OAuth flow lands with ISI-2899).",
+            "Connect Claude is not configured yet — the OAuth flow is not available in this deployment.",
         );
       } else if (res.status >= 200 && res.status < 300) {
         setConnectMsg("Connect Claude flow started — check the opened authorization window.");
@@ -156,7 +156,7 @@ export function CredentialsScreen({
             <details className="creds__howto">
               <summary>How to (setup-token)</summary>
               <p className="muted">
-                Re-login is one click once the zero-touch OAuth lifecycle (7.7)
+                Re-login is one click once the zero-touch OAuth lifecycle
                 is wired: <code>ksquad auth login</code> or the button above
                 writes fresh tokens into the same per-user Secret — you never
                 handle token strings.
@@ -215,7 +215,7 @@ export function CredentialsScreen({
                 <tr>
                   <td colSpan={7} className="creds__empty-row muted">
                     No agents with credentials in this squad yet — compose an
-                    Agent with a per-user Secret ref (8.5).
+                    Agent with a per-user Secret ref.
                   </td>
                 </tr>
               )}

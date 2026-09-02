@@ -114,6 +114,12 @@ type Options struct {
 	// its documented 501 (a dev run without the operator metrics URL wired),
 	// exactly like the other read models.
 	ToolUsage ToolUsageReader
+	// Org is the 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543):
+	// the Team→Agent→Role hierarchy, live per-agent status SSE, and agent
+	// detail/run-history — a projection over the Team/Agent/AgentRuntime/Role/Run
+	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
+	// run without an informer cache), exactly like Overview/Credentials.
+	Org OrgReader
 }
 
 // NewServer assembles the root router from opts.
@@ -216,6 +222,34 @@ func (s *Server) routes(opts Options) {
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
 				Methods(http.MethodGet)
+		}
+
+		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four
+		// read-only routes the Console Agents surface renders against — the
+		// Team→Agent→Role org diagram, its live per-agent status SSE, and the agent
+		// detail header + run history. All ride the SAME §13 choke point as
+		// /api/squad/overview; a deny is existence-hiding (404, never 403) and no
+		// mutating verb is routed (compose/edit stays 8.5, R6). A nil reader
+		// (cluster-less dev run) keeps the documented 501 so the contract stays honest.
+		org := s.router.Path("/api/teams/{teamId}/org").Subrouter()
+		org.Use(authz)
+		statusStream := s.router.Path("/api/teams/{teamId}/status/stream").Subrouter()
+		statusStream.Use(authz)
+		agentOne := s.router.Path("/api/agents/{agentId}").Subrouter()
+		agentOne.Use(authz)
+		agentRunsR := s.router.Path("/api/agents/{agentId}/runs").Subrouter()
+		agentRunsR.Use(authz)
+		if opts.Org != nil {
+			org.HandleFunc("", s.teamOrg(opts.Org)).Methods(http.MethodGet)
+			statusStream.HandleFunc("", s.teamStatusStream(opts.Org)).Methods(http.MethodGet)
+			agentOne.HandleFunc("", s.agentDetail(opts.Org)).Methods(http.MethodGet)
+			agentRunsR.HandleFunc("", s.agentRuns(opts.Org)).Methods(http.MethodGet)
+		} else {
+			h := notImplemented("agents org read model", "ISI-3548: wire an OrgReader (informer cache) to enable")
+			org.HandleFunc("", h).Methods(http.MethodGet)
+			statusStream.HandleFunc("", h).Methods(http.MethodGet)
+			agentOne.HandleFunc("", h).Methods(http.MethodGet)
+			agentRunsR.HandleFunc("", h).Methods(http.MethodGet)
 		}
 
 		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the

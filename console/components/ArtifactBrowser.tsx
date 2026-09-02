@@ -213,7 +213,7 @@ export function ArtifactBrowser({ runId }: { runId: string }) {
         <section className="card" data-testid="handoff-card">
           <h2 style={{ margin: "0 0 4px" }}>Structured handoff</h2>
           <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
-            The story 2.8 advisory contract this Run registered with the coordination record.
+            The advisory handoff contract this Run registered with the coordination record.
           </p>
           <Section title="did" items={handoff.did} />
           <Section title="decisions" items={handoff.decisions} />
