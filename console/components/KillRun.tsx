@@ -41,7 +41,7 @@ export function KillRun({ workItem, phase }: { workItem: string; phase?: string 
       }
       if (res.status === 501) {
         setState("error");
-        setDetail("kill seam not hosted by this apiserver (ISI-2884)");
+        setDetail("This apiserver does not host the run-kill endpoint.");
         return;
       }
       setState("error");

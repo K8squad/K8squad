@@ -19,7 +19,7 @@ export default async function RunBuildPage({
         <h1 style={{ margin: 0 }}>Run {runId} — build</h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
           The Run&apos;s build workspace: file tree, per-file bytes, and the diff against its base
-          ref (story 8.7).{" "}
+          ref.{" "}
           <a href={`/runs/${encodeURIComponent(runId)}`}>Back to the live stream</a>
         </p>
       </header>

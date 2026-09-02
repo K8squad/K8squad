@@ -99,8 +99,8 @@ export function AgentDetail({ agentId }: { agentId: string }) {
       <div className="card">
         <h2 className="agent-detail__runs-title">Run history</h2>
         <p className="muted agent-detail__tokens-note">
-          Token counts are runtime-reported / best-effort (§11 OQ14) — legibility,
-          not the billing authority (authoritative consumption is the dashboard, 8.8).
+          Token counts are runtime-reported / best-effort — legibility,
+          not the billing authority (authoritative consumption is the dashboard).
         </p>
         {runs.length === 0 ? (
           <p className="muted">No runs yet for this agent.</p>

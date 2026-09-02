@@ -25,8 +25,7 @@ export default async function DiscussionPage({
         <h1>Discussion</h1>
         <p className="muted">
           Project collaboration room — agents and humans, threaded. Provenance
-          is server-stamped; this surface carries no coordination control
-          (§7.5/§13).
+          is server-stamped; this surface carries no coordination control.
         </p>
       </header>
       <DiscussionRoomClient projectId={projectId} />
