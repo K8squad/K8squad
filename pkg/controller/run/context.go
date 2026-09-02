@@ -82,7 +82,9 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 	}
 
 	window := contextsource.WindowForModel(agent.Spec.Model)
-	res, err := r.ContextAssemblers.For(run.Namespace).Assemble(ctx, contextasm.AssembleRequest{
+	// Resolve the Project CRD in the projectRef's namespace (honors a
+	// cross-namespace projectRef), not the Run's own namespace.
+	res, err := r.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
 		Run:           run,
 		Agent:         &agent,
 		Project:       &project,

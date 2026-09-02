@@ -34,8 +34,15 @@ import "strings"
 // capability read, or an operator ModelCatalog) is the follow-up flagged on
 // the S1 child issue.
 
-// DefaultContextWindow is the conservative fallback for an unrecognised model.
-const DefaultContextWindow int64 = 128000
+// DefaultContextWindow is the fail-closed fallback for an unrecognised model.
+// It is deliberately SMALL (an Ollama-class local-model window, §8.5 budget
+// doc) rather than a large hosted-model default: an unknown model must never
+// be budgeted a 128K–1M prompt that its physical window cannot hold. A model
+// with a genuinely larger window must be added to modelWindows (or resolved
+// from its Agent Card) to earn it — under-budgeting is safe (the assembler
+// fails closed on must-include overflow), over-budgeting silently breaks the
+// runtime.
+const DefaultContextWindow int64 = 8192
 
 // modelWindows maps a lower-cased model-id prefix to its context window
 // (tokens). Longest-prefix match wins so "claude-sonnet-4-5" resolves off

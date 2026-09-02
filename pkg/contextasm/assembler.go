@@ -232,11 +232,22 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 
 	env := a.buildEnvelope(wi, meta, recall, arts, req.Run.Spec.Inputs)
 
-	budget, err := ResolveBudget(projectBudget(req.Project), agentBudget(req.Agent), req.ContextWindow)
-	if err != nil {
-		return nil, err
+	// Deterministic resume (AC3): when resuming, reuse the budget the snapshot
+	// pinned rather than re-resolving from the live Project/Agent. Combined
+	// with the caller pinning ContextWindow off the snapshot, this makes the
+	// resumed envelope byte-identical even if spec.model / contextBudgetOverride
+	// changed after the snapshot was stored. A fresh drive resolves normally.
+	var budget Budget
+	if req.Existing != nil && req.Existing.Budget != nil {
+		budget = budgetFromSnapshot(req.Existing.Budget)
+		span.AddEvent("contextasm.budget.resumed")
+	} else {
+		budget, err = ResolveBudget(projectBudget(req.Project), agentBudget(req.Agent), req.ContextWindow)
+		if err != nil {
+			return nil, err
+		}
+		span.AddEvent("contextasm.budget.resolved")
 	}
-	span.AddEvent("contextasm.budget.resolved")
 
 	injection := NewInjection(env)
 	budgeted, err := ApplyBudget(env, budget, req.ContextWindow, injection.OverheadTokens())
@@ -461,6 +472,25 @@ func pinRecallIDs(snap *ksquadv1alpha1.ContextSnapshot, recall []RecallDoc, env 
 }
 
 func i64ptr(v int64) *int64 { return &v }
+
+// budgetFromSnapshot rebuilds the applied Budget from a pinned snapshot for
+// deterministic resume — the exact per-tier allocation the first drive
+// recorded, so re-assembly reproduces identical bytes.
+func budgetFromSnapshot(b *ksquadv1alpha1.ContextBudget) Budget {
+	return Budget{
+		WorkItem:     derefI64(b.WorkItem),
+		ProjectDocs:  derefI64(b.ProjectDocs),
+		MemoryRecall: derefI64(b.MemoryRecall),
+		Artifacts:    derefI64(b.Artifacts),
+	}
+}
+
+func derefI64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
 
 func joinTitleBody(title, body string) string {
 	if title == "" {

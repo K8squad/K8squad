@@ -163,9 +163,10 @@ func TestBuildTaskPinnedRevisionMismatchFailsClosed(t *testing.T) {
 	}
 }
 
-// AC6: no snapshot (side-channel produced none, or Run predates S1) leaves the
-// bare title+body dispatch unchanged — SystemContext stays empty.
-func TestBuildTaskNoSnapshotLeavesSystemContextEmpty(t *testing.T) {
+// Race fix (#5): a missing snapshot must NOT silently ship title+body only.
+// With the side-channel wired but the reconciler not having pinned yet,
+// buildTask assembles fresh so the dispatch is still fully contextualised.
+func TestBuildTaskFreshAssembleWhenNoSnapshot(t *testing.T) {
 	run, agent, project := ctxFixtures(nil)
 	d := newDispatch(t, run, agent, project, stubAssemblers{src: stubSources{wiRev: "rev-1", goalRev: "1"}})
 
@@ -173,10 +174,25 @@ func TestBuildTaskNoSnapshotLeavesSystemContextEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildTask: %v", err)
 	}
-	if task.Envelope.SystemContext != "" {
-		t.Errorf("SystemContext = %q, want empty (no pinned snapshot)", task.Envelope.SystemContext)
+	if !strings.Contains(task.Envelope.SystemContext, "CI green three runs straight") {
+		t.Errorf("SystemContext not assembled fresh when snapshot is nil; got:\n%s", task.Envelope.SystemContext)
 	}
 	if task.Envelope.Input != "make test/flake green" {
 		t.Errorf("Input = %q, want the work-item body", task.Envelope.Input)
+	}
+}
+
+// AC6: with the side-channel OFF (no ContextAssemblers), the bare title+body
+// dispatch is unchanged — SystemContext stays empty.
+func TestBuildTaskNoAssemblerLeavesSystemContextEmpty(t *testing.T) {
+	run, agent, project := ctxFixtures(nil)
+	d := newDispatch(t, run, agent, project, nil)
+
+	task, err := d.buildTask(context.Background(), ctxRunUID, ctxRunUID)
+	if err != nil {
+		t.Fatalf("buildTask: %v", err)
+	}
+	if task.Envelope.SystemContext != "" {
+		t.Errorf("SystemContext = %q, want empty (side-channel off)", task.Envelope.SystemContext)
 	}
 }

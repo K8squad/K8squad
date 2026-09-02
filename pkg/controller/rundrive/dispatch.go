@@ -231,14 +231,19 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.Input = title // a titled-but-bodiless item still carries its instruction
 	}
 
-	// §8.5 context injection (story S1, ISI-3600, seam A): when the context
-	// side-channel is wired AND the reconciler pinned a snapshot, re-read the
-	// PINNED revisions/doc-ids and render the tier-framed system/context
-	// string. SystemContext is ADDITIVE — env.Input still carries the
-	// concrete work instruction (AC1). Absent the snapshot (side-channel off,
-	// or the Run predates it) SystemContext stays empty: the bare title+body
-	// dispatch is unchanged (AC6). Fail-closed on assembly error (AC4).
-	if d.cfg.ContextAssemblers != nil && run.Status.ContextSnapshot != nil {
+	// §8.5 context injection (story S1, ISI-3600, seam A): whenever the
+	// context side-channel is wired, assemble the tier-framed system/context
+	// string. With a pinned snapshot (the normal case — the reconciler pins at
+	// Claiming) it re-reads the PINNED revisions/doc-ids + budget/window for a
+	// byte-identical resume; WITHOUT one (the status reconciler has not pinned
+	// yet — the two controllers race) it assembles fresh rather than silently
+	// shipping title+body only. This makes a configured assembler a hard
+	// prerequisite of a fully-contextualised dispatch, not a best-effort
+	// add-on. SystemContext is ADDITIVE — env.Input still carries the concrete
+	// work instruction (AC1). Fail-closed on assembly error (AC4). With the
+	// side-channel OFF, SystemContext stays empty: the bare title+body
+	// dispatch is unchanged (AC6).
+	if d.cfg.ContextAssemblers != nil {
 		sysCtx, err := d.assembleSystemContext(ctx, run)
 		if err != nil {
 			return wire.Task{}, fmt.Errorf("rundrive: assemble system context for run %s/%s: %w", run.Namespace, run.Name, err)
@@ -358,15 +363,17 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	return cmd, nil
 }
 
-// assembleSystemContext re-reads the Run's PINNED context snapshot (seam A,
-// story S1) and renders the tier-framed system/context string. It runs
-// Assemble with Existing set to the persisted snapshot, so the same
-// revisions/doc-ids the reconciler pinned are re-read — the render is
-// byte-identical to the first drive (deterministic resume, AC3), and a pinned
-// revision that no longer resolves errors loudly here (the Sources contract).
+// assembleSystemContext renders the tier-framed system/context string (seam
+// A, story S1). With a pinned snapshot it runs Assemble with Existing set, so
+// the same revisions/doc-ids/window/budget the reconciler pinned are re-read —
+// the render is byte-identical to the first drive (deterministic resume, AC3),
+// and a pinned revision that no longer resolves errors loudly (Sources
+// contract). Without a snapshot (the reconciler has not pinned yet) it
+// assembles fresh so the dispatch is still fully contextualised, never
+// title+body only.
 func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.Run) (string, error) {
 	if len(run.Spec.Agents) == 0 {
-		return "", fmt.Errorf("run %s/%s has a context snapshot but no dispatch agent to resolve the model window", run.Namespace, run.Name)
+		return "", fmt.Errorf("run %s/%s: context side-channel is configured but the Run has no dispatch agent to resolve the model window", run.Namespace, run.Name)
 	}
 	agentRef := run.Spec.Agents[0]
 	agentNS := agentRef.Namespace
@@ -387,12 +394,24 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		return "", fmt.Errorf("read Project %s/%s: %w", projNS, run.Spec.ProjectRef.Name, err)
 	}
 
-	res, err := d.cfg.ContextAssemblers.For(run.Namespace).Assemble(ctx, contextasm.AssembleRequest{
+	// On resume the window comes from the pinned snapshot, not the live Agent:
+	// a spec.model / contextBudgetOverride change after the snapshot was
+	// stored must not silently re-budget the resumed envelope (the assembler
+	// pins the budget off Existing too). Fresh dispatch resolves from the
+	// live model.
+	window := contextsource.WindowForModel(agent.Spec.Model)
+	if snap := run.Status.ContextSnapshot; snap != nil && snap.ContextWindow != nil {
+		window = *snap.ContextWindow
+	}
+
+	// The Source resolves the Project CRD in projNS (which honors a
+	// cross-namespace projectRef), not the Run's own namespace.
+	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
 		Run:           run,
 		Agent:         &agent,
 		Project:       &project,
 		TeamID:        run.Spec.TeamRef.Name,
-		ContextWindow: contextsource.WindowForModel(agent.Spec.Model),
+		ContextWindow: window,
 		Existing:      run.Status.ContextSnapshot,
 	})
 	if err != nil {

@@ -127,28 +127,53 @@ var _ contextasm.Sources = (*Source)(nil)
 // and S2 pick it up together — this is the single site that changes.
 func (s *Source) WorkItem(ctx context.Context, id, rev string) (contextasm.WorkItemFacts, error) {
 	var title, body sql.NullString
-	var updatedAt time.Time
+	var updatedAt, cutoff time.Time
+	// cutoff = GREATEST(item.updated_at, MAX(comment.created_at)) so a latest
+	// read includes EVERY current comment — comment inserts do not touch
+	// work_item.updated_at, so keying the comment bound off updated_at alone
+	// would silently drop comments authored after the last item edit.
 	err := s.db.QueryRowContext(ctx,
-		`SELECT title, body, updated_at FROM coord.work_item WHERE id = $1::uuid`, id).
-		Scan(&title, &body, &updatedAt)
+		`SELECT w.title, w.body, w.updated_at,
+		        GREATEST(w.updated_at, COALESCE(MAX(c.created_at), w.updated_at)) AS cutoff
+		   FROM coord.work_item w
+		   LEFT JOIN coord.comment c ON c.work_item_id = w.id
+		  WHERE w.id = $1::uuid
+		  GROUP BY w.title, w.body, w.updated_at`, id).
+		Scan(&title, &body, &updatedAt, &cutoff)
 	if err != nil {
 		return contextasm.WorkItemFacts{}, fmt.Errorf("read work item %s: %w", id, err)
 	}
-	revStr := updatedAt.UTC().Format(time.RFC3339Nano)
-	if rev != "" && rev != revStr {
-		return contextasm.WorkItemFacts{}, fmt.Errorf(
-			"work item %s pinned revision %q no longer resolves (current %q): refusing to fall back to latest (deterministic-resume contract)",
-			id, rev, revStr)
+
+	// The revision token is opaque (ADR-001) and encodes BOTH the item
+	// revision (updated_at) and the comment cutoff. On resume the item
+	// revision is verified exactly — an edited work item fails loud, never a
+	// silent fall back to latest — while the pinned cutoff re-bounds the
+	// comment set so newly-appended comments are deterministically excluded
+	// (identical bytes) rather than either leaking in or hard-failing resume.
+	commentCutoff := cutoff
+	if rev == "" {
+		rev = encodeRev(updatedAt, cutoff)
+	} else {
+		pinnedItem, pinnedCutoff, perr := decodeRev(rev)
+		if perr != nil {
+			return contextasm.WorkItemFacts{}, fmt.Errorf("work item %s pinned revision %q: %w", id, rev, perr)
+		}
+		if !updatedAt.Equal(pinnedItem) {
+			return contextasm.WorkItemFacts{}, fmt.Errorf(
+				"work item %s pinned revision no longer resolves (item updated_at moved to %s): refusing to fall back to latest (deterministic-resume contract)",
+				id, updatedAt.UTC().Format(time.RFC3339Nano))
+		}
+		commentCutoff = pinnedCutoff
 	}
 
-	comments, err := s.comments(ctx, id, updatedAt)
+	comments, err := s.comments(ctx, id, commentCutoff)
 	if err != nil {
 		return contextasm.WorkItemFacts{}, err
 	}
 
 	return contextasm.WorkItemFacts{
 		ID:          id,
-		Revision:    revStr,
+		Revision:    rev,
 		Title:       title.String,
 		Description: body.String,
 		// AcceptanceCriteria + Goals: coord-schema gap (S2-shared). Empty, not faked.
@@ -156,8 +181,22 @@ func (s *Source) WorkItem(ctx context.Context, id, rev string) (contextasm.WorkI
 	}, nil
 }
 
-// comments reads the append-only comment history bounded by the pinned
-// revision timestamp (created_at <= cutoff), in authored order.
+// encodeRev packs the work-item revision (updated_at) and comment cutoff into
+// the opaque revision token as UnixNano pair. decodeRev is its inverse.
+func encodeRev(updatedAt, cutoff time.Time) string {
+	return fmt.Sprintf("%d:%d", updatedAt.UnixNano(), cutoff.UnixNano())
+}
+
+func decodeRev(rev string) (updatedAt, cutoff time.Time, err error) {
+	var u, c int64
+	if _, err = fmt.Sscanf(rev, "%d:%d", &u, &c); err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("malformed revision token: %w", err)
+	}
+	return time.Unix(0, u).UTC(), time.Unix(0, c).UTC(), nil
+}
+
+// comments reads the append-only comment history bounded by the resolved
+// cutoff (created_at <= cutoff), in authored order.
 func (s *Source) comments(ctx context.Context, workItemID string, cutoff time.Time) ([]contextasm.Comment, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT author_principal, body, created_at
