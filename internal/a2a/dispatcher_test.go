@@ -115,7 +115,12 @@ func TestDispatcherSinkForResolvesPerRun(t *testing.T) {
 		autoClose: true,
 		events:    []wire.Event{statusEvent(1, wire.TaskCompleted)},
 	}
-	byRun := map[string][]wire.Event{}
+	// Each Run is followed on its OWN goroutine (Dispatcher.Submit → go follow),
+	// so SinkFor's returned sinks are written concurrently. Use the mutex-guarded
+	// collectSink per Run rather than a raw map + closure, whose unsynchronized
+	// append tripped the -race gate (event-relay job). The byRun map itself is
+	// populated up front and only READ inside SinkFor, which is race-free.
+	byRun := map[string]*collectSink{"run-1": {}, "run-2": {}}
 	static := &collectSink{}
 	d := &clienta2a.Dispatcher{
 		Client: clienta2a.New(clienta2a.NewEngineTransport(fs)),
@@ -124,10 +129,7 @@ func TestDispatcherSinkForResolvesPerRun(t *testing.T) {
 		},
 		Sink: static, // must stay untouched when SinkFor is set
 		SinkFor: func(runID string) clienta2a.EventSink {
-			return clienta2a.SinkFunc(func(_ context.Context, ev wire.Event) error {
-				byRun[runID] = append(byRun[runID], ev)
-				return nil
-			})
+			return byRun[runID]
 		},
 	}
 	if err := d.Submit(context.Background(), "run-1", "run-1"); err != nil {
@@ -142,8 +144,9 @@ func TestDispatcherSinkForResolvesPerRun(t *testing.T) {
 		t.Fatalf("static Sink saw %d events, want 0 when SinkFor is set", len(static.events))
 	}
 	for _, run := range []string{"run-1", "run-2"} {
-		if len(byRun[run]) != 1 {
-			t.Fatalf("SinkFor(%q) saw %d events, want 1", run, len(byRun[run]))
+		// All follow goroutines have joined at d.Wait(), so reading events is safe.
+		if len(byRun[run].events) != 1 {
+			t.Fatalf("SinkFor(%q) saw %d events, want 1", run, len(byRun[run].events))
 		}
 	}
 }
