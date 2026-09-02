@@ -85,9 +85,38 @@ export TARGET_REPO_URL=https://github.com/K8squad/sympozium-todo-demo
 Exit code is 0 iff the minimum bar clears; a partial/fail exits non-zero while the
 per-phase table distinguishes **BLOCKED ≠ FAIL** for triage.
 
-## Reporting (SC-5) & failure capture
+## Reporting (SC-5) & failure capture (ISI-3562 contract)
 
 - Attach `.e2e-out/phase-status.md` + `.json` + `phase2-conditions.txt` + any
-  `phase4-operator.log` to the **Paperclip** run issue — not GitHub.
-- On any failure, hand the failure window (start/end UTC, traceId, failing request) to
-  Observability per the ISI-3534 correlation contract (coordinate shape on ISI-3562).
+  `phase4-operator.log` + the `fail-*.yaml` / `fail-*.describe.txt` / `fail-phase1-apply-v8.txt`
+  evidence dumps to the **Paperclip** run issue — not GitHub.
+
+### `failures[]` — the o11y enrichment key
+
+For **every** failing phase (FAIL or BLOCKED), `phase-status.json` emits one record in a
+top-level `failures[]` array (and a matching row in the report's *Failure capture* table).
+This is the CRD/operator-path adaptation of the ISI-3534 UI 4-field contract, agreed with
+Observability on **ISI-3562** (doc key `failure-capture`). Each record has **5 fields**:
+
+| Field | Meaning |
+|-------|---------|
+| `phase` | `Phase N — <name>` + `SC-<n>` + the assert that failed |
+| `window` | `{startedAtUtc, endedAtUtc}` RFC3339-UTC, stamped at phase entry/exit — bounds every downstream log/trace query |
+| `traceId` | W3C 32-hex **when one exists**, else `null` — **never fabricated** |
+| `failingOp` | CRD analogue of `METHOD URL → HTTP status`: apply `-v=8` deny reason, `Ready=False` reason/message, `Run status.phase=Failed` + terminal condition, or the git/CI probe |
+| `resourceId` | `{ref:"kind/namespace/name", uid, observedGeneration}` — mandatory & CRD-native; the trace/log **recovery key** |
+
+Plus `evidence[]` naming the dumped files for that failure.
+
+**Trace availability (by design — do not expect a `traceId` everywhere):**
+
+- **Phase 0/1** (preflight / `kubectl apply` admission) — synchronous webhook, **no trace**.
+  Evidence is the `-v=8` transcript + deny reason; `traceId=null`.
+- **Phase 2/3/4** (reconcile / dispatch / Run) — real Dynatrace trace. When the operator
+  stamps a W3C `traceparent` on the resource, the harness extracts it; otherwise
+  `traceId=null` and `resourceId` (which the operator stamps as `run.name`/`run.namespace`
+  on its spans) is what lets Observability recover the trace and grep the operator log.
+- **Phase 5** (build) — GitHub CI, off-cluster, **no DT trace**; `resourceId=null`.
+
+The `resourceId` is the primary recovery key precisely *because* several failure classes
+have no traceId — hand `failures[]` verbatim to Observability (ISI-3562) at report time.

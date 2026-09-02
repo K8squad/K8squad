@@ -81,6 +81,94 @@ endgroup(){ echo "::endgroup::"; }
 declare -a PH_ID PH_STATE PH_MSG
 record() { PH_ID+=("$1"); PH_STATE+=("$2"); PH_MSG+=("$3"); echo ":: [$2] $1 — $3"; }
 
+# ----------------------------------------------------------- o11y failure-capture (ISI-3562)
+# The Observability failure-capture contract (ISI-3562 -> ISI-3560, doc `failure-capture`)
+# adapts the ISI-3534 UI 4-field shape to the CRD/operator path: for EVERY failing phase,
+# emit a `failures[]` record in phase-status.json with 5 fields —
+#   1) phase      : "Phase N — <name>" + SC-<n> + the assert that failed
+#   2) window     : {startedAtUtc,endedAtUtc} RFC3339-UTC, stamped at phase entry/exit —
+#                   bounds every downstream log/trace query
+#   3) traceId    : W3C 32-hex WHEN ONE EXISTS. Phase 0/1 (sync admission webhook) has NO
+#                   trace; Phase 2/3/4 reconcile/dispatch DO. We NEVER fabricate one — a
+#                   null traceId + a CRD-native resourceId is what lets o11y recover the
+#                   operator span (it stamps run.name/run.namespace) and grep the log.
+#   4) failingOp  : the CRD analogue of "METHOD URL -> HTTP status" (apply -v=8 deny,
+#                   Ready=False reason/message, Run status.phase=Failed, or CI/build exit)
+#   5) resourceId : {ref:"kind/namespace/name", uid, observedGeneration} — MANDATORY &
+#                   CRD-native; the trace/log recovery key.
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+# Per-phase window is tracked via module globals (NOT a keyed map) so the window a
+# fail_capture stamps is always the phase that just ran, regardless of how its ledger
+# label vs. descriptive phase-string differ. pstart resets the exit stamp so a phase
+# that fails without an explicit pend defaults endedAtUtc to the failure moment (now),
+# never a stale prior-phase exit.
+_CUR_WIN_START=""; _CUR_WIN_END=""
+pstart() { _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END=""; }   # stamp phase entry
+pend()   { _CUR_WIN_END="$(now_utc)"; }                      # stamp phase exit
+# Explicit empty-array assignment (NOT a bare `declare -a`): under `set -u`, an array
+# that is declared but never assigned makes `${#FAILURES[@]}` throw on the happy path
+# (0 failures). `=()` keeps it a real, safely-countable empty array.
+declare -a FAILURES=()                               # each element: one 5-field JSON record
+
+# extract_trace <json> -> 32-hex W3C trace-id or "" (NEVER fabricated).
+# Looks where the operator/apiserver stamps a W3C traceparent: status.traceId, or a
+# `*traceparent`/`*trace-id` annotation (traceparent form 00-<32hex>-<16hex>-<flags>).
+extract_trace() {
+  echo "$1" | jq -r '
+    (.status.traceId // "")                                              as $t
+    | (.metadata.annotations // {}) as $a
+    | ($a | to_entries | map(select(.key|test("traceparent|trace-id";"i"))) | (.[0].value // "")) as $tp
+    | (if ($t|test("^[0-9a-fA-F]{32}$")) then $t
+       elif ($tp|test("^00-[0-9a-fA-F]{32}-")) then ($tp|split("-")[1])
+       elif ($tp|test("^[0-9a-fA-F]{32}$")) then $tp
+       else "" end)' 2>/dev/null || echo ""
+}
+
+# fail_capture <phaseKey> <failingOp> <kind> <name> [v8LogPath]
+#   Builds one failures[] record for the just-failed phase and dumps primary evidence:
+#   `kubectl get <kind> <name> -o yaml` (full .status.conditions) + `kubectl describe`
+#   (Events). phaseKey is the ledger label; its recorded FAIL/BLOCKED message supplies the
+#   SC tag + failed-assert text. Pass "" kind/name for phases with no CRD analogue
+#   (e.g. gated BLOCKEDs) — resourceId then carries a null ref and no trace is sought.
+fail_capture() {
+  local pkey="$1" failingOp="$2" rkind="$3" rname="$4" v8log="${5:-}"
+  local start="${_CUR_WIN_START:-}" end="${_CUR_WIN_END:-$(now_utc)}"
+  local uid="null" gen="null" traceId="null" ref="null"
+  local slug; slug="$(echo "$pkey" | tr -cd 'A-Za-z0-9' | cut -c1-24)"
+  if [ -n "$rkind" ] && [ -n "$rname" ]; then
+    ref="$rkind/$NAMESPACE/$rname"
+    local rjson; rjson="$(kubectl get "$rkind" "$rname" -n "$NAMESPACE" -o json 2>/dev/null || true)"
+    if [ -n "$rjson" ]; then
+      uid="$(echo "$rjson"  | jq -c '.metadata.uid // null')"
+      gen="$(echo "$rjson"  | jq -c '.status.observedGeneration // .metadata.generation // null')"
+      local tr; tr="$(extract_trace "$rjson")"
+      [ -n "$tr" ] && traceId="$(jq -Rn --arg v "$tr" '$v')"
+      # primary evidence: full conditions (yaml) + Events (describe)
+      kubectl get "$rkind" "$rname" -n "$NAMESPACE" -o yaml  > "$OUT_DIR/fail-$slug.yaml"          2>&1 || true
+      kubectl describe "$rkind" "$rname" -n "$NAMESPACE"     > "$OUT_DIR/fail-$slug.describe.txt"   2>&1 || true
+    fi
+  fi
+  local rec
+  rec="$(jq -n \
+    --arg phase "$pkey" \
+    --arg s "$start" --arg e "$end" \
+    --argjson trace "$traceId" \
+    --arg op "$failingOp" \
+    --arg ref "$ref" \
+    --argjson uid "$uid" --argjson gen "$gen" \
+    --arg v8 "$v8log" \
+    '{phase:$phase,
+      window:{startedAtUtc:($s|select(.!="")//null), endedAtUtc:($e|select(.!="")//null)},
+      traceId:$trace,
+      failingOp:$op,
+      resourceId:{ref:($ref|select(.!="null")//null), uid:$uid, observedGeneration:$gen},
+      evidence:( [ (if $ref!="null" then "fail-'"$slug"'.yaml","fail-'"$slug"'.describe.txt" else empty end),
+                   (if $v8!="" then $v8 else empty end) ] )
+     }')"
+  FAILURES+=("$rec")
+  echo "  o11y captured failure record for [$pkey] (resourceId=$ref)"
+}
+
 # ------------------------------------------------------------------ preflight (fail-closed)
 mkdir -p "$OUT_DIR"
 command -v kubectl >/dev/null || { c_fail "kubectl not on PATH"; exit 2; }
@@ -93,6 +181,7 @@ note "platform-e2e-bmad: ns=$NAMESPACE cp-ns=$CP_NS repo=$TARGET_REPO_URL squad=
 
 # ============================================================ PHASE 0 — Preflight
 group "PHASE 0 — preflight (cluster / operator / toolchain catalog)"
+pstart "Phase 0: Preflight"
 P0_OK=1; P0_MSG=""
 # CRDs present
 CRD_COUNT="$(kubectl get crd -o name 2>/dev/null | grep -c 'ksquad.io$' || true)"
@@ -116,22 +205,33 @@ for s in "$MODEL_SECRET_NAME" "$GH_SECRET_NAME"; do
   if kubectl get secret "$s" -n "$NAMESPACE" >/dev/null 2>&1; then echo "  ok   secret/$s present (value not read)"
   else P0_OK=0; P0_MSG+="secret/$s missing; "; echo "  MISS secret/$s absent in $NAMESPACE — ProxOps must create it out of band (§4)"; fi
 done
+pend "Phase 0: Preflight"
 if [ "$P0_OK" -eq 1 ]; then record "Phase 0: Preflight" PASS "cluster+operator+catalog+credential-Secrets present"
-else record "Phase 0: Preflight" FAIL "${P0_MSG%%; }"; fi
+else
+  record "Phase 0: Preflight" FAIL "${P0_MSG%%; }"
+  # Phase 0 = synchronous preflight; no CRD apply/admission, hence NO trace. The
+  # failingOp names the unmet precondition; resourceId is the operator Deployment when
+  # it is the miss, else null (cluster-scoped CRDs / catalog have no single ns object).
+  if echo "$P0_MSG" | grep -q 'operator not Available'; then
+    OP_DEP="$(kubectl get deploy -n "$CP_NS" -l app.kubernetes.io/component=operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    kubectl get deploy -n "$CP_NS" -l app.kubernetes.io/component=operator -o yaml > "$OUT_DIR/fail-phase0-operator.yaml" 2>&1 || true
+    fail_capture "Phase 0 — Preflight (SC-1 precondition)" "preflight: ${P0_MSG%%; }" "" ""
+  else
+    fail_capture "Phase 0 — Preflight (SC-1 precondition)" "preflight: ${P0_MSG%%; }" "" ""
+  fi
+fi
 endgroup
 
-# Preflight failures gate everything downstream — report and stop honestly.
-if [ "$P0_OK" -ne 1 ]; then
-  record "Phase 1: Deploy squad"     BLOCKED "gated by Phase 0 preflight"
-  record "Phase 2: Reconcile/Ready"  BLOCKED "gated by Phase 0 preflight"
-  record "Phase 3: Crew + toolchain" BLOCKED "gated by Phase 0 preflight"
-  record "Phase 4: Story -> PR"      BLOCKED "gated by Phase 0 preflight"
-  record "Phase 5: App buildable"    BLOCKED "gated by Phase 0 preflight"
-fi
+# NOTE: downstream gating is single-sourced in each phase's own else-branch (each records
+# exactly one BLOCKED ledger row + one failures[] record, attributed to its IMMEDIATE
+# gate). Phase 1's else-branch (below) handles the "gated by Phase 0" case, and Phases
+# 2-5 chain off it via P{n}_OK. There is deliberately no pre-emptive BLOCKED block here —
+# emitting one would double-record the ledger and the failures[] set when Phase 0 fails.
 
 # ============================================================ PHASE 1 — Deploy the squad via CRDs
 if [ "$P0_OK" -eq 1 ]; then
 group "PHASE 1 — deploy the squad via CRDs (2 parameterized edits, not committed)"
+pstart "Phase 1: Deploy squad"
 # Build the applied manifest from the numbered files:
 #   * SKIP 01-credentials.yaml — the plaintext REPLACE_ME Secrets. Real creds are the
 #     out-of-band ProxOps Secrets ($MODEL_SECRET_NAME / $GH_SECRET_NAME), NOT this file.
@@ -158,6 +258,9 @@ done
 if grep -vE '^[[:space:]]*#' "$APPLIED" | grep -qE '^kind: Secret|REPLACE_ME'; then
   record "Phase 1: Deploy squad" FAIL "refused: applied manifest still contains a Secret/REPLACE_ME token"
   P1_OK=0
+  pend "Phase 1: Deploy squad"
+  # SC-6 refusal — a local safety gate, not an admission response: no apply issued, no trace.
+  fail_capture "Phase 1 — Deploy squad (SC-6 secret-leak guard)" "local guard: refused to apply — manifest carries a Secret/REPLACE_ME token (no kubectl apply issued)" "" ""
 else
   echo "  ok   applied manifest carries no Secret/REPLACE_ME (creds are out-of-band, §4/SC-6)"
   echo "  applying $APPLIED (repo.url -> $TARGET_REPO_URL) ..."
@@ -166,24 +269,41 @@ else
     GOT_URL="$(kubectl get project bmad-demo-project -n "$NAMESPACE" -o jsonpath='{.spec.repo.url}' 2>/dev/null || true)"
     if [ "$GOT_URL" = "$TARGET_REPO_URL" ]; then
       record "Phase 1: Deploy squad" PASS "squad applied; Project repo.url=$TARGET_REPO_URL"; P1_OK=1
+      pend "Phase 1: Deploy squad"
     else
       record "Phase 1: Deploy squad" FAIL "Project repo.url mismatch: got '$GOT_URL' want '$TARGET_REPO_URL'"; P1_OK=0
+      pend "Phase 1: Deploy squad"
+      fail_capture "Phase 1 — Deploy squad (SC-1: Project repo.url applied)" "kubectl apply project/bmad-demo-project -> stored spec.repo.url='$GOT_URL' != '$TARGET_REPO_URL'" "project" "bmad-demo-project"
     fi
   else
     record "Phase 1: Deploy squad" FAIL "kubectl apply rejected one or more CRs (schema drift)"; P1_OK=0
+    pend "Phase 1: Deploy squad"
+    # Contract Part D: Phase 0/1 apply/admission = NO trace. Capture the -v=8 transcript
+    # (webhook deny reason / schema error) as PRIMARY evidence — this is the failingOp source.
+    V8="fail-phase1-apply-v8.txt"
+    kubectl apply -f "$APPLIED" -v=8 > "$OUT_DIR/$V8" 2>&1 || true
+    DENY="$(grep -iE 'denied the request|admission webhook|is invalid|Error from server' "$OUT_DIR/$V8" | head -3 | tr '\n' ' ' | cut -c1-300)"
+    fail_capture "Phase 1 — Deploy squad (SC-1: CRDs apply/admit)" "kubectl apply -f squad -v=8 -> ${DENY:-apply rejected (schema drift / admission denied); see $V8}" "" "" "$V8"
   fi
 fi
 endgroup
-else P1_OK=0; fi
+else
+  # Phase 0 preflight failed → Phase 1 never runs. Single-source its gated ledger row +
+  # failures[] record here (no CRD resource reached; no trace).
+  record "Phase 1: Deploy squad" BLOCKED "gated by Phase 0 preflight"; P1_OK=0
+  _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END="$(now_utc)"
+  fail_capture "Phase 1 — Deploy squad (BLOCKED: gated by Phase 0)" "not reached: gated by Phase 0 preflight failure" "" ""
+fi
 
 # ============================================================ PHASE 2 — Reconcile / Ready (SC-1)
 if [ "${P1_OK:-0}" -eq 1 ]; then
 group "PHASE 2 — reconcile to Ready (SC-1: all squad objects Ready=True, 0 degraded)"
+pstart "Phase 2: Reconcile/Ready"
 # Wait bounded for every reconcilable kind to reach Ready=True. Driven off the live
 # objects, not a hardcoded list. Skills/ConfigMaps/Namespace are not condition-bearing.
 KINDS="agentruntime agents roles.ksquad.io skills projects teams"
 DEADLINE=$(( $(date +%s) + RECONCILE_TIMEOUT ))
-DEGRADED=""
+DEGRADED=""; DEG_KIND=""; DEG_NAME=""
 dump_conditions() { # kind -> $OUT_DIR
   kubectl get "$1" -n "$NAMESPACE" -o wide > "$OUT_DIR/phase2-$1.wide.txt" 2>&1 || true
   kubectl get "$1" -n "$NAMESPACE" -o json 2>/dev/null \
@@ -200,20 +320,34 @@ for k in $KINDS; do
     if [ -z "$NOT_READY" ]; then echo "  ok   all $k Ready=True"; break; fi
     if [ "$(date +%s)" -ge "$DEADLINE" ]; then
       echo "  WAIT $k not Ready after ${RECONCILE_TIMEOUT}s: $NOT_READY"
-      DEGRADED+="$k[$NOT_READY] "; break
+      DEGRADED+="$k[$NOT_READY] "
+      # Remember the FIRST not-Ready object as the phase's representative resourceId.
+      if [ -z "$DEG_KIND" ]; then DEG_KIND="$k"; DEG_NAME="${NOT_READY%%,*}"; fi
+      break
     fi
     sleep "$POLL_INTERVAL"
   done
   dump_conditions "$k"
 done
+pend "Phase 2: Reconcile/Ready"
 if [ -z "$DEGRADED" ]; then record "Phase 2: Reconcile/Ready" PASS "all reconcilable squad objects Ready=True (SC-1)"; P2_OK=1
-else record "Phase 2: Reconcile/Ready" FAIL "degraded/not-Ready: ${DEGRADED% } (see phase2-conditions.txt)"; P2_OK=0; fi
+else
+  record "Phase 2: Reconcile/Ready" FAIL "degraded/not-Ready: ${DEGRADED% } (see phase2-conditions.txt)"; P2_OK=0
+  # Phase 2 reconcile HAS a real DT trace (operator reconcile span). failingOp = the
+  # failing Ready condition (reason/message) of the representative object; resourceId +
+  # extracted traceId let o11y pivot to the operator span / log.
+  READY_RM="$(kubectl get "$DEG_KIND" "$DEG_NAME" -n "$NAMESPACE" -o json 2>/dev/null \
+    | jq -r '(.status.conditions // [] | map(select(.type=="Ready")) | .[0]) as $c | "type=Ready status=\($c.status // "Missing") reason=\($c.reason // "?") message=\($c.message // "?")"' 2>/dev/null || echo "type=Ready status=Missing")"
+  fail_capture "Phase 2 — Reconcile/Ready (SC-1: all squad objects Ready=True)" "$DEG_KIND/$DEG_NAME: $READY_RM" "$DEG_KIND" "$DEG_NAME"
+fi
 endgroup
-else record "Phase 2: Reconcile/Ready" BLOCKED "gated by Phase 1"; P2_OK=0; fi
+else record "Phase 2: Reconcile/Ready" BLOCKED "gated by Phase 1"; P2_OK=0
+  _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END="$(now_utc)"; fail_capture "Phase 2 — Reconcile/Ready (BLOCKED: gated by Phase 1)" "not reached: gated by Phase 1 deploy failure" "" ""; fi
 
 # ============================================================ PHASE 3 — Crew up + toolchain attached (SC-2)
 if [ "${P2_OK:-0}" -eq 1 ]; then
 group "PHASE 3 — crew runnable + toolchain attached (SC-2)"
+pstart "Phase 3: Crew + toolchain"
 P3_OK=1; P3_MSG=""
 # (a) every cross-reference resolves (reuse the getting-started-smoke ref-integrity logic)
 DANGLING=0
@@ -229,24 +363,38 @@ GH_SEEN="$(kubectl get skill github -n "$NAMESPACE" -o name 2>/dev/null || true)
 [ -n "$BMAD_SEEN" ] && echo "  ok   skill/bmad present" || { P3_OK=0; P3_MSG+="bmad skill missing; "; }
 [ -n "$GH_SEEN" ]   && echo "  ok   skill/github present" || { P3_OK=0; P3_MSG+="github skill missing; "; }
 [ "$DANGLING" -eq 0 ] || { P3_OK=0; P3_MSG+="$DANGLING dangling toolchain ref(s); "; }
+pend "Phase 3: Crew + toolchain"
 if [ "$P3_OK" -eq 1 ]; then record "Phase 3: Crew + toolchain" PASS "agents runnable; bmad+github skills + toolchain refs resolve (SC-2)"
-else record "Phase 3: Crew + toolchain" FAIL "${P3_MSG%%; }"; fi
+else
+  record "Phase 3: Crew + toolchain" FAIL "${P3_MSG%%; }"
+  # Phase 3 = crew/ref integrity; resourceId points at the Team (the crew-level object
+  # whose reconcile surfaces skill/toolchain resolution) when present — CRD-native + trace.
+  T_NAME="$(kubectl get teams -n "$NAMESPACE" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [ -n "$T_NAME" ]; then fail_capture "Phase 3 — Crew + toolchain (SC-2: skills/toolchain resolve)" "ref-integrity: ${P3_MSG%%; }" "teams" "$T_NAME"
+  else fail_capture "Phase 3 — Crew + toolchain (SC-2: skills/toolchain resolve)" "ref-integrity: ${P3_MSG%%; }" "" ""; fi
+fi
 endgroup
-else record "Phase 3: Crew + toolchain" BLOCKED "gated by Phase 2"; P3_OK=0; fi
+else record "Phase 3: Crew + toolchain" BLOCKED "gated by Phase 2"; P3_OK=0
+  _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END="$(now_utc)"; fail_capture "Phase 3 — Crew + toolchain (BLOCKED: gated by Phase 2)" "not reached: gated by Phase 2 reconcile failure" "" ""; fi
 
 # ============================================================ PHASE 4 — Seed backlog + drive one story -> PR (SC-3)
 if [ "${P3_OK:-0}" -eq 1 ]; then
 group "PHASE 4 — seed backlog + drive >=1 BMAD story to a PR (SC-3)"
+pstart "Phase 4: Story -> PR"
 if [ -z "$SEED_CMD" ]; then
   # §9.1: no clean public API to seed a work item + create a Run. Report the finding
   # honestly as BLOCKED rather than fake a trigger. ProxOps/DevOps supply SEED_CMD.
   record "Phase 4: Story -> PR" BLOCKED "no SEED_CMD provided: work-item seed + Run-trigger seam unproven on this cluster (scenario §9.1). CRD/operator plane (SC-1/SC-2) validated above; supply SEED_CMD (and optional TRIGGER_CMD) to exercise the Run pipeline."
   P4_OK=0
+  # Seam not exercised: no Run created, hence no trace. resourceId = the Project whose
+  # backlog would drive the Run — the CRD-native anchor for the §9.1 finding.
+  fail_capture "Phase 4 — Story -> PR (SC-3: >=1 story -> PR)" "seam unexercised: SEED_CMD unset (scenario §9.1) — no work item seeded, no Run created" "projects" "bmad-demo-project"
 else
   echo "  seeding backlog via SEED_CMD ..."
   WORKITEM="$(bash -c "$SEED_CMD" 2>>"$OUT_DIR/phase4-seed.log" | tail -n1)"
   if [ -z "$WORKITEM" ]; then
     record "Phase 4: Story -> PR" FAIL "SEED_CMD produced no work-item id (see phase4-seed.log)"; P4_OK=0
+    fail_capture "Phase 4 — Story -> PR (SC-3: >=1 story -> PR)" "SEED_CMD -> exit/no-id: produced no work-item id (see phase4-seed.log)" "projects" "bmad-demo-project"
   else
     echo "  seeded work item: $WORKITEM"
     if [ -n "$TRIGGER_CMD" ]; then
@@ -288,21 +436,33 @@ EOF
       record "Phase 4: Story -> PR" BLOCKED "no Run admitted for workItemRef=$WORKITEM (operator did not create/admit a Run — §9.1 finding). See phase4-runs.wide.txt + operator logs."
       kubectl logs -n "$CP_NS" -l app.kubernetes.io/component=operator --tail=200 > "$OUT_DIR/phase4-operator.log" 2>&1 || true
       P4_OK=0
+      # No Run object exists — the operator/coordinator never admitted one. The dispatch
+      # decision lives on the Project's reconcile span; resourceId = Project (CRD-native
+      # anchor, operator stamps its trace) so o11y can prove admission never happened.
+      fail_capture "Phase 4 — Story -> PR (SC-3: Run admitted for work item)" "no Run for workItemRef=$WORKITEM — operator/coordinator did not create/admit a Run (§9.1); evidence: phase4-runs.wide.txt + phase4-operator.log" "projects" "bmad-demo-project"
     elif [ "$RUN_PHASE" = "Succeeded" ]; then
       record "Phase 4: Story -> PR" PASS "Run/$RUN_REF Succeeded for work item $WORKITEM (SC-3)"; P4_OK=1
     else
       record "Phase 4: Story -> PR" FAIL "Run/$RUN_REF terminal phase=$RUN_PHASE (not Succeeded). See phase4-runs.wide.txt + operator logs."
       kubectl logs -n "$CP_NS" -l app.kubernetes.io/component=operator --tail=200 > "$OUT_DIR/phase4-operator.log" 2>&1 || true
       P4_OK=0
+      # Run reached a terminal non-Succeeded phase — full DT trace exists (operator
+      # dispatch/reconcile span). failingOp = status.phase + terminal condition; resourceId
+      # = the Run itself; extract_trace pulls the W3C traceId from its status/annotations.
+      RUN_COND="$(kubectl get runs "$RUN_REF" -n "$NAMESPACE" -o json 2>/dev/null \
+        | jq -r '(.status.conditions // [] | last) as $c | "status.phase=\(.status.phase // "?") terminalCondition=\($c.type // "?")=\($c.status // "?") reason=\($c.reason // "?") message=\($c.message // "?")"' 2>/dev/null || echo "status.phase=$RUN_PHASE")"
+      fail_capture "Phase 4 — Story -> PR (SC-3: Run Succeeded)" "Run/$RUN_REF $RUN_COND (see phase4-runs.wide.txt + phase4-operator.log)" "runs" "$RUN_REF"
     fi
   fi
 fi
 endgroup
-else record "Phase 4: Story -> PR" BLOCKED "gated by Phase 3"; P4_OK=0; fi
+else record "Phase 4: Story -> PR" BLOCKED "gated by Phase 3"; P4_OK=0
+  _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END="$(now_utc)"; fail_capture "Phase 4 — Story -> PR (BLOCKED: gated by Phase 3)" "not reached: gated by Phase 3 crew/toolchain failure" "" ""; fi
 
 # ============================================================ PHASE 5 — Verify the app artifact builds (SC-4)
 if [ "${P4_OK:-0}" -eq 1 ]; then
 group "PHASE 5 — verify >=1 landed PR is buildable (SC-4)"
+pstart "Phase 5: App buildable"
 # The crew pushes branches + opens PRs on $TARGET_REPO_URL. We confirm a branch other
 # than the tracked ref appeared (evidence of a landed change) using read-only git
 # ls-remote — no token needed for a public repo; a private repo needs the write-path
@@ -319,9 +479,15 @@ if [ -n "$BRANCHES" ]; then
 else
   record "Phase 5: App buildable" FAIL "no crew-authored branch on $TARGET_REPO_URL beyond '$TARGET_REPO_REF' — the story produced no landed change."
   P5_OK=0
+  pend "Phase 5: App buildable"
+  # Phase 5 = GitHub, OFF-CLUSTER — NO DT trace and no CRD resourceId (contract Part D).
+  # failingOp is the git/CI probe; evidence is phase5.log. resourceId/traceId are null by
+  # design here (do NOT fabricate); ProxOps links the PR + CI conclusion in the report.
+  fail_capture "Phase 5 — App buildable (SC-4: >=1 landed PR buildable)" "git ls-remote --heads $TARGET_REPO_URL -> 0 crew-authored branches beyond '$TARGET_REPO_REF' (no landed change; off-cluster, no DT trace). See phase5.log" "" ""
 fi
 endgroup
-else record "Phase 5: App buildable" BLOCKED "gated by Phase 4"; P5_OK=0; fi
+else record "Phase 5: App buildable" BLOCKED "gated by Phase 4"; P5_OK=0
+  _CUR_WIN_START="$(now_utc)"; _CUR_WIN_END="$(now_utc)"; fail_capture "Phase 5 — App buildable (BLOCKED: gated by Phase 4)" "not reached: gated by Phase 4 story->PR failure" "" ""; fi
 
 # ============================================================ PHASE 6 — Report (SC-5/SC-6)
 group "PHASE 6 — emit per-phase report"
@@ -347,20 +513,46 @@ STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "- **SC-6** No credential leak (tokens only ever named k8s Secrets; harness never reads/echoes a token)"
   echo
   echo "_Minimum bar = SC-1..SC-3 PASS and SC-4 PASS for ≥1 story. Partials reported honestly; BLOCKED ≠ FAIL._"
+  # o11y failure-capture summary (ISI-3562) — one row per failing phase, human-readable.
+  if [ "${#FAILURES[@]}" -gt 0 ]; then
+    echo
+    echo "## Failure capture (ISI-3562 — o11y enrichment key)"
+    echo
+    echo "| Phase | Window (UTC) | traceId | failingOp | resourceId |"
+    echo "|-------|--------------|---------|-----------|------------|"
+    printf '%s\n' "${FAILURES[@]}" | jq -r '
+      (.resourceId.ref // "—") as $ref
+      | (if .resourceId.uid then " uid=\(.resourceId.uid)" else "" end) as $uid
+      | (if .resourceId.observedGeneration != null then " gen=\(.resourceId.observedGeneration)" else "" end) as $gen
+      | (.failingOp | gsub("\\|"; "\\\\|")) as $op
+      | "| \(.phase) | \(.window.startedAtUtc // "?")→\(.window.endedAtUtc // "?") | \(.traceId // "—") | \($op) | \($ref)\($uid)\($gen) |"'
+    echo
+    echo "_Phase 0/1 (sync admission) & Phase 5 (off-cluster GitHub) carry no DT trace by design — resourceId + evidence dumps are the recovery key. Phase 2/3/4 traceId (when present) pivots to the operator span (tenant per ISI-3562 doc)._"
+  fi
 } > "$MD"
 
-# JSON ledger for machine consumption.
+# JSON ledger for machine consumption. Adds `failures[]` (ISI-3562 5-field contract):
+# one record per FAILED/BLOCKED phase with phase, window{startedAtUtc,endedAtUtc},
+# traceId (null when none exists — never fabricated), failingOp, resourceId{ref,uid,
+# observedGeneration}, and evidence[] file names dumped under $OUT_DIR.
+FAILURES_JSON='[]'
+if [ "${#FAILURES[@]}" -gt 0 ]; then
+  FAILURES_JSON="$(printf '%s\n' "${FAILURES[@]}" | jq -s '.')"
+fi
 {
   echo -n '{"generated":"'"$STAMP"'","namespace":"'"$NAMESPACE"'","targetRepo":"'"$TARGET_REPO_URL"'","phases":['
   for i in "${!PH_ID[@]}"; do
     [ "$i" -gt 0 ] && echo -n ','
     echo -n '{"phase":'"$(jq -Rn --arg v "${PH_ID[$i]}" '$v')"',"state":"'"${PH_STATE[$i]}"'","message":'"$(jq -Rn --arg v "${PH_MSG[$i]}" '$v')"'}'
   done
-  echo ']}'
+  echo -n '],"failures":'"$(echo "$FAILURES_JSON" | jq -c '.')"'}'
+  echo
 } > "$JSON"
+# Validate the emitted JSON so a malformed ledger fails loudly, not silently.
+jq -e . "$JSON" >/dev/null || { c_fail "phase-status.json is not valid JSON"; }
 
 echo; echo "=== per-phase status ==="; cat "$MD"; echo
-note "artifacts written to $OUT_DIR (phase-status.md/.json, condition dumps, logs) — attach to the Paperclip run issue (SC-5)"
+note "artifacts written to $OUT_DIR (phase-status.md/.json, failures[] o11y records, fail-*.yaml/.describe.txt, condition dumps, logs) — attach to the Paperclip run issue (SC-5)"
 endgroup
 
 # ------------------------------------------------------------------ exit disposition
