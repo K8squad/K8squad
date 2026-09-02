@@ -77,6 +77,10 @@ function NodeLink({
       data-expanded={expanded}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
+      // The label span is display:none on the collapsed tablet rail and NavIcon's svg is
+      // aria-hidden, so without this the link would have no accessible name. Matches the
+      // visible label exactly, so no name mismatch when the text is shown.
+      aria-label={node.label}
     >
       <span className="rail__icon">
         <NavIcon id={node.id} />
