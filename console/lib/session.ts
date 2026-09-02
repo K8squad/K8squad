@@ -57,3 +57,21 @@ export async function viewer(): Promise<Viewer> {
     return closed;
   }
 }
+
+/**
+ * canCompose is the client-side UX gate for the compose entry points (ISI-3554 Story A "+ New Agent"
+ * / "Edit"). It answers only what the console's session source (/auth/me → {@link Viewer}) can
+ * honestly know: is there a signed-in caller?
+ *
+ * The server-side write authority (composecrd.go, §13 choke point) gates on PER-PROJECT contributor
+ * membership — a role that /auth/me does NOT expose and that is existence-hidden (a foreign project
+ * is 404, not 403). The browser therefore CANNOT know a non-admin's contributor tier, and hiding the
+ * action from a legitimate contributor would mislead (the same reason the Compose nav node is left
+ * ungated). So this gate mirrors exactly the one authz fact the client holds: an unauthenticated
+ * caller (no resolved identity) can never write and is gated out; any signed-in caller is offered the
+ * action, and the apiserver remains the authority — a viewer-tier caller who proceeds sees the
+ * server's 403 verbatim on submit (no dead-end write, just an honest server verdict).
+ */
+export function canCompose(v: Viewer): boolean {
+  return v.username != null;
+}

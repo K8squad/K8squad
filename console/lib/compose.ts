@@ -25,6 +25,40 @@ export function isComposeKind(v: string): v is ComposeKind {
   return (COMPOSE_KINDS as readonly string[]).includes(v);
 }
 
+/** Create (POST) vs edit-by-name (PUT, new revision) — the compose surface's two write modes. */
+export type ComposeMode = "create" | "edit";
+
+/**
+ * parseComposeParams maps the compose deep-link query contract (ISI-3554 Story A) onto the initial
+ * kind/mode/name state. The URL contract is stable across Stories A/B:
+ *   ?kind=agents        pre-selects the kind (canonical: the real ComposeKind literal, PLURAL)
+ *   &mode=edit          optional; defaults to "create"
+ *   &name=<dns1123>     optional edit target, pre-filled into the name field
+ *
+ * It is deliberately forgiving so a hand-typed or stale link never lands the user on a broken form:
+ *   - the singular alias `agent` maps to `agents` (ISI-3546 wrote `kind=agent` as shorthand);
+ *   - an absent / unrecognized `kind` falls back COMPLETELY to the default create form
+ *     (`projects`/`create`, empty name) — `mode`/`name` are NOT interpreted, so a malformed link
+ *     like `?mode=edit&name=foo` can't leak into a Project edit targeting `foo` (AC4 — a bare
+ *     `/compose` and any un-pre-selected link behave exactly as today);
+ *   - only once a real kind is pre-selected do we read `mode` (`edit` for the exact literal, else
+ *     `create`) and the `name` edit target.
+ * PURE + unit-tested; the component seeds useState from it.
+ */
+export function parseComposeParams(p: {
+  kind?: string | null;
+  mode?: string | null;
+  name?: string | null;
+}): { kind: ComposeKind; mode: ComposeMode; name: string } {
+  const raw = (p.kind ?? "").trim();
+  const aliased = raw === "agent" ? "agents" : raw; // accept the singular shorthand as an alias
+  // No explicitly pre-selected kind ⇒ full default state; never let a stray mode/name through.
+  if (!isComposeKind(aliased)) return { kind: "projects", mode: "create", name: "" };
+  const mode: ComposeMode = p.mode === "edit" ? "edit" : "create";
+  const name = (p.name ?? "").trim();
+  return { kind: aliased, mode, name };
+}
+
 /** Human labels for the kind selector. */
 export const KIND_LABEL: Record<ComposeKind, string> = {
   teams: "Team",

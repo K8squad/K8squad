@@ -7,10 +7,18 @@
 // 403 and Team creation is admin-only — the form surfaces the server's verdict verbatim rather
 // than pre-authorizing in the browser.
 
+import { Suspense } from "react";
+
 import { ComposeScreen } from "@/components/compose/ComposeScreen";
 
 export const dynamic = "force-dynamic";
 
 export default function ComposePage() {
-  return <ComposeScreen />;
+  // ComposeScreen reads deep-link params via useSearchParams (ISI-3554) — Next requires a Suspense
+  // boundary around a client component that reads the query string.
+  return (
+    <Suspense fallback={<div className="compose" aria-busy="true" />}>
+      <ComposeScreen />
+    </Suspense>
+  );
 }
