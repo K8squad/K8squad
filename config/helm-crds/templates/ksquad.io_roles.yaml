@@ -56,8 +56,10 @@ spec:
             properties:
               defaultSkills:
                 description: |-
-                  DefaultSkills are granted to agents assuming this role unless the
-                  Agent's own skillRefs override them.
+                  DefaultSkills are granted to every agent assuming this role. They are
+                  UNIONED with the Agent's own skillRefs, not replaced by them: the
+                  effective skill set is Agent.spec.skillRefs ∪ Role.spec.defaultSkills,
+                  deduped by ref (ADR-044 step 1).
                 items:
                   description: ObjectRef is a light cross-CRD reference to another
                     ksquad.io object.
