@@ -128,6 +128,15 @@ type Options struct {
 	// a coord store / signing key wired); the operator only injects the
 	// KSQUAD_COORD_URL token when this is live.
 	TaskIO http.Handler
+	// OrgOps is the ISI-3626 run-scoped board-ops seam (create-agent /
+	// create-skill / create-project / archive-project) mounted under
+	// /api/org-ops/. Like TaskIO it carries its OWN run-scoped bearer auth
+	// (pkg/orgops, verified via the shared taskio.Minter) and is mounted at the
+	// router root outside the cookie choke point — but every verb additionally
+	// requires the token's role-derived scope (org:write / project:write,
+	// ADR-0005 D2). Nil ⇒ the surface is simply absent (no signing key / write
+	// client wired).
+	OrgOps http.Handler
 }
 
 // NewServer assembles the root router from opts.
@@ -171,6 +180,14 @@ func (s *Server) routes(opts Options) {
 	if opts.TaskIO != nil {
 		s.router.PathPrefix("/api/task-io/").Handler(
 			http.StripPrefix("/api/task-io", opts.TaskIO))
+	}
+
+	// ── Run-scoped board-ops seam (ISI-3626) — same OWN-bearer-auth shape as ──
+	// task-io, mounted at the router root outside the cookie choke point. Its
+	// handler additionally enforces the token's role-derived scope per verb.
+	if opts.OrgOps != nil {
+		s.router.PathPrefix("/api/org-ops/").Handler(
+			http.StripPrefix("/api/org-ops", opts.OrgOps))
 	}
 
 	// ── Gated API surface (everything below rides the §13 authz choke point) ──

@@ -40,6 +40,13 @@ type Claims struct {
 	// shared HS256 key, so a session JWT can never be replayed as a run token.
 	RunID      string `json:"run,omitempty"`
 	WorkItemID string `json:"wid,omitempty"`
+	// Scopes carries the role-derived privilege grant for a run token (ISI-3626,
+	// ADR-0005 D2): e.g. "org:write" for CEO+manager runs, "project:write" for
+	// CEO runs, neither for IC runs. It is minted from the run's Role — never
+	// from Agent.spec.skillRefs — so the union-with-per-Agent-skills loophole
+	// cannot widen it. Empty on ordinary session JWTs and on IC run tokens; the
+	// org/project coord API checks it server-side on every privileged call.
+	Scopes []string `json:"scp,omitempty"`
 }
 
 // JWTIssuer issues HS256 mint/Verify pair.
