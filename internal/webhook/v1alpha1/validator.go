@@ -480,14 +480,31 @@ func (v *CrossRefValidator) validateRunToolCredentialsDerived(ctx context.Contex
 		}
 		agent := &ksquadv1alpha1.Agent{}
 		if err := v.Reader.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: ref.Name}, agent); err != nil {
-			// A missing/unreadable Agent is already reported by GuardRunAgents;
-			// here it just means no grants to contribute. Fail-closed happens
-			// below when the Run credential finds no authoriser.
+			if apierrors.IsNotFound(err) {
+				// A genuinely missing Agent is already reported by
+				// GuardRunAgents; it simply contributes no grants here.
+				continue
+			}
+			// A transient/forbidden read must NOT be silently downgraded to
+			// "no grant" — that would mischaracterise an API outage as a
+			// policy violation ("credential not declared") below. This guard
+			// runs its own Get (guards are independently switchable, so we
+			// cannot lean on GuardRunAgents having covered it), so it owns
+			// its own fail-closed diagnostic.
+			errs = append(errs, invalidf(fmt.Sprintf("spec.agents[%d]", agentIndexOf(run, ref)), ref.Name,
+				"admission read of Agent %s/%s failed (fail-closed): %v", run.Namespace, ref.Name, err))
 			continue
 		}
 		for _, tc := range agent.Spec.ToolCredentials {
 			authorised[grant{tc.Purpose, tc.SecretRef.Name, toolcred.EffectiveKey(tc.SecretRef.Key)}] = true
 		}
+	}
+	// If any Agent read failed transiently we cannot compute the authorised
+	// set reliably; return the fail-closed read diagnostic(s) WITHOUT running
+	// the policy comparison, so an outage is never reported as a mis-declared
+	// credential.
+	if len(errs) > 0 {
+		return errs
 	}
 	for i, tc := range run.Spec.ToolCredentials {
 		if !authorised[grant{tc.Purpose, tc.SecretRef.Name, toolcred.EffectiveKey(tc.SecretRef.Key)}] {
@@ -496,6 +513,18 @@ func (v *CrossRefValidator) validateRunToolCredentialsDerived(ctx context.Contex
 		}
 	}
 	return errs
+}
+
+// agentIndexOf returns the index of ref within run.Spec.Agents (by name +
+// resolved namespace), or -1. Used only to give a fail-closed Agent-read
+// diagnostic a precise field path.
+func agentIndexOf(run *ksquadv1alpha1.Run, ref ksquadv1alpha1.ObjectRef) int {
+	for i, a := range run.Spec.Agents {
+		if a.Name == ref.Name && resolveNamespace(a, run.Namespace) == resolveNamespace(ref, run.Namespace) {
+			return i
+		}
+	}
+	return -1
 }
 
 // validateRunToolchains resolves the Run's full toolchain demand — its

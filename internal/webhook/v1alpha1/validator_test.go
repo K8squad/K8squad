@@ -308,6 +308,44 @@ func TestValidateRunToolCredentials(t *testing.T) {
 	assert.Contains(t, err.Error(), "gitlab-token")
 }
 
+// TestValidateRunToolCredentialsAgentReadFailsClosed (ISI-3565, Copilot
+// review round 3): a transient/forbidden Agent read in the derived-from-Agent
+// check must fail CLOSED with a read diagnostic, NOT be silently downgraded
+// to "credential not declared" — an API outage must never be reported as a
+// user policy mistake.
+func TestValidateRunToolCredentialsAgentReadFailsClosed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, ksquadv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	boom := errors.New("apiserver timeout")
+	// Fail ONLY Agent reads; Team/Project/Secret-metadata resolve normally so
+	// the only failing lookup is the Agent authorization fetch.
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(validWorld()...).
+		WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-writepath", Namespace: ns}}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isAgent := obj.(*ksquadv1alpha1.Agent); isAgent {
+					return boom
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	v := &CrossRefValidator{Reader: c}
+
+	r := validRun()
+	r.Spec.Agents = []ksquadv1alpha1.ObjectRef{{Name: "pusher"}}
+	r.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}},
+	}
+	agg := v.ValidateRun(context.Background(), r).ToAggregate()
+	require.Error(t, agg)
+	assert.Contains(t, agg.Error(), "fail-closed", "Agent read failure must surface as a fail-closed diagnostic")
+	assert.NotContains(t, agg.Error(), "not declared by any same-namespace Agent",
+		"an API outage must NOT be reported as a policy violation")
+}
+
 // invalidCase couples one guard with its dangling-ref specimen: invalid
 // runs the exact denial the webhook server serializes (toInvalid shape).
 type invalidCase struct {
