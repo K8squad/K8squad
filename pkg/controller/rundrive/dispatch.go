@@ -37,6 +37,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -99,6 +100,16 @@ type OperatorDispatchConfig struct {
 	// recompute-from-snapshot). Nil ships title+body only, the pre-S1
 	// behavior, so the field is opt-in and non-regressing.
 	ContextAssemblers ContextAssemblers
+	// TaskIOMinter, when set, mints the run-scoped task-io token (ISI-3601 S2)
+	// injected into the shim env as KSQUAD_COORD_TOKEN. Nil disables task-io
+	// env injection entirely — the agent simply gets no token (fail-safe: an
+	// absent token makes the coord API refuse the call, never fail-open).
+	TaskIOMinter *taskio.Minter
+	// TaskIOCoordURL is the in-cluster coord/apiserver base URL injected as
+	// KSQUAD_COORD_URL (§AC7: an in-cluster Service, not a public surface).
+	// Empty disables task-io injection — both the minter and the URL are
+	// needed together for the seam to be usable.
+	TaskIOCoordURL string
 }
 
 // ContextAssemblers builds a per-namespace §8.5 context assembler over the
@@ -352,6 +363,29 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 			env = append(env, envName+"="+v)
 		}
 	}
+	// Task-io seam (ISI-3601 S2, AC6): the run-scoped bootstrap vars mirror
+	// Paperclip's PAPERCLIP_API_URL / PAPERCLIP_API_KEY / PAPERCLIP_TASK_ID
+	// injection so an agent can re-read its task, comment, update status, and
+	// check out mid-run. The token is minted per task, bound to (RUN_ID,
+	// WORK_ITEM_ID) — own-run only. It joins THIS curated env, never os.Environ,
+	// so the minimal-env invariant holds (no DATABASE_URL / operator secret
+	// reaches the subprocess). Injection is skipped wholesale unless both a
+	// minter and a coord URL are configured, and the Run names a work item —
+	// fail-safe (an absent token makes the coord API refuse the call, never
+	// fail-open).
+	if d.cfg.TaskIOMinter != nil && d.cfg.TaskIOCoordURL != "" && run.Spec.WorkItemRef != "" {
+		token, err := d.cfg.TaskIOMinter.Mint(runID, run.Spec.WorkItemRef, d.agentName(ctx, runID))
+		if err != nil {
+			return nil, fmt.Errorf("rundrive: mint task-io token for Run %s: %w", runID, err)
+		}
+		env = append(env,
+			taskio.EnvCoordURL+"="+d.cfg.TaskIOCoordURL,
+			taskio.EnvCoordToken+"="+token,
+			taskio.EnvWorkItemID+"="+run.Spec.WorkItemRef,
+			taskio.EnvRunID+"="+runID,
+		)
+	}
+
 	env = append(env, d.cfg.ExtraEnv...)
 
 	// #nosec G204 -- d.shimBin is the operator's own pod-spec env/config

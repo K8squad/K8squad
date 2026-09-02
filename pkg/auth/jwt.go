@@ -32,6 +32,14 @@ type Claims struct {
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
 	SessionID string `json:"sid,omitempty"`
+	// RunID / WorkItemID carry the run-scoped binding for the task-io token
+	// (ISI-3601): a token minted for a Run authorizes actions only on that
+	// Run's work item. They are empty on ordinary console session JWTs and set
+	// only on tokens minted through the "ksquad-taskio" issuer — the distinct
+	// issuer string is what domain-separates the two audiences even under a
+	// shared HS256 key, so a session JWT can never be replayed as a run token.
+	RunID      string `json:"run,omitempty"`
+	WorkItemID string `json:"wid,omitempty"`
 }
 
 // JWTIssuer issues HS256 mint/Verify pair.
@@ -50,13 +58,26 @@ var ErrInvalidToken = errors.New("auth: invalid token")
 // floor); ttl <= 0 defaults to 1h. A zero key is rejected — callers generate one
 // at startup (cmd/apiserver) and log the auto-generation warning.
 func NewJWTIssuer(key []byte, ttl time.Duration) (*JWTIssuer, error) {
+	return NewJWTIssuerWithIssuer(key, ttl, "ksquad-apiserver")
+}
+
+// NewJWTIssuerWithIssuer is NewJWTIssuer with a caller-chosen issuer string.
+// The issuer is minted into `iss` and re-checked on Verify, so two issuers over
+// the SAME signing key are audience-separated: a token minted by one does not
+// verify against the other (ISI-3601 run-scoped task-io tokens use a distinct
+// issuer so a console session JWT cannot be replayed as a run token). Callers
+// outside the console session mint should prefer this constructor.
+func NewJWTIssuerWithIssuer(key []byte, ttl time.Duration, iss string) (*JWTIssuer, error) {
 	if len(key) < 32 {
 		return nil, fmt.Errorf("auth: jwt signing key must be >= 32 bytes, got %d", len(key))
+	}
+	if iss == "" {
+		return nil, fmt.Errorf("auth: jwt issuer must be non-empty")
 	}
 	if ttl <= 0 {
 		ttl = time.Hour
 	}
-	return &JWTIssuer{key: key, iss: "ksquad-apiserver", ttl: ttl, now: time.Now}, nil
+	return &JWTIssuer{key: key, iss: iss, ttl: ttl, now: time.Now}, nil
 }
 
 // TTL reports the configured token lifetime (for the login response's expiresIn).
