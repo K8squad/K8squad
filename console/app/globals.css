@@ -322,8 +322,11 @@ body {
 
 /* ── Tablet + desktop: the rail appears; top bar / bottom nav step aside ──────────────────────── */
 @media (min-width: 768px) {
+  /* .drawer is included so a mobile drawer left open across a resize/rotate to tablet/desktop
+   * (its React state survives the breakpoint change) cannot cover the page with stale UI. */
   .topbar,
-  .bottomnav {
+  .bottomnav,
+  .drawer {
     display: none;
   }
   .shell__main {
@@ -371,13 +374,16 @@ body {
   .rail__brand {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: center; /* collapsed: only the expand button remains — centre it */
     gap: 8px;
     min-height: 32px;
     margin-bottom: 8px;
   }
+  /* The 64px icon rail has only ~44px of content width — not enough for the home lockup
+   * (24px mark + wordmark) beside the 32px expand button, which would overlap/clip. Hide the
+   * lockup while collapsed; it returns when the rail expands (below) and on desktop. */
   .rail__homelink {
-    display: inline-flex;
+    display: none;
   }
   .rail__expand {
     display: inline-flex;
@@ -429,6 +435,12 @@ body {
   .rail[data-expanded] .projselect {
     display: flex;
   }
+  .rail[data-expanded] .rail__brand {
+    justify-content: space-between; /* room for the lockup again once expanded to 240px */
+  }
+  .rail[data-expanded] .rail__homelink {
+    display: inline-flex;
+  }
   .rail[data-expanded] .rail__link {
     justify-content: flex-start;
     padding: 8px 10px;
@@ -462,6 +474,14 @@ body {
   }
   .rail__expand {
     display: none;
+  }
+  /* Persistent 240px rail: bring the home lockup back and left-align it (overrides the
+   * collapsed-tablet rules above, which also match at >=1024). */
+  .rail__brand {
+    justify-content: space-between;
+  }
+  .rail__homelink {
+    display: inline-flex;
   }
   .rail__label {
     display: inline;
