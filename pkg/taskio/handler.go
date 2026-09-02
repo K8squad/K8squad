@@ -6,6 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // Store is the coord-backed read/write model the endpoints operate over. It is
@@ -20,9 +26,11 @@ type Store interface {
 	GetTask(ctx context.Context, workItemID string) (TaskDetail, error)
 	// PostComment appends a comment attributed to principal and returns it.
 	PostComment(ctx context.Context, workItemID, principal, body string) (Comment, error)
-	// UpdateStatus transitions the work item's state. ErrInvalidTransition if
-	// the target is not a permitted next state.
-	UpdateStatus(ctx context.Context, workItemID, principal, target string) error
+	// UpdateStatus transitions the work item's state and returns the lane it was
+	// in BEFORE the move (for the AC8 `status.from` span attribute). from may be
+	// empty when the prior lane is unknown (e.g. an early validation refusal).
+	// ErrInvalidTransition if the target is not a permitted next state.
+	UpdateStatus(ctx context.Context, workItemID, principal, target string) (from string, err error)
 	// Checkout claims/refreshes the item via the EXISTING coord.claim fence and
 	// returns the fence held after the call. ErrStaleFence if the caller lost a
 	// custody race (fence monotonicity preserved).
@@ -95,11 +103,105 @@ func NewHandler(minter *Minter, store Store) *Handler {
 // endpoint is reachable unauthenticated (§AC5).
 func (h *Handler) Mux() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/get-task", h.auth(h.getTask))
-	mux.HandleFunc("/post-comment", h.auth(h.postComment))
-	mux.HandleFunc("/update-status", h.auth(h.updateStatus))
-	mux.HandleFunc("/checkout", h.auth(h.checkout))
+	// auth resolves the run token FIRST (so an unauthenticated caller never opens
+	// a span — AC8's GIVEN is "invoked with a valid run token"); instrument then
+	// opens the taskio.<op> server span with the token's run/work-item identity.
+	mux.HandleFunc("/get-task", h.auth(h.instrument("get_task", h.getTask)))
+	mux.HandleFunc("/post-comment", h.auth(h.instrument("post_comment", h.postComment)))
+	mux.HandleFunc("/update-status", h.auth(h.instrument("update_status", h.updateStatus)))
+	mux.HandleFunc("/checkout", h.auth(h.instrument("checkout", h.checkout)))
 	return mux
+}
+
+// instrument opens the AC8 `taskio.<op>` server span around a handler. It joins
+// the Run's distributed trace: the client (S3's skill runtime) forwards the
+// Run's `traceparent` — stamped into the pod env by dispatch — as an inbound
+// header, which is Extracted here so each call is a child of the Run trace.
+// Attributes are op/ids/status only; comment bodies and task descriptions are
+// NEVER emitted (§8 PII rule). A metric hook can attach at span end after
+// ISI-3593 without re-plumbing.
+func (h *Handler) instrument(op string, next authedHandler) authedHandler {
+	return func(w http.ResponseWriter, r *http.Request, tok RunToken) {
+		ctx := telemetry.Extract(r.Context(), inboundTrace(r))
+		ctx, span := telemetry.Tracer().Start(ctx, "taskio."+op,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("ksquad.taskio.op", op),
+				attribute.String("ksquad.run.id", tok.RunID),
+				attribute.String("ksquad.taskio.work_item_id", tok.WorkItemID),
+			),
+		)
+		defer span.End()
+
+		rec := &statusRecorder{ResponseWriter: w, code: http.StatusOK}
+		next(rec, r.WithContext(ctx), tok)
+
+		span.SetAttributes(attribute.Int("http.response.status_code", rec.code))
+		if rec.code >= http.StatusBadRequest {
+			span.SetAttributes(attribute.String("ksquad.taskio.error_class", errorClass(rec.code)))
+			span.SetStatus(codes.Error, http.StatusText(rec.code))
+		}
+	}
+}
+
+// inboundTrace lifts the W3C trace-context headers a task-io client forwards
+// into a carrier for telemetry.Extract. Absent headers root a fresh trace.
+func inboundTrace(r *http.Request) map[string]string {
+	c := map[string]string{}
+	if v := r.Header.Get("traceparent"); v != "" {
+		c["traceparent"] = v
+	}
+	if v := r.Header.Get("tracestate"); v != "" {
+		c["tracestate"] = v
+	}
+	return c
+}
+
+// statusRecorder captures the response status code for the AC8 span without
+// buffering the body. Defaults to 200 (a handler that Writes without an explicit
+// WriteHeader).
+type statusRecorder struct {
+	http.ResponseWriter
+	code    int
+	written bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.written {
+		s.code = code
+		s.written = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.written = true
+	return s.ResponseWriter.Write(b)
+}
+
+// errorClass maps a >=400 status to a low-cardinality span attribute value (§8:
+// bounded enum, never free text). 401 never reaches here — auth short-circuits
+// before the span opens.
+func errorClass(code int) string {
+	switch code {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
+	case http.StatusConflict:
+		return "stale_fence"
+	case http.StatusUnprocessableEntity:
+		return "invalid_transition"
+	default:
+		if code >= http.StatusInternalServerError {
+			return "server_error"
+		}
+		return "client_error"
+	}
 }
 
 // authedHandler is a handler that has already resolved the run token.
@@ -175,7 +277,16 @@ func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request, tok RunTo
 		writeError(w, http.StatusBadRequest, "status required")
 		return
 	}
-	if err := h.store.UpdateStatus(r.Context(), tok.WorkItemID, tok.Principal, req.Status); err != nil {
+	from, err := h.store.UpdateStatus(r.Context(), tok.WorkItemID, tok.Principal, req.Status)
+	// AC8: status.from/.to are recorded ONLY for update_status. .to is the
+	// requested target (always known); .from is the prior lane the store
+	// reports (may be empty on a refusal where the current lane is not read).
+	span := trace.SpanFromContext(r.Context())
+	span.SetAttributes(attribute.String("ksquad.taskio.status.to", req.Status))
+	if from != "" {
+		span.SetAttributes(attribute.String("ksquad.taskio.status.from", from))
+	}
+	if err != nil {
 		writeStoreError(w, err)
 		return
 	}

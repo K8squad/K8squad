@@ -19,6 +19,7 @@ type fakeStore struct {
 	lastAuthor     string
 	lastStatusWI   string
 	lastStatus     string
+	fromState      string
 	lastCheckoutWI string
 	fence          int64
 	transitionErr  error
@@ -41,10 +42,10 @@ func (f *fakeStore) PostComment(_ context.Context, wi, principal, body string) (
 	return Comment{Author: principal, Body: body, CreatedAt: time.Unix(0, 0)}, nil
 }
 
-func (f *fakeStore) UpdateStatus(_ context.Context, wi, _, target string) error {
+func (f *fakeStore) UpdateStatus(_ context.Context, wi, _, target string) (string, error) {
 	f.lastStatusWI = wi
 	f.lastStatus = target
-	return f.transitionErr
+	return f.fromState, f.transitionErr
 }
 
 func (f *fakeStore) Checkout(_ context.Context, wi, _, _ string) (int64, error) {
