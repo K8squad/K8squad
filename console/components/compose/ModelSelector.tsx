@@ -56,8 +56,11 @@ export function ModelSelector({
   }, [modelEndpointRef]);
 
   // The <select> shows: a curated id when the model is one; "Custom model…" while in custom mode;
-  // otherwise the empty placeholder (create-time, nothing chosen yet).
-  const selectValue = customMode ? CUSTOM : curated ? model : "";
+  // otherwise the empty placeholder (create-time, nothing chosen yet). Curated matching trims, so
+  // the value handed to the controlled <select> must be normalized too — otherwise a saved model
+  // with stray whitespace ("  claude-opus-4-8  ") is classified curated yet matches no <option>
+  // and silently renders as the placeholder (Copilot review, PR #240).
+  const selectValue = customMode ? CUSTOM : curated ? model.trim() : "";
 
   function onSelect(next: string) {
     if (next === CUSTOM) {
@@ -97,19 +100,14 @@ export function ModelSelector({
         error={errors["model"]}
       >
         {customMode ? (
-          <div className="compose__model-custom">
-            <input
-              value={model}
-              onChange={(e) => patch({ model: e.target.value })}
-              aria-invalid={!!errors["model"]}
-              aria-label="Custom model id"
-              placeholder="e.g. ollama/llama3.1:8b"
-              autoFocus
-            />
-            <button type="button" className="btn btn--ghost" onClick={backToList}>
-              ‹ Curated list
-            </button>
-          </div>
+          <input
+            value={model}
+            onChange={(e) => patch({ model: e.target.value })}
+            aria-invalid={!!errors["model"]}
+            aria-label="Custom model id"
+            placeholder="e.g. ollama/llama3.1:8b"
+            autoFocus
+          />
         ) : (
           <select
             value={selectValue}
@@ -127,6 +125,15 @@ export function ModelSelector({
           </select>
         )}
       </Field>
+
+      {/* The "back to curated list" control is a sibling of the <label> Field renders — never a
+          child of it: a <button> inside a <label> alongside the input is invalid, ambiguous-focus
+          markup for assistive tech (Copilot review, PR #240). */}
+      {customMode && (
+        <button type="button" className="btn btn--ghost compose__model-back" onClick={backToList}>
+          ‹ Curated list
+        </button>
+      )}
 
       <div className="compose__byo">
         <button

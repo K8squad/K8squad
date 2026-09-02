@@ -67,6 +67,20 @@ describe("<ModelSelector> — Story B ACs", () => {
     expect(select.value).toBe("claude-opus-4-8");
   });
 
+  it("normalizes a curated model with stray whitespace to the matching option (Copilot #240)", () => {
+    render(<Harness model="  claude-opus-4-8  " />);
+    // Curated (trim-matched) → shown in the list at the real option value, never the placeholder.
+    const select = screen.getByLabelText("Model") as HTMLSelectElement;
+    expect(select.value).toBe("claude-opus-4-8");
+  });
+
+  it("keeps the 'Curated list' button OUT of the label wrapper (Copilot #240)", () => {
+    render(<Harness model="my-self-hosted-model" />);
+    const back = screen.getByRole("button", { name: /curated list/i });
+    // Invalid markup guard: a <button> must not live inside the Field's <label>.
+    expect(back.closest("label")).toBeNull();
+  });
+
   it("AC3/AC8: BYO toggle is accessible and reveals the endpoint-Secret field", () => {
     render(<Harness />);
     const toggle = screen.getByRole("button", { name: /bring your own endpoint/i });

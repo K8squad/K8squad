@@ -1242,14 +1242,11 @@ a:hover {
 }
 
 /* Story B (ISI-3555): guided model selector + BYO endpoint. */
-.compose__model-custom {
-  display: flex;
-  gap: 8px;
-  align-items: stretch;
-}
-.compose__model-custom input {
-  flex: 1 1 auto;
-  min-width: 0;
+.compose__model-back {
+  align-self: flex-start;
+  margin-top: -4px;
+  padding: 4px 10px;
+  min-height: 0;
 }
 .btn--ghost {
   background: transparent;
