@@ -6,8 +6,11 @@
 // org diagram. An explicit `?team=<teamUID>` deep-link (e.g. from a shared URL) overrides that
 // resolution. Read-only legibility: click an agent to open its detail and run history.
 
+import Link from "next/link";
+
 import { SessionTeamOrg } from "@/components/agents/SessionTeamOrg";
 import { TeamOrgDiagram } from "@/components/agents/TeamOrgDiagram";
+import { canCompose, viewer } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -17,14 +20,39 @@ export default async function AgentsPage({
   searchParams: Promise<{ team?: string }>;
 }) {
   const { team } = await searchParams;
+  // "+ New Agent" is the discoverable entry point into the compose Agent form (ISI-3554 Story A).
+  // Gated on a resolved session identity; the apiserver stays the write authority (see canCompose).
+  const may = canCompose(await viewer());
   return (
     <main className="agents-page">
       <header className="agents-page__head">
-        <h1>Agents</h1>
-        <p className="muted">
-          Live org chart of your squad — Team → Agent → Role. Read-only: click
-          an agent to open its detail and run history.
-        </p>
+        <div className="agents-page__head-text">
+          <h1>Agents</h1>
+          <p className="muted">
+            Live org chart of your squad — Team → Agent → Role. Read-only: click
+            an agent to open its detail and run history.
+          </p>
+        </div>
+        {may ? (
+          <Link
+            className="btn btn--primary agents-page__new"
+            href="/compose?kind=agents"
+            aria-label="New Agent"
+          >
+            <span aria-hidden="true">+ </span>New Agent
+          </Link>
+        ) : (
+          <button
+            type="button"
+            className="btn agents-page__new"
+            disabled
+            aria-disabled="true"
+            aria-label="New Agent — sign in to add an agent"
+            title="Sign in to add an agent"
+          >
+            <span aria-hidden="true">+ </span>New Agent
+          </button>
+        )}
       </header>
       <div className="card">
         {team ? <TeamOrgDiagram teamId={team} /> : <SessionTeamOrg />}

@@ -746,6 +746,26 @@ a:hover {
   align-items: center;
   gap: 12px;
 }
+/* "Edit" deep-link into the compose Agent form (ISI-3554) — pinned to the head's trailing edge. */
+.agent-detail__edit {
+  margin-left: auto;
+}
+
+/* Agents landing header: title/description block + trailing "+ New Agent" action (ISI-3554). */
+.agents-page__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agents-page__head-text {
+  min-width: 0;
+}
+.agents-page__new {
+  flex: none;
+  white-space: nowrap;
+}
 
 /* Settings / OTLP form (8.12) */
 .settings-otlp {

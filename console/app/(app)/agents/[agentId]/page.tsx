@@ -6,6 +6,7 @@
 // affordance. Deny is existence-hiding — a foreign / missing Agent renders identically (404-not-403).
 
 import { AgentDetail } from "@/components/agents/AgentDetail";
+import { canCompose, viewer } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
 
@@ -15,9 +16,12 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>;
 }) {
   const { agentId } = await params;
+  // Whether to offer the "Edit" deep-link into the compose Agent form (ISI-3554 Story A) — resolved
+  // server-side from the session; the apiserver remains the write authority (see canCompose).
+  const mayEdit = canCompose(await viewer());
   return (
     <main className="agent-detail-page">
-      <AgentDetail agentId={agentId} />
+      <AgentDetail agentId={agentId} canEdit={mayEdit} />
     </main>
   );
 }
