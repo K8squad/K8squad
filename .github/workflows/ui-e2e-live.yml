@@ -1,0 +1,89 @@
+name: UI E2E (live)
+
+# ISI-3536 (parent ISI-3534) — the parameterized live-Console Playwright suite.
+#
+# OPTIONAL + MANUAL ONLY. This workflow is triggered by `workflow_dispatch` exclusively: it has NO
+# push/pull_request trigger, so it can NEVER gate a PR. There is no ephemeral environment to test
+# against — the target is an already-running Console (default http://10.0.0.219), which lives on the
+# homelab LAN, so this runs on the self-hosted runner that can reach it.
+#
+# It takes host / username / password as inputs (never committed). The password is consumed via env
+# and never echoed. See console/e2e/live/README.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Base URL of the live Console"
+        required: true
+        default: "http://10.0.0.219"
+      username:
+        description: "Admin username"
+        required: true
+        default: "admin"
+      password:
+        description: "Admin password (leave blank to run gateway + login-render rows only)"
+        required: false
+        default: ""
+      project_id:
+        description: "Optional project id for project-scoped page rows (blank = auto-discover)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  ui-e2e-live:
+    name: ui-e2e-live (manual, non-gating)
+    # The live target sits on the homelab LAN; a hosted runner cannot reach it.
+    runs-on: [self-hosted, linux, x64]
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Install Playwright browser (chromium)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run live UI E2E
+        env:
+          KSQUAD_BASE_URL: ${{ inputs.base_url }}
+          KSQUAD_USERNAME: ${{ inputs.username }}
+          KSQUAD_PASSWORD: ${{ inputs.password }}
+          KSQUAD_PROJECT_ID: ${{ inputs.project_id }}
+        # Do not fail the job on red rows — this is a diagnostic sweep; the per-feature scoreboard
+        # and artifacts are the deliverable. The step still surfaces the exit status in the summary.
+        run: |
+          set +e
+          npm run e2e:live
+          echo "playwright_exit=$?" >> "$GITHUB_OUTPUT"
+        id: run
+
+      - name: Publish per-feature scoreboard to the job summary
+        if: always()
+        run: |
+          if [ -f test-results/live/feature-status.md ]; then
+            cat test-results/live/feature-status.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No feature-status.md produced (suite did not start)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload reports & artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ui-e2e-live-report
+          path: |
+            console/playwright-report/live/**
+            console/test-results/live/**
+          if-no-files-found: warn
+          retention-days: 14
