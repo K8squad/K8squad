@@ -37,9 +37,12 @@ export type ComposeMode = "create" | "edit";
  *
  * It is deliberately forgiving so a hand-typed or stale link never lands the user on a broken form:
  *   - the singular alias `agent` maps to `agents` (ISI-3546 wrote `kind=agent` as shorthand);
- *   - an absent / unrecognized `kind` falls back to the current default (`projects`), so `/compose`
- *     with no params behaves exactly as it does today (AC4 — no regression);
- *   - `mode` is `edit` only for the exact literal, else `create`.
+ *   - an absent / unrecognized `kind` falls back COMPLETELY to the default create form
+ *     (`projects`/`create`, empty name) — `mode`/`name` are NOT interpreted, so a malformed link
+ *     like `?mode=edit&name=foo` can't leak into a Project edit targeting `foo` (AC4 — a bare
+ *     `/compose` and any un-pre-selected link behave exactly as today);
+ *   - only once a real kind is pre-selected do we read `mode` (`edit` for the exact literal, else
+ *     `create`) and the `name` edit target.
  * PURE + unit-tested; the component seeds useState from it.
  */
 export function parseComposeParams(p: {
@@ -49,10 +52,11 @@ export function parseComposeParams(p: {
 }): { kind: ComposeKind; mode: ComposeMode; name: string } {
   const raw = (p.kind ?? "").trim();
   const aliased = raw === "agent" ? "agents" : raw; // accept the singular shorthand as an alias
-  const kind: ComposeKind = isComposeKind(aliased) ? aliased : "projects";
+  // No explicitly pre-selected kind ⇒ full default state; never let a stray mode/name through.
+  if (!isComposeKind(aliased)) return { kind: "projects", mode: "create", name: "" };
   const mode: ComposeMode = p.mode === "edit" ? "edit" : "create";
   const name = (p.name ?? "").trim();
-  return { kind, mode, name };
+  return { kind: aliased, mode, name };
 }
 
 /** Human labels for the kind selector. */
