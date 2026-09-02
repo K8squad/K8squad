@@ -227,11 +227,25 @@ func TestValidateRunToolCredentials(t *testing.T) {
 	ctx := context.Background()
 
 	// Seed an Agent that DECLARES a github-token aux credential, and its
-	// Secret, on top of the base world.
+	// Secret, on top of the base world. Plus a cross-namespace Agent that
+	// declares the SAME name/key but in "other" — its Secret is a different
+	// physical object and must not authorize a Run in `ns`.
 	world := validWorld()
 	world = append(world,
 		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-writepath", Namespace: ns}},
 		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "pusher", Namespace: ns},
+			Spec: ksquadv1alpha1.AgentSpec{
+				RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
+				RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
+				CredentialSecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"},
+				Model:               "claude-sonnet-4",
+				ToolCredentials: []ksquadv1alpha1.ToolCredential{
+					// Explicit "token" key — must be treated as equal to an
+					// empty (defaulted) key on the Run side.
+					{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath", Key: "token"}},
+				},
+			}},
+		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "foreign-pusher", Namespace: "other"},
 			Spec: ksquadv1alpha1.AgentSpec{
 				RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
 				RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
@@ -252,15 +266,32 @@ func TestValidateRunToolCredentials(t *testing.T) {
 	}
 	ghCred := []ksquadv1alpha1.ToolCredential{{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}}}
 
-	// Valid: the Run projects exactly what the "pusher" Agent declares.
+	// Valid: the Run projects exactly what the "pusher" Agent declares. The
+	// Run leaves Key empty (→ "token"); the Agent declared Key "token"
+	// explicitly — EffectiveKey normalizes both, so it admits.
 	ok := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}}, ghCred)
 	assert.NoError(t, toInvalid("Run", ok.Name, v.ValidateRun(ctx, ok)),
-		"a Run projecting an Agent-declared aux credential must admit")
+		"a Run projecting an Agent-declared aux credential must admit (key default == explicit)")
+
+	// Key mismatch: same Secret name, DIFFERENT key than any Agent declared
+	// — rejected (a Run must not read a key the Agent never authorized).
+	keyMismatch := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}},
+		[]ksquadv1alpha1.ToolCredential{{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath", Key: "other-key"}}})
+	err := toInvalid("Run", keyMismatch.Name, v.ValidateRun(ctx, keyMismatch))
+	require.Error(t, err, "a Run selecting a Secret key no Agent declared must be rejected")
+	assert.Contains(t, err.Error(), "projected from an admitted Agent")
+
+	// Cross-namespace Agent: "foreign-pusher" in "other" declares the same
+	// name/key, but its Secret is a different physical object than the one the
+	// Run's pod would mount in `ns` — it must NOT authorize.
+	crossNs := runWith([]ksquadv1alpha1.ObjectRef{{Name: "foreign-pusher", Namespace: "other"}}, ghCred)
+	require.Error(t, toInvalid("Run", crossNs.Name, v.ValidateRun(ctx, crossNs)),
+		"a cross-namespace Agent must not authorize a Run's same-named aux credential")
 
 	// Not derived: the Run names an Agent that does NOT declare this
 	// credential — rejected (the bypass Copilot flagged).
 	bypass := runWith([]ksquadv1alpha1.ObjectRef{{Name: "amelia"}}, ghCred)
-	err := toInvalid("Run", bypass.Name, v.ValidateRun(ctx, bypass))
+	err = toInvalid("Run", bypass.Name, v.ValidateRun(ctx, bypass))
 	require.Error(t, err, "a Run aux credential no Agent declares must be rejected")
 	assert.Contains(t, err.Error(), "projected from an admitted Agent")
 

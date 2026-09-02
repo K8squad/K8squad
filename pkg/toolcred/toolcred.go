@@ -67,10 +67,23 @@ const (
 	PurposeGitHub Purpose = "github-token"
 )
 
-// defaultKey is the Secret data key read when a ToolCredential's SecretRef
-// leaves Key empty. It matches the credinject/capability "token" convention
-// so an aux-credential Secret has the same default shape as an MCP one.
-const defaultKey = "token"
+// DefaultSecretKey is the Secret data key read when a ToolCredential's
+// SecretRef leaves Key empty. It matches the credinject/capability "token"
+// convention so an aux-credential Secret has the same default shape as an MCP
+// one. Exported so admission (which must reason about the EFFECTIVE key when
+// authorizing a Run's projected credential against its Agents) normalizes an
+// empty key exactly the way Inject does.
+const DefaultSecretKey = "token"
+
+// EffectiveKey returns the Secret key that will actually be read for a ref:
+// the explicit Key, or DefaultSecretKey when empty. It is the one place the
+// "empty means default" rule lives, so Inject and admission agree.
+func EffectiveKey(key string) string {
+	if key == "" {
+		return DefaultSecretKey
+	}
+	return key
+}
 
 // table is the auxiliary-credential injection contract, keyed by purpose:
 // the ordered list of env var names the token is injected under. It is
@@ -147,10 +160,7 @@ func Inject(purpose Purpose, ref api.SecretRef) (Injection, error) {
 	if ref.Name == "" {
 		return Injection{}, fmt.Errorf("tool-credential injection for purpose %q requires a Secret name; got empty SecretRef", purpose)
 	}
-	key := ref.Key
-	if key == "" {
-		key = defaultKey
-	}
+	key := EffectiveKey(ref.Key)
 	env := make([]corev1.EnvVar, 0, len(names))
 	for _, name := range names {
 		env = append(env, corev1.EnvVar{

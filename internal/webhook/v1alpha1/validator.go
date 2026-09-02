@@ -459,26 +459,40 @@ func (v *CrossRefValidator) validateRunToolCredentialsDerived(ctx context.Contex
 	if len(run.Spec.ToolCredentials) == 0 {
 		return errs
 	}
-	// Collect the (purpose, secretName) grants declared by the Run's Agents.
-	type grant struct{ purpose, secret string }
+	// Collect the (purpose, secretName, effectiveKey) grants declared by the
+	// Run's Agents. The identity must include the EFFECTIVE Secret key, not
+	// just the name: toolcred.Inject mounts SecretRef.Key (defaulting to
+	// "token"), so a Run that reuses an authorized Secret name but selects a
+	// DIFFERENT key would otherwise slip through and read material the Agent
+	// never authorized.
+	//
+	// Only Agents in the RUN's namespace can authorize: the aux Secret is
+	// mounted by-reference (SecretKeySelector) in the pod's namespace = the
+	// Run's namespace, so a cross-namespace Agent's same-named Secret is a
+	// DIFFERENT physical object and must not authorize the Run's credential.
+	type grant struct{ purpose, secret, key string }
 	authorised := map[grant]bool{}
 	for _, ref := range run.Spec.Agents {
-		ns := resolveNamespace(ref, run.Namespace)
+		if resolveNamespace(ref, run.Namespace) != run.Namespace {
+			// Cross-namespace Agent: its Secrets live in its own namespace,
+			// not where this Run's pod will mount them. It cannot authorize.
+			continue
+		}
 		agent := &ksquadv1alpha1.Agent{}
-		if err := v.Reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, agent); err != nil {
+		if err := v.Reader.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: ref.Name}, agent); err != nil {
 			// A missing/unreadable Agent is already reported by GuardRunAgents;
 			// here it just means no grants to contribute. Fail-closed happens
 			// below when the Run credential finds no authoriser.
 			continue
 		}
 		for _, tc := range agent.Spec.ToolCredentials {
-			authorised[grant{tc.Purpose, tc.SecretRef.Name}] = true
+			authorised[grant{tc.Purpose, tc.SecretRef.Name, toolcred.EffectiveKey(tc.SecretRef.Key)}] = true
 		}
 	}
 	for i, tc := range run.Spec.ToolCredentials {
-		if !authorised[grant{tc.Purpose, tc.SecretRef.Name}] {
+		if !authorised[grant{tc.Purpose, tc.SecretRef.Name, toolcred.EffectiveKey(tc.SecretRef.Key)}] {
 			errs = append(errs, invalidf(fmt.Sprintf("spec.toolCredentials[%d]", i), tc,
-				"Run tool credential (purpose %q, secret %q) is not declared by any Agent in spec.agents; aux credentials must be projected from an admitted Agent, not granted directly on the Run (ADR-045 D5)", tc.Purpose, tc.SecretRef.Name))
+				"Run tool credential (purpose %q, secret %q, key %q) is not declared by any same-namespace Agent in spec.agents; aux credentials must be projected from an admitted Agent — matching purpose, Secret name AND key, in the Run's namespace — not granted directly on the Run (ADR-045 D5)", tc.Purpose, tc.SecretRef.Name, toolcred.EffectiveKey(tc.SecretRef.Key)))
 		}
 	}
 	return errs
