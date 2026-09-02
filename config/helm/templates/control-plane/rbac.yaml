@@ -132,4 +132,41 @@ subjects:
 - kind: ServiceAccount
   name: ksquad-scm-webhook
   namespace: {{ $ns }}
+---
+# apiserver compose write surface (ISI-3546 / ISI-3198). The 8.5 compose
+# endpoints (POST/PUT /api/{teams,projects,agents,roles,skills}) apply
+# user-authored CRs through the apiserver's OWN controller-runtime client, which
+# runs as the ksquad-apiserver ServiceAccount. In-app authz (contributor tier +
+# team-namespace scoping, ADR-039) is the real user boundary; the SA is the
+# trusted write proxy, so it needs cluster-wide access to the compose kinds
+# (Team namespaces are provisioned dynamically). Without this the client
+# authenticates but every apply 403s at the kube API — the route logs "write
+# surface ready" yet writes fail, the true blocker behind ISI-3544 ("can't add
+# an agent"). Create/update/patch only — compose never deletes; status is owned
+# by the operator, not this write path.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+rules:
+- apiGroups: [ksquad.io]
+  resources: [teams, projects, agents, roles, skills]
+  verbs: [get, list, watch, create, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8squad.fullname" . }}-apiserver
+subjects:
+- kind: ServiceAccount
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
 {{- end }}
