@@ -201,12 +201,25 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	assertApiserverBinding(t, string(chartYAML))
 }
 
-// tplAction matches a single Helm action (`{{ ... }}`); stripTemplates swaps
-// each for a fixed token so a still-templated snippet (namespace `{{ $ns }}`,
-// name `{{ include ... }}`) unmarshals as plain YAML for structural assertions.
-var tplAction = regexp.MustCompile(`\{\{[^}]*\}\}`)
+// nsMarker is the token the chart-namespace action `{{ $ns }}` maps to. It is
+// DISTINCT from the generic action token so the binding guard can require the
+// subject namespace to come from `{{ $ns }}` specifically — a hardcoded or
+// otherwise-templated namespace (e.g. `default`) then fails instead of passing.
+const nsMarker = "NS_TPL"
 
-func stripTemplates(s string) string { return tplAction.ReplaceAllString(s, "TPL") }
+// tplNS matches the chart-namespace action `{{ $ns }}` (tolerating whitespace /
+// `-` trim markers); tplAction matches any remaining Helm action. stripTemplates
+// applies the namespace one FIRST so the snippet unmarshals as plain YAML with
+// `{{ $ns }}` preserved as nsMarker and every other action collapsed to "TPL".
+var (
+	tplNS     = regexp.MustCompile(`\{\{-?\s*\$ns\s*-?\}\}`)
+	tplAction = regexp.MustCompile(`\{\{[^}]*\}\}`)
+)
+
+func stripTemplates(s string) string {
+	s = tplNS.ReplaceAllString(s, nsMarker)
+	return tplAction.ReplaceAllString(s, "TPL")
+}
 
 // assertApiserverBinding finds the ClusterRoleBinding whose metadata.name ends
 // in "-apiserver" and, within that single document, PARSES its roleRef and
@@ -241,8 +254,11 @@ func assertApiserverBinding(t *testing.T, chart string) {
 		found := false
 		for _, s := range subs.Subjects {
 			if s.Kind == "ServiceAccount" && s.Name == "ksquad-apiserver" {
-				if s.Namespace == "" {
-					t.Fatalf("apiserver binding subject ServiceAccount/ksquad-apiserver has no namespace: %+v", s)
+				// Namespace must be the chart namespace `{{ $ns }}` (→ nsMarker),
+				// not blank and not a hardcoded/other namespace — the SA lives in
+				// the release namespace, so a wrong namespace makes the grant inert.
+				if s.Namespace != nsMarker {
+					t.Fatalf("apiserver binding subject ServiceAccount/ksquad-apiserver namespace is %q, want the chart namespace {{ $ns }}: %+v", s.Namespace, s)
 				}
 				found = true
 			}
