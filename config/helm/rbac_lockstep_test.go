@@ -97,22 +97,55 @@ func TestOperatorClusterRoleMatchesGeneratedRole(t *testing.T) {
 	}
 }
 
-// clusterRoleRulesByName slices the `rules:` block out of the `---`-separated
-// chart document whose ClusterRole metadata name ends in the given suffix (the
-// name is Helm-templated `{{ include "k8squad.fullname" . }}-<suffix>`, so we
-// match on the suffix). The rules block itself is plain YAML — templating only
-// appears in metadata — so it unmarshals on its own without rendering the chart.
-// ClusterRoleBinding documents (same name suffix, no `rules:`) are skipped.
+// chartDoc is one `---`-delimited document from the (still-templated) chart,
+// with its kind and metadata.name pulled out. metaName is anchored to the first
+// `  name:` line under `metadata:` — NOT any substring of the document — so a
+// role's explanatory comment or a roleRef that mentions a name can't be mistaken
+// for the object's own identity.
+type chartDoc struct {
+	kind     string
+	metaName string
+	body     string
+}
+
+// splitChartDocs parses the chart into per-document (kind, metadata.name, body)
+// tuples. metadata.name stays Helm-templated (`{{ include ... }}-<suffix>`), so
+// callers match on its suffix; the body is used for the plain-YAML rules block.
+func splitChartDocs(chart string) []chartDoc {
+	var docs []chartDoc
+	for _, body := range strings.Split(chart, "\n---") {
+		var d chartDoc
+		d.body = body
+		inMeta := false
+		for _, l := range strings.Split(body, "\n") {
+			switch {
+			case strings.HasPrefix(l, "kind: "):
+				d.kind = strings.TrimSpace(strings.TrimPrefix(l, "kind:"))
+			case l == "metadata:":
+				inMeta = true
+			case inMeta && strings.HasPrefix(l, "  name:") && d.metaName == "":
+				d.metaName = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "name:"))
+				inMeta = false // first name under metadata is the object's own
+			}
+		}
+		docs = append(docs, d)
+	}
+	return docs
+}
+
+// clusterRoleRulesByName slices the `rules:` block out of the ClusterRole
+// document whose metadata.name ends in the given suffix. The rules block is
+// plain YAML — templating only appears in metadata — so it unmarshals on its own
+// without rendering the chart. Selection is anchored to kind + metadata.name, so
+// a rename of the object (leaving stale comment/roleRef text) fails the lookup
+// instead of silently matching the wrong document.
 func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyRule {
 	t.Helper()
-	for _, doc := range strings.Split(chart, "\n---") {
-		if !strings.Contains(doc, "\nkind: ClusterRole\n") {
-			continue // skips ClusterRoleBinding (kind: ClusterRoleBinding) and non-role docs
-		}
-		if !strings.Contains(doc, "-"+suffix+"\n") {
+	for _, d := range splitChartDocs(chart) {
+		if d.kind != "ClusterRole" || !strings.HasSuffix(d.metaName, "-"+suffix) {
 			continue
 		}
-		lines := strings.Split(doc, "\n")
+		lines := strings.Split(d.body, "\n")
 		start := -1
 		for i, l := range lines {
 			if l == "rules:" {
@@ -129,7 +162,7 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 		}
 		return parsed.Rules
 	}
-	t.Fatalf("no ClusterRole with name suffix %q found in rbac.yaml", suffix)
+	t.Fatalf("no ClusterRole with metadata.name ending %q found in rbac.yaml", "-"+suffix)
 	return nil
 }
 
@@ -158,10 +191,75 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 			"want:\n%+v\n\ngot:\n%+v", w, g)
 	}
 
-	// The grant is useless without the binding to the apiserver ServiceAccount;
-	// guard that the subject wiring can't silently disappear either.
-	if !strings.Contains(string(chartYAML), "kind: ClusterRoleBinding") ||
-		!strings.Contains(string(chartYAML), "name: ksquad-apiserver") {
-		t.Fatal("apiserver ClusterRoleBinding to ServiceAccount ksquad-apiserver is missing from rbac.yaml")
+	// The grant is useless without the binding to the apiserver ServiceAccount.
+	// Inspect the ONE apiserver ClusterRoleBinding document (anchored to its own
+	// metadata.name) and verify inside that same document that its roleRef points
+	// at the apiserver ClusterRole AND its subject is the ksquad-apiserver SA — so
+	// a deleted apiserver binding can't be masked by an unrelated binding (e.g.
+	// scm-webhook) elsewhere in the file satisfying the checks independently.
+	assertApiserverBinding(t, string(chartYAML))
+}
+
+// assertApiserverBinding finds the ClusterRoleBinding whose metadata.name ends
+// in "-apiserver" and, within that single document, requires a roleRef to a
+// ClusterRole named "-apiserver" and a ServiceAccount subject "ksquad-apiserver".
+func assertApiserverBinding(t *testing.T, chart string) {
+	t.Helper()
+	for _, d := range splitChartDocs(chart) {
+		if d.kind != "ClusterRoleBinding" || !strings.HasSuffix(d.metaName, "-apiserver") {
+			continue
+		}
+		// roleRef block: kind ClusterRole + name suffix -apiserver.
+		roleRef := sectionAfter(d.body, "roleRef:")
+		if !strings.Contains(roleRef, "kind: ClusterRole") ||
+			!nameLineHasSuffix(roleRef, "-apiserver") {
+			t.Fatalf("apiserver ClusterRoleBinding roleRef does not target the -apiserver ClusterRole:\n%s", roleRef)
+		}
+		// subjects block: a ServiceAccount named ksquad-apiserver.
+		subjects := sectionAfter(d.body, "subjects:")
+		if !strings.Contains(subjects, "kind: ServiceAccount") ||
+			!strings.Contains(subjects, "name: ksquad-apiserver") {
+			t.Fatalf("apiserver ClusterRoleBinding subject is not ServiceAccount ksquad-apiserver:\n%s", subjects)
+		}
+		return
 	}
+	t.Fatal("no ClusterRoleBinding with metadata.name ending -apiserver found in rbac.yaml")
+}
+
+// sectionAfter returns the lines from `header` up to (but excluding) the next
+// top-level (column-0) key, i.e. the value block belonging to that key.
+func sectionAfter(doc, header string) string {
+	lines := strings.Split(doc, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == header {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start; i < len(lines); i++ {
+		l := lines[i]
+		if l != "" && !strings.HasPrefix(l, " ") && !strings.HasPrefix(l, "-") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// nameLineHasSuffix reports whether any `name:` line in the block has a value
+// ending in the given suffix (the value stays Helm-templated).
+func nameLineHasSuffix(block, suffix string) bool {
+	for _, l := range strings.Split(block, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "name:") &&
+			strings.HasSuffix(strings.TrimSpace(strings.TrimPrefix(l, "name:")), suffix) {
+			return true
+		}
+	}
+	return false
 }
