@@ -1,7 +1,9 @@
 # One Agent per Role — the concrete squad members. Each Agent binds a model +
 # credential to a Role and Runtime. Skills are inherited from the Role's
-# spec.defaultSkills (05-roles.yaml); an Agent could override with its own
-# spec.skillRefs, but here we let the role defaults stand.
+# spec.defaultSkills (05-roles.yaml); an Agent's own spec.skillRefs are
+# UNIONED with (not replaced by) the role defaults — effective skills =
+# Agent.spec.skillRefs ∪ Role.spec.defaultSkills, deduped (ADR-044 step 1).
+# Here we add no per-agent skillRefs, so the role defaults stand alone.
 #
 # Models: opus for the strategic/heavy-reasoning roles (CEO, PM, Architect),
 # sonnet for the rest. credentialClass defaults to service-account.

@@ -29,8 +29,10 @@ type RoleSpec struct {
 	// +kubebuilder:validation:Required
 	PromptRef ObjectRef `json:"promptRef"`
 
-	// DefaultSkills are granted to agents assuming this role unless the
-	// Agent's own skillRefs override them.
+	// DefaultSkills are granted to every agent assuming this role. They are
+	// UNIONED with the Agent's own skillRefs, not replaced by them: the
+	// effective skill set is Agent.spec.skillRefs ∪ Role.spec.defaultSkills,
+	// deduped by ref (ADR-044 step 1).
 	// +optional
 	DefaultSkills []ObjectRef `json:"defaultSkills,omitempty"`
 
