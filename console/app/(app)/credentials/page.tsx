@@ -8,7 +8,7 @@
 import { CredentialsScreen } from "@/components/credentials/CredentialsScreen";
 
 export const metadata = {
-  title: "Credentials & auth state — KSquad Console",
+  title: "Credentials & auth state — K8squad Console",
 };
 
 export default function CredentialsPage() {

@@ -17,9 +17,9 @@ import { ThemeProvider } from "@/components/ThemeProvider";
 import { DEFAULT_THEME } from "@/lib/theme";
 
 export const metadata: Metadata = {
-  title: "KSquad Console",
+  title: "K8squad Console",
   description:
-    "Operator console — legibility + composition surface for KSquad squads.",
+    "Operator console — legibility + composition surface for K8squad squads.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
