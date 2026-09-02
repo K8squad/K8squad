@@ -24,6 +24,7 @@ import (
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -93,6 +94,16 @@ const (
 	// resolver Run assembly uses, so what admission proved is what
 	// dispatch assumes.
 	GuardRunToolchains = "run/toolchains"
+	// GuardRunToolCredentials guards Run.spec.toolCredentials (ISI-3565):
+	// the projected aux credentials must (a) pass the same enum/existence/
+	// no-duplicate checks as the Agent path, AND (b) be DERIVED from the
+	// Run's own Agents — every Run aux credential must be declared by one of
+	// the Run's spec.agents with a matching (purpose, Secret). Without (b) a
+	// Run author could mount ANY same-namespace Secret as GH_TOKEN, bypassing
+	// Agent admission (Copilot review, PR#230). Aux credentials on a Run that
+	// names no Agents are un-derivable and rejected fail-closed.
+	// #nosec G101 -- guard path key naming the field it guards, not a credential
+	GuardRunToolCredentials = "run/toolCredentials"
 	// GuardRunTrustedDev gates WHO may set the sandbox trusted-dev escape
 	// annotation: platform operators only. Without this guard the
 	// annotation is a plain metadata write any Run author can set,
@@ -269,30 +280,75 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 		}
 	}
 	if v.on(GuardAgentToolCredentials) {
-		for i, tc := range agent.Spec.ToolCredentials {
-			path := fmt.Sprintf("spec.toolCredentials[%d]", i)
-			// Enum-validate the purpose against the injection contract's
-			// taxonomy (pkg/toolcred): an unknown purpose must fail here, not
-			// at the AssemblePod seam where it would strand a Run.
-			if err := toolcred.ValidatePurpose(toolcred.Purpose(tc.Purpose)); err != nil {
-				errs = append(errs, invalidf(path+".purpose", tc.Purpose, "%v", err))
-			}
-			// Require a Secret name (fail closed, symmetric to
-			// credinject.Inject / GuardAgentSecret) and confirm it resolves.
-			if tc.SecretRef.Name == "" {
-				errs = append(errs, invalidf(path+".secretRef.name", tc.SecretRef, "tool credential requires a Secret name; got empty secretRef"))
-				continue
-			}
-			ok, err := refExists(ctx, v.Reader, &corev1.Secret{}, agent.Namespace, tc.SecretRef.Name)
-			switch {
-			case err != nil:
-				errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "admission read failed (fail-closed): %v", err))
-			case !ok:
-				errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "referenced Secret %s/%s does not exist; create the tool-credential Secret first", agent.Namespace, tc.SecretRef.Name))
-			}
+		errs = append(errs, v.validateToolCredentials(ctx, agent.Namespace, agent.Spec.ToolCredentials, "spec.toolCredentials")...)
+	}
+	return errs
+}
+
+// validateToolCredentials is the shared admission check for an aux-credential
+// list (ISI-3565), used by BOTH Agent and Run so what one admits the other
+// admits identically. Each entry must (a) name a KNOWN purpose
+// (pkg/toolcred), (b) carry a non-empty Secret that resolves, and (c) not
+// duplicate another entry's purpose — a duplicate purpose is admitted-but-
+// undispatchable, because toolcred.Inject would emit GH_TOKEN/GITHUB_TOKEN
+// twice and AssemblePod's collision guard would then reject the pod. All
+// three fail CLOSED at admission rather than at the injection seam.
+func (v *CrossRefValidator) validateToolCredentials(ctx context.Context, namespace string, creds []ksquadv1alpha1.ToolCredential, pathPrefix string) field.ErrorList {
+	var errs field.ErrorList
+	seen := map[string]int{}
+	for i, tc := range creds {
+		path := fmt.Sprintf("%s[%d]", pathPrefix, i)
+		// Enum-validate the purpose against the injection contract's
+		// taxonomy: an unknown purpose must fail here, not at the AssemblePod
+		// seam where it would strand a Run.
+		if err := toolcred.ValidatePurpose(toolcred.Purpose(tc.Purpose)); err != nil {
+			errs = append(errs, invalidf(path+".purpose", tc.Purpose, "%v", err))
+		} else if prev, dup := seen[tc.Purpose]; dup {
+			// Known purpose repeated: reject the second occurrence. Injecting
+			// the same purpose twice collides on GH_TOKEN/GITHUB_TOKEN and
+			// makes the admitted object undispatchable.
+			errs = append(errs, invalidf(path+".purpose", tc.Purpose, "duplicate tool-credential purpose %q (already declared at %s[%d]); declare each purpose at most once", tc.Purpose, pathPrefix, prev))
+		} else {
+			seen[tc.Purpose] = i
+		}
+		// Require a Secret name (fail closed, symmetric to
+		// credinject.Inject / GuardAgentSecret) and confirm it resolves.
+		if tc.SecretRef.Name == "" {
+			errs = append(errs, invalidf(path+".secretRef.name", tc.SecretRef, "tool credential requires a Secret name; got empty secretRef"))
+			continue
+		}
+		// Metadata-only existence check: this guard only needs to know the
+		// Secret exists, never its bytes. Deserializing the full Secret here
+		// would pull token plaintext into the control plane — contradicting
+		// the by-reference/no-plaintext boundary the whole seam is built on.
+		ok, err := v.secretMetadataExists(ctx, namespace, tc.SecretRef.Name)
+		switch {
+		case err != nil:
+			errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "admission read failed (fail-closed): %v", err))
+		case !ok:
+			errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "referenced Secret %s/%s does not exist; create the tool-credential Secret first", namespace, tc.SecretRef.Name))
 		}
 	}
 	return errs
+}
+
+// secretMetadataExists reports whether a Secret exists using a METADATA-ONLY
+// lookup (PartialObjectMetadata): the API server returns only name/namespace,
+// never the Secret's data, so the webhook proves existence without the
+// control plane ever handling the token bytes (the by-reference boundary,
+// NFR-SEC3). A transient read error fails closed (returned to the caller,
+// which denies admission).
+func (v *CrossRefValidator) secretMetadataExists(ctx context.Context, namespace, name string) (bool, error) {
+	meta := &metav1.PartialObjectMetadata{}
+	meta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+	err := v.Reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, meta)
+	if err == nil {
+		return true, nil
+	}
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // validateEndpointRef runs the §10.3 model-endpoint resolution
@@ -380,7 +436,51 @@ func (v *CrossRefValidator) ValidateRun(ctx context.Context, run *ksquadv1alpha1
 			}
 		}
 	}
+	if v.on(GuardRunToolCredentials) {
+		errs = append(errs, v.validateToolCredentials(ctx, run.Namespace, run.Spec.ToolCredentials, "spec.toolCredentials")...)
+		errs = append(errs, v.validateRunToolCredentialsDerived(ctx, run)...)
+	}
 	errs = append(errs, v.validateRunToolchains(ctx, run)...)
+	return errs
+}
+
+// validateRunToolCredentialsDerived enforces the trust boundary on a Run's
+// projected aux credentials (ISI-3565, Copilot review on PR#230): every
+// Run.spec.toolCredentials entry must be AUTHORISED by one of the Run's
+// spec.agents — an admitted Agent that declares the same (purpose, Secret).
+// The Run field is meant to be a name-only PROJECTION of admitted Agents'
+// aux credentials (ADR-045 D5), not a fresh grant surface; without this
+// check a Run submitter could select any same-namespace Secret and have it
+// injected as GH_TOKEN, bypassing Agent admission entirely. Fail-closed: an
+// aux credential with no backing Agent (including a Run that names no
+// Agents) is rejected.
+func (v *CrossRefValidator) validateRunToolCredentialsDerived(ctx context.Context, run *ksquadv1alpha1.Run) field.ErrorList {
+	var errs field.ErrorList
+	if len(run.Spec.ToolCredentials) == 0 {
+		return errs
+	}
+	// Collect the (purpose, secretName) grants declared by the Run's Agents.
+	type grant struct{ purpose, secret string }
+	authorised := map[grant]bool{}
+	for _, ref := range run.Spec.Agents {
+		ns := resolveNamespace(ref, run.Namespace)
+		agent := &ksquadv1alpha1.Agent{}
+		if err := v.Reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, agent); err != nil {
+			// A missing/unreadable Agent is already reported by GuardRunAgents;
+			// here it just means no grants to contribute. Fail-closed happens
+			// below when the Run credential finds no authoriser.
+			continue
+		}
+		for _, tc := range agent.Spec.ToolCredentials {
+			authorised[grant{tc.Purpose, tc.SecretRef.Name}] = true
+		}
+	}
+	for i, tc := range run.Spec.ToolCredentials {
+		if !authorised[grant{tc.Purpose, tc.SecretRef.Name}] {
+			errs = append(errs, invalidf(fmt.Sprintf("spec.toolCredentials[%d]", i), tc,
+				"Run tool credential (purpose %q, secret %q) is not declared by any Agent in spec.agents; aux credentials must be projected from an admitted Agent, not granted directly on the Run (ADR-045 D5)", tc.Purpose, tc.SecretRef.Name))
+		}
+	}
 	return errs
 }
 

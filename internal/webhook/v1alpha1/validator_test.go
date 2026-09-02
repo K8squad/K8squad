@@ -202,6 +202,79 @@ func TestValidateAgentToolCredentials(t *testing.T) {
 	err = toInvalid("Agent", emptyName.Name, v.ValidateAgent(ctx, emptyName))
 	require.Error(t, err, "empty tool-credential Secret name must be rejected")
 	assert.Contains(t, err.Error(), "secretRef")
+
+	// Duplicate purpose rejected: two github-token entries would inject
+	// GH_TOKEN/GITHUB_TOKEN twice and make the Agent undispatchable at the
+	// AssemblePod collision guard, so admission rejects it up front.
+	dup := validAgent()
+	dup.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-ollama"}},
+	}
+	err = toInvalid("Agent", dup.Name, v.ValidateAgent(ctx, dup))
+	require.Error(t, err, "duplicate tool-credential purpose must be rejected")
+	assert.Contains(t, err.Error(), "duplicate")
+	assert.Contains(t, err.Error(), "spec.toolCredentials[1].purpose")
+}
+
+// TestValidateRunToolCredentials (ISI-3565, GuardRunToolCredentials, Copilot
+// review on PR#230): a Run's projected aux credentials pass the same
+// enum/existence/no-duplicate checks as the Agent path AND must be DERIVED
+// from the Run's own Agents — a Run cannot grant an aux credential no Agent
+// declared, which would let a Run author mount any same-namespace Secret as
+// GH_TOKEN and bypass Agent admission.
+func TestValidateRunToolCredentials(t *testing.T) {
+	ctx := context.Background()
+
+	// Seed an Agent that DECLARES a github-token aux credential, and its
+	// Secret, on top of the base world.
+	world := validWorld()
+	world = append(world,
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-writepath", Namespace: ns}},
+		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "pusher", Namespace: ns},
+			Spec: ksquadv1alpha1.AgentSpec{
+				RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
+				RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
+				CredentialSecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"},
+				Model:               "claude-sonnet-4",
+				ToolCredentials: []ksquadv1alpha1.ToolCredential{
+					{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}},
+				},
+			}},
+	)
+	v := newValidator(t, world)
+
+	runWith := func(agents []ksquadv1alpha1.ObjectRef, creds []ksquadv1alpha1.ToolCredential) *ksquadv1alpha1.Run {
+		r := validRun()
+		r.Spec.Agents = agents
+		r.Spec.ToolCredentials = creds
+		return r
+	}
+	ghCred := []ksquadv1alpha1.ToolCredential{{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}}}
+
+	// Valid: the Run projects exactly what the "pusher" Agent declares.
+	ok := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}}, ghCred)
+	assert.NoError(t, toInvalid("Run", ok.Name, v.ValidateRun(ctx, ok)),
+		"a Run projecting an Agent-declared aux credential must admit")
+
+	// Not derived: the Run names an Agent that does NOT declare this
+	// credential — rejected (the bypass Copilot flagged).
+	bypass := runWith([]ksquadv1alpha1.ObjectRef{{Name: "amelia"}}, ghCred)
+	err := toInvalid("Run", bypass.Name, v.ValidateRun(ctx, bypass))
+	require.Error(t, err, "a Run aux credential no Agent declares must be rejected")
+	assert.Contains(t, err.Error(), "projected from an admitted Agent")
+
+	// No Agents at all: un-derivable, rejected.
+	noAgents := runWith(nil, ghCred)
+	require.Error(t, toInvalid("Run", noAgents.Name, v.ValidateRun(ctx, noAgents)),
+		"aux credentials on a Run naming no Agents must be rejected")
+
+	// Unknown purpose still enum-rejected on the Run path.
+	badPurpose := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}},
+		[]ksquadv1alpha1.ToolCredential{{Purpose: "gitlab-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}}})
+	err = toInvalid("Run", badPurpose.Name, v.ValidateRun(ctx, badPurpose))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitlab-token")
 }
 
 // invalidCase couples one guard with its dangling-ref specimen: invalid
@@ -278,6 +351,16 @@ func invalidCases() []invalidCase {
 			dangle(&r.Spec.Agents[0], "ghost-agent")
 			return toInvalid("Run", r.Name, v.ValidateRun(ctx, r))
 		}},
+		{GuardRunToolCredentials, func(ctx context.Context, v *CrossRefValidator) error {
+			// A Run aux credential that no Agent in spec.agents declares:
+			// enum + existence pass (github-token is known, the Secret is
+			// seeded), so the ONLY error is the derived-from-Agent trust check.
+			r := validRun()
+			r.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+				{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+			}
+			return toInvalid("Run", r.Name, v.ValidateRun(ctx, r))
+		}},
 	}
 }
 
@@ -292,6 +375,7 @@ var (
 		GuardAgentSkills:          "spec.skillRefs[0]",
 		GuardAgentSecret:          "spec.credentialSecretRef",
 		GuardAgentToolCredentials: "spec.toolCredentials[0].secretRef",
+		GuardRunToolCredentials:   "spec.toolCredentials[0]",
 		GuardRunTeam:              "spec.teamRef",
 		GuardRunProject:           "spec.projectRef",
 		GuardRunAgents:            "spec.agents[0]",
@@ -304,6 +388,7 @@ var (
 		GuardAgentSkills:          "ghost-skill",
 		GuardAgentSecret:          "ghost-secret",
 		GuardAgentToolCredentials: "ghost-tc-secret",
+		GuardRunToolCredentials:   "amelia-claude-token",
 		GuardRunTeam:              "ghost-team",
 		GuardRunProject:           "ghost-project",
 		GuardRunAgents:            "ghost-agent",
@@ -316,6 +401,7 @@ var (
 		GuardAgentSkills:          "grant it via an existing Skill",
 		GuardAgentSecret:          "BYO credential Secret",
 		GuardAgentToolCredentials: "tool-credential Secret",
+		GuardRunToolCredentials:   "projected from an admitted Agent",
 		GuardRunTeam:              "squad's tenancy",
 		GuardRunProject:           "repo + workspace PVC",
 		GuardRunAgents:            "fix the selector",
