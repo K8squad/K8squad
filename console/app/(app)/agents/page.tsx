@@ -1,11 +1,12 @@
-// app/agents/page.tsx — the Agents nav node (stories 8.10 + 8.13 IA).
+// app/agents/page.tsx — the Agents nav node: the live squad org chart.
 //
-// The console's "Agents" section (nav IA, CEO 2026-08-12 / story 8.13) hosts the org diagram (8.10)
-// + agent detail (8.11). The org diagram is Team-scoped (8.10 "Given a Team…"), so this landing
-// renders it for the selected Team via `?team=<teamId>`. Read/legibility surface (R6): no
-// compose/edit (that stays 8.5) and no coordination affordance. The diagram itself is a client
-// component (live SSE status); this route is the thin App Router entry inside the Epic 8 shell.
+// The Agents section hosts the org diagram (Team → Agent → Role) + agent detail. The diagram is
+// Team-scoped, and a session resolves to exactly ONE Team by UID (tenancy root — see SquadOverview),
+// so there is no manual team selector: the landing auto-resolves the session's Team and renders its
+// org diagram. An explicit `?team=<teamUID>` deep-link (e.g. from a shared URL) overrides that
+// resolution. Read-only legibility: click an agent to open its detail and run history.
 
+import { SessionTeamOrg } from "@/components/agents/SessionTeamOrg";
 import { TeamOrgDiagram } from "@/components/agents/TeamOrgDiagram";
 
 export const dynamic = "force-dynamic";
@@ -21,23 +22,13 @@ export default async function AgentsPage({
       <header className="agents-page__head">
         <h1>Agents</h1>
         <p className="muted">
-          Live squad org chart (Team → Agent → Role). Read-only legibility —
-          composition stays in the compose view, coordination stays
-          server-side. Click an agent to open its detail + run history.
+          Live org chart of your squad — Team → Agent → Role. Read-only: click
+          an agent to open its detail and run history.
         </p>
       </header>
-      {team ? (
-        <div className="card">
-          <TeamOrgDiagram teamId={team} />
-        </div>
-      ) : (
-        <div className="card">
-          <p className="muted">
-            Select a team to view its org diagram (e.g.{" "}
-            <code>/agents?team=&lt;teamId&gt;</code>).
-          </p>
-        </div>
-      )}
+      <div className="card">
+        {team ? <TeamOrgDiagram teamId={team} /> : <SessionTeamOrg />}
+      </div>
     </main>
   );
 }
