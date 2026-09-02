@@ -46,7 +46,7 @@ const DefaultTTL = time.Hour
 // no operator secret leaks into the task subprocess (the minimal-env invariant).
 const (
 	EnvCoordURL   = "KSQUAD_COORD_URL"   // in-cluster coord/apiserver base URL
-	EnvCoordToken = "KSQUAD_COORD_TOKEN" // the run-scoped bearer token below
+	EnvCoordToken = "KSQUAD_COORD_TOKEN" // #nosec G101 -- this is the env var NAME the run token rides under, not a credential value
 	EnvWorkItemID = "WORK_ITEM_ID"       // the Run's work item (also bound in the token)
 	EnvRunID      = "RUN_ID"             // the Run uid (also bound in the token)
 )
