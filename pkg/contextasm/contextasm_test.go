@@ -512,3 +512,37 @@ func TestRunCRDHasContextSnapshot(t *testing.T) {
 	assert.Contains(t, squashed, "goalRevision:", "snapshot pins the goal revision")
 	assert.Contains(t, squashed, "memoryDocIds:", "snapshot pins the memory doc ids")
 }
+
+// AC3/#8: on resume the assembler reuses the window + budget the snapshot
+// pinned, not the (possibly-changed) live Project/Agent — so a spec.model or
+// contextBudgetOverride edit after the snapshot was stored cannot re-render
+// different bytes.
+func TestAssembleResumePinsBudgetAndWindow(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+
+	// First drive: budget resolved from the live Agent at a small window, so
+	// the memory-recall tier is actually budget-shaped.
+	req1 := fixtureReq(src, 4000)
+	req1.Agent.Spec.ContextBudgetOverride = &ksquadv1alpha1.ContextBudget{MemoryRecall: i64ptr(1000)}
+	res1, err := a.Assemble(context.Background(), req1)
+	require.NoError(t, err)
+	require.NotNil(t, res1.Snapshot.ContextWindow)
+	require.NotNil(t, res1.Snapshot.Budget)
+	first := res1.Injection.SystemPrompt()
+
+	// The coord store still serves the pinned revisions after latest moves on.
+	src.wiHist = map[string]WorkItemFacts{res1.Snapshot.WorkItemRevision: src.wi}
+	src.metaHist = map[string]ProjectMeta{res1.Snapshot.GoalRevision: src.meta}
+
+	// Resume: the live Agent now advertises a different model window AND a
+	// tiny memory budget — Existing must override both.
+	req2 := fixtureReq(src, 999_999)
+	req2.Agent.Spec.ContextBudgetOverride = &ksquadv1alpha1.ContextBudget{MemoryRecall: i64ptr(1)}
+	req2.ContextWindow = *res1.Snapshot.ContextWindow // caller pins the window off the snapshot
+	req2.Existing = res1.Snapshot
+	res2, err := a.Assemble(context.Background(), req2)
+	require.NoError(t, err)
+	assert.Equal(t, first, res2.Injection.SystemPrompt(),
+		"resume must reuse the pinned window+budget, not the changed live Agent")
+}

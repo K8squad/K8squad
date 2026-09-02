@@ -56,6 +56,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
+	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
@@ -163,10 +164,20 @@ func main() {
 		// capability envelope pre-dispatch, stamps the immutable
 		// Run.status.capabilityManifest and projects the MCP IR ConfigMap
 		// the runtime adapters consume (ADR-044).
+		// Story S1 (ISI-3600): the §8.5 context assembler's first production
+		// caller. One Deps bundle over the coord pool + Project CRD client is
+		// shared by the reconciler (which assembles + pins the snapshot at
+		// Claiming → Running) and the dispatcher (which re-reads the pinned
+		// snapshot to inject env.SystemContext — seam A, deterministic
+		// resume). Memory is left nil until the fresh-recall query seam lands
+		// (the pinned-recall arm needs no embedder; the untrusted-recall tier
+		// is simply empty meanwhile).
+		ctxDeps := contextsource.Deps{DB: db, Client: mgr.GetClient()}
 		if err := (&runctrl.Reconciler{
-			Source:    coord.NewReconcileStepReader(db),
-			RBAC:      runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
-			Assembler: runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Source:            coord.NewReconcileStepReader(db),
+			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			ContextAssemblers: ctxDeps,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
@@ -213,8 +224,9 @@ func main() {
 				}
 				return "shim" // the operator image ships it at /usr/local/bin/shim
 			}(),
-			RuntimeType: os.Getenv("KSQUAD_RUNTIME_TYPE"),
-			Stderr:      shimLogWriter{},
+			RuntimeType:       os.Getenv("KSQUAD_RUNTIME_TYPE"),
+			Stderr:            shimLogWriter{},
+			ContextAssemblers: ctxDeps,
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
