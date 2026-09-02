@@ -5,8 +5,10 @@
 #                      CRD model has no manager edge
 #   - runtimeClassHint → sandbox posture for execution-heavy roles (gvisor)
 #
-# Skill wiring: every role gets `bmad`; coder/devops/code-reviewer add `github`;
-# observability-engineer adds `dynatrace`; graphical-designer adds `graphical`.
+# Skill wiring: every role gets `bmad` and `task-io` (the union baseline — a
+# working agent can always re-read/comment on/status its own task, ISI-3602);
+# coder/devops/code-reviewer add `github`; observability-engineer adds
+# `dynatrace`; graphical-designer adds `graphical`.
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -20,6 +22,7 @@ spec:
     name: ceo-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -34,6 +37,7 @@ spec:
     name: product-manager-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -48,6 +52,7 @@ spec:
     name: architect-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -62,6 +67,7 @@ spec:
     name: ux-designer-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -76,6 +82,7 @@ spec:
     name: brainstormer-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -90,6 +97,7 @@ spec:
     name: challenger-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -104,6 +112,7 @@ spec:
     name: content-writer-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -119,6 +128,7 @@ spec:
   runtimeClassHint: gvisor
   defaultSkills:
     - name: bmad
+    - name: task-io
     - name: github
 ---
 apiVersion: ksquad.io/v1alpha1
@@ -135,6 +145,7 @@ spec:
   runtimeClassHint: gvisor
   defaultSkills:
     - name: bmad
+    - name: task-io
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -150,6 +161,7 @@ spec:
   runtimeClassHint: gvisor
   defaultSkills:
     - name: bmad
+    - name: task-io
     - name: github
 ---
 apiVersion: ksquad.io/v1alpha1
@@ -166,6 +178,7 @@ spec:
   runtimeClassHint: gvisor
   defaultSkills:
     - name: bmad
+    - name: task-io
     - name: github
 ---
 apiVersion: ksquad.io/v1alpha1
@@ -181,6 +194,7 @@ spec:
     name: observability-engineer-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
     - name: dynatrace
 ---
 apiVersion: ksquad.io/v1alpha1
@@ -196,4 +210,5 @@ spec:
     name: graphical-designer-prompt
   defaultSkills:
     - name: bmad
+    - name: task-io
     - name: graphical
