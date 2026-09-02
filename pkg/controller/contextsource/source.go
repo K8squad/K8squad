@@ -114,6 +114,17 @@ var _ contextasm.Sources = (*Source)(nil)
 // Acceptance criteria and work-item-level goals are not yet columns on
 // coord.work_item (blocker shared with S2's coord read model); they come back
 // empty rather than hand-faked from body text.
+//
+// CONSOLIDATION WIRING SITE (S1↔S2, "design once, do not duplicate"): S2
+// (ISI-3601 / PR #237) landed a richer shared read — coord.ReadTaskDetail +
+// coord.AppendComment in pkg/coord/taskdetail.go (title/description/state/
+// blocked-reason/comments/fence). Once #237 merges to main, this function
+// should consume ReadTaskDetail instead of the direct work_item+comment reads
+// below, so the PUSH (S1) and PULL (S2) paths share one gather. It stays a
+// direct read only until then (#237 is not on main yet, so consuming it now
+// would stack this in-review PR on an unmerged one). When AC/goals get a
+// first-class coord surface, that column lands in ReadTaskDetail and both S1
+// and S2 pick it up together — this is the single site that changes.
 func (s *Source) WorkItem(ctx context.Context, id, rev string) (contextasm.WorkItemFacts, error) {
 	var title, body sql.NullString
 	var updatedAt time.Time
