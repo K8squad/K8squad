@@ -122,6 +122,16 @@ type RunSpec struct {
 	// (internal/index).
 	// +optional
 	OwnedBy PrincipalRef `json:"ownedBy,omitempty"`
+
+	// ToolCredentials are the auxiliary, non-model credentials projected from
+	// the dispatched Agent(s) (Agent.spec.toolCredentials, ISI-3565) onto the
+	// Run so the resolved Run self-describes which aux tokens its agent
+	// container carries — name-only by reference, ADR-045 D5, the same
+	// discipline the MCP credential projection uses. pkg/capability.AssemblePod
+	// reads these and injects GH_TOKEN/GITHUB_TOKEN into the agent container
+	// by reference via pkg/toolcred.
+	// +optional
+	ToolCredentials []ToolCredential `json:"toolCredentials,omitempty"`
 }
 
 var _ OwnedByHolder = &Run{}

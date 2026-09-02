@@ -167,6 +167,43 @@ func TestValidateAgentCredentialClass(t *testing.T) {
 	assert.Contains(t, err.Error(), "credentialClass")
 }
 
+// TestValidateAgentToolCredentials (ISI-3565, GuardAgentToolCredentials): a
+// known aux-credential purpose backed by an existing Secret admits; an
+// unknown purpose is enum-rejected at admission before it can reach the
+// AssemblePod injection seam, and an empty Secret name fails closed.
+func TestValidateAgentToolCredentials(t *testing.T) {
+	ctx := context.Background()
+	v := newValidator(t, validWorld())
+
+	// Valid: known purpose + existing Secret admits (amelia-claude-token is
+	// seeded in validWorld; any real Secret proves the resolve path).
+	ok := validAgent()
+	ok.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+	}
+	assert.NoError(t, toInvalid("Agent", ok.Name, v.ValidateAgent(ctx, ok)),
+		"known purpose + existing Secret must admit")
+
+	// Unknown purpose rejected at admission (the enum-reject AC).
+	badPurpose := validAgent()
+	badPurpose.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "gitlab-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+	}
+	err := toInvalid("Agent", badPurpose.Name, v.ValidateAgent(ctx, badPurpose))
+	require.Error(t, err, "unknown tool-credential purpose must be rejected")
+	assert.Contains(t, err.Error(), "spec.toolCredentials[0].purpose")
+	assert.Contains(t, err.Error(), "gitlab-token")
+
+	// Empty Secret name fails closed.
+	emptyName := validAgent()
+	emptyName.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{}},
+	}
+	err = toInvalid("Agent", emptyName.Name, v.ValidateAgent(ctx, emptyName))
+	require.Error(t, err, "empty tool-credential Secret name must be rejected")
+	assert.Contains(t, err.Error(), "secretRef")
+}
+
 // invalidCase couples one guard with its dangling-ref specimen: invalid
 // runs the exact denial the webhook server serializes (toInvalid shape).
 type invalidCase struct {
@@ -219,6 +256,13 @@ func invalidCases() []invalidCase {
 			a.Spec.FallbackModel.ModelEndpointRef.Name = "ghost-ep"
 			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
 		}},
+		{GuardAgentToolCredentials, func(ctx context.Context, v *CrossRefValidator) error {
+			a := validAgent()
+			a.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+				{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "ghost-tc-secret"}},
+			}
+			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
+		}},
 		{GuardRunTeam, func(ctx context.Context, v *CrossRefValidator) error {
 			r := validRun()
 			dangle(&r.Spec.TeamRef, "ghost-team")
@@ -241,37 +285,40 @@ func invalidCases() []invalidCase {
 // denial shape: field path + observed value + fix (the clear-message AC).
 var (
 	wantPathByGuard = map[string]string{
-		GuardTeamProjects: "spec.projects[0]",
-		GuardTeamAgents:   "spec.agents[0]",
-		GuardAgentRuntime: "spec.runtimeRef",
-		GuardAgentRole:    "spec.roleRef",
-		GuardAgentSkills:  "spec.skillRefs[0]",
-		GuardAgentSecret:  "spec.credentialSecretRef",
-		GuardRunTeam:      "spec.teamRef",
-		GuardRunProject:   "spec.projectRef",
-		GuardRunAgents:    "spec.agents[0]",
+		GuardTeamProjects:         "spec.projects[0]",
+		GuardTeamAgents:           "spec.agents[0]",
+		GuardAgentRuntime:         "spec.runtimeRef",
+		GuardAgentRole:            "spec.roleRef",
+		GuardAgentSkills:          "spec.skillRefs[0]",
+		GuardAgentSecret:          "spec.credentialSecretRef",
+		GuardAgentToolCredentials: "spec.toolCredentials[0].secretRef",
+		GuardRunTeam:              "spec.teamRef",
+		GuardRunProject:           "spec.projectRef",
+		GuardRunAgents:            "spec.agents[0]",
 	}
 	wantObservedByGuard = map[string]string{
-		GuardTeamProjects: "ghost-project",
-		GuardTeamAgents:   "ghost-agent",
-		GuardAgentRuntime: "ghost-runtime",
-		GuardAgentRole:    "ghost-role",
-		GuardAgentSkills:  "ghost-skill",
-		GuardAgentSecret:  "ghost-secret",
-		GuardRunTeam:      "ghost-team",
-		GuardRunProject:   "ghost-project",
-		GuardRunAgents:    "ghost-agent",
+		GuardTeamProjects:         "ghost-project",
+		GuardTeamAgents:           "ghost-agent",
+		GuardAgentRuntime:         "ghost-runtime",
+		GuardAgentRole:            "ghost-role",
+		GuardAgentSkills:          "ghost-skill",
+		GuardAgentSecret:          "ghost-secret",
+		GuardAgentToolCredentials: "ghost-tc-secret",
+		GuardRunTeam:              "ghost-team",
+		GuardRunProject:           "ghost-project",
+		GuardRunAgents:            "ghost-agent",
 	}
 	wantFixByGuard = map[string]string{
-		GuardTeamProjects: "create it first or fix the ref",
-		GuardTeamAgents:   "create it first or fix the ref",
-		GuardAgentRuntime: "FR-D3",
-		GuardAgentRole:    "create it first or fix the ref",
-		GuardAgentSkills:  "grant it via an existing Skill",
-		GuardAgentSecret:  "BYO credential Secret",
-		GuardRunTeam:      "squad's tenancy",
-		GuardRunProject:   "repo + workspace PVC",
-		GuardRunAgents:    "fix the selector",
+		GuardTeamProjects:         "create it first or fix the ref",
+		GuardTeamAgents:           "create it first or fix the ref",
+		GuardAgentRuntime:         "FR-D3",
+		GuardAgentRole:            "create it first or fix the ref",
+		GuardAgentSkills:          "grant it via an existing Skill",
+		GuardAgentSecret:          "BYO credential Secret",
+		GuardAgentToolCredentials: "tool-credential Secret",
+		GuardRunTeam:              "squad's tenancy",
+		GuardRunProject:           "repo + workspace PVC",
+		GuardRunAgents:            "fix the selector",
 	}
 )
 

@@ -186,6 +186,65 @@ func TestApplyToPodCollisionFailsClosed(t *testing.T) {
 	assert.Contains(t, err.Error(), `"agent" container`)
 }
 
+func TestAssemblePodInjectsToolCredentialsByReference(t *testing.T) {
+	run := newRun()
+	run.Spec.ToolCredentials = []api.ToolCredential{
+		{Purpose: "github-token", SecretRef: api.SecretRef{Name: "github-writepath-token"}},
+	}
+	asm, err := AssemblePod(run, nil, nil)
+	require.NoError(t, err)
+
+	// GH_TOKEN + GITHUB_TOKEN land on the agent container by reference.
+	pod := sandboxShapedPod()
+	require.NoError(t, ApplyToPod(pod, asm))
+	agent := podContainer(t, pod, "agent")
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		src := envValueFrom(t, agent.Env, name)
+		require.NotNil(t, src.SecretKeyRef, "%s injected by reference", name)
+		assert.Equal(t, "github-writepath-token", src.SecretKeyRef.Name)
+		assert.Equal(t, "token", src.SecretKeyRef.Key)
+	}
+}
+
+func TestAssemblePodToolCredentialUnknownPurposeFailsClosed(t *testing.T) {
+	run := newRun()
+	run.Spec.ToolCredentials = []api.ToolCredential{
+		{Purpose: "gitlab-token", SecretRef: api.SecretRef{Name: "x"}},
+	}
+	_, err := AssemblePod(run, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "toolCredentials[0]")
+	assert.Contains(t, err.Error(), "gitlab-token")
+}
+
+func TestAssemblePodToolCredentialEmptySecretFailsClosed(t *testing.T) {
+	run := newRun()
+	run.Spec.ToolCredentials = []api.ToolCredential{
+		{Purpose: "github-token", SecretRef: api.SecretRef{}},
+	}
+	_, err := AssemblePod(run, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Secret name")
+}
+
+func TestApplyToPodToolCredentialCollisionFailsClosed(t *testing.T) {
+	run := newRun()
+	run.Spec.ToolCredentials = []api.ToolCredential{
+		{Purpose: "github-token", SecretRef: api.SecretRef{Name: "github-writepath-token"}},
+	}
+	asm, err := AssemblePod(run, nil, nil)
+	require.NoError(t, err)
+
+	// A pod whose agent already carries GH_TOKEN (e.g. a model-cred or a
+	// hand-set env) must NOT be silently shadowed — the collision guard fires.
+	clash := sandboxShapedPod()
+	clash.Spec.Containers[0].Env = append(clash.Spec.Containers[0].Env, corev1.EnvVar{Name: "GH_TOKEN", Value: "leaked"})
+	err = ApplyToPod(clash, asm)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GH_TOKEN")
+	assert.Contains(t, err.Error(), "collides")
+}
+
 func TestMCPConfigMapFor(t *testing.T) {
 	run := newRun()
 	cm, err := MCPConfigMapFor(run, []Endpoint{httpEndpoint()})

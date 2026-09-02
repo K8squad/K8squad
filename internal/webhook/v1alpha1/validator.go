@@ -32,6 +32,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/sandbox"
 	"github.com/K8squad/K8squad/pkg/toolchain"
+	"github.com/K8squad/K8squad/pkg/toolcred"
 )
 
 // Guard ids for the cross-object existence checks. Each id names one
@@ -63,9 +64,17 @@ const (
 	// Secret (spec.fallbackModel.modelEndpointRef, story 5.11) with the
 	// same existence + shape discipline.
 	GuardAgentFallbackModelEndpoint = "agent/fallbackModel.modelEndpointRef"
-	GuardRunTeam                    = "run/teamRef"
-	GuardRunProject                 = "run/projectRef"
-	GuardRunAgents                  = "run/agents"
+	// GuardAgentToolCredentials validates spec.toolCredentials (ISI-3565,
+	// pkg/toolcred): each aux credential must name a KNOWN purpose and a
+	// non-empty Secret — an unknown purpose or dangling Secret must fail at
+	// ADMISSION, never reach the AssemblePod injection seam where it would
+	// strand a Run whose gh/git authenticates as nobody (symmetric to
+	// GuardAgentCredentialClass + GuardAgentSecret for the model credential).
+	// #nosec G101 -- guard path key naming the field it guards, not a credential
+	GuardAgentToolCredentials = "agent/toolCredentials"
+	GuardRunTeam              = "run/teamRef"
+	GuardRunProject           = "run/projectRef"
+	GuardRunAgents            = "run/agents"
 	// GuardSkillMCPServers guards Skill.spec.mcpToolRefs (story A2 /
 	// ADR-042): every ref must resolve to an existing MCPServer. The old
 	// schema-only world admitted dangling refs silently because no target
@@ -257,6 +266,30 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 	if v.on(GuardAgentFallbackModelEndpoint) && agent.Spec.FallbackModel != nil && agent.Spec.FallbackModel.ModelEndpointRef != nil {
 		if err := v.validateEndpointRef(ctx, agent.Namespace, agent.Spec.FallbackModel.ModelEndpointRef, "spec.fallbackModel.modelEndpointRef"); err != nil {
 			errs = append(errs, err)
+		}
+	}
+	if v.on(GuardAgentToolCredentials) {
+		for i, tc := range agent.Spec.ToolCredentials {
+			path := fmt.Sprintf("spec.toolCredentials[%d]", i)
+			// Enum-validate the purpose against the injection contract's
+			// taxonomy (pkg/toolcred): an unknown purpose must fail here, not
+			// at the AssemblePod seam where it would strand a Run.
+			if err := toolcred.ValidatePurpose(toolcred.Purpose(tc.Purpose)); err != nil {
+				errs = append(errs, invalidf(path+".purpose", tc.Purpose, "%v", err))
+			}
+			// Require a Secret name (fail closed, symmetric to
+			// credinject.Inject / GuardAgentSecret) and confirm it resolves.
+			if tc.SecretRef.Name == "" {
+				errs = append(errs, invalidf(path+".secretRef.name", tc.SecretRef, "tool credential requires a Secret name; got empty secretRef"))
+				continue
+			}
+			ok, err := refExists(ctx, v.Reader, &corev1.Secret{}, agent.Namespace, tc.SecretRef.Name)
+			switch {
+			case err != nil:
+				errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "admission read failed (fail-closed): %v", err))
+			case !ok:
+				errs = append(errs, invalidf(path+".secretRef", tc.SecretRef, "referenced Secret %s/%s does not exist; create the tool-credential Secret first", agent.Namespace, tc.SecretRef.Name))
+			}
 		}
 	}
 	return errs

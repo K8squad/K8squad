@@ -193,6 +193,55 @@ spec:
                 required:
                 - name
                 type: object
+              toolCredentials:
+                description: |-
+                  ToolCredentials are the auxiliary, non-model credentials projected from
+                  the dispatched Agent(s) (Agent.spec.toolCredentials, ISI-3565) onto the
+                  Run so the resolved Run self-describes which aux tokens its agent
+                  container carries — name-only by reference, ADR-045 D5, the same
+                  discipline the MCP credential projection uses. pkg/capability.AssemblePod
+                  reads these and injects GH_TOKEN/GITHUB_TOKEN into the agent container
+                  by reference via pkg/toolcred.
+                items:
+                  description: |-
+                    ToolCredential declares one auxiliary, non-model credential to inject into
+                    a Run's agent container for a local CLI tool (ISI-3565). Purpose is a
+                    closed enum the injection seam (pkg/toolcred) maps to a fixed set of
+                    runtime env var names — users pick the tool, never the env name — and
+                    SecretRef names the BYO Secret carrying the token by reference.
+                  properties:
+                    purpose:
+                      description: |-
+                        Purpose selects WHICH local tool the credential is for, and therefore
+                        which env var name(s) the token is injected under. It is a closed enum
+                        the seam owns (pkg/toolcred.KnownPurposes); an unknown purpose fails
+                        closed at admission (webhook) and at injection (AssemblePod). Empty is
+                        invalid — there is no safe default tool to guess.
+                      enum:
+                      - github-token
+                      type: string
+                    secretRef:
+                      description: |-
+                        SecretRef is the BYO Secret carrying the token. Injected by reference
+                        (SecretKeySelector) — the control plane never reads the bytes. Key
+                        defaults to "token" when empty.
+                      properties:
+                        key:
+                          description: Key inside the Secret; empty means the consumer-defined
+                            default key.
+                          type: string
+                        name:
+                          description: Name of the referenced Secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - purpose
+                  - secretRef
+                  type: object
+                type: array
               workItemRef:
                 description: |-
                   WorkItemRef is an opaque id into the apiserver/coordination Postgres
