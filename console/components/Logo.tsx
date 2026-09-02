@@ -21,7 +21,10 @@ const RECEDE = "#2E4E8C"; // recede depth mid
 // Canonical 8-Crest geometry (100-unit design space), copied verbatim from
 // mark-8crest-on-dark.svg. Centralised as named constants so the two crests / member nodes stay
 // consistent and a brand tweak is a one-line edit rather than a hunt through inline literals.
-const CREST = { x: 29, size: 42, rx: 13, strokeWidth: 9 } as const; // the two stacked squad-containers
+// The shapes group is rotated -90° (CCW) so the mark renders horizontally (left crest = lighter,
+// right crest = darker) — matching the orientation used on k8squad.io. Positive +90° maps the
+// upper/lighter crest to the right (wrong); negative -90° maps it to the left (correct).
+const CREST = { x: 29, size: 42, rx: 13, strokeWidth: 9 } as const; // the two squad-containers
 const CREST_Y = { top: 13, bottom: 45 } as const;
 const MEMBER = { x: 44.5, size: 11, rx: 3 } as const; // top/bottom squad-member nodes
 const MEMBER_Y = { top: 9.5, bottom: 79.5 } as const;
@@ -61,33 +64,39 @@ export function Logo({
             <stop offset="1" stopColor={RECEDE} />
           </linearGradient>
         </defs>
-        {/* lower crest (recedes) */}
-        <rect
-          x={CREST.x}
-          y={CREST_Y.bottom}
-          width={CREST.size}
-          height={CREST.size}
-          rx={CREST.rx}
-          fill="none"
-          stroke={`url(#${ringBot})`}
-          strokeWidth={CREST.strokeWidth}
-        />
-        {/* upper crest (leads) */}
-        <rect
-          x={CREST.x}
-          y={CREST_Y.top}
-          width={CREST.size}
-          height={CREST.size}
-          rx={CREST.rx}
-          fill="none"
-          stroke={`url(#${ringTop})`}
-          strokeWidth={CREST.strokeWidth}
-        />
-        {/* coordinator node — the bright pinch that fuses the two crests */}
-        <rect x={NODE.x} y={NODE.y} width={NODE.size} height={NODE.size} rx={NODE.rx} fill={LEAD} />
-        {/* squad member nodes */}
-        <rect x={MEMBER.x} y={MEMBER_Y.top} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={LEAD} />
-        <rect x={MEMBER.x} y={MEMBER_Y.bottom} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={RECEDE} />
+        {/* -90° rotation around the viewBox center so crests sit side-by-side (horizontal)
+            with the lighter crest on the LEFT and darker on the RIGHT, matching k8squad.io.
+            Positive rotate(90) maps the upper/lighter crest to the right — opposite to the
+            website — so the sign must be negative. */}
+        <g transform="rotate(-90 50 50)">
+          {/* lower crest (recedes) — becomes right crest after rotation */}
+          <rect
+            x={CREST.x}
+            y={CREST_Y.bottom}
+            width={CREST.size}
+            height={CREST.size}
+            rx={CREST.rx}
+            fill="none"
+            stroke={`url(#${ringBot})`}
+            strokeWidth={CREST.strokeWidth}
+          />
+          {/* upper crest (leads) — becomes left crest after rotation */}
+          <rect
+            x={CREST.x}
+            y={CREST_Y.top}
+            width={CREST.size}
+            height={CREST.size}
+            rx={CREST.rx}
+            fill="none"
+            stroke={`url(#${ringTop})`}
+            strokeWidth={CREST.strokeWidth}
+          />
+          {/* coordinator node — the bright pinch that fuses the two crests */}
+          <rect x={NODE.x} y={NODE.y} width={NODE.size} height={NODE.size} rx={NODE.rx} fill={LEAD} />
+          {/* squad member nodes */}
+          <rect x={MEMBER.x} y={MEMBER_Y.top} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={LEAD} />
+          <rect x={MEMBER.x} y={MEMBER_Y.bottom} width={MEMBER.size} height={MEMBER.size} rx={MEMBER.rx} fill={RECEDE} />
+        </g>
       </svg>
       {withWordmark && (
         <strong className="brand-wordmark">
