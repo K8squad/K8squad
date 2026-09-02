@@ -195,6 +195,24 @@ func TestDeriveStatusBuckets(t *testing.T) {
 			},
 			AgentStatusRunning, "", "new",
 		},
+		{
+			// Equal start times ⇒ deterministic tie-break by name (higher wins), regardless
+			// of list order — guards against currentRunId/status flapping on the SSE stream.
+			"equal start times break by name",
+			[]*ksquadv1.Run{
+				agentRun("ns", "run-a", "a", "", ksquadv1.RunPhaseRunning, &claimed, ""),
+				agentRun("ns", "run-b", "a", "", ksquadv1.RunPhaseRunning, &claimed, ""),
+			},
+			AgentStatusRunning, "", "run-b",
+		},
+		{
+			"equal start times break by name (reverse list order)",
+			[]*ksquadv1.Run{
+				agentRun("ns", "run-b", "a", "", ksquadv1.RunPhaseRunning, &claimed, ""),
+				agentRun("ns", "run-a", "a", "", ksquadv1.RunPhaseRunning, &claimed, ""),
+			},
+			AgentStatusRunning, "", "run-b",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -417,6 +435,35 @@ func TestAgentRunsHandlerArray(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].ID != "run-1" {
 		t.Fatalf("runs: %+v", runs)
+	}
+}
+
+// TestAgentRunsHandlerLimitZeroBounded — an explicit ?limit=0 must NOT return the full history:
+// the HTTP contract is bounded pagination, so the handler maps zero back to the default page.
+func TestAgentRunsHandlerLimitZeroBounded(t *testing.T) {
+	teamID := uuid.MustParse("cccc0000-0000-0000-0000-000000000000")
+	claimed := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	objs := []client.Object{
+		team("squad-a", "alpha", teamID.String()),
+		orgAgent("squad-a", "solo", "ag-solo", "rt", "", "m"),
+	}
+	// 60 runs > the default page of 50 — an unbounded limit=0 would return all 60.
+	for i := 0; i < 60; i++ {
+		objs = append(objs, agentRun("squad-a", "run-"+string(rune('a'+i/26))+string(rune('a'+i%26)), "solo", "ISI", ksquadv1.RunPhaseSucceeded, &claimed, ""))
+	}
+	h := testOrgServer(t, teamID, newOrgReader(t, objs...))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/agents/ag-solo/runs?limit=0", nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("limit=0: got %d, want 200", rec.Code)
+	}
+	var runs []RunSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &runs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(runs) != 50 {
+		t.Fatalf("limit=0 must clamp to the default page of 50, got %d", len(runs))
 	}
 }
 

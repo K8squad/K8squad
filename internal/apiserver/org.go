@@ -429,7 +429,16 @@ func deriveStatus(runs []*ksquadv1.Run) (status string, pausedReason *string, cu
 		if isTerminal(run.Status.Phase) {
 			continue
 		}
-		if current == nil || runStart(run).After(runStart(current)) {
+		// Freshest non-terminal Run wins; on identical start times break the tie by name
+		// (higher wins) so the choice is deterministic across cache reads — otherwise the
+		// selection would depend on list iteration order and currentRunId/status could flap
+		// on the SSE stream.
+		if current == nil {
+			current = run
+			continue
+		}
+		ts, cur := runStart(run), runStart(current)
+		if ts.After(cur) || (ts.Equal(cur) && run.Name > current.Name) {
 			current = run
 		}
 	}
@@ -608,7 +617,14 @@ func (s *Server) agentRuns(reader OrgReader) http.HandlerFunc {
 			return
 		}
 		agentUID := muxVar(r, "agentId")
+		// The HTTP contract is bounded pagination: an absent, malformed, or explicit
+		// limit=0 means the default page (never "unbounded"), so an external caller can
+		// never coerce the full run history in one response. queryIntDefault clamps the
+		// upper bound; the <=0 guard here maps the zero case back to the default.
 		limit := queryIntDefault(r, "limit", 50, 200)
+		if limit <= 0 {
+			limit = 50
+		}
 		offset := queryIntDefault(r, "offset", 0, 0)
 		runs, err := reader.AgentRuns(r.Context(), auth, agentUID, limit, offset)
 		if errors.Is(err, ErrTeamNotFound) || errors.Is(err, ErrAgentNotFound) {
@@ -645,11 +661,16 @@ func (s *Server) teamStatusStream(reader OrgReader) http.HandlerFunc {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-Accel-Buffering", "no") // defeat nginx/proxy response buffering
-		w.WriteHeader(http.StatusOK)
 
+		// Probe flush support BEFORE committing a status. The first Flush implicitly writes
+		// the 200 + headers when streaming IS supported; when it is NOT (a wrapped writer
+		// with no Flusher up the chain), ResponseController.Flush returns without writing, so
+		// we can still answer 500 rather than stranding the client on a committed-but-dead
+		// 200 stream. WriteHeader is therefore never called explicitly.
 		rc := http.NewResponseController(w)
 		if err := rc.Flush(); err != nil {
-			return // streaming unsupported by this writer
+			writeJSONError(w, http.StatusInternalServerError, "streaming unsupported")
+			return
 		}
 
 		ctx := r.Context()
