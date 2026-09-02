@@ -9,6 +9,7 @@
 // trace. READ-ONLY (R6): token counts are runtime-reported / best-effort (§11 OQ14) — legibility,
 // NOT the billing authority (authoritative consumption = 8.8). No mutate/claim/kill affordance.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { OrgAgent, RunSummary } from "@/lib/agents/types";
 import { createAgentsClient, AgentsApiError } from "@/lib/agents/api";
@@ -42,7 +43,14 @@ function fmtTokens(r: RunSummary): string {
   return parts.length ? parts.join(" / ") : "—";
 }
 
-export function AgentDetail({ agentId }: { agentId: string }) {
+export function AgentDetail({
+  agentId,
+  canEdit = false,
+}: {
+  agentId: string;
+  /** Offer the "Edit" deep-link into the compose Agent form (ISI-3554 Story A). Server-resolved. */
+  canEdit?: boolean;
+}) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [openRun, setOpenRun] = useState<string | null>(null);
 
@@ -94,6 +102,18 @@ export function AgentDetail({ agentId }: { agentId: string }) {
             ))}
           </span>
         </div>
+        {/* "Edit" deep-links into the compose Agent form in edit mode with the name pre-filled so a
+            PUT (new revision) targets this agent (ISI-3554 Story A). Gated server-side; the apiserver
+            remains the write authority (a viewer-tier caller sees the 403 verbatim on submit). */}
+        {canEdit && (
+          <Link
+            className="btn agent-detail__edit"
+            href={`/compose?kind=agents&mode=edit&name=${encodeURIComponent(agent.name)}`}
+            aria-label={`Edit ${agent.name}`}
+          >
+            Edit
+          </Link>
+        )}
       </header>
 
       <div className="card">

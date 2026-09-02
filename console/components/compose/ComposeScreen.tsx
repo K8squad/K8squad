@@ -13,21 +13,24 @@
 // revision N" / "updated to revision N".
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   COMPOSE_KINDS,
   KIND_LABEL,
   RUNTIME_CLASS_HINTS,
   emptyForm,
   isValid,
+  parseComposeParams,
   toWire,
   validate,
   type ComposeForm,
   type ComposeKind,
+  type ComposeMode,
   type ComposeResult,
   type FieldErrors,
 } from "@/lib/compose";
 
-type Mode = "create" | "edit";
+type Mode = ComposeMode;
 
 type SubmitState =
   | { kind: "idle" }
@@ -58,9 +61,34 @@ function parseError(status: number, body: string): { message: string; fields: Fi
 }
 
 export function ComposeScreen() {
-  const [kind, setKind] = useState<ComposeKind>("projects");
-  const [mode, setMode] = useState<Mode>("create");
-  const [cf, setCf] = useState<ComposeForm>(emptyForm("projects"));
+  // Deep-link seeding (ISI-3554 Story A). The compose surface is reachable directly (/compose) or
+  // via a discoverable entry point that pre-selects the form — "+ New Agent" on /agents links to
+  // ?kind=agents, and "Edit" on an agent detail links to ?kind=agents&mode=edit&name=<agentName>.
+  // Params seed the INITIAL state only; manual kind/mode switching afterward still works because the
+  // selectKind/selectMode handlers own the state from then on. Absent/invalid params fall back to
+  // today's defaults (parseComposeParams → projects/create), so a bare /compose is unchanged (AC4).
+  const params = useSearchParams();
+  const seed = useMemo(
+    () =>
+      parseComposeParams({
+        kind: params.get("kind"),
+        mode: params.get("mode"),
+        name: params.get("name"),
+      }),
+    // Seed once from the entry URL; later manual edits are owned by component state, not the URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const [kind, setKind] = useState<ComposeKind>(seed.kind);
+  const [mode, setMode] = useState<Mode>(seed.mode);
+  const [cf, setCf] = useState<ComposeForm>(() => {
+    const base = emptyForm(seed.kind);
+    // Pre-fill the name so an edit deep-link targets the right object (PUT is name-addressed).
+    return seed.name
+      ? ({ kind: base.kind, form: { ...base.form, name: seed.name } } as ComposeForm)
+      : base;
+  });
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
 
   const clientErrors = useMemo(() => validate(cf), [cf]);
