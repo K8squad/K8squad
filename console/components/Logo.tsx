@@ -21,8 +21,9 @@ const RECEDE = "#2E4E8C"; // recede depth mid
 // Canonical 8-Crest geometry (100-unit design space), copied verbatim from
 // mark-8crest-on-dark.svg. Centralised as named constants so the two crests / member nodes stay
 // consistent and a brand tweak is a one-line edit rather than a hunt through inline literals.
-// The shapes group is rotated 90° CW so the mark renders horizontally (left crest = lighter,
-// right crest = darker) — matching the orientation used on k8squad.io.
+// The shapes group is rotated -90° (CCW) so the mark renders horizontally (left crest = lighter,
+// right crest = darker) — matching the orientation used on k8squad.io. Positive +90° maps the
+// upper/lighter crest to the right (wrong); negative -90° maps it to the left (correct).
 const CREST = { x: 29, size: 42, rx: 13, strokeWidth: 9 } as const; // the two squad-containers
 const CREST_Y = { top: 13, bottom: 45 } as const;
 const MEMBER = { x: 44.5, size: 11, rx: 3 } as const; // top/bottom squad-member nodes
@@ -63,9 +64,11 @@ export function Logo({
             <stop offset="1" stopColor={RECEDE} />
           </linearGradient>
         </defs>
-        {/* 90° CW rotation around the viewBox center so crests sit side-by-side (horizontal),
-            matching the k8squad.io website orientation. */}
-        <g transform="rotate(90 50 50)">
+        {/* -90° rotation around the viewBox center so crests sit side-by-side (horizontal)
+            with the lighter crest on the LEFT and darker on the RIGHT, matching k8squad.io.
+            Positive rotate(90) maps the upper/lighter crest to the right — opposite to the
+            website — so the sign must be negative. */}
+        <g transform="rotate(-90 50 50)">
           {/* lower crest (recedes) — becomes right crest after rotation */}
           <rect
             x={CREST.x}
