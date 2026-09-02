@@ -257,7 +257,16 @@ func (v typedValidator[T]) ValidateDelete(ctx context.Context, obj T) (admission
 // concrete type must be recovered from each runtime value before the generic
 // setupAttributionFor helper can instantiate the typed webhook.
 func SetupAttributionWebhookWithManager(mgr manager.Manager, objs ...client.Object) error {
-	cross := crossrefs.NewCrossRefValidators(mgr.GetClient())
+	// Use the UNCACHED API reader, not mgr.GetClient(). The cross-ref guards
+	// read Secrets (GuardAgentSecret, tool-credential existence, model-endpoint
+	// resolution). A typed Secret Get through the cached client would start a
+	// Secret informer that list/watches and stores COMPLETE Secret objects —
+	// token plaintext included — in the manager cache, silently defeating the
+	// by-reference/no-plaintext boundary (NFR-SEC3) the aux-cred seam is built
+	// on. The API reader goes straight to the API server, so admission reads
+	// are transient/request-scoped and never warm a full-Secret cache. It is
+	// also the correct staleness posture for existence checks (ISI-3565).
+	cross := crossrefs.NewCrossRefValidators(mgr.GetAPIReader())
 	for _, obj := range objs {
 		var err error
 		switch o := obj.(type) {

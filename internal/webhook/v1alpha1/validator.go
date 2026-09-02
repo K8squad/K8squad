@@ -256,7 +256,12 @@ func (v *CrossRefValidator) ValidateAgent(ctx context.Context, agent *ksquadv1al
 	}
 	if v.on(GuardAgentSecret) {
 		ref := agent.Spec.CredentialSecretRef
-		ok, err := refExists(ctx, v.Reader, &corev1.Secret{}, agent.Namespace, ref.Name)
+		// Metadata-only existence check: the guard only needs to know the BYO
+		// credential Secret exists, never its bytes. A full typed Secret Get
+		// here would deserialize token plaintext into the control plane,
+		// contradicting the no-plaintext boundary (symmetric with the
+		// tool-credential check above; the reader is uncached — ISI-3565).
+		ok, err := v.secretMetadataExists(ctx, agent.Namespace, ref.Name)
 		switch {
 		case err != nil:
 			errs = append(errs, invalidf("spec.credentialSecretRef", ref, "admission read failed (fail-closed): %v", err))
