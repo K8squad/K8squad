@@ -35,6 +35,8 @@ spec:
         {{- include "ksquad.labels" . | nindent 8 }}
         app.kubernetes.io/component: apiserver
     spec:
+      # The 8.5 compose write surface applies CRs as this SA (RBAC in rbac.yaml, ISI-3546).
+      serviceAccountName: {{ include "ksquad.apiserver.fullname" . }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
