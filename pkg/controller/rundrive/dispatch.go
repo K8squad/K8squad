@@ -35,6 +35,8 @@ import (
 	"github.com/K8squad/K8squad/internal/a2a"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
+	"github.com/K8squad/K8squad/pkg/contextasm"
+	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -91,6 +93,21 @@ type OperatorDispatchConfig struct {
 	// Source overrides the coord read-side (nil = sqlDispatchSource over
 	// DB) — the seam tests bind a fake against instead of a live Postgres.
 	Source dispatchSource
+	// ContextAssemblers builds the §8.5 context assembler used to re-read
+	// the Run's pinned context snapshot and inject it as
+	// wire.Envelope.SystemContext (story S1, ISI-3600, seam A —
+	// recompute-from-snapshot). Nil ships title+body only, the pre-S1
+	// behavior, so the field is opt-in and non-regressing.
+	ContextAssemblers ContextAssemblers
+}
+
+// ContextAssemblers builds a per-namespace §8.5 context assembler over the
+// production Sources (pkg/controller/contextsource.Deps implements it). The
+// dispatcher re-reads the Run's pinned snapshot through it (Existing set) so
+// the injected SystemContext is byte-identical to what the reconciler pinned
+// (deterministic resume, AC3).
+type ContextAssemblers interface {
+	For(namespace string) *contextasm.Assembler
 }
 
 // NewOperatorDispatcher resolves the config, verifies the shim binary is
@@ -214,6 +231,21 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.Input = title // a titled-but-bodiless item still carries its instruction
 	}
 
+	// §8.5 context injection (story S1, ISI-3600, seam A): when the context
+	// side-channel is wired AND the reconciler pinned a snapshot, re-read the
+	// PINNED revisions/doc-ids and render the tier-framed system/context
+	// string. SystemContext is ADDITIVE — env.Input still carries the
+	// concrete work instruction (AC1). Absent the snapshot (side-channel off,
+	// or the Run predates it) SystemContext stays empty: the bare title+body
+	// dispatch is unchanged (AC6). Fail-closed on assembly error (AC4).
+	if d.cfg.ContextAssemblers != nil && run.Status.ContextSnapshot != nil {
+		sysCtx, err := d.assembleSystemContext(ctx, run)
+		if err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: assemble system context for run %s/%s: %w", run.Namespace, run.Name, err)
+		}
+		env.SystemContext = sysCtx
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
@@ -324,6 +356,49 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	cmd := exec.CommandContext(ctx, d.shimBin, "run")
 	cmd.Env = env
 	return cmd, nil
+}
+
+// assembleSystemContext re-reads the Run's PINNED context snapshot (seam A,
+// story S1) and renders the tier-framed system/context string. It runs
+// Assemble with Existing set to the persisted snapshot, so the same
+// revisions/doc-ids the reconciler pinned are re-read — the render is
+// byte-identical to the first drive (deterministic resume, AC3), and a pinned
+// revision that no longer resolves errors loudly here (the Sources contract).
+func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.Run) (string, error) {
+	if len(run.Spec.Agents) == 0 {
+		return "", fmt.Errorf("run %s/%s has a context snapshot but no dispatch agent to resolve the model window", run.Namespace, run.Name)
+	}
+	agentRef := run.Spec.Agents[0]
+	agentNS := agentRef.Namespace
+	if agentNS == "" {
+		agentNS = run.Namespace
+	}
+	var agent api.Agent
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: agentNS, Name: agentRef.Name}, &agent); err != nil {
+		return "", fmt.Errorf("read Agent %s/%s: %w", agentNS, agentRef.Name, err)
+	}
+
+	projNS := run.Spec.ProjectRef.Namespace
+	if projNS == "" {
+		projNS = run.Namespace
+	}
+	var project api.Project
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: projNS, Name: run.Spec.ProjectRef.Name}, &project); err != nil {
+		return "", fmt.Errorf("read Project %s/%s: %w", projNS, run.Spec.ProjectRef.Name, err)
+	}
+
+	res, err := d.cfg.ContextAssemblers.For(run.Namespace).Assemble(ctx, contextasm.AssembleRequest{
+		Run:           run,
+		Agent:         &agent,
+		Project:       &project,
+		TeamID:        run.Spec.TeamRef.Name,
+		ContextWindow: contextsource.WindowForModel(agent.Spec.Model),
+		Existing:      run.Status.ContextSnapshot,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.Injection.SystemPrompt(), nil
 }
 
 // agentModel resolves the dispatch agent's spec.model (empty = runtime

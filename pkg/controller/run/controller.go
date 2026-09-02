@@ -76,6 +76,11 @@ type Reconciler struct {
 	// Assembler resolves and records the capability manifest (Epic C).
 	// Nil disables the side-channel.
 	Assembler *Assembler
+	// ContextAssemblers builds the §8.5 context assembler over the
+	// production sources (story S1, ISI-3600). Nil disables the context
+	// side-channel — dispatch then ships title+body only (the pre-S1
+	// behavior), so the field is opt-in and non-regressing.
+	ContextAssemblers ContextAssemblers
 }
 
 // Reconcile reads the Run, looks up its committed durable step, projects that
@@ -145,6 +150,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			}
 			desired.CapabilityManifest = manifest
 		}
+	}
+
+	// Context-assembler side-channel (story S1, ISI-3600): at the Claiming →
+	// Running transition, assemble the §8.5 context envelope and pin its
+	// resolved-input snapshot on status.contextSnapshot (immutable for the
+	// Run's life, like the capability manifest). Dispatch re-reads the pinned
+	// snapshot to inject the identical context (deterministic resume).
+	// Fail-closed: an assembly error requeues — a Run never dispatches with a
+	// partial context envelope.
+	if err := r.ensureContextSnapshot(ctx, &runObj, &desired); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	if apiequality.Semantic.DeepEqual(runObj.Status, desired) {
