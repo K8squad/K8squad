@@ -8,6 +8,7 @@ package helm
 import (
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -200,26 +201,54 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	assertApiserverBinding(t, string(chartYAML))
 }
 
+// tplAction matches a single Helm action (`{{ ... }}`); stripTemplates swaps
+// each for a fixed token so a still-templated snippet (namespace `{{ $ns }}`,
+// name `{{ include ... }}`) unmarshals as plain YAML for structural assertions.
+var tplAction = regexp.MustCompile(`\{\{[^}]*\}\}`)
+
+func stripTemplates(s string) string { return tplAction.ReplaceAllString(s, "TPL") }
+
 // assertApiserverBinding finds the ClusterRoleBinding whose metadata.name ends
-// in "-apiserver" and, within that single document, requires a roleRef to a
-// ClusterRole named "-apiserver" and a ServiceAccount subject "ksquad-apiserver".
+// in "-apiserver" and, within that single document, PARSES its roleRef and
+// subjects (not substring-matches) and requires: roleRef → a ClusterRole named
+// "-apiserver"; and the complete subject entry kind=ServiceAccount /
+// name=ksquad-apiserver / namespace set. Parsing the typed entries means a
+// `User` named ksquad-apiserver, an unrelated ServiceAccount, or the right SA
+// in no/blank namespace can't satisfy the guard while the binding stays inert.
 func assertApiserverBinding(t *testing.T, chart string) {
 	t.Helper()
 	for _, d := range splitChartDocs(chart) {
 		if d.kind != "ClusterRoleBinding" || !strings.HasSuffix(d.metaName, "-apiserver") {
 			continue
 		}
-		// roleRef block: kind ClusterRole + name suffix -apiserver.
-		roleRef := sectionAfter(d.body, "roleRef:")
-		if !strings.Contains(roleRef, "kind: ClusterRole") ||
-			!nameLineHasSuffix(roleRef, "-apiserver") {
-			t.Fatalf("apiserver ClusterRoleBinding roleRef does not target the -apiserver ClusterRole:\n%s", roleRef)
+
+		var ref struct {
+			RoleRef rbacv1.RoleRef `json:"roleRef"`
 		}
-		// subjects block: a ServiceAccount named ksquad-apiserver.
-		subjects := sectionAfter(d.body, "subjects:")
-		if !strings.Contains(subjects, "kind: ServiceAccount") ||
-			!strings.Contains(subjects, "name: ksquad-apiserver") {
-			t.Fatalf("apiserver ClusterRoleBinding subject is not ServiceAccount ksquad-apiserver:\n%s", subjects)
+		if err := yaml.Unmarshal([]byte("roleRef:\n"+stripTemplates(sectionAfter(d.body, "roleRef:"))), &ref); err != nil {
+			t.Fatalf("parse apiserver binding roleRef: %v", err)
+		}
+		if ref.RoleRef.Kind != "ClusterRole" || !strings.HasSuffix(ref.RoleRef.Name, "-apiserver") {
+			t.Fatalf("apiserver ClusterRoleBinding roleRef does not target the -apiserver ClusterRole: %+v", ref.RoleRef)
+		}
+
+		var subs struct {
+			Subjects []rbacv1.Subject `json:"subjects"`
+		}
+		if err := yaml.Unmarshal([]byte("subjects:\n"+stripTemplates(sectionAfter(d.body, "subjects:"))), &subs); err != nil {
+			t.Fatalf("parse apiserver binding subjects: %v", err)
+		}
+		found := false
+		for _, s := range subs.Subjects {
+			if s.Kind == "ServiceAccount" && s.Name == "ksquad-apiserver" {
+				if s.Namespace == "" {
+					t.Fatalf("apiserver binding subject ServiceAccount/ksquad-apiserver has no namespace: %+v", s)
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("apiserver ClusterRoleBinding has no complete ServiceAccount/ksquad-apiserver subject: %+v", subs.Subjects)
 		}
 		return
 	}
@@ -249,17 +278,4 @@ func sectionAfter(doc, header string) string {
 		}
 	}
 	return strings.Join(lines[start:end], "\n")
-}
-
-// nameLineHasSuffix reports whether any `name:` line in the block has a value
-// ending in the given suffix (the value stays Helm-templated).
-func nameLineHasSuffix(block, suffix string) bool {
-	for _, l := range strings.Split(block, "\n") {
-		l = strings.TrimSpace(l)
-		if strings.HasPrefix(l, "name:") &&
-			strings.HasSuffix(strings.TrimSpace(strings.TrimPrefix(l, "name:")), suffix) {
-			return true
-		}
-	}
-	return false
 }
