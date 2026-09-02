@@ -132,4 +132,50 @@ subjects:
 - kind: ServiceAccount
   name: ksquad-scm-webhook
   namespace: {{ $ns }}
+---
+# apiserver compose write surface (ISI-3546 / ISI-3198). The 8.5 compose
+# endpoints (POST/PUT /api/{teams,projects,agents,roles,skills}) apply
+# user-authored CRs through the apiserver's OWN controller-runtime client, which
+# runs as the ksquad-apiserver ServiceAccount. In-app authz (contributor tier +
+# team-namespace scoping, ADR-039) is the real user boundary; the SA is the
+# trusted write proxy, so it needs cluster-wide access to the compose kinds
+# (Team namespaces are provisioned dynamically). Without this the client
+# authenticates but every apply 403s at the kube API — the route logs "write
+# surface ready" yet writes fail, the true blocker behind ISI-3544 ("can't add
+# an agent"). Least-privilege, mirrored to the DIRECT (uncached) client the
+# compose path actually uses (internal/apiserver/cache.go NewCRDApplier →
+# client.New): get+create+update on every compose kind (upsert = Get-then-
+# Create-or-Update, composecrd.go:305/321/334); list ONLY on teams, to resolve
+# the target Team namespace (CRDApplier.List over TeamList, composecrd.go:278).
+# No watch (direct client, no informers), no patch (never called), no delete
+# (compose never deletes); status is owned by the operator, not this write path.
+# Kept in lockstep by TestApiserverClusterRoleLeastPrivilege in rbac_lockstep_test.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+rules:
+- apiGroups: [ksquad.io]
+  resources: [teams]
+  verbs: [get, list, create, update]
+- apiGroups: [ksquad.io]
+  resources: [projects, agents, roles, skills]
+  verbs: [get, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8squad.fullname" . }}-apiserver
+subjects:
+- kind: ServiceAccount
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
 {{- end }}
