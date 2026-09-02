@@ -2,7 +2,7 @@
 
 A self-contained, `kubectl apply`-able squad that models the **BMAD method**
 (Breakthrough Method of Agile AI-Driven Development): 13 roles in a reporting
-hierarchy, wired with 4 default Skills. Use it to onboard onto K8squad on a real
+hierarchy, wired with 5 default Skills. Use it to onboard onto K8squad on a real
 cluster and as a template for your own squad.
 
 Everything lives in one namespace (`bmad-squad`) and every cross-reference
@@ -64,7 +64,7 @@ Tear down with `kubectl delete namespace bmad-squad`.
 | 01 | `01-credentials.yaml` | model-credential `Secret` (+ optional MCP token `Secret`s for 02b) (`REPLACE_ME`) |
 | 02 | `02-runtimes.yaml` | `AgentRuntime` (`claude-code`) |
 | 02b | `02b-mcpservers.yaml` | **optional** — an `MCPServer` reference example (not used by the default skills) |
-| 03 | `03-skills.yaml` | the 4 default `Skill`s |
+| 03 | `03-skills.yaml` | the 5 default `Skill`s |
 | 04 | `04-prompts.yaml` | 13 prompt `ConfigMap`s (behavior + hierarchy) |
 | 05 | `05-roles.yaml` | 13 `Role`s (promptRef + defaultSkills + labels) |
 | 06 | `06-agents.yaml` | 13 `Agent`s (model + role + runtime + credential) |
@@ -132,22 +132,32 @@ CEO (sam)
     └── Graphical Designer (gabi)
 ```
 
-## The 4 default Skills
+## The 5 default Skills
 
-A `Skill` is the CRD-authorized capability envelope. `bmad` ships **inline**
-(self-contained); the tool skills are **git-sourced and pinned to a commit SHA**
-(`repoRef`/`ref` are placeholders — repoint them at your own skill repo).
+A `Skill` is the CRD-authorized capability envelope. `bmad` and `task-io` ship
+**inline** (self-contained); the tool skills are **git-sourced and pinned to a
+commit SHA** (`repoRef`/`ref` are placeholders — repoint them at your own skill
+repo).
 
 | Skill | Source | Granted to | Purpose |
 |-------|--------|-----------|---------|
 | `bmad` | inline | **all 13 roles** | the BMAD workflow/methodology |
+| `task-io` | inline | **all 13 roles** | read/comment/status/checkout on your *own* task (ISI-3602) |
 | `github` | git | coder, devops-engineer, code-reviewer | SCM & PR workflows |
 | `dynatrace` | git | observability-engineer | telemetry queries (dtctl + Dynatrace MCP) |
 | `graphical` | git | graphical-designer | SVG rendering + asset toolchain |
 
+`task-io` is the **union baseline**: every working agent gets it via its Role so
+it can act on its own work item on demand (the coord-side analogue of an issue
+read/write API, delivered by S2/ISI-3601). It grants *agency over your own task*,
+never a general issue-browser and never context assembly — task context is PUSHED
+into the prompt at boot (S1/ISI-3590). It ships inline until S2 finalizes the
+coord API wire shapes, then converts to a SHA-pinned catalog entry.
+
 Skills attach to roles via `Role.spec.defaultSkills[]`; every Agent inherits its
-role's defaults (no per-Agent `skillRefs` override is used here, but the seam
-exists on `Agent.spec.skillRefs[]`).
+role's defaults as a **union** (`Agent.spec.skillRefs ∪ Role.spec.defaultSkills`,
+ADR-044 / ISI-3591), so an agent that sets its own `skillRefs` still keeps every
+role default including `task-io`.
 
 ## Customizing
 

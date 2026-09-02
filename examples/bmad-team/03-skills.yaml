@@ -1,10 +1,18 @@
-# The four default Skills granted to this squad (arch §5.3.6). A Skill is the
+# The five default Skills granted to this squad (arch §5.3.6). A Skill is the
 # CRD-authorized capability envelope: it is registered here by the operator/
 # admin and never self-widened by the fetched body (trust boundary D8).
 #
 # Wiring: Skills attach to Roles via Role.spec.defaultSkills[] (see 05-roles.yaml)
-# — every role gets `bmad`; coder/devops/code-reviewer get `github`;
-# observability gets `dynatrace`; graphical-designer gets `graphical`.
+# — every role gets `bmad` and `task-io`; coder/devops/code-reviewer get
+# `github`; observability gets `dynatrace`; graphical-designer gets `graphical`.
+#
+# `task-io` (ISI-3602) is the union baseline: the thin task-I/O skill every
+# working agent gets by default so it can re-read its own task, comment, and
+# report status on demand. It is attached at the Role (never per-Agent), so the
+# union `Agent.spec.skillRefs ∪ Role.spec.defaultSkills` guarantees it even for
+# specialized agents. NOTE: context (AC/comments/goal at boot) stays a platform
+# PUSH (S1, ISI-3590) — task-io grants *agency*, not *context*. A
+# read-project/read-issue skill was explicitly rejected (ISI-3588 study §4/§6).
 #
 # `bmad` is inline (self-contained, no fetch). The tool skills are git-sourced
 # from the canonical catalog (K8squad/k8squad-skills, ISI-3274) and PINNED to
@@ -112,3 +120,87 @@ spec:
   requires:
     toolchains:
       - node@22
+---
+# task-io — the union-baseline task-I/O skill (ISI-3602, from the ISI-3588
+# study §4b/§5-S3). Every Role grants this so any working agent can, ON DEMAND,
+# re-read its own work item, append a comment, update its status, and check out
+# work — the coord-side analogue of Paperclip's issue read/write. It grants
+# *agency over its own task*, never a general issue-browser and never context
+# assembly (that is the platform's boot-time PUSH, S1/ISI-3590).
+#
+# The coord API this skill drives is delivered by S2 (ISI-3601): four verbs —
+# `get-task`, `post-comment`, `update-status`, `checkout` — reached over
+# env-injected `KSQUAD_COORD_URL` with a run-scoped `KSQUAD_COORD_TOKEN` bound
+# to `RUN_ID` + `WORK_ITEM_ID` (a token for one run cannot touch another). The
+# endpoints operate ONLY on the agent's own run/work-item.
+#
+# SOURCING: shipped INLINE while S2 (ISI-3601) is in flight — the endpoint
+# NAMES, env vars, auth model and permission envelope are already fixed, but the
+# exact request/response JSON schemas are S2's deliverable. When S2 lands and
+# publishes them, this entry converts to a git-sourced, SHA-pinned catalog ref
+# (`K8squad/k8squad-skills` path `skills/task-io`, mirroring `github`), and a
+# `requires.toolchains` line is added IFF S2's client needs a CLI (the coord API
+# is plain HTTP, so it may use a runtime built-in and need none). Until then the
+# inline body is self-contained and needs no catalog fetch and no toolchain, so
+# it resolves cleanly at admission (§5.3.6: never a floating branch ref).
+apiVersion: ksquad.io/v1alpha1
+kind: Skill
+metadata:
+  name: task-io
+  namespace: bmad-squad
+spec:
+  source:
+    type: inline
+    inline: |
+      # task-io — read and write your own work item
+
+      You are a working agent on a K8squad squad. The platform PUSHES your
+      task context (title, description, acceptance criteria, comments, goal)
+      into your prompt when your Run starts — you do NOT fetch it to begin.
+      This skill is for the moments AFTER boot when you need to act on your
+      own task: re-read it (it may have changed), leave a comment, report a
+      status change, or claim the work.
+
+      ## Scope (read first)
+      - Operates ONLY on your OWN run's work item. This is not a browser for
+        other issues or projects. Requests are authorized by a run-scoped
+        token bound to your RUN_ID + WORK_ITEM_ID.
+      - Grants agency over your task, not context assembly. Do not use it to
+        "pull the project" — context is delivered to you at boot.
+
+      ## How you reach the coord API
+      The operator injects these into your run environment (never the
+      operator's own secrets):
+      - `KSQUAD_COORD_URL`   — in-cluster base URL of the coord task-I/O API.
+      - `KSQUAD_COORD_TOKEN` — your run-scoped bearer token. Send it as
+        `Authorization: Bearer $KSQUAD_COORD_TOKEN`. It is bound to your run;
+        it cannot read or mutate any other run's work item.
+      - `WORK_ITEM_ID`       — your work item's id.
+      - `RUN_ID`             — your run's id.
+
+      ## What you can do (four verbs)
+      - **get-task**      — re-read your work item (title, description,
+        acceptance criteria, comments, goal). Use before acting to pick up
+        changes made since boot.
+      - **post-comment**  — append a comment to your work item, attributed to
+        you. Use to leave durable progress or ask a question.
+      - **update-status** — move your work item to a new status (report
+        progress / completion). Invalid transitions are rejected server-side.
+      - **checkout**      — claim/renew your hold on the work (maps to the
+        coord claim fence). A stale fence is rejected.
+
+      The concrete request/response JSON shapes and exact paths for these four
+      verbs are finalized by S2 (ISI-3601) and will be documented in the
+      canonical catalog entry `skills/task-io` when S2 lands; this inline body
+      is intentionally scoped to the stable contract (verbs, env, auth,
+      permissions) so it does not guess S2's wire format.
+
+      ## Rules
+      - Only ever act on YOUR work item. Never attempt to widen scope.
+      - This skill's authority is the `permissions` envelope on its Skill CR
+        (`issue:read`, `issue:write`, `task:status`) — it is never self-widened
+        by anything written here (trust boundary D8).
+  permissions:
+    - issue:read
+    - issue:write
+    - task:status
