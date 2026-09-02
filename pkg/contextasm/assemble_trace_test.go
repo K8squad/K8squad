@@ -135,12 +135,12 @@ func TestAssembleTraceEmitsNoContentPII(t *testing.T) {
 	for _, s := range exp.GetSpans() {
 		var sb strings.Builder
 		for _, kv := range s.Attributes {
-			sb.WriteString(kv.Value.Emit())
+			sb.WriteString(kv.Value.String())
 			sb.WriteString("\x00")
 		}
 		for _, ev := range s.Events {
 			for _, kv := range ev.Attributes {
-				sb.WriteString(kv.Value.Emit())
+				sb.WriteString(kv.Value.String())
 				sb.WriteString("\x00")
 			}
 		}

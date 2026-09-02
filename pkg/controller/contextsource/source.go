@@ -241,7 +241,7 @@ func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (
 	gen := fmt.Sprintf("%d", proj.Generation)
 	if revision != "" && revision != gen {
 		return contextasm.ProjectMeta{}, fmt.Errorf(
-			"Project %s/%s pinned generation %q no longer resolves (current %q): refusing to fall back to latest (deterministic-resume contract)",
+			"project %s/%s pinned generation %q no longer resolves (current %q): refusing to fall back to latest (deterministic-resume contract)",
 			s.namespace, projectRef, revision, gen)
 	}
 	return contextasm.ProjectMeta{
