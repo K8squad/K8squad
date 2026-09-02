@@ -22,8 +22,8 @@ export default async function AgentsPage({
         <h1>Agents</h1>
         <p className="muted">
           Live squad org chart (Team → Agent → Role). Read-only legibility —
-          composition stays in the compose view (8.5), coordination stays
-          server-side (R6). Click an agent to open its detail + run history.
+          composition stays in the compose view, coordination stays
+          server-side. Click an agent to open its detail + run history.
         </p>
       </header>
       {team ? (

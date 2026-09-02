@@ -25,11 +25,11 @@ export default async function RunPage({
         <p className="muted" style={{ margin: "6px 0 0" }}>
           Live coordination progress.{" "}
           <a href={`/runs/${encodeURIComponent(runId)}/artifacts`}>
-            Inspect artifacts &amp; handoff (8.3)
+            Inspect artifacts &amp; handoff
           </a>
           {" · "}
           <a href={`/runs/${encodeURIComponent(runId)}/build`}>
-            Browse the build workspace (8.7)
+            Browse the build workspace
           </a>
         </p>
         {wi ? (
