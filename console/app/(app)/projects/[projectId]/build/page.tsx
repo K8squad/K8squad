@@ -13,11 +13,9 @@ export default async function BuildPage({
     <div>
       <h1>Build</h1>
       <p className="muted">
-        Build snapshots for{" "}
-        <strong>{decodeURIComponent(projectId)}</strong> (story 8.7e three-pane
-        browser — in flight under [ISI-2904](/ISI/issues/ISI-2904)). Per-Run
-        file tree / diff / code views live behind the BFF read proxies with
-        per-principal existence-hiding (8.7d).
+        Build snapshots for <strong>{decodeURIComponent(projectId)}</strong>.
+        Open a Run to inspect its build workspace — the per-Run file tree, diffs,
+        and code views.
       </p>
     </div>
   );

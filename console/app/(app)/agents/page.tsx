@@ -34,8 +34,7 @@ export default async function AgentsPage({
         <div className="card">
           <p className="muted">
             Select a team to view its org diagram (e.g.{" "}
-            <code>/agents?team=&lt;teamId&gt;</code>). The team selector lands
-            with the nav shell (story 8.13).
+            <code>/agents?team=&lt;teamId&gt;</code>).
           </p>
         </div>
       )}

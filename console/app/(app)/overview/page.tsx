@@ -1,17 +1,12 @@
-// app/overview/page.tsx — Overview (squad status/activity) mount point (story 8.13).
+// app/overview/page.tsx — Overview (squad status/activity), the story 8.1 GLOBAL surface.
 //
-// GLOBAL surface (8.1 squad overview). The live read-model wiring lands with ISI-2900; the
-// nav shell mounts the route now so the hierarchy exists and the rail node resolves.
+// This route mounts the SAME live read-model screen as the console root (app/page.tsx):
+// SquadOverview fetches GET /api/squad/overview through the BFF and renders the caller's
+// Team-scoped Teams→Projects→Run-status projection, with a distinct honest state for every
+// terminal HTTP status (401/404/501/5xx). No scaffold/story-scaffold copy reaches the UI.
+
+import { SquadOverview } from "@/components/SquadOverview";
 
 export default function OverviewPage() {
-  return (
-    <div>
-      <h1>Overview</h1>
-      <p className="muted">
-        Squad status and activity (story 8.1 — wiring in flight under
-        [ISI-2900](/ISI/issues/ISI-2900)). The apiserver read model this screen
-        consumes is <code>GET /api/squad/overview</code>.
-      </p>
-    </div>
-  );
+  return <SquadOverview />;
 }
