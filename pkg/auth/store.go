@@ -294,13 +294,21 @@ type PostgresSessionStore struct{ db *sql.DB }
 func NewPostgresSessionStore(db *sql.DB) *PostgresSessionStore { return &PostgresSessionStore{db: db} }
 
 // mintToken generates the opaque bearer token (256-bit entropy, base64url).
+//
+// CRITICAL (ISI-3541): the persisted token_hash MUST be sha256 of the EMITTED token
+// STRING — the exact bytes handed out as the ksquad_session cookie — because every
+// lookup (Resolve/Rotate/Logout here, and the §13 PostgresSessionResolver) computes
+// sha256([]byte(token)) over that same cookie string. Hashing the raw entropy instead
+// yields sha256(raw) != sha256(base64url(raw)), so no session ever resolves and every
+// gated route 401s while login still "succeeds" (it only INSERTs, never looks up).
 func mintToken() (string, []byte, error) {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		return "", nil, fmt.Errorf("auth: read session entropy: %w", err)
 	}
-	sum := sha256.Sum256(raw)
-	return base64.RawURLEncoding.EncodeToString(raw), sum[:], nil
+	token := base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(token))
+	return token, sum[:], nil
 }
 
 // Create inserts a live session row and returns the bearer token (never persisted).
