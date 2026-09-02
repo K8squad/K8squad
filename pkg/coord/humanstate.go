@@ -95,6 +95,22 @@ func NewHumanStateStore(db *sql.DB) (*HumanStateStore, error) {
 //     targetState — no lane change to make (409).
 //   - (zero, err): infrastructure failure; nothing was written.
 func (s *HumanStateStore) TransitionState(ctx context.Context, workItemID, teamID, targetState, fromState, principal, initiatedByUserID string) (StateTransition, error) {
+	return s.transition(ctx, workItemID, teamID, targetState, fromState, principal, "human", initiatedByUserID)
+}
+
+// AgentTransitionState is the AGENT-initiated counterpart of TransitionState
+// (ISI-3601 S2 update-status): a run moves its OWN work item to targetState.
+// Tenancy is already enforced upstream by the run-scoped task-io token binding
+// (own-run only), so teamID is "" (trusted caller) and there is no on-behalf-of
+// user. The ONLY difference from a human move is the audit provenance —
+// initiator="agent", not "human" — so the §6.5 audit_log truthfully attributes
+// the transition. The same state enum, optimistic fromState guard, no-fence
+// (ADR-037) and conflict/not-found semantics apply.
+func (s *HumanStateStore) AgentTransitionState(ctx context.Context, workItemID, targetState, fromState, principal string) (StateTransition, error) {
+	return s.transition(ctx, workItemID, "", targetState, fromState, principal, "agent", "")
+}
+
+func (s *HumanStateStore) transition(ctx context.Context, workItemID, teamID, targetState, fromState, principal, initiator, initiatedByUserID string) (StateTransition, error) {
 	if workItemID == "" || targetState == "" || principal == "" {
 		return StateTransition{}, fmt.Errorf(
 			"coord.HumanStateStore.TransitionState: workItemID, targetState and principal are required "+
@@ -165,7 +181,7 @@ func (s *HumanStateStore) TransitionState(ctx context.Context, workItemID, teamI
 	// (5) §6.5 audit provenance. fence_token is NULL by omission (ADR-037: a human
 	// lane move holds no custody). initiated_by_user_id is the §12.4 on-behalf-of id.
 	payload, err := json.Marshal(map[string]any{
-		"initiator":  "human",
+		"initiator":  initiator,
 		"from_state": currentState,
 		"to_state":   targetState,
 	})

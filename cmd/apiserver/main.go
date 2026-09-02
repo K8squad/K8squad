@@ -46,6 +46,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/search"
+	"github.com/K8squad/K8squad/pkg/taskio"
 )
 
 func main() {
@@ -292,6 +293,29 @@ func main() {
 		log.Printf("ksquad-apiserver: no database connection — audit log route will answer 501 until the database is available")
 	}
 
+	// ISI-3601 S2 run-scoped task-io seam: the coord-backed Store + the run-token
+	// verifier over the SAME HS256 signing key the operator mints with (so the
+	// operator can mint and the apiserver can verify with one configured secret).
+	// Absent a >=32-byte key the seam is disabled (nil handler): a token the
+	// operator minted could not be verified here anyway, so fail visible rather
+	// than mount an endpoint that rejects every real token.
+	var taskIOHandler http.Handler
+	if key := apiserver.DecodeJWTKey(cfg.JWTSigningKey); len(key) >= 32 {
+		minter, merr := taskio.NewMinter(key, time.Duration(cfg.JWTTTLSeconds)*time.Second)
+		store, serr := taskio.NewCoordStore(db, workItemState)
+		switch {
+		case merr != nil:
+			log.Printf("ksquad-apiserver: task-io seam disabled (minter): %v", merr)
+		case serr != nil:
+			log.Printf("ksquad-apiserver: task-io seam disabled (store): %v", serr)
+		default:
+			taskIOHandler = taskio.NewHandler(minter, store).Mux()
+			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/update-status/checkout)")
+		}
+	} else {
+		log.Printf("ksquad-apiserver: task-io seam disabled — no >=32B JWT signing key (set auth.signingKeySecretRef / KSQUAD_JWT_SIGNING_KEY)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator: authn,
 		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
@@ -318,6 +342,7 @@ func main() {
 		// 503 with the reason (the panel renders a degraded state).
 		ToolUsage: apiserver.NewOperatorMetricsToolUsage(os.Getenv("KSQUAD_OPERATOR_METRICS_URL")),
 		Hub:       hub,
+		TaskIO:    taskIOHandler,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,

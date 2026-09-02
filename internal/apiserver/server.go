@@ -120,6 +120,14 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
+	// post-comment / update-status / checkout) mounted under /api/task-io/. It
+	// does NOT ride the cookie BFF authz choke point: it carries its OWN
+	// run-scoped bearer auth (pkg/taskio), so it is mounted at the router root
+	// with a StripPrefix. Nil ⇒ the surface is simply absent (a dev run without
+	// a coord store / signing key wired); the operator only injects the
+	// KSQUAD_COORD_URL token when this is live.
+	TaskIO http.Handler
 }
 
 // NewServer assembles the root router from opts.
@@ -155,6 +163,15 @@ func (s *Server) routes(opts Options) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	}).Methods(http.MethodGet)
+
+	// ── Run-scoped task-io seam (ISI-3601 S2) — its OWN bearer auth, NOT the ──
+	// cookie choke point. Mounted at the router root so /api/task-io/{op}
+	// reaches the taskio.Handler mux (which serves /{op}); StripPrefix removes
+	// the mount prefix. Absent handler ⇒ the surface is simply not routed.
+	if opts.TaskIO != nil {
+		s.router.PathPrefix("/api/task-io/").Handler(
+			http.StripPrefix("/api/task-io", opts.TaskIO))
+	}
 
 	// ── Gated API surface (everything below rides the §13 authz choke point) ──
 	// The discussion Handler installs its own subrouter+BFFAuthz via Mount; the SSE and
