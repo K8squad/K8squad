@@ -1,6 +1,6 @@
 // app/api/session/route.ts — BFF for the caller's SESSION lifecycle (ISI-3522) + role summary.
 //
-//   GET    → /api/me      : the caller's role summary (story 8.14b UI RBAC gate; UX mirror only —
+//   GET    → /auth/me     : the caller's role summary (story 8.14b UI RBAC gate; UX mirror only —
 //                           the client FAILS CLOSED to viewer on any non-200/error).
 //   POST   → /auth/login  : sign in. Relays {username,password} to the apiserver login route and
 //                           relays its Set-Cookie (HttpOnly `ksquad_session`) back to the browser.
@@ -18,7 +18,7 @@ export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
 
 export async function GET(req: NextRequest): Promise<Response> {
-  return proxyJson(req, "/api/me");
+  return proxyJson(req, "/auth/me");
 }
 
 export async function POST(req: NextRequest): Promise<Response> {

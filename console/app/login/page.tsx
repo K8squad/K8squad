@@ -23,7 +23,7 @@ import { Logo } from "@/components/Logo";
 import { sanitizeNext } from "./safeNext";
 
 // Same-origin BFF endpoint the login form submits to. The Architect child adds the POST handler on
-// console/app/api/session/route.ts (today it is GET-only → /api/me). Kept as a const so the seam is
+// console/app/api/session/route.ts (GET → /auth/me, POST → /auth/login). Kept as a const so the seam is
 // obvious and easy to repoint.
 const SESSION_ENDPOINT = "/api/session";
 

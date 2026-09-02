@@ -4,8 +4,11 @@
 //   - default-off: no Gateway/HTTPRoute leaks into a normal install;
 //   - fail-fast on each invalid enabled config (no gatewayClassName, no
 //     controlPlane, identical hostnames);
-//   - HTTP-only IP mode renders a Gateway + both HTTPRoutes with the apiserver
-//     under /api and no hostnames;
+//   - HTTP-only IP mode renders a Gateway + ONLY the console HTTPRoute (the
+//     console owns `/` incl. the `/api/*` BFF); the apiserver gets NO browser
+//     route on a shared IP — a `/api` apiserver route would shadow the BFF and
+//     break login (ISI-3530). The direct apiserver route appears only once a
+//     dedicated `hostnames.apiserver` is set;
 //   - HTTPS + redirect renders an https listener and a redirect that targets the
 //     CONFIGURED https port (not a derived 443).
 //
@@ -92,7 +95,8 @@ func TestGatewayRejectsIdenticalHostnames(t *testing.T) {
 	}
 }
 
-// HTTP-only IP mode: Gateway + both HTTPRoutes, apiserver under /api, no hostnames.
+// HTTP-only IP mode: Gateway + ONLY the console HTTPRoute (console owns `/`
+// including the `/api/*` BFF); no apiserver route, no hostnames (ISI-3530).
 func TestGatewayHTTPOnlyIPMode(t *testing.T) {
 	out, err := renderGW(t,
 		"--set", "exposure.gateway.enabled=true",
@@ -103,16 +107,46 @@ func TestGatewayHTTPOnlyIPMode(t *testing.T) {
 	for _, want := range []string{
 		"kind: Gateway",
 		`gatewayClassName: "kgateway"`,
-		"name: ksquad-console",
-		"name: ksquad-apiserver",
-		`value: "/api"`, // apiserver routed under /api in IP mode
+		"name: ksquad-console", // the sole HTTPRoute in IP mode
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("HTTP-only IP render missing %q:\n%s", want, out)
 		}
 	}
+	// Exactly one HTTPRoute (console) — a `/api` apiserver route in IP mode would
+	// shadow the console BFF and break login (ISI-3530).
+	if n := strings.Count(out, "kind: HTTPRoute"); n != 1 {
+		t.Errorf("IP mode must render exactly one HTTPRoute (console); got %d:\n%s", n, out)
+	}
+	if strings.Contains(out, `value: "/api"`) {
+		t.Errorf("IP mode must NOT route the apiserver under /api (shadows the BFF):\n%s", out)
+	}
 	if strings.Contains(out, "hostnames:") {
 		t.Errorf("IP mode must not render any hostnames block:\n%s", out)
+	}
+}
+
+// With a dedicated apiserver hostname the direct apiserver HTTPRoute DOES render
+// (host-specificity keeps it collision-free with the console BFF) — the escape
+// hatch that ISI-3530 preserved for direct apiserver ingress.
+func TestGatewayApiserverRouteWithHostname(t *testing.T) {
+	out, err := renderGW(t,
+		"--set", "exposure.gateway.enabled=true",
+		"--set", "exposure.gateway.gatewayClassName=kgateway",
+		"--set", "exposure.gateway.hostnames.apiserver=api.ksquad.example.com")
+	if err != nil {
+		t.Fatalf("render failed: %v\n%s", err, out)
+	}
+	if n := strings.Count(out, "kind: HTTPRoute"); n != 2 {
+		t.Errorf("apiserver-hostname mode should render two HTTPRoutes (console + apiserver); got %d:\n%s", n, out)
+	}
+	for _, want := range []string{
+		"name: ksquad-apiserver",
+		"api.ksquad.example.com",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("apiserver-hostname render missing %q:\n%s", want, out)
+		}
 	}
 }
 

@@ -412,6 +412,12 @@ kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 # → http://localhost:8080  — pick the bmad-squad team, create a Run, watch it stream
 ```
 
+> **First time?** A fresh install has no users, so the Console `/login` screen
+> renders but you can't sign in until an admin is seeded. Enable the bootstrap
+> admin once — see *First login (bootstrap admin)* in the
+> [chart README](../config/helm/README.md#first-login-bootstrap-admin) — then
+> log in with that username + password (and clear the bootstrap credential after).
+
 From the console you create a Run, give it a goal, and watch progress stream
 live over SSE as the PM scopes it, the Architect sequences it, and the Coder /
 reviewers execute. The same is possible declaratively with a `Run` CR — see the
