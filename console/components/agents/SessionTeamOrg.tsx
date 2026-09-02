@@ -75,10 +75,13 @@ export function SessionTeamOrg() {
     );
   }
   if (state.kind === "no-team") {
+    // Reached on 404 or a 200 body with no `team.uid` — the session has no Team org projection to
+    // resolve. This is NOT "a Team with zero agents": a real empty Team resolves to `ok` and
+    // TeamOrgDiagram renders its own empty-agents state. So the copy speaks to the missing
+    // projection, not agent count.
     return (
       <p className="muted">
-        Your session resolves to a team with no agents yet. Compose a Team and
-        its agents will appear here.
+        No team org chart is available for your session yet.
       </p>
     );
   }
