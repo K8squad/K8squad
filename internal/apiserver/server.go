@@ -6,6 +6,9 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
@@ -150,13 +153,64 @@ func NewServer(opts Options) *Server {
 	return s
 }
 
-// Handler returns the root http.Handler to serve.
-func (s *Server) Handler() http.Handler { return s.router }
+// Handler returns the root http.Handler to serve. It is wrapped in the otelhttp server
+// instrumentation (ISI-3668) so every request opens a standard server span, inbound W3C
+// trace-context is extracted from the request headers, and http.server.request.duration is
+// recorded — all keyed off the process telemetry spine installed in cmd/apiserver (telemetry.Setup).
+// The route template (not the interpolated path) is stamped as http.route by routeTagMiddleware,
+// which runs after mux matches the route; see routes(). Liveness/readiness probes are filtered out
+// so kubelet polling does not flood the trace/metric stream.
+func (s *Server) Handler() http.Handler {
+	return otelhttp.NewHandler(s.router, "ksquad-apiserver",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
+		}),
+	)
+}
+
+// routeTagMiddleware stamps the matched gorilla/mux route TEMPLATE onto the otelhttp server span
+// and the metric labeler as http.route. It is a mux root middleware, so it runs after route
+// matching (mux.CurrentRoute is populated) and inside the otelhttp span started by Handler(). We
+// use the template — e.g. "/api/agents/{name}" — never the interpolated path, so the interpolated
+// {name} (which may be a secret/agent name) never lands in the http.route attribute or span name.
+// This preserves the low-cardinality + no-secret-in-telemetry rule for both traces and the
+// http.server.request.duration histogram.
+func routeTagMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route := mux.CurrentRoute(r)
+		if route == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		tmpl, err := route.GetPathTemplate()
+		if err != nil || tmpl == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpRoute := attribute.String("http.route", tmpl)
+		if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+			span.SetAttributes(httpRoute)
+			// Rename the generic operation span to "{METHOD} {template}" for a readable,
+			// still-low-cardinality span name.
+			span.SetName(r.Method + " " + tmpl)
+		}
+		if labeler, ok := otelhttp.LabelerFromContext(r.Context()); ok {
+			labeler.Add(httpRoute)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Hub returns the SSE hub so a publisher (run reconciler / outbox relay) can fan events out.
 func (s *Server) Hub() *Hub { return s.hub }
 
 func (s *Server) routes(opts Options) {
+	// otelhttp span enrichment (ISI-3668): a root middleware so it runs after mux matches a route
+	// (mux.CurrentRoute is set) and inside the server span started by Handler(). It stamps the route
+	// TEMPLATE as http.route — never the interpolated secret name. Registered before any route so it
+	// wraps the whole surface uniformly.
+	s.router.Use(routeTagMiddleware)
+
 	// ── Liveness / readiness (unauthenticated; probes only, no tenant data) ──
 	s.router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

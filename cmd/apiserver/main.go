@@ -45,9 +45,10 @@ import (
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/issuesync"
-	"github.com/K8squad/K8squad/pkg/search"
 	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/search"
 	"github.com/K8squad/K8squad/pkg/taskio"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 func main() {
@@ -85,6 +86,26 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Install the OpenTelemetry spine (ISI-3668, prerequisite for the onboarding/compose
+	// observability in ISI-3666/ISI-3669). This mirrors cmd/operator/main.go:110: it registers a
+	// W3C trace-context propagator, a TracerProvider so every inbound request opens a server span,
+	// and the otelslog bridge so structured logs carry trace_id/span_id. Without it, telemetry.Tracer()
+	// in this process is a no-op and traces/logs from the new endpoints silently drop. Exports to
+	// stdout for now; the MeterProvider is a separate track (ISI-3593).
+	_, otelShutdown, err := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-apiserver"})
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: initialize OpenTelemetry spine: %v", err)
+	}
+	defer func() {
+		// Flush on a fresh bounded context: the signal ctx is already cancelled by the time we
+		// return, and Shutdown must still drain buffered spans/logs.
+		flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer flushCancel()
+		if serr := otelShutdown(flushCtx); serr != nil {
+			log.Printf("ksquad-apiserver: OpenTelemetry shutdown: %v", serr)
+		}
+	}()
 
 	// Fail closed at start: connect + ping the store of record before serving.
 	db, err := sql.Open("pgx", cfg.DatabaseURL)
