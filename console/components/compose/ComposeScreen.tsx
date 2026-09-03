@@ -15,7 +15,9 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
-import { ModelSelector } from "./ModelSelector";
+import { TeamForm } from "../forms/TeamForm";
+import { ProjectForm } from "../forms/ProjectForm";
+import { AgentForm } from "../forms/AgentForm";
 import {
   COMPOSE_KINDS,
   KIND_LABEL,
@@ -243,109 +245,15 @@ function KindFields({
   );
 
   switch (cf.kind) {
-    case "teams": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Namespace strategy" hint="optional — defaults to perTeam">
-            <input
-              value={f.namespaceStrategy}
-              onChange={(e) => patch({ namespaceStrategy: e.target.value })}
-              placeholder="perTeam"
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "projects": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Repo URL" error={errors["repo.url"]}>
-            <input
-              value={f.repoUrl}
-              onChange={(e) => patch({ repoUrl: e.target.value })}
-              aria-invalid={!!errors["repo.url"]}
-              placeholder="https://github.com/org/repo"
-            />
-          </Field>
-          <Field label="Repo ref" hint="optional — branch / tag / SHA">
-            <input
-              value={f.repoRef}
-              onChange={(e) => patch({ repoRef: e.target.value })}
-              placeholder="main"
-            />
-          </Field>
-          <Field label="Egress policy ref" hint="optional — name or namespace/name">
-            <input
-              value={f.egressPolicyRef}
-              onChange={(e) => patch({ egressPolicyRef: e.target.value })}
-            />
-          </Field>
-          <Field label="Goals" hint="one goal per line">
-            <textarea
-              rows={3}
-              value={f.goals}
-              onChange={(e) => patch({ goals: e.target.value })}
-              placeholder={"Ship the checkout flow\nHarden the payment path"}
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "agents": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          <Field label="Project" hint="the squad this Agent composes within" error={errors["project"]}>
-            <input
-              value={f.project}
-              onChange={(e) => patch({ project: e.target.value })}
-              aria-invalid={!!errors["project"]}
-            />
-          </Field>
-          {nameField}
-          <Field label="Runtime ref" error={errors["runtimeRef.name"]}>
-            <input
-              value={f.runtimeRef}
-              onChange={(e) => patch({ runtimeRef: e.target.value })}
-              aria-invalid={!!errors["runtimeRef.name"]}
-              placeholder="name or namespace/name"
-            />
-          </Field>
-          <Field label="Role ref" error={errors["roleRef.name"]}>
-            <input
-              value={f.roleRef}
-              onChange={(e) => patch({ roleRef: e.target.value })}
-              aria-invalid={!!errors["roleRef.name"]}
-            />
-          </Field>
-          <ModelSelector
-            model={f.model}
-            modelEndpointRef={f.modelEndpointRef}
-            byoEnabled={f.byoEnabled}
-            errors={errors}
-            patch={patch}
-          />
-          <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
-            <input
-              value={f.credentialSecretRef}
-              onChange={(e) => patch({ credentialSecretRef: e.target.value })}
-              aria-invalid={!!errors["credentialSecretRef.name"]}
-            />
-          </Field>
-          <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
-            <textarea
-              rows={3}
-              value={f.skillRefs}
-              onChange={(e) => patch({ skillRefs: e.target.value })}
-            />
-          </Field>
-        </div>
-      );
-    }
+    // E0 shared forms (ISI-3670, AD-1, FR-8). Team/Project/Agent render via the extracted
+    // components so every create surface mounts identical, correct forms; Roles & Skills stay
+    // inline — advanced, out of E0 scope.
+    case "teams":
+      return <TeamForm form={cf.form} errors={errors} patch={patch} />;
+    case "projects":
+      return <ProjectForm form={cf.form} errors={errors} patch={patch} />;
+    case "agents":
+      return <AgentForm form={cf.form} errors={errors} patch={patch} />;
     case "roles": {
       const f = cf.form;
       return (
