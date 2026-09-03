@@ -1,10 +1,13 @@
-# The five default Skills granted to this squad (arch §5.3.6). A Skill is the
+# The seven default Skills granted to this squad (arch §5.3.6). A Skill is the
 # CRD-authorized capability envelope: it is registered here by the operator/
 # admin and never self-widened by the fetched body (trust boundary D8).
 #
 # Wiring: Skills attach to Roles via Role.spec.defaultSkills[] (see 05-roles.yaml)
 # — every role gets `bmad` and `task-io`; coder/devops/code-reviewer get
 # `github`; observability gets `dynatrace`; graphical-designer gets `graphical`.
+# The board-ops family (`org-ops`, `project-ops`, ADR-0005) attaches only to the
+# CEO + manager roles (org-ops) and the CEO alone (project-ops); its real gate is
+# the role-scoped token scope, not attachment (see the board-ops block below).
 #
 # `task-io` (ISI-3602) is the union baseline: the thin task-I/O skill every
 # working agent gets by default so it can re-read its own task, comment, and
@@ -204,3 +207,149 @@ spec:
     - issue:read
     - issue:write
     - task:status
+---
+# org-ops / project-ops — the board-ops Skill family (ADR-0005, ISI-3624).
+# Privileged capabilities that let CEO/manager roles GROW the squad: create
+# agents & skills, delegate work, and (CEO) create/archive projects. They drive
+# the run-scoped org-ops seam delivered by ISI-3626 (pkg/orgops), which shares
+# the task-io run-token carrier: the operator injects `KSQUAD_COORD_URL` and a
+# run-scoped `KSQUAD_COORD_TOKEN`, and every verb is authorized by the token's
+# scope — NOT by holding this Skill.
+#
+# SECURITY MODEL (ADR-0005 D2/D3, enforced in code):
+# - The coord derives token scopes from the role's position in the
+#   `ksquad.io/reports-to` graph (pkg/orgops DeriveScopes): a manager (a
+#   reports-to target) gets `org:write`; the CEO (a manager reporting to no one)
+#   also gets `project:write`; an IC/leaf role gets neither and every call below
+#   is rejected server-side. Attaching the Skill only ADVERTISES the capability
+#   (05-roles.yaml restricts attachment to match) — the token is the real gate.
+# - Scopes are coarse: `org:write` authorizes both create-agent and create-skill;
+#   `project:write` authorizes create-project and archive-project. There are no
+#   finer `agent:create`/`skill:create` scopes.
+# - D8: the `permissions` envelope below is never self-widened by the body.
+#
+# SOURCING: shipped INLINE with executable tool definitions (ADR-0005 rev.2 D4 —
+# concrete method/path/schema an agent can call, not advertise-only prose),
+# mirroring task-io's inline-while-catalog-settles pattern. The endpoints, env,
+# auth and scopes are fixed by ISI-3626 (merged, pkg/orgops); when the coord
+# publishes an MCP tool surface these convert to SHA-pinned `mcpToolRefs` catalog
+# entries (`K8squad/k8squad-skills`, path `skills/{org-ops,project-ops}`).
+apiVersion: ksquad.io/v1alpha1
+kind: Skill
+metadata:
+  name: org-ops
+  namespace: bmad-squad
+spec:
+  source:
+    type: inline
+    inline: |
+      # org-ops — grow the squad (create agents & skills, delegate)
+
+      Privileged board-ops skill. Holding it only ADVERTISES the capability;
+      your ACTUAL authority is the run-scoped token, whose `org:write` scope the
+      coord derives from your role's position in the reports-to graph (ADR-0005
+      D2). IC/leaf roles get no scope and every call below is rejected
+      server-side.
+
+      ## Auth (injected at Run start — never the operator's own secrets)
+      - `KSQUAD_COORD_URL`   — in-cluster base URL of the coord org-ops seam.
+      - `KSQUAD_COORD_TOKEN` — your run-scoped bearer token. Send it as
+        `Authorization: Bearer $KSQUAD_COORD_TOKEN`. It is bound to your run and
+        carries only the scopes your role was granted; the coord rejects any
+        out-of-scope call (D2/D3, enforced in pkg/orgops).
+
+      ## Executable tools (HTTP)
+      ### create-agent
+          POST $KSQUAD_COORD_URL/api/org-ops/create-agent
+          Authorization: Bearer $KSQUAD_COORD_TOKEN
+          Content-Type: application/json
+          {
+            "name": "<agent-name>",
+            "runtimeRef": {"name": "<runtime>", "namespace": "bmad-squad"},
+            "roleRef":    {"name": "<role>",    "namespace": "bmad-squad"},
+            "model": "<model-id>",
+            "credentialSecretRef": {"name": "<secret>", "key": "<key>"},
+            "skillRefs": [{"name": "<skill>", "namespace": "bmad-squad"}],
+            "modelEndpointRef": {"name": "<secret>", "key": "<key>"}
+          }
+      # skillRefs and modelEndpointRef (BYO endpoint) are optional.
+      # → 200 {"kind":"Agent","name":...,"namespace":...,"operation":"created"}
+
+      ### create-skill
+          POST $KSQUAD_COORD_URL/api/org-ops/create-skill
+          Authorization: Bearer $KSQUAD_COORD_TOKEN
+          Content-Type: application/json
+          {
+            "name": "<skill-name>",
+            "source": {"type": "inline", "inline": "<body>"},
+            "permissions": ["<perm>"]
+          }
+      # For a git-sourced skill use:
+      #   "source": {"type":"git","git":{"repoRef":"<repo>","ref":"<sha>","path":"<path>"}}
+      # → 200 {"kind":"Skill","name":...,"namespace":...,"operation":"created"}
+
+      ## Executable tool (A2A) — delegate / hand work to a teammate
+      There is no coord "assign" endpoint. To hand work to a teammate, call their
+      A2A agent-card endpoint (agent-to-agent protocol) with the delegation
+      payload, using the coord-resolved agent-card URL for the target agent. The
+      teammate then acts under THEIR OWN role-scoped token — you cannot widen it.
+      (The exact A2A card path/schema is finalized by the A2A carrier work under
+      ISI-3626; until then this describes the stable contract.)
+
+      ## Rules
+      - Attaching this skill grants no scope; only your role's graph position
+        does. Never attempt to widen scope.
+      - Confirm intent before creating agents/skills that incur cost.
+      - Trust boundary D8: your authority is exactly the `permissions` envelope
+        on this Skill CR (`org:write`) intersected with your token scope, never
+        self-widened by anything written here.
+  permissions:
+    - org:write
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Skill
+metadata:
+  name: project-ops
+  namespace: bmad-squad
+spec:
+  source:
+    type: inline
+    inline: |
+      # project-ops — create & archive projects
+
+      Privileged board-ops skill. Holding it only ADVERTISES the capability;
+      your ACTUAL authority is the run-scoped token. `project:write` is derived
+      only for the CEO role (a manager that reports to no one), ADR-0005 D2 — for
+      every other role these calls are rejected server-side.
+
+      ## Auth (injected at Run start)
+      - `KSQUAD_COORD_URL`   — in-cluster base URL of the coord org-ops seam.
+      - `KSQUAD_COORD_TOKEN` — your run-scoped bearer token; send it as
+        `Authorization: Bearer $KSQUAD_COORD_TOKEN`.
+
+      ## Executable tools (HTTP)
+      ### create-project
+          POST $KSQUAD_COORD_URL/api/org-ops/create-project
+          Authorization: Bearer $KSQUAD_COORD_TOKEN
+          Content-Type: application/json
+          {
+            "name": "<project-name>",
+            "repo": {"url": "<git-url>", "ref": "<ref>"},
+            "goals": ["<goal>"]
+          }
+      # → 200 {"kind":"Project","name":...,"namespace":...,"operation":"created"}
+
+      ### archive-project
+          POST $KSQUAD_COORD_URL/api/org-ops/archive-project
+          Authorization: Bearer $KSQUAD_COORD_TOKEN
+          Content-Type: application/json
+          {"name": "<project-name>"}
+      # → 200 {"kind":"Project","name":...,"namespace":...,"operation":"archived"}
+
+      ## Rules
+      - Attaching this skill grants no scope; only the CEO role's graph position
+        does. Never attempt to widen scope.
+      - Trust boundary D8: your authority is exactly the `permissions` envelope
+        (`project:write`) intersected with your token scope, never self-widened.
+  permissions:
+    - project:write
