@@ -137,6 +137,16 @@ func (c *Client) Follow(ctx context.Context, sess Session, sink EventSink) (Resu
 			return res, ctx.Err()
 		case ev, ok := <-sess.Events():
 			if !ok {
+				// A canceled context wins over a coincidental stream close: when
+				// the caller drops the follow, the shim's stream may close in the
+				// same scheduling window that ctx is canceled, and the select above
+				// then picks either branch at random. Surface the cancellation
+				// (and reach the shim to cancel the live task) rather than
+				// reporting a clean terminal completion.
+				if err := ctx.Err(); err != nil {
+					_ = sess.Cancel(context.WithoutCancel(ctx), "context canceled")
+					return res, err
+				}
 				res.Status = sess.Status()
 				return res, nil
 			}
