@@ -144,8 +144,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	sync := project.Spec.Repo.Sync
 	if sync == nil {
-		// Repo-sync not configured: nothing to mirror, no poll to schedule.
-		// A Project without sync is not an error state (§5.4).
+// Repo-sync not configured: nothing to mirror, no poll to schedule.
+    // A Project without sync is not an error state (§5.4).
+    // Fixed ISI-3664: nil pointer dereference panic
 		return ctrl.Result{}, nil
 	}
 
