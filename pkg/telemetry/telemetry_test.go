@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -61,6 +62,63 @@ func TestSetupEmitsSpanAndCorrelatedLog(t *testing.T) {
 	if n := strings.Count(out, traceID); n < 2 {
 		t.Errorf("trace id %q appears %d times, want >=2 (span + correlated log):\n%s", traceID, n, out)
 	}
+}
+
+// TestSetupRecordsMetric is the ISI-3593 metric prerequisite proof: Setup wires
+// a real stdout MeterProvider; a counter incremented through the process Meter()
+// lands in the writer after shutdown flushes the pipeline, carrying its own name
+// and the resource service.name — i.e. Meter() is now a usable, exporting meter,
+// which every bootstrap-path metric (ksquad.contextasm.* / ksquad.taskio.*)
+// depends on.
+func TestSetupRecordsMetric(t *testing.T) {
+	buf := &bytes.Buffer{}
+	_, shutdown, err := Setup(context.Background(), Options{ServiceName: "test-svc", Writer: buf})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	counter, err := Meter().Int64Counter("ksquad.test.metric")
+	if err != nil {
+		t.Fatalf("Int64Counter: %v", err)
+	}
+	counter.Add(context.Background(), 7)
+
+	// Shutdown flushes the PeriodicReader, emitting the collected metric to buf.
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "ksquad.test.metric") {
+		t.Errorf("metric was not exported to stdout:\n%s", out)
+	}
+	if !strings.Contains(out, "test-svc") {
+		t.Errorf("metric export missing resource service.name:\n%s", out)
+	}
+}
+
+// TestMeterSafeBeforeSetup proves the no-op-before-Setup contract the accessor
+// promises: recording through Meter() with no MeterProvider installed neither
+// panics nor errors, so bootstrap-path code can build instruments at init time.
+func TestMeterSafeBeforeSetup(t *testing.T) {
+	restore := installNoopMeter(t)
+	defer restore()
+
+	counter, err := Meter().Int64Counter("ksquad.test.preinit")
+	if err != nil {
+		t.Fatalf("Int64Counter before Setup: %v", err)
+	}
+	// Must not panic.
+	counter.Add(context.Background(), 1)
+}
+
+// installNoopMeter clears any globally-installed MeterProvider so Meter() falls
+// back to the API's no-op, returning a restore func.
+func installNoopMeter(t *testing.T) func() {
+	t.Helper()
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(noop.NewMeterProvider())
+	return func() { otel.SetMeterProvider(prev) }
 }
 
 // TestExtractJoinsW3CTrace proves AC3 inbound: Extract lifts a W3C traceparent
