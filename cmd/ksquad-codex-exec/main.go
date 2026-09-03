@@ -79,7 +79,10 @@ func run(passthrough []string, getenv func(string) string, stdout, stderr io.Wri
 	}
 	envelope := buildEnvelope(getenv(envSystemContext), getenv(envInput))
 
-	cmd := exec.Command(bin, buildArgs(passthrough)...) // #nosec G204 -- bin is operator-controlled; the prompt rides stdin, never argv.
+	// #nosec G204 G702 -- bin is operator-controlled (fixed "codex" or the
+	// KSQUAD_CODEX_BIN override); passthrough is the codex adapter's constant
+	// flags, not request input. The prompt rides stdin, never argv (NFR-SEC1).
+	cmd := exec.Command(bin, buildArgs(passthrough)...)
 	cmd.Stdin = strings.NewReader(envelope)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
