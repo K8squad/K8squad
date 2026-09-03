@@ -132,6 +132,26 @@ flight on the old key it pauses/resumes per story 7.4. **Never** add the
 `human-seat` label to a service-account Secret — it has no refresh token and
 would land in `error`.
 
+### 5.1 Codex (OpenAI) — service-account only in v1
+
+Codex (`AgentRuntime{type: codex}`, the official Rust `codex` CLI) authenticates
+with a **BYO OpenAI API key** and is therefore a plain **`service-account`**
+credential — rotate it exactly as §5 above. Codex-specific details
+(`pkg/credinject`, `pkg/shim/runtimes/codex.go`):
+
+- The per-user Secret's `apiKey` value is injected by reference as
+  **`OPENAI_API_KEY`** (the OpenAI-standard env, ADR-026 OpenAI wire). Rotation
+  is the same `kubectl patch secret … stringData.apiKey` as §5.
+- **Human-seat (ChatGPT-subscription) auth is not available in v1.** It is a
+  ToS-gated fast-follow (ISI-3661). A `credentialClass: human-seat` on a `codex`
+  Agent **fails closed** — the pair is deliberately unmapped, so no Run
+  authenticates under an env the codex CLI ignores. Use `service-account`.
+- **Egress:** codex Run pods need network egress to **`api.openai.com`** (or, for
+  a BYO OpenAI-compatible endpoint, that host) — allow it in the squad
+  NetworkPolicy. A BYO endpoint carries its own token + base URL via the model
+  route (story 5.7); the per-user `OPENAI_API_KEY` is emitted only when no BYO
+  route is set.
+
 ---
 
 ## 6. Controller tuning (arch §21 — not a v1 gate)
