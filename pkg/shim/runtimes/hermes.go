@@ -29,7 +29,12 @@ import (
 // on the OpenAI-compatible wire.
 type hermes struct{}
 
-func (hermes) Type() string                     { return apiv1alpha1.RuntimeTypeHermes }
+func (hermes) Type() string { return apiv1alpha1.RuntimeTypeHermes }
+
+// CLIVersion names the PLANNED Hermes CLI revision: there is no upstream
+// release artifact to pin yet, so ksquad-shim-hermes ships no CLI
+// (intentionally unpackaged — see the cli-hermes stage disposition in
+// Dockerfile.shim, ISI-3667).
 func (hermes) CLIVersion() string               { return "v1.2.0" }
 func (hermes) CredentialShape() CredentialShape { return ShapeAPIKey }
 

@@ -7,11 +7,14 @@
 #   3. any runtime-specific entrypoint wrapper (e.g. ksquad-codex-exec for codex).
 #
 # RUNTIME selects which CLI layer is baked in (`FROM cli-${RUNTIME}`). It is NO LONGER
-# label-only (ISI-3653 fixes that pre-existing drift). Today only `codex` stages a real
-# CLI — static-musl codex@rust-v0.152.0 plus the ksquad-codex-exec wrapper (§3.2/D4). The
-# other runtimes' CLI layers are no-ops until their own packaging stories land, matching
-# the shim matrix in .github/workflows/component-matrix.yml. An unknown RUNTIME fails
-# closed at `FROM cli-${RUNTIME}` (no matching stage).
+# label-only (ISI-3653 fixes that pre-existing drift). Real CLI packaging today:
+#   codex    — static-musl codex@rust-v0.152.0 + ksquad-codex-exec wrapper (ISI-3653)
+#   opencode — sst/opencode@v1.18.27 musl tarball, musl/libstdc++ libs staged (ISI-3667)
+#   claude   — Claude Code@2.1.236 native binary, sha256-verified (ISI-3667; the shim
+#              adapter for claude-code itself remains Phase 2, pkg/shim/runtimes)
+# openclaw/hermes are intentionally UNPACKAGED (disposition at their stages, ISI-3667).
+# This matches the shim matrix in .github/workflows/component-matrix.yml. An unknown
+# RUNTIME fails closed at `FROM cli-${RUNTIME}` (no matching stage).
 #
 #   docker buildx build -f Dockerfile.shim \
 #     --build-arg RUNTIME=codex \
@@ -41,16 +44,85 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     go build -trimpath -ldflags="-s -w" -o /out/ksquad-codex-exec ./cmd/ksquad-codex-exec
 
 # ---- CLI-install stages: one per runtime; the final image selects cli-${RUNTIME} ---------
-# Each stage populates /cli-out with the binaries to overlay onto the final image's $PATH.
-# The no-op base emits an empty /cli-out so the selector always resolves and the COPY into
-# the final image is a harmless no-op for runtimes with no packaged CLI yet.
+# Each stage populates /cli-out with the binaries to overlay onto the final image's $PATH,
+# and /cli-lib with any runtime libs the CLI needs on the distroless/static base (musl
+# loader + libc for the dynamic-musl bun CLIs; empty for static/no-op stages). The no-op
+# base emits empty dirs so the selector always resolves and the COPYs into the final image
+# are harmless no-ops for runtimes with no packaged CLI.
 FROM alpine:3.21 AS cli-noop
-RUN mkdir -p /cli-out
+RUN mkdir -p /cli-out /cli-lib
 FROM cli-noop AS cli-reference
-FROM cli-noop AS cli-claude
+
+# openclaw + hermes — DISPOSITION (ISI-3667 AC4): intentionally NOT packaged. Neither CLI
+# has an upstream release artifact to pin: the adapters (pkg/shim/runtimes/openclaw.go,
+# hermes.go, story 5.5) target in-development CLI surfaces whose CLIVersion() pins
+# (v0.9.0 / v1.2.0) name planned revisions, not downloadable binaries. The stages stay
+# empty BY DECISION: an empty /cli-out means the shim fails closed at exec (binary not
+# found) rather than masquerading as a working runtime behind a placeholder script.
+# Revisit when a real openclaw/hermes artifact channel exists.
 FROM cli-noop AS cli-openclaw
 FROM cli-noop AS cli-hermes
-FROM cli-noop AS cli-opencode
+
+# opencode (ISI-3667): stage the pinned sst/opencode release the adapter targets
+# (opencode.CLIVersion(), ADR-017). Upstream ships bun-compiled per-arch tarballs; the
+# *-musl variants are DYNAMICALLY linked against musl + libstdc++ + libgcc (unlike the
+# fully-static codex binary), so the stage also exports alpine's musl loader + those libs
+# via /cli-lib for the distroless/static final image. `opencode --version` prints the bare
+# semver; assert it at build time (mirrors the codex AC1 check).
+FROM alpine:3.21 AS cli-opencode
+ARG TARGETARCH
+ARG OPENCODE_VERSION=v1.18.27
+ARG OPENCODE_SEMVER=1.18.27
+RUN apk add --no-cache curl ca-certificates libgcc libstdc++
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) ocarch=x64 ;; \
+      arm64) ocarch=arm64 ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /cli-out /cli-lib/lib /cli-lib/usr/lib; \
+    curl -fsSL "https://github.com/sst/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-${ocarch}-musl.tar.gz" \
+      -o /tmp/opencode.tar.gz; \
+    tar -xzf /tmp/opencode.tar.gz -C /tmp; \
+    install -m0755 /tmp/opencode /cli-out/opencode; \
+    rm -f /tmp/opencode.tar.gz /tmp/opencode; \
+    /cli-out/opencode --version | grep -Fq "${OPENCODE_SEMVER}"; \
+    cp -a /lib/ld-musl-*.so.1 /lib/libc.musl-*.so.1 /cli-lib/lib/; \
+    for f in /lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1; do \
+      [ ! -f "$f" ] || cp -aL "$f" /cli-lib/usr/lib/; \
+    done; \
+    cp -aL /usr/lib/libstdc++.so.6 /cli-lib/usr/lib/; \
+    test -f /cli-lib/usr/lib/libgcc_s.so.1; \
+    test -f /cli-lib/usr/lib/libstdc++.so.6
+
+# claude-code (ISI-3667): Anthropic ships the Claude Code CLI as bun-compiled native
+# binaries (the same channel claude.ai/install.sh pulls from), with a per-release
+# manifest.json carrying sha256 checksums. Pinned, sha256-verified against the pinned
+# manifest values, and version-asserted at build time. The binary is dynamic-musl
+# (NEEDED: libc.musl only — verified from the ELF dynamic section), so only the musl
+# loader pair is staged via /cli-lib. `claude --version` prints "<semver> (Claude Code)".
+FROM alpine:3.21 AS cli-claude
+ARG TARGETARCH
+ARG CLAUDE_VERSION=2.1.236
+# sha256 of the pinned release's linux-{x64,arm64}-musl binaries, from
+# .../claude-code-releases/${CLAUDE_VERSION}/manifest.json
+ARG CLAUDE_SHA256_X64=979acf4877fa3dca24d6d15043022b5005cc8502fdb4c68992dd91651af31731
+ARG CLAUDE_SHA256_ARM64=56fe9241267b0187538a9cf7dafa0df12d94fd27789fa7207a59c2a0b4121b8f
+RUN apk add --no-cache curl ca-certificates
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) ccplat=linux-x64-musl;   sha="$CLAUDE_SHA256_X64" ;; \
+      arm64) ccplat=linux-arm64-musl; sha="$CLAUDE_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /cli-out /cli-lib/lib; \
+    base="https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"; \
+    curl -fsSL "$base/${CLAUDE_VERSION}/${ccplat}/claude" -o /tmp/claude; \
+    echo "$sha  /tmp/claude" | sha256sum -c -; \
+    install -m0755 /tmp/claude /cli-out/claude; \
+    rm -f /tmp/claude; \
+    /cli-out/claude --version | grep -Fq "${CLAUDE_VERSION}"; \
+    cp -a /lib/ld-musl-*.so.1 /lib/libc.musl-*.so.1 /cli-lib/lib/
 
 # codex (ISI-3653 / seam O): stage the pinned static-musl codex CLI + the ksquad-codex-exec
 # wrapper. The release tarball ships an arch-suffixed binary (codex-<triple>); we install it
@@ -68,7 +140,7 @@ RUN set -eux; \
       arm64) triple=aarch64-unknown-linux-musl ;; \
       *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    mkdir -p /cli-out; \
+    mkdir -p /cli-out /cli-lib; \
     curl -fsSL "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-${triple}.tar.gz" \
       -o /tmp/codex.tar.gz; \
     tar -xzf /tmp/codex.tar.gz -C /tmp; \
@@ -91,5 +163,8 @@ WORKDIR /
 # shim first — this creates /usr/local/bin before the (possibly empty) CLI overlay.
 COPY --from=build /out/shim /usr/local/bin/shim
 COPY --from=cli /cli-out/ /usr/local/bin/
+# Runtime libs for dynamic-musl CLIs (opencode, claude): the musl loader pair and, for
+# opencode, libstdc++/libgcc. Empty for codex (fully static) and unpackaged runtimes.
+COPY --from=cli /cli-lib/ /
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shim"]
