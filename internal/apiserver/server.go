@@ -123,6 +123,12 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// OTelConfig is the Story A / 13.8 OTLP-exporter read model (ISI-2917, child of
+	// ISI-3586 under Option A): GET /api/otelconfig serves the current cluster-scoped
+	// OTelConfig CR mapped to the client wire shape (console/lib/otelconfig.ts). Nil ⇒
+	// the route keeps the documented 501 (a cluster-less dev run without a kube
+	// client), exactly like the other read models.
+	OTelConfig OTelConfigSource
 	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
 	// post-comment / update-status / checkout) mounted under /api/task-io/. It
 	// does NOT ride the cookie BFF authz choke point: it carries its OWN
@@ -338,6 +344,21 @@ func (s *Server) routes(opts Options) {
 			statusStream.HandleFunc("", h).Methods(http.MethodGet)
 			agentOne.HandleFunc("", h).Methods(http.MethodGet)
 			agentRunsR.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// Story A / 13.8 (ISI-2917) OTelConfig read model: GET /api/otelconfig
+		// serves the current cluster-scoped OTelConfig CR mapped to the client wire
+		// shape so the Settings page stops rendering "no exporters" once a CR
+		// exists. Read-model only (no writes), no company/team prefix, behind the
+		// SAME §13 choke point. A missing CR is the opt-in 404 default, not an
+		// error. Nil source (cluster-less dev run) keeps the documented 501.
+		otelCfg := s.router.Path("/api/otelconfig").Subrouter()
+		otelCfg.Use(authz)
+		if opts.OTelConfig != nil {
+			otelCfg.HandleFunc("", s.otelConfig(opts.OTelConfig)).Methods(http.MethodGet)
+		} else {
+			otelCfg.HandleFunc("", notImplemented("otel-config read model", "ISI-2917: wire a kube client to enable")).
+				Methods(http.MethodGet)
 		}
 
 		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the
