@@ -22,6 +22,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BurntSushi/toml"
+
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
 
@@ -208,54 +210,85 @@ func RenderOpenClaw(endpoints []Endpoint) ([]byte, error) {
 	return json.MarshalIndent(doc, "", "  ")
 }
 
-// RenderCodex renders the Codex `config.toml` [mcp_servers.*] section for the
-// endpoint set. Codex is the first non-JSON runtime in the render matrix (its
-// native config is TOML), and its full renderer — server-granularity tool
-// scoping (arch ISI-3646 D3), transport fidelity and the [model_providers.*]
-// BYO superset (D6) — lands with story S5.
-//
-// This is the S2 stub (ISI-3654): it wires the adapter seam end to end by
-// emitting the mcp_servers table with command/args/url + env-NAME references
-// (secret material only ever rides process env, ADR-045 D5), sorted for
-// determinism. S5 replaces it with the conformant renderer.
-func RenderCodex(endpoints []Endpoint) ([]byte, error) {
-	names := make([]string, 0, len(endpoints))
-	byName := make(map[string]Endpoint, len(endpoints))
-	for _, ep := range endpoints {
-		names = append(names, ep.Name)
-		byName[ep.Name] = ep
-	}
-	sort.Strings(names)
+// codexMCPServer is one server in a Codex `config.toml` [mcp_servers.<name>]
+// table. Codex is the first non-JSON runtime in the render matrix — its native
+// config is TOML — so this mirrors the claudeMCPEntry shape onto TOML keys.
+type codexMCPServer struct {
+	// stdio transport.
+	Command string   `toml:"command,omitempty"`
+	Args    []string `toml:"args,omitempty"`
 
-	var b strings.Builder
-	b.WriteString("# Rendered by K8squad shim (ISI-3654 S2 stub; full renderer = S5).\n")
-	for _, name := range names {
-		ep := byName[name]
-		fmt.Fprintf(&b, "\n[mcp_servers.%s]\n", name)
+	// streamable-http transport. bearer_token_env_var names the env var the
+	// CLI reads the token from — by-reference, never the literal token
+	// (ADR-045 D5: config files persist in workspaces/artifacts, env does not).
+	URL               string `toml:"url,omitempty"`
+	BearerTokenEnvVar string `toml:"bearer_token_env_var,omitempty"`
+
+	// x-ksquad extension keys carry the effective tool filter. Codex MCP
+	// config at the pinned CLI is server-granularity only (arch ISI-3646 D3):
+	// these are documented, wrapper-unenforced provenance mirroring
+	// RenderClaudeCode — codex.Capabilities() advertises the gap honestly
+	// (F15), it never claims per-tool enforcement no wrapper delivers.
+	XKsquadAllowTools []string `toml:"x-ksquad-allow-tools,omitempty"`
+	XKsquadDenyTools  []string `toml:"x-ksquad-deny-tools,omitempty"`
+
+	// Env is the stdio subprocess credential env, each value a ${VAR}
+	// name-reference never the literal token (ADR-045 D5). Declared last so
+	// the encoder emits [mcp_servers.<name>.env] as a sub-table after the
+	// scalar keys (TOML requires tables to follow their parent's scalars).
+	Env map[string]string `toml:"env,omitempty"`
+}
+
+type codexConfig struct {
+	MCPServers map[string]codexMCPServer `toml:"mcp_servers"`
+}
+
+// RenderCodex renders the Codex `config.toml` [mcp_servers.*] section for the
+// endpoint set (arch ISI-3646 §3.3, D3; seams K/L): stdio servers as
+// command/args with an env sub-table of ${VAR} references, streamable-http as
+// url + bearer_token_env_var (the env NAME, never the literal token — ADR-045
+// D5). Per-tool filters ride as documented x-ksquad-allow-tools/deny-tools
+// extension keys mirroring RenderClaudeCode; native scoping is server
+// granularity only. Map key ordering is deterministic (the encoder sorts),
+// so the manifest bytes are stable. It lands at $CODEX_HOME/config.toml via
+// mcpWorkDirFile (codex.go).
+func RenderCodex(endpoints []Endpoint) ([]byte, error) {
+	cfg := codexConfig{MCPServers: make(map[string]codexMCPServer, len(endpoints))}
+	for _, ep := range endpoints {
+		srv := codexMCPServer{
+			XKsquadAllowTools: ep.AllowTools,
+			XKsquadDenyTools:  ep.DenyTools,
+		}
 		switch ep.Transport {
 		case string(api.MCPTransportStdio):
-			fmt.Fprintf(&b, "command = %q\n", ep.Command)
-			if len(ep.Args) > 0 {
-				b.WriteString("args = [")
-				for i, a := range ep.Args {
-					if i > 0 {
-						b.WriteString(", ")
-					}
-					fmt.Fprintf(&b, "%q", a)
+			srv.Command = ep.Command
+			srv.Args = ep.Args
+			for _, name := range ep.EnvNames {
+				if srv.Env == nil {
+					srv.Env = map[string]string{}
 				}
-				b.WriteString("]\n")
-			}
-			if len(ep.EnvNames) > 0 {
-				fmt.Fprintf(&b, "\n[mcp_servers.%s.env]\n", name)
-				for _, n := range ep.EnvNames {
-					fmt.Fprintf(&b, "%s = %q\n", n, "${"+n+"}")
-				}
+				srv.Env[name] = "${" + name + "}"
 			}
 		case string(api.MCPTransportStreamableHTTP):
-			fmt.Fprintf(&b, "url = %q\n", ep.URL)
+			srv.URL = ep.URL
+			if len(ep.EnvNames) > 0 {
+				// One bearer token by-reference (env NAME); the CLI resolves
+				// it from process env. Never the literal token (ADR-045 D5).
+				srv.BearerTokenEnvVar = ep.EnvNames[0]
+			}
 		default:
 			return nil, fmt.Errorf("codex renderer: unknown transport %q for server %q", ep.Transport, ep.Name)
 		}
+		cfg.MCPServers[ep.Name] = srv
+	}
+
+	var b strings.Builder
+	b.WriteString("# Rendered by K8squad shim (ISI-3657 S5). Credentials are env-name\n")
+	b.WriteString("# references only — never literal secret material (ADR-045 D5).\n")
+	enc := toml.NewEncoder(&b)
+	enc.Indent = ""
+	if err := enc.Encode(cfg); err != nil {
+		return nil, fmt.Errorf("codex renderer: encode config.toml: %w", err)
 	}
 	return []byte(b.String()), nil
 }
