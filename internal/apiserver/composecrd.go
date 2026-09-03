@@ -39,6 +39,7 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -645,6 +646,12 @@ func (s *ComposeService) planSkill(req skillRequest) applyPlan {
 	switch req.Source.Type {
 	case string(ksquadv1.SkillSourceInline):
 		errs = required("source.inline", req.Source.Inline, errs)
+		if len(req.Source.Inline) > ksquadv1.MaxInlineSkillBodySize {
+			errs = append(errs, fieldError{
+				Field:   "source.inline",
+				Message: fmt.Sprintf("must be at most %d characters", ksquadv1.MaxInlineSkillBodySize),
+			})
+		}
 		if req.Source.Git != nil {
 			errs = append(errs, fieldError{"source.git", "must be unset when source.type is inline"})
 		}

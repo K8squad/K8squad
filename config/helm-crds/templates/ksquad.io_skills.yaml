@@ -165,6 +165,7 @@ spec:
                     type: object
                   inline:
                     description: Inline is the literal skill body, used when type=inline.
+                    maxLength: 262144
                     type: string
                   type:
                     description: 'Type discriminates the source: inline or git.'
