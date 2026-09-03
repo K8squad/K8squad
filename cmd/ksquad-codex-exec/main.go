@@ -1,74 +1,103 @@
-// Command ksquad-codex-exec is the codex-specific entrypoint wrapper (ISI-3646 §3.2, D4).
+/*
+Copyright 2026 The K8squad Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// Command ksquad-codex-exec is the prompt-delivery wrapper for the ChatGPT
+// Codex runtime (Epic ISI-3647, arch §3.2/§5 item 3, seams B/C). Unlike the
+// other v1 CLIs, `codex exec` reads its prompt from stdin/argv rather than an
+// env envelope; ExecSpec has no Stdin field. This tiny static binary bridges
+// that gap: the Codex adapter launches it (with adapter-supplied flags as
+// argv) and env-injects the context envelope, exactly as every other runtime
+// does. The wrapper reassembles the envelope from KSQUAD_SYSTEM_CONTEXT +
+// KSQUAD_INPUT and hands it to `codex exec -` on stdin, so the prompt never
+// appears on argv / the process table (NFR-SEC1). It inherits the process env,
+// so credentials and model-route vars flow through untouched.
 //
-// The K8squad shim delivers the prompt envelope through the environment
-// (KSQUAD_SYSTEM_CONTEXT + KSQUAD_INPUT) and never on argv (NFR-SEC1: no prompt in the
-// process table). The real `codex exec` reads its prompt from argv or stdin — not from
-// those env vars — and ExecSpec carries no Stdin field (pkg/shim/runtimes/runtime.go).
-// This wrapper bridges the gap: it assembles the envelope from the environment and runs
-//
-//	codex exec - <passed-through flags>
-//
-// with the envelope on stdin (`-` = read prompt from stdin), keeping the prompt off argv.
-// The codex adapter's ExecSpec.Path targets this wrapper; ExecSpec.Args are the codex
-// flags (--json, -m, -C, -s workspace-write, -a never, …) which pass straight through.
-//
-// STATUS — packaging stub (ISI-3653 / Codex S1). This minimal, compiling implementation
-// exists so the ksquad-shim-codex image builds with `codex` and `ksquad-codex-exec` on
-// $PATH (AC1). Full envelope semantics — richer system/context framing, structured error
-// mapping, and human-seat $CODEX_HOME/auth.json staging (§3.4) — are wired by ISI-3647
-// Story 3 (the S3 wrapper story). Keep the exec-on-stdin contract stable across that work.
+// It is also the future home for S9 auth.json staging.
 package main
 
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 )
 
-// codexBin is the pinned static-musl codex CLI staged onto $PATH by Dockerfile.shim
-// (RUNTIME=codex). Resolved via $PATH so the image layout owns the location.
-const codexBin = "codex"
+const (
+	// envSystemContext + envInput are the context-envelope pair every KSquad
+	// runtime reads its system context + work instruction from (spec §8.5).
+	envSystemContext = "KSQUAD_SYSTEM_CONTEXT"
+	envInput         = "KSQUAD_INPUT"
+	// envCodexBin overrides the codex binary resolved on PATH; used by tests
+	// (and any operator that ships codex under a non-default name).
+	envCodexBin = "KSQUAD_CODEX_BIN"
+)
 
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "ksquad-codex-exec:", err)
-		os.Exit(1)
+// buildEnvelope reassembles the single prompt codex reads from stdin out of the
+// two context env vars. The system context precedes the concrete instruction,
+// separated by a blank line; either half may be empty.
+func buildEnvelope(systemContext, input string) string {
+	switch {
+	case systemContext == "":
+		return input
+	case input == "":
+		return systemContext
+	default:
+		return systemContext + "\n\n" + input
 	}
 }
 
-// run assembles the prompt envelope from the shim's env transport and execs
-// `codex exec - <args>` with the envelope on stdin, propagating codex's exit code.
-func run(args []string) error {
-	// #nosec G204 G702 -- codexBin is a fixed binary name; args are the codex flags the
-	// registered codex adapter constructs from constants (pkg/shim/runtimes/codex.go),
-	// not untrusted input. The prompt rides stdin/env (buildEnvelope), never argv.
-	cmd := exec.Command(codexBin, append([]string{"exec", "-"}, args...)...)
-	cmd.Stdin = strings.NewReader(buildEnvelope(os.Getenv))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = os.Environ()
+// buildArgs is the codex argv: `exec -` (read the prompt from stdin) followed
+// by the adapter-supplied passthrough flags. The prompt is NEVER placed here —
+// that is the whole point of the wrapper (NFR-SEC1).
+func buildArgs(passthrough []string) []string {
+	args := make([]string, 0, len(passthrough)+2)
+	args = append(args, "exec", "-")
+	return append(args, passthrough...)
+}
+
+// run launches codex with the envelope on stdin and returns its exit code. It
+// is factored out of main so the exec path is unit-testable with a fake codex.
+func run(passthrough []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	bin := getenv(envCodexBin)
+	if bin == "" {
+		bin = "codex"
+	}
+	envelope := buildEnvelope(getenv(envSystemContext), getenv(envInput))
+
+	// #nosec G204 G702 -- bin is operator-controlled (fixed "codex" or the
+	// KSQUAD_CODEX_BIN override); passthrough is the codex adapter's constant
+	// flags, not request input. The prompt rides stdin, never argv (NFR-SEC1).
+	cmd := exec.Command(bin, buildArgs(passthrough)...)
+	cmd.Stdin = strings.NewReader(envelope)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			// Preserve codex's exit status so the shim sees the true terminal state.
-			os.Exit(ee.ExitCode())
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return exitErr.ExitCode()
 		}
-		return err
+		fmt.Fprintf(stderr, "ksquad-codex-exec: %v\n", err)
+		return 1
 	}
-	return nil
+	return 0
 }
 
-// buildEnvelope folds KSQUAD_SYSTEM_CONTEXT (framing, when present) and KSQUAD_INPUT (the
-// task) into a single prompt for codex's stdin. getenv is injected for testability.
-func buildEnvelope(getenv func(string) string) string {
-	var b strings.Builder
-	if sys := getenv("KSQUAD_SYSTEM_CONTEXT"); sys != "" {
-		b.WriteString(sys)
-		b.WriteString("\n\n")
-	}
-	b.WriteString(getenv("KSQUAD_INPUT"))
-	return b.String()
+func main() {
+	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
