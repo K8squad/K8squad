@@ -80,6 +80,7 @@ type SkillSource struct {
 	Type SkillSourceType `json:"type"`
 
 	// Inline is the literal skill body, used when type=inline.
+	// +kubebuilder:validation:MaxLength=262144
 	// +optional
 	Inline string `json:"inline,omitempty"`
 
