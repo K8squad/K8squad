@@ -159,8 +159,8 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	}
 	logExp, err := stdoutlog.New(logExpOpts...)
 	if err != nil {
-		// Best-effort: don't leak the trace pipeline we already started.
-		_ = tp.Shutdown(ctx)
+		// Best-effort: don't leak the trace and metric pipelines we already started.
+		_ = errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
 		return nil, nil, fmt.Errorf("telemetry: stdout log exporter: %w", err)
 	}
 	lp := sdklog.NewLoggerProvider(
