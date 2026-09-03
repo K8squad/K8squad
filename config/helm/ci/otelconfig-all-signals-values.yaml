@@ -1,0 +1,25 @@
+# Fixture: all three signals. traces over grpc (always_on sampling), metrics
+# and logs over http (full URLs, canonicalized to http/protobuf). Exercises the
+# namespace/name auth form and confirms sampling is emitted ONLY on traces
+# (B-AC2, B-AC3).
+observability:
+  otel:
+    name: platform
+    traces:
+      endpoint: "https://otlp.dynatrace.example.com:4317"
+      protocol: grpc
+      authSecretRef: monitoring/dynatrace-otlp
+      authSecretKey: api-token
+      sampling:
+        ratio: 1
+    metrics:
+      endpoint: "https://otlp.dynatrace.example.com/v1/metrics"
+      protocol: http
+      authSecretRef: monitoring/dynatrace-otlp
+      authSecretKey: api-token
+      resourceAttributes:
+        service.namespace: k8squad
+    logs:
+      endpoint: "https://otlp.dynatrace.example.com/v1/logs"
+      protocol: http/protobuf
+      authSecretRef: dynatrace-otlp

@@ -94,3 +94,24 @@ Exposure (Gateway API):
   nothing to reach. Enable the control plane first (see above), then optionally
   turn on Gateway exposure (--set exposure.gateway.enabled=true ...).
 {{- end }}
+
+Observability (OTelConfig):
+{{- $otel := (.Values.observability | default dict).otel | default dict }}
+{{- $sigs := list }}
+{{- if not (empty (($otel.traces | default dict).endpoint)) }}{{- $sigs = append $sigs "traces" }}{{- end }}
+{{- if not (empty (($otel.metrics | default dict).endpoint)) }}{{- $sigs = append $sigs "metrics" }}{{- end }}
+{{- if not (empty (($otel.logs | default dict).endpoint)) }}{{- $sigs = append $sigs "logs" }}{{- end }}
+{{- if $sigs }}
+  DECLARED — OTelConfig/{{ $otel.name | default "default" }} routes {{ join ", " $sigs }}.
+  It shows in Settings and drives platform telemetry export. Inspect:
+
+    kubectl get otelconfig {{ $otel.name | default "default" }} -o yaml
+
+  Auth is by Secret reference — make sure the referenced Secret(s) exist:
+
+    kubectl -n {{ include "k8squad.namespace" . }} get secret
+{{- else }}
+  NONE (observability.otel empty). No OTelConfig CR is rendered and nothing is
+  exported. Declare a target (traces/metrics/logs) to opt in — see the chart
+  README "Observability — declare a telemetry target (OTelConfig)".
+{{- end }}

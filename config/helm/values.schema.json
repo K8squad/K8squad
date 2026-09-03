@@ -144,6 +144,46 @@
           }
         }
       }
+    },
+    "observability": {
+      "type": "object",
+      "description": "GitOps-declared telemetry target (Story B, ISI-3619). Renders a cluster-scoped OTelConfig CR from opt-in observability.otel.*; absent/empty emits no CR.",
+      "additionalProperties": false,
+      "properties": {
+        "otel": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OTel routing. Populate any of traces/metrics/logs with an endpoint to opt in.",
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 253, "description": "OTelConfig metadata.name (cluster-scoped). Defaults to 'default'." },
+            "traces": { "$ref": "#/$defs/otelSignal" },
+            "metrics": { "$ref": "#/$defs/otelSignal" },
+            "logs": { "$ref": "#/$defs/otelSignal" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "otelSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One signal routing. Reference-only auth: authSecretRef names a Secret, never a token value.",
+      "properties": {
+        "endpoint": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "grpc: host[:port] (optional http(s) scheme, no path); http: full http(s) URL." },
+        "protocol": { "type": "string", "enum": ["grpc", "http", "http/protobuf", "http/json"], "description": "Wire enum grpc|http; http canonicalizes to CRD http/protobuf (W1)." },
+        "authSecretRef": { "type": "string", "minLength": 1, "description": "Secret name, or 'namespace/name'. Referenced only — never a token value." },
+        "authSecretKey": { "type": "string", "minLength": 1, "description": "Secret key holding the auth value. Defaults to 'token' (W2)." },
+        "resourceAttributes": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Merged into the exported resource. Platform-owned keys (service.instance.id) are rejected by the webhook." },
+        "sampling": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Head sampling, traces only. Rejected by the webhook on metrics/logs.",
+          "properties": {
+            "ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "null/absent -> unset; 0 -> always_off; 1 -> always_on; (0,1) -> probabilistic{ratio} (W3)." }
+          }
+        }
+      }
     }
   }
 }
