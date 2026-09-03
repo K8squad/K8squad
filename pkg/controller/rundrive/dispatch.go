@@ -383,12 +383,19 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 		if err != nil {
 			return nil, fmt.Errorf("rundrive: mint task-io token for Run %s: %w", runID, err)
 		}
-		env = append(env,
-			taskio.EnvCoordURL+"="+d.cfg.TaskIOCoordURL,
-			taskio.EnvCoordToken+"="+token,
-			taskio.EnvWorkItemID+"="+run.Spec.WorkItemRef,
-			taskio.EnvRunID+"="+runID,
-		)
+		// Render the credential content through the shared taskio.RunCredential so
+		// the env carrier here and the warmpool/sandbox Secret carrier (topology 2,
+		// ADR-0007) stay byte-identical — same fields, same order. The trace carrier
+		// is left off here because the shim emits TRACEPARENT/TRACESTATE
+		// unconditionally above (out of band of task-io); the Secret carrier folds it
+		// into the same struct when it wires the Bind path.
+		cred := taskio.RunCredential{
+			CoordURL:   d.cfg.TaskIOCoordURL,
+			Token:      token,
+			WorkItemID: run.Spec.WorkItemRef,
+			RunID:      runID,
+		}
+		env = append(env, cred.EnvKV()...)
 	}
 
 	env = append(env, d.cfg.ExtraEnv...)
