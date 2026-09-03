@@ -206,6 +206,60 @@ body {
   font-size: 13px;
 }
 
+/* SETTINGS section header (ISI-3725 / ISI-3641 mock): a small-caps muted group label above its
+ * links, with a hairline separator so the grouped block reads distinct from the primary items. */
+.rail__group--section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.rail__section {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* Namespace scope chip in the content top bar (mock's `● ns: all`). Static indicator for now. */
+.nschip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.nschip__dot {
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Avatar-only UserMenu variant (top-bar identity glyph, ISI-3725). */
+.usermenu--avatar {
+  display: inline-flex;
+  flex: none;
+}
+.usermenu--avatar .usermenu__avatar {
+  cursor: default;
+}
+
+/* Placeholder landing for not-yet-built nav destinations (Teams/Projects/Runs/Plugins, ISI-3725). */
+.stub {
+  max-width: 60ch;
+}
+.stub p {
+  color: var(--text-2);
+  margin-top: 8px;
+}
+
 /* Breadcrumb + project selector — chrome the shell renders; kept minimal so the frame reads whole. */
 .crumbs {
   display: flex;
@@ -409,9 +463,11 @@ body {
     flex-direction: column;
   }
 
-  /* Collapsed icon rail: hide labels, sub-nav and the project selector; centre each link on its icon. */
+  /* Collapsed icon rail: hide labels, sub-nav, section headers and the project selector; centre
+   * each link on its icon. */
   .rail__label,
   .rail__sub,
+  .rail__section,
   .rail .projselect {
     display: none;
   }
@@ -426,7 +482,8 @@ body {
     box-shadow: 8px 0 24px rgba(3, 7, 18, 0.35);
   }
   .rail[data-expanded] .rail__label,
-  .rail[data-expanded] .rail__sub {
+  .rail[data-expanded] .rail__sub,
+  .rail[data-expanded] .rail__section {
     display: flex;
   }
   .rail[data-expanded] .rail__label {
@@ -488,6 +545,9 @@ body {
   }
   .rail__sub {
     display: flex;
+  }
+  .rail__section {
+    display: block;
   }
   .rail .projselect {
     display: flex;
