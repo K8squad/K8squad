@@ -235,6 +235,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 // SetupWithManager registers the reconciler for Project events.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Client == nil {
+		r.Client = mgr.GetClient()
+	}
+	if r.Scheme == nil {
+		r.Scheme = mgr.GetScheme()
+	}
 	if r.Providers == nil {
 		r.Providers = scm.NewProviderRegistry()
 	}
