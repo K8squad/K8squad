@@ -31,6 +31,9 @@ import {
   type ComposeResult,
   type FieldErrors,
 } from "@/lib/compose";
+import { TeamForm } from "./TeamForm";
+import { ProjectForm } from "./ProjectForm";
+import { AgentForm } from "./AgentForm";
 
 type Mode = ComposeMode;
 
@@ -231,123 +234,25 @@ function KindFields({
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
 }) {
-  const nameField = (
-    <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
-      <input
-        value={cf.form.name}
-        onChange={(e) => patch({ name: e.target.value })}
-        aria-invalid={!!errors["name"]}
-        placeholder="my-resource"
-      />
-    </Field>
-  );
-
   switch (cf.kind) {
-    case "teams": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Namespace strategy" hint="optional — defaults to perTeam">
-            <input
-              value={f.namespaceStrategy}
-              onChange={(e) => patch({ namespaceStrategy: e.target.value })}
-              placeholder="perTeam"
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "projects": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Repo URL" error={errors["repo.url"]}>
-            <input
-              value={f.repoUrl}
-              onChange={(e) => patch({ repoUrl: e.target.value })}
-              aria-invalid={!!errors["repo.url"]}
-              placeholder="https://github.com/org/repo"
-            />
-          </Field>
-          <Field label="Repo ref" hint="optional — branch / tag / SHA">
-            <input
-              value={f.repoRef}
-              onChange={(e) => patch({ repoRef: e.target.value })}
-              placeholder="main"
-            />
-          </Field>
-          <Field label="Egress policy ref" hint="optional — name or namespace/name">
-            <input
-              value={f.egressPolicyRef}
-              onChange={(e) => patch({ egressPolicyRef: e.target.value })}
-            />
-          </Field>
-          <Field label="Goals" hint="one goal per line">
-            <textarea
-              rows={3}
-              value={f.goals}
-              onChange={(e) => patch({ goals: e.target.value })}
-              placeholder={"Ship the checkout flow\nHarden the payment path"}
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "agents": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          <Field label="Project" hint="the squad this Agent composes within" error={errors["project"]}>
-            <input
-              value={f.project}
-              onChange={(e) => patch({ project: e.target.value })}
-              aria-invalid={!!errors["project"]}
-            />
-          </Field>
-          {nameField}
-          <Field label="Runtime ref" error={errors["runtimeRef.name"]}>
-            <input
-              value={f.runtimeRef}
-              onChange={(e) => patch({ runtimeRef: e.target.value })}
-              aria-invalid={!!errors["runtimeRef.name"]}
-              placeholder="name or namespace/name"
-            />
-          </Field>
-          <Field label="Role ref" error={errors["roleRef.name"]}>
-            <input
-              value={f.roleRef}
-              onChange={(e) => patch({ roleRef: e.target.value })}
-              aria-invalid={!!errors["roleRef.name"]}
-            />
-          </Field>
-          <ModelSelector
-            model={f.model}
-            modelEndpointRef={f.modelEndpointRef}
-            byoEnabled={f.byoEnabled}
-            errors={errors}
-            patch={patch}
-          />
-          <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
-            <input
-              value={f.credentialSecretRef}
-              onChange={(e) => patch({ credentialSecretRef: e.target.value })}
-              aria-invalid={!!errors["credentialSecretRef.name"]}
-            />
-          </Field>
-          <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
-            <textarea
-              rows={3}
-              value={f.skillRefs}
-              onChange={(e) => patch({ skillRefs: e.target.value })}
-            />
-          </Field>
-        </div>
-      );
-    }
+    case "teams":
+      return <TeamForm cf={cf} errors={errors} patch={patch} />;
+    case "projects":
+      return <ProjectForm cf={cf} errors={errors} patch={patch} />;
+    case "agents":
+      return <AgentForm cf={cf} errors={errors} patch={patch} />;
     case "roles": {
       const f = cf.form;
+      const nameField = (
+        <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <input
+            value={f.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            aria-invalid={!!errors["name"]}
+            placeholder="my-resource"
+          />
+        </Field>
+      );
       return (
         <div className="compose__grid">
           <Field label="Project" error={errors["project"]}>
@@ -390,6 +295,16 @@ function KindFields({
     }
     case "skills": {
       const f = cf.form;
+      const nameField = (
+        <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <input
+            value={f.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            aria-invalid={!!errors["name"]}
+            placeholder="my-resource"
+          />
+        </Field>
+      );
       return (
         <div className="compose__grid">
           <Field label="Project" error={errors["project"]}>
