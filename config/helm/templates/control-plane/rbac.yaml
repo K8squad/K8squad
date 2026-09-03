@@ -23,8 +23,16 @@ rules:
   resources: [persistentvolumeclaims]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [""]
+  # ISI-3614 / ADR-0007: the warm-pool Bind path reads the booted sandbox pod
+  # (by its unique label) to place the pod-owned task-io Secret in the pod's
+  # namespace with an OwnerReference for auto-GC.
+  resources: [pods]
+  verbs: [get, list, watch]
+- apiGroups: [""]
   resources: [secrets]
-  verbs: [get, list, patch, update, watch]
+  # create: ISI-3614 / ADR-0007 — the warm-pool Bind path writes a per-sandbox
+  # task-io Secret (pod-owned, auto-GC) to deliver the run-scoped credential.
+  verbs: [create, get, list, patch, update, watch]
 - apiGroups: [batch]
   resources: [jobs]
   verbs: [create, delete, get, list, watch]

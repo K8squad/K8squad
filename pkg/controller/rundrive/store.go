@@ -287,6 +287,7 @@ type ProdRunner struct {
 	initiatedBy string
 	binder      coord.SandboxBinder
 	dispatcher  coord.TaskDispatcher
+	credWriter  coord.RunCredentialWriter
 }
 
 // NewProdRunner binds the Runner seam. binder/dispatcher may be nil.
@@ -297,6 +298,15 @@ func NewProdRunner(db *sql.DB, principal string, binder coord.SandboxBinder, dis
 	return &ProdRunner{db: db, principal: principal, binder: binder, dispatcher: dispatcher}
 }
 
+// WithCredentialWriter opts this runner into topology-2 (ADR-0007) Bind-path
+// task-io Secret delivery: every per-Run ProdEffects it builds carries the writer,
+// so BindSandbox writes the run-scoped credential right after the sandbox binds.
+// Nil leaves credential-off mode. Returns r for chaining.
+func (r *ProdRunner) WithCredentialWriter(w coord.RunCredentialWriter) *ProdRunner {
+	r.credWriter = w
+	return r
+}
+
 // Store implements Runner.Store.
 func (r *ProdRunner) Store(ctx context.Context, run *api.Run) (machineStore, error) {
 	return coord.NewProdReconcileStore(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
@@ -305,8 +315,13 @@ func (r *ProdRunner) Store(ctx context.Context, run *api.Run) (machineStore, err
 
 // Effects implements Runner.Effects.
 func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects, error) {
-	return coord.NewProdEffects(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
+	e, err := coord.NewProdEffects(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
 		r.principal, r.initiatedBy, r.binder, r.dispatcher)
+	if err != nil {
+		return nil, err
+	}
+	// Topology-2 opt-in: nil credWriter leaves credential-off mode.
+	return e.WithRunCredentialWriter(r.credWriter), nil
 }
 
 // SpecClassifier resolves a Run's warm-pool (key, class) from its CRD spec —
