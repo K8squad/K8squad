@@ -20,6 +20,7 @@ rules:
   resources:
   - limitranges
   - resourcequotas
+  - secrets
   - serviceaccounts
   verbs:
   - create
@@ -53,12 +54,10 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
+  - pods
   verbs:
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - batch

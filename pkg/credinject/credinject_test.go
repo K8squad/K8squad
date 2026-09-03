@@ -68,6 +68,17 @@ func TestInject_RuntimeNativeMapping(t *testing.T) {
 			wantKey: "apiKey",
 		},
 		{
+			// ISI-3647 S4 (FR4/AC1): a BYO OpenAI key for a codex Agent rides
+			// the OpenAI-standard env, injected by reference. "codex" is the
+			// literal the RuntimeTypeCodex const (S2) will hold.
+			name:    "codex service account -> OPENAI_API_KEY env",
+			runtime: "codex",
+			class:   ClassServiceAccount,
+			ref:     api.SecretRef{Name: "dave-openai"},
+			wantEnv: "OPENAI_API_KEY",
+			wantKey: "apiKey",
+		},
+		{
 			name:    "explicit Secret key overrides the default",
 			runtime: api.RuntimeTypeClaudeCode,
 			class:   ClassHumanSeat,
@@ -149,6 +160,20 @@ func TestInject_ClassNotSupportedByRuntimeFailsClosed(t *testing.T) {
 	_, err := Inject(api.RuntimeTypeOpenClaw, ClassHumanSeat, api.SecretRef{Name: "x"})
 	if err == nil {
 		t.Fatal("Inject: want fail-closed error for unsupported (runtime, class) pair, got nil")
+	}
+	if !strings.Contains(err.Error(), string(ClassHumanSeat)) {
+		t.Errorf("error should name the unsupported class, got %q", err.Error())
+	}
+}
+
+// TestInject_CodexHumanSeatFailsClosed proves the ToS-gated human-seat auth.json
+// branch (ISI-3647 S9) is deliberately unmapped for codex in v1: a human-seat
+// class on codex fails CLOSED rather than falling back to the service-account
+// row, so no Run authenticates under an env the codex CLI ignores.
+func TestInject_CodexHumanSeatFailsClosed(t *testing.T) {
+	_, err := Inject("codex", ClassHumanSeat, api.SecretRef{Name: "x"})
+	if err == nil {
+		t.Fatal("Inject: want fail-closed error for (codex, human-seat) unmapped pair, got nil")
 	}
 	if !strings.Contains(err.Error(), string(ClassHumanSeat)) {
 		t.Errorf("error should name the unsupported class, got %q", err.Error())

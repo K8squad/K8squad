@@ -134,15 +134,15 @@ CEO (sam)
 
 ## The 7 default Skills
 
-A `Skill` is the CRD-authorized capability envelope. `bmad`, `task-io`,
-`org-ops` and `project-ops` ship **inline** (self-contained); the tool skills
+A `Skill` is the CRD-authorized capability envelope. `bmad`, `org-ops` and
+`project-ops` ship **inline** (self-contained); `task-io` and the tool skills
 are **git-sourced and pinned to a commit SHA** (`repoRef`/`ref` are placeholders
 — repoint them at your own skill repo).
 
 | Skill | Source | Granted to | Purpose |
 |-------|--------|-----------|---------|
 | `bmad` | inline | **all 13 roles** | the BMAD workflow/methodology |
-| `task-io` | inline | **all 13 roles** | read/comment/status/checkout on your *own* task (ISI-3602) |
+| `task-io` | git | **all 13 roles** | read/comment/status/checkout on your *own* task (ISI-3602) |
 | `org-ops` | inline | ceo, product-manager, architect, ux-designer | create agents & skills, delegate work (ADR-0005) |
 | `project-ops` | inline | ceo | create & archive projects (ADR-0005) |
 | `github` | git | coder, devops-engineer, code-reviewer | SCM & PR workflows |
@@ -153,8 +153,11 @@ are **git-sourced and pinned to a commit SHA** (`repoRef`/`ref` are placeholders
 it can act on its own work item on demand (the coord-side analogue of an issue
 read/write API, delivered by S2/ISI-3601). It grants *agency over your own task*,
 never a general issue-browser and never context assembly — task context is PUSHED
-into the prompt at boot (S1/ISI-3590). It ships inline until S2 finalizes the
-coord API wire shapes, then converts to a SHA-pinned catalog entry.
+into the prompt at boot (S1/ISI-3590). Now that S2 has landed and published the
+coord API wire shapes, it is git-sourced and pinned to the canonical
+`K8squad/k8squad-skills` `skills/task-io` catalog entry (mirroring `github`); the
+catalog README documents the four verbs, their request/response shapes, the env
+contract and the client trace-join.
 
 ### Board-ops (`org-ops` / `project-ops`) — the security boundary is the token, not attachment
 

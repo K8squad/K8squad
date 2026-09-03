@@ -36,16 +36,19 @@ const (
 
 	// RuntimeTypeHermes is the Hermes coding-agent flavor.
 	RuntimeTypeHermes = "hermes"
+
+	// RuntimeTypeCodex is the ChatGPT Codex coding-agent flavor (ISI-3647).
+	RuntimeTypeCodex = "codex"
 )
 
 // AgentRuntimeSpec defines the desired state of AgentRuntime (arch §5.3,
 // story 1.3 Task 0 — minimal authoring so Agent.spec.runtimeRef has a
 // target; the richer runtime policy surface lands with the sandbox stories).
 //
-// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes'] || self.experimental"
+// +kubebuilder:validation:XValidation:message="spec.type must be one of the conformant runtimes [openclaw claude-code opencode hermes codex], or set spec.experimental=true to admit a vendor-shim runtime (FR-D3)",rule="self.type in ['openclaw','claude-code','opencode','hermes','codex'] || self.experimental"
 type AgentRuntimeSpec struct {
 	// Type is the coding-agent flavor this runtime serves (arch §5.3):
-	// openclaw, claude-code, opencode or hermes out of the box. The field is
+	// openclaw, claude-code, opencode, hermes or codex out of the box. The field is
 	// intentionally a free string rather than a closed enum: shim vendors
 	// register additional flavors behind spec.experimental=true with zero
 	// CRD schema change (FR-D3). A non-conformant type without the

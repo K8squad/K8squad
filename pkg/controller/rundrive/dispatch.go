@@ -285,8 +285,16 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 // before dispatch, so this is a cache hit in practice). A Run deleted
 // mid-dispatch is an error: dispatch must fail loudly, never drive a ghost.
 func (d *operatorDispatch) runByUID(ctx context.Context, runID string) (*api.Run, error) {
+	return runByUIDFrom(ctx, d.cfg.Client, runID)
+}
+
+// runByUIDFrom resolves the Run CR whose UID matches runID over the given client
+// (the Run drive loop keys on the Run's real uid, not name). Shared by the shim
+// dispatch path and the warm-pool Bind-path credential writer, which is handed
+// only the run-id string from the coord bind frame.
+func runByUIDFrom(ctx context.Context, c client.Client, runID string) (*api.Run, error) {
 	var runs api.RunList
-	if err := d.cfg.Client.List(ctx, &runs); err != nil {
+	if err := c.List(ctx, &runs); err != nil {
 		return nil, fmt.Errorf("list Runs: %w", err)
 	}
 	for i := range runs.Items {
@@ -494,6 +502,16 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 // the listed namespace's Roles, yields no scope, so a lookup glitch can never
 // widen a token.
 func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []string {
+	return runScopesFor(ctx, d.cfg.Client, run)
+}
+
+// runScopesFor derives the ISI-3626 role scopes (org:write/project:write) for a
+// Run from its first Agent's Role, over the given client. It is the SINGLE scope
+// source both dispatch topologies mint against — the operator-spawned shim
+// (operatorDispatch.deriveRunScopes) and the warm-pool Bind-path credential
+// writer — so a warm-pool agent gets byte-identical scopes to a shim agent
+// (scope parity). Fail-closed: any resolution gap returns nil (IC/no-scope).
+func runScopesFor(ctx context.Context, c client.Client, run *api.Run) []string {
 	if len(run.Spec.Agents) == 0 {
 		return nil
 	}
@@ -503,7 +521,7 @@ func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []
 		ns = run.Namespace
 	}
 	var agent api.Agent
-	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
 		return nil
 	}
 	roleName := agent.Spec.RoleRef.Name
@@ -515,7 +533,7 @@ func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []
 		roleNS = ns
 	}
 	var roles api.RoleList
-	if err := d.cfg.Client.List(ctx, &roles, client.InNamespace(roleNS)); err != nil {
+	if err := c.List(ctx, &roles, client.InNamespace(roleNS)); err != nil {
 		return nil
 	}
 	views := make([]orgops.RoleView, 0, len(roles.Items))

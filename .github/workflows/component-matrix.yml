@@ -12,7 +12,7 @@ name: Component Matrix
 # typed JSON outputs, one per toolchain family:
 #
 #   go         — deployable Go binaries        (operator, apiserver, memory)
-#   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode)
+#   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode, codex)
 #   helm       — Helm charts                    (k8squad)
 #   node       — Node/TypeScript surfaces       (console)
 #   toolchains — catalog toolchain images       (Dockerfile.toolchain-<tool>, ISI-3413)
@@ -31,7 +31,7 @@ name: Component Matrix
 #
 # STABLE CHECK-RUN NAMES (branch protection wires these per component — ISI-2674):
 #   go / operator      go / apiserver     go / memory
-#   shim / claude      shim / openclaw    shim / hermes    shim / opencode
+#   shim / claude      shim / openclaw    shim / hermes    shim / opencode    shim / codex
 #   helm / k8squad     node / console     db / migrations self-check
 # Consumers MUST keep their `name:` templates in sync with these so a required check never
 # silently renames itself out from under branch protection.
@@ -80,8 +80,13 @@ jobs:
           # Compact single-line JSON so `fromJSON()` in the calling lane stays trivial.
           {
             echo 'go=[{"component":"operator","path":"cmd/operator"},{"component":"apiserver","path":"cmd/apiserver"},{"component":"memory","path":"cmd/memory"},{"component":"event-relay","path":"cmd/event-relay"},{"component":"scm-webhook","path":"cmd/scm-webhook"}]'
-            echo 'shims=[{"runtime":"claude","path":"cmd/shim-claude"},{"runtime":"openclaw","path":"cmd/shim-openclaw"},{"runtime":"hermes","path":"cmd/shim-hermes"},{"runtime":"opencode","path":"cmd/shim-opencode"}]'
-            echo 'helm=[{"chart":"k8squad-crds","path":"config/helm-crds"},{"chart":"k8squad","path":"config/helm"}]'
+            # Drift fix (ISI-3653): there is ONE generic shim main (cmd/shim); the runtime is
+            # selected at IMAGE build via the RUNTIME build-arg (Dockerfile.shim cli-<runtime>
+            # stage), NOT a per-runtime cmd/shim-<runtime> dir. Those dirs never existed, so the
+            # ci.yml shim lane skip-with-reasoned every runtime. `path` now points at the real
+            # source so the lanes lint+build+test the shim main per-runtime, and codex is added.
+            echo 'shims=[{"runtime":"claude","path":"cmd/shim"},{"runtime":"openclaw","path":"cmd/shim"},{"runtime":"hermes","path":"cmd/shim"},{"runtime":"opencode","path":"cmd/shim"},{"runtime":"codex","path":"cmd/shim"}]'
+            echo 'helm=[{"chart":"k8squad","path":"config/helm"}]'
             echo 'node=[{"component":"console","path":"console"}]'
             # Toolchain image family (ISI-3413). `version` is the CATALOG TAG referenced by
             # config/helm/values.yaml tools.defaultCatalog.entries (tracks an upstream minor
