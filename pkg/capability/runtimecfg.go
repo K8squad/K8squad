@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -205,6 +206,58 @@ func RenderOpenClaw(endpoints []Endpoint) ([]byte, error) {
 		doc.MCP.Servers[ep.Name] = entry
 	}
 	return json.MarshalIndent(doc, "", "  ")
+}
+
+// RenderCodex renders the Codex `config.toml` [mcp_servers.*] section for the
+// endpoint set. Codex is the first non-JSON runtime in the render matrix (its
+// native config is TOML), and its full renderer — server-granularity tool
+// scoping (arch ISI-3646 D3), transport fidelity and the [model_providers.*]
+// BYO superset (D6) — lands with story S5.
+//
+// This is the S2 stub (ISI-3654): it wires the adapter seam end to end by
+// emitting the mcp_servers table with command/args/url + env-NAME references
+// (secret material only ever rides process env, ADR-045 D5), sorted for
+// determinism. S5 replaces it with the conformant renderer.
+func RenderCodex(endpoints []Endpoint) ([]byte, error) {
+	names := make([]string, 0, len(endpoints))
+	byName := make(map[string]Endpoint, len(endpoints))
+	for _, ep := range endpoints {
+		names = append(names, ep.Name)
+		byName[ep.Name] = ep
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("# Rendered by K8squad shim (ISI-3654 S2 stub; full renderer = S5).\n")
+	for _, name := range names {
+		ep := byName[name]
+		fmt.Fprintf(&b, "\n[mcp_servers.%s]\n", name)
+		switch ep.Transport {
+		case string(api.MCPTransportStdio):
+			fmt.Fprintf(&b, "command = %q\n", ep.Command)
+			if len(ep.Args) > 0 {
+				b.WriteString("args = [")
+				for i, a := range ep.Args {
+					if i > 0 {
+						b.WriteString(", ")
+					}
+					fmt.Fprintf(&b, "%q", a)
+				}
+				b.WriteString("]\n")
+			}
+			if len(ep.EnvNames) > 0 {
+				fmt.Fprintf(&b, "\n[mcp_servers.%s.env]\n", name)
+				for _, n := range ep.EnvNames {
+					fmt.Fprintf(&b, "%s = %q\n", n, "${"+n+"}")
+				}
+			}
+		case string(api.MCPTransportStreamableHTTP):
+			fmt.Fprintf(&b, "url = %q\n", ep.URL)
+		default:
+			return nil, fmt.Errorf("codex renderer: unknown transport %q for server %q", ep.Transport, ep.Name)
+		}
+	}
+	return []byte(b.String()), nil
 }
 
 // RenderHermes renders the hermes passthrough: hermes consumes the

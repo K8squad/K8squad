@@ -77,7 +77,7 @@ spec:
               type:
                 description: |-
                   Type is the coding-agent flavor this runtime serves (arch §5.3):
-                  openclaw, claude-code, opencode or hermes out of the box. The field is
+                  openclaw, claude-code, opencode, hermes or codex out of the box. The field is
                   intentionally a free string rather than a closed enum: shim vendors
                   register additional flavors behind spec.experimental=true with zero
                   CRD schema change (FR-D3). A non-conformant type without the
@@ -89,10 +89,10 @@ spec:
             type: object
             x-kubernetes-validations:
             - message: spec.type must be one of the conformant runtimes [openclaw
-                claude-code opencode hermes], or set spec.experimental=true to admit
-                a vendor-shim runtime (FR-D3)
-              rule: self.type in ['openclaw','claude-code','opencode','hermes'] ||
-                self.experimental
+                claude-code opencode hermes codex], or set spec.experimental=true
+                to admit a vendor-shim runtime (FR-D3)
+              rule: self.type in ['openclaw','claude-code','opencode','hermes','codex']
+                || self.experimental
         type: object
     served: true
     storage: true
