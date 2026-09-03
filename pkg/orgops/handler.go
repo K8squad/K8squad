@@ -27,6 +27,10 @@ type Store interface {
 	CreateSkill(ctx context.Context, tok taskio.RunToken, req SkillInput) (Result, error)
 	CreateProject(ctx context.Context, tok taskio.RunToken, req ProjectInput) (Result, error)
 	ArchiveProject(ctx context.Context, tok taskio.RunToken, name string) (Result, error)
+	// Assign resolves the A2A handoff carrier for handing work to a teammate
+	// (there is no coord assignee row — I4/no-P2P). It validates the target
+	// agent exists in the calling run's namespace and returns the carrier.
+	Assign(ctx context.Context, tok taskio.RunToken, req AssignInput) (AssignResult, error)
 }
 
 // Sentinel errors a Store may return; the handler maps each to a status code.
@@ -100,6 +104,40 @@ type archiveProjectRequest struct {
 	Name string `json:"name"`
 }
 
+// AssignInput is the assign-work body: hand a work item to a teammate agent.
+// The coord model has NO assignee column and NO agent-to-agent row by design
+// (I4/no-P2P, migrations 0001/0004), so "assign to a teammate" is not a board-
+// row write — its sanctioned carrier is an A2A SubmitTask to the target agent's
+// card (ADR-0005 rev.2 D4). This endpoint authorizes the intent (org:write) and
+// resolves the A2A carrier; the actual SubmitTask is performed by the caller's
+// runtime A2A client. To ENQUEUE claimable work instead, use task-io /subtask.
+type AssignInput struct {
+	ToAgent    string `json:"toAgent"`
+	WorkItemID string `json:"workItemId"`
+	Summary    string `json:"summary,omitempty"`
+}
+
+// A2ACarrier is the resolved agent-to-agent handoff descriptor the assign verb
+// returns: everything the runtime's existing A2A client (pkg/a2a V1 SubmitTask,
+// V6 GetAgentCard) needs to hand work to the teammate, addressed by the same
+// Agent Card the platform already advertises.
+type A2ACarrier struct {
+	Verb         string `json:"verb"`         // "SubmitTask" (A2A V1)
+	TargetAgent  string `json:"targetAgent"`  // resolved Agent metadata.name
+	TargetSquad  string `json:"targetSquad"`  // the Agent's namespace (squad)
+	AgentCardRef string `json:"agentCardRef"` // "<namespace>/<name>" — the runtime resolves this to the shim card
+}
+
+// AssignResult reports the resolved carriers for an assign intent. A2A is the
+// direct handoff carrier; CoordEnqueue names the alternative (enqueue claimable
+// work) so a skill can ship both and let the runtime pick.
+type AssignResult struct {
+	WorkItemID   string     `json:"workItemId,omitempty"`
+	ToAgent      string     `json:"toAgent"`
+	A2A          A2ACarrier `json:"a2a"`
+	CoordEnqueue string     `json:"coordEnqueue"` // "/api/task-io/subtask"
+}
+
 // Result is the response body for a successful verb: the kind/name/namespace the
 // write landed in plus the operation performed.
 type Result struct {
@@ -127,10 +165,22 @@ func NewHandler(minter *taskio.Minter, store Store) *Handler {
 // token and the role-derived scope that token carries.
 func (h *Handler) Mux() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/create-agent", h.auth(h.instrument("create_agent", h.requireScope(ScopeOrgWrite, h.createAgent))))
-	mux.HandleFunc("/create-skill", h.auth(h.instrument("create_skill", h.requireScope(ScopeOrgWrite, h.createSkill))))
-	mux.HandleFunc("/create-project", h.auth(h.instrument("create_project", h.requireScope(ScopeProjectWrite, h.createProject))))
+	// Canonical noun routes (ADR-0005 rev.2 D4): these are the paths the org-ops
+	// skill body's HTTP tool definitions target, so the tool is callable
+	// end-to-end.
+	agents := h.auth(h.instrument("create_agent", h.requireScope(ScopeOrgWrite, h.createAgent)))
+	skills := h.auth(h.instrument("create_skill", h.requireScope(ScopeOrgWrite, h.createSkill)))
+	projects := h.auth(h.instrument("create_project", h.requireScope(ScopeProjectWrite, h.createProject)))
+	mux.HandleFunc("/agents", agents)
+	mux.HandleFunc("/skills", skills)
+	mux.HandleFunc("/projects", projects)
+	mux.HandleFunc("/assign", h.auth(h.instrument("assign", h.requireScope(ScopeOrgWrite, h.assign))))
 	mux.HandleFunc("/archive-project", h.auth(h.instrument("archive_project", h.requireScope(ScopeProjectWrite, h.archiveProject))))
+	// Verb aliases (the original ISI-3626 shapes) kept callable so an early
+	// caller minted against them does not break; the nouns above are canonical.
+	mux.HandleFunc("/create-agent", agents)
+	mux.HandleFunc("/create-skill", skills)
+	mux.HandleFunc("/create-project", projects)
 	return mux
 }
 
@@ -236,6 +286,26 @@ func (h *Handler) archiveProject(w http.ResponseWriter, r *http.Request, tok tas
 		return
 	}
 	res, err := h.store.ArchiveProject(r.Context(), tok, req.Name)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (h *Handler) assign(w http.ResponseWriter, r *http.Request, tok taskio.RunToken) {
+	if !post(w, r) {
+		return
+	}
+	var req AssignInput
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.ToAgent == "" {
+		writeError(w, http.StatusBadRequest, "toAgent required")
+		return
+	}
+	res, err := h.store.Assign(r.Context(), tok, req)
 	if err != nil {
 		writeStoreError(w, err)
 		return

@@ -43,6 +43,10 @@ func (f *fakeStore) ArchiveProject(_ context.Context, _ taskio.RunToken, name st
 	f.reached = "archive-project"
 	return Result{Kind: "Project", Name: name, Namespace: "ns", Operation: "archived"}, f.err
 }
+func (f *fakeStore) Assign(_ context.Context, _ taskio.RunToken, req AssignInput) (AssignResult, error) {
+	f.reached = "assign"
+	return AssignResult{ToAgent: req.ToAgent, A2A: A2ACarrier{Verb: "SubmitTask", TargetAgent: req.ToAgent, AgentCardRef: "ns/" + req.ToAgent}, CoordEnqueue: "/api/task-io/subtask"}, f.err
+}
 
 func newTestHandler(t *testing.T, store Store) (http.Handler, *taskio.Minter) {
 	t.Helper()
@@ -79,7 +83,7 @@ const agentBody = `{"name":"new-agent","runtimeRef":{"name":"rt"},"roleRef":{"na
 func TestNoTokenIs401(t *testing.T) {
 	fs := &fakeStore{}
 	h, _ := newTestHandler(t, fs)
-	rec := do(t, h, "create-agent", "", agentBody)
+	rec := do(t, h, "agents", "", agentBody)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("no token: got %d, want 401", rec.Code)
 	}
@@ -92,7 +96,7 @@ func TestNoTokenIs401(t *testing.T) {
 // verb — the store is never reached. This is the loophole-closing gate: even if
 // the caller holds the org-ops skill body, its token lacks the scope.
 func TestICTokenDeniedAllVerbs(t *testing.T) {
-	for _, op := range []string{"create-agent", "create-skill", "create-project", "archive-project"} {
+	for _, op := range []string{"agents", "skills", "assign", "projects", "archive-project"} {
 		fs := &fakeStore{}
 		h, m := newTestHandler(t, fs)
 		rec := do(t, h, op, mint(t, m, nil), `{}`)
@@ -108,35 +112,31 @@ func TestICTokenDeniedAllVerbs(t *testing.T) {
 // org:write authorizes create-agent/create-skill but NOT create-project/
 // archive-project — a manager cannot create or archive projects.
 func TestOrgWriteScopeBoundary(t *testing.T) {
-	allowed := map[string]bool{"create-agent": true, "create-skill": true}
-	for _, op := range []string{"create-agent", "create-skill", "create-project", "archive-project"} {
+	// org:write authorizes agents/skills/assign; projects/archive-project need
+	// project:write. wantCode 201 = created, 200 = assign ok, 403 = out of scope.
+	cases := []struct {
+		op       string
+		body     string
+		wantCode int
+	}{
+		{"agents", agentBody, http.StatusCreated},
+		{"skills", `{"name":"sk","source":{"type":"inline","inline":"body"}}`, http.StatusCreated},
+		{"assign", `{"toAgent":"coder"}`, http.StatusOK},
+		{"projects", `{"name":"p","repo":{"url":"https://x"}}`, http.StatusForbidden},
+		{"archive-project", `{"name":"p"}`, http.StatusForbidden},
+	}
+	for _, c := range cases {
 		fs := &fakeStore{}
 		h, m := newTestHandler(t, fs)
-		body := `{"name":"x"}`
-		if op == "create-agent" {
-			body = agentBody
+		rec := do(t, h, c.op, mint(t, m, []string{ScopeOrgWrite}), c.body)
+		if rec.Code != c.wantCode {
+			t.Fatalf("%s with org:write: got %d, want %d (body %s)", c.op, rec.Code, c.wantCode, rec.Body.String())
 		}
-		if op == "create-skill" {
-			body = `{"name":"sk","source":{"type":"inline","inline":"body"}}`
+		if c.wantCode == http.StatusForbidden && fs.reached != "" {
+			t.Fatalf("%s: project verb reached store with only org:write: %q", c.op, fs.reached)
 		}
-		if op == "create-project" {
-			body = `{"name":"p","repo":{"url":"https://x"}}`
-		}
-		rec := do(t, h, op, mint(t, m, []string{ScopeOrgWrite}), body)
-		if allowed[op] {
-			if rec.Code != http.StatusCreated {
-				t.Fatalf("%s with org:write: got %d, want 201 (body %s)", op, rec.Code, rec.Body.String())
-			}
-			if fs.reached != op {
-				t.Fatalf("%s: store not reached (reached %q)", op, fs.reached)
-			}
-		} else {
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("%s with only org:write: got %d, want 403", op, rec.Code)
-			}
-			if fs.reached != "" {
-				t.Fatalf("%s: project verb reached store with only org:write: %q", op, fs.reached)
-			}
+		if c.wantCode != http.StatusForbidden && fs.reached == "" {
+			t.Fatalf("%s: store not reached", c.op)
 		}
 	}
 }
@@ -147,9 +147,9 @@ func TestProjectWriteAllowsProjectVerbs(t *testing.T) {
 	h, m := newTestHandler(t, fs)
 	tok := mint(t, m, []string{ScopeOrgWrite, ScopeProjectWrite})
 
-	rec := do(t, h, "create-project", tok, `{"name":"p","repo":{"url":"https://x"}}`)
+	rec := do(t, h, "projects", tok, `{"name":"p","repo":{"url":"https://x"}}`)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("create-project with project:write: got %d, want 201", rec.Code)
+		t.Fatalf("projects with project:write: got %d, want 201", rec.Code)
 	}
 	rec = do(t, h, "archive-project", tok, `{"name":"p"}`)
 	if rec.Code != http.StatusOK {
@@ -213,10 +213,51 @@ func TestArchiveRequiresName(t *testing.T) {
 	}
 }
 
+// assign (org:write) returns the A2A carrier; an empty toAgent is 400 before the store.
+func TestAssignCarrier(t *testing.T) {
+	fs := &fakeStore{}
+	h, m := newTestHandler(t, fs)
+	tok := mint(t, m, []string{ScopeOrgWrite})
+
+	rec := do(t, h, "assign", tok, `{"toAgent":"coder","workItemId":"wi-1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("assign with org:write: got %d, want 200", rec.Code)
+	}
+	var res AssignResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode assign result: %v", err)
+	}
+	if res.A2A.Verb != "SubmitTask" || res.A2A.TargetAgent != "coder" || res.CoordEnqueue == "" {
+		t.Fatalf("assign carrier not populated: %+v", res)
+	}
+
+	fs2 := &fakeStore{}
+	h2, m2 := newTestHandler(t, fs2)
+	rec = do(t, h2, "assign", mint(t, m2, []string{ScopeOrgWrite}), `{"toAgent":""}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("assign empty toAgent: got %d, want 400", rec.Code)
+	}
+	if fs2.reached != "" {
+		t.Fatalf("store reached with empty toAgent: %q", fs2.reached)
+	}
+}
+
+// The canonical noun route and the verb alias hit the same handler/scope.
+func TestNounRouteAndVerbAliasParity(t *testing.T) {
+	for _, op := range []string{"agents", "create-agent"} {
+		fs := &fakeStore{}
+		h, m := newTestHandler(t, fs)
+		rec := do(t, h, op, mint(t, m, []string{ScopeOrgWrite}), agentBody)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s: got %d, want 201", op, rec.Code)
+		}
+	}
+}
+
 // The 403 body names the scope required (operational legibility, no secret leak).
 func TestForbiddenBodyNamesScope(t *testing.T) {
 	h, m := newTestHandler(t, &fakeStore{})
-	rec := do(t, h, "create-project", mint(t, m, []string{ScopeOrgWrite}), `{}`)
+	rec := do(t, h, "projects", mint(t, m, []string{ScopeOrgWrite}), `{}`)
 	var body map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
 	if !strings.Contains(body["error"], ScopeProjectWrite) {
