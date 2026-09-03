@@ -29,6 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/K8squad/K8squad/pkg/taskio"
 )
 
 func clientObjectKey(t *testing.T, ns, name string) types.NamespacedName {
@@ -134,5 +136,63 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 		if e.Name == "TRACEPARENT" || e.Name == "TRACESTATE" {
 			t.Fatalf("bare boot stamped %s without a traced context", e.Name)
 		}
+	}
+}
+
+// TestKubeProvisionerBootMountsCoordSecretVolume (ISI-3614, ADR-0007 channel A):
+// Boot mounts the per-sandbox task-io Secret at the coord path so the Bind-path
+// writer (topology 2) can deliver a run-scoped credential to an already-running
+// pod. The volume is OPTIONAL (the Secret only exists after Bind) and the mount
+// is read-only. The Secret is named after the pod (== sandbox_ref).
+func TestKubeProvisionerBootMountsCoordSecretVolume(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	ctx := context.Background()
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor"}, "sbx-coord"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-coord"), pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == taskio.CoordVolumeName {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	if vol == nil {
+		t.Fatalf("no %q volume on pod; volumes=%+v", taskio.CoordVolumeName, pod.Spec.Volumes)
+	}
+	if vol.Secret == nil {
+		t.Fatalf("%q volume is not a Secret source: %+v", taskio.CoordVolumeName, vol.VolumeSource)
+	}
+	if vol.Secret.SecretName != "sbx-coord" {
+		t.Errorf("Secret name = %q, want the pod/sandbox_ref name %q", vol.Secret.SecretName, "sbx-coord")
+	}
+	if vol.Secret.Optional == nil || !*vol.Secret.Optional {
+		t.Errorf("Secret volume must be Optional (Secret does not exist until Bind); got %v", vol.Secret.Optional)
+	}
+
+	var mount *corev1.VolumeMount
+	for i := range pod.Spec.Containers[0].VolumeMounts {
+		if pod.Spec.Containers[0].VolumeMounts[i].Name == taskio.CoordVolumeName {
+			mount = &pod.Spec.Containers[0].VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatalf("sandbox container has no %q mount", taskio.CoordVolumeName)
+	}
+	if mount.MountPath != taskio.CoordMountPath {
+		t.Errorf("mount path = %q, want %q", mount.MountPath, taskio.CoordMountPath)
+	}
+	if !mount.ReadOnly {
+		t.Errorf("coord Secret mount should be read-only")
 	}
 }

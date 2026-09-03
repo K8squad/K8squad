@@ -9,6 +9,21 @@ const (
 	EnvTraceState  = "TRACESTATE"
 )
 
+// CoordMountPath is the in-pod directory where the warmpool/sandbox topology
+// (topology 2, ADR-0007 channel A) mounts the per-sandbox Secret that carries a
+// RunCredential. The Bind-path writer names the Secret after the sandbox_ref
+// (== pod name) and renders the credential to its keys via SecretData; the
+// sandbox supervisor reads each value from a file under this path (the env→path
+// contract), e.g. <CoordMountPath>/KSQUAD_COORD_TOKEN. Unlike the shim's env
+// carrier, this survives the Boot-before-Bind ordering: the volume mounts
+// optionally at Boot and the file appears once the operator writes the Secret at
+// Bind.
+const CoordMountPath = "/var/run/ksquad/coord"
+
+// CoordVolumeName is the pod volume / volumeMount name for the projected
+// per-sandbox task-io Secret (CoordMountPath).
+const CoordVolumeName = "ksquad-coord-taskio"
+
 // RunCredential is the carrier-agnostic content of the run-scoped task-io
 // credential — the exact set an agent subprocess needs to talk back to the coord
 // API for its OWN run (re-read task, comment, update status, checkout), plus the
