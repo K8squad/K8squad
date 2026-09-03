@@ -6,17 +6,39 @@ with the **same** `KSQUAD_COORD_TOKEN` it uses for task-io, POSTing to
 **role-derived scope** stamped into that token by the operator at mint time —
 never on the skill body or its attachment (ADR-0005 D2).
 
-## Verbs, scopes, and shapes
+## Verbs, scopes, and shapes (ADR-0005 rev.2 D4 — executable tool endpoints)
 
 | Verb (`POST /api/org-ops/…`) | Required scope | Request body |
 |------------------------------|----------------|--------------|
-| `create-agent`   | `org:write`     | `{"name","runtimeRef":{"name"},"roleRef":{"name"},"model","credentialSecretRef":{"name"},"skillRefs":[…],"modelEndpointRef":{…}?}` |
-| `create-skill`   | `org:write`     | `{"name","source":{"type":"inline"\|"git","inline"?,"git":{"repoRef","ref","path"?}?},"permissions":[…]}` |
-| `create-project` | `project:write` | `{"name","repo":{"url","ref"?},"goals":[…]}` |
+| `agents`   | `org:write`     | `{"name","runtimeRef":{"name"},"roleRef":{"name"},"model","credentialSecretRef":{"name"},"skillRefs":[…],"modelEndpointRef":{…}?}` |
+| `skills`   | `org:write`     | `{"name","source":{"type":"inline"\|"git","inline"?,"git":{"repoRef","ref","path"?}?},"permissions":[…]}` |
+| `assign`   | `org:write`     | `{"toAgent","workItemId"?,"summary"?}` → returns the A2A carrier (see below) |
+| `projects` | `project:write` | `{"name","repo":{"url","ref"?},"goals":[…]}` |
 | `archive-project`| `project:write` | `{"name"}` |
 
 All are `POST`. Auth is `Authorization: Bearer $KSQUAD_COORD_TOKEN`. Forward the
-Run's `traceparent` so each call joins the Run trace (`orgops.<op>` span).
+Run's `traceparent` so each call joins the Run trace (`orgops.<op>` span). The
+verb aliases `create-agent` / `create-skill` / `create-project` remain callable
+(the original ISI-3626 shapes) but the nouns above are canonical.
+
+## Two carriers for "assign to a teammate" (D4)
+
+The coord model has **no assignee column and no agent-to-agent row by design**
+(I4 / no-P2P, migrations 0001 / 0004): work moves by claim/dispatch, not direct
+assignment. So "hand work to a teammate" has two sanctioned carriers, and a
+skill MAY ship both:
+
+1. **A2A (direct handoff)** — `POST /api/org-ops/assign` authorizes the intent
+   (`org:write`), validates the target Agent exists in the caller's own squad
+   namespace, and returns an **A2A carrier descriptor** the runtime's existing
+   A2A client (pkg/a2a V1 `SubmitTask`, addressed by the target's Agent Card)
+   uses to submit the task. apiserver is the authorization + resolution point;
+   the SubmitTask transport is the operator/runtime plane, not re-implemented
+   here. Response: `{"toAgent","a2a":{"verb":"SubmitTask","targetAgent","targetSquad","agentCardRef":"<ns>/<name>"},"coordEnqueue":"/api/task-io/subtask"}`.
+2. **Coord enqueue (claimable work)** — create a subtask via task-io
+   `POST /api/task-io/subtask` (ISI-3601), which the coordinator dispatches to
+   whoever claims it. This is the row-write carrier; it does not target a
+   specific teammate.
 
 ## Scope derivation (who gets what)
 
@@ -33,10 +55,11 @@ ADR-0005 D2):
 
 ## Status codes
 
-`201` created · `200` archived · `400` bad body / missing name · `401` missing /
-bad / expired token · `403` token lacks the required scope · `404` no
-Project to archive **or** the run's namespace is unresolvable · `409` object
-already exists · `422` field validation / admission rejection.
+`201` created · `200` archived / assign carrier resolved · `400` bad body /
+missing name / missing toAgent · `401` missing / bad / expired token · `403`
+token lacks the required scope · `404` no Project to archive, no target Agent to
+assign, **or** the run's namespace is unresolvable · `409` object already
+exists · `422` field validation / admission rejection.
 
 ## Tenancy
 

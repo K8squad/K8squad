@@ -161,3 +161,30 @@ func TestArchiveProject(t *testing.T) {
 		t.Fatalf("archive missing: got %v, want ErrNotFound", err)
 	}
 }
+
+// Assign resolves an existing teammate Agent in the run's namespace and returns
+// the A2A carrier; an unknown target is ErrNotFound. It writes no board row
+// (coord has no assignee — I4/no-P2P).
+func TestAssignResolvesTargetOrNotFound(t *testing.T) {
+	teammate := &ksquadv1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: squadNS}}
+	s, prov := newStoreFixture(t, teammate)
+
+	res, err := s.Assign(context.Background(), runTok(), AssignInput{ToAgent: "coder", WorkItemID: "wi-1"})
+	if err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	if res.A2A.Verb != "SubmitTask" || res.A2A.TargetAgent != "coder" || res.A2A.AgentCardRef != squadNS+"/coder" {
+		t.Fatalf("A2A carrier not resolved: %+v", res.A2A)
+	}
+	if res.CoordEnqueue != "/api/task-io/subtask" {
+		t.Fatalf("coord enqueue carrier missing: %+v", res)
+	}
+	if len(*prov) != 1 || (*prov)[0]["operation"] != "assigned" {
+		t.Fatalf("assign provenance not recorded: %+v", *prov)
+	}
+
+	// Unknown teammate → ErrNotFound (existence-checked within the run's squad).
+	if _, err := s.Assign(context.Background(), runTok(), AssignInput{ToAgent: "ghost"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("assign unknown target: got %v, want ErrNotFound", err)
+	}
+}

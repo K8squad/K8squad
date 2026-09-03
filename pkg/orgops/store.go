@@ -242,6 +242,42 @@ func (s *CRDStore) ArchiveProject(ctx context.Context, tok taskio.RunToken, name
 	return Result{Kind: "Project", Name: name, Namespace: ns, Operation: "archived"}, nil
 }
 
+// Assign resolves the A2A carrier for handing a work item to a teammate agent.
+// Because the coord model has no assignee row by design (I4/no-P2P), this does
+// NOT write a board row: it authorizes the intent (the handler already checked
+// org:write), validates the target Agent exists in the calling run's own
+// namespace (so a manager can only hand off within their squad), records
+// provenance, and returns the A2A SubmitTask descriptor the runtime uses. A
+// missing target Agent is ErrNotFound.
+func (s *CRDStore) Assign(ctx context.Context, tok taskio.RunToken, req AssignInput) (AssignResult, error) {
+	if err := validName(req.ToAgent); err != nil {
+		return AssignResult{}, err
+	}
+	ns, err := s.runNamespace(ctx, tok)
+	if err != nil {
+		return AssignResult{}, err
+	}
+	var agent ksquadv1.Agent
+	if getErr := s.c.Get(ctx, client.ObjectKey{Namespace: ns, Name: req.ToAgent}, &agent); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			return AssignResult{}, ErrNotFound
+		}
+		return AssignResult{}, fmt.Errorf("orgops: resolve assignee %s: %w", req.ToAgent, getErr)
+	}
+	s.record(ctx, tok.Principal, "Assign", req.ToAgent, ns, "assigned")
+	return AssignResult{
+		WorkItemID: req.WorkItemID,
+		ToAgent:    req.ToAgent,
+		A2A: A2ACarrier{
+			Verb:         "SubmitTask",
+			TargetAgent:  agent.Name,
+			TargetSquad:  ns,
+			AgentCardRef: ns + "/" + agent.Name,
+		},
+		CoordEnqueue: "/api/task-io/subtask",
+	}, nil
+}
+
 // record appends a provenance row on a context DETACHED from the request (a
 // client disconnect right after the apply must not cancel the row that records
 // it), matching the console compose discipline.
