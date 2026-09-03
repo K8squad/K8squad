@@ -2,6 +2,7 @@
 
 import { ComposeForm, FieldErrors } from "@/lib/compose";
 import { Field } from "./fields";
+import { ModelSelector } from "./ModelSelector";
 
 interface AgentFormProps {
   cf: ComposeForm & { kind: "agents" };
@@ -46,25 +47,18 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
           aria-invalid={!!errors["roleRef.name"]}
         />
       </Field>
-      <Field label="Model" error={errors["model"]}>
-        <input
-          value={cf.form.model}
-          onChange={(e) => patch({ model: e.target.value })}
-          aria-invalid={!!errors["model"]}
-          placeholder="claude-opus-4-8"
-        />
-      </Field>
+      <ModelSelector
+        model={cf.form.model}
+        modelEndpointRef={cf.form.modelEndpointRef}
+        byoEnabled={cf.form.byoEnabled}
+        errors={errors}
+        patch={patch}
+      />
       <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
         <input
           value={cf.form.credentialSecretRef}
           onChange={(e) => patch({ credentialSecretRef: e.target.value })}
           aria-invalid={!!errors["credentialSecretRef.name"]}
-        />
-      </Field>
-      <Field label="Model endpoint Secret ref" hint="optional — name or name/key">
-        <input
-          value={cf.form.modelEndpointRef}
-          onChange={(e) => patch({ modelEndpointRef: e.target.value })}
         />
       </Field>
       <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">

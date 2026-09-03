@@ -51,4 +51,12 @@ describe("ComposeScreen deep-link seeding", () => {
     renderWith("kind=bogus");
     expect((screen.getByLabelText("Compose kind") as HTMLSelectElement).value).toBe("projects");
   });
+
+  // Regression guard (ISI-3670): the Agent form must mount the guided <ModelSelector> (ISI-3555),
+  // not a raw "Model" text input. PR #261 dropped it; the isolated ModelSelector suite stayed green
+  // because nothing asserted the picker actually renders inside the mounted AgentForm.
+  it("?kind=agents mounts the guided ModelSelector (ISI-3555), not a raw model field", () => {
+    renderWith("kind=agents");
+    expect(screen.getByRole("button", { name: /bring your own endpoint/i })).toBeInTheDocument();
+  });
 });
