@@ -34,6 +34,34 @@ func TestMintVerifyRoundTrip(t *testing.T) {
 	}
 }
 
+// ISI-3626: MintWithScopes stamps a role-derived scope that survives the
+// round-trip, and HasScope reports it. A plain Mint (task-io) carries none.
+func TestMintWithScopesRoundTrip(t *testing.T) {
+	m, _ := NewMinter(testKey(), time.Hour)
+
+	scoped, err := m.MintWithScopes("run-A", "wi-1", "ceo-agent", []string{"org:write", "project:write"})
+	if err != nil {
+		t.Fatalf("MintWithScopes: %v", err)
+	}
+	got, err := m.Verify(scoped)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !got.HasScope("org:write") || !got.HasScope("project:write") {
+		t.Fatalf("scopes lost in round-trip: %+v", got.Scopes)
+	}
+	if got.HasScope("nonsense") {
+		t.Fatal("HasScope true for a scope never minted")
+	}
+
+	// A plain Mint (the task-io lineage) carries no scope — an IC-equivalent token.
+	plain, _ := m.Mint("run-A", "wi-1", "ic-agent")
+	pg, _ := m.Verify(plain)
+	if pg.HasScope("org:write") || len(pg.Scopes) != 0 {
+		t.Fatalf("plain Mint leaked a scope: %+v", pg.Scopes)
+	}
+}
+
 func TestMintRequiresBinding(t *testing.T) {
 	m, _ := NewMinter(testKey(), time.Hour)
 	if _, err := m.Mint("", "wi-1", "a"); err == nil {

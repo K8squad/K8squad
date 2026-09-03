@@ -70,6 +70,25 @@ type RunToken struct {
 	RunID      string
 	WorkItemID string
 	Principal  string // author_principal for comments / claim holder attribution
+	// Scopes is the role-derived privilege grant (ISI-3626, ADR-0005 D2) the
+	// org/project coord API enforces — e.g. "org:write" / "project:write". It is
+	// empty for IC (leaf-role) runs and for the task-io surface, which never
+	// consults it (task-io self-limits to one work item). Derived from the run's
+	// Role at mint time, so per-Agent skillRefs cannot widen it.
+	Scopes []string
+}
+
+// HasScope reports whether the token carries scope s. The org/project coord API
+// calls this to gate a privileged verb; a token minted for an IC run (no scope)
+// or a task-io-only run always returns false, so the API denies server-side even
+// if the caller holds the (untrusted) skill body that describes the verb.
+func (t RunToken) HasScope(s string) bool {
+	for _, have := range t.Scopes {
+		if have == s {
+			return true
+		}
+	}
+	return false
 }
 
 // Minter mints and verifies run-scoped tokens over the shared HS256 machinery.
@@ -102,6 +121,16 @@ func (m *Minter) TTL() time.Duration { return m.iss.TTL() }
 // token always authorizes exactly one run's work item. principal may be empty
 // (attribution falls back to the run) but is normally the agent name.
 func (m *Minter) Mint(runID, workItemID, principal string) (string, error) {
+	return m.MintWithScopes(runID, workItemID, principal, nil)
+}
+
+// MintWithScopes is Mint with a role-derived privilege grant stamped into the
+// token (ISI-3626, ADR-0005 D2). scopes is derived from the run's Role — never
+// from Agent.spec.skillRefs — so the union loophole cannot widen it. An empty
+// scopes slice mints an IC-equivalent token (task-io works, org/project verbs
+// are denied). The scope is a property of the ONE token the Run carries
+// (KSQUAD_COORD_TOKEN), so a single mint site governs both surfaces.
+func (m *Minter) MintWithScopes(runID, workItemID, principal string, scopes []string) (string, error) {
 	if runID == "" || workItemID == "" {
 		return "", fmt.Errorf("taskio: mint requires runID and workItemID")
 	}
@@ -109,6 +138,7 @@ func (m *Minter) Mint(runID, workItemID, principal string) (string, error) {
 		Subject:    principal,
 		RunID:      runID,
 		WorkItemID: workItemID,
+		Scopes:     scopes,
 	})
 }
 
@@ -130,6 +160,7 @@ func (m *Minter) Verify(token string) (RunToken, error) {
 		RunID:      c.RunID,
 		WorkItemID: c.WorkItemID,
 		Principal:  c.Subject,
+		Scopes:     c.Scopes,
 	}, nil
 }
 

@@ -37,6 +37,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/orgops"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
@@ -374,7 +375,11 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	// fail-safe (an absent token makes the coord API refuse the call, never
 	// fail-open).
 	if d.cfg.TaskIOMinter != nil && d.cfg.TaskIOCoordURL != "" && run.Spec.WorkItemRef != "" {
-		token, err := d.cfg.TaskIOMinter.Mint(runID, run.Spec.WorkItemRef, d.agentName(ctx, runID))
+		// The ONE coord token also carries the ISI-3626 role-derived scope
+		// (org:write/project:write) the org-ops seam enforces; IC runs mint an
+		// empty scope so only the own-task task-io verbs work.
+		scopes := d.deriveRunScopes(ctx, run)
+		token, err := d.cfg.TaskIOMinter.MintWithScopes(runID, run.Spec.WorkItemRef, d.agentName(ctx, runID), scopes)
 		if err != nil {
 			return nil, fmt.Errorf("rundrive: mint task-io token for Run %s: %w", runID, err)
 		}
@@ -470,6 +475,59 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 		return "" // model resolution is best-effort on this seam; the shim defaults
 	}
 	return agent.Spec.Model
+}
+
+// deriveRunScopes computes the ISI-3626 role-derived privilege scopes stamped
+// into the Run's coord token (ADR-0005 D2): org:write for CEO + manager roles,
+// project:write for the CEO role, neither for IC roles. It resolves the dispatch
+// Agent's Role, lists every Role in that namespace to decide manager/CEO
+// structurally, and applies orgops.DeriveScopes — so the grant follows the Role
+// graph and NEVER Agent.spec.skillRefs (closing the skill-union loophole). It is
+// fail-closed to least privilege: any read failure, or a Role that is not among
+// the listed namespace's Roles, yields no scope, so a lookup glitch can never
+// widen a token.
+func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []string {
+	if len(run.Spec.Agents) == 0 {
+		return nil
+	}
+	ref := run.Spec.Agents[0]
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var agent api.Agent
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+		return nil
+	}
+	roleName := agent.Spec.RoleRef.Name
+	if roleName == "" {
+		return nil
+	}
+	roleNS := agent.Spec.RoleRef.Namespace
+	if roleNS == "" {
+		roleNS = ns
+	}
+	var roles api.RoleList
+	if err := d.cfg.Client.List(ctx, &roles, client.InNamespace(roleNS)); err != nil {
+		return nil
+	}
+	views := make([]orgops.RoleView, 0, len(roles.Items))
+	var target orgops.RoleView
+	found := false
+	for i := range roles.Items {
+		rv := orgops.RoleView{
+			Name:      roles.Items[i].Name,
+			ReportsTo: roles.Items[i].Labels[orgops.LabelReportsTo],
+		}
+		views = append(views, rv)
+		if roles.Items[i].Name == roleName {
+			target, found = rv, true
+		}
+	}
+	if !found {
+		return nil // cross-namespace roleRef we could not situate in the graph — fail closed.
+	}
+	return orgops.DeriveScopes(target, views)
 }
 
 // materializeMCPConfig copies the Run's projected MCP IR ConfigMap to a temp
