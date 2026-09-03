@@ -35,6 +35,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -68,6 +69,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
@@ -78,6 +80,21 @@ import (
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
 // binary-specific so the operator never contends with another ksquad manager.
 const leaderElectionID = "ksquad-operator.ksquad.io"
+
+// decodeSigningKey mirrors internal/apiserver.decodeKeyBytes: accept a raw or
+// base64-encoded HS256 key so the operator and the apiserver read the SAME
+// KSQUAD_JWT_SIGNING_KEY value identically (a shared Secret mints and verifies
+// the run-scoped task-io token). A too-short/invalid value is handed through
+// verbatim so taskio.NewMinter rejects it loudly (< 32 bytes).
+func decodeSigningKey(key string) []byte {
+	if raw, err := base64.RawStdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	if raw, err := base64.StdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	return []byte(key)
+}
 
 var scheme = runtime.NewScheme()
 
@@ -213,6 +230,22 @@ func main() {
 		// its ledger-only dispatcher — an honest, loudly-logged degraded
 		// state, never a silently broken dispatch.
 		mapper := toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
+
+		// Run-scoped task-io token (ISI-3601 S2): mint with the SAME shared
+		// HS256 key the apiserver verifies with (KSQUAD_JWT_SIGNING_KEY), so
+		// one configured Secret covers mint (operator) and verify (coord API).
+		// Absent key or coord URL ⇒ nil minter ⇒ no task-io env injected into
+		// the shim (fail-safe: the agent gets no token, never a fail-open one).
+		var taskIOMinter *taskio.Minter
+		taskIOCoordURL := os.Getenv("KSQUAD_COORD_URL")
+		if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" && taskIOCoordURL != "" {
+			if m, merr := taskio.NewMinter(decodeSigningKey(raw), 0); merr != nil {
+				ctrl.Log.Error(merr, "task-io token minter disabled: KSQUAD_JWT_SIGNING_KEY invalid (agents will get no run-scoped coord token)")
+			} else {
+				taskIOMinter = m
+			}
+		}
+
 		var a2aErr error
 		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
 			DB:     db,
@@ -227,6 +260,8 @@ func main() {
 			RuntimeType:       os.Getenv("KSQUAD_RUNTIME_TYPE"),
 			Stderr:            shimLogWriter{},
 			ContextAssemblers: ctxDeps,
+			TaskIOMinter:      taskIOMinter,
+			TaskIOCoordURL:    taskIOCoordURL,
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")

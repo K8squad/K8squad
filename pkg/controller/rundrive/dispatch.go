@@ -37,6 +37,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -99,6 +101,16 @@ type OperatorDispatchConfig struct {
 	// recompute-from-snapshot). Nil ships title+body only, the pre-S1
 	// behavior, so the field is opt-in and non-regressing.
 	ContextAssemblers ContextAssemblers
+	// TaskIOMinter, when set, mints the run-scoped task-io token (ISI-3601 S2)
+	// injected into the shim env as KSQUAD_COORD_TOKEN. Nil disables task-io
+	// env injection entirely — the agent simply gets no token (fail-safe: an
+	// absent token makes the coord API refuse the call, never fail-open).
+	TaskIOMinter *taskio.Minter
+	// TaskIOCoordURL is the in-cluster coord/apiserver base URL injected as
+	// KSQUAD_COORD_URL (§AC7: an in-cluster Service, not a public surface).
+	// Empty disables task-io injection — both the minter and the URL are
+	// needed together for the seam to be usable.
+	TaskIOCoordURL string
 }
 
 // ContextAssemblers builds a per-namespace §8.5 context assembler over the
@@ -352,6 +364,33 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 			env = append(env, envName+"="+v)
 		}
 	}
+	// Task-io seam (ISI-3601 S2, AC6): the run-scoped bootstrap vars mirror
+	// Paperclip's PAPERCLIP_API_URL / PAPERCLIP_API_KEY / PAPERCLIP_TASK_ID
+	// injection so an agent can re-read its task, comment, update status, and
+	// check out mid-run. The token is minted per task, bound to (RUN_ID,
+	// WORK_ITEM_ID) — own-run only. It joins THIS curated env, never os.Environ,
+	// so the minimal-env invariant holds (no DATABASE_URL / operator secret
+	// reaches the subprocess). Injection is skipped wholesale unless both a
+	// minter and a coord URL are configured, and the Run names a work item —
+	// fail-safe (an absent token makes the coord API refuse the call, never
+	// fail-open).
+	if d.cfg.TaskIOMinter != nil && d.cfg.TaskIOCoordURL != "" && run.Spec.WorkItemRef != "" {
+		// The ONE coord token also carries the ISI-3626 role-derived scope
+		// (org:write/project:write) the org-ops seam enforces; IC runs mint an
+		// empty scope so only the own-task task-io verbs work.
+		scopes := d.deriveRunScopes(ctx, run)
+		token, err := d.cfg.TaskIOMinter.MintWithScopes(runID, run.Spec.WorkItemRef, d.agentName(ctx, runID), scopes)
+		if err != nil {
+			return nil, fmt.Errorf("rundrive: mint task-io token for Run %s: %w", runID, err)
+		}
+		env = append(env,
+			taskio.EnvCoordURL+"="+d.cfg.TaskIOCoordURL,
+			taskio.EnvCoordToken+"="+token,
+			taskio.EnvWorkItemID+"="+run.Spec.WorkItemRef,
+			taskio.EnvRunID+"="+runID,
+		)
+	}
+
 	env = append(env, d.cfg.ExtraEnv...)
 
 	// #nosec G204 -- d.shimBin is the operator's own pod-spec env/config
@@ -436,6 +475,59 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 		return "" // model resolution is best-effort on this seam; the shim defaults
 	}
 	return agent.Spec.Model
+}
+
+// deriveRunScopes computes the ISI-3626 role-derived privilege scopes stamped
+// into the Run's coord token (ADR-0005 D2): org:write for CEO + manager roles,
+// project:write for the CEO role, neither for IC roles. It resolves the dispatch
+// Agent's Role, lists every Role in that namespace to decide manager/CEO
+// structurally, and applies orgops.DeriveScopes — so the grant follows the Role
+// graph and NEVER Agent.spec.skillRefs (closing the skill-union loophole). It is
+// fail-closed to least privilege: any read failure, or a Role that is not among
+// the listed namespace's Roles, yields no scope, so a lookup glitch can never
+// widen a token.
+func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []string {
+	if len(run.Spec.Agents) == 0 {
+		return nil
+	}
+	ref := run.Spec.Agents[0]
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var agent api.Agent
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+		return nil
+	}
+	roleName := agent.Spec.RoleRef.Name
+	if roleName == "" {
+		return nil
+	}
+	roleNS := agent.Spec.RoleRef.Namespace
+	if roleNS == "" {
+		roleNS = ns
+	}
+	var roles api.RoleList
+	if err := d.cfg.Client.List(ctx, &roles, client.InNamespace(roleNS)); err != nil {
+		return nil
+	}
+	views := make([]orgops.RoleView, 0, len(roles.Items))
+	var target orgops.RoleView
+	found := false
+	for i := range roles.Items {
+		rv := orgops.RoleView{
+			Name:      roles.Items[i].Name,
+			ReportsTo: roles.Items[i].Labels[orgops.LabelReportsTo],
+		}
+		views = append(views, rv)
+		if roles.Items[i].Name == roleName {
+			target, found = rv, true
+		}
+	}
+	if !found {
+		return nil // cross-namespace roleRef we could not situate in the graph — fail closed.
+	}
+	return orgops.DeriveScopes(target, views)
 }
 
 // materializeMCPConfig copies the Run's projected MCP IR ConfigMap to a temp

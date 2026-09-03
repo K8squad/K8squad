@@ -46,6 +46,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/search"
+	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/taskio"
 )
 
 func main() {
@@ -276,9 +278,14 @@ func main() {
 	// an honest contract, not a hard start failure. The SAME memberships store backs its
 	// write-tier gate, and the SAME coord.audit_log writer records its provenance rows.
 	var composeCRD *apiserver.ComposeService
+	// The direct (uncached) write client is shared by the console compose surface
+	// (8.5) and the run-scoped org-ops seam (ISI-3626) — one write path into the
+	// cluster, never two.
+	var crdApplier apiserver.CRDApplier
 	if applier, aerr := apiserver.NewCRDApplier(); aerr != nil {
 		log.Printf("ksquad-apiserver: CRD-apply write surface disabled (POST/PUT /api/{teams,projects,agents,roles,skills} → 501): %v", aerr)
 	} else {
+		crdApplier = applier
 		composeCRD = apiserver.NewComposeService(applier, memberships, coordAuditWriter(db))
 		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints)")
 	}
@@ -290,6 +297,48 @@ func main() {
 		log.Printf("ksquad-apiserver: audit log read model ready")
 	} else {
 		log.Printf("ksquad-apiserver: no database connection — audit log route will answer 501 until the database is available")
+	}
+
+	// ISI-3601 S2 run-scoped task-io seam: the coord-backed Store + the run-token
+	// verifier over the SAME HS256 signing key the operator mints with (so the
+	// operator can mint and the apiserver can verify with one configured secret).
+	// Absent a >=32-byte key the seam is disabled (nil handler): a token the
+	// operator minted could not be verified here anyway, so fail visible rather
+	// than mount an endpoint that rejects every real token.
+	var taskIOHandler http.Handler
+	// OrgOps (ISI-3626) shares the SAME run-token verifier as task-io — one
+	// KSQUAD_COORD_TOKEN drives both surfaces — so the minter is built once here
+	// and reused below.
+	var runTokenMinter *taskio.Minter
+	if key := apiserver.DecodeJWTKey(cfg.JWTSigningKey); len(key) >= 32 {
+		minter, merr := taskio.NewMinter(key, time.Duration(cfg.JWTTTLSeconds)*time.Second)
+		store, serr := taskio.NewCoordStore(db, workItemState)
+		switch {
+		case merr != nil:
+			log.Printf("ksquad-apiserver: task-io seam disabled (minter): %v", merr)
+		case serr != nil:
+			log.Printf("ksquad-apiserver: task-io seam disabled (store): %v", serr)
+		default:
+			runTokenMinter = minter
+			taskIOHandler = taskio.NewHandler(minter, store).Mux()
+			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/update-status/checkout)")
+		}
+	} else {
+		log.Printf("ksquad-apiserver: task-io seam disabled — no >=32B JWT signing key (set auth.signingKeySecretRef / KSQUAD_JWT_SIGNING_KEY)")
+	}
+
+	// ISI-3626 run-scoped board-ops seam (/api/org-ops). It needs BOTH the shared
+	// run-token verifier (above) and the direct write client (crdApplier); absent
+	// either it stays unmounted. Enforcement is server-side per verb: create-agent
+	// / create-skill require org:write, create-project / archive-project require
+	// project:write — scopes the operator derives from the run's Role at mint time.
+	var orgOpsHandler http.Handler
+	if runTokenMinter != nil && crdApplier != nil {
+		store := orgops.NewCRDStore(crdApplier, coordAuditWriter(db))
+		orgOpsHandler = orgops.NewHandler(runTokenMinter, store).Mux()
+		log.Printf("ksquad-apiserver: org-ops seam ready (/api/org-ops: create-agent/create-skill/create-project/archive-project; org:write/project:write scoped)")
+	} else {
+		log.Printf("ksquad-apiserver: org-ops seam disabled — needs both a >=32B JWT signing key and a CRD write client")
 	}
 
 	srv := apiserver.NewServer(apiserver.Options{
@@ -318,6 +367,8 @@ func main() {
 		// 503 with the reason (the panel renders a degraded state).
 		ToolUsage: apiserver.NewOperatorMetricsToolUsage(os.Getenv("KSQUAD_OPERATOR_METRICS_URL")),
 		Hub:       hub,
+		TaskIO:    taskIOHandler,
+		OrgOps:    orgOpsHandler,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,
