@@ -1,8 +1,15 @@
 # ADR-0007 — Pod-side-supervisor topology + Bind→pod task-io credential delivery
 
-- **Status:** Accepted — *implementation delegated*
+- **Status:** Accepted — *implementation delegated* — **rev.2**
 - **Date:** 2026-09-03
 - **Author:** Winston (System Architect)
+- **Revisions:** rev.2 (2026-09-03) — folds in the ISI-3614/DevOps review: the Bind-path
+  mint runs in the **operator/rundrive reconcile layer** (which has `*api.Run` +
+  `client.Client` → `deriveRunScopes`/`agentName`), **not** inside the run-id-only
+  `coord.ProdEffects` port. Minting in the coord port would silently drop the ISI-3626 role
+  scopes (`org:write`/`project:write`) and use the wrong principal on topology 2 — a
+  capability regression vs. topology 1. Channel decision (A) unchanged; only the mint's code
+  location is pinned. See Decision D2 and the seam-contract table.
 - **Issue:** ISI-3635 (unblocks ISI-3614; base seam ISI-3601 / PR #237, merged `286b840`)
 - **Coordinates with:** `pkg/controller/rundrive/dispatch.go` (operator-spawned topology 1),
   `pkg/warmpool` (Boot/Bind), `pkg/coord` (`ProdEffects.BindSandbox`), `pkg/taskio`
@@ -104,10 +111,12 @@ This is candidate **(A)** from the design note — chosen over the note's favore
 decisive criterion is the one the ticket names: *which channel lets ISI-3614 deliver working
 task-io credentials to topology-2 pods with the least new, unbuilt machinery?*
 
-- **(A)** needs only: mount an *optional* Secret at Boot + mint-and-write the Secret at Bind.
-  Both are small and mechanical, and depend only on already-merged `taskio.Minter` +
-  the `(run_id, work_item_id, sandbox_ref)` that `BindSandbox` already has. **A can ship before
-  the D1 bridge exists.**
+- **(A)** needs only: mount an *optional* Secret at Boot + a rundrive-layer effect that
+  mints-and-writes the Secret once Bind surfaces `sandbox_ref`. Both are small and mechanical,
+  and depend only on already-merged `taskio.Minter` + the `*api.Run` the operator already holds
+  (for `deriveRunScopes`/`agentName`) + the `sandbox_ref` from `Pool.Bind`/`BindSandbox`. **A can
+  ship before the D1 bridge exists.** (rev.2: the mint runs in the operator/rundrive layer, not
+  the run-id-only `coord.ProdEffects` port — see the seam-contract table.)
 - **(C)** folds the token into the Task envelope — but the envelope bridge (D1) is the hardest,
   least-built part. Coupling the credential to it means the credential cannot ship until the
   whole bridge ships, and inherits the bridge's reliability/auth risk. A bearer token in a POST
@@ -128,18 +137,34 @@ different reliability, lifecycle, and secret-handling needs.
 
 | Role | Who | What |
 |---|---|---|
-| **Mint** | operator, at Bind | `taskio.Minter.MintWithScopes(runID, workItemID, principal, scopes)` — the **same** minter, issuer, claims, and scopes `dispatch.shimCommand` uses. Inputs come from `coord.sandbox_bind` (`run_id`, `work_item_id`, `bound_by` = principal), known once `Pool.Bind` returns. |
-| **Trace** | operator, at Bind | `telemetry.Inject(ctx, carrier)` on the **Bind** context (the run.reconcile span is live at Bind, unlike warm Boot) → real run `TRACEPARENT`/`TRACESTATE`. |
-| **Write/serve** | operator, at Bind | create-or-update Secret `name=<sandbox_ref>`, namespace = sandbox namespace, keys: `KSQUAD_COORD_URL`, `KSQUAD_COORD_TOKEN`, `WORK_ITEM_ID`, `RUN_ID`, `TRACEPARENT`, `TRACESTATE`. `OwnerReference` → the sandbox pod (auto-GC on teardown; `TearDown` already deletes the pod). Idempotent: Bind is idempotent on `runID`, so a reattach rewrites byte-identical content. |
-| **Read** | in-pod supervisor | read token + siblings from the mounted **path** (`/var/run/ksquad/coord/`), *waiting/watching* for the token file to appear (it is written at Bind, after Boot); then `Extract` the traceparent and initialize the task-io client against `KSQUAD_COORD_URL`. |
+| **Mint** | **operator / rundrive reconcile layer, after Bind** (NOT `coord.ProdEffects`) | `taskio.Minter.MintWithScopes(runID, workItemID, principal, scopes)` — the **same** minter, issuer, claims, and scopes `dispatch.shimCommand` uses. **`scopes` = `deriveRunScopes(ctx, run)` and `principal` = `agentName(...)` (`run.Spec.Agents[0].Name`)** — both derived from `*api.Run` via the operator's `client.Client` (Agent CRD → `RoleRef` → `RoleList`). `runID`/`workItemID` from the `*api.Run` (same as `shimCommand`). **Not** from `coord.sandbox_bind`: that port is run-id-only and its `bound_by` ≠ the `Agents[0].Name` principal — minting there would fail-closed to empty scopes and silently drop `org:write`/`project:write` on topology 2 (see rev.2). |
+| **Trace** | operator / rundrive, after Bind | `telemetry.Inject(ctx, carrier)` on the **Bind/reconcile** context (the run.reconcile span is live, unlike warm Boot) → real run `TRACEPARENT`/`TRACESTATE`. |
+| **Write/serve** | operator / rundrive, after Bind returns `sandbox_ref` | an **operator-layer effect** (rundrive, which holds `client.Client`) that fires once `Pool.Bind`/`BindSandbox` has surfaced `sandbox_ref`: create-or-update Secret `name=<sandbox_ref>`, namespace = sandbox namespace, keys: `KSQUAD_COORD_URL`, `KSQUAD_COORD_TOKEN`, `WORK_ITEM_ID`, `RUN_ID`, `TRACEPARENT`, `TRACESTATE`. `OwnerReference` → the sandbox pod (auto-GC on teardown; `TearDown` already deletes the pod). Idempotent: Bind is idempotent on `runID`, so a reattach rewrites byte-identical content. The `coord.ProdEffects` port stays run-id-only — it is **not** extended with CRD/Role access. |
+| **Read** | in-pod supervisor | read token + siblings from the mounted **path** (`/var/run/ksquad/coord/`), *waiting/watching* for the token file to appear (it is written after Bind, after Boot); then `Extract` the traceparent and initialize the task-io client against `KSQUAD_COORD_URL`. |
 | **RBAC** | operator SA | `create`/`update`/`get` on `secrets` **scoped to the sandbox namespace** (not cluster-wide). A pod can mount only the Secret named in its own (operator-authored) spec — kubelet enforces; no cross-sandbox read. Secret honors cluster encryption-at-rest. |
 | **Minimal-env invariant** | preserved & strengthened | container env at Boot still carries **no operator secret** (no `DATABASE_URL`, no `os.Environ`). The coord token arrives via a dedicated Secret volume containing **only** the run-scoped token + trace carrier + IDs — nothing else. The topology-1 minimal-env test property is mirrored for topology 2. |
 
+**Where the mint runs (rev.2, load-bearing).** The token's *content* — not just its carrier —
+requires operator-only inputs: `deriveRunScopes(ctx, run *api.Run)` (dispatch.go) walks
+`Agents[0]` → Agent CRD → `RoleRef` → `RoleList` via `client.Client` to derive the ISI-3626
+role scopes and **fails closed to `nil`** when it can't situate the graph; `agentName` reads
+`run.Spec.Agents[0].Name` for the principal claim. `coord.ProdEffects.BindSandbox` /
+`SandboxBinder` is deliberately run-id-only (no `*api.Run`, no CRD access), and its `bound_by`
+is not the `Agents[0].Name` principal. So the mint (and the Secret write) **must** live in the
+rundrive/operator reconcile layer alongside `shimCommand`, keyed on the `sandbox_ref` the Bind
+returns — never inside the coord port. Doing otherwise is a silent capability regression:
+warmpool-dispatched agents would lose `org:write`/`project:write` while shim-dispatched agents
+keep them.
+
 **Shared helper (no divergence):** extract the env/claim construction currently inline in
-`dispatch.shimCommand` into a `taskio` helper (e.g. `taskio.RunCredential{URL,Token,WorkItemID,
-RunID,Traceparent,Tracestate}` + a builder that mints and injects). `shimCommand` renders it to
-**env**; the Bind path renders the *same struct* to **Secret keys**. Both topologies stay
-byte-for-byte identical in what the credential contains — the only difference is env vs. file.
+`dispatch.shimCommand` into a carrier-agnostic `taskio` builder (e.g.
+`taskio.RunCredential{URL,Token,WorkItemID,RunID,Traceparent,Tracestate}` built from
+`(*api.Run, sandbox/coord URL)` via `deriveRunScopes` + `agentName` + `MintWithScopes` +
+`telemetry.Inject`). It lives in **rundrive**, alongside `shimCommand`, so **both** paths call
+the *same* builder: `shimCommand` renders the struct to **env**; the Bind-path effect renders
+the *same struct* to **Secret keys**. Byte-for-byte identical credential content; the only
+difference is env vs. file. (ISI-3614 may land this extraction as carrier-agnostic prep before
+PR #246 merges — it is non-blocking and touches only topology 1's internals.)
 
 ## Sandbox-contract change (name it so ISI-3614 wires it mechanically)
 
@@ -152,8 +177,11 @@ The **one** downstream behavioral change: the sandbox image/supervisor moves fro
    `optional: true` (Boot must not block on a Secret that does not exist until Bind). Container
    env is otherwise unchanged; the Boot-time `TRACEPARENT` stays for the pool/warm-boot trace,
    but the **run-scoped** traceparent is the one delivered in the Secret at Bind.
-2. **Bind** (operator Bind path, alongside/after `coord.ProdEffects.BindSandbox`): mint + write
-   the Secret `<sandbox_ref>` per the seam contract above, using the shared `taskio` helper.
+2. **Bind** (**operator/rundrive reconcile layer**, after `Pool.Bind`/`BindSandbox` surfaces
+   `sandbox_ref` — *not* inside the run-id-only `coord.ProdEffects` port): mint (scopes via
+   `deriveRunScopes`, principal via `agentName`, both off `*api.Run`) + write the Secret
+   `<sandbox_ref>` per the seam contract above, using the shared `taskio.RunCredential` builder.
+   The operator reads `sandbox_ref` from the Bind return (or `coord.sandbox_bind`).
 3. **Supervisor/image:** read the credential from the mounted path (block/watch until present),
    `Extract` the traceparent, start the task-io client. This is the contract line the sandbox
    image owner must land with ISI-3614.
@@ -195,8 +223,11 @@ reuse `taskio.Minter` + `telemetry.Inject`, mint at Bind against the now-known
 ## Verification (smallest proof for the wiring, ISI-3614)
 
 - **Unit:** shared `taskio` helper renders the same `RunCredential` to env (topology 1) and to
-  Secret keys (topology 2) — assert byte-identical values for a fixed `(runID, workItemID,
-  principal, ctx)`.
+  Secret keys (topology 2) — assert byte-identical values for a fixed `(*api.Run, ctx)`.
+- **Scope-parity (rev.2 regression guard):** for the same `*api.Run`, the token minted on the
+  Bind/warmpool path carries the **identical** `scopes` (`deriveRunScopes`) and `principal`
+  (`agentName`) as the token `shimCommand` mints — proving warmpool agents don't silently lose
+  `org:write`/`project:write`. Assert the mint is driven from `*api.Run`, not `coord.sandbox_bind`.
 - **Unit:** Bind path writes Secret `<sandbox_ref>` with the 6 keys, an OwnerReference to the
   pod, and is idempotent across a second (reattach) Bind — assert no second/divergent write.
 - **Invariant test (mirror topology 1):** the sandbox pod spec carries **no** operator secret in
