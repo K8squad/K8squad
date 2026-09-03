@@ -231,6 +231,7 @@ var allowedSurface = map[string]string{
 	"ProdEffects.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
 	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
 	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
+	"RunCredentialWriter":     "ADR-0007 topology-2 Bind-path task-io credential delivery port (custody/execution, run-id + sandbox_ref only, no content)",
 
 	// §8.7c build-snapshot capture at Collecting (Story 8.7c / ISI-2903). At Collecting
 	// ProdEffects additionally upserts a content-addressed kind='build-snapshot' artifact
@@ -238,10 +239,11 @@ var allowedSurface = map[string]string{
 	// snapshotter reads the Run's OWN worktree git-natively (read-only) and returns a
 	// content hash + summary meta — no worker-authored content, nothing re-enters
 	// coordination (no-P2P). A capture failure is a legible audit row, never a channel.
-	"BuildSnapshot":               "§8.7c content-addressed build-snapshot (uri/sha256 + summary meta)",
-	"BuildSnapshotter":            "§8.7c read-only worktree capture seam (custody/execution, no content)",
-	"NewBuildbrowserSnapshotter":  "§8.7c constructor binding the git read-model to one Run's worktree",
-	"ProdEffects.WithSnapshotter": "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
+	"BuildSnapshot":                       "§8.7c content-addressed build-snapshot (uri/sha256 + summary meta)",
+	"BuildSnapshotter":                    "§8.7c read-only worktree capture seam (custody/execution, no content)",
+	"NewBuildbrowserSnapshotter":          "§8.7c constructor binding the git read-model to one Run's worktree",
+	"ProdEffects.WithSnapshotter":         "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
+	"ProdEffects.WithRunCredentialWriter": "ADR-0007 opt-in the Bind-path task-io Secret delivery (custody-only)",
 
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause

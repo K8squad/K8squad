@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -129,6 +130,19 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 					// live Run) stamps nothing — the next span roots a fresh
 					// trace, honestly.
 					Env: sandboxEnv(ctx, toolusage.Enabled()),
+					// Topology 2 (ADR-0007 channel A): mount the per-sandbox
+					// task-io Secret at the coord path. The mount is OPTIONAL
+					// (see the Volume below) because the Secret does not exist
+					// at Boot — it is written by the operator at Bind, once
+					// RUN_ID/WORK_ITEM_ID exist to mint against. The supervisor
+					// reads the run-scoped credential from files here (env→path
+					// contract); no operator secret rides the container env, so
+					// the minimal-env invariant holds.
+					VolumeMounts: []corev1.VolumeMount{{
+						Name:      taskio.CoordVolumeName,
+						MountPath: taskio.CoordMountPath,
+						ReadOnly:  true,
+					}},
 					Resources: corev1.ResourceRequirements{
 						// Requests match limits for guaranteed QoS.
 						Limits:   limits,
@@ -164,6 +178,21 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 					},
 				},
 			},
+			// The projected Secret for the mount above. Optional so Boot never
+			// blocks on a Secret that only exists after Bind (and a warm pod
+			// that is never bound simply has no file — fail-safe: an absent
+			// token makes the coord API refuse the call, never fail-open). The
+			// Secret is named after the pod (== sandbox_ref) so the Bind-path
+			// writer can address it from the run-id-only bind frame.
+			Volumes: []corev1.Volume{{
+				Name: taskio.CoordVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: sandboxID,
+						Optional:   ptrTo(true),
+					},
+				},
+			}},
 		},
 	}
 

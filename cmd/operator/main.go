@@ -267,11 +267,20 @@ func main() {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
 		}
 
+		// Topology 2 (ADR-0007 channel A): the warm-pool Bind path delivers the
+		// run-scoped task-io credential via a per-sandbox Secret (the shim env
+		// carrier is topology 1). Same minter + coord URL as the shim, so both
+		// topologies mint identically; nil (no minter/URL) leaves credential-off.
+		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
+			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher)
+		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
+			runner = runner.WithCredentialWriter(credWriter)
+		}
+
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
 			rundrive.NewProdPauses(resumeStore),
-			rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-				kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher))
+			runner)
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
