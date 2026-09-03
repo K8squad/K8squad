@@ -9,6 +9,15 @@
 # working agent can always re-read/comment on/status its own task, ISI-3602);
 # coder/devops/code-reviewer add `github`; observability-engineer adds
 # `dynatrace`; graphical-designer adds `graphical`.
+#
+# Board-ops (ADR-0005 D2): the CEO + manager roles (ceo, product-manager,
+# architect, ux-designer — the roles that are a `ksquad.io/reports-to` target)
+# add `org-ops`; `project-ops` is CEO-only. IC/leaf roles get neither.
+# Attaching a board-ops Skill is advisory advertisement ONLY — the real
+# authority is the run-scoped token, whose `org:write`/`project:write` scope the
+# coord derives from this reports-to graph (pkg/orgops DeriveScopes, ISI-3626),
+# not from attachment. A leaf role that somehow carried the Skill would still be
+# denied server-side.
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -23,6 +32,8 @@ spec:
   defaultSkills:
     - name: bmad
     - name: task-io
+    - name: org-ops
+    - name: project-ops
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -38,6 +49,7 @@ spec:
   defaultSkills:
     - name: bmad
     - name: task-io
+    - name: org-ops
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -53,6 +65,7 @@ spec:
   defaultSkills:
     - name: bmad
     - name: task-io
+    - name: org-ops
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
@@ -68,6 +81,7 @@ spec:
   defaultSkills:
     - name: bmad
     - name: task-io
+    - name: org-ops
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role

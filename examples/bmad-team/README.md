@@ -2,7 +2,7 @@
 
 A self-contained, `kubectl apply`-able squad that models the **BMAD method**
 (Breakthrough Method of Agile AI-Driven Development): 13 roles in a reporting
-hierarchy, wired with 5 default Skills. Use it to onboard onto K8squad on a real
+hierarchy, wired with 7 default Skills. Use it to onboard onto K8squad on a real
 cluster and as a template for your own squad.
 
 Everything lives in one namespace (`bmad-squad`) and every cross-reference
@@ -64,7 +64,7 @@ Tear down with `kubectl delete namespace bmad-squad`.
 | 01 | `01-credentials.yaml` | model-credential `Secret` (+ optional MCP token `Secret`s for 02b) (`REPLACE_ME`) |
 | 02 | `02-runtimes.yaml` | `AgentRuntime` (`claude-code`) |
 | 02b | `02b-mcpservers.yaml` | **optional** — an `MCPServer` reference example (not used by the default skills) |
-| 03 | `03-skills.yaml` | the 5 default `Skill`s |
+| 03 | `03-skills.yaml` | the 7 default `Skill`s |
 | 04 | `04-prompts.yaml` | 13 prompt `ConfigMap`s (behavior + hierarchy) |
 | 05 | `05-roles.yaml` | 13 `Role`s (promptRef + defaultSkills + labels) |
 | 06 | `06-agents.yaml` | 13 `Agent`s (model + role + runtime + credential) |
@@ -132,17 +132,19 @@ CEO (sam)
     └── Graphical Designer (gabi)
 ```
 
-## The 5 default Skills
+## The 7 default Skills
 
-A `Skill` is the CRD-authorized capability envelope. `bmad` and `task-io` ship
-**inline** (self-contained); the tool skills are **git-sourced and pinned to a
-commit SHA** (`repoRef`/`ref` are placeholders — repoint them at your own skill
-repo).
+A `Skill` is the CRD-authorized capability envelope. `bmad`, `task-io`,
+`org-ops` and `project-ops` ship **inline** (self-contained); the tool skills
+are **git-sourced and pinned to a commit SHA** (`repoRef`/`ref` are placeholders
+— repoint them at your own skill repo).
 
 | Skill | Source | Granted to | Purpose |
 |-------|--------|-----------|---------|
 | `bmad` | inline | **all 13 roles** | the BMAD workflow/methodology |
 | `task-io` | inline | **all 13 roles** | read/comment/status/checkout on your *own* task (ISI-3602) |
+| `org-ops` | inline | ceo, product-manager, architect, ux-designer | create agents & skills, delegate work (ADR-0005) |
+| `project-ops` | inline | ceo | create & archive projects (ADR-0005) |
 | `github` | git | coder, devops-engineer, code-reviewer | SCM & PR workflows |
 | `dynatrace` | git | observability-engineer | telemetry queries (dtctl + Dynatrace MCP) |
 | `graphical` | git | graphical-designer | SVG rendering + asset toolchain |
@@ -153,6 +155,39 @@ read/write API, delivered by S2/ISI-3601). It grants *agency over your own task*
 never a general issue-browser and never context assembly — task context is PUSHED
 into the prompt at boot (S1/ISI-3590). It ships inline until S2 finalizes the
 coord API wire shapes, then converts to a SHA-pinned catalog entry.
+
+### Board-ops (`org-ops` / `project-ops`) — the security boundary is the token, not attachment
+
+`org-ops` and `project-ops` are **privileged** board-ops skills (ADR-0005): they
+let CEO/manager roles grow the squad by driving the run-scoped org-ops seam
+(`/api/org-ops/{create-agent,create-skill,create-project,archive-project}`,
+ISI-3626). They ship **inline with executable tool definitions** — concrete
+HTTP method/path/schema an agent can call, carrying the injected
+`KSQUAD_COORD_TOKEN`, plus an A2A descriptor for delegating work to a teammate.
+
+The critical rule (**ADR-0005 D2**): **attaching one of these skills grants no
+authority.** The real gate is the run-scoped token, whose `org:write` /
+`project:write` scope the coord derives from the role's position in the
+`ksquad.io/reports-to` graph (`pkg/orgops` `DeriveScopes`): a **manager** (a
+reports-to target) gets `org:write`; the **CEO** (a manager reporting to no one)
+also gets `project:write`; an **IC/leaf** role gets neither and every board-ops
+call is rejected server-side. Attachment in `05-roles.yaml` is restricted to
+match the graph purely as advertisement — a leaf role that somehow carried the
+skill would still be denied. Scopes are coarse (`org:write` covers create-agent
+*and* create-skill; there are no finer `agent:create`/`skill:create` scopes), and
+no permission is ever self-widened by the skill body (trust boundary D8).
+
+### Context is PUSHED at boot — do not add a read-project/read-issue skill
+
+Every agent on this squad receives its task context (title, description,
+acceptance criteria, comments, goal) **pushed into its prompt at Run start** by
+`contextasm` (S1/ISI-3600) — the K8squad model is PUSH, unlike Paperclip's PULL.
+When templating your own squad, do **not** add a redundant `read-project` /
+`read-issue` skill to fetch context at boot; it was explicitly rejected in the
+ISI-3588 study (§4/§6). `task-io` covers the only legitimate post-boot need
+(re-reading *your own* changed work item on demand), and `org-ops`/`project-ops`
+cover growing the org — governed by the role-scoped token (D2), not by
+attachment.
 
 Skills attach to roles via `Role.spec.defaultSkills[]`; every Agent inherits its
 role's defaults as a **union** (`Agent.spec.skillRefs ∪ Role.spec.defaultSkills`,
