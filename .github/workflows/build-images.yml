@@ -168,9 +168,11 @@ jobs:
       # container-image lane here (see the header) — it is now. One row per runtime from the
       # component-matrix `shims` family; every row builds the SAME Dockerfile.shim with a
       # RUNTIME build-arg selecting the CLI layer, and publishes ghcr.io/k8squad/ksquad-shim-
-      # <runtime>. Today only codex bakes a real CLI (static-musl codex@rust-v0.152.0 + the
-      # ksquad-codex-exec wrapper); the others ship the shim main with a no-op CLI layer until
-      # their own packaging stories land. Change-gated on plain main pushes (mirrors the
+      # <runtime>. Real CLI layers today: codex (static-musl codex@rust-v0.152.0 + the
+      # ksquad-codex-exec wrapper, ISI-3653), opencode (sst/opencode@v1.18.27) and claude
+      # (Claude Code@2.1.236, sha256-verified) per ISI-3667; openclaw/hermes intentionally
+      # ship the shim main only (no upstream CLI artifact — see Dockerfile.shim). Change-gated
+      # on plain main pushes (mirrors the
       # toolchain lane) so 5 multi-arch legs don't starve the 2-runner fleet on unrelated pushes.
       - name: Plan the shim image matrix (ISI-3653)
         id: shims

@@ -29,8 +29,13 @@ import (
 // sandbox rather than the shim, so it advertises packageInstall=false honestly.
 type openCode struct{}
 
-func (openCode) Type() string                     { return apiv1alpha1.RuntimeTypeOpenCode }
-func (openCode) CLIVersion() string               { return "v0.4.0" }
+func (openCode) Type() string { return apiv1alpha1.RuntimeTypeOpenCode }
+
+// CLIVersion pins the sst/opencode release baked into ksquad-shim-opencode
+// (Dockerfile.shim cli-opencode, OPENCODE_VERSION — keep the two in lockstep,
+// ADR-017). Bumped v0.4.0 → v1.18.27 by ISI-3667: v0.4.0 predates upstream's
+// musl release assets the distroless/static shim image requires.
+func (openCode) CLIVersion() string               { return "v1.18.27" }
 func (openCode) CredentialShape() CredentialShape { return ShapeAPIKey }
 
 func (openCode) Capabilities() a2a.Capabilities {
