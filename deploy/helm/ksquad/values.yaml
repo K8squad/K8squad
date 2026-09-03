@@ -438,3 +438,85 @@ events:
     subjectPrefix: ksquad
     # NATS client URL. Empty → derived from the release-local bus (nats.enabled).
     natsUrl: ""
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Observability — the OTel Collector gateway + redaction/SLO pipeline
+#   (Story 13.7 / ISI-3723, obs-plan §6 §9 §10). On-by-default, endpoint-gated
+#   per obs-plan §1.5: the collector always runs and enforces the redaction and
+#   tail-sampling pipeline, but ships to a vendor only when export.otlp.endpoint
+#   is set. Squad/agent shim OTLP is pushed to the gateway Service; the gateway is
+#   the ONLY hop that talks to the vendor backend (sandboxes never do — §10).
+# ═════════════════════════════════════════════════════════════════════════════
+observability:
+  # deployment.environment resource attribute stamped on every signal (§10).
+  environment: production
+
+  collector:
+    # The gateway collector is ON by default (one helm install → full pipeline).
+    # Disabling it removes the redaction/SLO backstop — do so only when an
+    # external collector already fronts the vendor.
+    enabled: true
+    image:
+      # OTel Contrib distro (has k8sattributes, redaction, transform, tail_sampling).
+      # If the vendor exporter/processor isn't in Contrib, an OCB custom build is
+      # the path (obs-plan §10 "custom collector — deferred, flagged").
+      repository: otel/opentelemetry-collector-contrib
+      tag: "0.116.0"
+      pullPolicy: IfNotPresent
+    # Emit the debug exporter at detailed verbosity (dev only). With no vendor
+    # endpoint the collector falls back to the debug exporter at basic verbosity
+    # regardless, so every pipeline always has a sink.
+    debugExporter: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    networkPolicy:
+      # Collector-side allowlist: OTLP ingress from squad namespaces + governed
+      # vendor egress. The squad-SIDE carve-out (each Project's default-deny
+      # egress opening a hole TO this Service) is stamped by the operator.
+      enabled: true
+      # Namespaces bearing this label may push OTLP to the gateway. Set on squad
+      # tenant namespaces by the Team/tenancy reconciler (§11.1 arch).
+      squadNamespaceLabel:
+        key: ksquad.io/tenancy
+        value: squad
+      vendorEgress:
+        # Allow the governed hop to the external vendor backend.
+        enabled: true
+        # Vendor OTLP port (443 for hosted Dynatrace/most SaaS OTLP endpoints).
+        port: 443
+        # In-cluster ranges the vendor egress rule must NOT cover (pods/services).
+        # Tune to your CNI's pod/service CIDRs so this rule only reaches OUTSIDE.
+        exceptCIDRs:
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+
+  traces:
+    # Base-rate head/tail sampling for healthy traces (%). Failed/paused/error
+    # traces are always kept at 100% by tail_sampling regardless of this (§4.2).
+    samplingPercentage: 10
+
+  export:
+    # Vendor OTLP routing for the gateway's egress. Empty endpoint = no vendor:
+    # the collector still enforces redaction/sampling and prints to the debug
+    # sink. Set endpoint (+ auth) to ship to Dynatrace/Prometheus/etc.
+    otlp:
+      endpoint: "" # e.g. https://abc123.live.dynatrace.com/api/v2/otlp
+      insecure: false
+      auth:
+        # Secret holding the Authorization header value (e.g. "Api-Token dt0c01...").
+        # Injected as env KSQUAD_OTLP_AUTH; never rendered into the ConfigMap.
+        secretName: ""
+        secretKey: token
+
+  sloRules:
+    # Render the §9 SLO PrometheusRule. OFF by default: needs the Prometheus
+    # Operator CRD (monitoring.coreos.com/v1), which is not a chart dependency.
+    enabled: false
+    # Extra labels for the PrometheusRule (e.g. release: kube-prometheus-stack
+    # so the Prometheus Operator's ruleSelector picks it up).
+    labels: {}

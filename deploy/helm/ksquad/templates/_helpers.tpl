@@ -51,6 +51,16 @@ Component service names.
 {{- end -}}
 
 {{/*
+OTel Collector gateway names (Story 13.7, obs-plan §10). The in-cluster gateway
+is the only telemetry egress hop: squad/agent OTLP is pushed here, and this
+Deployment (system namespace, governed egress) is what talks to the vendor
+backend — sandboxes never do (obs-plan §10 egress interaction).
+*/}}
+{{- define "ksquad.otel-collector.fullname" -}}
+{{- printf "%s-otel-collector" (include "ksquad.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
 NATS/JetStream event-bus names + resolution (ISI-2253, §16/§17.4).
 */}}
 {{- define "ksquad.nats.fullname" -}}

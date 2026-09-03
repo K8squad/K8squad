@@ -1,0 +1,164 @@
+{{- /*
+  SLO / alerting rules — Story 13.7, obs-plan §9. One PrometheusRule encoding the
+  plan's SLO table. Each alert is actionable and maps to an operator runbook; the
+  two `page`-grade correctness SLOs (warm-claim latency, crash-reclaim health) are
+  the differentiators the architecture stakes itself on. Alert fatigue is a
+  cardinality problem in disguise — the page set stays small and correctness-first.
+
+  Requires the Prometheus Operator CRD (monitoring.coreos.com/v1). OFF by default
+  because that CRD is not a chart dependency; enable on clusters running it.
+  Metric names follow the ksquad_* Prometheus form of the semconv registry (§7);
+  they track story 13.9/Epic-D instrumentation and the §5.6 cardinality allowlist.
+*/ -}}
+{{- if and .Values.observability.collector.enabled .Values.observability.sloRules.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "ksquad.otel-collector.fullname" . }}-slo
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+    {{- with .Values.observability.sloRules.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: ksquad.slo.correctness
+      rules:
+        # Warm-claim latency — page (NFR-PERF1 / §14 AD-3).
+        - alert: KSquadWarmClaimLatencyHigh
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(ksquad_sandbox_claim_duration_seconds_bucket{pool_hit="warm"}[5m]))
+            ) > 5
+          for: 10m
+          labels:
+            severity: page
+            slo: warm-claim-latency
+          annotations:
+            summary: "Warm-claim p95 latency > 5s for 10m"
+            description: "sandbox.claim.duration{pool_hit=warm} p95 exceeds the 5s SLO (NFR-PERF1)."
+        - alert: KSquadColdClaimRateHigh
+          expr: |
+            sum(rate(ksquad_sandbox_claim_total{pool_hit="cold"}[10m]))
+              / clamp_min(sum(rate(ksquad_sandbox_claim_total[10m])), 1) > 0.05
+          for: 10m
+          labels:
+            severity: page
+            slo: warm-claim-latency
+          annotations:
+            summary: "Cold-claim rate > 5%"
+            description: "Warm pool is missing too often — claims fall through to cold start."
+        # Pool readiness — page (§5.4 policy).
+        - alert: KSquadWarmPoolEmptyUnderPressure
+          expr: |
+            min(ksquad_warmpool_ready) == 0
+              and on() sum(rate(ksquad_sandbox_claim_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: page
+            slo: pool-readiness
+          annotations:
+            summary: "Warm pool ready=0 with active claim pressure"
+            description: "No warm sandboxes available while claims are arriving."
+        # Crash-reclaim health — page (correctness; the coordination spine).
+        - alert: KSquadLeaseReclaimThrash
+          expr: |
+            sum(rate(ksquad_coord_lease_reclaim_total[10m]))
+              > 3 * avg_over_time(sum(rate(ksquad_coord_lease_reclaim_total[10m]))[1h:10m])
+          for: 15m
+          labels:
+            severity: page
+            slo: crash-reclaim-health
+          annotations:
+            summary: "Lease-reclaim rate 3x baseline (thrash)"
+            description: "Reclaim is correct recovery but bounded; a sustained 3x spike signals crash-loop or fencing trouble."
+        - alert: KSquadStaleHolderRenewals
+          expr: sum(rate(ksquad_coord_lease_stale_holder_total[10m])) > 0
+          for: 10m
+          labels:
+            severity: page
+            slo: crash-reclaim-health
+          annotations:
+            summary: "Stale-holder lease renewals sustained > 0"
+            description: "A fenced/zombie holder is still renewing — fencing epoch (§6.2) is not cutting it off."
+    - name: ksquad.slo.reliability
+      rules:
+        # Run failure rate — ticket (NFR-REL). Excludes operator-initiated kills.
+        - alert: KSquadRunFailureRateHigh
+          expr: |
+            sum(rate(ksquad_run_completed_total{outcome="failed"}[15m]))
+              / clamp_min(sum(rate(ksquad_run_completed_total{outcome!="killed"}[15m])), 1) > 0.2
+          for: 15m
+          labels:
+            severity: ticket
+            slo: run-failure-rate
+          annotations:
+            summary: "Run failure ratio > 20% over 15m"
+            description: "run.completed{outcome=failed} share of non-killed completions exceeds 20%."
+        # Runs stuck in a non-terminal phase — ticket.
+        - alert: KSquadRunPhaseStuck
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, phase) (rate(ksquad_run_phase_duration_seconds_bucket{phase="Dispatching"}[10m]))
+            ) > 60
+          for: 10m
+          labels:
+            severity: ticket
+            slo: runs-stuck
+          annotations:
+            summary: "Runs stuck in {{`{{ $labels.phase }}`}} > SLO"
+            description: "A non-terminal Run phase exceeds its SLO (e.g. Dispatching > 60s)."
+        # Paused-on-auth backlog — ticket (§10 watch item).
+        - alert: KSquadPausedRunBacklog
+          expr: max(ksquad_run_paused_active) > 0
+          for: 30m
+          labels:
+            severity: ticket
+            slo: paused-on-auth
+          annotations:
+            summary: "Runs Paused > 30m"
+            description: "Credential refresh may not be happening — Runs are stuck paused-on-auth."
+        # Reconcile health — ticket, per controller.
+        - alert: KSquadReconcileErrorsHigh
+          expr: sum by (controller) (rate(ksquad_reconcile_errors_total[10m])) > 0.1
+          for: 15m
+          labels:
+            severity: ticket
+            slo: reconcile-health
+          annotations:
+            summary: "Reconcile error rate high for {{`{{ $labels.controller }}`}}"
+            description: "A controller's reconcile error rate is elevated."
+    - name: ksquad.slo.security
+      rules:
+        # Memory authz denials — ticket (security).
+        - alert: KSquadMemoryWriteDenialsSpike
+          expr: sum(rate(ksquad_memory_write_denied_total[10m])) > 0.1
+          for: 10m
+          labels:
+            severity: ticket
+            slo: memory-authz-denials
+          annotations:
+            summary: "Memory-write authz denial spike"
+            description: "Either an attack or a misconfiguration — the operator must see it (obs-plan §8)."
+        # Poisoning candidates — page (security). Any sustained non-zero.
+        - alert: KSquadMemoryPoisoningCandidates
+          expr: sum(ksquad_memory_poisoning_candidates) > 0
+          for: 5m
+          labels:
+            severity: page
+            slo: poisoning-candidates
+          annotations:
+            summary: "Memory poisoning candidates sustained > 0"
+            description: "A hostile cross-principal write pattern is surfacing (obs-plan §8). Signal carries IDs/hashes only."
+        # Shim conformance — block release. Any check regressing to fail.
+        - alert: KSquadShimConformanceRegressed
+          expr: min(ksquad_shim_conformance_result) < 1
+          for: 5m
+          labels:
+            severity: page
+            slo: shim-conformance
+          annotations:
+            summary: "Shim conformance check regressed to fail"
+            description: "A shim/A2A conformance check is failing at runtime — block release (obs-plan §9)."
+{{- end }}
