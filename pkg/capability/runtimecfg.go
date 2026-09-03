@@ -239,8 +239,33 @@ type codexMCPServer struct {
 	Env map[string]string `toml:"env,omitempty"`
 }
 
+// codexModelProvider is one entry in the Codex `config.toml`
+// [model_providers.<id>] table — a BYO OpenAI-compatible endpoint (story 5.7,
+// arch ISI-3646 D6, seam J). base_url is the endpoint URL (not a secret; safe
+// to persist in the config document); wire_api selects the OpenAI wire dialect
+// ("chat" for the completions-style API Ollama and most compatible hosts
+// serve). The endpoint token is NOT named here — it rides OPENAI_API_KEY in the
+// process env (modelRouteEnv), preserving the "no literal credential in a
+// persisted config" discipline (ADR-045 D5).
+type codexModelProvider struct {
+	BaseURL string `toml:"base_url"`
+	WireAPI string `toml:"wire_api"`
+}
+
+// codexBYOProviderID is the fixed provider id the shim renders for a BYO model
+// endpoint, referenced by the top-level model_provider selector.
+const codexBYOProviderID = "ksquad-byo"
+
 type codexConfig struct {
+	// ModelProvider selects the active provider (top-level scalar; TOML
+	// requires it before any table). Set to codexBYOProviderID only when a BYO
+	// endpoint is rendered, else omitted so the CLI keeps its built-in default.
+	ModelProvider string `toml:"model_provider,omitempty"`
+
 	MCPServers map[string]codexMCPServer `toml:"mcp_servers"`
+
+	// ModelProviders carries the BYO endpoint block; omitted when none is set.
+	ModelProviders map[string]codexModelProvider `toml:"model_providers,omitempty"`
 }
 
 // RenderCodex renders the Codex `config.toml` [mcp_servers.*] section for the
@@ -252,8 +277,30 @@ type codexConfig struct {
 // granularity only. Map key ordering is deterministic (the encoder sorts),
 // so the manifest bytes are stable. It lands at $CODEX_HOME/config.toml via
 // mcpWorkDirFile (codex.go).
+//
+// RenderCodex renders MCP servers only (no BYO model provider); it is the
+// signature the shared render matrix + mcpWorkDirFile consume. Callers with a
+// resolved BYO endpoint use RenderCodexConfig.
 func RenderCodex(endpoints []Endpoint) ([]byte, error) {
+	return RenderCodexConfig(endpoints, "")
+}
+
+// RenderCodexConfig renders the Codex `config.toml` for the endpoint set and,
+// when modelEndpoint is non-empty, a BYO OpenAI-compatible model-provider block
+// (story 5.7, FR6/AC9; arch ISI-3646 D6, seam J): a [model_providers.ksquad-byo]
+// table (base_url + wire_api) plus the top-level model_provider = "ksquad-byo"
+// selector pointing the CLI at it. This is a safe superset of the OPENAI_BASE_URL
+// env the shim already exports (modelRouteEnv) — whichever the pinned CLI honors,
+// the Run reaches the operator's endpoint. The endpoint token is never rendered
+// here; it rides OPENAI_API_KEY in the process env (ADR-045 D5).
+func RenderCodexConfig(endpoints []Endpoint, modelEndpoint string) ([]byte, error) {
 	cfg := codexConfig{MCPServers: make(map[string]codexMCPServer, len(endpoints))}
+	if modelEndpoint != "" {
+		cfg.ModelProvider = codexBYOProviderID
+		cfg.ModelProviders = map[string]codexModelProvider{
+			codexBYOProviderID: {BaseURL: modelEndpoint, WireAPI: "chat"},
+		}
+	}
 	for _, ep := range endpoints {
 		srv := codexMCPServer{
 			XKsquadAllowTools: ep.AllowTools,

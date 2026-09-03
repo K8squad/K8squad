@@ -97,13 +97,19 @@ func (r codex) Command(lc LaunchContext) (ExecSpec, error) {
 		Env:     env,
 		WorkDir: lc.WorkDir,
 	}
-	// Epic C (ADR-044 step 6): codex's config.toml [mcp_servers.*] section,
-	// rendered from the projected IR at start. RenderCodex is the S5 renderer
-	// (stubbed until then); credentials ride as env NAMES inside the document.
-	if f, err := mcpWorkDirFile("config.toml", capability.RenderCodex, lc.MCPEndpoints); err != nil {
-		return ExecSpec{}, err
-	} else if f != nil {
-		spec.WorkDirFiles = append(spec.WorkDirFiles, *f)
+	// Epic C (ADR-044 step 6): codex's config.toml, rendered from the projected
+	// IR at start — the [mcp_servers.*] section plus, when a BYO endpoint is set
+	// (story 5.7, S6), the [model_providers.ksquad-byo] block pointing the CLI at
+	// it (a safe superset of the OPENAI_BASE_URL env above). Credentials/tokens
+	// ride as env inside the process, never as literals in the document.
+	// A BYO endpoint alone (no MCP servers) still needs the file, so render
+	// directly rather than via the MCP-only mcpWorkDirFile helper.
+	if len(lc.MCPEndpoints) > 0 || lc.ModelRoute.Endpoint != "" {
+		content, err := capability.RenderCodexConfig(lc.MCPEndpoints, lc.ModelRoute.Endpoint)
+		if err != nil {
+			return ExecSpec{}, err
+		}
+		spec.WorkDirFiles = append(spec.WorkDirFiles, WorkDirFile{Name: "config.toml", Content: content})
 	}
 	return spec, nil
 }

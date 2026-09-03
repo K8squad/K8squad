@@ -63,12 +63,17 @@ import (
 // silently send the Run to the provider default, not the operator's endpoint).
 //
 // The Anthropic-family runtimes read ANTHROPIC_BASE_URL; the OpenAI-compatible
-// opencode runtime (the natural Ollama host, story 5.8) reads OPENAI_BASE_URL.
+// runtimes — opencode (the natural Ollama host, story 5.8) and codex (OpenAI's
+// official Rust CLI, ISI-3647/S6) — read OPENAI_BASE_URL. codex additionally
+// materializes a config.toml [model_providers.ksquad-byo] block from the same
+// endpoint (capability.RenderCodexConfig); the URL injected here is the
+// load-bearing half, the block is a safe superset (arch ISI-3646 D6).
 var baseURLEnv = map[string]string{
 	api.RuntimeTypeClaudeCode: "ANTHROPIC_BASE_URL",
 	api.RuntimeTypeOpenClaw:   "ANTHROPIC_BASE_URL",
 	api.RuntimeTypeHermes:     "ANTHROPIC_BASE_URL",
 	api.RuntimeTypeOpenCode:   "OPENAI_BASE_URL",
+	api.RuntimeTypeCodex:      "OPENAI_BASE_URL",
 }
 
 // Resolve builds the complete credential + endpoint injection for one Agent

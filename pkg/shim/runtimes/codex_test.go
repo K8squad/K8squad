@@ -176,3 +176,31 @@ func TestCodexMCPWorkDirFile(t *testing.T) {
 		t.Errorf("rendered config.toml must carry the mcp_servers table; got %q", withMCP.WorkDirFiles[0].Content)
 	}
 }
+
+// S6 (FR6/AC9): a BYO model endpoint materializes config.toml with the
+// [model_providers.ksquad-byo] block — even with no MCP servers — so the CLI is
+// pointed at the endpoint via config as well as OPENAI_BASE_URL (safe superset).
+// The route token stays out of the persisted config.
+func TestCodexBYOModelProviderConfig(t *testing.T) {
+	rt, _ := Get(apiv1alpha1.RuntimeTypeCodex)
+	spec, err := rt.Command(LaunchContext{
+		WorkDir:    "/work",
+		ModelRoute: a2a.ModelRoute{Endpoint: "http://ollama:11434/v1", Token: "route-token"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.WorkDirFiles) != 1 || spec.WorkDirFiles[0].Name != "config.toml" {
+		t.Fatalf("BYO endpoint alone must still materialize config.toml; got %v", spec.WorkDirFiles)
+	}
+	content := string(spec.WorkDirFiles[0].Content)
+	if !strings.Contains(content, "[model_providers.ksquad-byo]") {
+		t.Errorf("config.toml must carry the BYO model_providers block; got %q", content)
+	}
+	if !strings.Contains(content, `base_url = "http://ollama:11434/v1"`) {
+		t.Errorf("model provider must point at the endpoint; got %q", content)
+	}
+	if strings.Contains(content, "route-token") {
+		t.Errorf("route token must never land in the persisted config.toml; got %q", content)
+	}
+}

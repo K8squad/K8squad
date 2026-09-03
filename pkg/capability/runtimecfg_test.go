@@ -140,8 +140,15 @@ type codexTOMLServer struct {
 	Env               map[string]string `toml:"env"`
 }
 
+type codexTOMLProvider struct {
+	BaseURL string `toml:"base_url"`
+	WireAPI string `toml:"wire_api"`
+}
+
 type codexTOMLDoc struct {
-	MCPServers map[string]codexTOMLServer `toml:"mcp_servers"`
+	ModelProvider  string                       `toml:"model_provider"`
+	MCPServers     map[string]codexTOMLServer   `toml:"mcp_servers"`
+	ModelProviders map[string]codexTOMLProvider `toml:"model_providers"`
 }
 
 // TestRenderCodexEmitsValidTOMLWithByReferenceCreds is the AC1/AC3 shape: the
@@ -223,6 +230,46 @@ func TestRenderCodexDeterministic(t *testing.T) {
 	// Both server tables are present.
 	assert.True(t, strings.Contains(string(first), "[mcp_servers.gh-stdio]"))
 	assert.True(t, strings.Contains(string(first), "[mcp_servers.github-mcp]"))
+}
+
+// TestRenderCodexBYOModelProvider is the S6 (FR6/AC9) shape: when a BYO model
+// endpoint is set, RenderCodexConfig emits a [model_providers.ksquad-byo] block
+// (base_url + wire_api) plus the top-level model_provider selector, alongside
+// any MCP servers — and never the endpoint token (that rides OPENAI_API_KEY env).
+func TestRenderCodexBYOModelProvider(t *testing.T) {
+	raw, err := RenderCodexConfig([]Endpoint{stdioEndpoint()}, "http://ollama:11434/v1")
+	require.NoError(t, err)
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc), "config.toml is valid TOML")
+
+	// Top-level selector points at the BYO provider.
+	assert.Equal(t, "ksquad-byo", doc.ModelProvider)
+	// The provider block carries the endpoint URL + OpenAI wire dialect.
+	prov, ok := doc.ModelProviders["ksquad-byo"]
+	require.True(t, ok, "model_providers.ksquad-byo present")
+	assert.Equal(t, "http://ollama:11434/v1", prov.BaseURL)
+	assert.Equal(t, "chat", prov.WireAPI)
+	// MCP servers still render next to the provider block.
+	_, ok = doc.MCPServers["gh-stdio"]
+	assert.True(t, ok, "mcp servers preserved alongside model provider")
+	// The endpoint token is never rendered into the persisted config.
+	assert.NotContains(t, string(raw), "OPENAI_API_KEY", "token env not in config.toml")
+	assert.NotContains(t, string(raw), "ollama-secret", "no token/secret leakage")
+}
+
+// TestRenderCodexNoModelProviderByDefault guards that the plain MCP-only render
+// (no BYO endpoint) emits neither the selector nor a providers block, so the CLI
+// keeps its built-in default provider.
+func TestRenderCodexNoModelProviderByDefault(t *testing.T) {
+	raw, err := RenderCodex([]Endpoint{stdioEndpoint()})
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "model_provider", "no BYO provider unless endpoint set")
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc))
+	assert.Empty(t, doc.ModelProvider)
+	assert.Empty(t, doc.ModelProviders)
 }
 
 func TestRenderHermesPassthroughIsIR(t *testing.T) {
