@@ -1,17 +1,32 @@
 # syntax=docker/dockerfile:1.9
 # ksquad-shim-<runtime> — A2A⇄native sidecar, one image per AgentRuntime.type.
-# TEMPLATE (Phase 2): the per-runtime build args select which shim main to compile and
-# which runtime base layer to stage. Not yet wired into build-images.yml's matrix — the
-# shim matrix lands with the A2A conformance suite that owns the runtime list.
+#
+# The image folds THREE things onto $PATH:
+#   1. /usr/local/bin/shim   — the generic A2A shim main (cmd/shim), runtime-agnostic.
+#   2. the runtime's native CLI — staged per-RUNTIME by the cli-<runtime> stages below.
+#   3. any runtime-specific entrypoint wrapper (e.g. ksquad-codex-exec for codex).
+#
+# RUNTIME selects which CLI layer is baked in (`FROM cli-${RUNTIME}`). It is NO LONGER
+# label-only (ISI-3653 fixes that pre-existing drift). Today only `codex` stages a real
+# CLI — static-musl codex@rust-v0.152.0 plus the ksquad-codex-exec wrapper (§3.2/D4). The
+# other runtimes' CLI layers are no-ops until their own packaging stories land, matching
+# the shim matrix in .github/workflows/component-matrix.yml. An unknown RUNTIME fails
+# closed at `FROM cli-${RUNTIME}` (no matching stage).
 #
 #   docker buildx build -f Dockerfile.shim \
-#     --build-arg RUNTIME=openclaw \
-#     --platform linux/amd64,linux/arm64 -t ghcr.io/k8squad/ksquad-shim-openclaw .
+#     --build-arg RUNTIME=codex \
+#     --platform linux/amd64,linux/arm64 -t ghcr.io/k8squad/ksquad-shim-codex .
 
+# RUNTIME is consumed in a `FROM` line below, so it must be a GLOBAL arg (declared before
+# the first FROM). Re-declared inside the stages that use it in RUN/LABEL.
+ARG RUNTIME=reference
+
+# ---- Go build: the generic shim + (always) the codex wrapper -----------------------------
+# The wrapper is tiny and stdlib-only; building it unconditionally keeps this file simple.
+# It only reaches the final image when RUNTIME=codex selects the cli-codex stage below.
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
-ARG RUNTIME=reference
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
@@ -20,14 +35,61 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/shim ./cmd/shim
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/ksquad-codex-exec ./cmd/ksquad-codex-exec
 
+# ---- CLI-install stages: one per runtime; the final image selects cli-${RUNTIME} ---------
+# Each stage populates /cli-out with the binaries to overlay onto the final image's $PATH.
+# The no-op base emits an empty /cli-out so the selector always resolves and the COPY into
+# the final image is a harmless no-op for runtimes with no packaged CLI yet.
+FROM alpine:3.21 AS cli-noop
+RUN mkdir -p /cli-out
+FROM cli-noop AS cli-reference
+FROM cli-noop AS cli-claude
+FROM cli-noop AS cli-openclaw
+FROM cli-noop AS cli-hermes
+FROM cli-noop AS cli-opencode
+
+# codex (ISI-3653 / seam O): stage the pinned static-musl codex CLI + the ksquad-codex-exec
+# wrapper. The release tarball ships an arch-suffixed binary (codex-<triple>); we install it
+# as `codex`. Note: `codex --version` prints `codex-cli ${CODEX_SEMVER}` while the pinned
+# RELEASE TAG is ${CODEX_VERSION} (rust-v…) — the latter equals codex.CLIVersion() in the
+# adapter (ADR-017 immutable pin). We assert the numeric version at build time (AC1).
+FROM alpine:3.21 AS cli-codex
+ARG TARGETARCH
+ARG CODEX_VERSION=rust-v0.152.0
+ARG CODEX_SEMVER=0.152.0
+RUN apk add --no-cache curl ca-certificates
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) triple=x86_64-unknown-linux-musl ;; \
+      arm64) triple=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /cli-out; \
+    curl -fsSL "https://github.com/openai/codex/releases/download/${CODEX_VERSION}/codex-${triple}.tar.gz" \
+      -o /tmp/codex.tar.gz; \
+    tar -xzf /tmp/codex.tar.gz -C /tmp; \
+    install -m0755 "/tmp/codex-${triple}" /cli-out/codex; \
+    rm -f /tmp/codex.tar.gz; \
+    /cli-out/codex --version | grep -Fq "${CODEX_SEMVER}"
+COPY --from=build /out/ksquad-codex-exec /cli-out/ksquad-codex-exec
+
+# Select the CLI layer for the requested runtime (fails closed on an unknown RUNTIME).
+FROM cli-${RUNTIME} AS cli
+
+# ---- Final image -------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG RUNTIME=reference
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
-      org.opencontainers.image.title="ksquad-shim" \
+      org.opencontainers.image.title="ksquad-shim-${RUNTIME}" \
       org.opencontainers.image.description="KSquad A2A shim sidecar (runtime=${RUNTIME})" \
       org.opencontainers.image.licenses="Apache-2.0"
 WORKDIR /
+# shim first — this creates /usr/local/bin before the (possibly empty) CLI overlay.
 COPY --from=build /out/shim /usr/local/bin/shim
+COPY --from=cli /cli-out/ /usr/local/bin/
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shim"]
