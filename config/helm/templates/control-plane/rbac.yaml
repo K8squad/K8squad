@@ -11,17 +11,17 @@ metadata:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
 rules:
 - apiGroups: [""]
-  resources: [configmaps]
-  verbs: [create, delete, get, list, update, watch]
+  # configmaps patch + namespaces merged into this rule: ISI-3724 (story 13.8,
+  # ADR-0008 M1b) — otelegress upserts the operator-owned collector-egress
+  # ConfigMap; controller-gen merged the namespace grant here.
+  resources: [configmaps, namespaces]
+  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # secrets create: ISI-3614 / ADR-0007 — the warm-pool Bind path writes a
   # per-sandbox task-io Secret (pod-owned, auto-GC) to deliver the run-scoped
   # credential.
   resources: [limitranges, resourcequotas, secrets, serviceaccounts]
   verbs: [create, get, list, patch, update, watch]
-- apiGroups: [""]
-  resources: [namespaces]
-  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   resources: [persistentvolumeclaims]
   verbs: [create, delete, get, list, watch]
@@ -31,6 +31,12 @@ rules:
   # namespace with an OwnerReference for auto-GC.
   resources: [pods]
   verbs: [get, list, watch]
+- apiGroups: [apps]
+  # ISI-3724 (story 13.8, ADR-0008 M1b): otelegress rolls the no-hot-reload
+  # collector by patching its Deployment with the otelconfig-generation
+  # annotation (collector located via the component label in POD_NAMESPACE).
+  resources: [deployments]
+  verbs: [get, list, patch, watch]
 - apiGroups: [batch]
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
