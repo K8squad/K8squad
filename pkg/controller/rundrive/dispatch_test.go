@@ -123,6 +123,179 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// TestCodexHelperProcess is not a real test: exec'd as the fake codex `shim run`
+// subprocess (ISI-3660, KSQUAD_RUNTIME_TYPE=codex), it mimics a codex Run
+// reaching a TERMINAL state and EMITTING one artifact on the o11y spine (SSE
+// stdout) — the AC10 property (terminal-state + artifacts, not typed-event
+// parity, D-r2.7). It dumps the runtime type it was launched with so the driver
+// test can prove KSQUAD_RUNTIME_TYPE=codex was curated into the shim env
+// end-to-end (not merely computed in a unit).
+func TestCodexHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_CODEX_HELPER") != "1" {
+		return
+	}
+	var task wire.Task
+	if err := json.NewDecoder(os.Stdin).Decode(&task); err != nil {
+		fmt.Fprintln(os.Stderr, "codex-helper: decode task:", err)
+		os.Exit(2)
+	}
+	if dump := os.Getenv("KSQUAD_RUNTIME_DUMP"); dump != "" {
+		_ = os.WriteFile(dump, []byte(os.Getenv("KSQUAD_RUNTIME_TYPE")), 0o600)
+	}
+	events := []wire.Event{
+		{Seq: 1, A2ATaskID: task.A2ATaskID, Type: wire.EventStatus, Payload: wire.StatusPayload{State: wire.TaskWorking}},
+		{Seq: 2, A2ATaskID: task.A2ATaskID, Type: wire.EventArtifactRef, Payload: wire.ArtifactRef{
+			Kind:       "patch",
+			WorkItemID: task.WorkItemID,
+			URI:        "coord://artifacts/" + task.WorkItemID + "/diff.patch",
+			// 64-hex content hash (content-addressed, §5).
+			SHA256: strings.Repeat("ab", 32),
+		}},
+		{Seq: 3, A2ATaskID: task.A2ATaskID, Type: wire.EventStatus, Payload: wire.StatusPayload{State: wire.TaskCompleted}},
+	}
+	enc := json.NewEncoder(os.Stdout)
+	for _, ev := range events {
+		if err := enc.Encode(ev); err != nil {
+			os.Exit(2)
+		}
+	}
+	os.Exit(0)
+}
+
+// TestOperatorDispatcherCodexReachesTerminalWithArtifact is the ISI-3660 AC2
+// gate at the dispatch/SSE-stdout level (hermetic, no cluster): a single-runtime
+// codex Run driven through the REAL operator dispatch chain — dispatch
+// identifiers → Dispatcher → StdioTransport spawning a codex `shim run`
+// subprocess → RunEvents sink — reaches a TERMINAL state and emits an artifact
+// on the spine (AC10). It also proves KSQUAD_RUNTIME_TYPE=codex was curated into
+// the shim env end-to-end.
+func TestOperatorDispatcherCodexReachesTerminalWithArtifact(t *testing.T) {
+	const runUID = "cccccccc-0000-4444-8888-cccccccccccc"
+	run := &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-codex", Namespace: "team-a", UID: types.UID(runUID)},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "team-a"},
+			ProjectRef:  api.ObjectRef{Name: "proj-1"},
+			WorkItemRef: "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+			Agents:      []api.ObjectRef{{Name: "codex-coder"}},
+		},
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "codex-coder", Namespace: "team-a"},
+		Spec:       api.AgentSpec{Model: "gpt-5.4-codex"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+
+	reg := prometheus.NewRegistry()
+	mapper := toolusage.NewMapper(nil, reg)
+
+	var forwarded []wire.Event
+	inner := captureSink{evs: &forwarded}
+
+	runtimeDump := t.TempDir() + "/runtime.txt"
+	d, err := NewOperatorDispatcher(OperatorDispatchConfig{
+		DB:          lazyDB(t),
+		Client:      cl,
+		Mapper:      mapper,
+		ShimBin:     os.Args[0], // the test binary re-execs as the fake codex shim
+		RuntimeType: "codex",
+		RunEvents:   inner,
+		ExtraEnv:    []string{"GO_WANT_CODEX_HELPER=1", "KSQUAD_RUNTIME_DUMP=" + runtimeDump},
+		Source:      fakeDispatchSource{title: "Fix the bug", body: "apply the patch", fence: "5"},
+	})
+	if err != nil {
+		t.Fatalf("NewOperatorDispatcher: %v", err)
+	}
+	if err := d.Submit(context.Background(), runUID, runUID); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	d.Wait() // background follow settles before assertions
+
+	// The codex shim was launched with KSQUAD_RUNTIME_TYPE=codex end-to-end.
+	rtBytes, err := os.ReadFile(runtimeDump)
+	if err != nil {
+		t.Fatalf("read runtime dump: %v", err)
+	}
+	if got := string(rtBytes); got != "codex" {
+		t.Errorf("shim launched with KSQUAD_RUNTIME_TYPE=%q, want codex", got)
+	}
+
+	// AC10: the Run reached a terminal state AND emitted an artifact on the spine.
+	// Events are forwarded post-JSON, so payloads arrive as generic maps — assert
+	// on the wire Type plus the decoded fields (mirrors the SSE-stdout shape a
+	// consumer sees off the spine).
+	var reachedTerminal bool
+	var artifacts []map[string]any
+	for _, ev := range forwarded {
+		p, _ := ev.Payload.(map[string]any)
+		switch ev.Type {
+		case wire.EventStatus:
+			if p["state"] == string(wire.TaskCompleted) {
+				reachedTerminal = true
+			}
+		case wire.EventArtifactRef:
+			artifacts = append(artifacts, p)
+		}
+	}
+	if !reachedTerminal {
+		t.Errorf("codex Run never reached terminal completed; events=%+v", forwarded)
+	}
+	if len(artifacts) != 1 {
+		t.Fatalf("codex Run emitted %d artifact-ref(s), want 1 (AC10 artifacts)", len(artifacts))
+	}
+	art := artifacts[0]
+	if art["work_item_id"] != run.Spec.WorkItemRef {
+		t.Errorf("artifact work_item_id=%q, want the Run's item %q (§5 binding)", art["work_item_id"], run.Spec.WorkItemRef)
+	}
+	if sha, _ := art["sha256"].(string); len(sha) != 64 {
+		t.Errorf("artifact sha256 %q is not a 64-hex content hash (content-addressed, §5)", art["sha256"])
+	}
+	if uri, _ := art["uri"].(string); uri == "" {
+		t.Error("artifact has empty uri")
+	}
+}
+
+// TestShimEnvSelectsCodexRuntime pins the KSQUAD_RUNTIME_TYPE=codex selection at
+// the shim-env seam (ISI-3660): an operator dispatch configured for the codex
+// runtime curates KSQUAD_RUNTIME_TYPE=codex into the minimal shim env, and no
+// operator secret leaks into the subprocess.
+func TestShimEnvSelectsCodexRuntime(t *testing.T) {
+	const runUID = "dddddddd-1111-4444-8888-dddddddddddd"
+	run := &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-codex-env", Namespace: "team-a", UID: types.UID(runUID)},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "team-a"},
+			ProjectRef:  api.ObjectRef{Name: "proj-1"},
+			WorkItemRef: "77777777-8888-9999-aaaa-bbbbbbbbbbbb",
+			Agents:      []api.ObjectRef{{Name: "codex-coder"}},
+		},
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "codex-coder", Namespace: "team-a"},
+		Spec:       api.AgentSpec{Model: "gpt-5.4-codex"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	d := &operatorDispatch{
+		cfg:     OperatorDispatchConfig{Client: cl, RuntimeType: "codex"},
+		shimBin: "shim",
+	}
+
+	cmd, err := d.shimCommand(context.Background(), wire.Task{A2ATaskID: runUID})
+	if err != nil {
+		t.Fatalf("shimCommand: %v", err)
+	}
+	env := envMap(t, cmd.Env)
+	if env["KSQUAD_RUNTIME_TYPE"] != "codex" {
+		t.Errorf("KSQUAD_RUNTIME_TYPE=%q, want codex", env["KSQUAD_RUNTIME_TYPE"])
+	}
+	if env["KSQUAD_MODEL"] != "gpt-5.4-codex" {
+		t.Errorf("KSQUAD_MODEL=%q, want the agent's codex model", env["KSQUAD_MODEL"])
+	}
+	if _, leaked := env["DATABASE_URL"]; leaked {
+		t.Error("DATABASE_URL leaked into the codex shim env (minimal-env invariant broken)")
+	}
+}
+
 // TestOperatorDispatcherProducesScrapeableSeries is the ISI-3352 acceptance
 // at the wiring level — the operator-shaped physical feed chain, every
 // component real: dispatch identifiers → Dispatcher → StdioTransport
