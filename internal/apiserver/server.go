@@ -123,6 +123,13 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// Onboarding is the E1 onboarding-progress read model (ISI-3673, AD-2): the
+	// derived 4-milestone projection over CRD existence (Team / preset Agents /
+	// credentials / Project-with-repo-auth) plus the non-CR-derivable flags held
+	// as Team annotations (ksquad.io/onboarding-*). Nil ⇒ GET
+	// /api/onboarding/progress keeps the documented 501 (a cluster-less dev run),
+	// exactly like the other read models.
+	Onboarding OnboardingReader
 	// OTelConfig is the Story A / 13.8 OTLP-exporter read model (ISI-2917, child of
 	// ISI-3586 under Option A): GET /api/otelconfig serves the current cluster-scoped
 	// OTelConfig CR mapped to the client wire shape (console/lib/otelconfig.ts). Nil ⇒
@@ -344,6 +351,22 @@ func (s *Server) routes(opts Options) {
 			statusStream.HandleFunc("", h).Methods(http.MethodGet)
 			agentOne.HandleFunc("", h).Methods(http.MethodGet)
 			agentRunsR.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// E1 onboarding-progress read model (ISI-3673, AD-2): the derived
+		// 4-milestone {step,done,total,nextMilestone} projection the Launchpad and
+		// the "Finish setup (n/4)" chip render against (FR-1). Team-scoped via the
+		// session's AuthorContext — the route carries no {teamId} path param, so a
+		// cross-tenant read is structurally impossible (never 403; a foreign
+		// surface simply does not exist). A missing Team CR is NOT an error here:
+		// it is milestone ① incomplete. Nil reader ⇒ documented 501.
+		onboarding := s.router.Path("/api/onboarding/progress").Subrouter()
+		onboarding.Use(authz)
+		if opts.Onboarding != nil {
+			onboarding.HandleFunc("", s.onboardingProgress(opts.Onboarding)).Methods(http.MethodGet)
+		} else {
+			onboarding.HandleFunc("", notImplemented("onboarding-progress read model", "ISI-3673: wire an OnboardingReader (informer cache) to enable")).
+				Methods(http.MethodGet)
 		}
 
 		// Story A / 13.8 (ISI-2917) OTelConfig read model: GET /api/otelconfig
