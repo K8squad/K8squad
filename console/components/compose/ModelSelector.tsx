@@ -15,10 +15,17 @@
 // The authoritative output is always a plain `model` string (+ `modelEndpointRef` when BYO is on);
 // this component never encodes an endpoint or token into `model`. It owns only presentation state
 // (curated-vs-custom mode); the form values + validation live in lib/compose + lib/modelHints.
+//
+// ISI-3681 E3-S3 extension (AD-4/AD-5, extends ISI-3555 in place — no parallel component): the same
+// component gains a single Fallback control mapping to `Agent.spec.fallbackModel.{model,
+// modelEndpointRef}` (fallbackModel/fallbackModelEndpointRef form fields), advisory trigger chips
+// (on error / on rate-limit / on timeout — presentational v1, CRD has no trigger field), a
+// same-provider resilience warning (FR-4.1/4.2), and an optional "apply default to all agents"
+// shortcut (FR-4.4). The multi-order fallback list is a labelled v2 placeholder, not built (AC3).
 
 import { useEffect, useState } from "react";
 import { Field } from "./fields";
-import { isCuratedModel, modelShapeHint, useModelHints } from "@/lib/modelHints";
+import { isCuratedModel, modelShapeHint, sameProvider, useModelHints } from "@/lib/modelHints";
 import type { FieldErrors } from "@/lib/compose";
 
 /** Sentinel <option> value for the "Custom model…" escape hatch (never a real model id). */
@@ -27,21 +34,80 @@ const CUSTOM = "__custom__";
 /** The id of the BYO region, referenced by the toggle's aria-controls. */
 const BYO_REGION_ID = "compose-byo-endpoint";
 
+/** The id of the Fallback region, referenced by the toggle's aria-controls. */
+const FALLBACK_REGION_ID = "compose-fallback-model";
+
+/** The advisory fallback triggers (UI-only in v1 — the CRD FallbackModel has no trigger field). */
+const FALLBACK_TRIGGERS = [
+  { id: "error", label: "on error" },
+  { id: "rate-limit", label: "on rate-limit" },
+  { id: "timeout", label: "on timeout" },
+] as const;
+type TriggerId = (typeof FALLBACK_TRIGGERS)[number]["id"];
+
 export function ModelSelector({
   model,
   modelEndpointRef,
   byoEnabled,
+  fallbackModel,
+  fallbackModelEndpointRef,
   errors,
   patch,
+  onApplyToAll,
 }: {
   model: string;
   modelEndpointRef: string;
   byoEnabled: boolean;
+  fallbackModel: string;
+  fallbackModelEndpointRef: string;
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
+  // FR-4.4 "apply a default to all agents": when supplied, the shortcut is rendered and invoked with
+  // the current primary+fallback selection so the parent can fan it across the squad. Absent ⇒ the
+  // shortcut is not rendered (a single-Agent compose form has no squad to fan across).
+  onApplyToAll?: (defaults: {
+    model: string;
+    modelEndpointRef: string;
+    fallbackModel: string;
+    fallbackModelEndpointRef: string;
+  }) => void;
 }) {
   const hints = useModelHints();
   const curated = isCuratedModel(model, hints);
+
+  // Advisory trigger chips (v1, not persisted): rate-limit is the signal the shim actually switches
+  // on today (FallbackModel CRD doc); the others are presentational placeholders. Local state only —
+  // no CRD field, so nothing rides toWire.
+  const [triggers, setTriggers] = useState<Set<TriggerId>>(() => new Set<TriggerId>(["rate-limit"]));
+  function toggleTrigger(id: TriggerId) {
+    setTriggers((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // Fallback section open-state is presentation-only (there is no fallbackEnabled form field): a
+  // saved fallbackModel (edit hydration) opens it, and the user may toggle it explicitly. Turning it
+  // off clears both fallback fields so a hidden fallback never rides the apply.
+  const [fallbackEnabled, setFallbackEnabled] = useState(() => fallbackModel.trim() !== "");
+  useEffect(() => {
+    if (fallbackModel.trim() !== "" && !fallbackEnabled) setFallbackEnabled(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fallbackModel]);
+  function toggleFallback() {
+    if (fallbackEnabled) {
+      setFallbackEnabled(false);
+      patch({ fallbackModel: "", fallbackModelEndpointRef: "" });
+    } else {
+      setFallbackEnabled(true);
+    }
+  }
+
+  // Same-provider resilience warning (FR-4.1/4.2): only meaningful while the fallback is on and both
+  // ids resolve to the same coarse provider.
+  const showSameProviderWarning = fallbackEnabled && sameProvider(model, fallbackModel);
 
   // Custom mode is presentation-only: derive its initial value from a saved-but-non-curated model
   // (edit hydration → opens in Custom pre-filled, AC2), then let the user toggle it explicitly.
@@ -170,6 +236,94 @@ export function ModelSelector({
           </div>
         )}
       </div>
+
+      {/* Fallback model (ISI-3681 E3-S3 / AD-4): a single secondary model the shim switches to on a
+          rate_limited signal → Agent.spec.fallbackModel.{model,modelEndpointRef}. */}
+      <div className="compose__fallback">
+        <button
+          type="button"
+          className={`btn ${fallbackEnabled ? "btn--primary" : ""}`}
+          aria-pressed={fallbackEnabled}
+          aria-expanded={fallbackEnabled}
+          aria-controls={FALLBACK_REGION_ID}
+          onClick={toggleFallback}
+        >
+          {fallbackEnabled ? "✓ Fallback model" : "Add a fallback model"}
+        </button>
+
+        {fallbackEnabled && (
+          <div id={FALLBACK_REGION_ID} className="compose__fallback-region" role="group" aria-label="Fallback model">
+            <Field
+              label="Fallback model"
+              hint="Secondary model the runtime switches to mid-Run on a rate-limit — any model id."
+              error={errors["fallbackModel.model"]}
+            >
+              <input
+                value={fallbackModel}
+                onChange={(e) => patch({ fallbackModel: e.target.value })}
+                aria-invalid={!!errors["fallbackModel.model"]}
+                aria-label="Fallback model id"
+                placeholder="e.g. claude-haiku-4-5 or ollama/llama3.1:8b"
+              />
+            </Field>
+
+            <Field
+              label="Fallback endpoint Secret ref"
+              hint="optional — name or name/key of the fallback's own endpoint Secret"
+              error={errors["fallbackModel.modelEndpointRef.name"]}
+            >
+              <input
+                value={fallbackModelEndpointRef}
+                onChange={(e) => patch({ fallbackModelEndpointRef: e.target.value })}
+                aria-invalid={!!errors["fallbackModel.modelEndpointRef.name"]}
+                aria-label="Fallback endpoint Secret ref"
+                placeholder="optional — my-endpoint or my-endpoint/url"
+              />
+            </Field>
+
+            {/* Advisory trigger chips — presentational only in v1 (no CRD trigger field). */}
+            <div className="compose__fallback-triggers" role="group" aria-label="Fallback triggers (advisory)">
+              {FALLBACK_TRIGGERS.map((t) => {
+                const on = triggers.has(t.id);
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className={`chip ${on ? "chip--on" : ""}`}
+                    aria-pressed={on}
+                    onClick={() => toggleTrigger(t.id)}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="muted compose__fallback-note">
+              Triggers are advisory in this version — the runtime switches on rate-limit today. Ordered
+              multi-fallback is coming in a future version.
+            </p>
+
+            {showSameProviderWarning && (
+              <p className="warn compose__fallback-warning" role="alert">
+                Your fallback is the same provider as your primary model — a provider-wide rate limit could
+                affect both. Consider a different provider for real resilience.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {onApplyToAll && (
+        <button
+          type="button"
+          className="btn btn--ghost compose__apply-all"
+          onClick={() =>
+            onApplyToAll({ model, modelEndpointRef, fallbackModel, fallbackModelEndpointRef })
+          }
+        >
+          Apply this default to all agents
+        </button>
+      )}
     </>
   );
 }
