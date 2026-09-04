@@ -27,8 +27,9 @@ type MetricsCollector struct {
 	checksDuration       *prometheus.HistogramVec
 	checksErrors         *prometheus.CounterVec
 	
-	// PR metadata metrics
-	prsByAuthor          *prometheus.GaugeVec
+	// PR metadata metrics (no per-author split: a GitHub username is a
+	// per-entity identifier and never a metric label — obs-plan §1.2/§5.6)
+	prsActive            prometheus.Gauge
 	prsBySize            *prometheus.GaugeVec
 	prsByCheckStatus     *prometheus.GaugeVec
 	
@@ -73,7 +74,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_validation_total",
 			Help: "Total number of PR validation operations",
 		},
-		[]string{"status", "pr_number", "author"},
+		[]string{"outcome"},
 	)
 	
 	m.validationsDuration = promauto.NewHistogramVec(
@@ -82,7 +83,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Help:    "Duration of PR validation operations",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"status", "pr_number"},
+		[]string{"outcome"},
 	)
 	
 	m.validationsErrors = promauto.NewCounterVec(
@@ -90,7 +91,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_validation_errors_total",
 			Help: "Total number of PR validation errors",
 		},
-		[]string{"error_type", "pr_number"},
+		[]string{"error_code"},
 	)
 	
 	// Check-specific metrics
@@ -99,7 +100,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_check_total",
 			Help: "Total number of individual check executions",
 		},
-		[]string{"check_name", "status", "pr_number"},
+		[]string{"check", "outcome"},
 	)
 	
 	m.checksDuration = promauto.NewHistogramVec(
@@ -108,7 +109,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Help:    "Duration of individual check executions",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"check_name", "pr_number"},
+		[]string{"check"},
 	)
 	
 	m.checksErrors = promauto.NewCounterVec(
@@ -116,16 +117,15 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_check_errors_total",
 			Help: "Total number of individual check errors",
 		},
-		[]string{"check_name", "error_type", "pr_number"},
+		[]string{"check", "error_code"},
 	)
 	
 	// PR metadata metrics
-	m.prsByAuthor = promauto.NewGaugeVec(
+	m.prsActive = promauto.NewGauge(
 		prometheus.GaugeOpts{
-			Name: "pr_validation_active_by_author",
-			Help: "Number of currently active PR validations by author",
+			Name: "pr_validation_active",
+			Help: "Number of currently active PR validations",
 		},
-		[]string{"author"},
 	)
 	
 	m.prsBySize = promauto.NewGaugeVec(
@@ -133,7 +133,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_validation_active_by_size",
 			Help: "Number of currently active PR validations by size category",
 		},
-		[]string{"size_category"},
+		[]string{"kind"},
 	)
 	
 	m.prsByCheckStatus = promauto.NewGaugeVec(
@@ -141,7 +141,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_validation_active_by_check_status",
 			Help: "Number of currently active PR validations by check status",
 		},
-		[]string{"check_status"},
+		[]string{"outcome"},
 	)
 	
 	// System metrics
@@ -150,7 +150,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_system_errors_total",
 			Help: "Total number of system-level errors",
 		},
-		[]string{"error_type"},
+		[]string{"error_code"},
 	)
 	
 	m.apiCallsTotal = promauto.NewCounterVec(
@@ -158,7 +158,7 @@ func (m *MetricsCollector) initializeMetrics() {
 			Name: "pr_api_calls_total",
 			Help: "Total number of API calls",
 		},
-		[]string{"api_type", "status", "pr_number"},
+		[]string{"operation", "outcome"},
 	)
 	
 	m.apiCallsDuration = promauto.NewHistogramVec(
@@ -167,36 +167,36 @@ func (m *MetricsCollector) initializeMetrics() {
 			Help:    "Duration of API calls",
 			Buckets: prometheus.DefBuckets,
 		},
-		[]string{"api_type", "pr_number"},
+		[]string{"operation"},
 	)
 }
 
 // RecordValidation records a validation operation
 func (m *MetricsCollector) RecordValidation(ctx context.Context, prNumber int, author string, status string, duration time.Duration) {
-	m.validationsTotal.WithLabelValues(status, fmt.Sprintf("%d", prNumber), author).Inc()
-	m.validationsDuration.WithLabelValues(status, fmt.Sprintf("%d", prNumber)).Observe(duration.Seconds())
+	m.validationsTotal.WithLabelValues(status).Inc()
+	m.validationsDuration.WithLabelValues(status).Observe(duration.Seconds())
 }
 
 // RecordValidationError records a validation error
 func (m *MetricsCollector) RecordValidationError(ctx context.Context, prNumber int, errorType string) {
-	m.validationsErrors.WithLabelValues(errorType, fmt.Sprintf("%d", prNumber)).Inc()
+	m.validationsErrors.WithLabelValues(errorType).Inc()
 }
 
 // RecordCheck records an individual check execution
 func (m *MetricsCollector) RecordCheck(ctx context.Context, prNumber int, checkName string, status string, duration time.Duration) {
-	m.checksTotal.WithLabelValues(checkName, status, fmt.Sprintf("%d", prNumber)).Inc()
-	m.checksDuration.WithLabelValues(checkName, fmt.Sprintf("%d", prNumber)).Observe(duration.Seconds())
+	m.checksTotal.WithLabelValues(checkName, status).Inc()
+	m.checksDuration.WithLabelValues(checkName).Observe(duration.Seconds())
 }
 
 // RecordCheckError records an individual check error
 func (m *MetricsCollector) RecordCheckError(ctx context.Context, prNumber int, checkName string, errorType string) {
-	m.checksErrors.WithLabelValues(checkName, errorType, fmt.Sprintf("%d", prNumber)).Inc()
+	m.checksErrors.WithLabelValues(checkName, errorType).Inc()
 }
 
 // RecordAPICall records an API call
 func (m *MetricsCollector) RecordAPICall(ctx context.Context, prNumber int, apiType string, status string, duration time.Duration) {
-	m.apiCallsTotal.WithLabelValues(apiType, status, fmt.Sprintf("%d", prNumber)).Inc()
-	m.apiCallsDuration.WithLabelValues(apiType, fmt.Sprintf("%d", prNumber)).Observe(duration.Seconds())
+	m.apiCallsTotal.WithLabelValues(apiType, status).Inc()
+	m.apiCallsDuration.WithLabelValues(apiType).Observe(duration.Seconds())
 }
 
 // RecordSystemError records a system-level error
@@ -210,13 +210,12 @@ func (m *MetricsCollector) UpdateActivePRs(prs []PullRequestMetadata) {
 	defer m.mu.Unlock()
 	
 	// Reset gauges
-	m.prsByAuthor.Reset()
 	m.prsBySize.Reset()
 	m.prsByCheckStatus.Reset()
 	
 	// Update metrics
+	m.prsActive.Set(float64(len(prs)))
 	for _, pr := range prs {
-		m.prsByAuthor.WithLabelValues(pr.Author).Inc()
 		m.prsBySize.WithLabelValues(pr.SizeCategory).Inc()
 		m.prsByCheckStatus.WithLabelValues(pr.CheckStatus).Inc()
 	}
@@ -257,7 +256,6 @@ func (m *MetricsCollector) Describe(ch chan<- *prometheus.Desc) {
 	m.checksTotal.Describe(ch)
 	m.checksDuration.Describe(ch)
 	m.checksErrors.Describe(ch)
-	m.prsByAuthor.Describe(ch)
 	m.prsBySize.Describe(ch)
 	m.prsByCheckStatus.Describe(ch)
 	m.systemErrors.Describe(ch)
@@ -272,7 +270,6 @@ func (m *MetricsCollector) Collect(ch chan<- prometheus.Metric) {
 	m.checksTotal.Collect(ch)
 	m.checksDuration.Collect(ch)
 	m.checksErrors.Collect(ch)
-	m.prsByAuthor.Collect(ch)
 	m.prsBySize.Collect(ch)
 	m.prsByCheckStatus.Collect(ch)
 	m.systemErrors.Collect(ch)
