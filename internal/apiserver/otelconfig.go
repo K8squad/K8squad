@@ -43,9 +43,10 @@ import (
 //	W3 sampling — the CRD's SamplingConfig maps to the wire's scalar ratio:
 //	   nil → omitted; always_off → 0; always_on → 1; probabilistic → the ratio.
 //
-// status.signals (W4 healthy|erroring|pending|disabled) is DELIBERATELY not
-// emitted: the OTelConfig CRD carries no status.signals yet — Story D adds it.
-// This mapper surfaces it once present; until then the wire status is omitted
+// status.signals (W4 healthy|erroring|pending|disabled) is surfaced here (Story
+// D / ISI-3621): the CRD now carries OTelConfigStatus.Signals, populated by the
+// export reconciler. This mapper projects it verbatim onto the wire status when
+// present; when the operator has reported nothing yet the wire status is omitted
 // and the Settings page shows the config without a per-signal health chip.
 
 // ErrOTelConfigNotFound is the sentinel the source returns when no OTelConfig CR
@@ -127,14 +128,32 @@ type otelConfigSpecWire struct {
 	Logs    *signalWire `json:"logs,omitempty"`
 }
 
+// signalStatusWire mirrors console/lib/otelconfig.ts status.signals[key]
+// ({state, detail}). detail carries a human-readable, secret-free reason only —
+// the source CRD status is populated by the export reconciler under D-AC3, so no
+// token value can reach here (this mapper reads the CR, never a Secret).
+type signalStatusWire struct {
+	State  string `json:"state,omitempty"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// otelConfigStatusWire mirrors OtelConfigWire["status"]. Keyed by signal name
+// ("traces"/"metrics"/"logs"), omitted entirely when the operator has not yet
+// reported any signal — the client's `wire.status?.signals?.[key]` reads absence
+// as "no health yet" and the Export state card renders nothing for that signal.
+type otelConfigStatusWire struct {
+	Signals map[string]signalStatusWire `json:"signals,omitempty"`
+}
+
 // OtelConfigWire is the client wire shape (console/lib/otelconfig.ts OtelConfigWire).
 // spec is a value (always serialized) so fromWire()'s `wire?.spec ?? {}` reads a
-// present object even when every signal is unconfigured. status is omitted until
-// Story D adds status.signals to the CRD (see file header).
+// present object even when every signal is unconfigured. status is a pointer,
+// emitted only once the operator has reported per-signal health (Story D).
 type OtelConfigWire struct {
-	APIVersion string             `json:"apiVersion,omitempty"`
-	Kind       string             `json:"kind,omitempty"`
-	Spec       otelConfigSpecWire `json:"spec"`
+	APIVersion string                `json:"apiVersion,omitempty"`
+	Kind       string                `json:"kind,omitempty"`
+	Spec       otelConfigSpecWire    `json:"spec"`
+	Status     *otelConfigStatusWire `json:"status,omitempty"`
 }
 
 // crdToWire is the deterministic CRD→wire projection (A-AC4). Pure — no kube, no
@@ -148,7 +167,22 @@ func crdToWire(cr *ksquadv1.OTelConfig) OtelConfigWire {
 			Metrics: signalToWire(cr.Spec.Metrics),
 			Logs:    signalToWire(cr.Spec.Logs),
 		},
+		Status: statusToWire(cr.Status.Signals),
 	}
+}
+
+// statusToWire maps the CRD's per-signal export health onto the wire status
+// (Story D). Empty/nil in ⇒ nil out, so status is omitted until the operator has
+// reported at least one signal.
+func statusToWire(signals map[string]ksquadv1.SignalStatus) *otelConfigStatusWire {
+	if len(signals) == 0 {
+		return nil
+	}
+	out := make(map[string]signalStatusWire, len(signals))
+	for key, s := range signals {
+		out[key] = signalStatusWire{State: string(s.State), Detail: s.Detail}
+	}
+	return &otelConfigStatusWire{Signals: out}
 }
 
 // signalToWire maps one CRD SignalRouting to its wire shape; nil in ⇒ nil out
