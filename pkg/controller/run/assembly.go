@@ -94,7 +94,7 @@ func (a *Assembler) Resolve(ctx context.Context, run *api.Run) (*ResolvedEnvelop
 		Toolchains:   resolved,
 		Endpoints:    endpoints,
 		Servers:      servers,
-		Manifest:     capability.BuildManifest(resolved, endpoints),
+		Manifest:     capability.BuildManifest(resolved, endpoints, reqs.Skills),
 	}, nil
 }
 

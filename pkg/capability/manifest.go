@@ -29,10 +29,11 @@ import (
 // capability manifest (ADR-044 step 5): toolchains pinned, MCP endpoints
 // with their effective tool filters, no credential material — followed by
 // the capabilityHash that keys warm-pool inventory (step 7).
-func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint) *api.CapabilityManifest {
+func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills []GrantedSkill) *api.CapabilityManifest {
 	m := &api.CapabilityManifest{
 		Toolchains:   make([]api.ResolvedToolchainRef, 0, len(resolved)),
 		MCPEndpoints: make([]api.ResolvedMCPEndpoint, 0, len(endpoints)),
+		Skills:       make([]api.GrantedSkill, 0, len(skills)),
 	}
 	for _, res := range resolved {
 		m.Toolchains = append(m.Toolchains, api.ResolvedToolchainRef{
@@ -57,6 +58,20 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint) *api.Cap
 			CredentialSecretRef: ep.CredentialSecretRef,
 			EgressPolicyRef:     ep.EgressPolicyRef,
 		})
+	}
+	for _, skill := range skills {
+		// Convert internal GrantedSkill to API type for serialization
+		apiSkill := api.GrantedSkill{
+			Namespace:   skill.Namespace,
+			Name:        skill.Name,
+			SourceType:  skill.SourceType,
+			Inline:      skill.Inline,
+			Permissions: skill.Permissions,
+		}
+		if skill.Git != nil {
+			apiSkill.Git = skill.Git
+		}
+		m.Skills = append(m.Skills, apiSkill)
 	}
 	m.CapabilityHash = HashManifest(m)
 	return m
