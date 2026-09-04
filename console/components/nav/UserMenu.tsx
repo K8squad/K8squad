@@ -32,9 +32,26 @@ export function UserMenu({
   variant = "rail",
 }: {
   username: string | null;
-  variant?: "rail" | "drawer";
+  variant?: "rail" | "drawer" | "avatar";
 }) {
   const [busy, setBusy] = useState(false);
+
+  // Avatar-only variant (ISI-3725): the top-bar identity glyph from the ISI-3641 mock. No sign-out
+  // here — that control stays in the rail-foot rail/drawer variants; this is a read-only "who am I"
+  // indicator so the avatar is not a duplicate action.
+  if (variant === "avatar") {
+    return (
+      <span
+        className="usermenu usermenu--avatar"
+        title={username ?? "Account"}
+        aria-label={username ? `Signed in as ${username}` : "Account"}
+      >
+        <span className="usermenu__avatar" aria-hidden="true">
+          {initial(username)}
+        </span>
+      </span>
+    );
+  }
 
   async function signOut() {
     if (busy) return;
