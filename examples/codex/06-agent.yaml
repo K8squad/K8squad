@@ -1,0 +1,28 @@
+# The concrete Codex squad member. The Agent binds a model + BYO credential to
+# a Role and Runtime (arch §5.1):
+#   - runtimeRef           → the codex AgentRuntime (02-runtime.yaml)
+#   - roleRef              → the codex-coder Role (05-role.yaml)
+#   - credentialSecretRef  → the BYO OpenAI key Secret (01-credentials.yaml)
+#   - credentialClass      → service-account: a long-lived OpenAI API key,
+#                            injected onto OPENAI_API_KEY by pkg/credinject
+#   - model                → the codex default model id (pkg/shim/runtimes/codex.go)
+#
+# No modelEndpointRef is set: this Agent uses the default OpenAI endpoint. Point
+# it at a BYO / OpenAI-compatible endpoint only via a modelEndpointRef Secret.
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: cody
+  namespace: codex-squad
+  labels:
+    ksquad.io/example: codex
+spec:
+  model: gpt-5.4-codex
+  roleRef:
+    name: codex-coder
+  runtimeRef:
+    name: codex
+  credentialSecretRef:
+    name: openai-credentials
+    key: token
+  credentialClass: service-account
