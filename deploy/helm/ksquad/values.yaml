@@ -501,9 +501,20 @@ observability:
     samplingPercentage: 10
 
   export:
-    # Vendor OTLP routing for the gateway's egress. Empty endpoint = no vendor:
-    # the collector still enforces redaction/sampling and prints to the debug
-    # sink. Set endpoint (+ auth) to ship to Dynatrace/Prometheus/etc.
+    # ┌─ DEPRECATED (ADR-0008 §Migration, ISI-3747) ────────────────────────────┐
+    # │ The OTelConfig CRD is the single source of truth for vendor egress; the │
+    # │ operator reconciles it into the collector egress overlay (ISI-3724).    │
+    # │ These values remain for ONE release as a no-operator BOOTSTRAP fallback:│
+    # │ setting endpoint renders the {release}-otel-collector-egress ConfigMap  │
+    # │ directly from Helm. They are removed once the operator path is live on  │
+    # │ k8squad-test.                                                           │
+    # │                                                                         │
+    # │ Do NOT set endpoint here AND run the operator egress reconcile — both   │
+    # │ write the same ConfigMap and will contend. Leave endpoint EMPTY and use │
+    # │ the OTelConfig CR when the operator is present.                         │
+    # └─────────────────────────────────────────────────────────────────────────┘
+    # Empty endpoint = no vendor: the collector still enforces redaction/sampling
+    # and prints to the debug sink.
     otlp:
       endpoint: "" # e.g. https://abc123.live.dynatrace.com/api/v2/otlp
       insecure: false
