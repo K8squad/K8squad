@@ -47,9 +47,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -71,6 +74,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/otelcr"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
@@ -80,6 +84,73 @@ import (
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
 // binary-specific so the operator never contends with another ksquad manager.
 const leaderElectionID = "ksquad-operator.ksquad.io"
+
+// defaultSystemNamespace is where an OTelConfig auth Secret without an explicit
+// namespace is resolved. Overridable via $POD_NAMESPACE (the downward-API value
+// a pod is given), so the operator resolves Secrets in its own namespace.
+const defaultSystemNamespace = "ksquad-system"
+
+// resolveTelemetryOptions performs the ONE-SHOT (restart-scoped, W6) read of the
+// cluster-scoped OTelConfig CR and folds its per-signal routing into opts before
+// telemetry.Setup runs. It is fail-open by contract (C-AC2/C-AC3): any failure
+// — no client, no CR, a denied/missing Secret — leaves the affected signal(s)
+// on the stdout default and NEVER fatals the operator. Auth token values are
+// never logged; only signal names and Secret-scoped errors are.
+func resolveTelemetryOptions(ctx context.Context, cfg *rest.Config, opts *telemetry.Options) {
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		// No reader ⇒ can't source the CR; keep the stdout default (never fatal).
+		ctrl.Log.Info("telemetry spine: unable to build OTelConfig reader; exporting to stdout", "err", err.Error())
+		return
+	}
+
+	var list ksquadv1alpha1.OTelConfigList
+	if err := c.List(ctx, &list); err != nil {
+		ctrl.Log.Info("telemetry spine: unable to list OTelConfig; exporting to stdout", "err", err.Error())
+		return
+	}
+	cr := otelcr.Pick(list.Items)
+	if cr == nil {
+		ctrl.Log.Info("telemetry spine: no OTelConfig; exporting to stdout")
+		return
+	}
+
+	systemNamespace := os.Getenv("POD_NAMESPACE")
+	if systemNamespace == "" {
+		systemNamespace = defaultSystemNamespace
+	}
+
+	res := otelcr.Resolve(ctx, cr, secretGetter{c: c}, systemNamespace)
+	opts.Traces = res.Traces
+	opts.Metrics = res.Metrics
+	opts.Logs = res.Logs
+	for _, se := range res.Errors {
+		// The error is Secret-scoped and carries no token VALUE (C-AC3); the
+		// signal falls back to stdout and the operator continues.
+		ctrl.Log.Info("telemetry spine: signal falling back to stdout",
+			"signal", se.Signal, "err", se.Err.Error())
+	}
+	ctrl.Log.Info("telemetry spine: OTelConfig applied (restart-scoped, W6)",
+		"otelconfig", cr.Name,
+		"traces", res.Traces != nil, "metrics", res.Metrics != nil, "logs", res.Logs != nil)
+}
+
+// secretGetter adapts the kube client to otelcr.SecretGetter: it reads a
+// corev1.Secret and returns one key's bytes, erroring when the Secret or the key
+// is absent. The returned error never contains the value.
+type secretGetter struct{ c client.Client }
+
+func (g secretGetter) Get(ctx context.Context, namespace, name, key string) ([]byte, error) {
+	var sec corev1.Secret
+	if err := g.c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &sec); err != nil {
+		return nil, err
+	}
+	v, ok := sec.Data[key]
+	if !ok {
+		return nil, fmt.Errorf("key %q not present in secret", key)
+	}
+	return v, nil
+}
 
 // decodeSigningKey mirrors internal/apiserver.decodeKeyBytes: accept a raw or
 // base64-encoded HS256 key so the operator and the apiserver read the SAME
@@ -122,10 +193,26 @@ func main() {
 	// and the manager stops on it. (ctrl.SetupSignalHandler must be called once.)
 	ctx := ctrl.SetupSignalHandler()
 
+	// One rest.Config drives both the one-shot OTelConfig read below and the
+	// manager, so they agree on the cluster/credentials.
+	cfg := ctrl.GetConfigOrDie()
+
 	// Install the OpenTelemetry spine (ISI-2915/ISI-3103): W3C propagation, a
 	// TracerProvider so every Run drive pass is one span, and the otelslog bridge
-	// so structured logs carry trace_id/span_id. Exports to stdout for now.
-	_, otelShutdown, err := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-operator"})
+	// so structured logs carry trace_id/span_id.
+	//
+	// Per-signal export target (ISI-3620, Story C): stdout stays the default, and
+	// each signal opts into OTLP from the cluster-scoped OTelConfig CR.
+	//
+	// W6 (restart-scoped read, ratified by Architect Winston, C-AC4): the CR is
+	// read EXACTLY ONCE here at process start. A CR change therefore requires an
+	// operator rollout to take effect — this is the agreed v1 design; there is
+	// deliberately no live watch/reconcile of the routing. Story D's reconciler
+	// owns OTelConfig.status; live re-read is a deferred follow-up.
+	telemetryOpts := telemetry.Options{ServiceName: "ksquad-operator"}
+	resolveTelemetryOptions(ctx, cfg, &telemetryOpts)
+
+	_, otelShutdown, err := telemetry.Setup(ctx, telemetryOpts)
 	if err != nil {
 		ctrl.Log.Error(err, "unable to initialize OpenTelemetry spine")
 		os.Exit(1)
@@ -140,7 +227,7 @@ func main() {
 		}
 	}()
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,

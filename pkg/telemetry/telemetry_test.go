@@ -21,6 +21,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric/noop"
@@ -62,6 +63,49 @@ func TestSetupEmitsSpanAndCorrelatedLog(t *testing.T) {
 	if n := strings.Count(out, traceID); n < 2 {
 		t.Errorf("trace id %q appears %d times, want >=2 (span + correlated log):\n%s", traceID, n, out)
 	}
+}
+
+// TestSetupAllNilSignalsKeepsStdout proves the C-AC2 default is preserved: with
+// every *SignalExport nil, Setup builds the stdout pipelines exactly as before
+// ISI-3620 — a span emitted after Setup still lands in the configured Writer.
+func TestSetupAllNilSignalsKeepsStdout(t *testing.T) {
+	buf := &bytes.Buffer{}
+	_, shutdown, err := Setup(context.Background(), Options{ServiceName: "test-svc", Writer: buf})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	_, span := Tracer().Start(context.Background(), "stdout.default.span")
+	span.End()
+	if err := shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if out := buf.String(); !strings.Contains(out, "stdout.default.span") {
+		t.Errorf("all-nil signals should keep stdout default; span not in writer:\n%s", out)
+	}
+}
+
+// TestSetupOTLPSignalDoesNotBlockOrError proves the opt-in OTLP path is
+// offline-safe: a non-nil SignalExport pointed at an unreachable endpoint still
+// returns nil error and a working shutdown, because the OTLP batchers connect
+// lazily. No network is required for the test.
+func TestSetupOTLPSignalDoesNotBlockOrError(t *testing.T) {
+	buf := &bytes.Buffer{}
+	unreachable := &SignalExport{Protocol: "grpc", Endpoint: "http://127.0.0.1:0"}
+	_, shutdown, err := Setup(context.Background(), Options{
+		ServiceName: "test-svc",
+		Writer:      buf,
+		Traces:      unreachable,
+		Metrics:     unreachable,
+		Logs:        unreachable,
+	})
+	if err != nil {
+		t.Fatalf("Setup with unreachable OTLP endpoint returned error: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// Shutdown may report a flush error against the dead endpoint; it must not
+	// hang. We only require that it returns.
+	_ = shutdown(ctx)
 }
 
 // TestSetupRecordsMetric is the ISI-3593 metric prerequisite proof: Setup wires
