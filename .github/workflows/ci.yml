@@ -178,6 +178,20 @@ jobs:
       - name: Verify generated code + manifests match the markers
         run: make verify-codegen
 
+  cardinality:
+    name: obs / cardinality gate
+    runs-on: [self-hosted, linux, x64]
+    # Story 13.6 (ISI-3122) / obs-plan §5.6, §11.1 gate 1: every Prometheus *Vec
+    # metric label key must be in the bounded-cardinality allowlist
+    # (internal/observability/cardinality_allowlist.go). Out-of-allowlist labels
+    # (e.g. run.id / work_item.id / principal.id used as a metric label) fail the
+    # build — label discipline is tested, not hoped for. Pure grep, no toolchain.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enforce the metric-label cardinality allowlist
+        run: scripts/ci/obs-cardinality-gate.sh
+
   migrations:
     name: db / migrations self-check
     runs-on: [self-hosted, linux, x64]
