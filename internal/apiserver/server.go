@@ -60,7 +60,11 @@ type Options struct {
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
-	Hub         *Hub                     // optional; NewServer allocates one when nil
+	// SecretWriter is the E3-S1 managed-credential write surface (ISI-3679, AD-6):
+	// POST /api/credentials creates one label-scoped Secret in the caller's team
+	// namespace. Nil ⇒ the POST keeps its documented 501 (cluster-less dev run).
+	SecretWriter *SecretWriteService
+	Hub          *Hub // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -398,14 +402,27 @@ func (s *Server) routes(opts Options) {
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
 		// Connect-Claude seam and answers its own documented 501 until ISI-2899 lands the
 		// OAuth flow — the route exists so the console has one honest endpoint, never a
-		// fabricated login.
+		// fabricated login. POST /api/credentials is the E3-S1 managed-credential
+		// paste-key write (ISI-3679, AD-6): one label-scoped Secret in the caller's
+		// team namespace, value never echoed (NFR-2). The POST rides the SAME
+		// same-origin CSRF guard + bounded body as the other mutation surfaces —
+		// with a tighter ceiling than compose (a credential is bytes, not a skill
+		// body).
 		creds := s.router.Path("/api/credentials").Subrouter()
 		creds.Use(authz)
+		creds.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		creds.Use(maxBytesBody(credentialMaxValueBytes + 4<<10))
 		if opts.Credentials != nil {
 			creds.HandleFunc("", s.credentials(opts.Credentials)).Methods(http.MethodGet)
 		} else {
 			creds.HandleFunc("", notImplemented("credential read model", "ISI-2902: wire a CredentialOverviewReader (informer cache) to enable")).
 				Methods(http.MethodGet)
+		}
+		if opts.SecretWriter != nil {
+			creds.HandleFunc("", opts.SecretWriter.handleCredentialCreate).Methods(http.MethodPost)
+		} else {
+			creds.HandleFunc("", notImplemented("managed-credential write", "ISI-3679: wire a SecretWriteService (direct client) to enable")).
+				Methods(http.MethodPost)
 		}
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
@@ -546,6 +563,22 @@ func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
 			coll.HandleFunc("", h).Methods(http.MethodPost)
 			item.HandleFunc("", h).Methods(http.MethodPut)
 		}
+	}
+
+	// Squad materialize (ISI-3677, AD-3): POST /api/compose/squad turns a
+	// template (Minimal Trio ★ / BMAD / Solo) into a Team (if absent) + N
+	// Agents in one authorized call, behind the SAME choke point and write
+	// middleware as the single-kind compose routes. A nil ComposeService keeps
+	// the documented 501.
+	squad := s.router.Path("/api/compose/squad").Subrouter()
+	squad.Use(authz)
+	squad.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+	squad.Use(maxBytesBody(64 << 10))
+	if opts.ComposeCRD != nil {
+		squad.HandleFunc("", opts.ComposeCRD.handleComposeSquad).Methods(http.MethodPost)
+	} else {
+		squad.HandleFunc("", notImplemented("squad materialize endpoint", "ISI-3677: wire a ComposeService (controller-runtime client) to enable")).
+			Methods(http.MethodPost)
 	}
 }
 
