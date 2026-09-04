@@ -37,6 +37,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/orgops"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
@@ -263,6 +264,38 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.SystemContext = sysCtx
 	}
 
+	// Resolve the BYO model endpoint (§11, §10.3, ADR-026). An Agent with no
+	// modelEndpointRef resolves to an empty ModelRoute (the runtime's own
+	// provider default). When a modelEndpointRef IS set, resolution is
+	// fail-closed per the modelendpoint contract: a dangling Secret, a missing
+	// endpointURL, or a malformed URL aborts the dispatch rather than silently
+	// routing the Run to a paid provider default (weak local models must never
+	// fail silently mid-Run — the story 5.7 acceptance).
+	var modelRoute wire.ModelRoute
+	if len(run.Spec.Agents) > 0 {
+		ref := run.Spec.Agents[0]
+		ns := ref.Namespace
+		if ns == "" {
+			ns = run.Namespace
+		}
+		var agent api.Agent
+		if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
+		}
+		resolver := modelendpoint.Resolver{Reader: d.cfg.Client}
+		endpoint, err := resolver.Resolve(ctx, &agent)
+		if err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: resolve model endpoint for Agent %s/%s: %w", ns, agent.Name, err)
+		}
+		if endpoint.BaseURL != "" {
+			modelRoute = wire.ModelRoute{
+				Endpoint: endpoint.BaseURL,
+				Model:    endpoint.Model,
+				Token:    endpoint.Token,
+			}
+		}
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
@@ -274,9 +307,9 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// operator pod, so this is honestly false — the pod-side supervisor
 		// topology (follow-up ADR) is where it flips true.
 		CredentialsMounted: false,
-		// ModelRoute stays zero for fixed-vendor runtimes (spec §11); the
-		// BYO-endpoint resolution rides the same follow-up seam.
-		ModelRoute: wire.ModelRoute{},
+		// ModelRoute carries the resolved BYO endpoint (§11, §10.3). Empty
+		// means the runtime's own provider default (fixed-vendor).
+		ModelRoute: modelRoute,
 	}, nil
 }
 

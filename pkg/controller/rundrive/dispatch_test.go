@@ -27,6 +27,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -43,6 +44,9 @@ func dispatchScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := api.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := corev1.AddToScheme(s); err != nil { // BYO endpoint Secrets (§10.3)
 		t.Fatal(err)
 	}
 	return s
@@ -209,6 +213,90 @@ func TestOperatorDispatcherProducesScrapeableSeries(t *testing.T) {
 	}
 	if !strings.Contains(exposition, `ksquad_tool_calls_total{agent="coder",skill="git",tool="shell"}`) {
 		t.Errorf("exposition lacks ksquad_tool_calls_total{agent=\"coder\"} series:\n%s", exposition)
+	}
+}
+
+// TestBuildTaskProjectsBYOModelEndpoint is the ISI-3663 regression: an Agent
+// whose spec.modelEndpointRef resolves to an Ollama/OpenAI-compat Secret must
+// have that endpoint (URL + model + token) projected into the dispatched
+// wire.Task.ModelRoute — otherwise the sandbox never routes to the endpoint at
+// inference time (it was admission-validated but the route rode empty).
+func TestBuildTaskProjectsBYOModelEndpoint(t *testing.T) {
+	const runUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	run := &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-byo", Namespace: "team-a", UID: types.UID(runUID)},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "team-a"},
+			ProjectRef:  api.ObjectRef{Name: "proj-1"},
+			WorkItemRef: "99999999-8888-7777-6666-555555555555",
+			Agents:      []api.ObjectRef{{Name: "ollama-coder"}},
+		},
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "ollama-coder", Namespace: "team-a"},
+		Spec: api.AgentSpec{
+			Model:            "qwen3.6:latest",
+			ModelEndpointRef: &api.SecretRef{Name: "ollama-endpoint"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ollama-endpoint", Namespace: "team-a"},
+		Data: map[string][]byte{
+			"endpointURL": []byte("http://10.0.0.185:11434/v1"),
+			"apiToken":    []byte("s3cr3t-bearer"),
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, secret).Build()
+	d := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl},
+		source: fakeDispatchSource{title: "wire ollama", body: "route this run", fence: "3"},
+	}
+
+	task, err := d.buildTask(context.Background(), runUID, runUID)
+	if err != nil {
+		t.Fatalf("buildTask: %v", err)
+	}
+	if task.ModelRoute.Endpoint != "http://10.0.0.185:11434/v1" {
+		t.Errorf("ModelRoute.Endpoint = %q, want the resolved BYO base URL", task.ModelRoute.Endpoint)
+	}
+	if task.ModelRoute.Model != "qwen3.6:latest" {
+		t.Errorf("ModelRoute.Model = %q, want the agent's served model", task.ModelRoute.Model)
+	}
+	if task.ModelRoute.Token != "s3cr3t-bearer" {
+		t.Errorf("ModelRoute.Token = %q, want the resolved endpoint bearer (token-guarded BYO)", task.ModelRoute.Token)
+	}
+}
+
+// TestBuildTaskFailsClosedOnBadEndpoint pins the modelendpoint fail-closed
+// contract at the dispatch seam: an Agent with a modelEndpointRef pointing at a
+// missing Secret must ABORT the dispatch, never silently fall back to the paid
+// provider default (weak-local-model-must-not-fail-silently, story 5.7).
+func TestBuildTaskFailsClosedOnBadEndpoint(t *testing.T) {
+	const runUID = "ffffffff-1111-2222-3333-444444444444"
+	run := &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-bad", Namespace: "team-a", UID: types.UID(runUID)},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "team-a"},
+			ProjectRef:  api.ObjectRef{Name: "proj-1"},
+			WorkItemRef: "99999999-8888-7777-6666-555555555555",
+			Agents:      []api.ObjectRef{{Name: "dangling"}},
+		},
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "dangling", Namespace: "team-a"},
+		Spec: api.AgentSpec{
+			Model:            "qwen3.6:latest",
+			ModelEndpointRef: &api.SecretRef{Name: "does-not-exist"},
+		},
+	}
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	d := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl},
+		source: fakeDispatchSource{title: "x", body: "y", fence: "1"},
+	}
+
+	if _, err := d.buildTask(context.Background(), runUID, runUID); err == nil {
+		t.Fatal("buildTask must fail closed when a modelEndpointRef Secret is missing")
 	}
 }
 
