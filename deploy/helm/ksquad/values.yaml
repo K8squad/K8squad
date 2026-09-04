@@ -114,6 +114,20 @@ apiserver:
   # MUST match the console's KSQUAD_SESSION_COOKIE.
   sessionCookie: ksquad_session
 
+  # ── Managed-credential Secret-write grant (AD-6 / ISI-3671) ────────────────
+  # POST /api/credentials (E3-S1) is the apiserver's first Secret-write. It runs
+  # as the apiserver SA (created in rbac.yaml) and needs `secrets:create` — CREATE
+  # ONLY. Rendered by apiserver-rbac.yaml.
+  rbac:
+    # Bind the create-only `secrets` ClusterRole to the apiserver SA. Required for
+    # POST /api/credentials to function; without it the handler 403s → 502.
+    secretsCreate: true
+    # Cluster-side defense-in-depth: a ValidatingAdmissionPolicy (k8s >= 1.30, VAP
+    # GA at 1.30) that constrains the apiserver SA to creating only Secrets
+    # labelled ksquad.io/managed-credential=true in squad team namespaces
+    # (ksquad.io/tenancy=squad), failurePolicy: Fail. Disable on clusters < 1.30.
+    secretWriteAdmissionPolicy: true
+
   # ── Epic 15 auth seam (9.5 / ISI-2920) ────────────────────────────────────
   auth:
     # HS256 signing key for the internal JWT. SUPPLY A DURABLE ONE for any
