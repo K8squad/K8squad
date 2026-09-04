@@ -28,7 +28,16 @@ rules:
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+    # configmaps create/update/patch is the OTelConfig→collector egress overlay
+    # write path (ADR-0008 M1(b), ISI-3724): the operator owns the
+    # {release}-otel-collector-egress ConfigMap.
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Patch the collector Deployment's pod-template annotation
+  # (ksquad.io/otelconfig-generation) to trigger a rolling restart when egress
+  # changes — the collector has no hot-reload (ADR-0008 §Mechanism.5, ISI-3724).
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
