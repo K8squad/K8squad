@@ -77,6 +77,57 @@ describe("toWire nesting + optional omission", () => {
       skillRefs: [{ name: "s1" }, { name: "s2", namespace: "ns" }],
     });
     expect("modelEndpointRef" in w).toBe(false);
+    // No credentialClass / fallbackModel set on the default form ⇒ neither rides the wire.
+    expect("credentialClass" in w).toBe(false);
+    expect("fallbackModel" in w).toBe(false);
+  });
+
+  it("round-trips credentialClass + fallbackModel through toWire (ISI-3681 E3-S3 AC5)", () => {
+    const w = toWire(
+      agent({
+        project: "p",
+        name: "a1",
+        runtimeRef: "rt",
+        roleRef: "r",
+        model: "claude-opus-4-8",
+        credentialSecretRef: "cred/token",
+        credentialClass: "human-seat",
+        fallbackModel: "claude-haiku-4-5",
+        fallbackModelEndpointRef: "fb-endpoint/url",
+      }),
+    );
+    expect(w).toMatchObject({
+      credentialClass: "human-seat",
+      fallbackModel: { model: "claude-haiku-4-5", modelEndpointRef: { name: "fb-endpoint", key: "url" } },
+    });
+  });
+
+  it("omits the fallback endpoint ref when only a fallback model is set", () => {
+    const w = toWire(
+      agent({
+        project: "p",
+        name: "a1",
+        runtimeRef: "rt",
+        roleRef: "r",
+        model: "claude-opus-4-8",
+        credentialSecretRef: "cred",
+        fallbackModel: "ollama/llama3.1:8b",
+      }),
+    );
+    expect(w.fallbackModel).toEqual({ model: "ollama/llama3.1:8b" });
+    // A fallback endpoint with no fallback model is not a fallback at all — nothing rides.
+    const noFb = toWire(
+      agent({
+        project: "p",
+        name: "a1",
+        runtimeRef: "rt",
+        roleRef: "r",
+        model: "claude-opus-4-8",
+        credentialSecretRef: "cred",
+        fallbackModelEndpointRef: "orphan/url",
+      }),
+    );
+    expect("fallbackModel" in noFb).toBe(false);
   });
 
   it("emits skill git source and drops the inline branch (and vice versa)", () => {

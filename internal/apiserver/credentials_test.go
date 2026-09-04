@@ -129,6 +129,46 @@ func TestCredentialsProjection(t *testing.T) {
 	}
 }
 
+// TestCredentialsCredentialClassDualRead — the Credentials read-model prefers the authoritative
+// spec.credentialClass (ISI-3681 E3-S3 AC6 / R-CR1 C2) and falls back to the legacy
+// ksquad.io/credential-class annotation only when the spec field is empty. A spec value wins even
+// when a stale annotation disagrees, so the screen reflects what the injector/webhook actually read.
+func TestCredentialsCredentialClassDualRead(t *testing.T) {
+	const teamUID = "aaaaaaaa-7777-7777-7777-777777777777"
+
+	// spec-set: authoritative field present → used verbatim.
+	specAgent := agent("squad-a", "a-spec", "hermes", "sec-1")
+	specAgent.Spec.CredentialClass = "human-seat"
+
+	// legacy-annotation-only: no spec field → annotation fallback keeps the row honest.
+	legacyAgent := agent("squad-a", "b-legacy", "hermes", "sec-2")
+	legacyAgent.Annotations = map[string]string{"ksquad.io/credential-class": "service-account"}
+
+	// spec wins over a stale annotation that disagrees.
+	bothAgent := agent("squad-a", "c-both", "hermes", "sec-3")
+	bothAgent.Spec.CredentialClass = "service-account"
+	bothAgent.Annotations = map[string]string{"ksquad.io/credential-class": "human-seat"}
+
+	r := newCredReader(t, team("squad-a", "alpha", teamUID), specAgent, legacyAgent, bothAgent)
+	ov, err := r.Credentials(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	byName := map[string]string{}
+	for _, row := range ov.Agents {
+		byName[row.Agent] = row.CredentialClass
+	}
+	if byName["a-spec"] != "human-seat" {
+		t.Fatalf("spec.credentialClass must be read: got %q", byName["a-spec"])
+	}
+	if byName["b-legacy"] != "service-account" {
+		t.Fatalf("legacy annotation must be the fallback: got %q", byName["b-legacy"])
+	}
+	if byName["c-both"] != "service-account" {
+		t.Fatalf("spec must win over a stale annotation: got %q", byName["c-both"])
+	}
+}
+
 // TestCredentialsZeroKnowledgeIsUnknown — an Agent with no Runs, no annotations, and no
 // controller data must render health unknown, NOT a fabricated connected badge: absence of a
 // paused Run is not evidence the credential works (PR #87 review).

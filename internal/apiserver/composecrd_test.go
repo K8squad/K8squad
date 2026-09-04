@@ -310,6 +310,67 @@ func TestComposeAgentContributorAllowed(t *testing.T) {
 	}
 }
 
+// ── credentialClass + fallbackModel persist onto the Agent spec (ISI-3681 E3-S3 AC5, R-CR1 C1) ──
+//
+// Both fields must round-trip through agentRequest → planAgent onto Agent.spec, mirroring the
+// modelEndpointRef path exactly. credentialClass persist is MANDATORY (the injector/webhook read
+// it); fallbackModel carries its optional own-endpoint ref.
+func TestComposeAgentPersistsCredentialClassAndFallback(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{
+		Project: "widget", Name: "backend-dev", Model: "claude-opus-4-8",
+		CredentialClass: "human-seat",
+		FallbackModel: &fallbackModelWire{
+			Model:            "claude-haiku-4-5",
+			ModelEndpointRef: &secretRefWire{Name: "fb-endpoint", Key: "url"},
+		},
+	}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "backend-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.CredentialClass != "human-seat" {
+		t.Fatalf("credentialClass not persisted: %q", got.Spec.CredentialClass)
+	}
+	if got.Spec.FallbackModel == nil || got.Spec.FallbackModel.Model != "claude-haiku-4-5" {
+		t.Fatalf("fallbackModel not persisted: %+v", got.Spec.FallbackModel)
+	}
+	if got.Spec.FallbackModel.ModelEndpointRef == nil ||
+		got.Spec.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" ||
+		got.Spec.FallbackModel.ModelEndpointRef.Key != "url" {
+		t.Fatalf("fallbackModel endpoint ref not persisted: %+v", got.Spec.FallbackModel.ModelEndpointRef)
+	}
+}
+
+// ── an Agent composed without the optional fields leaves them unset (no phantom persist) ────────
+func TestComposeAgentOmitsUnsetOptionalFields(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{Project: "widget", Name: "plain-dev", Model: "claude-opus-4-8"}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "plain-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.CredentialClass != "" || got.Spec.FallbackModel != nil {
+		t.Fatalf("unset optionals must stay empty: class=%q fallback=%+v", got.Spec.CredentialClass, got.Spec.FallbackModel)
+	}
+}
+
 // ── an Agent with no write grant on its project → 404 (existence-hiding) ─────
 
 func TestComposeAgentNoMembershipNotFound(t *testing.T) {

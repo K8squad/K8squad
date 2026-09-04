@@ -110,6 +110,19 @@ export type AgentForm = {
   model: string;
   modelEndpointRef: string; // secret "name" or "name/key"; omitted when blank
   credentialSecretRef: string; // secret "name" or "name/key"
+  // credentialClass is the human-seat vs service-account axis (ISI-3681 E3-S3 / AD-4/AD-5). It
+  // persists onto Agent.spec.credentialClass — read by the injector (resolve.go) and webhook
+  // (validator.go) — so persisting it is MANDATORY (advisory-only leaves the auth-mode fork inert).
+  // "" ⇒ default (service-account) at injection time; the two explicit values are "human-seat" and
+  // "service-account". Omitted from the wire when blank.
+  credentialClass: string; // "" | "human-seat" | "service-account"
+  // fallbackModel is the secondary model for mid-Run rate_limited recovery (Agent.spec.fallbackModel).
+  // "" ⇒ no fallback (the field is omitted from the wire); otherwise it round-trips as
+  // { model, modelEndpointRef? }, mirroring the primary model's BYO endpoint path.
+  fallbackModel: string;
+  // fallbackModelEndpointRef optionally gives the fallback its own BYO endpoint Secret
+  // ("name" or "name/key"). Only serialized when both a fallbackModel and this ref are set.
+  fallbackModelEndpointRef: string;
   // UI-only: the "Bring your own endpoint" toggle (Story B, ISI-3555). NOT serialized — toWire
   // never emits it; the authoritative wire fields are `model` (+ `modelEndpointRef` when BYO is on).
   // When true, an endpoint Secret ref is required (validate); when false the ref is treated as
@@ -168,6 +181,9 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
           model: "",
           modelEndpointRef: "",
           credentialSecretRef: "",
+          credentialClass: "",
+          fallbackModel: "",
+          fallbackModelEndpointRef: "",
           byoEnabled: false,
         },
       };
@@ -255,6 +271,19 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
         model: f.model.trim(),
         ...(f.modelEndpointRef.trim() ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) } : {}),
         credentialSecretRef: parseSecretRef(f.credentialSecretRef),
+        ...(f.credentialClass.trim() ? { credentialClass: f.credentialClass.trim() } : {}),
+        // Fallback rides through only when a fallback model is set; its optional endpoint Secret
+        // mirrors the primary modelEndpointRef shape (name or name/key).
+        ...(f.fallbackModel.trim()
+          ? {
+              fallbackModel: {
+                model: f.fallbackModel.trim(),
+                ...(f.fallbackModelEndpointRef.trim()
+                  ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+                  : {}),
+              },
+            }
+          : {}),
       };
     }
     case "roles": {
