@@ -15,7 +15,6 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
-import { ModelSelector } from "./ModelSelector";
 import {
   COMPOSE_KINDS,
   KIND_LABEL,
