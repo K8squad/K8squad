@@ -1,0 +1,359 @@
+{{- /*
+  OpenTelemetry Collector gateway — Story 13.7 (obs-plan §6, §9, §10, ISI-3723).
+
+  The single telemetry-egress hop for the whole platform. Squad/agent shim OTLP
+  is PUSHED here; this Deployment (system namespace, governed egress) is the only
+  thing that talks to the vendor backend. Sandboxes never get direct vendor
+  egress — the collector routes telemetry THROUGH the tenancy model, it does not
+  punch a hole in it (obs-plan §10 "egress interaction"; the allowlist half lives
+  in otel-collector-networkpolicy.yaml).
+
+  Pipeline order is a HARD RULE of the plan and of the persona critical rules:
+    memory_limiter (FIRST) → k8sattributes → resource → redaction → tail_sampling → batch (LAST)
+  - memory_limiter first: backpressure before OOM.
+  - k8sattributes (NOT resourcedetection): KSquad is Kubernetes-native.
+  - redaction BEFORE any exporter: no secret/PII ever leaves the cluster boundary
+    (obs-plan §6, NFR-SEC3 + R9) — the collector is the backstop to service-side
+    discipline, double-guarded.
+  - tail_sampling AFTER enrichment/redaction (needs attrs to decide), BEFORE batch.
+  - batch last: batch after all mutation.
+*/ -}}
+{{- if .Values.observability.collector.enabled -}}
+{{- $name := include "ksquad.otel-collector.fullname" . -}}
+{{- $otlp := .Values.observability.export.otlp -}}
+{{- $vendorIsHTTP := or (hasPrefix "http://" $otlp.endpoint) (hasPrefix "https://" $otlp.endpoint) -}}
+{{- $vendorExporter := ternary "otlphttp/vendor" "otlp/vendor" $vendorIsHTTP -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+---
+{{- /* k8sattributes needs cluster-wide read on pods/namespaces/replicasets to
+       enrich k8s.* resource attributes. Read-only, no write anywhere. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+data:
+  collector.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      # Scrape control-plane /metrics off pods carrying prometheus.io/scrape,
+      # scoped to the release namespace (control plane only, not squad tenants).
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: ksquad-control-plane
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names: [{{ .Release.Namespace }}]
+              relabel_configs:
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  action: keep
+                  regex: "true"
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+                  action: replace
+                  target_label: __metrics_path__
+                  regex: (.+)
+                - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                  action: replace
+                  regex: ([^:]+)(?::\d+)?;(\d+)
+                  replacement: $$1:$$2
+                  target_label: __address__
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: k8s_namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: k8s_pod
+
+    processors:
+      # MUST be first — backpressure before OOM (persona critical rule).
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      # K8s-only enrichment. NEVER resourcedetection (that is for VM/bare-metal).
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+      resource:
+        attributes:
+          - key: service.namespace
+            value: {{ .Release.Namespace | quote }}
+            action: upsert
+          - key: deployment.environment
+            value: {{ .Values.observability.environment | quote }}
+            action: upsert
+      # PII + secret backstop, guard #1 (obs-plan §6): mask attribute VALUES that
+      # MATCH a secret shape, wherever they appear on spans & logs. Runs before any
+      # exporter so nothing sensitive crosses the cluster boundary.
+      redaction:
+        allow_all_keys: true
+        blocked_values:
+          - "(?i)bearer\\s+[a-z0-9._~+/-]+=*"                       # bearer tokens
+          - "sk-[A-Za-z0-9]{16,}"                                    # sk- style API keys
+          - "xox[baprs]-[A-Za-z0-9-]+"                               # slack tokens
+          - "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"    # JWTs (incl. OAuth)
+          - "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"        # emails
+        summary: debug
+      # Guard #2 (obs-plan §6): drop attributes whose KEY looks credential-shaped
+      # (the redaction processor keys off values, so key-name scrubbing lives in
+      # OTTL), and scrub free-text log BODIES — agent-authored content is untrusted
+      # and must never be logged verbatim.
+      transform/redaction:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+        log_statements:
+          - context: log
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+              - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
+              - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
+              - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
+              - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
+              - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+      # Keep failed/paused/error traces 100%; sample the healthy majority
+      # (obs-plan §4.2). Single-replica gateway assumption: tail_sampling needs a
+      # whole trace at one instance — see collector.replicas note in values.yaml.
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        expected_new_traces_per_sec: 200
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-failed-runs
+            type: string_attribute
+            string_attribute:
+              key: ksquad.run.terminal_reason
+              values: [failed, error, killed]
+          - name: keep-paused-runs
+            type: string_attribute
+            string_attribute:
+              key: ksquad.run.phase
+              values: [Paused]
+          - name: base-rate
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: {{ .Values.observability.traces.samplingPercentage }}
+      # MUST be last — batch after all mutation (persona critical rule).
+      batch:
+        send_batch_size: 8192
+        send_batch_max_size: 16384
+        timeout: 5s
+
+    exporters:
+      # In-cluster scrape surface (SLO rules in otel-collector-slo-rules.yaml
+      # read these). Always on so metrics stay observable even with no vendor.
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true
+      {{- if $otlp.endpoint }}
+      {{- /* HTTP(S) URL → otlphttp exporter; bare host:port → otlp (gRPC).
+             Mirrors the OTelConfig CRD endpoint semantics (grpc = host[:port],
+             http = full URL). */}}
+      {{ $vendorExporter }}:
+        endpoint: {{ $otlp.endpoint | quote }}
+        {{- if $otlp.auth.secretName }}
+        headers:
+          Authorization: "${env:KSQUAD_OTLP_AUTH}"
+        {{- end }}
+        tls:
+          insecure: {{ $otlp.insecure }}
+      {{- end }}
+      # Fallback sink so traces/logs pipelines always have >=1 exporter. When no
+      # vendor endpoint is set the collector still enforces the redaction/sampling
+      # pipeline and prints to stdout (basic verbosity); a real install sets
+      # observability.export.otlp.endpoint and telemetry ships to the backend.
+      debug:
+        verbosity: {{ if .Values.observability.collector.debugExporter }}detailed{{ else }}basic{{ end }}
+
+    {{- /* traces/logs export to the vendor when configured, else the debug sink. */}}
+    {{- $signalExporters := ternary $vendorExporter "debug" (not (empty $otlp.endpoint)) }}
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
+          exporters: [{{ $signalExporters }}]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, k8sattributes, resource, batch]
+          exporters: [prometheus{{ if $otlp.endpoint }}, {{ $vendorExporter }}{{ end }}]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          exporters: [{{ $signalExporters }}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+spec:
+  # SINGLE replica by design: tail_sampling needs every span of a trace at one
+  # instance. Scaling the gateway requires a loadbalancing-exporter fan-in tier
+  # (fast-follow, obs-plan §10 "custom collector (OCB) — deferred").
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: otel-collector
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: otel-collector
+      annotations:
+        checksum/config: {{ .Values.observability.collector.debugExporter | toString | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.observability.collector.image.repository }}:{{ .Values.observability.collector.image.tag }}"
+          imagePullPolicy: {{ .Values.observability.collector.image.pullPolicy }}
+          args: ["--config=/conf/collector.yaml"]
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: prom-export
+              containerPort: 8889
+          {{- if $otlp.auth.secretName }}
+          env:
+            - name: KSQUAD_OTLP_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $otlp.auth.secretName | quote }}
+                  key: {{ $otlp.auth.secretKey | quote }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.observability.collector.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8889"
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: prom-export
+      port: 8889
+      targetPort: 8889
+      protocol: TCP
+{{- end }}
