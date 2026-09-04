@@ -369,6 +369,27 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// E1 onboarding-dismiss write-path (ISI-3761 / FR-1.3): the server-side writer
+		// that persists the Launchpad-dismissal flag so the "Finish setup (n/4)" chip
+		// (E1-S3) follows a returning tenant across devices. It is the SOLE writer of
+		// the flag the progress projection above only reads. Team-scoped via the
+		// session (no {teamId} param ⇒ cross-tenant write structurally impossible); a
+		// first-run tenant with no Team CR 404s (dismissal is meaningless before
+		// milestone ①). Rides the SAME write choke point as the compose surface —
+		// sameOriginGuard (CSRF) + maxBytesBody (bounded body) — per the E2-S2 AC3
+		// write conventions. A nil write client (cluster-less dev run) keeps the
+		// documented 501.
+		onboardingDismiss := s.router.Path("/api/onboarding/dismiss").Subrouter()
+		onboardingDismiss.Use(authz)
+		onboardingDismiss.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		onboardingDismiss.Use(maxBytesBody(4 << 10)) // {dismissed: bool} is tiny; still bounded
+		if opts.ComposeCRD != nil {
+			onboardingDismiss.HandleFunc("", s.onboardingDismiss(opts.ComposeCRD.applier)).Methods(http.MethodPost)
+		} else {
+			onboardingDismiss.HandleFunc("", notImplemented("onboarding-dismiss write path", "ISI-3761: wire a ComposeService (controller-runtime client) to enable")).
+				Methods(http.MethodPost)
+		}
+
 		// Story A / 13.8 (ISI-2917) OTelConfig read model: GET /api/otelconfig
 		// serves the current cluster-scoped OTelConfig CR mapped to the client wire
 		// shape so the Settings page stops rendering "no exporters" once a CR

@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -49,7 +50,6 @@ import (
 // incomplete — the first-run tenant's honest answer is {step:1, done:0, nextMilestone:"team"},
 // not the 404 the other read models give (their projections are meaningless without a Team;
 // this projection's whole job is to describe that absence).
-
 // Onboarding milestone IDs, in journey order. nextMilestone carries one of these (empty when
 // the journey is complete).
 const (
@@ -159,7 +159,6 @@ func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string) (
 	if err != nil {
 		return OnboardingProgress{}, err
 	}
-
 	var agents ksquadv1.AgentList
 	if err := r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
 		return OnboardingProgress{}, err
@@ -168,14 +167,12 @@ func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string) (
 	if err := r.reader.List(ctx, &projects, client.InNamespace(team.ns)); err != nil {
 		return OnboardingProgress{}, err
 	}
-
 	// The dismissal/test-connection flags live on the Team CR — fetch it for the annotations
 	// (the resolveTeam list is memoized per UID and does not retain the object).
 	var teamCR ksquadv1.Team
 	if err := r.reader.Get(ctx, client.ObjectKey{Namespace: team.ns, Name: team.name}, &teamCR); err != nil {
 		return OnboardingProgress{}, err
 	}
-
 	complete := [OnboardingTotalMilestones]bool{
 		true, // ① team — resolved above
 		agentsMilestoneComplete(agents.Items),
@@ -257,8 +254,7 @@ func projectMilestoneComplete(projects []ksquadv1.Project) bool {
 
 // ── Team-annotation read/write helpers (AC3 / story task 4) ────────────────
 // Pure object-level helpers: they mutate/read the in-memory Team's annotations; persisting a
-// write is the caller's client.Update (the compose-crd write surface owns CR writes, R6).
-
+// write is the caller's applier.Update (the compose-crd write surface owns CR writes, R6).
 // OnboardingDismissed reads the Launchpad-dismissal flag from the Team CR.
 func OnboardingDismissed(team *ksquadv1.Team) bool {
 	return team.Annotations[OnboardingDismissedAnnotation] == "true"
@@ -318,4 +314,68 @@ func (s *Server) onboardingProgress(reader OnboardingReader) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, progress)
 	}
+}
+
+// onboardingDismiss is the handler behind POST /api/onboarding/dismiss (E1-S4 / FR-1.3): the
+// server-side write-path that persists the Launchpad-dismissal flag so the "Finish setup (n/4)"
+// chip (E1-S3) follows a returning tenant across devices. The GET projection (onboardingProgress)
+// only READS the flag; this is its sole writer (BFF stays GET-only by design).
+//
+// Tenancy mirrors the compose write surface (composecrd.go): the caller's Team is resolved from
+// the session (authScope → Team UID), NOT a path param, so a cross-tenant write is structurally
+// impossible (AC1). A first-run tenant with no Team CR 404s — dismissal is meaningless before
+// milestone ① (AC2). The write rides sameOriginGuard + maxBytesBody at the route (server.go),
+// matching the E2-S2 AC3 write conventions.
+func (s *Server) onboardingDismiss(applier CRDApplier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		teamUID, ok := authScope(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			Dismissed bool `json:"dismissed"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		// Resolve the caller's Team CR by UID (the same List-and-match the compose surface uses;
+		// authScope hands us the K8s object UID, not a name/namespace). A UID that matches no Team
+		// is the first-run tenant — 404 (AC2).
+		team, err := resolveTeamByUID(r.Context(), applier, teamUID)
+		if err != nil {
+			if errors.Is(err, ErrTeamNotFound) {
+				writeJSONError(w, http.StatusNotFound, "no team found for this caller")
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "team lookup failed")
+			return
+		}
+		SetOnboardingDismissed(team, req.Dismissed)
+		if err := applier.Update(r.Context(), team); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "failed to persist dismissal state")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"dismissed": req.Dismissed})
+	}
+}
+
+// resolveTeamByUID returns the caller's Team CR (the object to mutate + Update) by matching the
+// session's Team UID against every Team the applier can see. ErrTeamNotFound when none matches —
+// the first-run tenant. Mirrors ComposeService.teamNamespace, but returns the object itself since
+// the dismissal write mutates the Team CR's annotations in place.
+func resolveTeamByUID(ctx context.Context, applier CRDApplier, teamUID string) (*ksquadv1.Team, error) {
+	if teamUID == "" {
+		return nil, ErrTeamNotFound
+	}
+	var teams ksquadv1.TeamList
+	if err := applier.List(ctx, &teams); err != nil {
+		return nil, err
+	}
+	for i := range teams.Items {
+		if string(teams.Items[i].UID) == teamUID {
+			return &teams.Items[i], nil
+		}
+	}
+	return nil, ErrTeamNotFound
 }

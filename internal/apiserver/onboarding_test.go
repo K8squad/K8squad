@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -334,5 +335,103 @@ func TestOnboardingNilReaderStill501(t *testing.T) {
 	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/onboarding/progress", nil), devToken))
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("nil reader: got %d, want 501 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// --- dismiss write-path (ISI-3761 / FR-1.3) ------------------------------------------------------
+
+// testDismissServer wires a full server with a ComposeService over a fake client seeded with objs,
+// scoped to teamID. Returns the handler and the underlying client so tests can re-read the Team CR
+// to assert the persisted annotation.
+func testDismissServer(t *testing.T, teamID uuid.UUID, objs ...client.Object) (http.Handler, client.Client) {
+	t.Helper()
+	c := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: teamID},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		ComposeCRD:    NewComposeService(c, nil, nil),
+	})
+	return srv.Handler(), c
+}
+
+func dismissReq(body string) *http.Request {
+	return withSession(httptest.NewRequest(http.MethodPost, "/api/onboarding/dismiss", strings.NewReader(body)), devToken)
+}
+
+// TestDismissRoundTrip — set then clear: the flag persists to the Team CR annotation and reads back
+// on the response body, and clearing removes the annotation (absent beats stale false).
+func TestDismissRoundTrip(t *testing.T) {
+	teamID := uuid.MustParse("eeee1111-1111-1111-1111-111111111111")
+	h, c := testDismissServer(t, teamID, team("squad-a", "alpha", teamID.String()))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dismissReq(`{"dismissed":true}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got map[string]bool
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !got["dismissed"] {
+		t.Fatalf("body must echo dismissed=true: %v", got)
+	}
+	var tm ksquadv1.Team
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "squad-a", Name: "alpha"}, &tm); err != nil {
+		t.Fatalf("re-read team: %v", err)
+	}
+	if !OnboardingDismissed(&tm) {
+		t.Fatalf("annotation must persist after set: %v", tm.Annotations)
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, dismissReq(`{"dismissed":false}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "squad-a", Name: "alpha"}, &tm); err != nil {
+		t.Fatalf("re-read team: %v", err)
+	}
+	if _, ok := tm.Annotations[OnboardingDismissedAnnotation]; ok {
+		t.Fatalf("clearing must delete the annotation: %v", tm.Annotations)
+	}
+}
+
+// TestDismissFirstRun404 — a session whose Team UID matches no Team CR (first-run tenant, or any
+// non-matching tenant) gets 404: dismissal is meaningless before milestone ①, and the route has no
+// {teamId} param so a cross-tenant write is structurally impossible (AC2). A foreign Team exists but
+// is not the caller's — still 404.
+func TestDismissFirstRun404(t *testing.T) {
+	teamID := uuid.MustParse("ffff1111-1111-1111-1111-111111111111")
+	h, _ := testDismissServer(t, teamID, team("squad-b", "beta", "00000000-0000-0000-0000-000000000000"))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dismissReq(`{"dismissed":true}`))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("no matching team: got %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDismissUnauthenticated — no session ⇒ 401 at the choke point.
+func TestDismissUnauthenticated(t *testing.T) {
+	teamID := uuid.MustParse("abcd1111-1111-1111-1111-111111111111")
+	h, _ := testDismissServer(t, teamID, team("squad-a", "alpha", teamID.String()))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/onboarding/dismiss", strings.NewReader(`{"dismissed":true}`)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no session: got %d, want 401", rec.Code)
+	}
+}
+
+// TestDismissNilComposeStill501 — with no write client wired the route keeps the documented 501.
+func TestDismissNilComposeStill501(t *testing.T) {
+	teamID := uuid.MustParse("dcba1111-1111-1111-1111-111111111111")
+	h := testOnboardingServer(t, teamID, newOnboardingReader(t)) // no ComposeCRD wired
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dismissReq(`{"dismissed":true}`))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("nil compose: got %d, want 501 (body %s)", rec.Code, rec.Body.String())
 	}
 }
