@@ -64,6 +64,28 @@ spec:
                    loudly, ledger stays honest). */}}
             - name: KSQUAD_SHIM_BIN
               value: /usr/local/bin/shim
+            {{- /* ISI-3745: the workspace PVC family reads its StorageClass /
+                   size / access mode from the storage contract, never the
+                   cluster default. The `<fullname>-storage` ConfigMap resolves
+                   `storage.workspace.*` (with the global fallback) and the
+                   operator stamps these onto every per-Run workspace PVC
+                   (pkg/workspace/manager.go). Unset here = the operator's
+                   compile-time fallback, which is the very bug this fixes. */}}
+            - name: KSQUAD_WORKSPACE_STORAGE_CLASS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "ksquad.fullname" . }}-storage
+                  key: workspace.storageClassName
+            - name: KSQUAD_WORKSPACE_PVC_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "ksquad.fullname" . }}-storage
+                  key: workspace.size
+            - name: KSQUAD_WORKSPACE_ACCESS_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "ksquad.fullname" . }}-storage
+                  key: workspace.accessMode
             {{- with .Values.operator.shimRuntimeType }}
             - name: KSQUAD_RUNTIME_TYPE
               value: {{ . | quote }}

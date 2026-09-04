@@ -39,6 +39,24 @@ spec:
         {{- include "k8squad.otelEnv" . | nindent 8 }}
         - name: KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED
           value: {{ .Values.tools.rbac.clusterScopeEnabled | default false | quote }}
+        {{- /* ISI-3745: hand the operator the workspace PVC StorageClass / size /
+               access mode from Helm values so every per-Run workspace PVC comes
+               from the storage contract, never the cluster default (which on
+               k8squad-test has no `standard` class → PVC Pending → Run stranded).
+               An empty defaultClass is omitted here and the operator falls back
+               to its compile-time default (pkg/workspace/manager.go). */}}
+        {{- with .Values.workspacePVC.defaultClass }}
+        - name: KSQUAD_WORKSPACE_STORAGE_CLASS
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.workspacePVC.defaultSize }}
+        - name: KSQUAD_WORKSPACE_PVC_SIZE
+          value: {{ . | quote }}
+        {{- end }}
+        {{- with (first .Values.workspacePVC.defaultAccessModes) }}
+        - name: KSQUAD_WORKSPACE_ACCESS_MODE
+          value: {{ . | quote }}
+        {{- end }}
         {{- with .Values.controlPlane.operator.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -24,13 +24,16 @@ import { NavIcon } from "@/components/nav/NavIcon";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
 import { UserMenu } from "@/components/nav/UserMenu";
+import { SetupChip } from "@/components/nav/SetupChip";
 import {
   mobileNav,
   navTree,
   visibleNav,
+  withOnboardingLock,
   withProject,
   type AccessLevel,
   type NavNode,
+  type OnboardingProgress,
 } from "@/lib/nav";
 
 function activeIds(pathname: string): Set<string> {
@@ -67,6 +70,29 @@ function NodeLink({
   onNavigate?: () => void;
   expanded?: boolean;
 }) {
+  // E1-S3 soft lock (AD-10, FR-1.4): a locked node stays VISIBLE but renders as inert
+  // text with a padlock glyph — never a link, never pruned from the DOM. The text
+  // equivalent (NFR-4) is the aria-label + sr-only hint; the title gives sighted users
+  // the same reason on hover.
+  if (node.locked) {
+    return (
+      <span
+        className="rail__link rail__link--locked"
+        data-expanded={expanded}
+        aria-disabled="true"
+        aria-label={`${node.label} (locked — finish setup to unlock)`}
+        title="Locked until your first Team exists — finish setup to unlock"
+      >
+        <span className="rail__icon">
+          <NavIcon id={node.id} />
+        </span>
+        <span className="rail__label">{node.label}</span>
+        <span className="rail__lock" aria-hidden="true">
+          <NavIcon id="lock" size={13} />
+        </span>
+      </span>
+    );
+  }
   const href = node.scope === "project" && projectId
     ? withProject(node.href, projectId)
     : node.scope === "project"
@@ -89,6 +115,7 @@ function NodeLink({
         <NavIcon id={node.id} />
       </span>
       <span className="rail__label">{node.label}</span>
+      {node.badge && <span className="rail__badge">{node.badge}</span>}
     </Link>
   );
 }
@@ -107,6 +134,8 @@ export function ConsoleShell({
   const pathname = usePathname() ?? "/";
   const [railExpanded, setRailExpanded] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // E1-S3: the AD-2 onboarding projection drives the nav lock + "Finish setup" chip.
+  const [progress, setProgress] = useState<OnboardingProgress | null>(null);
 
   // Close transient surfaces on navigation.
   useEffect(() => {
@@ -114,11 +143,35 @@ export function ConsoleShell({
     setDrawerOpen(false);
   }, [pathname]);
 
+  // Read the onboarding projection once per mount (E1-S1 BFF proxy). Fail-open: if the
+  // endpoint is unreachable, unauthenticated, or not yet wired (E1-S1 still landing), the
+  // nav simply renders unlocked with no chip — the lock is a courtesy rail, never an
+  // authz wall (the apiserver's gates stay the real wall).
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/onboarding/progress", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((p) => {
+        if (cancelled || !p || typeof p.done !== "number" || typeof p.total !== "number") {
+          return;
+        }
+        setProgress(p as OnboardingProgress);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const ids = activeIds(pathname);
-  const nodes = visibleNav(tree, access);
+  // FR-1.4: until a Team exists (milestone ① is always the first incomplete one when it
+  // doesn't, so nextMilestone === "team"), gate the non-setup surfaces with the soft lock.
+  const teamExists = progress ? progress.nextMilestone !== "team" : true;
+  const lockedTree = withOnboardingLock(tree, teamExists);
+  const nodes = visibleNav(lockedTree, access);
   const projectMatch = pathname.match(/^\/projects\/([^/]+)/);
   const activeProject = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
-  const { bottom, drawer } = mobileNav(access, tree);
+  const { bottom, drawer } = mobileNav(access, lockedTree);
 
   return (
     <div className="shell">
@@ -183,6 +236,8 @@ export function ConsoleShell({
             ),
           )}
         </nav>
+        {/* E1-S3: persistent way back to setup (renders only when incomplete + dismissed). */}
+        <SetupChip progress={progress} />
         {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
         <div className="rail__foot">
           <UserMenu username={username} variant="rail" />
@@ -275,6 +330,8 @@ export function ConsoleShell({
                 ),
               )}
             </div>
+            {/* E1-S3 chip, also reachable on mobile. */}
+            <SetupChip progress={progress} onNavigate={() => setDrawerOpen(false)} />
             {/* Sign-out also reachable from the mobile drawer (ISI-3570). */}
             <div className="drawer__foot">
               <UserMenu username={username} variant="drawer" />

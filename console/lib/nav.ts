@@ -36,6 +36,16 @@ export type NavNode = {
    * never passed to a link renderer. RBAC on the CHILDREN still applies via {@link visibleNav}.
    */
   section?: boolean;
+  /**
+   * Soft lock (E1-S3 / AD-10): the node stays VISIBLE but renders disabled with a padlock
+   * glyph + text equivalent (NFR-4) — the softer sibling of `requiredAccess` pruning.
+   * Derived, never hand-set in the canonical tree: {@link withOnboardingLock} stamps it
+   * from the AD-2 progress projection ("no Team exists yet" gating, FR-1.4). `visibleNav`
+   * never prunes a locked node — lock means shown-but-inert, never absent-from-DOM.
+   */
+  locked?: boolean;
+  /** Optional short badge rendered beside the label (AD-10), e.g. a count. */
+  badge?: string;
   children?: NavNode[];
 };
 
@@ -226,4 +236,66 @@ export function breadcrumbFor(pathname: string): Crumb[] {
   const last = crumbs[crumbs.length - 1];
   crumbs[crumbs.length - 1] = { label: last.label, href: null };
   return crumbs;
+}
+
+/* ——— E1-S3 onboarding nav lock + "Finish setup" chip (AD-10, FR-1.3/1.4) ——— */
+
+/**
+ * The AD-2 onboarding projection the console reads from GET /api/onboarding/progress
+ * (E1-S1, ISI-3673). `step` is the 1-based first INCOMPLETE milestone, `done` counts every
+ * complete milestone, `total` is the fixed journey length (4), `nextMilestone` names the
+ * first incomplete milestone id (empty at 4/4), and `dismissed` surfaces the Team-CR
+ * "user dismissed the Launchpad" annotation (ksquad.io/onboarding-dismissed).
+ */
+export type OnboardingProgress = {
+  step: number;
+  done: number;
+  total: number;
+  nextMilestone?: string;
+  dismissed?: boolean;
+};
+
+/**
+ * Onboarding milestone id → the console surface where that milestone is completed (FR-1.3).
+ * Journey order is ① team · ② agents · ③ models · ④ project (internal/apiserver/onboarding.go).
+ * Team and Project are authored on the Compose CRD surface; Models & credentials lives on
+ * the Credentials screen. Kept here so the nav chip (E1-S3) and the Launchpad (E1-S2) share
+ * ONE routing table.
+ */
+export const ONBOARDING_MILESTONE_HREF: Record<string, string> = {
+  team: "/compose",
+  agents: "/agents",
+  models: "/credentials",
+  project: "/compose",
+};
+
+/**
+ * Top-level nav ids gated behind "a Team exists" (FR-1.4). Dashboard, Overview and Compose
+ * stay open on purpose: Overview carries the setup hub (Launchpad, E1-S2) and Compose is
+ * where milestone ① (the Team CR) is authored — locking them would strand first-run Nadia.
+ * The lock clears the moment the Team-exists signal flips true.
+ */
+const LOCKED_UNTIL_TEAM: ReadonlySet<string> = new Set([
+  "projects",
+  "agents",
+  "settings",
+  "users",
+]);
+
+/**
+ * Derive the soft-locked tree from the canonical one (AD-10). When `teamExists` is false,
+ * every gated node (and its children, by inheritance) is stamped `locked: true` — it stays
+ * in the tree, so `visibleNav` still returns it and every breakpoint renders it
+ * visible-but-disabled. When `teamExists` is true the tree is returned untouched (4/4 or
+ * any Team → everything unlocked, AC4). Pure: the input tree is never mutated.
+ */
+export function withOnboardingLock(tree: NavNode[], teamExists: boolean): NavNode[] {
+  if (teamExists) return tree;
+  const lock = (nodes: NavNode[], inherited: boolean): NavNode[] =>
+    nodes.map((node) => {
+      const locked = inherited || LOCKED_UNTIL_TEAM.has(node.id);
+      const children = node.children ? lock(node.children, locked) : undefined;
+      return locked || children ? { ...node, locked, ...(children ? { children } : {}) } : node;
+    });
+  return lock(tree, false);
 }

@@ -103,7 +103,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 
 	overlay, err := telemetry.RenderEgressOverlay(sel)
 	if err != nil {
-		return ctrl.Result{}, r.reportNotReady(ctx, sel, "RenderFailed", err)
+		// A bad/invalid routing spec is a real export-config failure: erroring.
+		return ctrl.Result{}, r.reportNotReady(ctx, sel, "RenderFailed", err, ksquadv1alpha1.SignalStateErroring)
 	}
 
 	collector, err := r.findCollector(ctx)
@@ -114,8 +115,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		// Collector not up yet; requeue by returning an error is noisy — report
 		// and let the next OTelConfig event (or the collector appearing) retry.
 		logger.Info("otelegress: collector Deployment not found yet; will retry on next event")
+		// Collector still coming up during bootstrap — transient, not an export
+		// failure: pending, so the Console card doesn't false-alarm as erroring.
 		return ctrl.Result{}, r.reportNotReady(ctx, sel, "CollectorNotFound",
-			fmt.Errorf("collector Deployment (label %s=%s) not found in %q", componentLabelKey, collectorComponent, r.Namespace))
+			fmt.Errorf("collector Deployment (label %s=%s) not found in %q", componentLabelKey, collectorComponent, r.Namespace),
+			ksquadv1alpha1.SignalStatePending)
 	}
 
 	changed, err := r.applyOverlay(ctx, collector.Namespace, collector.Name+egressConfigMapSuffix, overlay)
@@ -235,18 +239,20 @@ func (r *Reconciler) reportReady(ctx context.Context, cfg *ksquadv1alpha1.OTelCo
 	if changed {
 		msg = "collector egress overlay applied from OTelConfig; collector rolled"
 	}
-	return r.setCondition(ctx, cfg, metav1.ConditionTrue, "EgressApplied", msg)
+	return r.setCondition(ctx, cfg, metav1.ConditionTrue, "EgressApplied", msg, ksquadv1alpha1.SignalStateHealthy)
 }
 
-func (r *Reconciler) reportNotReady(ctx context.Context, cfg *ksquadv1alpha1.OTelConfig, reason string, cause error) error {
+func (r *Reconciler) reportNotReady(ctx context.Context, cfg *ksquadv1alpha1.OTelConfig, reason string, cause error, signalState ksquadv1alpha1.SignalState) error {
 	// Report the readiness regression but surface the original cause to requeue.
-	_ = r.setCondition(ctx, cfg, metav1.ConditionFalse, reason, cause.Error())
+	_ = r.setCondition(ctx, cfg, metav1.ConditionFalse, reason, cause.Error(), signalState)
 	return cause
 }
 
-// setCondition updates the OTelConfig's EgressReady condition. A status-update
-// failure is logged, not fatal — the overlay is already applied by then.
-func (r *Reconciler) setCondition(ctx context.Context, cfg *ksquadv1alpha1.OTelConfig, status metav1.ConditionStatus, reason, msg string) error {
+// setCondition updates the OTelConfig's EgressReady condition and, per D-AC2
+// (ISI-3621), the per-signal export health on status.signals via SetSignal. A
+// status-update failure is logged, not fatal — the overlay is already applied
+// by then.
+func (r *Reconciler) setCondition(ctx context.Context, cfg *ksquadv1alpha1.OTelConfig, status metav1.ConditionStatus, reason, msg string, configuredState ksquadv1alpha1.SignalState) error {
 	next := cfg.DeepCopy()
 	next.Status.ObservedGeneration = cfg.Generation
 	meta.SetStatusCondition(&next.Status.Conditions, metav1.Condition{
@@ -256,11 +262,39 @@ func (r *Reconciler) setCondition(ctx context.Context, cfg *ksquadv1alpha1.OTelC
 		Message:            msg,
 		ObservedGeneration: cfg.Generation,
 	})
+	applySignals(&next.Status, next.Spec, configuredState, msg)
 	if err := r.Status().Update(ctx, next); err != nil {
 		log.FromContext(ctx).Error(err, "otelegress: update otelconfig status", "otelconfig", cfg.Name)
 		return nil
 	}
 	return nil
+}
+
+// applySignals populates status.signals for the three OTLP signals (D-AC2 /
+// ISI-3621). A signal with no routing in the spec is `disabled`; a configured
+// signal takes configuredState — `healthy` when the egress overlay reconciled
+// cleanly, `erroring` (with a secret-free reason) on a config/render failure,
+// or `pending` while the collector has not come up yet. This is reconcile-
+// derived health (ADR W6, reconcile-scoped): `healthy` means the routing is
+// applied to the collector, not that the vendor acknowledged datapoints.
+// detail is only attached to non-healthy states and never carries a token value
+// — it is the EgressReady condition message, built from spec fields and Secret
+// reference *names* only (D-AC3).
+func applySignals(st *ksquadv1alpha1.OTelConfigStatus, spec ksquadv1alpha1.OTelConfigSpec, configuredState ksquadv1alpha1.SignalState, detail string) {
+	set := func(key string, routing *ksquadv1alpha1.SignalRouting) {
+		if routing == nil {
+			st.SetSignal(key, ksquadv1alpha1.SignalStateDisabled, "")
+			return
+		}
+		d := ""
+		if configuredState != ksquadv1alpha1.SignalStateHealthy {
+			d = detail
+		}
+		st.SetSignal(key, configuredState, d)
+	}
+	set("traces", spec.Traces)
+	set("metrics", spec.Metrics)
+	set("logs", spec.Logs)
 }
 
 // SetupWithManager registers the otelegress controller. It reconciles on every
