@@ -178,6 +178,9 @@ func main() {
 	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
 	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
 	var org apiserver.OrgReader
+	// Story A / 13.8 OTelConfig read model (ISI-2917): a projection over the SAME
+	// cache — the cluster-scoped OTelConfig CR the Settings page reads.
+	var otelConfig apiserver.OTelConfigSource
 	// 8.8a dashboard: the same informer cache that backs overview/credentials
 	// also feeds the dashboard's live-Runs tile, so the cache block below is
 	// the ONE place all three read models get their reader.
@@ -189,6 +192,7 @@ func main() {
 		overview = apiserver.NewClientOverviewReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
+		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
 	}
@@ -369,6 +373,7 @@ func main() {
 		Overview:      overview,
 		Credentials:   credentials,
 		Org:           org,
+		OTelConfig:    otelConfig,
 		Builds:        builds,
 		Artifacts:     artifacts,
 		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
