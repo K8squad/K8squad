@@ -310,6 +310,67 @@ func TestComposeAgentContributorAllowed(t *testing.T) {
 	}
 }
 
+// ── credentialClass + fallbackModel persist onto the Agent spec (ISI-3681 E3-S3 AC5, R-CR1 C1) ──
+//
+// Both fields must round-trip through agentRequest → planAgent onto Agent.spec, mirroring the
+// modelEndpointRef path exactly. credentialClass persist is MANDATORY (the injector/webhook read
+// it); fallbackModel carries its optional own-endpoint ref.
+func TestComposeAgentPersistsCredentialClassAndFallback(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{
+		Project: "widget", Name: "backend-dev", Model: "claude-opus-4-8",
+		CredentialClass: "human-seat",
+		FallbackModel: &fallbackModelWire{
+			Model:            "claude-haiku-4-5",
+			ModelEndpointRef: &secretRefWire{Name: "fb-endpoint", Key: "url"},
+		},
+	}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "backend-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.CredentialClass != "human-seat" {
+		t.Fatalf("credentialClass not persisted: %q", got.Spec.CredentialClass)
+	}
+	if got.Spec.FallbackModel == nil || got.Spec.FallbackModel.Model != "claude-haiku-4-5" {
+		t.Fatalf("fallbackModel not persisted: %+v", got.Spec.FallbackModel)
+	}
+	if got.Spec.FallbackModel.ModelEndpointRef == nil ||
+		got.Spec.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" ||
+		got.Spec.FallbackModel.ModelEndpointRef.Key != "url" {
+		t.Fatalf("fallbackModel endpoint ref not persisted: %+v", got.Spec.FallbackModel.ModelEndpointRef)
+	}
+}
+
+// ── an Agent composed without the optional fields leaves them unset (no phantom persist) ────────
+func TestComposeAgentOmitsUnsetOptionalFields(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{Project: "widget", Name: "plain-dev", Model: "claude-opus-4-8"}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "plain-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.CredentialClass != "" || got.Spec.FallbackModel != nil {
+		t.Fatalf("unset optionals must stay empty: class=%q fallback=%+v", got.Spec.CredentialClass, got.Spec.FallbackModel)
+	}
+}
+
 // ── an Agent with no write grant on its project → 404 (existence-hiding) ─────
 
 func TestComposeAgentNoMembershipNotFound(t *testing.T) {
@@ -386,204 +447,5 @@ func mustJSON(t *testing.T, w *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if err := json.Unmarshal(w.Body.Bytes(), v); err != nil {
 		t.Fatalf("decode response %q: %v", w.Body.String(), err)
-	}
-}
-
-// ── squad materialize (ISI-3677, AD-3) ───────────────────────────────────────
-
-// squadReq builds a minimal valid squadRequest for a template.
-func squadReq(template, teamName string) squadRequest {
-	req := squadRequest{Template: template, Project: "widget"}
-	if teamName != "" {
-		req.Team = &teamRequest{Name: teamName}
-	}
-	return req
-}
-
-func TestComposeSquadMaterialize_MinimalTrioHappyPath(t *testing.T) {
-	// Admin caller: Team compose is admin-only (invariant 2), and onboarding's
-	// first-run materialize creates the Team.
-	svc, prov := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("root", teamUID, true), squadReq("minimal-trio", "acme-squad"), nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var res squadResponse
-	mustJSON(t, w, &res)
-	if res.Team == nil || res.Team.Kind != "Team" || res.Team.Name != "acme-squad" || res.Team.Operation != "created" {
-		t.Fatalf("unexpected team result: %+v", res.Team)
-	}
-	if len(res.Agents) != 3 {
-		t.Fatalf("minimal-trio must create 3 agents, got %d", len(res.Agents))
-	}
-	if len(res.Errors) != 0 {
-		t.Fatalf("want no errors, got %+v", res.Errors)
-	}
-	// Every agent references its seeded Role preset + the shared credential (AD-5),
-	// with the per-preset default model (FR-6.1).
-	wantRole := map[string]string{"boss": "role-boss", "implementer": "role-implementer", "manager": "role-manager"}
-	wantModel := map[string]string{"boss": "claude-opus-5", "implementer": "claude-sonnet-5", "manager": "claude-sonnet-5"}
-	for _, a := range res.Agents {
-		var got ksquadv1.Agent
-		if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: a.Name}, &got); err != nil {
-			t.Fatalf("agent %s not applied: %v", a.Name, err)
-		}
-		if got.Spec.RoleRef.Name != wantRole[a.Name] {
-			t.Fatalf("agent %s: want roleRef %s, got %s", a.Name, wantRole[a.Name], got.Spec.RoleRef.Name)
-		}
-		if got.Spec.CredentialSecretRef.Name != "model-credentials" || got.Spec.CredentialSecretRef.Key != "token" {
-			t.Fatalf("agent %s: shared credential not set: %+v", a.Name, got.Spec.CredentialSecretRef)
-		}
-		if got.Spec.RuntimeRef.Name != "claude-code" {
-			t.Fatalf("agent %s: default runtime not set: %+v", a.Name, got.Spec.RuntimeRef)
-		}
-		if got.Spec.Model != wantModel[a.Name] {
-			t.Fatalf("agent %s: want model %s, got %s", a.Name, wantModel[a.Name], got.Spec.Model)
-		}
-	}
-	// Provenance: 1 Team + 3 Agents, all server-stamped.
-	if len(*prov) != 4 {
-		t.Fatalf("want 4 provenance rows, got %d: %+v", len(*prov), *prov)
-	}
-}
-
-func TestComposeSquadMaterialize_SoloTemplate(t *testing.T) {
-	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", teamUID, false), squadReq("solo", ""), nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var res squadResponse
-	mustJSON(t, w, &res)
-	if res.Team != nil {
-		t.Fatalf("no team requested ⇒ no team result, got %+v", res.Team)
-	}
-	if len(res.Agents) != 2 {
-		t.Fatalf("solo must create Boss+Impl (2 agents), got %d", len(res.Agents))
-	}
-}
-
-func TestComposeSquadMaterialize_BMADTemplate(t *testing.T) {
-	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", teamUID, false), squadReq("bmad", ""), nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var res squadResponse
-	mustJSON(t, w, &res)
-	if len(res.Agents) != 10 {
-		t.Fatalf("bmad must create the examples/bmad-team set (10 agents), got %d", len(res.Agents))
-	}
-	for _, a := range res.Agents {
-		var got ksquadv1.Agent
-		if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: a.Name}, &got); err != nil {
-			t.Fatalf("agent %s not applied: %v", a.Name, err)
-		}
-		switch got.Spec.RoleRef.Name {
-		case "role-boss", "role-implementer", "role-manager":
-		default:
-			t.Fatalf("agent %s references non-seeded role %s", a.Name, got.Spec.RoleRef.Name)
-		}
-	}
-}
-
-func TestComposeSquadMaterialize_InvalidTemplate422(t *testing.T) {
-	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", teamUID, false), squadReq("nope", ""), nil)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("want 422, got %d: %s", w.Code, w.Body.String())
-	}
-	var res struct {
-		Error  string       `json:"error"`
-		Fields []fieldError `json:"fields"`
-	}
-	mustJSON(t, w, &res)
-	if res.Error != "validation failed" || len(res.Fields) != 1 || res.Fields[0].Field != "template" {
-		t.Fatalf("want template field error, got %+v", res)
-	}
-}
-
-func TestComposeSquadMaterialize_Unauthenticated401(t *testing.T) {
-	svc, _ := newComposeFixture(t, nil)
-	r := httptest.NewRequest(http.MethodPost, "/api/compose/squad", strings.NewReader(`{"template":"solo"}`))
-	w := httptest.NewRecorder()
-	svc.handleComposeSquad(w, r)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("want 401, got %d", w.Code)
-	}
-}
-
-func TestComposeSquadMaterialize_NoTeamNamespace404(t *testing.T) {
-	svc, _ := newComposeFixture(t, nil)
-	// A caller whose Team UID resolves to no Team → cross-tenant 404.
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", "33333333-3333-3333-3333-333333333333", true), squadReq("solo", ""), nil)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404, got %d: %s", w.Code, w.Body.String())
-	}
-}
-
-func TestComposeSquadMaterialize_TeamAlreadyExisting(t *testing.T) {
-	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer),
-		&ksquadv1.Team{ObjectMeta: metav1.ObjectMeta{Name: "acme-squad", Namespace: teamNS}})
-	// Admin so the (admin-only) Team plan authorizes; the existing Team is
-	// reported as "existing", not a 409 failure (AC1: created if absent).
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("root", teamUID, true), squadReq("solo", "acme-squad"), nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var res squadResponse
-	mustJSON(t, w, &res)
-	if res.Team == nil || res.Team.Operation != "existing" {
-		t.Fatalf("want team operation existing, got %+v", res.Team)
-	}
-	if len(res.Agents) != 2 || len(res.Errors) != 0 {
-		t.Fatalf("want 2 agents and no errors, got %+v", res)
-	}
-}
-
-func TestComposeSquadMaterialize_PartialFailure207Verbatim(t *testing.T) {
-	// The caller has no membership on the agents' project scope → every Agent
-	// fails with 404 (existence-hiding), surfaced verbatim (AC4, NFR-5).
-	svc, _ := newComposeFixture(t, nil)
-	req := squadReq("minimal-trio", "")
-	req.Project = "widget"
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", teamUID, false), req, nil)
-	if w.Code != http.StatusMultiStatus {
-		t.Fatalf("want 207, got %d: %s", w.Code, w.Body.String())
-	}
-	var res squadResponse
-	mustJSON(t, w, &res)
-	if len(res.Agents) != 0 || len(res.Errors) != 3 {
-		t.Fatalf("want 0 created + 3 verbatim errors, got %+v", res)
-	}
-	for _, e := range res.Errors {
-		if e.Kind != "Agent" || e.Status != http.StatusNotFound || e.Error == "" {
-			t.Fatalf("error not verbatim: %+v", e)
-		}
-	}
-}
-
-func TestComposeSquadMaterialize_ModelOverride(t *testing.T) {
-	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
-	req := squadReq("solo", "")
-	req.Models = map[string]string{"boss": "claude-opus-4-8"}
-	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
-		caller("alice", teamUID, false), req, nil)
-	if w.Code != http.StatusCreated {
-		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
-	}
-	var got ksquadv1.Agent
-	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "boss"}, &got); err != nil {
-		t.Fatalf("boss agent not applied: %v", err)
-	}
-	if got.Spec.Model != "claude-opus-4-8" {
-		t.Fatalf("console-supplied model must win (presets.ts), got %s", got.Spec.Model)
 	}
 }

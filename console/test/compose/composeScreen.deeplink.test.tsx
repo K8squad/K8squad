@@ -24,16 +24,24 @@ function renderWith(query: string) {
   return render(<ComposeScreen />);
 }
 
+// E5-S1 (ISI-3685): the kind <select> is replaced by a tab bar (role="tablist"
+// aria-label="Compose kind"); the selected kind is the tab with aria-selected="true".
+function activeTab() {
+  return screen
+    .getAllByRole("tab")
+    .find((t) => t.getAttribute("aria-selected") === "true");
+}
+
 describe("ComposeScreen deep-link seeding", () => {
   it("?kind=agents pre-selects the Agent kind in create mode (AC2)", () => {
     renderWith("kind=agents");
-    expect((screen.getByLabelText("Compose kind") as HTMLSelectElement).value).toBe("agents");
+    expect(activeTab()).toHaveTextContent("Agent");
     expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("?kind=agents&mode=edit&name=<n> seeds edit mode with the name pre-filled (AC3)", () => {
     renderWith("kind=agents&mode=edit&name=reviewer");
-    expect((screen.getByLabelText("Compose kind") as HTMLSelectElement).value).toBe("agents");
+    expect(activeTab()).toHaveTextContent("Agent");
     expect(screen.getByRole("button", { name: "Edit by name" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -43,13 +51,13 @@ describe("ComposeScreen deep-link seeding", () => {
 
   it("a bare mount with no params is unchanged — projects / create (AC4)", () => {
     renderWith("");
-    expect((screen.getByLabelText("Compose kind") as HTMLSelectElement).value).toBe("projects");
+    expect(activeTab()).toHaveTextContent("Project");
     expect(screen.getByRole("button", { name: "Create" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("an unrecognized ?kind falls back to the default (AC4)", () => {
     renderWith("kind=bogus");
-    expect((screen.getByLabelText("Compose kind") as HTMLSelectElement).value).toBe("projects");
+    expect(activeTab()).toHaveTextContent("Project");
   });
 
   // Regression guard (ISI-3670): the Agent form must mount the guided <ModelSelector> (ISI-3555),

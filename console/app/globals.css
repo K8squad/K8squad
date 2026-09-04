@@ -1374,6 +1374,200 @@ a:hover {
   margin: 0;
 }
 
+/* E5-S1 (ISI-3685): Compose re-shell — tab bar, three-pane layout, guidance strip, YAML preview. */
+
+.compose__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.compose__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-2);
+  border-radius: var(--radius) var(--radius) 0 0;
+  min-height: 40px;
+  transition: color 0.1s, border-color 0.1s;
+}
+.compose__tab:hover {
+  color: var(--text-1);
+  background: var(--canvas);
+}
+.compose__tab--active {
+  color: #3D7DFF;
+  border-bottom-color: #3D7DFF;
+  font-weight: 600;
+}
+.compose__tab--adv {
+  color: var(--text-2);
+  opacity: 0.8;
+}
+.compose__tab-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 9999px;
+  background: var(--border);
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.compose__guidance {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, #3D7DFF 8%, var(--canvas));
+  border: 1px solid color-mix(in srgb, #3D7DFF 25%, var(--border));
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+.compose__guidance-icon {
+  flex-shrink: 0;
+  color: #3D7DFF;
+  font-style: normal;
+}
+
+/* Three-pane layout (AC2/FR-7.3) */
+.compose__panes {
+  display: grid;
+  grid-template-columns: 200px 1fr 260px;
+  gap: 16px;
+  align-items: start;
+  margin-top: 12px;
+}
+@media (max-width: 1100px) {
+  .compose__panes {
+    grid-template-columns: 1fr;
+  }
+  .compose__yaml-pane {
+    display: none;
+  }
+}
+@media (max-width: 768px) {
+  .compose__list-pane {
+    display: none;
+  }
+}
+
+.compose__pane-heading {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 8px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.compose__pane-note {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.compose__list-pane {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  min-height: 200px;
+}
+.compose__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.compose__list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: calc(var(--radius) - 2px);
+  background: var(--surface, var(--canvas));
+  border: 1px solid var(--border);
+}
+.compose__list-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-1);
+  word-break: break-all;
+}
+.compose__list-sub {
+  font-size: 11px;
+}
+
+.compose__form-pane {
+  min-width: 0;
+}
+
+.compose__yaml-pane {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  overflow: hidden;
+}
+.compose__yaml {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-1);
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* Verbatim error banner with recovery CTA (AC4/NFR-5) */
+.compose__error-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  background: color-mix(in srgb, #e53e3e 8%, var(--canvas));
+  border: 1px solid color-mix(in srgb, #e53e3e 30%, var(--border));
+  border-radius: var(--radius);
+  margin-top: 12px;
+  font-size: 13px;
+}
+.compose__error-status {
+  font-size: 11px;
+  font-weight: 700;
+  color: #e53e3e;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.compose__error-msg {
+  color: var(--text-1);
+  font-weight: 500;
+}
+.compose__error-cta {
+  color: var(--text-2);
+  font-style: italic;
+}
+.compose__error-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 /* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
 .tool-usage__note {
   font-size: 12px;
@@ -1692,4 +1886,58 @@ a:hover {
   .rail:not([data-expanded]) .usermenu__name {
     display: none;
   }
+}
+
+/* ——— E1-S3 nav lock + "Finish setup (n/4)" chip (AD-10, FR-1.3/1.4, NFR-4) ——— */
+.rail__link--locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+  user-select: none;
+}
+.rail__link--locked:hover {
+  color: var(--text-2);
+  background: transparent;
+}
+.rail__lock {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.rail__badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.setupchip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.setupchip:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  text-decoration: none;
+}
+.setupchip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.setupchip__icon {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
 }

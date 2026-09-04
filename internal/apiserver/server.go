@@ -60,11 +60,7 @@ type Options struct {
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
-	// SecretWriter is the E3-S1 managed-credential write surface (ISI-3679, AD-6):
-	// POST /api/credentials creates one label-scoped Secret in the caller's team
-	// namespace. Nil ⇒ the POST keeps its documented 501 (cluster-less dev run).
-	SecretWriter *SecretWriteService
-	Hub          *Hub // optional; NewServer allocates one when nil
+	Hub         *Hub                     // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -127,6 +123,11 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// Onboarding is the E1 onboarding-progress read model (ISI-3673): the Team→Project/Agent
+	// projection that Launchpad (E1-S2) and "Finish setup (n/4)" chip (E1-S3) render against.
+	// Nil ⇒ the routes keep the documented 501 (a cluster-less dev run without an informer cache),
+	// exactly like Overview/Credentials.
+	Onboarding OnboardingReader
 	// OTelConfig is the Story A / 13.8 OTLP-exporter read model (ISI-2917, child of
 	// ISI-3586 under Option A): GET /api/otelconfig serves the current cluster-scoped
 	// OTelConfig CR mapped to the client wire shape (console/lib/otelconfig.ts). Nil ⇒
@@ -322,6 +323,35 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// E1 onboarding-progress (ISI-3673): the Launchpad (E1-S2) and "Finish setup (n/4)"
+		// chip (E1-S3) render against this projection. Absent a reader (cluster-less dev run)
+		// it keeps the documented 501 so the contract stays honest.
+		onboardingProgress := s.router.Path("/api/onboarding/progress").Subrouter()
+		onboardingProgress.Use(authz)
+		if opts.Onboarding != nil {
+			onboardingProgress.HandleFunc("", s.onboardingProgress(opts.Onboarding)).Methods(http.MethodGet)
+		} else {
+			onboardingProgress.HandleFunc("", notImplemented("onboarding-progress read model", "ISI-3673: wire an OnboardingReader (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// E1 onboarding-dismiss (ISI-3761 / FR-1.3): the server-side write-path that persists the
+		// Launchpad-dismissal flag so the 'Finish setup (n/4)' chip (E1-S3) follows a returning
+		// tenant across devices. It is the sole writer of the flag the progress projection reads.
+		// Rides the SAME write choke point as the compose surface — sameOriginGuard (CSRF) +
+		// maxBytesBody (bounded body) — per the E2-S2 AC3 write conventions. A nil write client
+		// (cluster-less dev run) keeps the documented 501.
+		onboardingDismiss := s.router.Path("/api/onboarding/dismiss").Subrouter()
+		onboardingDismiss.Use(authz)
+		onboardingDismiss.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		onboardingDismiss.Use(maxBytesBody(4 << 10)) // {dismissed: bool} is tiny; still bounded
+		if opts.ComposeCRD != nil {
+			onboardingDismiss.HandleFunc("", s.onboardingDismiss(opts.ComposeCRD.applier)).Methods(http.MethodPost)
+		} else {
+			onboardingDismiss.HandleFunc("", notImplemented("onboarding-dismiss write path", "ISI-3761: wire a ComposeService (controller-runtime client) to enable")).
+				Methods(http.MethodPost)
+		}
+
 		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four
 		// read-only routes the Console Agents surface renders against — the
 		// Team→Agent→Role org diagram, its live per-agent status SSE, and the agent
@@ -402,27 +432,14 @@ func (s *Server) routes(opts Options) {
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7
 		// Connect-Claude seam and answers its own documented 501 until ISI-2899 lands the
 		// OAuth flow — the route exists so the console has one honest endpoint, never a
-		// fabricated login. POST /api/credentials is the E3-S1 managed-credential
-		// paste-key write (ISI-3679, AD-6): one label-scoped Secret in the caller's
-		// team namespace, value never echoed (NFR-2). The POST rides the SAME
-		// same-origin CSRF guard + bounded body as the other mutation surfaces —
-		// with a tighter ceiling than compose (a credential is bytes, not a skill
-		// body).
+		// fabricated login.
 		creds := s.router.Path("/api/credentials").Subrouter()
 		creds.Use(authz)
-		creds.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
-		creds.Use(maxBytesBody(credentialMaxValueBytes + 4<<10))
 		if opts.Credentials != nil {
 			creds.HandleFunc("", s.credentials(opts.Credentials)).Methods(http.MethodGet)
 		} else {
 			creds.HandleFunc("", notImplemented("credential read model", "ISI-2902: wire a CredentialOverviewReader (informer cache) to enable")).
 				Methods(http.MethodGet)
-		}
-		if opts.SecretWriter != nil {
-			creds.HandleFunc("", opts.SecretWriter.handleCredentialCreate).Methods(http.MethodPost)
-		} else {
-			creds.HandleFunc("", notImplemented("managed-credential write", "ISI-3679: wire a SecretWriteService (direct client) to enable")).
-				Methods(http.MethodPost)
 		}
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
@@ -563,22 +580,6 @@ func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
 			coll.HandleFunc("", h).Methods(http.MethodPost)
 			item.HandleFunc("", h).Methods(http.MethodPut)
 		}
-	}
-
-	// Squad materialize (ISI-3677, AD-3): POST /api/compose/squad turns a
-	// template (Minimal Trio ★ / BMAD / Solo) into a Team (if absent) + N
-	// Agents in one authorized call, behind the SAME choke point and write
-	// middleware as the single-kind compose routes. A nil ComposeService keeps
-	// the documented 501.
-	squad := s.router.Path("/api/compose/squad").Subrouter()
-	squad.Use(authz)
-	squad.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
-	squad.Use(maxBytesBody(64 << 10))
-	if opts.ComposeCRD != nil {
-		squad.HandleFunc("", opts.ComposeCRD.handleComposeSquad).Methods(http.MethodPost)
-	} else {
-		squad.HandleFunc("", notImplemented("squad materialize endpoint", "ISI-3677: wire a ComposeService (controller-runtime client) to enable")).
-			Methods(http.MethodPost)
 	}
 }
 

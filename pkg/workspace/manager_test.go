@@ -103,6 +103,50 @@ func TestEnsureWorkspaceCreatesPVC(t *testing.T) {
 	}
 }
 
+// ISI-3745: the workspace PVC's StorageClass / size / access mode must come
+// from the Helm storage contract (operator env), never the hardcoded default.
+func TestEnsureWorkspaceHonorsStorageEnv(t *testing.T) {
+	t.Setenv(EnvWorkspaceStorageClass, "local-path")
+	t.Setenv(EnvWorkspacePVCSize, "20Gi")
+	t.Setenv(EnvWorkspaceAccessMode, string(corev1.ReadWriteMany))
+
+	run := newRun()
+	m := newManager(t, run)
+
+	pvc, err := m.EnsureWorkspace(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "local-path" {
+		t.Errorf("storage class = %v, want local-path", pvc.Spec.StorageClassName)
+	}
+	want := resource.MustParse("20Gi")
+	got := pvc.Spec.Resources.Requests["storage"]
+	if got.Cmp(want) != 0 {
+		t.Errorf("storage request = %s, want 20Gi", got.String())
+	}
+	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteMany {
+		t.Errorf("access modes = %v, want [ReadWriteMany]", pvc.Spec.AccessModes)
+	}
+}
+
+// An empty StorageClass env must NOT leak through as an empty StorageClassName
+// (which would re-select the cluster default) — it falls back to the constant.
+func TestEnsureWorkspaceEmptyEnvFallsBack(t *testing.T) {
+	t.Setenv(EnvWorkspaceStorageClass, "")
+
+	run := newRun()
+	m := newManager(t, run)
+
+	pvc, err := m.EnsureWorkspace(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != WorkspaceStorageClass {
+		t.Errorf("storage class = %v, want fallback %q", pvc.Spec.StorageClassName, WorkspaceStorageClass)
+	}
+}
+
 func TestEnsureWorkspaceIdempotent(t *testing.T) {
 	run := newRun()
 	m := newManager(t, run)

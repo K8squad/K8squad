@@ -208,6 +208,42 @@ func TestCRDToWireNeverEmitsTokenOrKey(t *testing.T) {
 	}
 }
 
+// D-AC1/D-AC4: the mapper surfaces status.signals verbatim so the Console
+// "Export state" card can render per-signal health; absent status ⇒ omitted.
+func TestCRDToWireStatusSignals(t *testing.T) {
+	t.Run("no signals reported → status omitted", func(t *testing.T) {
+		wire := crdToWire(&ksquadv1.OTelConfig{})
+		if wire.Status != nil {
+			t.Fatalf("status should be nil until the operator reports a signal, got %+v", wire.Status)
+		}
+		body, _ := json.Marshal(wire)
+		if strings.Contains(string(body), "\"status\"") {
+			t.Fatalf("empty status must not serialize: %s", body)
+		}
+	})
+
+	t.Run("reported signals surface state+detail", func(t *testing.T) {
+		cr := &ksquadv1.OTelConfig{}
+		cr.Status.SetSignal("traces", ksquadv1.SignalStateHealthy, "")
+		cr.Status.SetSignal("metrics", ksquadv1.SignalStateErroring, "endpoint unreachable")
+		cr.Status.SetSignal("logs", ksquadv1.SignalStateDisabled, "")
+
+		wire := crdToWire(cr)
+		if wire.Status == nil || len(wire.Status.Signals) != 3 {
+			t.Fatalf("expected 3 signals on wire, got %+v", wire.Status)
+		}
+		if got := wire.Status.Signals["traces"].State; got != "healthy" {
+			t.Fatalf("traces state = %q want healthy", got)
+		}
+		if got := wire.Status.Signals["metrics"]; got.State != "erroring" || got.Detail != "endpoint unreachable" {
+			t.Fatalf("metrics = %+v want erroring/endpoint unreachable", got)
+		}
+		if got := wire.Status.Signals["logs"].State; got != "disabled" {
+			t.Fatalf("logs state = %q want disabled", got)
+		}
+	})
+}
+
 // A-AC6: deterministic multiple-CR pick — "default" wins; else lexically-first; never errors.
 func TestPickOTelConfig(t *testing.T) {
 	mk := func(name string) ksquadv1.OTelConfig {
