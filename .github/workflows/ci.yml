@@ -304,6 +304,7 @@ jobs:
         include: ${{ fromJSON(needs.components.outputs.helm) }}
     env:
       HELM_VERSION: v3.16.4
+      KUBECONFORM_VERSION: v0.6.7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -344,6 +345,28 @@ jobs:
           # (neither chart uses Helm's special crds/ dir) but kept for forward-compat.
           helm template ksquad-ci "${{ matrix.path }}" --include-crds > /dev/null
           echo "chart '${{ matrix.chart }}' renders clean"
+
+      # OTelConfig CR render + structural gate (Story B, ISI-3619). Renders the
+      # opt-in observability.otel.* fixtures and asserts the CR contract Story A
+      # serves / Story C consumes, then validates every rendered CR against the
+      # committed OTelConfig CRD schema with kubeconform. Only the control-plane
+      # chart carries the template, so it is gated on config/helm.
+      - name: Install kubeconform (pinned)
+        if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
+        run: |
+          set -euo pipefail
+          if kubeconform -v 2>/dev/null | grep -q "${KUBECONFORM_VERSION}"; then
+            echo "kubeconform ${KUBECONFORM_VERSION} already present"; exit 0
+          fi
+          tmp="$(mktemp -d)"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" -o "$tmp/kc.tgz"
+          tar -xzf "$tmp/kc.tgz" -C "$tmp" kubeconform
+          sudo install -m 0755 "$tmp/kubeconform" /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: OTelConfig CR render + validate (ISI-3619)
+        if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
+        run: bash config/helm/ci/otelconfig-test.sh
 
   node:
     name: node / ${{ matrix.component }}

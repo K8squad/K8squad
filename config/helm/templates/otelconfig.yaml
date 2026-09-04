@@ -1,0 +1,99 @@
+{{/*
+Story B (ISI-3619) — GitOps-declared telemetry target.
+
+Renders a single cluster-scoped OTelConfig CR from opt-in `observability.otel.*`
+values so the platform's telemetry routing is declared in the chart and Settings
+(Story A) shows it the moment the chart is applied.
+
+OPT-IN (B-AC1): the CR is emitted ONLY when at least one signal
+(traces / metrics / logs) carries a non-empty `endpoint`. An absent or
+endpoint-less `observability.otel` renders nothing — the in-cluster default
+(no OTelConfig → nothing exported, per the CRD's opt-in contract) is preserved.
+
+REFERENCE-ONLY (B-AC4): auth is a Secret *reference* — `authSecretRef` is a
+Secret name (or `namespace/name`); the key defaults to `token` (W2). No token
+value ever lives in values.yaml; the Secret is created out-of-band (see README).
+
+Rendered spec targets the ksquad.io/v1alpha1 OTelConfig contract (arch §5.1):
+  - protocol: wire enum is grpc|http; `http` canonicalizes to the CRD's
+    `http/protobuf` (W1). `http/protobuf` and `http/json` also pass through, so
+    a direct `observability.otel.<signal>.protocol: http/json` is reachable.
+  - sampling: traces-only (W3) — ratio null/absent → unset; 0 → always_off;
+    1 → always_on; (0,1) → probabilistic{ratio}.
+*/}}
+
+{{/*
+Renders the shared body of one signal routing (endpoint, protocol, optional
+auth reference, optional resourceAttributes). `ctx` is a dict {sig}.
+*/}}
+{{- define "k8squad.otelSignal" -}}
+{{- $sig := .sig -}}
+{{- $proto := $sig.protocol | default "grpc" -}}
+{{- if eq $proto "http" -}}{{- $proto = "http/protobuf" -}}{{- end -}}
+endpoint: {{ required "observability.otel.<signal>.endpoint must be set to enable a signal" $sig.endpoint | quote }}
+protocol: {{ $proto | quote }}
+{{- with $sig.authSecretRef }}
+auth:
+  {{- $parts := splitList "/" . }}
+  {{- if eq (len $parts) 2 }}
+  namespace: {{ index $parts 0 | quote }}
+  name: {{ index $parts 1 | quote }}
+  {{- else }}
+  name: {{ . | quote }}
+  {{- end }}
+  key: {{ $sig.authSecretKey | default "token" | quote }}
+{{- end }}
+{{- with $sig.resourceAttributes }}
+resourceAttributes:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}
+
+{{- $otel := (.Values.observability | default dict).otel | default dict -}}
+{{- $traces := $otel.traces | default dict -}}
+{{- $metrics := $otel.metrics | default dict -}}
+{{- $logs := $otel.logs | default dict -}}
+{{- $hasTraces := not (empty $traces.endpoint) -}}
+{{- $hasMetrics := not (empty $metrics.endpoint) -}}
+{{- $hasLogs := not (empty $logs.endpoint) -}}
+{{- if or $hasTraces $hasMetrics $hasLogs -}}
+apiVersion: ksquad.io/v1alpha1
+kind: OTelConfig
+metadata:
+  # Cluster-scoped: no namespace. One platform-scoped routing contract.
+  name: {{ $otel.name | default "default" }}
+  labels:
+    {{- include "k8squad.labels" . | nindent 4 }}
+    ksquad.io/component: observability
+spec:
+  {{- if $hasTraces }}
+  traces:
+    {{- include "k8squad.otelSignal" (dict "sig" $traces) | nindent 4 }}
+    {{- /* Sampling — traces only (W3). null/absent ratio leaves the sampler unset. */ -}}
+    {{- $s := $traces.sampling | default dict -}}
+    {{- if hasKey $s "ratio" -}}
+    {{- $r := $s.ratio -}}
+    {{- if kindIs "invalid" $r -}}
+    {{- /* ratio: null → unset */ -}}
+    {{- else if eq (float64 $r) 0.0 }}
+    sampling:
+      type: always_off
+    {{- else if eq (float64 $r) 1.0 }}
+    sampling:
+      type: always_on
+    {{- else }}
+    sampling:
+      type: probabilistic
+      ratio: {{ $r }}
+    {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- if $hasMetrics }}
+  metrics:
+    {{- include "k8squad.otelSignal" (dict "sig" $metrics) | nindent 4 }}
+  {{- end }}
+  {{- if $hasLogs }}
+  logs:
+    {{- include "k8squad.otelSignal" (dict "sig" $logs) | nindent 4 }}
+  {{- end }}
+{{- end -}}

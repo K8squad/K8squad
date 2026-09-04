@@ -244,6 +244,71 @@ cluster-user-authored CRDs, not chart-rendered — see the BMAD squad example in
 [`examples/bmad-team/02b-mcpservers.yaml`](../../examples/bmad-team/02b-mcpservers.yaml)
 and the [getting-started guide](../../docs/getting-started-bmad.md).
 
+## Observability — declare a telemetry target (OTelConfig)
+
+Set `observability.otel.*` to render a single cluster-scoped **`OTelConfig`** CR
+(`ksquad.io/v1alpha1`) so the platform's telemetry routing is GitOps-declared
+and shows up in **Settings** the moment the release is applied (ISI-3619).
+
+Opt-in: with `observability.otel` empty (the default) **no CR is emitted** and
+nothing is exported. Configure any of `traces` / `metrics` / `logs` with an
+`endpoint` to turn a signal on — the CR carries only the signals you set.
+
+> This is separate from `controlPlane.otel.*`, which only wires the
+> `OTEL_EXPORTER_OTLP_*` env on the control-plane workloads. `observability.otel`
+> declares the platform-scoped routing contract the operator/apiserver consume.
+
+### Create the auth Secret (out-of-band)
+
+Auth is **reference-only** — values never carry a token. Create the Secret
+yourself, then reference it by name:
+
+```sh
+kubectl -n k8squad-system create secret generic otel-auth \
+  --from-literal=token="Api-Token dt0c01.XXXXXXXX...."   # Dynatrace: "Api-Token <token>"
+```
+
+The key defaults to `token`; override per signal with `authSecretKey`. Reference
+a Secret in another namespace with the `namespace/name` form in `authSecretRef`.
+
+### Point at Dynatrace
+
+```yaml
+observability:
+  otel:
+    traces:
+      endpoint: "https://<env-id>.live.dynatrace.com/api/v2/otlp/v1/traces"
+      protocol: http                # canonicalizes to http/protobuf
+      authSecretRef: otel-auth      # Secret holding the Dynatrace API token
+    metrics:
+      endpoint: "https://<env-id>.live.dynatrace.com/api/v2/otlp/v1/metrics"
+      protocol: http
+      authSecretRef: otel-auth
+    logs:
+      endpoint: "https://<env-id>.live.dynatrace.com/api/v2/otlp/v1/logs"
+      protocol: http
+      authSecretRef: otel-auth
+```
+
+### Point at an in-cluster OpenTelemetry Collector (gRPC)
+
+```yaml
+observability:
+  otel:
+    traces:
+      endpoint: "otel-collector.observability:4317"   # host[:port], NO path for grpc
+      protocol: grpc
+      sampling:
+        ratio: 0.1                  # null/absent=unset · 0=always_off · 1=always_on · (0,1)=probabilistic
+    metrics:
+      endpoint: "otel-collector.observability:4317"
+      protocol: grpc
+```
+
+Endpoint rules the CRD enforces (CEL + webhook): a `grpc` endpoint is
+`host[:port]` (optional `http(s)://` scheme, **no path**); `http`/`http/protobuf`
+/`http/json` endpoints are **full URLs**. `sampling` is **traces-only**.
+
 ## CRD lifecycle (owned by the k8squad-crds chart)
 
 This chart ships **zero** CRDs. Per
@@ -277,4 +342,9 @@ values and the kind CI propagation test.
 ```sh
 make helm-lint      # helm lint both charts (config/helm + config/helm-crds)
 make helm-template  # helm template both charts (local render, no cluster)
+
+# OTelConfig CR render + structural gate (ISI-3619): renders the observability.otel.*
+# fixtures under ci/ and validates each rendered CR against the OTelConfig CRD schema
+# with kubeconform (installs kubeconform in CI; skips-with-reason if absent locally).
+bash config/helm/ci/otelconfig-test.sh
 ```

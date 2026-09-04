@@ -367,3 +367,49 @@ tools:
   rbac:
     # +optional
     clusterScopeEnabled: false
+
+# ---------------------------------------------------------------------------
+# Observability — GitOps-declared telemetry target (Story B, ISI-3619).
+#
+# When you configure at least one signal endpoint below, the chart renders a
+# single cluster-scoped `OTelConfig` CR (ksquad.io/v1alpha1) so the platform's
+# telemetry routing is declared in the chart and shows up in Settings (Story A)
+# the moment the release is applied. Absent/empty -> NO CR is emitted and the
+# in-cluster default (nothing exported) is preserved.
+#
+# This is DISTINCT from `controlPlane.otel.*` above: that block wires the
+# OTEL_EXPORTER_OTLP_* env on the control-plane workloads (their own SDK
+# export); `observability.otel.*` here declares the platform-scoped OTelConfig
+# routing contract consumed by the operator/apiserver.
+#
+# AUTH IS REFERENCE-ONLY: `authSecretRef` names a Secret (or `namespace/name`);
+# the key defaults to `token`. NEVER put a token VALUE here — create the Secret
+# out-of-band (see README "Point the platform at a collector / Dynatrace").
+# ---------------------------------------------------------------------------
+observability:
+  # OTel routing. Leave `otel` empty (the default) to emit no CR. Populate any
+  # of traces / metrics / logs with an `endpoint` to opt in. Documented shape:
+  #
+  #   otel:
+  #     name: default                 # OTelConfig metadata.name (cluster-scoped)
+  #     traces:
+  #       endpoint: "https://otlp.example.com:4317"  # grpc: host[:port], no path
+  #       protocol: grpc              # grpc | http (http -> CRD http/protobuf, W1)
+  #       authSecretRef: otel-auth    # Secret name, or "namespace/name"
+  #       authSecretKey: token        # defaults to "token" (W2)
+  #       resourceAttributes:         # optional; platform keys (service.instance.id) rejected
+  #         deployment.environment: prod
+  #       sampling:
+  #         ratio: 0.1                # null/absent -> unset; 0 -> always_off;
+  #                                   # 1 -> always_on; (0,1) -> probabilistic{ratio} (W3)
+  #     metrics:
+  #       endpoint: "https://otlp.example.com/v1/metrics"  # http: full URL
+  #       protocol: http             # canonicalizes to http/protobuf
+  #       authSecretRef: otel-auth
+  #     logs:
+  #       endpoint: "https://otlp.example.com/v1/logs"
+  #       protocol: http
+  #       authSecretRef: otel-auth
+  #
+  # NOTE: sampling is traces-only — the webhook/CRD reject it on metrics/logs.
+  otel: {}
