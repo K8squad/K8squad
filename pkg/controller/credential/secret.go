@@ -60,21 +60,6 @@ const (
 	// credential is never given the OAuth-refresh lifecycle.
 	LabelCredentialClass = "ksquad.io/credential-class"
 
-	// LabelManagedCredential marks a Secret as created by the apiserver's
-	// managed-credential write path (AD-6, internal/apiserver/secretwrite.go).
-	// It is the containment boundary for the FIRST Secret-write grant the
-	// apiserver holds: the handler stamps this label on every Secret it
-	// creates, and the read/list surfaces filter on it, so the apiserver can
-	// never touch (or even acknowledge) an arbitrary Secret. Stamped ONLY from
-	// this const — never a literal — so write and read cannot drift.
-	LabelManagedCredential = "ksquad.io/managed-credential"
-
-	// LabelManagedCredentialValue is the sole valid value of
-	// LabelManagedCredential. The cluster-side ValidatingAdmissionPolicy
-	// (deploy/helm/ksquad/templates/apiserver-rbac.yaml) matches this exact
-	// string, so it is a const, not a convention.
-	LabelManagedCredentialValue = "true"
-
 	// ClassHumanSeat is the LabelCredentialClass value the controller selects:
 	// an interactive OAuth token bound to a human's subscription seat (Claude
 	// Code OAuth, story 7.2). Matches credinject.ClassHumanSeat.

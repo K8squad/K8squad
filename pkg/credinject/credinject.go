@@ -154,31 +154,13 @@ var table = map[string]map[CredentialClass]binding{
 	// OpenAI-standard OPENAI_API_KEY env, injected by reference so the control
 	// plane never reads the bytes (NFR-SEC1). The human-seat auth.json branch
 	// is the ToS-gated S9 fast-follow, deliberately absent here so a human-seat
-	// class on codex fails CLOSED until that story lands.
-	api.RuntimeTypeCodex: {
+	// class on codex fails CLOSED until that story lands. Keyed on the literal
+	// "codex" — the value the RuntimeTypeCodex const (added by the S2 runtime
+	// adapter story) will hold — so this credential row ships independently of
+	// S2 with zero behavioural difference once the const lands.
+	"codex": {
 		ClassServiceAccount: {envVar: "OPENAI_API_KEY", defaultKey: "apiKey"},
 	},
-}
-
-// DefaultSecretKey returns the Secret data key the injection contract reads
-// for a (runtime, class) pair when the Agent's SecretRef leaves Key empty —
-// the READ side of the credential contract exported so a WRITE path (the
-// apiserver's managed-credential create, AD-6) stores the material under the
-// same key instead of inventing one. An empty class resolves to DefaultClass,
-// exactly like Inject. It returns ok=false — fails CLOSED — for an unknown
-// runtime or an unmapped (runtime, class) pair, so a writer can never persist
-// a credential under a key no injector will ever read.
-func DefaultSecretKey(runtimeType string, class CredentialClass) (string, bool) {
-	class = Resolve(class)
-	byClass, ok := table[runtimeType]
-	if !ok {
-		return "", false
-	}
-	b, ok := byClass[class]
-	if !ok {
-		return "", false
-	}
-	return b.defaultKey, true
 }
 
 // Injection is the runtime-native materialisation of one credential. Today the

@@ -152,6 +152,15 @@ func Collect(ctx context.Context, reader client.Reader, run *api.Run) (*Requirem
 	return reqs, nil
 }
 
+<<<<<<< Updated upstream
+=======
+// GrantedSkill is copied from api/v1alpha1 to avoid circular imports.
+// Records a skill's identity, source type, and permissions for capability 
+// assembly (ADR-0004 Phase 1 keystone). Permissions are copied verbatim from 
+// Skill.spec.permissions ONLY (never from body content — AC4/AC7 D8).
+type GrantedSkill = api.GrantedSkill
+
+>>>>>>> Stashed changes
 func containsString(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {
