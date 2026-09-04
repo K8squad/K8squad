@@ -564,6 +564,22 @@ func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
 			item.HandleFunc("", h).Methods(http.MethodPut)
 		}
 	}
+
+	// Squad materialize (ISI-3677, AD-3): POST /api/compose/squad turns a
+	// template (Minimal Trio ★ / BMAD / Solo) into a Team (if absent) + N
+	// Agents in one authorized call, behind the SAME choke point and write
+	// middleware as the single-kind compose routes. A nil ComposeService keeps
+	// the documented 501.
+	squad := s.router.Path("/api/compose/squad").Subrouter()
+	squad.Use(authz)
+	squad.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+	squad.Use(maxBytesBody(64 << 10))
+	if opts.ComposeCRD != nil {
+		squad.HandleFunc("", opts.ComposeCRD.handleComposeSquad).Methods(http.MethodPost)
+	} else {
+		squad.HandleFunc("", notImplemented("squad materialize endpoint", "ISI-3677: wire a ComposeService (controller-runtime client) to enable")).
+			Methods(http.MethodPost)
+	}
 }
 
 // notImplemented returns a handler that answers 501 with a machine-readable body naming the
