@@ -3,15 +3,12 @@ package prgate
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/google/go-github/v58/github"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/require"
 )
 
 // MockGitHubClient is a mock implementation of the GitHub client interface
@@ -29,141 +26,158 @@ func (m *MockGitHubClient) ListPullRequestCommits(ctx context.Context, owner, re
 	return args.Get(0).([]*github.RepositoryCommit), args.Get(1).(*github.Response), args.Error(2)
 }
 
-func (m *MockGitHubClient) GetCheckRunsForRef(ctx context.Context, owner, repo, ref string, opts *github.ListCheckRunsOptions) ([]*github.CheckRun, *github.Response, error) {
+func (m *MockGitHubClient) GetCheckRunsForRef(ctx context.Context, owner, repo string, ref string, opts *github.ListCheckRunsOptions) ([]*github.CheckRun, *github.Response, error) {
 	args := m.Called(ctx, owner, repo, ref, opts)
 	return args.Get(0).([]*github.CheckRun), args.Get(1).(*github.Response), args.Error(2)
+}
+
+func signedCommit() *github.RepositoryCommit {
+	return createMockCommit("feat: test change\n\nSigned-off-by: testuser <test@example.com>")
+}
+
+func unsignedCommit() *github.RepositoryCommit {
+	return createMockCommit("feat: test change without signature")
 }
 
 // Test cases for PR validation gate
 func TestPRValidationGate(t *testing.T) {
 	tests := []struct {
-		name          string
-		prData        *PullRequestData
-		expectedError  error
-		shouldPass    bool
-		errorType     ValidationErrorType
+		name             string
+		prData           *PullRequestData
+		isNilPR          bool
+		shouldPass       bool
+		failedCheckNames []string
 	}{
 		{
 			name: "Valid PR with all checks passing",
 			prData: &PullRequestData{
-				PRNumber:      189,
-				Author:        "testuser",
-				Title:         "test feature implementation",
-				Body:          "Test PR body",
-				BaseRef:       "main",
-				HeadRef:       "feature/test",
-				HasDCO:        true,
-				CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "success", "")},
-				Coverage:      85.0,
-				Commits:       []*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")},
+				PRNumber:  189,
+				Author:    "testuser",
+				Title:     "test feature implementation",
+				Body:      "Test PR body",
+				BaseRef:   "main",
+				HeadRef:   "feature/test",
+				HasDCO:    true,
+				CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "success"), createMockCheckRun("security", "completed", "success")},
+				Coverage:  85.0,
+				Commits:   []*github.RepositoryCommit{signedCommit()},
 			},
 			shouldPass: true,
 		},
 		{
 			name: "PR fails DCO validation",
 			prData: &PullRequestData{
-				PRNumber:      190,
-				Author:        "testuser",
-				Title:         "test feature without DCO",
-				Body:          "Test PR body",
-				BaseRef:       "main",
-				HeadRef:       "feature/test",
-				HasDCO:        false,
-				CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "success", "")},
-				Coverage:      85.0,
-				Commits:       []*github.RepositoryCommit{createMockCommit("No DCO signature")},
+				PRNumber:  190,
+				Author:    "testuser",
+				Title:     "test feature without DCO",
+				Body:      "Test PR body",
+				BaseRef:   "main",
+				HeadRef:   "feature/test",
+				HasDCO:    false,
+				CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "success"), createMockCheckRun("security", "completed", "success")},
+				Coverage:  85.0,
+				Commits:   []*github.RepositoryCommit{unsignedCommit()},
 			},
-			expectedError:  &ValidationError{Type: DCOValidation, Message: "PR commits are not properly signed off"},
-			shouldPass:    false,
-			errorType:     DCOValidation,
+			shouldPass:       false,
+			failedCheckNames: []string{"DCO Compliance"},
 		},
 		{
 			name: "PR fails CI validation",
 			prData: &PullRequestData{
-				PRNumber:      191,
-				Author:        "testuser",
-				Title:         "test feature with CI failure",
-				Body:          "Test PR body",
-				BaseRef:       "main",
-				HeadRef:       "feature/test",
-				HasDCO:        true,
-				CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "failure", "lint errors found")},
-				Coverage:      85.0,
-				Commits:       []*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")},
+				PRNumber:  191,
+				Author:    "testuser",
+				Title:     "test feature with CI failure",
+				Body:      "Test PR body",
+				BaseRef:   "main",
+				HeadRef:   "feature/test",
+				HasDCO:    true,
+				CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "failure"), createMockCheckRun("security", "completed", "success")},
+				Coverage:  85.0,
+				Commits:   []*github.RepositoryCommit{signedCommit()},
 			},
-			expectedError:  &ValidationError{Type: CIValidation, Message: "Required CI checks are failing"},
-			shouldPass:    false,
-			errorType:     CIValidation,
+			shouldPass:       false,
+			failedCheckNames: []string{"CI Status"},
 		},
 		{
 			name: "PR fails coverage validation",
 			prData: &PullRequestData{
-				PRNumber:      192,
-				Author:        "testuser",
-				Title:         "test feature with low coverage",
-				Body:          "Test PR body",
-				BaseRef:       "main",
-				HeadRef:       "feature/test",
-				HasDCO:        true,
-				CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "success", "")},
-				Coverage:      45.0, // Below threshold
-				Commits:       []*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")},
+				PRNumber:  192,
+				Author:    "testuser",
+				Title:     "test feature with low coverage",
+				Body:      "Test PR body",
+				BaseRef:   "main",
+				HeadRef:   "feature/test",
+				HasDCO:    true,
+				CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "success"), createMockCheckRun("security", "completed", "success")},
+				Coverage:  45.0, // Below threshold
+				Commits:   []*github.RepositoryCommit{signedCommit()},
 			},
-			expectedError:  &ValidationError{Type: CoverageValidation, Message: "Code coverage (45.00%) is below minimum threshold (55.00%)"},
-			shouldPass:    false,
-			errorType:     CoverageValidation,
+			shouldPass:       false,
+			failedCheckNames: []string{"Code Coverage"},
 		},
 		{
 			name: "PR has missing check runs",
 			prData: &PullRequestData{
-				PRNumber:      193,
-				Author:        "testuser",
-				Title:         "test feature missing security check",
-				Body:          "Test PR body",
-				BaseRef:       "main",
-				HeadRef:       "feature/test",
-				HasDCO:        true,
-				CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "success", "")}, // Missing security check
-				Coverage:      85.0,
-				Commits:       []*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")},
+				PRNumber:  193,
+				Author:    "testuser",
+				Title:     "test feature missing security check",
+				Body:      "Test PR body",
+				BaseRef:   "main",
+				HeadRef:   "feature/test",
+				HasDCO:    true,
+				CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "success")}, // Missing security check
+				Coverage:  85.0,
+				Commits:   []*github.RepositoryCommit{signedCommit()},
 			},
-			expectedError:  &ValidationError{Type: CIValidation, Message: "Required CI checks are missing"},
-			shouldPass:    false,
-			errorType:     CIValidation,
+			shouldPass:       false,
+			failedCheckNames: []string{"CI Status"},
 		},
 		{
-			name: "PR with timed out API calls",
-			prData: nil, // Will trigger timeout in validation
-			expectedError:  &ValidationError{Type: SystemError, Message: "validation timed out after 30 seconds"},
-			shouldPass:    false,
-			errorType:     SystemError,
+			name:             "Nil PR data returns a SystemError",
+			prData:           nil,
+			isNilPR:          true,
+			shouldPass:       false,
+			failedCheckNames: nil,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gate := NewPRValidationGate(&Config{
+			gate, err := NewPRValidationGate(&Config{
 				MinCoverage:    55.0,
 				RequiredChecks: []string{"ci/lint", "security"},
 				Timeout:        30 * time.Second,
 			})
+			if err != nil {
+				t.Fatalf("NewPRValidationGate: %v", err)
+			}
 
 			result, err := gate.Validate(context.Background(), tt.prData)
 
+			if tt.isNilPR {
+				assert.Error(t, err, "Expected a SystemError for nil PR data")
+				assert.Nil(t, result)
+				var validationErr *ValidationError
+				assert.True(t, errors.As(err, &validationErr), "Expected ValidationError type")
+				assert.Equal(t, SystemError, validationErr.Type)
+				return
+			}
+
+			assert.NoError(t, err, "Expected validation to complete without error")
+			assert.NotNil(t, result)
+			assert.NotEmpty(t, result.CheckResults, "Expected check results")
+
 			if tt.shouldPass {
-				assert.NoError(t, err, "Expected validation to pass")
 				assert.True(t, result.IsValid, "Expected result to be valid")
-				assert.NotEmpty(t, result.CheckResults, "Expected check results")
 			} else {
-				assert.Error(t, err, "Expected validation to fail")
 				assert.False(t, result.IsValid, "Expected result to be invalid")
-				
-				if tt.expectedError != nil {
-					var validationErr *ValidationError
-					assert.True(t, errors.As(err, &validationErr), "Expected ValidationError type")
-					assert.Equal(t, tt.expectedError.Error(), err.Error())
-					assert.Equal(t, tt.errorType, validationErr.Type)
+				var failed []string
+				for _, check := range result.CheckResults {
+					if check.Status == "fail" {
+						failed = append(failed, check.Name)
+					}
 				}
+				assert.ElementsMatch(t, tt.failedCheckNames, failed, "Expected the failing checks to match")
 			}
 		})
 	}
@@ -231,7 +245,7 @@ func TestPRValidationGateEdgeCases(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := NewPRValidationGate(tt.config)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMessage)
@@ -242,91 +256,65 @@ func TestPRValidationGateEdgeCases(t *testing.T) {
 	}
 }
 
-// Test integration with mock GitHub API
+// Test gate with an injected GitHub client: validation must not depend on the
+// GitHub API surface for locally complete PR data.
 func TestPRValidationGateWithMockGitHub(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/test/repo/pulls/189":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{
-				"number": 189,
-				"title": "Test PR",
-				"user": {"login": "testuser"},
-				"head": {"ref": "feature/test"},
-				"base": {"ref": "main"},
-				"body": "Test PR body"
-			}`))
-		case "/repos/test/repo/pulls/189/files":
-			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`[]`))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	// Test with mock server
-	mockClient := &MockGitHubClient{}
-	
-	gate := &PRValidationGate{
-		config: &Config{
-			MinCoverage:    55.0,
-			RequiredChecks: []string{"ci/lint"},
-			Timeout:        10 * time.Second,
-		},
-		githubClient: mockClient,
+	gate, err := NewPRValidationGate(&Config{
+		MinCoverage:    55.0,
+		RequiredChecks: []string{"ci/lint", "security"},
+		Timeout:        10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewPRValidationGate: %v", err)
 	}
-
-	// Set up mock expectations
-	mockClient.On("GetPullRequest", context.Background(), "test", "repo", 189).
-		Return(&github.PullRequest{
-			Number: github.Int(189),
-			Title:  github.String("Test PR"),
-			User:   &github.User{Login: github.String("testuser")},
-			Head:   &github.PullRequestBranch{Ref: github.String("feature/test")},
-			Base:   &github.PullRequestBranch{Ref: github.String("main")},
-			Body:   github.String("Test PR body"),
-		}, nil, nil)
-
-	mockClient.On("ListPullRequestCommits", context.Background(), "test", "repo", 189, mock.Anything).
-		Return([]*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")}, nil, nil)
-
-	mockClient.On("GetCheckRunsForRef", context.Background(), "test", "repo", "feature/test", mock.Anything).
-		Return([]*github.CheckRun{createMockCheckRun("ci/lint", "success", "")}, nil, nil)
+	gate.SetGitHubClient(&MockGitHubClient{})
 
 	prData := &PullRequestData{
-		PRNumber: 189,
-		Owner:     "test",
-		Repo:      "repo",
+		PRNumber:  189,
+		Author:    "testuser",
+		Title:     "Test PR",
+		Body:      "Test PR body",
+		BaseRef:   "main",
+		HeadRef:   "feature/test",
+		HasDCO:    true,
+		CheckRuns: []*github.CheckRun{createMockCheckRun("ci/lint", "completed", "success"), createMockCheckRun("security", "completed", "success")},
+		Coverage:  85.0,
+		Commits:   []*github.RepositoryCommit{signedCommit()},
 	}
 
 	result, err := gate.Validate(context.Background(), prData)
-	
+
 	assert.NoError(t, err)
 	assert.True(t, result.IsValid)
-	assert.Equal(t, 1, len(result.CheckResults))
+	assert.Equal(t, 4, len(result.CheckResults))
 }
 
 // Benchmark tests
 func BenchmarkPRValidationGate(b *testing.B) {
-	gate := NewPRValidationGate(&Config{
+	gate, err := NewPRValidationGate(&Config{
 		MinCoverage:    55.0,
 		RequiredChecks: []string{"ci/lint", "security", "integration"},
 		Timeout:        30 * time.Second,
 	})
+	if err != nil {
+		b.Fatalf("NewPRValidationGate: %v", err)
+	}
 
 	prData := &PullRequestData{
-		PRNumber:      189,
-		Author:        "testuser",
-		Title:         "test feature implementation",
-		Body:          "Test PR body",
-		BaseRef:       "main",
-		HeadRef:       "feature/test",
-		HasDCO:        true,
-		CheckRuns:     []*github.CheckRun{createMockCheckRun("ci/lint", "success", "")},
-		Coverage:      85.0,
-		Commits:       []*github.RepositoryCommit{createMockCommit("Signed-off-by: testuser <test@example.com>")},
+		PRNumber: 189,
+		Author:   "testuser",
+		Title:    "test feature implementation",
+		Body:     "Test PR body",
+		BaseRef:  "main",
+		HeadRef:  "feature/test",
+		HasDCO:   true,
+		CheckRuns: []*github.CheckRun{
+			createMockCheckRun("ci/lint", "completed", "success"),
+			createMockCheckRun("security", "completed", "success"),
+			createMockCheckRun("integration", "completed", "success"),
+		},
+		Coverage: 85.0,
+		Commits:  []*github.RepositoryCommit{signedCommit()},
 	}
 
 	b.ResetTimer()
@@ -338,9 +326,9 @@ func BenchmarkPRValidationGate(b *testing.B) {
 // Helper functions
 func createMockCheckRun(name, status, conclusion string) *github.CheckRun {
 	return &github.CheckRun{
-		ID:        github.Int64(1),
-		Name:      github.String(name),
-		Status:    github.String(status),
+		ID:         github.Int64(1),
+		Name:       github.String(name),
+		Status:     github.String(status),
 		Conclusion: github.String(conclusion),
 	}
 }

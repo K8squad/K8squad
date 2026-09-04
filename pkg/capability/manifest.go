@@ -58,13 +58,6 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint) *api.Cap
 			EgressPolicyRef:     ep.EgressPolicyRef,
 		})
 	}
-<<<<<<< Updated upstream
-=======
-	for _, skill := range skills {
-		// Internal type is now an alias to API type, no conversion needed
-		m.Skills = append(m.Skills, skill)
-	}
->>>>>>> Stashed changes
 	m.CapabilityHash = HashManifest(m)
 	return m
 }
