@@ -189,7 +189,13 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 			// exists (ISI-2899) — the projection does not invent them.
 			Health: CredHealthUnknown,
 		}
-		if cls, ok := a.Annotations["ksquad.io/credential-class"]; ok {
+		// Dual-read (R-CR1 C2): the authoritative write target is now spec.credentialClass
+		// (persisted by the compose surface, story E3-S3), so prefer it. Fall back to the
+		// legacy ksquad.io/credential-class annotation for rows written before the spec
+		// field was persisted — keeps the Credentials screen honest for old Agents (NFR-5).
+		if a.Spec.CredentialClass != "" {
+			row.CredentialClass = a.Spec.CredentialClass
+		} else if cls, ok := a.Annotations["ksquad.io/credential-class"]; ok {
 			row.CredentialClass = cls
 		}
 		if holds, held := holdsByAgent[a.Name]; held {

@@ -1357,6 +1357,58 @@ a:hover {
   margin: 0;
 }
 
+/* E3-S3 (ISI-3681): fallback model control + advisory trigger chips + apply-to-all. Mirrors the
+   BYO region shell above so the two guided sub-controls read as one family. */
+.compose__fallback,
+.compose__apply-all {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.compose__fallback > .btn,
+.compose__apply-all > .btn {
+  align-self: flex-start;
+}
+.compose__fallback-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+.compose__fallback-note,
+.compose__fallback-warning,
+.compose__fallback-v2,
+.compose__apply-all-note {
+  font-size: 12px;
+  margin: 0;
+}
+.compose__fallback-warning {
+  color: var(--warning, #b45309);
+}
+.compose__fallback-triggers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.chip {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.chip--on {
+  background: var(--accent, #3d7dff);
+  border-color: var(--accent, #3d7dff);
+  color: #fff;
+}
+
 /* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
 .tool-usage__note {
   font-size: 12px;

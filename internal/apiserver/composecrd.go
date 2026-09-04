@@ -167,18 +167,37 @@ type projectRequest struct {
 	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
 }
 
+// fallbackModelWire is the wire shape for spec.fallbackModel (§10.3, ADR-030/031):
+// a secondary model with its OWN optional endpoint Secret. It mirrors the CRD's
+// FallbackModel exactly (model + optional modelEndpointRef) so the four-layer
+// round-trip stays a straight copy — no reshape (R-CR1 C1).
+type fallbackModelWire struct {
+	Model            string         `json:"model"`
+	ModelEndpointRef *secretRefWire `json:"modelEndpointRef,omitempty"`
+}
+
 type agentRequest struct {
 	// Project scopes the compose operation for the write-tier RBAC check (the
 	// squad the Agent composes within). It is NOT written to the Agent spec — the
 	// Agent CR is team-namespace-scoped; this is the membership scope only.
-	Project             string          `json:"project"`
-	Name                string          `json:"name"`
-	RuntimeRef          objectRefWire   `json:"runtimeRef"`
-	RoleRef             objectRefWire   `json:"roleRef"`
-	SkillRefs           []objectRefWire `json:"skillRefs,omitempty"`
-	Model               string          `json:"model"`
-	ModelEndpointRef    *secretRefWire  `json:"modelEndpointRef,omitempty"`
-	CredentialSecretRef secretRefWire   `json:"credentialSecretRef"`
+	Project          string          `json:"project"`
+	Name             string          `json:"name"`
+	RuntimeRef       objectRefWire   `json:"runtimeRef"`
+	RoleRef          objectRefWire   `json:"roleRef"`
+	SkillRefs        []objectRefWire `json:"skillRefs,omitempty"`
+	Model            string          `json:"model"`
+	ModelEndpointRef *secretRefWire  `json:"modelEndpointRef,omitempty"`
+	// FallbackModel persists the secondary-model choice onto spec.fallbackModel
+	// (R-CR1 C1, story E3-S3). Omitted ⇒ no fallback (the CRD field stays nil), so
+	// an author who never opens the fallback control never rides an empty one along.
+	FallbackModel       *fallbackModelWire `json:"fallbackModel,omitempty"`
+	CredentialSecretRef secretRefWire      `json:"credentialSecretRef"`
+	// CredentialClass persists the auth-mode fork onto spec.credentialClass
+	// (human-seat vs service-account, story 5.4). MANDATORY round-trip (R-CR1 C1):
+	// advisory-only would leave the D2 auth-mode fork inert — the injector
+	// (credinject) and webhook (validator.go) key on this exact string. Empty is
+	// valid and resolves to the service-account default at injection time.
+	CredentialClass string `json:"credentialClass,omitempty"`
 }
 
 type roleRequest struct {
@@ -532,6 +551,7 @@ func (s *ComposeService) planAgent(req agentRequest) applyPlan {
 		RuntimeRef:          req.RuntimeRef.toRef(),
 		RoleRef:             req.RoleRef.toRef(),
 		CredentialSecretRef: req.CredentialSecretRef.toRef(),
+		CredentialClass:     req.CredentialClass,
 		Model:               req.Model,
 	}
 	for _, sr := range req.SkillRefs {
@@ -540,6 +560,19 @@ func (s *ComposeService) planAgent(req agentRequest) applyPlan {
 	if req.ModelEndpointRef != nil {
 		ref := req.ModelEndpointRef.toRef()
 		spec.ModelEndpointRef = &ref
+	}
+	// Map fallbackModel onto spec.fallbackModel, mirroring the modelEndpointRef
+	// copy above: the fallback's own endpoint Secret is optional and rides through
+	// unchanged. The webhook (GuardAgentFallbackModelEndpoint) validates the ref;
+	// CRD CEL enforces model MinLength=1 — the form omits an empty fallback so a
+	// half-filled control never reaches admission.
+	if req.FallbackModel != nil {
+		fb := &ksquadv1.FallbackModel{Model: req.FallbackModel.Model}
+		if req.FallbackModel.ModelEndpointRef != nil {
+			ref := req.FallbackModel.ModelEndpointRef.toRef()
+			fb.ModelEndpointRef = &ref
+		}
+		spec.FallbackModel = fb
 	}
 	agent := &ksquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},

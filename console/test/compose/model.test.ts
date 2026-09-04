@@ -79,6 +79,54 @@ describe("toWire nesting + optional omission", () => {
     expect("modelEndpointRef" in w).toBe(false);
   });
 
+  it("emits credentialClass + fallbackModel (E3-S3, R-CR1 C1) and omits them when blank", () => {
+    const base = {
+      project: "p",
+      name: "a1",
+      runtimeRef: "rt",
+      roleRef: "r",
+      model: "claude-opus-4-8",
+      credentialSecretRef: "cred/token",
+    };
+    // Blank fallback + class ⇒ neither key rides along (mirrors modelEndpointRef omit).
+    const bare = toWire(agent({ ...base }));
+    expect("credentialClass" in bare).toBe(false);
+    expect("fallbackModel" in bare).toBe(false);
+
+    // Class + fallback (model only) present.
+    const full = toWire(
+      agent({
+        ...base,
+        credentialClass: "human-seat",
+        fallbackModel: "claude-haiku-4-5",
+      }),
+    );
+    expect(full).toMatchObject({
+      credentialClass: "human-seat",
+      fallbackModel: { model: "claude-haiku-4-5" },
+    });
+    expect("modelEndpointRef" in (full.fallbackModel as object)).toBe(false);
+
+    // Fallback with its own endpoint ref → nested secret ref; advisory triggers are NEVER serialized.
+    const withFbEndpoint = toWire(
+      agent({
+        ...base,
+        fallbackModel: "ollama/llama3.1:8b",
+        fallbackModelEndpointRef: "fb-endpoint/url",
+        fallbackTriggers: ["error", "rate-limit"],
+      }),
+    );
+    expect(withFbEndpoint.fallbackModel).toEqual({
+      model: "ollama/llama3.1:8b",
+      modelEndpointRef: { name: "fb-endpoint", key: "url" },
+    });
+    expect("fallbackTriggers" in withFbEndpoint).toBe(false);
+
+    // A bare fallback endpoint with NO model id never emits a half-filled fallback.
+    const bareFbEndpoint = toWire(agent({ ...base, fallbackModelEndpointRef: "fb-endpoint" }));
+    expect("fallbackModel" in bareFbEndpoint).toBe(false);
+  });
+
   it("emits skill git source and drops the inline branch (and vice versa)", () => {
     const git = toWire(
       skill({ name: "s", sourceType: "git", gitRepoRef: "repo", gitRef: "main", gitPath: "d" }),

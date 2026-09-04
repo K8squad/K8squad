@@ -57,6 +57,38 @@ export function isCuratedModel(id: string, hints: readonly ModelHint[] = CURATED
  * legal-but-unusual id must still submit (vendor neutrality, AC7). Empty is not this function's
  * concern — required-ness is enforced by `validate()` in lib/compose.
  */
+/**
+ * modelProvider derives a coarse provider key from a model id, for the fallback same-provider
+ * resilience warning (FR-4.1/4.2, story E3-S3). It is a HEURISTIC, never a gate — it only decides
+ * whether to surface a soft warning, and misclassifying an exotic id at worst suppresses (or shows)
+ * an advisory note. Rules, in order: an explicit "provider/model" prefix wins (e.g. `ollama/…`,
+ * `openai/…`); otherwise a leading family token maps a bare vendor id (`claude-*`→anthropic,
+ * `gpt-*`/`o1*`→openai, `gemini-*`→google); an empty id has no provider ("").
+ */
+export function modelProvider(id: string): string {
+  const v = id.trim().toLowerCase();
+  if (!v) return "";
+  const slash = v.indexOf("/");
+  if (slash > 0) return v.slice(0, slash);
+  if (v.startsWith("claude")) return "anthropic";
+  if (v.startsWith("gpt") || v.startsWith("o1")) return "openai";
+  if (v.startsWith("gemini")) return "google";
+  return v;
+}
+
+/**
+ * sameProviderWarning returns a soft resilience warning when a primary and fallback model resolve to
+ * the SAME provider (FR-4.1/4.2): a fallback on the same provider shares its rate-limit / outage
+ * blast radius, so it rarely buys resilience. Returns undefined when either is empty or they differ.
+ * NEVER blocks submit — the fallback is still valid; this only nudges (AD-4).
+ */
+export function sameProviderWarning(primary: string, fallback: string): string | undefined {
+  const p = modelProvider(primary);
+  const f = modelProvider(fallback);
+  if (!p || !f || p !== f) return undefined;
+  return `Fallback shares the same provider (${p}) as the primary model — it may hit the same rate limit or outage. Consider a different provider for real resilience.`;
+}
+
 export function modelShapeHint(id: string): string | undefined {
   const v = id.trim();
   if (!v) return undefined; // emptiness is a hard "required" error elsewhere, not a soft hint

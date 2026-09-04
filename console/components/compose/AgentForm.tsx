@@ -51,6 +51,9 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
         model={cf.form.model}
         modelEndpointRef={cf.form.modelEndpointRef}
         byoEnabled={cf.form.byoEnabled}
+        fallbackModel={cf.form.fallbackModel}
+        fallbackModelEndpointRef={cf.form.fallbackModelEndpointRef}
+        fallbackTriggers={cf.form.fallbackTriggers}
         errors={errors}
         patch={patch}
       />
@@ -60,6 +63,26 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
           onChange={(e) => patch({ credentialSecretRef: e.target.value })}
           aria-invalid={!!errors["credentialSecretRef.name"]}
         />
+      </Field>
+      {/* Auth-mode fork (credentialClass) persist seam (E3-S3, R-CR1 C1). The rich fork UI with the
+          env-var readout + Test-connection lives in E3-S4; this minimal select keeps the field wired
+          end-to-end so an author can pick a human-seat OAuth agent today. Empty ⇒ server default
+          (service-account). */}
+      <Field
+        label="Credential class"
+        hint="human-seat = interactive OAuth (e.g. Claude Code); service-account = long-lived API key (default)"
+        error={errors["credentialClass"]}
+      >
+        <select
+          value={cf.form.credentialClass}
+          onChange={(e) => patch({ credentialClass: e.target.value })}
+          aria-label="Credential class"
+          aria-invalid={!!errors["credentialClass"]}
+        >
+          <option value="">— Default (service-account) —</option>
+          <option value="human-seat">human-seat (OAuth)</option>
+          <option value="service-account">service-account (API key)</option>
+        </select>
       </Field>
       <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
         <textarea

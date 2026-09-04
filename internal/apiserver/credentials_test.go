@@ -129,6 +129,48 @@ func TestCredentialsProjection(t *testing.T) {
 	}
 }
 
+// TestCredentialsCredentialClassDualRead — R-CR1 C2 (story E3-S3): the read-model prefers
+// spec.credentialClass (the authoritative write target the compose surface now persists) and
+// falls back to the legacy ksquad.io/credential-class annotation for rows written before the spec
+// field. When both are present, spec wins; when only the annotation is present, it is honored.
+func TestCredentialsCredentialClassDualRead(t *testing.T) {
+	const teamUID = "aaaaaaaa-9999-9999-9999-999999999999"
+
+	specOnly := agent("squad-a", "a-spec", "hermes", "sec-a")
+	specOnly.Spec.CredentialClass = "human-seat"
+
+	annotationOnly := agent("squad-a", "b-legacy", "hermes", "sec-b")
+	annotationOnly.Annotations = map[string]string{"ksquad.io/credential-class": "service-account"}
+
+	specWins := agent("squad-a", "c-both", "hermes", "sec-c")
+	specWins.Spec.CredentialClass = "human-seat"
+	specWins.Annotations = map[string]string{"ksquad.io/credential-class": "service-account"}
+
+	neither := agent("squad-a", "d-none", "hermes", "sec-d")
+
+	r := newCredReader(t, team("squad-a", "alpha", teamUID), specOnly, annotationOnly, specWins, neither)
+	ov, err := r.Credentials(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("Credentials: %v", err)
+	}
+	got := map[string]string{}
+	for _, row := range ov.Agents {
+		got[row.Agent] = row.CredentialClass
+	}
+	if got["a-spec"] != "human-seat" {
+		t.Fatalf("spec-only: got %q, want human-seat", got["a-spec"])
+	}
+	if got["b-legacy"] != "service-account" {
+		t.Fatalf("annotation fallback: got %q, want service-account", got["b-legacy"])
+	}
+	if got["c-both"] != "human-seat" {
+		t.Fatalf("spec must win over annotation: got %q, want human-seat", got["c-both"])
+	}
+	if got["d-none"] != "" {
+		t.Fatalf("no class anywhere: got %q, want empty", got["d-none"])
+	}
+}
+
 // TestCredentialsZeroKnowledgeIsUnknown — an Agent with no Runs, no annotations, and no
 // controller data must render health unknown, NOT a fabricated connected badge: absence of a
 // paused Run is not evidence the credential works (PR #87 review).

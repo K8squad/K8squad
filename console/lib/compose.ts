@@ -110,6 +110,20 @@ export type AgentForm = {
   model: string;
   modelEndpointRef: string; // secret "name" or "name/key"; omitted when blank
   credentialSecretRef: string; // secret "name" or "name/key"
+  // credentialClass is the auth-mode fork (R-CR1 C1, story E3-S3): "" (⇒ server default
+  // service-account) | "human-seat" | "service-account". It PERSISTS to Agent.spec.credentialClass
+  // — the injector (credinject) and webhook key on this exact string, so an advisory-only value
+  // would leave the D2 auth-mode fork inert. Empty is valid (blank-omitted by toWire).
+  credentialClass: string;
+  // fallbackModel + fallbackModelEndpointRef map to Agent.spec.fallbackModel.{model,modelEndpointRef}
+  // (§10.3, ADR-030/031). A single-fallback control (AD-4); toWire emits `fallbackModel` only when a
+  // model id is present (a bare endpoint ref never rides along), mirroring the modelEndpointRef omit.
+  fallbackModel: string;
+  fallbackModelEndpointRef: string; // secret "name" or "name/key" for the fallback's own endpoint
+  // UI-only: advisory trigger chips (on error / on rate-limit / on timeout). The v1 CRD FallbackModel
+  // has NO trigger field (AC3, Q3/R5), so these are presentational only — toWire NEVER emits them.
+  // Kept in the form model (not local component state) so an "apply to all" default carries them.
+  fallbackTriggers: string[];
   // UI-only: the "Bring your own endpoint" toggle (Story B, ISI-3555). NOT serialized — toWire
   // never emits it; the authoritative wire fields are `model` (+ `modelEndpointRef` when BYO is on).
   // When true, an endpoint Secret ref is required (validate); when false the ref is treated as
@@ -168,6 +182,10 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
           model: "",
           modelEndpointRef: "",
           credentialSecretRef: "",
+          credentialClass: "",
+          fallbackModel: "",
+          fallbackModelEndpointRef: "",
+          fallbackTriggers: [],
           byoEnabled: false,
         },
       };
@@ -255,6 +273,20 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
         model: f.model.trim(),
         ...(f.modelEndpointRef.trim() ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) } : {}),
         credentialSecretRef: parseSecretRef(f.credentialSecretRef),
+        // credentialClass persists the auth-mode fork (R-CR1 C1); blank-omitted (server defaults it).
+        ...(f.credentialClass.trim() ? { credentialClass: f.credentialClass.trim() } : {}),
+        // fallbackModel rides through only when a model id is set — a bare endpoint ref (or the
+        // advisory trigger chips) never emits a half-filled fallback (mirrors modelEndpointRef omit).
+        ...(f.fallbackModel.trim()
+          ? {
+              fallbackModel: {
+                model: f.fallbackModel.trim(),
+                ...(f.fallbackModelEndpointRef.trim()
+                  ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+                  : {}),
+              },
+            }
+          : {}),
       };
     }
     case "roles": {

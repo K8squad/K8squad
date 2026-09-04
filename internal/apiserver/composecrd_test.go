@@ -310,6 +310,74 @@ func TestComposeAgentContributorAllowed(t *testing.T) {
 	}
 }
 
+// TestComposeAgentFallbackAndCredentialClass — R-CR1 C1 (story E3-S3): the four-layer field-adds
+// persist onto the Agent CR. fallbackModel (with its own optional endpoint ref) maps onto
+// spec.fallbackModel; credentialClass maps onto spec.credentialClass (read by the injector + webhook
+// — advisory-only would leave the D2 auth-mode fork inert).
+func TestComposeAgentFallbackAndCredentialClass(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{
+		Project: "widget", Name: "backend-dev", Model: "claude-opus-4-8",
+		CredentialClass: "human-seat",
+		FallbackModel: &fallbackModelWire{
+			Model:            "ollama/llama3.1:8b",
+			ModelEndpointRef: &secretRefWire{Name: "fb-endpoint", Key: "url"},
+		},
+	}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "backend-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.CredentialClass != "human-seat" {
+		t.Fatalf("credentialClass not persisted: %q", got.Spec.CredentialClass)
+	}
+	if got.Spec.FallbackModel == nil {
+		t.Fatalf("fallbackModel not persisted: %+v", got.Spec)
+	}
+	if got.Spec.FallbackModel.Model != "ollama/llama3.1:8b" {
+		t.Fatalf("fallback model: %q", got.Spec.FallbackModel.Model)
+	}
+	if got.Spec.FallbackModel.ModelEndpointRef == nil ||
+		got.Spec.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" ||
+		got.Spec.FallbackModel.ModelEndpointRef.Key != "url" {
+		t.Fatalf("fallback endpoint ref: %+v", got.Spec.FallbackModel.ModelEndpointRef)
+	}
+}
+
+// TestComposeAgentOmitsFallbackAndClassWhenAbsent — a plain Agent (no fallback, no class) leaves
+// both CRD fields at their zero value: nil FallbackModel, empty CredentialClass (⇒ the injector's
+// service-account default). A half-filled control never rides an empty fallback along.
+func TestComposeAgentOmitsFallbackAndClassWhenAbsent(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{Project: "widget", Name: "plain-dev", Model: "claude-opus-4-8"}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "plain-dev"}, &got); err != nil {
+		t.Fatalf("agent not applied: %v", err)
+	}
+	if got.Spec.FallbackModel != nil {
+		t.Fatalf("fallbackModel should be nil when absent: %+v", got.Spec.FallbackModel)
+	}
+	if got.Spec.CredentialClass != "" {
+		t.Fatalf("credentialClass should be empty when absent: %q", got.Spec.CredentialClass)
+	}
+}
+
 // ── an Agent with no write grant on its project → 404 (existence-hiding) ─────
 
 func TestComposeAgentNoMembershipNotFound(t *testing.T) {
