@@ -196,6 +196,107 @@ func TestReconcileCollectorNotFound(t *testing.T) {
 	}
 }
 
+func getStatus(t *testing.T, r *Reconciler, name string) ksquadv1alpha1.OTelConfigStatus {
+	t.Helper()
+	var cfg ksquadv1alpha1.OTelConfig
+	if err := r.Get(context.Background(), client.ObjectKey{Name: name}, &cfg); err != nil {
+		t.Fatalf("get otelconfig: %v", err)
+	}
+	return cfg.Status
+}
+
+func signalState(t *testing.T, st ksquadv1alpha1.OTelConfigStatus, key string) ksquadv1alpha1.SignalState {
+	t.Helper()
+	sig, ok := st.Signals[key]
+	if !ok {
+		t.Fatalf("status.signals missing key %q; have %v", key, st.Signals)
+	}
+	return sig.State
+}
+
+// D-AC2 (ISI-3621): a successful reconcile marks configured signals `healthy`
+// and unconfigured signals `disabled` on status.signals. The fixture routes
+// only traces, so metrics/logs must report disabled.
+func TestReconcileSignalsHealthyAndDisabled(t *testing.T) {
+	r := newReconciler(t, collectorDeployment(), otelConfig("default", 3))
+	reconcile(t, r)
+
+	st := getStatus(t, r, "default")
+	if got := signalState(t, st, "traces"); got != ksquadv1alpha1.SignalStateHealthy {
+		t.Errorf("traces state = %q, want healthy", got)
+	}
+	for _, key := range []string{"metrics", "logs"} {
+		if got := signalState(t, st, key); got != ksquadv1alpha1.SignalStateDisabled {
+			t.Errorf("%s state = %q, want disabled", key, got)
+		}
+	}
+}
+
+// D-AC2: all three signals configured → all healthy after a clean reconcile.
+func TestReconcileSignalsAllHealthy(t *testing.T) {
+	cfg := otelConfig("default", 1)
+	route := &ksquadv1alpha1.SignalRouting{
+		Endpoint: "https://otlp.dynatrace.com/api/v2/otlp/v1/metrics",
+		Protocol: ksquadv1alpha1.ExportProtocolHTTPProtobuf,
+		Auth:     &ksquadv1alpha1.SecretKeyReference{Name: "otlp-token", Key: "token"},
+	}
+	cfg.Spec.Metrics = route
+	cfg.Spec.Logs = route
+	r := newReconciler(t, collectorDeployment(), cfg)
+	reconcile(t, r)
+
+	st := getStatus(t, r, "default")
+	for _, key := range []string{"traces", "metrics", "logs"} {
+		if got := signalState(t, st, key); got != ksquadv1alpha1.SignalStateHealthy {
+			t.Errorf("%s state = %q, want healthy", key, got)
+		}
+	}
+}
+
+// D-AC2: while the collector has not come up yet, a configured signal reports
+// `pending` (transient bootstrap), not `erroring` — the Console card must not
+// false-alarm. Unconfigured signals still report disabled.
+func TestReconcileSignalsPendingWhenCollectorMissing(t *testing.T) {
+	r := newReconciler(t, otelConfig("default", 1))
+	// Reconcile returns the requeue error (no collector); status is still written.
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "default"}})
+
+	st := getStatus(t, r, "default")
+	if got := signalState(t, st, "traces"); got != ksquadv1alpha1.SignalStatePending {
+		t.Errorf("traces state = %q, want pending", got)
+	}
+	if got := signalState(t, st, "metrics"); got != ksquadv1alpha1.SignalStateDisabled {
+		t.Errorf("metrics state = %q, want disabled", got)
+	}
+}
+
+// D-AC2 + D-AC3: an invalid routing spec makes the render fail → configured
+// signal is `erroring` with a human-readable, secret-free detail (never a token
+// value). The detail mirrors the EgressReady condition message.
+func TestReconcileSignalsErroringOnRenderFailureNoSecret(t *testing.T) {
+	cfg := otelConfig("default", 1)
+	cfg.Spec.Traces.Endpoint = "" // empty endpoint → RenderEgressOverlay fails
+	r := newReconciler(t, collectorDeployment(), cfg)
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "default"}})
+
+	st := getStatus(t, r, "default")
+	sig, ok := st.Signals["traces"]
+	if !ok {
+		t.Fatalf("status.signals missing traces; have %v", st.Signals)
+	}
+	if sig.State != ksquadv1alpha1.SignalStateErroring {
+		t.Errorf("traces state = %q, want erroring", sig.State)
+	}
+	if sig.Detail == "" {
+		t.Error("erroring signal must carry a human-readable detail")
+	}
+	// D-AC3: no token value may appear in detail. The fixture uses a Dynatrace
+	// token shaped "dt0c01.*"; assert that shape never leaks.
+	if strings.Contains(sig.Detail, "dt0c01") {
+		t.Errorf("detail leaked a token value: %q", sig.Detail)
+	}
+}
+
 func TestSelectConfig(t *testing.T) {
 	if SelectConfig(nil) != nil {
 		t.Error("empty set must select nil")
