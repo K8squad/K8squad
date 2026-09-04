@@ -217,3 +217,42 @@ func TestKnownClassesStable(t *testing.T) {
 		t.Fatalf("KnownClasses: want 2, got %d (%v)", len(got), got)
 	}
 }
+
+// TestDefaultSecretKeyIsTheReadKey — the exported read-key seam (AD-6/F1): the
+// key a writer derives MUST equal the key Inject projects when SecretRef.Key
+// is empty, for every mapped (runtime, class) pair, and unmapped pairs fail
+// closed. Pinning this against Inject (not a literal) is what keeps write/read
+// agreement from drifting.
+func TestDefaultSecretKeyIsTheReadKey(t *testing.T) {
+	for rt, byClass := range table {
+		for class, b := range byClass {
+			got, ok := DefaultSecretKey(rt, class)
+			if !ok {
+				t.Errorf("DefaultSecretKey(%q, %q): want ok, the pair is mapped", rt, class)
+				continue
+			}
+			if got != b.defaultKey {
+				t.Errorf("DefaultSecretKey(%q, %q): want %q, got %q", rt, class, b.defaultKey, got)
+			}
+			inj, err := Inject(rt, class, api.SecretRef{Name: "cred"})
+			if err != nil {
+				t.Errorf("Inject(%q, %q): %v", rt, class, err)
+				continue
+			}
+			if inj.Env[0].ValueFrom.SecretKeyRef.Key != got {
+				t.Errorf("Inject(%q, %q) reads key %q but DefaultSecretKey says %q", rt, class,
+					inj.Env[0].ValueFrom.SecretKeyRef.Key, got)
+			}
+		}
+	}
+	if _, ok := DefaultSecretKey("nope", ClassServiceAccount); ok {
+		t.Error("unknown runtime must fail closed")
+	}
+	if _, ok := DefaultSecretKey(api.RuntimeTypeOpenClaw, ClassHumanSeat); ok {
+		t.Error("unmapped (runtime, class) pair must fail closed")
+	}
+	// Empty class resolves to the default, exactly like Inject.
+	if got, ok := DefaultSecretKey(api.RuntimeTypeClaudeCode, ""); !ok || got != "apiKey" {
+		t.Errorf("empty class ⇒ default key: want apiKey/true, got %q/%v", got, ok)
+	}
+}

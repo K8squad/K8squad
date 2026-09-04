@@ -214,10 +214,68 @@ data:
         endpoint: 0.0.0.0:8889
         resource_to_telemetry_conversion:
           enabled: true
-      {{- if $otlp.endpoint }}
-      {{- /* HTTP(S) URL → otlphttp exporter; bare host:port → otlp (gRPC).
-             Mirrors the OTelConfig CRD endpoint semantics (grpc = host[:port],
-             http = full URL). */}}
+      # Safe default sink. The BASE config NEVER contains a vendor exporter
+      # (ADR-0008 M1(b)): vendor egress is supplied by a SECOND --config overlay
+      # (ConfigMap {{ $name }}-egress, mounted at /conf/egress) — owned by the
+      # operator, reconciled from the OTelConfig CRD (ISI-3724), or as a
+      # no-operator bootstrap fallback rendered by Helm from the DEPRECATED
+      # observability.export.otlp.* values. confmap deep-merges maps and
+      # REPLACES the per-signal exporters sequences below, so the overlay swaps
+      # `debug`→vendor while redaction/tail_sampling stay enforced upstream here.
+      debug:
+        verbosity: {{ if .Values.observability.collector.debugExporter }}detailed{{ else }}basic{{ end }}
+
+    {{- /* Base defaults: debug (traces/logs) + prometheus (metrics). The egress
+           overlay replaces these exporters lists when a vendor is configured. */}}
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
+          exporters: [debug]
+        metrics:
+          receivers: [otlp, prometheus]
+          processors: [memory_limiter, k8sattributes, resource, batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          exporters: [debug]
+---
+{{- if $otlp.endpoint }}
+{{- /*
+  Bootstrap / no-operator vendor egress overlay — ADR-0008 §Migration (DEPRECATED).
+  Rendered ONLY when observability.export.otlp.endpoint is set. This is the SECOND
+  --config source ({{ $name }}-egress, mounted at /conf/egress): it carries just the
+  vendor exporter + the per-signal exporters override. confmap deep-merges the
+  `exporters:` map and REPLACES the base per-signal exporters sequences, leaving
+  redaction/tail_sampling (base) upstream — so nothing sensitive ever bypasses the
+  redaction backstop.
+
+  Ownership: when the operator (ISI-3724) reconciles egress from the OTelConfig CRD,
+  leave observability.export.otlp.endpoint EMPTY — the operator owns THIS exact
+  ConfigMap. Never set both, or `helm upgrade` and the operator will contend for it.
+  This Helm-rendered fallback exists for one release so bootstrap installs (no
+  operator yet) can still ship to a vendor; it is removed once the operator path is
+  live on k8squad-test.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-egress
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector
+  annotations:
+    # Marks Helm as the writer; the operator overwrites this to its own value when
+    # it takes ownership (lets an operator upgrade detect+adopt the bootstrap CM).
+    ksquad.io/egress-source: helm-bootstrap
+data:
+  egress.yaml: |
+    exporters:
+      # HTTP(S) URL → otlphttp exporter; bare host:port → otlp (gRPC). Mirrors the
+      # OTelConfig CRD endpoint semantics the operator overlay will emit.
       {{ $vendorExporter }}:
         endpoint: {{ $otlp.endpoint | quote }}
         {{- if $otlp.auth.secretName }}
@@ -226,32 +284,17 @@ data:
         {{- end }}
         tls:
           insecure: {{ $otlp.insecure }}
-      {{- end }}
-      # Fallback sink so traces/logs pipelines always have >=1 exporter. When no
-      # vendor endpoint is set the collector still enforces the redaction/sampling
-      # pipeline and prints to stdout (basic verbosity); a real install sets
-      # observability.export.otlp.endpoint and telemetry ships to the backend.
-      debug:
-        verbosity: {{ if .Values.observability.collector.debugExporter }}detailed{{ else }}basic{{ end }}
-
-    {{- /* traces/logs export to the vendor when configured, else the debug sink. */}}
-    {{- $signalExporters := ternary $vendorExporter "debug" (not (empty $otlp.endpoint)) }}
     service:
-      extensions: [health_check]
       pipelines:
+        # Sequences replace on merge: base [debug]/[prometheus] → vendor-routed.
         traces:
-          receivers: [otlp]
-          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
-          exporters: [{{ $signalExporters }}]
+          exporters: [{{ $vendorExporter }}]
         metrics:
-          receivers: [otlp, prometheus]
-          processors: [memory_limiter, k8sattributes, resource, batch]
-          exporters: [prometheus{{ if $otlp.endpoint }}, {{ $vendorExporter }}{{ end }}]
+          exporters: [prometheus, {{ $vendorExporter }}]
         logs:
-          receivers: [otlp]
-          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
-          exporters: [{{ $signalExporters }}]
+          exporters: [{{ $vendorExporter }}]
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -274,7 +317,10 @@ spec:
         {{- include "ksquad.labels" . | nindent 8 }}
         app.kubernetes.io/component: otel-collector
       annotations:
-        checksum/config: {{ .Values.observability.collector.debugExporter | toString | sha256sum }}
+        # Roll the pod when the base config OR the Helm bootstrap egress values
+        # change. Operator-written egress rollouts use ksquad.io/otelconfig-generation
+        # (ISI-3724) instead — this covers only the Helm-owned inputs.
+        checksum/config: {{ printf "%v|%v" .Values.observability.collector.debugExporter $otlp | sha256sum }}
     spec:
       serviceAccountName: {{ $name }}
       securityContext:
@@ -286,7 +332,13 @@ spec:
         - name: otel-collector
           image: "{{ .Values.observability.collector.image.repository }}:{{ .Values.observability.collector.image.tag }}"
           imagePullPolicy: {{ .Values.observability.collector.image.pullPolicy }}
-          args: ["--config=/conf/collector.yaml"]
+          # Two --config sources: Helm-owned base + operator/bootstrap egress
+          # overlay. confmap merges them (maps deep-merge, sequences replace by
+          # last source). Egress mount is optional (see volumes) so first boot
+          # before the overlay exists does not wedge the pod (ADR-0008 M1(b)).
+          args:
+            - --config=/conf/base/collector.yaml
+            - --config=/conf/egress/egress.yaml
           ports:
             - name: otlp-grpc
               containerPort: 4317
@@ -322,12 +374,21 @@ spec:
           resources:
             {{- toYaml .Values.observability.collector.resources | nindent 12 }}
           volumeMounts:
-            - name: config
-              mountPath: /conf
+            - name: config-base
+              mountPath: /conf/base
+            - name: config-egress
+              mountPath: /conf/egress
       volumes:
-        - name: config
+        - name: config-base
           configMap:
             name: {{ $name }}
+        # Vendor egress overlay (second --config). optional:true so first boot —
+        # before the operator (ISI-3724) has written it, or with no bootstrap
+        # observability.export.otlp.endpoint set — does not wedge the pod.
+        - name: config-egress
+          configMap:
+            name: {{ $name }}-egress
+            optional: true
 ---
 apiVersion: v1
 kind: Service
