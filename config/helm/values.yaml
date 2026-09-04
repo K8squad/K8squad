@@ -240,9 +240,13 @@ fullnameOverride: ""
 
 # Workspace PVC configuration for Projects (story 4.3, §9.4)
 workspacePVC:
-  # Default storage class for workspace PVCs. Empty means the cluster default,
-  # but this is discouraged as it can lead to misconfiguration (story 9.2).
-  # Should be resolved by the operator from Helm-provided workspace storage class.
+  # Default storage class for every per-Run workspace PVC the operator stamps.
+  # Wired to the operator via KSQUAD_WORKSPACE_STORAGE_CLASS (ISI-3745,
+  # config/helm/templates/control-plane/operator.yaml). Empty is DISCOURAGED:
+  # it drops the env and the operator falls back to its compile-time default,
+  # which will strand Runs on clusters without that class (e.g. k8squad-test has
+  # no `standard` class → PVC Pending). Set this per cluster (k8squad-test:
+  # "local-path", nfs-csi is broken — see ISI-3510).
   # +optional
   defaultClass: ""
   

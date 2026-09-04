@@ -22,6 +22,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"os"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -36,16 +37,31 @@ import (
 )
 
 const (
-	// WorkspacePVCSize is the default size for agent workspace PVCs
+	// WorkspacePVCSize is the fallback size for agent workspace PVCs when the
+	// operator is not handed one via EnvWorkspacePVCSize.
 	WorkspacePVCSize = "10Gi"
-	
-	// WorkspaceStorageClass is the default storage class for workspace PVCs
-	// This should be configurable via Helm chart values
+
+	// WorkspaceStorageClass is the LAST-RESORT default storage class for
+	// workspace PVCs. It is only used when EnvWorkspaceStorageClass is unset.
+	//
+	// ISI-3745: the durable value comes from the Helm storage contract
+	// (`workspacePVC.defaultClass` / `storage.workspace.storageClassName` → the
+	// operator's EnvWorkspaceStorageClass env). Every PVC's StorageClass must
+	// come from values, NEVER the cluster default — so a correctly-deployed
+	// operator always overrides this literal. It survives only as a compile-time
+	// fallback for env-less unit tests and smoke runs.
 	WorkspaceStorageClass = "standard"
-	
+
+	// Env vars the operator Deployment injects from the Helm workspace storage
+	// values (config/helm workspacePVC.*, deploy/helm/ksquad storage.workspace.*).
+	// An empty or unset value falls back to the package constants above.
+	EnvWorkspaceStorageClass = "KSQUAD_WORKSPACE_STORAGE_CLASS"
+	EnvWorkspacePVCSize      = "KSQUAD_WORKSPACE_PVC_SIZE"
+	EnvWorkspaceAccessMode   = "KSQUAD_WORKSPACE_ACCESS_MODE"
+
 	// LabelWorkspace identifies PVCs managed by this controller
 	LabelWorkspace = "k8squad.io/workspace"
-	
+
 	// LabelRun identifies the Run that owns this workspace
 	LabelRun = "k8squad.io/run"
 )
@@ -53,13 +69,35 @@ const (
 // Manager manages PVC lifecycle for agent workspaces
 type Manager struct {
 	client client.Client
+
+	// storageClass / pvcSize / accessMode are resolved once at construction from
+	// the operator's environment (fed by the Helm storage contract, ISI-3745).
+	// They are the values stamped onto every workspace PVC.
+	storageClass string
+	pvcSize      string
+	accessMode   corev1.PersistentVolumeAccessMode
 }
 
-// NewWorkspaceManager creates a new workspace manager
+// NewWorkspaceManager creates a new workspace manager. Workspace PVC storage
+// parameters are resolved from the environment injected by the Helm chart
+// (ISI-3745); each falls back to a package default when its env var is unset.
 func NewWorkspaceManager(kubeClient client.Client) *Manager {
 	return &Manager{
-		client: kubeClient,
+		client:       kubeClient,
+		storageClass: envOrDefault(EnvWorkspaceStorageClass, WorkspaceStorageClass),
+		pvcSize:      envOrDefault(EnvWorkspacePVCSize, WorkspacePVCSize),
+		accessMode:   corev1.PersistentVolumeAccessMode(envOrDefault(EnvWorkspaceAccessMode, string(corev1.ReadWriteOnce))),
 	}
+}
+
+// envOrDefault returns the environment value for key, or def when it is unset or
+// empty. An empty StorageClass would silently re-select the cluster default —
+// exactly the ISI-3745 failure — so empty is treated as "unset".
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // This controller does For(&Run{}).Owns(&PersistentVolumeClaim{}) (see
@@ -94,32 +132,32 @@ func (wm *Manager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 // If the PVC doesn't exist, it creates one. If it exists, it returns the reference.
 func (wm *Manager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	logger := log.FromContext(ctx)
-	
+
 	// Generate the PVC name for this Run
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-	
+
 	// Check if PVC already exists
 	existingPVC := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, existingPVC)
-	
+
 	if err == nil {
 		// PVC already exists, return it
 		logger.Info("Workspace PVC already exists", "pvc", pvcName, "run", run.Name)
 		return existingPVC, nil
 	}
-	
+
 	if !errors.IsNotFound(err) {
 		// Other error occurred
 		return nil, fmt.Errorf("failed to check existing PVC %s: %w", pvcName, err)
 	}
-	
+
 	// PVC doesn't exist, create it
 	pvc := wm.createWorkspacePVC(run, pvcName)
-	
+
 	if err := wm.client.Create(ctx, pvc); err != nil {
 		return nil, fmt.Errorf("failed to create workspace PVC %s: %w", pvcName, err)
 	}
-	
+
 	logger.Info("Created workspace PVC", "pvc", pvcName, "run", run.Name)
 	return pvc, nil
 }
@@ -127,26 +165,26 @@ func (wm *Manager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run)
 // GetWorkspace returns the workspace PVC for the given Run
 func (wm *Manager) GetWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-	
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to get workspace PVC %s: %w", pvcName, err)
 	}
-	
+
 	return pvc, nil
 }
 
 // DeleteWorkspace deletes the workspace PVC for the given Run
 func (wm *Manager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) error {
 	logger := log.FromContext(ctx)
-	
+
 	pvcName := fmt.Sprintf("workspace-%s", run.Name)
-	
+
 	pvc := &corev1.PersistentVolumeClaim{}
 	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, pvc)
-	
+
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// PVC doesn't exist, nothing to do
@@ -155,13 +193,13 @@ func (wm *Manager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run)
 		}
 		return fmt.Errorf("failed to get workspace PVC %s for deletion: %w", pvcName, err)
 	}
-	
+
 	// Delete the PVC
 	deletePolicy := metav1.DeletePropagationForeground
 	if err := wm.client.Delete(ctx, pvc, client.PropagationPolicy(deletePolicy)); err != nil {
 		return fmt.Errorf("failed to delete workspace PVC %s: %w", pvcName, err)
 	}
-	
+
 	logger.Info("Deleted workspace PVC", "pvc", pvcName, "run", run.Name)
 	return nil
 }
@@ -169,12 +207,14 @@ func (wm *Manager) DeleteWorkspace(ctx context.Context, run *ksquadv1alpha1.Run)
 // createWorkspacePVC creates a workspace PVC for the given Run
 func (wm *Manager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *corev1.PersistentVolumeClaim {
 	// ponytail: RunSpec.SandboxPolicy carries no per-Run workspace sizing/class
-	// fields (api/v1alpha1/run_types.go), so we use the package defaults.
+	// fields (api/v1alpha1/run_types.go), so we use the manager-level defaults
+	// resolved from the Helm storage contract at construction (ISI-3745).
 	// Upgrade path: add a WorkspacePVC *PVCSpec to SandboxPolicy (mirror
 	// ProjectSpec.WorkspacePVC) and read Size/Class from it here.
-	storageClass := WorkspaceStorageClass
-	pvcSize := WorkspacePVCSize
-	
+	storageClass := wm.storageClass
+	pvcSize := wm.pvcSize
+	accessMode := wm.accessMode
+
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      pvcName,
@@ -202,7 +242,7 @@ func (wm *Manager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{
-				corev1.ReadWriteOnce, // One node can mount it read-write
+				accessMode, // RWO default; RWX only if the class supports it (§9.4)
 			},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
@@ -212,7 +252,7 @@ func (wm *Manager) createWorkspacePVC(run *ksquadv1alpha1.Run, pvcName string) *
 			StorageClassName: &storageClass,
 		},
 	}
-	
+
 	return pvc
 }
 
@@ -247,14 +287,14 @@ func IsWorkspaceOwned(pvc *corev1.PersistentVolumeClaim) bool {
 	if pvc == nil {
 		return false
 	}
-	
+
 	if pvc.Labels == nil {
 		return false
 	}
-	
+
 	_, isWorkspace := pvc.Labels[LabelWorkspace]
 	_, isRun := pvc.Labels[LabelRun]
-	
+
 	return isWorkspace && isRun
 }
 
@@ -263,7 +303,7 @@ func GetRunForWorkspace(pvc *corev1.PersistentVolumeClaim) (string, bool) {
 	if pvc == nil || pvc.Labels == nil {
 		return "", false
 	}
-	
+
 	runName, ok := pvc.Labels[LabelRun]
 	return runName, ok
 }
