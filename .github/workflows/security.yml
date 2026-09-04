@@ -171,13 +171,50 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           node-version: 24
-      - name: Audit
+      - name: Audit (bounded retry on transient npmjs.org outages)
         if: steps.guard.outputs.present == 'true'
         # The console package lives in console/; audit reads its lockfile there.
         # Fall back to repo root if a top-level package.json is ever added.
+        # ISI-3773: `npm audit` reddens the PR gate identically for a real high/critical
+        # advisory and for an npmjs.org audit-endpoint outage ("audit endpoint returned an
+        # error", seen 2026-09-04 on PR #270). Retry with backoff ONLY on endpoint/transport
+        # errors — detected when the --json output lacks metadata.vulnerabilities. A response
+        # that parses to real results is enforced deterministically and never retried away.
         run: |
           if [ -f console/package.json ]; then cd console; fi
-          npm audit --audit-level=high
+          attempt=1
+          while [ "$attempt" -le 3 ]; do
+            echo "npm audit attempt $attempt/3"
+            if npm audit --json > audit-result.json 2> audit-err.txt; then rc=0; else rc=$?; fi
+            # A genuine audit response always carries metadata.vulnerabilities (even when
+            # all counts are zero). Its absence means the registry endpoint errored or the
+            # transport failed — the only retryable case.
+            if node -e "const r=require('./audit-result.json'); if(!r.metadata||!r.metadata.vulnerabilities) process.exit(1)" 2>/dev/null; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              wait_s=$((attempt * 30))
+              echo "::warning::npm audit endpoint error (attempt $attempt/3) — retrying in ${wait_s}s"
+              sleep "$wait_s"
+            fi
+            attempt=$((attempt + 1))
+          done
+          cat audit-err.txt
+          node -e "
+            const r = require('./audit-result.json');
+            if (!r.metadata || !r.metadata.vulnerabilities) {
+              console.error('::error::npm audit endpoint unreachable after 3 attempts (npmjs.org outage, not a finding). Re-run this workflow once the registry recovers.');
+              process.exit(1);
+            }
+            const v = r.metadata.vulnerabilities;
+            console.log('vulnerabilities:', JSON.stringify(v));
+            const bad = (v.high || 0) + (v.critical || 0);
+            if (bad > 0) {
+              console.error('::error::' + bad + ' high/critical advisories — run npm audit locally for details.');
+              process.exit(1);
+            }
+            console.log('npm audit: no high/critical advisories.');
+          "
 
   trivy-fs:
     name: Trivy (filesystem + config)
