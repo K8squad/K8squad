@@ -1,0 +1,105 @@
+{{- if .Values.exposure.gateway.enabled -}}
+{{- $g := .Values.exposure.gateway -}}
+{{- $ns := include "k8squad.namespace" . -}}
+{{- /* Serving listener: prefer https when enabled, else http. */ -}}
+{{- $serveSection := ternary "https" "http" $g.listeners.https.enabled -}}
+{{- /* Hostnames are OPTIONAL (ISI-3515): omit `hostnames` to expose by IP.
+       IP-only mode: the console owns EVERYTHING at `/` — including the entire
+       BFF surface under `/api/*` (session/login/runs/…), which per ADR-013/§13
+       is the ONLY path the browser ever takes. The apiserver is reached solely
+       through that BFF (ClusterIP, in-cluster), so it gets NO browser-facing
+       HTTPRoute on a shared IP — a `/api` apiserver route would shadow the BFF
+       and break login (ISI-3530). Direct apiserver ingress requires a dedicated
+       hostname, where it owns `/` on its own host and never collides. */ -}}
+{{- $apiHasHost := not (empty $g.hostnames.apiserver) -}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-console
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "console") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: {{ $serveSection }}
+  {{- if $g.hostnames.console }}
+  hostnames:
+    - {{ $g.hostnames.console | quote }}
+  {{- end }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: ksquad-console
+          port: 80
+{{- if $apiHasHost }}
+---
+{{/* Direct apiserver ingress ONLY on its own hostname (host-specificity keeps
+     it collision-free with the console BFF). Omitted in IP-only mode. */}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: {{ $serveSection }}
+  hostnames:
+    - {{ $g.hostnames.apiserver | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      # SSE PRESERVATION (§13): request timeout 0s disables the route timeout so
+      # a long-lived progress stream is never cut. HTTPRoute.timeouts is Extended
+      # conformance — kgateway/Envoy-based classes honor 0s; verify per class.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
+      backendRefs:
+        - name: ksquad-apiserver
+          port: 8080
+{{- end }}
+{{- if and $g.httpsRedirect $g.listeners.http.enabled $g.listeners.https.enabled }}
+---
+{{/* Edge http→https redirect on the http listener (values-driven). Hostnames
+     are optional here too — omitted → redirect every host reaching the IP. */}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ksquad-https-redirect
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "exposure") | nindent 4 }}
+spec:
+  parentRefs:
+    - name: ksquad
+      sectionName: http
+  {{- if or $g.hostnames.console $g.hostnames.apiserver }}
+  hostnames:
+    {{- with $g.hostnames.console }}
+    - {{ . | quote }}
+    {{- end }}
+    {{- with $g.hostnames.apiserver }}
+    - {{ . | quote }}
+    {{- end }}
+  {{- end }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            # Pin the target port to the configured https listener. Omitting it
+            # makes Gateway API derive the well-known 443, which sends clients to
+            # the wrong port whenever the https listener runs on e.g. 8443.
+            port: {{ $g.listeners.https.port }}
+            statusCode: 301
+{{- end }}
+{{- end }}

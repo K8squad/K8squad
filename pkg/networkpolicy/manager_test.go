@@ -88,7 +88,9 @@ func TestReconcileCreatesAllThreePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if res.Requeue || res.RequeueAfter != 0 {
+	// Result.Requeue was deprecated in controller-runtime v0.24; a steady-state
+	// reconcile returns a zero Result, so RequeueAfter==0 is the full assertion.
+	if res.RequeueAfter != 0 {
 		t.Errorf("unexpected requeue result: %+v", res)
 	}
 
@@ -351,5 +353,42 @@ func TestPtrTo(t *testing.T) {
 	i := ptrTo(42)
 	if i == nil || *i != 42 {
 		t.Fatalf("ptrTo(42) = %v", i)
+	}
+}
+
+// TestNoEmptyPeersInAllPolicies guards the API-server invariant that every peer
+// in a NetworkPolicy ingress From / egress To list must specify at least one of
+// podSelector, namespaceSelector, or ipBlock. An empty peer object {} is
+// rejected by the apiserver with "must specify a peer" — that was the ISI-3521
+// team-networkpolicy reconcile failure. The controller-runtime fake client used
+// by the other tests skips this validation, so this is a dedicated structural
+// guard. To allow "all destinations", the To/From list must be omitted (nil),
+// never a list containing an empty peer.
+func TestNoEmptyPeersInAllPolicies(t *testing.T) {
+	team := newTeam()
+	m := &Manager{}
+	policies := []*networkingv1.NetworkPolicy{
+		m.createTeamIsolationPolicy(team),
+		m.createTeamEgressPolicy(team),
+		m.createTeamIngressPolicy(team),
+	}
+	nonEmpty := func(p networkingv1.NetworkPolicyPeer) bool {
+		return p.PodSelector != nil || p.NamespaceSelector != nil || p.IPBlock != nil
+	}
+	for _, np := range policies {
+		for i, rule := range np.Spec.Egress {
+			for j, peer := range rule.To {
+				if !nonEmpty(peer) {
+					t.Errorf("%s: egress[%d].to[%d] is an empty peer (apiserver rejects it); omit To for allow-all", np.Name, i, j)
+				}
+			}
+		}
+		for i, rule := range np.Spec.Ingress {
+			for j, peer := range rule.From {
+				if !nonEmpty(peer) {
+					t.Errorf("%s: ingress[%d].from[%d] is an empty peer (apiserver rejects it); omit From for allow-all", np.Name, i, j)
+				}
+			}
+		}
 	}
 }

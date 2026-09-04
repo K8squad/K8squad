@@ -28,7 +28,12 @@ import (
 // endpoint (story 5.7) and can prove conformance on the $0 Ollama lane.
 type openClaw struct{}
 
-func (openClaw) Type() string                     { return apiv1alpha1.RuntimeTypeOpenClaw }
+func (openClaw) Type() string { return apiv1alpha1.RuntimeTypeOpenClaw }
+
+// CLIVersion names the PLANNED OpenClaw CLI revision: there is no upstream
+// release artifact to pin yet, so ksquad-shim-openclaw ships no CLI
+// (intentionally unpackaged — see the cli-openclaw stage disposition in
+// Dockerfile.shim, ISI-3667).
 func (openClaw) CLIVersion() string               { return "v0.9.0" }
 func (openClaw) CredentialShape() CredentialShape { return ShapeAPIKey }
 

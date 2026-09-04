@@ -6,4 +6,7 @@ ARG PYTHON_IMAGE=python:3.12-alpine
 FROM ${PYTHON_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: python"
+# ISI-3444: pull the current alpine openssl fix (libcrypto3 >= 3.5.8-r0,
+# CVE-2026-14456) at build time instead of waiting on the rolling base ref.
+RUN apk upgrade --no-cache libcrypto3 libssl3
 ENTRYPOINT ["/usr/local/bin/python3"]

@@ -318,12 +318,11 @@ func (npm *Manager) createTeamIsolationPolicy(team *ksquadv1alpha1.Team) *networ
 			},
 			Egress: []networkingv1.NetworkPolicyEgressRule{
 				{
-					// Allow egress to internet
-					To: []networkingv1.NetworkPolicyPeer{
-						{
-							// Allow to all destinations (no selector = any IP)
-						},
-					},
+					// Allow egress to all destinations on the ports below.
+					// NOTE: an empty To list (nil) means "any destination";
+					// a To containing an empty peer {} is rejected by the API
+					// server ("spec.egress[0].to[0]: Required value: must
+					// specify a peer") — that was ISI-3521. Omit To entirely.
 					// Allow common outbound ports
 					Ports: []networkingv1.NetworkPolicyPort{
 						{

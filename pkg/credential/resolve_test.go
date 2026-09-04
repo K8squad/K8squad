@@ -157,6 +157,41 @@ func TestResolve_BYOEndpoint_KeyOverride_7_5(t *testing.T) {
 	}
 }
 
+// ISI-3647 S6 (FR6/AC9) — codex is OpenAI-compatible, so a BYO endpoint injects
+// the endpoint URL into OPENAI_BASE_URL by reference (mirroring opencode); the
+// endpoint token stays uninjected by the resolver (it rides the credential
+// Secret / OPENAI_API_KEY, never a second env under the same header).
+func TestResolve_BYOEndpoint_Codex_S6(t *testing.T) {
+	agent := agentWith("frank-codex", api.AgentSpec{
+		CredentialSecretRef: api.SecretRef{Name: "frank-key"},
+		ModelEndpointRef:    &api.SecretRef{Name: "frank-endpoint"},
+	})
+	inj, err := Resolve(api.RuntimeTypeCodex, agent)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	got := findEnv(t, inj.Env, "OPENAI_BASE_URL")
+	if got == nil {
+		t.Fatalf("missing OPENAI_BASE_URL endpoint injection; got env %+v", inj.Env)
+	}
+	if got.ValueFrom.SecretKeyRef.Name != "frank-endpoint" {
+		t.Errorf("endpoint secret = %q, want frank-endpoint", got.ValueFrom.SecretKeyRef.Name)
+	}
+	if got.ValueFrom.SecretKeyRef.Key != "endpointURL" {
+		t.Errorf("endpoint key = %q, want default endpointURL", got.ValueFrom.SecretKeyRef.Key)
+	}
+	// The provider credential env is present; the endpoint token is NOT injected
+	// separately by the resolver — no second by-value env under OPENAI_API_KEY.
+	if findEnv(t, inj.Env, "OPENAI_API_KEY") == nil {
+		t.Errorf("provider credential env dropped when endpoint set; got %+v", inj.Env)
+	}
+	for _, e := range inj.Env {
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			t.Errorf("resolver emitted a by-value env %q; every value must be by-reference", e.Name)
+		}
+	}
+}
+
 // Fail-closed — a nil Agent, an empty credential ref, and an unmapped
 // runtime/class pair each error rather than emit a silently-wrong pod.
 func TestResolve_FailsClosed(t *testing.T) {

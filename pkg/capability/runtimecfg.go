@@ -20,6 +20,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
@@ -205,6 +208,136 @@ func RenderOpenClaw(endpoints []Endpoint) ([]byte, error) {
 		doc.MCP.Servers[ep.Name] = entry
 	}
 	return json.MarshalIndent(doc, "", "  ")
+}
+
+// codexMCPServer is one server in a Codex `config.toml` [mcp_servers.<name>]
+// table. Codex is the first non-JSON runtime in the render matrix — its native
+// config is TOML — so this mirrors the claudeMCPEntry shape onto TOML keys.
+type codexMCPServer struct {
+	// stdio transport.
+	Command string   `toml:"command,omitempty"`
+	Args    []string `toml:"args,omitempty"`
+
+	// streamable-http transport. bearer_token_env_var names the env var the
+	// CLI reads the token from — by-reference, never the literal token
+	// (ADR-045 D5: config files persist in workspaces/artifacts, env does not).
+	URL               string `toml:"url,omitempty"`
+	BearerTokenEnvVar string `toml:"bearer_token_env_var,omitempty"`
+
+	// x-ksquad extension keys carry the effective tool filter. Codex MCP
+	// config at the pinned CLI is server-granularity only (arch ISI-3646 D3):
+	// these are documented, wrapper-unenforced provenance mirroring
+	// RenderClaudeCode — codex.Capabilities() advertises the gap honestly
+	// (F15), it never claims per-tool enforcement no wrapper delivers.
+	XKsquadAllowTools []string `toml:"x-ksquad-allow-tools,omitempty"`
+	XKsquadDenyTools  []string `toml:"x-ksquad-deny-tools,omitempty"`
+
+	// Env is the stdio subprocess credential env, each value a ${VAR}
+	// name-reference never the literal token (ADR-045 D5). Declared last so
+	// the encoder emits [mcp_servers.<name>.env] as a sub-table after the
+	// scalar keys (TOML requires tables to follow their parent's scalars).
+	Env map[string]string `toml:"env,omitempty"`
+}
+
+// codexModelProvider is one entry in the Codex `config.toml`
+// [model_providers.<id>] table — a BYO OpenAI-compatible endpoint (story 5.7,
+// arch ISI-3646 D6, seam J). base_url is the endpoint URL (not a secret; safe
+// to persist in the config document); wire_api selects the OpenAI wire dialect
+// ("chat" for the completions-style API Ollama and most compatible hosts
+// serve). The endpoint token is NOT named here — it rides OPENAI_API_KEY in the
+// process env (modelRouteEnv), preserving the "no literal credential in a
+// persisted config" discipline (ADR-045 D5).
+type codexModelProvider struct {
+	BaseURL string `toml:"base_url"`
+	WireAPI string `toml:"wire_api"`
+}
+
+// codexBYOProviderID is the fixed provider id the shim renders for a BYO model
+// endpoint, referenced by the top-level model_provider selector.
+const codexBYOProviderID = "ksquad-byo"
+
+type codexConfig struct {
+	// ModelProvider selects the active provider (top-level scalar; TOML
+	// requires it before any table). Set to codexBYOProviderID only when a BYO
+	// endpoint is rendered, else omitted so the CLI keeps its built-in default.
+	ModelProvider string `toml:"model_provider,omitempty"`
+
+	MCPServers map[string]codexMCPServer `toml:"mcp_servers"`
+
+	// ModelProviders carries the BYO endpoint block; omitted when none is set.
+	ModelProviders map[string]codexModelProvider `toml:"model_providers,omitempty"`
+}
+
+// RenderCodex renders the Codex `config.toml` [mcp_servers.*] section for the
+// endpoint set (arch ISI-3646 §3.3, D3; seams K/L): stdio servers as
+// command/args with an env sub-table of ${VAR} references, streamable-http as
+// url + bearer_token_env_var (the env NAME, never the literal token — ADR-045
+// D5). Per-tool filters ride as documented x-ksquad-allow-tools/deny-tools
+// extension keys mirroring RenderClaudeCode; native scoping is server
+// granularity only. Map key ordering is deterministic (the encoder sorts),
+// so the manifest bytes are stable. It lands at $CODEX_HOME/config.toml via
+// mcpWorkDirFile (codex.go).
+//
+// RenderCodex renders MCP servers only (no BYO model provider); it is the
+// signature the shared render matrix + mcpWorkDirFile consume. Callers with a
+// resolved BYO endpoint use RenderCodexConfig.
+func RenderCodex(endpoints []Endpoint) ([]byte, error) {
+	return RenderCodexConfig(endpoints, "")
+}
+
+// RenderCodexConfig renders the Codex `config.toml` for the endpoint set and,
+// when modelEndpoint is non-empty, a BYO OpenAI-compatible model-provider block
+// (story 5.7, FR6/AC9; arch ISI-3646 D6, seam J): a [model_providers.ksquad-byo]
+// table (base_url + wire_api) plus the top-level model_provider = "ksquad-byo"
+// selector pointing the CLI at it. This is a safe superset of the OPENAI_BASE_URL
+// env the shim already exports (modelRouteEnv) — whichever the pinned CLI honors,
+// the Run reaches the operator's endpoint. The endpoint token is never rendered
+// here; it rides OPENAI_API_KEY in the process env (ADR-045 D5).
+func RenderCodexConfig(endpoints []Endpoint, modelEndpoint string) ([]byte, error) {
+	cfg := codexConfig{MCPServers: make(map[string]codexMCPServer, len(endpoints))}
+	if modelEndpoint != "" {
+		cfg.ModelProvider = codexBYOProviderID
+		cfg.ModelProviders = map[string]codexModelProvider{
+			codexBYOProviderID: {BaseURL: modelEndpoint, WireAPI: "chat"},
+		}
+	}
+	for _, ep := range endpoints {
+		srv := codexMCPServer{
+			XKsquadAllowTools: ep.AllowTools,
+			XKsquadDenyTools:  ep.DenyTools,
+		}
+		switch ep.Transport {
+		case string(api.MCPTransportStdio):
+			srv.Command = ep.Command
+			srv.Args = ep.Args
+			for _, name := range ep.EnvNames {
+				if srv.Env == nil {
+					srv.Env = map[string]string{}
+				}
+				srv.Env[name] = "${" + name + "}"
+			}
+		case string(api.MCPTransportStreamableHTTP):
+			srv.URL = ep.URL
+			if len(ep.EnvNames) > 0 {
+				// One bearer token by-reference (env NAME); the CLI resolves
+				// it from process env. Never the literal token (ADR-045 D5).
+				srv.BearerTokenEnvVar = ep.EnvNames[0]
+			}
+		default:
+			return nil, fmt.Errorf("codex renderer: unknown transport %q for server %q", ep.Transport, ep.Name)
+		}
+		cfg.MCPServers[ep.Name] = srv
+	}
+
+	var b strings.Builder
+	b.WriteString("# Rendered by K8squad shim (ISI-3657 S5). Credentials are env-name\n")
+	b.WriteString("# references only — never literal secret material (ADR-045 D5).\n")
+	enc := toml.NewEncoder(&b)
+	enc.Indent = ""
+	if err := enc.Encode(cfg); err != nil {
+		return nil, fmt.Errorf("codex renderer: encode config.toml: %w", err)
+	}
+	return []byte(b.String()), nil
 }
 
 // RenderHermes renders the hermes passthrough: hermes consumes the

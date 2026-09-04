@@ -231,6 +231,12 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		// no embedded coordination rows.
 		reflect.TypeOf(CapabilityManifest{}):  true,
 		reflect.TypeOf(ResolvedMCPEndpoint{}): true,
+		// ToolCredential (ISI-3565) is the auxiliary-credential seam's
+		// declarative slot projected from Agent onto Run: a purpose enum +
+		// a Secret NAME ref (SecretRef), injected by reference. Refs and
+		// declarative data, never embedded coordination rows or Secret
+		// material (ADR-001/AC7, ADR-045 D5).
+		reflect.TypeOf(ToolCredential{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {

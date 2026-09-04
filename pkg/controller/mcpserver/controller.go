@@ -145,6 +145,7 @@ type Reconciler struct {
 // and result ConfigMaps mapped back via owner references.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("mcpserver").
 		For(&ksquadv1alpha1.MCPServer{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.ConfigMap{}).

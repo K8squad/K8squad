@@ -1,0 +1,54 @@
+name: getting-started-smoke
+
+# Getting-started fresh-cluster reproduce lane (ISI-3476) — unblocks QA gate
+# ISI-3290 AC-5 ("the documented quickstart reproduces on a clean cluster").
+#
+# On a THROWAWAY kind cluster this runs the published getting-started steps
+# verbatim (helm install the chart with the default toolchain catalog enabled
+# -> kubectl apply examples/bmad-team/squad.yaml) and asserts the squad applies
+# clean with NO dangling refs. All logic lives in hack/getting-started-smoke.sh
+# so it is runnable locally against any kube-context; this workflow only
+# provisions the cluster + toolchain and invokes it.
+#
+# Runs on PRs that touch the getting-started surface (so doc drift is caught at
+# review time), nightly, and on manual dispatch. Reconcile-to-Ready of the live
+# agents is credential/image-gated and documented as skip-with-reason inside the
+# script — never a silent pass (same convention as e2e.yml).
+
+on:
+  pull_request:
+    paths:
+      - 'examples/bmad-team/**'
+      - 'config/helm/**'
+      - 'config/helm-crds/**'
+      - 'deploy/helm/**'
+      - 'hack/getting-started-smoke.sh'
+      - '.github/workflows/getting-started-smoke.yml'
+  schedule:
+    - cron: '0 5 * * *'   # nightly, offset from e2e.yml's 04:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: getting-started-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  getting-started-smoke:
+    name: getting-started reproduce (fresh kind cluster)
+    runs-on: [self-hosted, linux, x64]   # needs docker/kind — the QA-gate agent workspace has neither (ISI-3476)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      - name: Create fresh kind cluster
+        uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          wait: 120s
+
+      - name: Reproduce the getting-started quickstart + assert no dangling refs
+        run: ./hack/getting-started-smoke.sh

@@ -167,6 +167,185 @@ func TestValidateAgentCredentialClass(t *testing.T) {
 	assert.Contains(t, err.Error(), "credentialClass")
 }
 
+// TestValidateAgentToolCredentials (ISI-3565, GuardAgentToolCredentials): a
+// known aux-credential purpose backed by an existing Secret admits; an
+// unknown purpose is enum-rejected at admission before it can reach the
+// AssemblePod injection seam, and an empty Secret name fails closed.
+func TestValidateAgentToolCredentials(t *testing.T) {
+	ctx := context.Background()
+	v := newValidator(t, validWorld())
+
+	// Valid: known purpose + existing Secret admits (amelia-claude-token is
+	// seeded in validWorld; any real Secret proves the resolve path).
+	ok := validAgent()
+	ok.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+	}
+	assert.NoError(t, toInvalid("Agent", ok.Name, v.ValidateAgent(ctx, ok)),
+		"known purpose + existing Secret must admit")
+
+	// Unknown purpose rejected at admission (the enum-reject AC).
+	badPurpose := validAgent()
+	badPurpose.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "gitlab-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+	}
+	err := toInvalid("Agent", badPurpose.Name, v.ValidateAgent(ctx, badPurpose))
+	require.Error(t, err, "unknown tool-credential purpose must be rejected")
+	assert.Contains(t, err.Error(), "spec.toolCredentials[0].purpose")
+	assert.Contains(t, err.Error(), "gitlab-token")
+
+	// Empty Secret name fails closed.
+	emptyName := validAgent()
+	emptyName.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{}},
+	}
+	err = toInvalid("Agent", emptyName.Name, v.ValidateAgent(ctx, emptyName))
+	require.Error(t, err, "empty tool-credential Secret name must be rejected")
+	assert.Contains(t, err.Error(), "secretRef")
+
+	// Duplicate purpose rejected: two github-token entries would inject
+	// GH_TOKEN/GITHUB_TOKEN twice and make the Agent undispatchable at the
+	// AssemblePod collision guard, so admission rejects it up front.
+	dup := validAgent()
+	dup.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-ollama"}},
+	}
+	err = toInvalid("Agent", dup.Name, v.ValidateAgent(ctx, dup))
+	require.Error(t, err, "duplicate tool-credential purpose must be rejected")
+	assert.Contains(t, err.Error(), "duplicate")
+	assert.Contains(t, err.Error(), "spec.toolCredentials[1].purpose")
+}
+
+// TestValidateRunToolCredentials (ISI-3565, GuardRunToolCredentials, Copilot
+// review on PR#230): a Run's projected aux credentials pass the same
+// enum/existence/no-duplicate checks as the Agent path AND must be DERIVED
+// from the Run's own Agents — a Run cannot grant an aux credential no Agent
+// declared, which would let a Run author mount any same-namespace Secret as
+// GH_TOKEN and bypass Agent admission.
+func TestValidateRunToolCredentials(t *testing.T) {
+	ctx := context.Background()
+
+	// Seed an Agent that DECLARES a github-token aux credential, and its
+	// Secret, on top of the base world. Plus a cross-namespace Agent that
+	// declares the SAME name/key but in "other" — its Secret is a different
+	// physical object and must not authorize a Run in `ns`.
+	world := validWorld()
+	world = append(world,
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-writepath", Namespace: ns}},
+		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "pusher", Namespace: ns},
+			Spec: ksquadv1alpha1.AgentSpec{
+				RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
+				RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
+				CredentialSecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"},
+				Model:               "claude-sonnet-4",
+				ToolCredentials: []ksquadv1alpha1.ToolCredential{
+					// Explicit "token" key — must be treated as equal to an
+					// empty (defaulted) key on the Run side.
+					{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath", Key: "token"}},
+				},
+			}},
+		&ksquadv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "foreign-pusher", Namespace: "other"},
+			Spec: ksquadv1alpha1.AgentSpec{
+				RuntimeRef:          ksquadv1alpha1.ObjectRef{Name: "claude-stable"},
+				RoleRef:             ksquadv1alpha1.ObjectRef{Name: "coder"},
+				CredentialSecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"},
+				Model:               "claude-sonnet-4",
+				ToolCredentials: []ksquadv1alpha1.ToolCredential{
+					{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}},
+				},
+			}},
+	)
+	v := newValidator(t, world)
+
+	runWith := func(agents []ksquadv1alpha1.ObjectRef, creds []ksquadv1alpha1.ToolCredential) *ksquadv1alpha1.Run {
+		r := validRun()
+		r.Spec.Agents = agents
+		r.Spec.ToolCredentials = creds
+		return r
+	}
+	ghCred := []ksquadv1alpha1.ToolCredential{{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}}}
+
+	// Valid: the Run projects exactly what the "pusher" Agent declares. The
+	// Run leaves Key empty (→ "token"); the Agent declared Key "token"
+	// explicitly — EffectiveKey normalizes both, so it admits.
+	ok := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}}, ghCred)
+	assert.NoError(t, toInvalid("Run", ok.Name, v.ValidateRun(ctx, ok)),
+		"a Run projecting an Agent-declared aux credential must admit (key default == explicit)")
+
+	// Key mismatch: same Secret name, DIFFERENT key than any Agent declared
+	// — rejected (a Run must not read a key the Agent never authorized).
+	keyMismatch := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}},
+		[]ksquadv1alpha1.ToolCredential{{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath", Key: "other-key"}}})
+	err := toInvalid("Run", keyMismatch.Name, v.ValidateRun(ctx, keyMismatch))
+	require.Error(t, err, "a Run selecting a Secret key no Agent declared must be rejected")
+	assert.Contains(t, err.Error(), "projected from an admitted Agent")
+
+	// Cross-namespace Agent: "foreign-pusher" in "other" declares the same
+	// name/key, but its Secret is a different physical object than the one the
+	// Run's pod would mount in `ns` — it must NOT authorize.
+	crossNs := runWith([]ksquadv1alpha1.ObjectRef{{Name: "foreign-pusher", Namespace: "other"}}, ghCred)
+	require.Error(t, toInvalid("Run", crossNs.Name, v.ValidateRun(ctx, crossNs)),
+		"a cross-namespace Agent must not authorize a Run's same-named aux credential")
+
+	// Not derived: the Run names an Agent that does NOT declare this
+	// credential — rejected (the bypass Copilot flagged).
+	bypass := runWith([]ksquadv1alpha1.ObjectRef{{Name: "amelia"}}, ghCred)
+	err = toInvalid("Run", bypass.Name, v.ValidateRun(ctx, bypass))
+	require.Error(t, err, "a Run aux credential no Agent declares must be rejected")
+	assert.Contains(t, err.Error(), "projected from an admitted Agent")
+
+	// No Agents at all: un-derivable, rejected.
+	noAgents := runWith(nil, ghCred)
+	require.Error(t, toInvalid("Run", noAgents.Name, v.ValidateRun(ctx, noAgents)),
+		"aux credentials on a Run naming no Agents must be rejected")
+
+	// Unknown purpose still enum-rejected on the Run path.
+	badPurpose := runWith([]ksquadv1alpha1.ObjectRef{{Name: "pusher"}},
+		[]ksquadv1alpha1.ToolCredential{{Purpose: "gitlab-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}}})
+	err = toInvalid("Run", badPurpose.Name, v.ValidateRun(ctx, badPurpose))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gitlab-token")
+}
+
+// TestValidateRunToolCredentialsAgentReadFailsClosed (ISI-3565, Copilot
+// review round 3): a transient/forbidden Agent read in the derived-from-Agent
+// check must fail CLOSED with a read diagnostic, NOT be silently downgraded
+// to "credential not declared" — an API outage must never be reported as a
+// user policy mistake.
+func TestValidateRunToolCredentialsAgentReadFailsClosed(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, ksquadv1alpha1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	boom := errors.New("apiserver timeout")
+	// Fail ONLY Agent reads; Team/Project/Secret-metadata resolve normally so
+	// the only failing lookup is the Agent authorization fetch.
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(validWorld()...).
+		WithObjects(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gh-writepath", Namespace: ns}}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isAgent := obj.(*ksquadv1alpha1.Agent); isAgent {
+					return boom
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	v := &CrossRefValidator{Reader: c}
+
+	r := validRun()
+	r.Spec.Agents = []ksquadv1alpha1.ObjectRef{{Name: "pusher"}}
+	r.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+		{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "gh-writepath"}},
+	}
+	agg := v.ValidateRun(context.Background(), r).ToAggregate()
+	require.Error(t, agg)
+	assert.Contains(t, agg.Error(), "fail-closed", "Agent read failure must surface as a fail-closed diagnostic")
+	assert.NotContains(t, agg.Error(), "not declared by any same-namespace Agent",
+		"an API outage must NOT be reported as a policy violation")
+}
+
 // invalidCase couples one guard with its dangling-ref specimen: invalid
 // runs the exact denial the webhook server serializes (toInvalid shape).
 type invalidCase struct {
@@ -219,6 +398,13 @@ func invalidCases() []invalidCase {
 			a.Spec.FallbackModel.ModelEndpointRef.Name = "ghost-ep"
 			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
 		}},
+		{GuardAgentToolCredentials, func(ctx context.Context, v *CrossRefValidator) error {
+			a := validAgent()
+			a.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+				{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "ghost-tc-secret"}},
+			}
+			return toInvalid("Agent", a.Name, v.ValidateAgent(ctx, a))
+		}},
 		{GuardRunTeam, func(ctx context.Context, v *CrossRefValidator) error {
 			r := validRun()
 			dangle(&r.Spec.TeamRef, "ghost-team")
@@ -234,6 +420,16 @@ func invalidCases() []invalidCase {
 			dangle(&r.Spec.Agents[0], "ghost-agent")
 			return toInvalid("Run", r.Name, v.ValidateRun(ctx, r))
 		}},
+		{GuardRunToolCredentials, func(ctx context.Context, v *CrossRefValidator) error {
+			// A Run aux credential that no Agent in spec.agents declares:
+			// enum + existence pass (github-token is known, the Secret is
+			// seeded), so the ONLY error is the derived-from-Agent trust check.
+			r := validRun()
+			r.Spec.ToolCredentials = []ksquadv1alpha1.ToolCredential{
+				{Purpose: "github-token", SecretRef: ksquadv1alpha1.SecretRef{Name: "amelia-claude-token"}},
+			}
+			return toInvalid("Run", r.Name, v.ValidateRun(ctx, r))
+		}},
 	}
 }
 
@@ -241,37 +437,43 @@ func invalidCases() []invalidCase {
 // denial shape: field path + observed value + fix (the clear-message AC).
 var (
 	wantPathByGuard = map[string]string{
-		GuardTeamProjects: "spec.projects[0]",
-		GuardTeamAgents:   "spec.agents[0]",
-		GuardAgentRuntime: "spec.runtimeRef",
-		GuardAgentRole:    "spec.roleRef",
-		GuardAgentSkills:  "spec.skillRefs[0]",
-		GuardAgentSecret:  "spec.credentialSecretRef",
-		GuardRunTeam:      "spec.teamRef",
-		GuardRunProject:   "spec.projectRef",
-		GuardRunAgents:    "spec.agents[0]",
+		GuardTeamProjects:         "spec.projects[0]",
+		GuardTeamAgents:           "spec.agents[0]",
+		GuardAgentRuntime:         "spec.runtimeRef",
+		GuardAgentRole:            "spec.roleRef",
+		GuardAgentSkills:          "spec.skillRefs[0]",
+		GuardAgentSecret:          "spec.credentialSecretRef",
+		GuardAgentToolCredentials: "spec.toolCredentials[0].secretRef",
+		GuardRunToolCredentials:   "spec.toolCredentials[0]",
+		GuardRunTeam:              "spec.teamRef",
+		GuardRunProject:           "spec.projectRef",
+		GuardRunAgents:            "spec.agents[0]",
 	}
 	wantObservedByGuard = map[string]string{
-		GuardTeamProjects: "ghost-project",
-		GuardTeamAgents:   "ghost-agent",
-		GuardAgentRuntime: "ghost-runtime",
-		GuardAgentRole:    "ghost-role",
-		GuardAgentSkills:  "ghost-skill",
-		GuardAgentSecret:  "ghost-secret",
-		GuardRunTeam:      "ghost-team",
-		GuardRunProject:   "ghost-project",
-		GuardRunAgents:    "ghost-agent",
+		GuardTeamProjects:         "ghost-project",
+		GuardTeamAgents:           "ghost-agent",
+		GuardAgentRuntime:         "ghost-runtime",
+		GuardAgentRole:            "ghost-role",
+		GuardAgentSkills:          "ghost-skill",
+		GuardAgentSecret:          "ghost-secret",
+		GuardAgentToolCredentials: "ghost-tc-secret",
+		GuardRunToolCredentials:   "amelia-claude-token",
+		GuardRunTeam:              "ghost-team",
+		GuardRunProject:           "ghost-project",
+		GuardRunAgents:            "ghost-agent",
 	}
 	wantFixByGuard = map[string]string{
-		GuardTeamProjects: "create it first or fix the ref",
-		GuardTeamAgents:   "create it first or fix the ref",
-		GuardAgentRuntime: "FR-D3",
-		GuardAgentRole:    "create it first or fix the ref",
-		GuardAgentSkills:  "grant it via an existing Skill",
-		GuardAgentSecret:  "BYO credential Secret",
-		GuardRunTeam:      "squad's tenancy",
-		GuardRunProject:   "repo + workspace PVC",
-		GuardRunAgents:    "fix the selector",
+		GuardTeamProjects:         "create it first or fix the ref",
+		GuardTeamAgents:           "create it first or fix the ref",
+		GuardAgentRuntime:         "FR-D3",
+		GuardAgentRole:            "create it first or fix the ref",
+		GuardAgentSkills:          "grant it via an existing Skill",
+		GuardAgentSecret:          "BYO credential Secret",
+		GuardAgentToolCredentials: "tool-credential Secret",
+		GuardRunToolCredentials:   "projected from an admitted Agent",
+		GuardRunTeam:              "squad's tenancy",
+		GuardRunProject:           "repo + workspace PVC",
+		GuardRunAgents:            "fix the selector",
 	}
 )
 

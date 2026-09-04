@@ -6,6 +6,9 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
@@ -114,6 +117,35 @@ type Options struct {
 	// its documented 501 (a dev run without the operator metrics URL wired),
 	// exactly like the other read models.
 	ToolUsage ToolUsageReader
+	// Org is the 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543):
+	// the Team→Agent→Role hierarchy, live per-agent status SSE, and agent
+	// detail/run-history — a projection over the Team/Agent/AgentRuntime/Role/Run
+	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
+	// run without an informer cache), exactly like Overview/Credentials.
+	Org OrgReader
+	// OTelConfig is the Story A / 13.8 OTLP-exporter read model (ISI-2917, child of
+	// ISI-3586 under Option A): GET /api/otelconfig serves the current cluster-scoped
+	// OTelConfig CR mapped to the client wire shape (console/lib/otelconfig.ts). Nil ⇒
+	// the route keeps the documented 501 (a cluster-less dev run without a kube
+	// client), exactly like the other read models.
+	OTelConfig OTelConfigSource
+	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
+	// post-comment / update-status / checkout) mounted under /api/task-io/. It
+	// does NOT ride the cookie BFF authz choke point: it carries its OWN
+	// run-scoped bearer auth (pkg/taskio), so it is mounted at the router root
+	// with a StripPrefix. Nil ⇒ the surface is simply absent (a dev run without
+	// a coord store / signing key wired); the operator only injects the
+	// KSQUAD_COORD_URL token when this is live.
+	TaskIO http.Handler
+	// OrgOps is the ISI-3626 run-scoped board-ops seam (create-agent /
+	// create-skill / create-project / archive-project) mounted under
+	// /api/org-ops/. Like TaskIO it carries its OWN run-scoped bearer auth
+	// (pkg/orgops, verified via the shared taskio.Minter) and is mounted at the
+	// router root outside the cookie choke point — but every verb additionally
+	// requires the token's role-derived scope (org:write / project:write,
+	// ADR-0005 D2). Nil ⇒ the surface is simply absent (no signing key / write
+	// client wired).
+	OrgOps http.Handler
 }
 
 // NewServer assembles the root router from opts.
@@ -127,13 +159,64 @@ func NewServer(opts Options) *Server {
 	return s
 }
 
-// Handler returns the root http.Handler to serve.
-func (s *Server) Handler() http.Handler { return s.router }
+// Handler returns the root http.Handler to serve. It is wrapped in the otelhttp server
+// instrumentation (ISI-3668) so every request opens a standard server span, inbound W3C
+// trace-context is extracted from the request headers, and http.server.request.duration is
+// recorded — all keyed off the process telemetry spine installed in cmd/apiserver (telemetry.Setup).
+// The route template (not the interpolated path) is stamped as http.route by routeTagMiddleware,
+// which runs after mux matches the route; see routes(). Liveness/readiness probes are filtered out
+// so kubelet polling does not flood the trace/metric stream.
+func (s *Server) Handler() http.Handler {
+	return otelhttp.NewHandler(s.router, "ksquad-apiserver",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/healthz" && r.URL.Path != "/readyz"
+		}),
+	)
+}
+
+// routeTagMiddleware stamps the matched gorilla/mux route TEMPLATE onto the otelhttp server span
+// and the metric labeler as http.route. It is a mux root middleware, so it runs after route
+// matching (mux.CurrentRoute is populated) and inside the otelhttp span started by Handler(). We
+// use the template — e.g. "/api/agents/{name}" — never the interpolated path, so the interpolated
+// {name} (which may be a secret/agent name) never lands in the http.route attribute or span name.
+// This preserves the low-cardinality + no-secret-in-telemetry rule for both traces and the
+// http.server.request.duration histogram.
+func routeTagMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route := mux.CurrentRoute(r)
+		if route == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		tmpl, err := route.GetPathTemplate()
+		if err != nil || tmpl == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpRoute := attribute.String("http.route", tmpl)
+		if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+			span.SetAttributes(httpRoute)
+			// Rename the generic operation span to "{METHOD} {template}" for a readable,
+			// still-low-cardinality span name.
+			span.SetName(r.Method + " " + tmpl)
+		}
+		if labeler, ok := otelhttp.LabelerFromContext(r.Context()); ok {
+			labeler.Add(httpRoute)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Hub returns the SSE hub so a publisher (run reconciler / outbox relay) can fan events out.
 func (s *Server) Hub() *Hub { return s.hub }
 
 func (s *Server) routes(opts Options) {
+	// otelhttp span enrichment (ISI-3668): a root middleware so it runs after mux matches a route
+	// (mux.CurrentRoute is set) and inside the server span started by Handler(). It stamps the route
+	// TEMPLATE as http.route — never the interpolated secret name. Registered before any route so it
+	// wraps the whole surface uniformly.
+	s.router.Use(routeTagMiddleware)
+
 	// ── Liveness / readiness (unauthenticated; probes only, no tenant data) ──
 	s.router.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -149,6 +232,23 @@ func (s *Server) routes(opts Options) {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	}).Methods(http.MethodGet)
+
+	// ── Run-scoped task-io seam (ISI-3601 S2) — its OWN bearer auth, NOT the ──
+	// cookie choke point. Mounted at the router root so /api/task-io/{op}
+	// reaches the taskio.Handler mux (which serves /{op}); StripPrefix removes
+	// the mount prefix. Absent handler ⇒ the surface is simply not routed.
+	if opts.TaskIO != nil {
+		s.router.PathPrefix("/api/task-io/").Handler(
+			http.StripPrefix("/api/task-io", opts.TaskIO))
+	}
+
+	// ── Run-scoped board-ops seam (ISI-3626) — same OWN-bearer-auth shape as ──
+	// task-io, mounted at the router root outside the cookie choke point. Its
+	// handler additionally enforces the token's role-derived scope per verb.
+	if opts.OrgOps != nil {
+		s.router.PathPrefix("/api/org-ops/").Handler(
+			http.StripPrefix("/api/org-ops", opts.OrgOps))
+	}
 
 	// ── Gated API surface (everything below rides the §13 authz choke point) ──
 	// The discussion Handler installs its own subrouter+BFFAuthz via Mount; the SSE and
@@ -215,6 +315,49 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", s.squadOverview(opts.Overview)).Methods(http.MethodGet)
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
+				Methods(http.MethodGet)
+		}
+
+		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four
+		// read-only routes the Console Agents surface renders against — the
+		// Team→Agent→Role org diagram, its live per-agent status SSE, and the agent
+		// detail header + run history. All ride the SAME §13 choke point as
+		// /api/squad/overview; a deny is existence-hiding (404, never 403) and no
+		// mutating verb is routed (compose/edit stays 8.5, R6). A nil reader
+		// (cluster-less dev run) keeps the documented 501 so the contract stays honest.
+		org := s.router.Path("/api/teams/{teamId}/org").Subrouter()
+		org.Use(authz)
+		statusStream := s.router.Path("/api/teams/{teamId}/status/stream").Subrouter()
+		statusStream.Use(authz)
+		agentOne := s.router.Path("/api/agents/{agentId}").Subrouter()
+		agentOne.Use(authz)
+		agentRunsR := s.router.Path("/api/agents/{agentId}/runs").Subrouter()
+		agentRunsR.Use(authz)
+		if opts.Org != nil {
+			org.HandleFunc("", s.teamOrg(opts.Org)).Methods(http.MethodGet)
+			statusStream.HandleFunc("", s.teamStatusStream(opts.Org)).Methods(http.MethodGet)
+			agentOne.HandleFunc("", s.agentDetail(opts.Org)).Methods(http.MethodGet)
+			agentRunsR.HandleFunc("", s.agentRuns(opts.Org)).Methods(http.MethodGet)
+		} else {
+			h := notImplemented("agents org read model", "ISI-3548: wire an OrgReader (informer cache) to enable")
+			org.HandleFunc("", h).Methods(http.MethodGet)
+			statusStream.HandleFunc("", h).Methods(http.MethodGet)
+			agentOne.HandleFunc("", h).Methods(http.MethodGet)
+			agentRunsR.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// Story A / 13.8 (ISI-2917) OTelConfig read model: GET /api/otelconfig
+		// serves the current cluster-scoped OTelConfig CR mapped to the client wire
+		// shape so the Settings page stops rendering "no exporters" once a CR
+		// exists. Read-model only (no writes), no company/team prefix, behind the
+		// SAME §13 choke point. A missing CR is the opt-in 404 default, not an
+		// error. Nil source (cluster-less dev run) keeps the documented 501.
+		otelCfg := s.router.Path("/api/otelconfig").Subrouter()
+		otelCfg.Use(authz)
+		if opts.OTelConfig != nil {
+			otelCfg.HandleFunc("", s.otelConfig(opts.OTelConfig)).Methods(http.MethodGet)
+		} else {
+			otelCfg.HandleFunc("", notImplemented("otel-config read model", "ISI-2917: wire a kube client to enable")).
 				Methods(http.MethodGet)
 		}
 

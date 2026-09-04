@@ -28,6 +28,7 @@ import (
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/toolchain"
+	"github.com/K8squad/K8squad/pkg/toolcred"
 )
 
 // PodAssembly is the capability plane's contribution to a sandbox pod
@@ -102,6 +103,25 @@ func AssemblePod(run *api.Run, resolved []toolchain.Resolved, endpoints []Endpoi
 			}
 			asm.AgentEnv = append(asm.AgentEnv, credentialEnvFor(ep, ep.CredentialSecretRef)...)
 		}
+	}
+
+	// Auxiliary (non-model) tool credentials (ISI-3565): a github-token
+	// entry lands GH_TOKEN + GITHUB_TOKEN on the agent container by
+	// reference for a local gh/git. This rides the LIVE assembly seam
+	// (sibling to the MCP credentialEnvFor path above) rather than the dark
+	// pkg/credential.Resolve. Fail closed on an unknown purpose or empty
+	// Secret name — a mis-declared aux credential must abort assembly, not
+	// dispatch a sandbox whose gh/git authenticates as nobody. The
+	// ApplyToPod env-collision guard then rejects an aux env name that would
+	// shadow a model-cred or KSQUAD_MCP_* env.
+	for i, tc := range run.Spec.ToolCredentials {
+		inj, err := toolcred.Inject(toolcred.Purpose(tc.Purpose), tc.SecretRef)
+		if err != nil {
+			return nil, fmt.Errorf("assemble tool credential spec.toolCredentials[%d]: %w", i, err)
+		}
+		asm.AgentEnv = append(asm.AgentEnv, inj.Env...)
+		asm.Volumes = append(asm.Volumes, inj.Volumes...)
+		asm.AgentMounts = append(asm.AgentMounts, inj.Mounts...)
 	}
 	return asm, nil
 }

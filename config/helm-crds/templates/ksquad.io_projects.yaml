@@ -1,0 +1,394 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    app.kubernetes.io/part-of: k8squad
+  annotations:
+    {{- if .Values.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: projects.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: Project
+    listKind: ProjectList
+    plural: projects
+    shortNames:
+    - proj
+    singular: project
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Project is the Schema for the projects API — a repo + workspace
+          (arch §5.1). It is namespaced by default.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ProjectSpec defines the desired state of Project (arch §5.1, §5.4, §8.5,
+              story 1.2 AC5).
+
+              A Project couples an upstream source repository (mirrored, not made the
+              source of truth — §5.4) with a workspace and a context budget.
+            properties:
+              contextBudget:
+                description: |-
+                  ContextBudget is the project-level default per-tier token allocation
+                  (§8.5) — raise it once for projects with large architecture docs and
+                  every agent on the project inherits it. Per-Agent overrides via
+                  Agent.spec.contextBudgetOverride; per-Run dynamic trim in the shim.
+                properties:
+                  artifacts:
+                    description: Artifacts tier allocation (build outputs, PR refs
+                      from the §5.4 mirror).
+                    format: int64
+                    type: integer
+                  memoryRecall:
+                    description: |-
+                      MemoryRecall tier allocation (scoped §7 semantic recall, untrusted
+                      provenance tier).
+                    format: int64
+                    type: integer
+                  projectDocs:
+                    description: ProjectDocs tier allocation (architecture docs, conventions).
+                    format: int64
+                    type: integer
+                  workItem:
+                    description: |-
+                      WorkItem tier allocation. Must-include content (work item + acceptance
+                      criteria + goals) is never truncated (§8.5).
+                    format: int64
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: context budget tiers must be >= 0 when set; remove or raise
+                    the negative tier
+                  rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
+                    || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
+                    >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+              egressPolicyRef:
+                description: |-
+                  EgressPolicyRef references the egress policy applied to this
+                  project's Runs (§12.2 — default-deny NetworkPolicy + allowlist).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              goals:
+                description: |-
+                  Goals are project-level goals injected into every Run's context
+                  envelope (§8.5). A goal change is a new Project revision; the next Run
+                  assembles against it while in-flight Runs keep their snapshot.
+                items:
+                  type: string
+                type: array
+              ownedBy:
+                description: |-
+                  OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+                  authoritative ownership signal for resource-scoped permission checks
+                  (Epic 15.3) — not a display field. Mutable: ownership may be
+                  transferred after creation. Defaults to the created-by principal at
+                  admission (internal/webhook AttributionWebhook) and is indexed for
+                  RBAC scope queries (internal/index).
+                maxLength: 253
+                minLength: 1
+                type: string
+              repo:
+                description: |-
+                  Repo is the upstream source repository mirrored by KSquad (§5.4:
+                  GitHub is the v1 provider behind the pkg/scm seam; the fenced
+                  coordination record stays authoritative).
+                properties:
+                  auth:
+                    description: Auth carries the per-Project BYO credential for the
+                      provider.
+                    properties:
+                      credentialSecretRef:
+                        description: CredentialSecretRef is the BYO provider credential
+                          Secret.
+                        properties:
+                          key:
+                            description: Key inside the Secret; empty means the consumer-defined
+                              default key.
+                            type: string
+                          name:
+                            description: Name of the referenced Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - credentialSecretRef
+                    type: object
+                  ref:
+                    description: |-
+                      Ref is the default ref to track (branch or tag); empty means the
+                      provider default branch.
+                    type: string
+                  sync:
+                    description: Sync configures the repo-sync reconciler (§5.4).
+                      Nil disables sync.
+                    properties:
+                      issueSync:
+                        description: |-
+                          IssueSync configures the story-11.2 GitHub-issues ⇄ work-items sync
+                          for this Project. Nil keeps the default: inbound-only sync for any
+                          issue links that exist (§5.4, FR-H1).
+                        properties:
+                          direction:
+                            default: inbound
+                            description: |-
+                              Direction governs which way changes flow for this Project's issue
+                              links: inbound mirrors provider issue status/labels into the linked
+                              work item only; bidirectional also reflects KSquad work-item status
+                              changes back to the provider issue through the SourceProvider seam
+                              (origin-marked for echo suppression, §5.4).
+                            enum:
+                            - inbound
+                            - bidirectional
+                            type: string
+                        type: object
+                      mirror:
+                        description: |-
+                          Mirror selects what the inbound reconciler mirrors into the scm
+                          schema. Nil means the default set: issues, pull requests, check runs
+                          and release/build artifacts (§5.4).
+                        properties:
+                          artifacts:
+                            description: Artifacts mirrors release/build artifacts
+                              by URI + sha (FR-H2).
+                            type: boolean
+                          checkRuns:
+                            description: CheckRuns mirrors CI check runs (FR-H2).
+                            type: boolean
+                          issues:
+                            description: Issues mirrors provider issues (FR-H1 issue⇄work-item
+                              mapping).
+                            type: boolean
+                          pullRequests:
+                            description: PullRequests mirrors PRs incl. review state
+                              (FR-H2).
+                            type: boolean
+                        type: object
+                      pollIntervalSeconds:
+                        default: 300
+                        description: |-
+                          PollIntervalSeconds is the periodic poll-fallback cadence (§5.4,
+                          story 11.1 AC3): the level-triggered reconcile re-runs at this
+                          interval so a lost webhook is never permanent drift. It comes from
+                          the spec/chart values, never a reconciler hardcode; zero means the
+                          default of 300s.
+                        format: int32
+                        minimum: 60
+                        type: integer
+                      provider:
+                        description: |-
+                          Provider is the source-control provider. GitHub is v1; GitLab and
+                          Gitea drop in behind the same pkg/scm interface (§5.4, ADR-018).
+                        enum:
+                        - github
+                        - gitlab
+                        - gitea
+                        type: string
+                      reflectOutbound:
+                        description: |-
+                          ReflectOutbound opts in to posting KSquad Run status/comments back to
+                          the provider (§5.4): off by default, requires a status-write-scoped
+                          token, every write origin-marked for echo suppression.
+                        type: boolean
+                      webhookSecretRef:
+                        description: |-
+                          WebhookSecretRef references the per-Project HMAC Secret. The HMAC
+                          signature is verified before any webhook payload is parsed (§5.4,
+                          FR-H4, NFR-SEC8); webhooks are only a fast path on top of the
+                          level-triggered reconcile.
+                        properties:
+                          key:
+                            description: Key inside the Secret; empty means the consumer-defined
+                              default key.
+                            type: string
+                          name:
+                            description: Name of the referenced Secret.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    required:
+                    - provider
+                    type: object
+                  url:
+                    description: |-
+                      URL of the upstream repository, e.g.
+                      "https://github.com/acme/widget".
+                    minLength: 1
+                    type: string
+                required:
+                - url
+                type: object
+              workspacePVC:
+                description: |-
+                  WorkspacePVC sizes and classes the Project workspace PVC (§9.4 —
+                  Runs work in their own git-worktree on this volume).
+                properties:
+                  accessModes:
+                    description: |-
+                      AccessModes of the PVC (§9.4). Default [ReadWriteOnce] — the
+                      serialize-via-lease + worktree-per-Run regime; ReadWriteMany is the
+                      opt-in for storage classes that support true parallelism.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  class:
+                    description: |-
+                      Class is the storageClass name. Empty does NOT mean the cluster
+                      default (story 9.2: relying on the cluster default is
+                      misconfiguration) — the operator resolves it from its Helm-provided
+                      workspace storage class and fails closed when that is unset too:
+                      no PVC is created silently bound to an unsuitable class.
+                    type: string
+                  size:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: Size of the PVC, e.g. "50Gi".
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                required:
+                - size
+                type: object
+            required:
+            - repo
+            type: object
+          status:
+            description: |-
+              ProjectStatus is the observed state of a Project. The repo-sync
+              reconciler (story 11.1) is its only writer: status reports mirror
+              liveness — never desired state, and never coordination custody (§6).
+            properties:
+              conditions:
+                description: |-
+                  Conditions summarize the repo-sync loop's latest observations
+                  (story 11.1): SyncReady when the provider seam + BYO credential
+                  resolved and the last level-triggered mirror pass applied.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              sync:
+                description: |-
+                  Sync reports repo-sync mirror progress (§5.4, story 11.1). Nil
+                  until the first successful mirror pass.
+                properties:
+                  lastMirrorTime:
+                    description: |-
+                      LastMirrorTime is when the level-triggered reconcile last applied
+                      a provider snapshot to the scm mirror (webhook-triggered or poll).
+                    format: date-time
+                    type: string
+                  lastWebhookTime:
+                    description: |-
+                      LastWebhookTime is when a good-signature webhook last triggered a
+                      reconcile fast path (§5.4). Unaffected by poll ticks.
+                    format: date-time
+                    type: string
+                  mirrorRecordCount:
+                    description: |-
+                      MirrorRecordCount is the number of records the last snapshot
+                      applied (post echo-suppression) — a liveness signal, not a
+                      coordination fact.
+                    format: int64
+                    type: integer
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

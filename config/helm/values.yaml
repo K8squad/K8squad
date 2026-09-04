@@ -1,6 +1,222 @@
-# Default values for the k8squad control-plane chart (Story 1.4 skeleton).
-# Full service wiring (apiserver, operator, console, memory, shim) lands in
-# later epics; this skeleton owns the CRD group + control-plane namespace.
+# Default values for the k8squad control-plane chart.
+# The namespace + CRD group ship unconditionally (Story 1.4). The running
+# control plane (operator/apiserver/console/memory/scm-webhook, ISI-3488) is
+# gated behind controlPlane.enabled and is OFF by default so `helm install`
+# stays a safe CRD+namespace bootstrap until an operator is wanted.
+
+# ---------------------------------------------------------------------------
+# Control plane (ISI-3488). Deployments + Services + RBAC for the workloads
+# whose images CI publishes to ghcr.io/k8squad/ksquad-<component>.
+#
+# Requires a Postgres backing store — set controlPlane.database.existingSecret
+# (preferred) or controlPlane.database.dsn (dev only) before enabling.
+#
+# NOT covered here (deliberate, documented gaps):
+#  * admission webhook (cmd/webhook) — no image lane exists yet, so the
+#    Mutating/ValidatingWebhookConfiguration is NOT installed. Installing it
+#    without a webhook backend would fail-closed on every Agent/Project/Run/
+#    Team write. Track the image lane before wiring cert-manager + CA inject.
+#  * event-relay — hard-requires NATS + Postgres; gated behind its own
+#    controlPlane.eventRelay.enabled and off until a NATS URL is supplied.
+# ---------------------------------------------------------------------------
+controlPlane:
+  # Master switch for the running control plane. false → chart installs only
+  # the namespace, CRDs, and (optionally) the toolchain catalog.
+  enabled: false
+
+  image:
+    # registry+org; component images resolve to <registry>/ksquad-<component>.
+    registry: ghcr.io/k8squad
+    # Image tag; empty falls back to the chart appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Pull secrets for private ghcr access, attached to each ServiceAccount.
+  imagePullSecrets: []
+
+  # Postgres store of record (apiserver, operator coordination, memory).
+  database:
+    # Name of an existing Secret holding the DSN. Preferred for production.
+    existingSecret: ""
+    # Key within existingSecret holding the DSN.
+    key: dsn
+    # Inline DSN — dev only; rendered into a chart-owned Secret. Never commit
+    # a real credential here.
+    dsn: ""
+
+  # OTLP exporter wiring → the observability gateway collector (live since
+  # ISI-3484). Injected as OTEL_EXPORTER_OTLP_* on every workload.
+  otel:
+    enabled: true
+    endpoint: "http://otel-gateway-collector.observability:4317"
+    protocol: grpc
+
+  operator:
+    replicas: 1
+    leaderElect: true
+    resources: {}
+    extraEnv: []
+
+  apiserver:
+    replicas: 1
+    resources: {}
+    extraEnv: []
+    # Session-cookie `Secure` attribute (ISI-3530). The apiserver defaults to
+    # SecureCookies=true; over a plain-HTTP gateway the browser DROPS the Secure
+    # cookie, so the Console middleware guard bounces every post-login navigation
+    # back to /login. Resolve KSQUAD_SECURE_COOKIES:
+    #   "" (auto, default) → emit false ONLY when exposure.gateway is enabled and
+    #        TLS is NOT terminated at it (http listener, https.enabled=false); in
+    #        every other case emit nothing and keep the apiserver's secure default.
+    #   "true" / "false"   → force that value explicitly (overrides auto).
+    # Prefer terminating TLS at the Gateway (https.enabled + certSecretName) and
+    # leaving this "" so cookies stay Secure end-to-end.
+    secureCookies: ""
+    # Seed the first admin (feature 15.2) so the Console `/login` is usable on a
+    # fresh install. The apiserver runs this ONCE — only when auth.user is empty —
+    # then it is an idempotent no-op on every later start. OFF by default: a
+    # deliberate opt-in for new installs (ISI-3530).
+    #
+    # The password is NEVER read from plaintext values — it must come from a
+    # Secret you create out-of-band, e.g.:
+    #   kubectl -n <ns> create secret generic ksquad-bootstrap-admin \
+    #     --from-literal=password='<chosen-password>'
+    # After the first successful login, delete that Secret (or set enabled=false
+    # and `helm upgrade`) — the seed has already run and no longer needs it.
+    bootstrapAdmin:
+      enabled: false
+      # Admin username to seed (required when enabled=true).
+      username: ""
+      # Name of an existing Secret holding the bootstrap password (required when
+      # enabled=true). Never inline the password in values.
+      existingSecret: ""
+      # Key within existingSecret holding the plaintext password.
+      passwordKey: password
+      # Optional: pin the admin's tenancy-root team UUID. Empty → auto-minted on
+      # first seed (set KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID via this to make it stable).
+      teamId: ""
+
+  console:
+    replicas: 1
+    resources: {}
+    extraEnv: []
+
+  memory:
+    replicas: 1
+    resources: {}
+    extraEnv: []
+
+  scmWebhook:
+    replicas: 1
+    resources: {}
+    extraEnv: []
+
+  eventRelay:
+    # Off by default UNLESS the bundled bus (controlPlane.nats.enabled) is on —
+    # then the relay is auto-enabled and natsUrl auto-derived (see below). Set
+    # enabled=true + a natsUrl to drain the outbox to an EXTERNAL NATS instead.
+    enabled: false
+    natsUrl: ""
+    replicas: 1
+    resources: {}
+    extraEnv: []
+
+  # NATS / JetStream — the plugin event bus (§16 / §17.4 / ADR-023; CEO
+  # 2026-08-11 "data in Postgres, events on NATS"). Postgres/CNPG stays the sole
+  # source of truth (ADR-001); NATS holds only in-flight / replayable event
+  # copies drained best-effort by event-relay, so NATS-down NEVER blocks a
+  # Run/claim/write. Bundling it here makes `controlPlane.enabled=true` yield a
+  # complete event plane (5 Deployments + Postgres + NATS + event-relay),
+  # matching the umbrella chart's guarantees.
+  nats:
+    # ON by default (like the umbrella chart) so `controlPlane.enabled=true`
+    # yields a COMPLETE event plane — a JetStream StatefulSet is rendered AND
+    # eventRelay is auto-enabled with natsUrl=nats://ksquad-nats.<ns>.svc:<port>.
+    # Requires persistence.storageClassName (fail-fast, §16.2). Set false to opt
+    # out (e.g. to drain to an EXTERNAL bus via eventRelay.natsUrl, or to run the
+    # core without live plugin event streaming — the outbox buffers regardless).
+    enabled: true
+    image: nats:2.10-alpine
+    port: 4222
+    jetstream:
+      # Bare token — NATS' size lexer rejects a quoted "4GB"/"4Gi" (ISI-2624).
+      maxFileStore: 4GB
+    ha:
+      # false → single JetStream replica. true → clustered RAFT quorum; replicas
+      # must be ODD and >= 3.
+      enabled: false
+      replicas: 3
+    # JetStream file-store PVC. StorageClass is a first-class knob (§16.2): the
+    # PVC NEVER silently relies on the cluster-default class — it is REQUIRED
+    # when nats.enabled (fail-fast), exactly like the umbrella chart.
+    persistence:
+      storageClassName: ""
+      size: 4Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Exposure (ISI-3515). Gateway API routing for the console + apiserver.
+#
+# OFF by default — a bare `controlPlane.enabled=true` brings the stack up as
+# ClusterIP Services (reach the console via `kubectl port-forward`), so the
+# install needs no Gateway API / GatewayClass to succeed. Turn this on to have
+# the chart render a Gateway + HTTPRoutes automatically. The GatewayClass is the
+# only required knob — hostnames are OPTIONAL:
+#
+#   # Expose by IP (no DNS): console owns http://<gwIP>/ INCLUDING the BFF at
+#   # /api/* (login, runs, …). The browser reaches the apiserver only through
+#   # that BFF (ADR-013); direct apiserver ingress needs a hostname (below).
+#   helm upgrade k8squad config/helm -n k8squad-system \
+#     --set controlPlane.enabled=true \
+#     --set exposure.gateway.enabled=true \
+#     --set exposure.gateway.gatewayClassName=kgateway
+#
+#   # Or host-based (set either/both hostnames):
+#     --set exposure.gateway.hostnames.console=ksquad.example.com \
+#     --set exposure.gateway.hostnames.apiserver=api.ksquad.example.com
+#
+# The chart REFERENCES an existing GatewayClass and NEVER creates one — the
+# GatewayClass is owned by the Gateway controller you installed (kgateway,
+# cilium, envoy, istio, traefik…). The install fails fast only if `enabled` is
+# set without a gatewayClassName.
+# ---------------------------------------------------------------------------
+exposure:
+  gateway:
+    # Master switch. false → no Gateway/HTTPRoute rendered (ClusterIP only).
+    enabled: false
+    # REQUIRED when enabled. The GatewayClass to reference — must already exist
+    # in the cluster (e.g. `kgateway`). The chart never creates a GatewayClass.
+    gatewayClassName: ""
+    # OPTIONAL host-based routing. Leave BOTH empty to expose by IP address —
+    # the console then answers at `/` for EVERYTHING, including the BFF at
+    # `/api/*` (the browser's only path, ADR-013), and NO browser-facing
+    # apiserver route is rendered (it would shadow the BFF and break login,
+    # ISI-3530). Set hostnames.apiserver to also expose the apiserver directly
+    # on its own host (it then owns `/` there — collision-free by host).
+    hostnames:
+      console: "" # e.g. ksquad.example.com
+      apiserver: "" # e.g. api.ksquad.example.com   (the SSE endpoint, §13)
+    listeners:
+      http:
+        enabled: true
+        port: 80
+      https:
+        # Off by default — flip on and supply certSecretName to terminate TLS
+        # at the Gateway.
+        enabled: false
+        port: 443
+        # REQUIRED when https.enabled: the TLS cert Secret (terminate at gateway).
+        certSecretName: ""
+    # Redirect http→https at the Gateway edge (renders a RequestRedirect route
+    # on the http listener). Ignored unless BOTH listeners are enabled.
+    httpsRedirect: false
+    # Extra annotations/labels on the Gateway object (controller-specific tuning).
+    annotations: {}
+    labels: {}
 
 namespace:
   # Create the control-plane namespace as a chart resource.
@@ -16,6 +232,11 @@ namespace:
 # Standard `app.kubernetes.io/*` label roots applied to chart-owned resources.
 nameOverride: ""
 fullnameOverride: ""
+
+# NOTE: this chart ships NO CRDs (ADR-0002, Option B). The eleven ksquad.io
+# CRDs are owned by the standalone, independently-versioned `k8squad-crds`
+# chart (config/helm-crds), which MUST be installed/upgraded first. There are
+# deliberately no crds.* values here — CRD lifecycle is that chart's concern.
 
 # Workspace PVC configuration for Projects (story 4.3, §9.4)
 workspacePVC:
@@ -57,8 +278,8 @@ tools:
     entries:
       kubectl:
         versions:
-        - version: "1.31"
-          image: ghcr.io/k8squad/toolchains/kubectl:1.31
+        - version: "1.36"
+          image: ghcr.io/k8squad/toolchains/kubectl:1.36
           provides: [kubectl]
         rbac:
           scope: namespace
@@ -76,13 +297,13 @@ tools:
           provides: [git]
       gh:
         versions:
-        - version: "2.62"
-          image: ghcr.io/k8squad/toolchains/gh:2.62
+        - version: "2.98"
+          image: ghcr.io/k8squad/toolchains/gh:2.98
           provides: [gh]
       go:
         versions:
-        - version: "1.23"
-          image: ghcr.io/k8squad/toolchains/go:1.23
+        - version: "1.26"
+          image: ghcr.io/k8squad/toolchains/go:1.26
           provides: [go]
       node:
         versions:
@@ -96,8 +317,8 @@ tools:
           provides: [dtctl]
       helm:
         versions:
-        - version: "3.16"
-          image: ghcr.io/k8squad/toolchains/helm:3.16
+        - version: "3.21"
+          image: ghcr.io/k8squad/toolchains/helm:3.21
           provides: [helm]
       # AI-agent toolset (ISI-3400, approved on ISI-3387 card b72964f6).
       # All seven are PATH-staged with zero Kubernetes grants — no rbac
@@ -111,8 +332,8 @@ tools:
           provides: [python, python3, pip]
       docker-cli:
         versions:
-        - version: "27"
-          image: ghcr.io/k8squad/toolchains/docker-cli:27
+        - version: "29"
+          image: ghcr.io/k8squad/toolchains/docker-cli:29
           provides: [docker]
       uv:
         versions:
@@ -146,3 +367,49 @@ tools:
   rbac:
     # +optional
     clusterScopeEnabled: false
+
+# ---------------------------------------------------------------------------
+# Observability — GitOps-declared telemetry target (Story B, ISI-3619).
+#
+# When you configure at least one signal endpoint below, the chart renders a
+# single cluster-scoped `OTelConfig` CR (ksquad.io/v1alpha1) so the platform's
+# telemetry routing is declared in the chart and shows up in Settings (Story A)
+# the moment the release is applied. Absent/empty -> NO CR is emitted and the
+# in-cluster default (nothing exported) is preserved.
+#
+# This is DISTINCT from `controlPlane.otel.*` above: that block wires the
+# OTEL_EXPORTER_OTLP_* env on the control-plane workloads (their own SDK
+# export); `observability.otel.*` here declares the platform-scoped OTelConfig
+# routing contract consumed by the operator/apiserver.
+#
+# AUTH IS REFERENCE-ONLY: `authSecretRef` names a Secret (or `namespace/name`);
+# the key defaults to `token`. NEVER put a token VALUE here — create the Secret
+# out-of-band (see README "Point the platform at a collector / Dynatrace").
+# ---------------------------------------------------------------------------
+observability:
+  # OTel routing. Leave `otel` empty (the default) to emit no CR. Populate any
+  # of traces / metrics / logs with an `endpoint` to opt in. Documented shape:
+  #
+  #   otel:
+  #     name: default                 # OTelConfig metadata.name (cluster-scoped)
+  #     traces:
+  #       endpoint: "https://otlp.example.com:4317"  # grpc: host[:port], no path
+  #       protocol: grpc              # grpc | http (http -> CRD http/protobuf, W1)
+  #       authSecretRef: otel-auth    # Secret name, or "namespace/name"
+  #       authSecretKey: token        # defaults to "token" (W2)
+  #       resourceAttributes:         # optional; platform keys (service.instance.id) rejected
+  #         deployment.environment: prod
+  #       sampling:
+  #         ratio: 0.1                # null/absent -> unset; 0 -> always_off;
+  #                                   # 1 -> always_on; (0,1) -> probabilistic{ratio} (W3)
+  #     metrics:
+  #       endpoint: "https://otlp.example.com/v1/metrics"  # http: full URL
+  #       protocol: http             # canonicalizes to http/protobuf
+  #       authSecretRef: otel-auth
+  #     logs:
+  #       endpoint: "https://otlp.example.com/v1/logs"
+  #       protocol: http
+  #       authSecretRef: otel-auth
+  #
+  # NOTE: sampling is traces-only — the webhook/CRD reject it on metrics/logs.
+  otel: {}

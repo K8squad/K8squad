@@ -149,6 +149,18 @@ var table = map[string]map[CredentialClass]binding{
 		// credential — that path resolves via pkg/modelendpoint, not here.
 		ClassServiceAccount: {envVar: "OPENAI_API_KEY", defaultKey: "apiKey"},
 	},
+	// Codex (ChatGPT/OpenAI Rust CLI) is a service-account-only runtime in v1
+	// (ISI-3647 arch §3.4/§5 item 4, seam H, D1): the BYO OpenAI key rides the
+	// OpenAI-standard OPENAI_API_KEY env, injected by reference so the control
+	// plane never reads the bytes (NFR-SEC1). The human-seat auth.json branch
+	// is the ToS-gated S9 fast-follow, deliberately absent here so a human-seat
+	// class on codex fails CLOSED until that story lands. Keyed on the literal
+	// "codex" — the value the RuntimeTypeCodex const (added by the S2 runtime
+	// adapter story) will hold — so this credential row ships independently of
+	// S2 with zero behavioural difference once the const lands.
+	"codex": {
+		ClassServiceAccount: {envVar: "OPENAI_API_KEY", defaultKey: "apiKey"},
+	},
 }
 
 // Injection is the runtime-native materialisation of one credential. Today the

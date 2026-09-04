@@ -268,6 +268,60 @@ spec:
                   - name
                   type: object
                 type: array
+              toolCredentials:
+                description: |-
+                  ToolCredentials are auxiliary, NON-MODEL credentials injected
+                  by-reference into the Run's agent container for local CLI tools
+                  (ISI-3565, decision doc isi-3564-gh-token-seam-decision.md). This is a
+                  sibling seam to the model credentialSecretRef/credentialClass path
+                  (pkg/credinject): a github-token entry lands GH_TOKEN + GITHUB_TOKEN so
+                  a local gh/git can push a branch and open a PR on the tree reposync
+                  already checked out. It is a LIST because an agent may need more than
+                  one aux token later; each entry names a PURPOSE (never an arbitrary env
+                  var name — the seam owns the name mapping so a Secret cannot shadow
+                  PATH or a model key) and the Secret backing it. Projected name-only
+                  onto the Run spec (ADR-045 D5) and injected through
+                  pkg/capability.AssemblePod, the LIVE sandbox-assembly seam.
+                items:
+                  description: |-
+                    ToolCredential declares one auxiliary, non-model credential to inject into
+                    a Run's agent container for a local CLI tool (ISI-3565). Purpose is a
+                    closed enum the injection seam (pkg/toolcred) maps to a fixed set of
+                    runtime env var names — users pick the tool, never the env name — and
+                    SecretRef names the BYO Secret carrying the token by reference.
+                  properties:
+                    purpose:
+                      description: |-
+                        Purpose selects WHICH local tool the credential is for, and therefore
+                        which env var name(s) the token is injected under. It is a closed enum
+                        the seam owns (pkg/toolcred.KnownPurposes); an unknown purpose fails
+                        closed at admission (webhook) and at injection (AssemblePod). Empty is
+                        invalid — there is no safe default tool to guess.
+                      enum:
+                      - github-token
+                      type: string
+                    secretRef:
+                      description: |-
+                        SecretRef is the BYO Secret carrying the token. Injected by reference
+                        (SecretKeySelector) — the control plane never reads the bytes. Key
+                        defaults to "token" when empty.
+                      properties:
+                        key:
+                          description: Key inside the Secret; empty means the consumer-defined
+                            default key.
+                          type: string
+                        name:
+                          description: Name of the referenced Secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - purpose
+                  - secretRef
+                  type: object
+                type: array
             required:
             - credentialSecretRef
             - model

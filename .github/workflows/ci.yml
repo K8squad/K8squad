@@ -178,6 +178,20 @@ jobs:
       - name: Verify generated code + manifests match the markers
         run: make verify-codegen
 
+  cardinality:
+    name: obs / cardinality gate
+    runs-on: [self-hosted, linux, x64]
+    # Story 13.6 (ISI-3122) / obs-plan §5.6, §11.1 gate 1: every Prometheus *Vec
+    # metric label key must be in the bounded-cardinality allowlist
+    # (internal/observability/cardinality_allowlist.go). Out-of-allowlist labels
+    # (e.g. run.id / work_item.id / principal.id used as a metric label) fail the
+    # build — label discipline is tested, not hoped for. Pure grep, no toolchain.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enforce the metric-label cardinality allowlist
+        run: scripts/ci/obs-cardinality-gate.sh
+
   migrations:
     name: db / migrations self-check
     runs-on: [self-hosted, linux, x64]
@@ -304,6 +318,7 @@ jobs:
         include: ${{ fromJSON(needs.components.outputs.helm) }}
     env:
       HELM_VERSION: v3.16.4
+      KUBECONFORM_VERSION: v0.6.7
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -338,11 +353,34 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         run: |
           set -euo pipefail
-          # Render with defaults; fail closed on any template/schema error. CRDs live under
-          # crds/ and are installed by Helm out-of-band, so --include-crds keeps the render
-          # representative of an install.
+          # Render with defaults; fail closed on any template/schema error. CRDs are their
+          # own chart (config/helm-crds, ADR-0002 Option B) rendered as ordinary templates;
+          # the control-plane chart ships none. --include-crds is a harmless no-op here
+          # (neither chart uses Helm's special crds/ dir) but kept for forward-compat.
           helm template ksquad-ci "${{ matrix.path }}" --include-crds > /dev/null
           echo "chart '${{ matrix.chart }}' renders clean"
+
+      # OTelConfig CR render + structural gate (Story B, ISI-3619). Renders the
+      # opt-in observability.otel.* fixtures and asserts the CR contract Story A
+      # serves / Story C consumes, then validates every rendered CR against the
+      # committed OTelConfig CRD schema with kubeconform. Only the control-plane
+      # chart carries the template, so it is gated on config/helm.
+      - name: Install kubeconform (pinned)
+        if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
+        run: |
+          set -euo pipefail
+          if kubeconform -v 2>/dev/null | grep -q "${KUBECONFORM_VERSION}"; then
+            echo "kubeconform ${KUBECONFORM_VERSION} already present"; exit 0
+          fi
+          tmp="$(mktemp -d)"
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" -o "$tmp/kc.tgz"
+          tar -xzf "$tmp/kc.tgz" -C "$tmp" kubeconform
+          sudo install -m 0755 "$tmp/kubeconform" /usr/local/bin/kubeconform
+          kubeconform -v
+
+      - name: OTelConfig CR render + validate (ISI-3619)
+        if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
+        run: bash config/helm/ci/otelconfig-test.sh
 
   node:
     name: node / ${{ matrix.component }}

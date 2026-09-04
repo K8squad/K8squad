@@ -99,6 +99,23 @@ type TaskDispatcher interface {
 	Submit(ctx context.Context, a2aTaskID, runID string) error
 }
 
+// RunCredentialWriter delivers the run-scoped task-io credential to a bound
+// warm-pool sandbox (topology 2, ADR-0007 channel A). ProdEffects invokes it at
+// most once per Run — right after the sandbox is physically bound, so RUN_ID and
+// the bound sandbox_ref (== pod name) both exist — passing ONLY those two
+// identifiers. Like the other ports it is CUSTODY/execution and carries no
+// worker content: the impl (operator/rundrive layer) owns loading the Run,
+// deriving the role scopes/principal, minting, and writing the per-sandbox
+// Secret, so pkg/coord stays k8s-free and run-id-only. A nil writer selects
+// credential-off mode (no Secret written — the sandbox simply gets no task-io
+// file; fail-safe, an absent token makes the coord API refuse, never fail-open).
+type RunCredentialWriter interface {
+	// WriteRunCredential mints the run-scoped credential and writes it to the
+	// per-sandbox Secret named sandboxRef. It MUST be idempotent on
+	// (runID, sandboxRef) — a re-drive create-or-updates the same Secret.
+	WriteRunCredential(ctx context.Context, runID, sandboxRef string) error
+}
+
 // ProdEffects implements reconcile.Effects against the production coord schema for
 // ONE Run. Like ProdReconcileStore it is constructed per Run and bound to that Run's
 // work_item_id / run_id / principal; those (not the machine's fixture strings) key
@@ -114,9 +131,10 @@ type ProdEffects struct {
 	principal   string // who is driving (§6.5 provenance on every marker/audit row)
 	initiatedBy string // §12.4 control-plane stamp (may be empty → NULL)
 
-	binder      SandboxBinder    // physical warm-pool bind; nil = ledger-only
-	dispatcher  TaskDispatcher   // physical A2A shim submit; nil = ledger-only
-	snapshotter BuildSnapshotter // 8.7c build-snapshot capture; nil = snapshot-off
+	binder      SandboxBinder       // physical warm-pool bind; nil = ledger-only
+	dispatcher  TaskDispatcher      // physical A2A shim submit; nil = ledger-only
+	snapshotter BuildSnapshotter    // 8.7c build-snapshot capture; nil = snapshot-off
+	credWriter  RunCredentialWriter // topology-2 Bind-path task-io Secret; nil = credential-off
 
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
@@ -154,6 +172,15 @@ func NewProdEffects(ctx context.Context, db *sql.DB, workItemID, runID, principa
 // build-browser wiring opts in. Returns e for chaining. A nil snapshotter leaves snapshot-off mode.
 func (e *ProdEffects) WithSnapshotter(s BuildSnapshotter) *ProdEffects {
 	e.snapshotter = s
+	return e
+}
+
+// WithRunCredentialWriter enables topology-2 (ADR-0007) Bind-path task-io Secret
+// delivery. Like WithSnapshotter it is an option, not a constructor arg, so the
+// existing NewProdEffects call sites keep working; only the warm-pool wiring opts
+// in. Returns e for chaining. A nil writer leaves credential-off mode.
+func (e *ProdEffects) WithRunCredentialWriter(w RunCredentialWriter) *ProdEffects {
+	e.credWriter = w
 	return e
 }
 
@@ -223,6 +250,20 @@ func (e *ProdEffects) BindSandbox(runID string, keyed bool) {
 			return
 		}
 		sandboxRef = ref
+	}
+	// Topology 2 (ADR-0007 channel A): deliver the run-scoped task-io credential
+	// to the just-bound sandbox by writing its per-sandbox Secret. Done BEFORE the
+	// durable marker below so the at-most-once contract carries it: a crash after
+	// the write but before the marker re-drives (the binder reattaches run_id-keyed
+	// and the write create-or-updates the same Secret), and a committed marker
+	// implies the credential was delivered. credWriter/binder nil ⇒ skipped
+	// (ledger/credential-off). Needs the physical sandboxRef, so it never runs on
+	// the ledger-only path.
+	if e.credWriter != nil && sandboxRef != "" {
+		if err := e.credWriter.WriteRunCredential(e.ctx, e.runID, sandboxRef); err != nil {
+			e.fail(fmt.Errorf("coord.ProdEffects.BindSandbox: write run credential: %w", err))
+			return
+		}
 	}
 	if _, err := e.db.ExecContext(e.ctx, `
 		INSERT INTO coord.sandbox_bind (run_id, work_item_id, sandbox_ref, bound_by)

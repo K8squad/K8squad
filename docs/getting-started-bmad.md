@@ -12,18 +12,23 @@ helm repo add ksquad https://charts.k8squad.io
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
   --set tools.defaultCatalog.enabled=true
 
-# 2. Apply the predefined BMAD squad — Team, Roles, Agents, Project, Skills,
-#    and the 2 MCP servers the tool Skills talk to
-kubectl apply -f examples/bmad-team/
+# 2. Apply the predefined BMAD squad — Team, Roles, Agents, Project, Skills.
+#    The tool Skills reach GitHub/Dynatrace/rendering through CLI toolchains,
+#    so there are no MCP servers to set up.
+kubectl apply -f examples/bmad-team/squad.yaml
 
-# 3. Put real tokens in the credentials Secrets (model, GitHub MCP, Dynatrace MCP)
-kubectl -n bmad-squad edit secret model-credentials github-mcp-token dynatrace-mcp-token
+# 3. Put a real token in the model-credentials Secret
+kubectl -n bmad-squad edit secret model-credentials
 
 # 4. Watch the team come up
-kubectl -n bmad-squad get team,agents,roles,skills,mcpservers
+kubectl -n bmad-squad get team,agents,roles,skills
 
 # 5. (Optional) add the dev/debug Skills from the canonical catalog
 kubectl apply -k github.com/K8squad/k8squad-skills
+
+# 6. (Optional, advanced) only if you add a skill whose tools are reachable
+#    ONLY over MCP: apply the MCPServer reference example + its token Secrets
+# kubectl apply -f examples/bmad-team/02b-mcpservers.yaml
 ```
 
 That is the whole journey. The rest of this guide explains each step, what you
@@ -32,9 +37,10 @@ just deployed, and how to kick off a first Run.
 > **Heads-up on sources.** Two repos back this squad:
 > - The **team** manifests live in this repo under
 >   [`examples/bmad-team/`](../examples/bmad-team/) (ISI-3270) — Team, Roles,
->   Agents, Project, the credentials Secrets, **the 4 default Skills**
->   (`03-skills.yaml`) **and the 2 MCP servers** (`02b-mcpservers.yaml`), all
->   in the `bmad-squad` namespace. One apply gives you a working squad.
+>   Agents, Project, the credentials Secrets and **the 4 default Skills**
+>   (`03-skills.yaml`), all in the `bmad-squad` namespace. One apply of
+>   `squad.yaml` gives you a working squad. (`02b-mcpservers.yaml` is an
+>   optional MCPServer reference example the default skills don't use.)
 > - The dedicated [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)
 >   repo (ISI-3274) is the **canonical Skill catalog** — the authoritative
 >   definitions of those 4 defaults *plus* the dev/debug skill set. You only
@@ -86,7 +92,7 @@ all). Verify it landed:
 kubectl get toolchains -n k8squad-system
 ```
 
-Without the catalog, Runs whose Skills require `gh@2.62`, `dtctl@1.0` or
+Without the catalog, Runs whose Skills require `gh@2.98`, `dtctl@1.0` or
 `node@22` fail admission with an actionable message naming the demanding
 skill — nothing stages silently.
 
@@ -97,40 +103,38 @@ If you would rather build from source, see
 
 ## The capability-plane checklist
 
-The squad's tool Skills resolve against more than the folder you apply. Four
-requirements, each covered in its step below, decide whether your first Run
-admits:
+The squad's tool Skills resolve against more than the folder you apply. Two
+requirements for the default squad, plus an optional advanced one, decide
+whether your first Run admits:
 
 | # | Requirement | Where |
 |---|-------------|-------|
-| 1 | **Toolchain catalog enabled** — the Skills' `requires.toolchains` (`gh@2.62`, `dtctl@1.0`, `node@22`) resolve `name@version` against `Toolchain` objects. Install the operator with `--set tools.defaultCatalog.enabled=true` or Runs fail admission naming the missing toolchain. | [Prerequisites](#prerequisites) |
-| 2 | **`02b-mcpservers.yaml` applied + real tokens** — the `github` and `dynatrace` Skills' `mcpToolRefs` resolve against the two `MCPServer` CRs; their credential Secrets must not hold `REPLACE_ME`. | [Step 1](#step-1--apply-the-bmad-squad), [Step 3](#step-3--set-the-credentials-model--mcp-servers) |
-| 3 | **Discovery has run** — the control plane probes each server (`initialize` → `tools/list`) before `status.observedTools` is populated. Until then Runs referencing the server **fail closed** (stay `Pending`); expect one probe cycle (~up to 10 min at the default interval) after the first apply. | [Step 3](#step-3--set-the-credentials-model--mcp-servers) |
-| 4 | **Skill sources SHA-pinned** — git-sourced Skills must carry an immutable commit `ref`, not a floating branch. The bundled SHAs are placeholders; repoint them at the catalog's published SHAs. | [Step 4](#sha-pinned-skill-sources) |
+| 1 | **Toolchain catalog enabled** — the Skills' `requires.toolchains` (`gh@2.98`, `dtctl@1.0`, `node@22`) resolve `name@version` against `Toolchain` objects. Install the operator with `--set tools.defaultCatalog.enabled=true` or Runs fail admission naming the missing toolchain. | [Prerequisites](#prerequisites) |
+| 2 | **Skill sources SHA-pinned** — git-sourced Skills must carry an immutable commit `ref`, not a floating branch. The bundled SHAs point at real catalog commits; repoint them if you fork the catalog. | [Step 4](#sha-pinned-skill-sources) |
+| — | **(Optional, advanced) MCP servers** — only if you add a skill whose tools are reachable *only* over MCP: apply `02b-mcpservers.yaml`, give the skill an `mcpToolRefs`, set the token Secrets (not `REPLACE_ME`), and wait one discovery probe cycle (`initialize` → `tools/list`) before Runs referencing it admit. The default skills use CLI toolchains and need none of this. | [Step 3](#step-3--set-the-credentials-model--optional-mcp-servers) |
 
 ---
 
 ## Step 1 — Apply the BMAD squad
 
-The predefined team is a `kubectl apply`-able bundle:
-
-```bash
-kubectl apply -f examples/bmad-team/
-```
-
-`kubectl` applies every manifest in the directory; the operator resolves the
-namespace, Secret, prompt ConfigMaps, runtimes, Roles, Agents, Project and Team
-regardless of file order. If you prefer one file, apply the concatenated bundle
-instead:
+The predefined team is a `kubectl apply`-able bundle. Apply the concatenated
+single-file bundle:
 
 ```bash
 kubectl apply -f examples/bmad-team/squad.yaml
 ```
 
-Everything — including the four default `Skill` CRs (`03-skills.yaml`) and the
-two `MCPServer` CRs the tool Skills reference (`02b-mcpservers.yaml`) — lands
+`squad.yaml` carries the namespace, Secret, prompt ConfigMaps, runtimes,
+Skills, Roles, Agents, Project and Team; the operator resolves them regardless
+of order. (You can also apply the numbered files individually — see the folder
+README — but skip the optional `02b-mcpservers.yaml`, which `squad.yaml`
+deliberately leaves out.)
+
+Everything — including the four default `Skill` CRs (`03-skills.yaml`) — lands
 in a dedicated **`bmad-squad`** namespace so it never collides with the
-`k8squad-demo` quickstart squad. The Roles reference those Skills by name via
+`k8squad-demo` quickstart squad. The tool Skills reach their tools through CLI
+toolchains, so no `MCPServer` is applied by default (`02b-mcpservers.yaml` is
+an optional reference example). The Roles reference those Skills by name via
 their `defaultSkills[]`, and they apply in the same bundle, so the squad is
 self-contained: this one apply is enough to bring the team up.
 
@@ -184,7 +188,7 @@ See the repo's own `README.md` for the per-skill purpose, the least-privilege
 
 ---
 
-## Step 3 — Set the credentials (model + MCP servers)
+## Step 3 — Set the credentials (model + optional MCP servers)
 
 The squad ships with placeholder tokens so `apply` never fails, but the agents
 cannot authenticate until you swap them for real ones.
@@ -208,9 +212,19 @@ Every Agent references this one Secret by name and key
 (`credentialSecretRef: { name: model-credentials, key: token }`), so you set the
 credential in exactly one place.
 
-**MCP server tokens** — the `github-mcp` and `dynatrace-mcp` servers from
-`02b-mcpservers.yaml` each reference their own Secret (`github-mcp-token`,
-`dynatrace-mcp-token`), because credentials never ride inside the CRD itself:
+**Tool tokens (CLI toolchains)** — the `github` and `dynatrace` skills drive
+the `gh` and `dtctl` CLIs, which authenticate from an env-var token (e.g.
+`GH_TOKEN`, `DT_API_TOKEN`) projected into the Run pod — never a file the
+runtime reads (ADR-045 D5). Supply those via the agent's credential
+projection (see the per-skill READMEs in
+[`k8squad-skills`](https://github.com/K8squad/k8squad-skills)); a missing
+token just leaves the CLI unauthenticated, it does not block admission.
+
+**(Optional, advanced) MCP server tokens** — *only* if you opted into
+`02b-mcpservers.yaml` for an MCP-backed skill. The `github-mcp` /
+`dynatrace-mcp` servers there each reference their own Secret
+(`github-mcp-token`, `dynatrace-mcp-token`), because credentials never ride
+inside the CRD itself:
 
 ```bash
 kubectl -n bmad-squad create secret generic github-mcp-token \
@@ -221,7 +235,7 @@ kubectl -n bmad-squad create secret generic dynatrace-mcp-token \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-The control-plane discovery controller probes each server (initialize →
+The control-plane discovery controller then probes each server (initialize →
 `tools/list`) and records the tool surface on `status.observedTools`. A Run
 referencing an MCP server fails closed until discovery has succeeded — check
 the conditions and give it one probe cycle:
@@ -295,11 +309,12 @@ and attaches them to the roles that need them via each Role's `defaultSkills[]`
 
 Each Skill declares its own `source` (`inline` or `git`), `permissions` (the
 authorized capability envelope), and `requires` (toolchains and sidecars the
-operator provisions). The `requires.toolchains` refs — `gh@2.62`,
+operator provisions). The `requires.toolchains` refs — `gh@2.98`,
 `dtctl@1.0`, `node@22` — resolve `name@version` against the catalog you
-enabled at install time, and the `github` / `dynatrace` Skills additionally
-declare `mcpToolRefs` that resolve against the two `MCPServer` CRs from
-`02b-mcpservers.yaml` (see Step 3). Beyond these four, the catalog carries a
+enabled at install time; these tools are plain CLIs, so the `github` /
+`dynatrace` Skills reach them through their toolchains and carry **no**
+`mcpToolRefs` (MCP is the optional advanced path in `02b-mcpservers.yaml`,
+for tools reachable only over MCP). Beyond these four, the catalog carries a
 **dev/debug set** (code-search, kubectl-debug, go-build-test, and more — see
 Step 2) you can layer on per role or per agent.
 
@@ -312,7 +327,7 @@ pinned to an immutable **commit SHA** — never a floating branch:
 source:
   git:
     repoRef: github.com/K8squad/k8squad-skills
-    ref: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"   # 40-hex commit SHA
+    ref: "bf3bc86b338d488fe751c289943db194ce8102c7"   # 40-hex commit SHA
     path: skills/github
 ```
 
@@ -322,8 +337,9 @@ mid-Run. A pinned SHA means the exact bytes the operator stages are the exact
 bytes you reviewed. It is the same reproducibility discipline as the
 digest-pinned toolchain images.
 
-The SHAs shipped in `03-skills.yaml` are **illustrative placeholders**. Before
-pointing the squad at anything real, repoint each `ref` at:
+The SHAs shipped in `03-skills.yaml` point at **real catalog commits**
+(`bf3bc86` = `k8squad-skills` main). Repoint each `ref` if you fork the
+catalog — at:
 
 - the published SHA of the corresponding skill revision in the
   [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills)
@@ -339,7 +355,7 @@ bump a dependency version.
 
 ```bash
 # All resources present
-kubectl -n bmad-squad get team,agents,roles,skills,project,mcpservers
+kubectl -n bmad-squad get team,agents,roles,skills,project
 
 # The toolchain catalog the squad resolves against
 kubectl get toolchains -n k8squad-system
@@ -352,25 +368,27 @@ kubectl -n bmad-squad describe team bmad-squad
 kubectl -n bmad-squad describe agent ceo
 ```
 
-You want the `Team` status to show its agents reconciled, both `MCPServer`s
-`Ready=True` with a non-empty `TOOLS` count, and no events complaining about a
-missing `*Ref`. If an Agent is stuck, `describe` it — the most common causes
-are the credentials Secrets still holding `REPLACE_ME`, or a prompt ConfigMap
-or default `Skill` from the bundle that failed to apply (re-apply the whole
-`examples/bmad-team/`).
+You want the `Team` status to show its agents reconciled and no events
+complaining about a missing `*Ref`. If an Agent is stuck, `describe` it — the
+most common causes are the `model-credentials` Secret still holding
+`REPLACE_ME`, or a prompt ConfigMap or default `Skill` from the bundle that
+failed to apply (re-apply `examples/bmad-team/squad.yaml`). (If you opted into
+the optional `02b-mcpservers.yaml`, also check each `MCPServer` is
+`Ready=True` with a non-empty `TOOLS` count.)
 
 ### What a Run actually assembles
 
 When you kick off a Run, the operator resolves the participating agents'
 Skills, unions their requirements, and builds the sandbox pod around them:
 
-- every resolved toolchain (`gh@2.62`, `dtctl@1.0`, `node@22`) is staged by an
+- every resolved toolchain (`gh@2.98`, `dtctl@1.0`, `node@22`) is staged by an
   **init container** onto a shared volume, mounted read-only, with `PATH`
   pointing at it — `gh` and `dtctl` are on `PATH` before the agent runtime
   starts;
-- the `dynatrace-mcp` stdio server runs as a **sidecar**; `github-mcp` is
-  wired into the runtime's native MCP config, scoped to the tools its
-  `toolFilter` allows;
+- (only if a skill references an `MCPServer`) a stdio MCP server runs as a
+  **sidecar** and a streamable-http one is wired into the runtime's native MCP
+  config, scoped to the tools its `toolFilter` allows — the default skills use
+  no MCP server, so this step is a no-op for them;
 - the unioned toolchain RBAC is rendered as **one per-Run `Role`** bound to the
   squad ServiceAccount — gone when the Run completes;
 - the resolved set (images, tool filters, granted RBAC) is recorded as the
@@ -394,6 +412,12 @@ kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 # → http://localhost:8080  — pick the bmad-squad team, create a Run, watch it stream
 ```
 
+> **First time?** A fresh install has no users, so the Console `/login` screen
+> renders but you can't sign in until an admin is seeded. Enable the bootstrap
+> admin once — see *First login (bootstrap admin)* in the
+> [chart README](../config/helm/README.md#first-login-bootstrap-admin) — then
+> log in with that username + password (and clear the bootstrap credential after).
+
 From the console you create a Run, give it a goal, and watch progress stream
 live over SSE as the PM scopes it, the Architect sequences it, and the Coder /
 reviewers execute. The same is possible declaratively with a `Run` CR — see the
@@ -411,17 +435,19 @@ reviewers execute. The same is possible declaratively with a `Run` CR — see th
   bundle's `03-skills.yaml`; canonical definitions live in
   [`K8squad/k8squad-skills`](https://github.com/K8squad/k8squad-skills), which
   also carries the optional dev/debug set).
-- **2 `MCPServer`s** — `github-mcp` (streamable-http) and `dynatrace-mcp`
-  (stdio sidecar), the endpoints the tool Skills' `mcpToolRefs` resolve
-  against (`02b-mcpservers.yaml`).
-- **3 `Secret`s** — your model token plus the two MCP server tokens,
-  referenced everywhere.
+- **1 `Secret`** — your `model-credentials` model token, referenced by every
+  Agent. (The tool CLIs authenticate from env-var tokens projected per Run;
+  see Step 3.)
 - **1+ `AgentRuntime`** — the coding-agent flavor (e.g. `claude-code`).
 - **1 `Project`** — the repository the squad works on.
 
+No `MCPServer` is applied by default — the tool Skills use CLI toolchains.
+`02b-mcpservers.yaml` (two illustrative `MCPServer`s + their token Secrets)
+stays on the shelf until you add an MCP-backed skill.
+
 Plus, at the cluster level: the **`Toolchain` catalog** in `k8squad-system`
-(seven tools, enabled with `tools.defaultCatalog.enabled=true`) that the
-squad's `requires.toolchains` refs resolve against.
+(the curated tool set, enabled with `tools.defaultCatalog.enabled=true`) that
+the squad's `requires.toolchains` refs resolve against.
 
 ---
 
@@ -445,6 +471,10 @@ squad's `requires.toolchains` refs resolve against.
 - Read the [architecture overview](../README.md#-architecture).
 - Explore the [quickstart squad](../hack/quickstart/squad.yaml) — the minimal
   one-agent version this squad extends.
+- **Add your own tool** — when a skill needs a CLI the default catalog does not
+  ship, follow [Adding a toolchain](https://github.com/K8squad/k8squad-skills/blob/main/docs/adding-a-toolchain.md):
+  build the tool image, wire it into the catalog (or your team namespace), and
+  pin `name@version` so `requires.toolchains` resolves.
 - Full CRD and API reference: <https://k8squad.io/docs>.
 
 Clean up when you are done:

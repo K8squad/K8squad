@@ -1,0 +1,5 @@
+# Fixture: no observability.otel configured -> NO OTelConfig CR (B-AC1).
+# Kept explicit (rather than relying on chart defaults) so the assertion is
+# pinned even if the default block changes.
+observability:
+  otel: {}

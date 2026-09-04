@@ -1,0 +1,15 @@
+# Fixture: a single signal (traces) over grpc with probabilistic sampling and
+# a Secret-referenced auth. Renders ONE OTelConfig with only the traces block
+# (B-AC2). grpc endpoint is host:port with no path (B-AC3).
+observability:
+  otel:
+    name: default
+    traces:
+      endpoint: "otlp.example.com:4317"
+      protocol: grpc
+      authSecretRef: otel-auth
+      # authSecretKey omitted -> defaults to "token" (W2)
+      resourceAttributes:
+        deployment.environment: prod
+      sampling:
+        ratio: 0.25

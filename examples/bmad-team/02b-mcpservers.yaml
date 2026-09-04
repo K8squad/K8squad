@@ -1,10 +1,16 @@
-# MCP servers the squad's tool Skills reach (ADR-042, Epic A / ISI-3285).
+# OPTIONAL / ADVANCED — an MCPServer reference example (ADR-042, Epic A /
+# ISI-3285). The default skills in 03-skills.yaml do NOT use this file: they
+# reach their tools through CLI toolchains (`gh`, `dtctl`, `node`), which
+# need no MCPServer. Apply this file only if you add a skill whose tool
+# surface is reachable ONLY over MCP (a hosted service that speaks the
+# protocol, not a CLI), and give that skill an `mcpToolRefs` entry pointing
+# at one of these servers.
 #
-# Skill.spec.mcpToolRefs in 03-skills.yaml resolve against these MCPServer
-# objects — fail-closed: a dangling ref rejects the Run at admission.
-# Each server is data-only (transport + endpoint/command + credential +
-# tool envelope + egress linkage); Skills may only NARROW toolFilter, never
-# widen it (trust boundary D8).
+# A Skill's `spec.mcpToolRefs` resolves against MCPServer objects like these
+# — fail-closed: a dangling ref rejects the Run at admission. Each server is
+# data-only (transport + endpoint/command + credential + tool envelope +
+# egress linkage); Skills may only NARROW toolFilter, never widen it (trust
+# boundary D8).
 #
 # The discovery controller probes each server from the control plane
 # (initialize → tools/list) and records status.observedTools plus the

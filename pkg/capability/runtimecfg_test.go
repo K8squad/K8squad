@@ -18,10 +18,12 @@ package capability
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 
+	"github.com/BurntSushi/toml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -126,6 +128,150 @@ func TestRenderOpenClawServersSection(t *testing.T) {
 	assert.Equal(t, []string{"create_pull_request", "list_issues"}, ep.AllowedTools)
 }
 
+// codexTOMLServer mirrors the codex config.toml [mcp_servers.<name>] shape for
+// decode-side assertions.
+type codexTOMLServer struct {
+	Command           string            `toml:"command"`
+	Args              []string          `toml:"args"`
+	URL               string            `toml:"url"`
+	BearerTokenEnvVar string            `toml:"bearer_token_env_var"`
+	XKsquadAllowTools []string          `toml:"x-ksquad-allow-tools"`
+	XKsquadDenyTools  []string          `toml:"x-ksquad-deny-tools"`
+	Env               map[string]string `toml:"env"`
+}
+
+type codexTOMLProvider struct {
+	BaseURL string `toml:"base_url"`
+	WireAPI string `toml:"wire_api"`
+}
+
+type codexTOMLDoc struct {
+	ModelProvider  string                       `toml:"model_provider"`
+	MCPServers     map[string]codexTOMLServer   `toml:"mcp_servers"`
+	ModelProviders map[string]codexTOMLProvider `toml:"model_providers"`
+}
+
+// TestRenderCodexEmitsValidTOMLWithByReferenceCreds is the AC1/AC3 shape: the
+// HTTP endpoint renders to valid config.toml with url + a by-reference
+// bearer_token_env_var (the env NAME, never the literal token), and the
+// per-tool filter rides as the documented x-ksquad extension key.
+func TestRenderCodexEmitsValidTOMLWithByReferenceCreds(t *testing.T) {
+	raw, err := RenderCodex(scopedEndpoints())
+	require.NoError(t, err)
+
+	// AC3: the bytes parse as valid TOML.
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc), "config.toml is valid TOML")
+
+	srv, ok := doc.MCPServers["github-mcp"]
+	require.True(t, ok, "github-mcp present")
+	assert.Equal(t, "https://mcp.example/github", srv.URL)
+	// AC1/AC3: credential is a by-reference env NAME, never the literal token.
+	assert.Equal(t, "KSQUAD_MCP_GITHUB_MCP_TOKEN", srv.BearerTokenEnvVar)
+	assert.Empty(t, srv.Command, "http endpoint has no command")
+	// Per-tool filter → documented extension key (server-granularity, D3).
+	assert.Equal(t, []string{"create_pull_request", "list_issues"}, srv.XKsquadAllowTools)
+
+	// Defense in depth: the backing Secret name never leaks into the config.
+	assert.NotContains(t, string(raw), "github-token", "no secret name leakage")
+}
+
+// TestRenderCodexStdioEntry covers the stdio transport: command/args plus an
+// env sub-table whose values are ${VAR} name-references only (AC1/AC3).
+func TestRenderCodexStdioEntry(t *testing.T) {
+	raw, err := RenderCodex([]Endpoint{stdioEndpoint()})
+	require.NoError(t, err)
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc))
+	srv := doc.MCPServers["gh-stdio"]
+	assert.Equal(t, "gh-mcp-serve", srv.Command)
+	assert.Equal(t, []string{"--org", "acme"}, srv.Args)
+	// Credential by-reference: ${VAR}, never the literal token.
+	assert.Equal(t, "${KSQUAD_MCP_GH_STDIO_TOKEN}", srv.Env["KSQUAD_MCP_GH_STDIO_TOKEN"])
+	assert.NotContains(t, string(raw), "gh-token", "no secret name leakage")
+}
+
+// TestRenderCodexTaskIOServerAppears is the AC2 shape: the task-io Skill's MCP
+// server (ADR-0004/ISI-3601/3602 — a stdio server the CLI reads relative to the
+// workdir) appears in the rendered config.toml. config.toml itself lands in
+// $CODEX_HOME=workdir (codex.go), so the workdir/task-io files contract holds.
+func TestRenderCodexTaskIOServerAppears(t *testing.T) {
+	taskIO := Endpoint{
+		Name:       "task-io",
+		Transport:  "stdio",
+		Command:    "ksquad-task-io",
+		Args:       []string{"serve", "--workdir", "."},
+		AllowTools: []string{"read_task", "write_artifact"},
+	}
+	raw, err := RenderCodex([]Endpoint{taskIO})
+	require.NoError(t, err)
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc))
+	srv, ok := doc.MCPServers["task-io"]
+	require.True(t, ok, "task-io MCP server present")
+	assert.Equal(t, "ksquad-task-io", srv.Command)
+	assert.Equal(t, []string{"read_task", "write_artifact"}, srv.XKsquadAllowTools)
+	// No credential: the task-io server rides no BYO Secret.
+	assert.Empty(t, srv.Env)
+	assert.Empty(t, srv.BearerTokenEnvVar)
+}
+
+// TestRenderCodexDeterministic guards stable manifest bytes across renders
+// (map ordering is sorted by the encoder).
+func TestRenderCodexDeterministic(t *testing.T) {
+	eps := []Endpoint{stdioEndpoint(), scopedEndpoints()[0]}
+	first, err := RenderCodex(eps)
+	require.NoError(t, err)
+	second, err := RenderCodex(eps)
+	require.NoError(t, err)
+	assert.Equal(t, string(first), string(second))
+	// Both server tables are present.
+	assert.True(t, strings.Contains(string(first), "[mcp_servers.gh-stdio]"))
+	assert.True(t, strings.Contains(string(first), "[mcp_servers.github-mcp]"))
+}
+
+// TestRenderCodexBYOModelProvider is the S6 (FR6/AC9) shape: when a BYO model
+// endpoint is set, RenderCodexConfig emits a [model_providers.ksquad-byo] block
+// (base_url + wire_api) plus the top-level model_provider selector, alongside
+// any MCP servers — and never the endpoint token (that rides OPENAI_API_KEY env).
+func TestRenderCodexBYOModelProvider(t *testing.T) {
+	raw, err := RenderCodexConfig([]Endpoint{stdioEndpoint()}, "http://ollama:11434/v1")
+	require.NoError(t, err)
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc), "config.toml is valid TOML")
+
+	// Top-level selector points at the BYO provider.
+	assert.Equal(t, "ksquad-byo", doc.ModelProvider)
+	// The provider block carries the endpoint URL + OpenAI wire dialect.
+	prov, ok := doc.ModelProviders["ksquad-byo"]
+	require.True(t, ok, "model_providers.ksquad-byo present")
+	assert.Equal(t, "http://ollama:11434/v1", prov.BaseURL)
+	assert.Equal(t, "chat", prov.WireAPI)
+	// MCP servers still render next to the provider block.
+	_, ok = doc.MCPServers["gh-stdio"]
+	assert.True(t, ok, "mcp servers preserved alongside model provider")
+	// The endpoint token is never rendered into the persisted config.
+	assert.NotContains(t, string(raw), "OPENAI_API_KEY", "token env not in config.toml")
+	assert.NotContains(t, string(raw), "ollama-secret", "no token/secret leakage")
+}
+
+// TestRenderCodexNoModelProviderByDefault guards that the plain MCP-only render
+// (no BYO endpoint) emits neither the selector nor a providers block, so the CLI
+// keeps its built-in default provider.
+func TestRenderCodexNoModelProviderByDefault(t *testing.T) {
+	raw, err := RenderCodex([]Endpoint{stdioEndpoint()})
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "model_provider", "no BYO provider unless endpoint set")
+
+	var doc codexTOMLDoc
+	require.NoError(t, toml.Unmarshal(raw, &doc))
+	assert.Empty(t, doc.ModelProvider)
+	assert.Empty(t, doc.ModelProviders)
+}
+
 func TestRenderHermesPassthroughIsIR(t *testing.T) {
 	raw, err := RenderHermes(scopedEndpoints())
 	require.NoError(t, err)
@@ -146,6 +292,7 @@ func TestRenderersRejectUnknownTransport(t *testing.T) {
 		{"claude-code", RenderClaudeCode},
 		{"opencode", RenderOpenCode},
 		{"openclaw", RenderOpenClaw},
+		{"codex", RenderCodex},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := tc.fn(bad)

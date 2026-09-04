@@ -35,6 +35,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -56,6 +57,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
+	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
@@ -67,6 +69,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
@@ -77,6 +80,21 @@ import (
 // leaderElectionID is the ConfigMap/Lease name the manager coordinates on. It is
 // binary-specific so the operator never contends with another ksquad manager.
 const leaderElectionID = "ksquad-operator.ksquad.io"
+
+// decodeSigningKey mirrors internal/apiserver.decodeKeyBytes: accept a raw or
+// base64-encoded HS256 key so the operator and the apiserver read the SAME
+// KSQUAD_JWT_SIGNING_KEY value identically (a shared Secret mints and verifies
+// the run-scoped task-io token). A too-short/invalid value is handed through
+// verbatim so taskio.NewMinter rejects it loudly (< 32 bytes).
+func decodeSigningKey(key string) []byte {
+	if raw, err := base64.RawStdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	if raw, err := base64.StdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	return []byte(key)
+}
 
 var scheme = runtime.NewScheme()
 
@@ -163,10 +181,20 @@ func main() {
 		// capability envelope pre-dispatch, stamps the immutable
 		// Run.status.capabilityManifest and projects the MCP IR ConfigMap
 		// the runtime adapters consume (ADR-044).
+		// Story S1 (ISI-3600): the §8.5 context assembler's first production
+		// caller. One Deps bundle over the coord pool + Project CRD client is
+		// shared by the reconciler (which assembles + pins the snapshot at
+		// Claiming → Running) and the dispatcher (which re-reads the pinned
+		// snapshot to inject env.SystemContext — seam A, deterministic
+		// resume). Memory is left nil until the fresh-recall query seam lands
+		// (the pinned-recall arm needs no embedder; the untrusted-recall tier
+		// is simply empty meanwhile).
+		ctxDeps := contextsource.Deps{DB: db, Client: mgr.GetClient()}
 		if err := (&runctrl.Reconciler{
-			Source:    coord.NewReconcileStepReader(db),
-			RBAC:      runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
-			Assembler: runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Source:            coord.NewReconcileStepReader(db),
+			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			ContextAssemblers: ctxDeps,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
@@ -202,6 +230,22 @@ func main() {
 		// its ledger-only dispatcher — an honest, loudly-logged degraded
 		// state, never a silently broken dispatch.
 		mapper := toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
+
+		// Run-scoped task-io token (ISI-3601 S2): mint with the SAME shared
+		// HS256 key the apiserver verifies with (KSQUAD_JWT_SIGNING_KEY), so
+		// one configured Secret covers mint (operator) and verify (coord API).
+		// Absent key or coord URL ⇒ nil minter ⇒ no task-io env injected into
+		// the shim (fail-safe: the agent gets no token, never a fail-open one).
+		var taskIOMinter *taskio.Minter
+		taskIOCoordURL := os.Getenv("KSQUAD_COORD_URL")
+		if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" && taskIOCoordURL != "" {
+			if m, merr := taskio.NewMinter(decodeSigningKey(raw), 0); merr != nil {
+				ctrl.Log.Error(merr, "task-io token minter disabled: KSQUAD_JWT_SIGNING_KEY invalid (agents will get no run-scoped coord token)")
+			} else {
+				taskIOMinter = m
+			}
+		}
+
 		var a2aErr error
 		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
 			DB:     db,
@@ -213,18 +257,30 @@ func main() {
 				}
 				return "shim" // the operator image ships it at /usr/local/bin/shim
 			}(),
-			RuntimeType: os.Getenv("KSQUAD_RUNTIME_TYPE"),
-			Stderr:      shimLogWriter{},
+			RuntimeType:       os.Getenv("KSQUAD_RUNTIME_TYPE"),
+			Stderr:            shimLogWriter{},
+			ContextAssemblers: ctxDeps,
+			TaskIOMinter:      taskIOMinter,
+			TaskIOCoordURL:    taskIOCoordURL,
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
 		}
 
+		// Topology 2 (ADR-0007 channel A): the warm-pool Bind path delivers the
+		// run-scoped task-io credential via a per-sandbox Secret (the shim env
+		// carrier is topology 1). Same minter + coord URL as the shim, so both
+		// topologies mint identically; nil (no minter/URL) leaves credential-off.
+		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
+			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher)
+		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
+			runner = runner.WithCredentialWriter(credWriter)
+		}
+
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
 			rundrive.NewProdPauses(resumeStore),
-			rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-				kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher))
+			runner)
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
@@ -340,7 +396,14 @@ func main() {
 	// Register custom controllers for workspace and network management.
 	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
 	// network policies are per-Team.
+	// A dedicated controller name is required: controller-runtime derives the
+	// name from the primary Kind (lowercased) unless overridden, so a bare
+	// For(&Run{}) here collides with the Run drive-loop controller ("run") and
+	// For(&Team{}) collides with the Team reconciler ("team"), tripping the
+	// "controller with name X already exists" uniqueness check at manager start
+	// (surfaced deploying ISI-3488/ISI-3490). Name them for their concern.
 	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("run-workspace").
 		For(&ksquadv1alpha1.Run{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Complete(workspaceManager); err != nil {
@@ -349,6 +412,7 @@ func main() {
 	}
 
 	if err := ctrl.NewControllerManagedBy(mgr).
+		Named("team-networkpolicy").
 		For(&ksquadv1alpha1.Team{}).
 		Owns(&networkingv1.NetworkPolicy{}).
 		Complete(networkPolicyManager); err != nil {

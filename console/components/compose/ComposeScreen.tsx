@@ -13,21 +13,28 @@
 // revision N" / "updated to revision N".
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Field } from "./fields";
 import {
   COMPOSE_KINDS,
   KIND_LABEL,
   RUNTIME_CLASS_HINTS,
   emptyForm,
   isValid,
+  parseComposeParams,
   toWire,
   validate,
   type ComposeForm,
   type ComposeKind,
+  type ComposeMode,
   type ComposeResult,
   type FieldErrors,
 } from "@/lib/compose";
+import { TeamForm } from "./TeamForm";
+import { ProjectForm } from "./ProjectForm";
+import { AgentForm } from "./AgentForm";
 
-type Mode = "create" | "edit";
+type Mode = ComposeMode;
 
 type SubmitState =
   | { kind: "idle" }
@@ -58,9 +65,34 @@ function parseError(status: number, body: string): { message: string; fields: Fi
 }
 
 export function ComposeScreen() {
-  const [kind, setKind] = useState<ComposeKind>("projects");
-  const [mode, setMode] = useState<Mode>("create");
-  const [cf, setCf] = useState<ComposeForm>(emptyForm("projects"));
+  // Deep-link seeding (ISI-3554 Story A). The compose surface is reachable directly (/compose) or
+  // via a discoverable entry point that pre-selects the form — "+ New Agent" on /agents links to
+  // ?kind=agents, and "Edit" on an agent detail links to ?kind=agents&mode=edit&name=<agentName>.
+  // Params seed the INITIAL state only; manual kind/mode switching afterward still works because the
+  // selectKind/selectMode handlers own the state from then on. Absent/invalid params fall back to
+  // today's defaults (parseComposeParams → projects/create), so a bare /compose is unchanged (AC4).
+  const params = useSearchParams();
+  const seed = useMemo(
+    () =>
+      parseComposeParams({
+        kind: params.get("kind"),
+        mode: params.get("mode"),
+        name: params.get("name"),
+      }),
+    // Seed once from the entry URL; later manual edits are owned by component state, not the URL.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
+  const [kind, setKind] = useState<ComposeKind>(seed.kind);
+  const [mode, setMode] = useState<Mode>(seed.mode);
+  const [cf, setCf] = useState<ComposeForm>(() => {
+    const base = emptyForm(seed.kind);
+    // Pre-fill the name so an edit deep-link targets the right object (PUT is name-addressed).
+    return seed.name
+      ? ({ kind: base.kind, form: { ...base.form, name: seed.name } } as ComposeForm)
+      : base;
+  });
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
 
   const clientErrors = useMemo(() => validate(cf), [cf]);
@@ -192,27 +224,6 @@ export function ComposeScreen() {
 
 // ── Per-kind field sets ───────────────────────────────────────────────────────
 
-function Field({
-  label,
-  hint,
-  error,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  error?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <label className="compose__field">
-      <span>{label}</span>
-      {children}
-      {hint && !error && <em className="field-hint">{hint}</em>}
-      {error && <em className="field-error">{error}</em>}
-    </label>
-  );
-}
-
 function KindFields({
   cf,
   errors,
@@ -222,130 +233,25 @@ function KindFields({
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
 }) {
-  const nameField = (
-    <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
-      <input
-        value={cf.form.name}
-        onChange={(e) => patch({ name: e.target.value })}
-        aria-invalid={!!errors["name"]}
-        placeholder="my-resource"
-      />
-    </Field>
-  );
-
   switch (cf.kind) {
-    case "teams": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Namespace strategy" hint="optional — defaults to perTeam">
-            <input
-              value={f.namespaceStrategy}
-              onChange={(e) => patch({ namespaceStrategy: e.target.value })}
-              placeholder="perTeam"
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "projects": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          {nameField}
-          <Field label="Repo URL" error={errors["repo.url"]}>
-            <input
-              value={f.repoUrl}
-              onChange={(e) => patch({ repoUrl: e.target.value })}
-              aria-invalid={!!errors["repo.url"]}
-              placeholder="https://github.com/org/repo"
-            />
-          </Field>
-          <Field label="Repo ref" hint="optional — branch / tag / SHA">
-            <input
-              value={f.repoRef}
-              onChange={(e) => patch({ repoRef: e.target.value })}
-              placeholder="main"
-            />
-          </Field>
-          <Field label="Egress policy ref" hint="optional — name or namespace/name">
-            <input
-              value={f.egressPolicyRef}
-              onChange={(e) => patch({ egressPolicyRef: e.target.value })}
-            />
-          </Field>
-          <Field label="Goals" hint="one goal per line">
-            <textarea
-              rows={3}
-              value={f.goals}
-              onChange={(e) => patch({ goals: e.target.value })}
-              placeholder={"Ship the checkout flow\nHarden the payment path"}
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "agents": {
-      const f = cf.form;
-      return (
-        <div className="compose__grid">
-          <Field label="Project" hint="the squad this Agent composes within" error={errors["project"]}>
-            <input
-              value={f.project}
-              onChange={(e) => patch({ project: e.target.value })}
-              aria-invalid={!!errors["project"]}
-            />
-          </Field>
-          {nameField}
-          <Field label="Runtime ref" error={errors["runtimeRef.name"]}>
-            <input
-              value={f.runtimeRef}
-              onChange={(e) => patch({ runtimeRef: e.target.value })}
-              aria-invalid={!!errors["runtimeRef.name"]}
-              placeholder="name or namespace/name"
-            />
-          </Field>
-          <Field label="Role ref" error={errors["roleRef.name"]}>
-            <input
-              value={f.roleRef}
-              onChange={(e) => patch({ roleRef: e.target.value })}
-              aria-invalid={!!errors["roleRef.name"]}
-            />
-          </Field>
-          <Field label="Model" error={errors["model"]}>
-            <input
-              value={f.model}
-              onChange={(e) => patch({ model: e.target.value })}
-              aria-invalid={!!errors["model"]}
-              placeholder="claude-opus-4-8"
-            />
-          </Field>
-          <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
-            <input
-              value={f.credentialSecretRef}
-              onChange={(e) => patch({ credentialSecretRef: e.target.value })}
-              aria-invalid={!!errors["credentialSecretRef.name"]}
-            />
-          </Field>
-          <Field label="Model endpoint Secret ref" hint="optional — name or name/key">
-            <input
-              value={f.modelEndpointRef}
-              onChange={(e) => patch({ modelEndpointRef: e.target.value })}
-            />
-          </Field>
-          <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
-            <textarea
-              rows={3}
-              value={f.skillRefs}
-              onChange={(e) => patch({ skillRefs: e.target.value })}
-            />
-          </Field>
-        </div>
-      );
-    }
+    case "teams":
+      return <TeamForm cf={cf} errors={errors} patch={patch} />;
+    case "projects":
+      return <ProjectForm cf={cf} errors={errors} patch={patch} />;
+    case "agents":
+      return <AgentForm cf={cf} errors={errors} patch={patch} />;
     case "roles": {
       const f = cf.form;
+      const nameField = (
+        <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <input
+            value={f.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            aria-invalid={!!errors["name"]}
+            placeholder="my-resource"
+          />
+        </Field>
+      );
       return (
         <div className="compose__grid">
           <Field label="Project" error={errors["project"]}>
@@ -388,6 +294,16 @@ function KindFields({
     }
     case "skills": {
       const f = cf.form;
+      const nameField = (
+        <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
+          <input
+            value={f.name}
+            onChange={(e) => patch({ name: e.target.value })}
+            aria-invalid={!!errors["name"]}
+            placeholder="my-resource"
+          />
+        </Field>
+      );
       return (
         <div className="compose__grid">
           <Field label="Project" error={errors["project"]}>

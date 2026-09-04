@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Helm toolchain image (ISI-3413). Static upstream release binary from get.helm.sh.
 FROM alpine:3.21 AS fetch
-ARG HELM_VERSION=v3.16.4
+ARG HELM_VERSION=v3.21.4
 ARG TARGETARCH
 RUN apk add --no-cache curl tar \
  && curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \

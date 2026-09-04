@@ -23,6 +23,7 @@ import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
+import { UserMenu } from "@/components/nav/UserMenu";
 import {
   mobileNav,
   navTree,
@@ -34,20 +35,22 @@ import {
 
 function activeIds(pathname: string): Set<string> {
   const ids = new Set<string>();
-  if (pathname === "/") ids.add("dashboard");
   if (pathname.startsWith("/overview")) ids.add("overview");
+  if (pathname.startsWith("/compose")) ids.add("compose");
+  if (pathname.startsWith("/teams")) ids.add("teams");
+  if (pathname.startsWith("/projects")) ids.add("projects");
   if (pathname.startsWith("/agents")) ids.add("agents");
+  if (pathname.startsWith("/runs")) ids.add("runs");
+  if (pathname.startsWith("/credentials")) ids.add("credentials");
+  if (pathname.startsWith("/plugins")) ids.add("plugins");
   if (pathname.startsWith("/users")) ids.add("users");
-  const m = pathname.match(/^\/projects\/([^/]+)(?:\/(\w+))?/);
-  if (m) {
-    ids.add("project");
-    if (m[2]) ids.add(m[2]);
-  }
-  const s = pathname.match(/^\/settings(?:\/(\w+))?/);
-  if (s) {
-    ids.add("settings");
-    if (s[1]) ids.add(s[1]);
-  }
+  // "OTel" is the rail label for the OTLP config surface at /settings/configuration (ISI-3725):
+  // the whole /settings subtree lights the OTel item, keeping active-nav honest until Settings grows
+  // more than one surface.
+  if (pathname.startsWith("/settings")) ids.add("otel");
+  // Project sub-nav tab active-state (ISI-3651 E5) still derives from the deep project route.
+  const m = pathname.match(/^\/projects\/[^/]+\/(\w+)/);
+  if (m) ids.add(m[1]);
   return ids;
 }
 
@@ -77,6 +80,10 @@ function NodeLink({
       data-expanded={expanded}
       onClick={onNavigate}
       aria-current={active ? "page" : undefined}
+      // The label span is display:none on the collapsed tablet rail and NavIcon's svg is
+      // aria-hidden, so without this the link would have no accessible name. Matches the
+      // visible label exactly, so no name mismatch when the text is shown.
+      aria-label={node.label}
     >
       <span className="rail__icon">
         <NavIcon id={node.id} />
@@ -89,10 +96,12 @@ function NodeLink({
 export function ConsoleShell({
   children,
   access = "user",
+  username = null,
   tree = navTree(),
 }: {
   children: ReactNode;
   access?: AccessLevel;
+  username?: string | null;
   tree?: NavNode[];
 }) {
   const pathname = usePathname() ?? "/";
@@ -135,29 +144,49 @@ export function ConsoleShell({
         </div>
         <NavigatingProjectSelector activeId={activeProject} />
         <nav className="rail__nav">
-          {nodes.map((n) => (
-            <div key={n.id} className="rail__group">
-              <NodeLink
-                node={n}
-                active={ids.has(n.id)}
-                projectId={activeProject}
-              />
-              {n.children && (n.id !== "project" || activeProject) && (
-                <div className="rail__sub">
-                  {n.children.map((c) => (
-                    <NodeLink
-                      key={c.id}
-                      node={c}
-                      active={ids.has(c.id)}
-                      projectId={activeProject}
-                      expanded
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+          {nodes.map((n) =>
+            n.section ? (
+              // SETTINGS group (ISI-3725): a small-caps heading + its children as full rail links,
+              // NOT the project accordion. The heading is presentational (no link, no icon).
+              <div key={n.id} className="rail__group rail__group--section">
+                <div className="rail__section">{n.label}</div>
+                {(n.children ?? []).map((c) => (
+                  <NodeLink
+                    key={c.id}
+                    node={c}
+                    active={ids.has(c.id)}
+                    projectId={activeProject}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div key={n.id} className="rail__group">
+                <NodeLink
+                  node={n}
+                  active={ids.has(n.id)}
+                  projectId={activeProject}
+                />
+                {n.children && (n.id !== "project" || activeProject) && (
+                  <div className="rail__sub">
+                    {n.children.map((c) => (
+                      <NodeLink
+                        key={c.id}
+                        node={c}
+                        active={ids.has(c.id)}
+                        projectId={activeProject}
+                        expanded
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ),
+          )}
         </nav>
+        {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
+        <div className="rail__foot">
+          <UserMenu username={username} variant="rail" />
+        </div>
       </aside>
       {railExpanded && (
         <div
@@ -183,11 +212,24 @@ export function ConsoleShell({
           <ThemeToggle />
         </header>
 
-        {/* Desktop/tablet content header */}
+        {/* Desktop/tablet content header. Right cluster matches the ISI-3641 mock top bar
+            (search · namespace chip · avatar); breadcrumb + theme toggle kept as a product decision
+            (spec §2 left the call to the Architect). */}
         <header className="contentbar">
           <Breadcrumb pathname={pathname} />
           <GlobalSearch />
+          {/* Namespace scope chip. Static "all" for now — the namespace selector is a later surface;
+              this is the mock's `● ns: all` indicator, not a wired control (ISI-3725). */}
+          <span className="nschip" title="Namespace scope">
+            <span className="nschip__dot" aria-hidden="true">
+              ●
+            </span>
+            ns: all
+          </span>
           <ThemeToggle />
+          {/* Identity indicator (mock's top-right avatar). Sign-out itself lives in the rail foot
+              (ISI-3570) — this is an avatar-only reuse of UserMenu, not a duplicate control. */}
+          <UserMenu username={username} variant="avatar" />
         </header>
 
         <main className="shell__main">{children}</main>
@@ -216,16 +258,26 @@ export function ConsoleShell({
               </button>
             </div>
             <div className="drawer__body">
-              {drawer.map((n) => (
-                <NodeLink
-                  key={`d-${n.id}`}
-                  node={n}
-                  active={ids.has(n.id)}
-                  projectId={activeProject}
-                  onNavigate={() => setDrawerOpen(false)}
-                  expanded
-                />
-              ))}
+              {drawer.map((n) =>
+                n.section ? (
+                  <div key={`d-${n.id}`} className="rail__section">
+                    {n.label}
+                  </div>
+                ) : (
+                  <NodeLink
+                    key={`d-${n.id}`}
+                    node={n}
+                    active={ids.has(n.id)}
+                    projectId={activeProject}
+                    onNavigate={() => setDrawerOpen(false)}
+                    expanded
+                  />
+                ),
+              )}
+            </div>
+            {/* Sign-out also reachable from the mobile drawer (ISI-3570). */}
+            <div className="drawer__foot">
+              <UserMenu username={username} variant="drawer" />
             </div>
           </div>
           <div

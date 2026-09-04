@@ -6,8 +6,11 @@
 // A read-write COMPOSE surface over the `OTelConfig` CRD (1.5), like Compose (8.5): per-signal
 // (traces/metrics/logs) exporter routing — endpoint, protocol (grpc|http), auth as a Secret
 // NAME (a reference — the UI never shows, stores, or transmits a token value), resource
-// attributes, sampling. Default state is OPT-IN: no exporter configured → telemetry stays
-// in-cluster. Saves go through the BFF (app/api/otelconfig → apiserver), which composes and
+// attributes, sampling. Default state is OPT-IN: with nothing configured here the app emits no
+// OTLP of its OWN — this screen governs app-level routing only, NOT platform telemetry, which
+// the cluster's infrastructure OTel Collector may already export (ISI-3551: the old "stays
+// in-cluster" copy misled operators when the infra collector was live). Saves go through the
+// BFF (app/api/otelconfig → apiserver), which composes and
 // applies the CRD via the reconciler (13.8); export state (healthy/erroring per signal)
 // renders from the CRD status when present.
 
@@ -103,9 +106,12 @@ export function OtlpConfigScreen() {
     <div className="settings-otlp">
       <h1>Settings · Configuration</h1>
       <p className="muted">
-        OTLP exporter routing — where traces, metrics, and logs are sent. Opt-in:
-        with no exporter configured, telemetry stays in-cluster. Auth is a
-        Secret reference; token values are never shown or stored here.
+        Application-level OTLP routing — where <em>this app</em> sends its own
+        traces, metrics, and logs. Opt-in: with nothing configured here, the app
+        emits no OTLP of its own. This screen does not govern platform telemetry,
+        which your cluster&apos;s infrastructure OTel Collector may already be
+        exporting. Auth is a Secret reference; token values are never shown or
+        stored here.
       </p>
 
       <div className="card">
@@ -117,7 +123,11 @@ export function OtlpConfigScreen() {
           </p>
         )}
         {(load.kind === "empty" || (!dirty && !hasAnyExporter(form))) && (
-          <p className="muted">No exporter configured — telemetry stays in-cluster.</p>
+          <p className="muted">
+            No app-level OTLP exporter configured here. Platform telemetry may
+            still be exported by the cluster&apos;s infrastructure OTel Collector —
+            that layer is managed outside this screen.
+          </p>
         )}
         {load.kind === "loaded" &&
           SIGNAL_KEYS.map((key) => {
@@ -188,7 +198,10 @@ function SignalCard({
     return (
       <div className="card signal signal--empty">
         <h2>{SIGNAL_LABEL[signalKey]}</h2>
-        <p className="muted">Not configured — stays in-cluster until you add an exporter.</p>
+        <p className="muted">
+          Not configured — this app emits no OTLP for this signal until you add an
+          exporter. Platform telemetry may still flow via the cluster collector.
+        </p>
         <button
           type="button"
           className="btn"

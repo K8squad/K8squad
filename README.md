@@ -26,7 +26,7 @@ formation-keeping.
 
 ## ✨ Features
 
-- **🤖 Autonomous agent squads** — mix heterogeneous runtimes (Claude Code, Ollama, OpenClaw, Hermes) in one squad through thin A2A shims. Agents coordinate through shared work items, not brittle direct messaging.
+- **🤖 Autonomous agent squads** — mix heterogeneous runtimes (Claude Code, Codex, Ollama, OpenClaw, Hermes) in one squad through thin A2A shims. Agents coordinate through shared work items, not brittle direct messaging.
 - **📋 Project-scoped work management** — a Kanban-style work-item tree with tickets, sub-tickets, checkout/claim/lease, comments, and artifacts — an append-only, provenanced coordination record.
 - **🔒 RBAC & per-project isolation** — every `Team` is a tenancy boundary with its own namespace, NetworkPolicy, and quota. Agent code runs untrusted in gVisor-sandboxed pods; the control plane stays trusted.
 - **📡 OTel-native observability** — traces, metrics, and logs are OpenTelemetry-first across the operator, API server, and every run, so squad activity is visible end to end.
@@ -108,7 +108,7 @@ flowchart TB
         subgraph team["Team namespace — RBAC · NetworkPolicy · quota"]
             sandbox["Sandbox Pod<br/>warm-pool · gVisor RuntimeClass"]
             shim["shim sidecar<br/>A2A ⇄ native"]
-            runtime["agent runtime<br/>Claude Code / Ollama / OpenClaw / Hermes / …"]
+            runtime["agent runtime<br/>Claude Code / Codex / Ollama / OpenClaw / Hermes / …"]
             pvc[("Project workspace PVC<br/>per-principal worktree")]
             sandbox --> shim
             shim <--> runtime

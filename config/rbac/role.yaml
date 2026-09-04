@@ -20,6 +20,7 @@ rules:
   resources:
   - limitranges
   - resourcequotas
+  - secrets
   - serviceaccounts
   verbs:
   - create
@@ -43,12 +44,20 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - secrets
+  - persistentvolumeclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
   verbs:
   - get
   - list
-  - patch
-  - update
   - watch
 - apiGroups:
   - batch
@@ -69,6 +78,7 @@ rules:
   - mcpservers
   - otelconfigs
   - roles
+  - runs
   - skills
   verbs:
   - get
@@ -80,6 +90,7 @@ rules:
   - mcpservers/status
   - otelconfigs/status
   - projects/status
+  - runs/status
   - teams/status
   verbs:
   - get

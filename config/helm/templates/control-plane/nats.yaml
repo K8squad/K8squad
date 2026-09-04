@@ -1,0 +1,159 @@
+{{- /* NATS / JetStream — the plugin event bus (§16 / §17.4 / ADR-023; ISI-3508,
+       follow-on to ISI-3488). Mirrors the umbrella chart's parent-rendered
+       StatefulSet so the JetStream file-store PVC's StorageClass stays a
+       first-class KSquad knob (controlPlane.nats.persistence.storageClassName,
+       §16.2) and never the cluster default. JetStream is the plugin
+       replay/catch-up substrate; single-replica by default, ha.enabled flips to
+       a clustered RAFT quorum. NATS holds NO state of record (Postgres is the
+       sole source of truth, ADR-001) — only in-flight/replayable event copies —
+       and NATS-down never blocks the core (event-relay drains best-effort). */ -}}
+{{- if and .Values.controlPlane.enabled .Values.controlPlane.nats.enabled -}}
+{{- $ns := include "k8squad.namespace" . -}}
+{{- $c := "nats" -}}
+{{- $sc := include "k8squad.storageClass.nats" . -}}
+{{- if not $sc -}}
+{{- fail "controlPlane.nats.persistence.storageClassName is REQUIRED when controlPlane.nats.enabled — the JetStream PVC never relies on the cluster-default StorageClass (§16.2)." -}}
+{{- end -}}
+{{- $replicas := int (include "k8squad.nats.replicas" .) -}}
+{{- if .Values.controlPlane.nats.ha.enabled -}}
+{{- if lt $replicas 3 -}}{{- fail "controlPlane.nats.ha.replicas must be >= 3 for a clustered JetStream RAFT quorum." -}}{{- end -}}
+{{- if eq (mod $replicas 2) 0 -}}{{- fail "controlPlane.nats.ha.replicas must be ODD for a JetStream RAFT quorum (3, 5, …)." -}}{{- end -}}
+{{- end -}}
+{{- $port := .Values.controlPlane.nats.port | default 4222 -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksquad-nats-config
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+data:
+  nats.conf: |
+    port: {{ $port }}
+    http: 8222
+    jetstream {
+      store_dir: "/data/jetstream"
+      {{- /* NO quote: NATS' size lexer only handles a bare token with a
+             multi-char suffix (GB/Gi/MB); a quoted "4GB"/"4Gi" fails to parse
+             and JetStream refuses to boot (ISI-2624 C1). */}}
+      max_file_store: {{ .Values.controlPlane.nats.jetstream.maxFileStore }}
+    }
+    {{- if .Values.controlPlane.nats.ha.enabled }}
+    cluster {
+      name: "ksquad-js"
+      port: 6222
+      routes: [
+        {{- range $i := until $replicas }}
+        "nats://ksquad-nats-{{ $i }}.ksquad-nats-headless:6222",
+        {{- end }}
+      ]
+    }
+    {{- end }}
+---
+{{- /* Headless Service: stable per-pod DNS for the JetStream cluster routes. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-nats-headless
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ $port }}
+    - name: cluster
+      port: 6222
+    - name: monitor
+      port: 8222
+---
+{{- /* Client Service: what event-relay + plugins connect to (k8squad.nats.url). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: ksquad-nats
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ $port }}
+      targetPort: {{ $port }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ksquad-nats
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  serviceName: ksquad-nats-headless
+  selector:
+    matchLabels:
+      {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 8 }}
+    spec:
+      {{- with .Values.controlPlane.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nats
+          image: {{ .Values.controlPlane.nats.image | quote }}
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy | default "IfNotPresent" }}
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - name: client
+              containerPort: {{ $port }}
+            - name: cluster
+              containerPort: 6222
+            - name: monitor
+              containerPort: 8222
+          {{- /* Probes are LOCAL to NATS (its own monitoring port). They never
+                 gate the apiserver/core — NATS-down never blocks (§17.4). */}}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml (.Values.controlPlane.nats.resources | default dict) | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: jetstream
+              mountPath: /data/jetstream
+      volumes:
+        - name: config
+          configMap:
+            name: ksquad-nats-config
+  volumeClaimTemplates:
+    - metadata:
+        name: jetstream
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $sc | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.controlPlane.nats.persistence.size | quote }}
+{{- end }}

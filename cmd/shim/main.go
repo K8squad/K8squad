@@ -16,7 +16,7 @@ limitations under the License.
 
 // Command shim is the KSquad agent-runtime sidecar (arch §7.5, stories 5.5 +
 // 5.8): one binary, one image per AgentRuntime.type, selected at launch from
-// the registered v1 shim set (openclaw, hermes, opencode). It is the target
+// the registered v1 shim set (openclaw, hermes, opencode, codex). It is the target
 // Dockerfile.shim builds.
 //
 // Subcommands:

@@ -1,20 +1,30 @@
-// app/api/session/route.ts — BFF proxy for the caller's session/role summary
-// (story 8.14b UI RBAC gate). GET-ONLY.
+// app/api/session/route.ts — BFF for the caller's SESSION lifecycle (ISI-3522) + role summary.
 //
-// The console needs the caller's role (viewer vs contributor/maintainer) to
-// decide whether drag-and-drop is ENABLED in the UI. The authoritative RBAC
-// decision always lives in the Go apiserver (§6.7.2/§12.3) — this gate is a UX
-// mirror, never a security boundary. The BFF relays the apiserver's /api/me
-// verdict verbatim; the client FAILS CLOSED to viewer on any non-200 or error
-// (deny-by-default), so an absent upstream never widens permissions.
+//   GET    → /auth/me     : the caller's role summary (story 8.14b UI RBAC gate; UX mirror only —
+//                           the client FAILS CLOSED to viewer on any non-200/error).
+//   POST   → /auth/login  : sign in. Relays {username,password} to the apiserver login route and
+//                           relays its Set-Cookie (HttpOnly `ksquad_session`) back to the browser.
+//   DELETE → /auth/logout : sign out. Relays the cookie-clearing Set-Cookie back.
+//
+// The Go apiserver stays the ONE authz choke point (§13 / ADR-013): it is the sole credential
+// verifier and session-cookie issuer. The BFF adds NO second authz path — it forwards identity and
+// surfaces the apiserver's status VERBATIM (401 invalid creds, 429 rate-limited, 200 success).
 
 import type { NextRequest } from "next/server";
-import { proxyJson } from "@/lib/bff";
+import { proxyAuth, proxyJson } from "@/lib/bff";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
 
 export async function GET(req: NextRequest): Promise<Response> {
-  return proxyJson(req, "/api/me");
+  return proxyJson(req, "/auth/me");
+}
+
+export async function POST(req: NextRequest): Promise<Response> {
+  return proxyAuth(req, "/auth/login", "POST");
+}
+
+export async function DELETE(req: NextRequest): Promise<Response> {
+  return proxyAuth(req, "/auth/logout", "DELETE");
 }

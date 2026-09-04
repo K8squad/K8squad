@@ -156,7 +156,7 @@ export function SquadOverview() {
         </h1>
         <p className="muted" style={{ margin: "6px 0 0" }}>
           Squad overview — Team <code>{team.namespace}/{team.name}</code>: Projects and Run
-          status at a glance, no <code>kubectl</code> (story 8.1).
+          status at a glance, no <code>kubectl</code>.
         </p>
       </header>
 

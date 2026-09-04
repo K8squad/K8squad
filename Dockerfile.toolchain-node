@@ -10,6 +10,13 @@ LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
 RUN apk add --no-cache libstdc++ ca-certificates
 COPY --from=src /usr/local/bin/node /usr/local/bin/node
 COPY --from=src /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
- && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+# ISI-3444: the npm bundled in node:22-alpine ships tar 7.5.11 (CRITICAL
+# CVE-2026-59873) and brace-expansion 2.0.2 (HIGH CVE-2026-13149) — fixable, so the
+# Trivy gate fails the leg. Upgrade the bundled npm to a pinned release that carries
+# tar >= 7.5.19 (npm 12.0.2 declares tar ^7.5.19).
+ARG NPM_VERSION=12.0.2
+RUN node /usr/local/lib/node_modules/npm/bin/npm-cli.js install -g "npm@${NPM_VERSION}" \
+ && npm cache clean --force
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 ENTRYPOINT ["/usr/local/bin/node"]

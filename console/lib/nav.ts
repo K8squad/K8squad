@@ -28,6 +28,14 @@ export type NavNode = {
   scope?: "global" | "project";
   /** Minimum access to see this node; defaults to "user" (visible to everyone). */
   requiredAccess?: AccessLevel;
+  /**
+   * A non-navigating GROUP HEADER (ISI-3725 / ISI-3641 mock `06-onboarding-hub`). A `section` node
+   * is NOT a link and NOT a collapsible accordion — the rail renders its `label` as a small-caps
+   * muted heading and its `children` as normal, always-visible rail links beneath it. Distinct from a
+   * `children` accordion (which stays for project sub-nav). A section node carries `href: ""`; it is
+   * never passed to a link renderer. RBAC on the CHILDREN still applies via {@link visibleNav}.
+   */
+  section?: boolean;
   children?: NavNode[];
 };
 
@@ -40,30 +48,26 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
 ];
 
 /**
- * The canonical top-level nav tree. Dashboard (global fleet root) tops the rail, then Overview,
- * the project-scoped Project node (expands to its sub-nav), Agents, and Settings (with its
- * Configuration child — the OTLP exporter surface, story 8.12).
+ * The canonical top-level nav tree, aligned to the ISI-3641 onboarding redesign mock
+ * `06-onboarding-hub` (ISI-3716 deviation spec → ISI-3725). Rail, top→bottom:
+ *
+ *   Overview · Compose · Teams · Projects · Agents · Runs
+ *   ─ SETTINGS ─ (section header)  OTel · Credentials · Plugins · Users & Roles
+ *
+ * Deltas from the old tree: Dashboard(/`) dropped (Overview is the root); Compose promoted to 2nd;
+ * Teams + Runs promoted to top-level items; the old project-scoped `Project` node (Build/Tickets/
+ * Runs/Discussion accordion) flattened to a top-level `Projects` link — the project sub-nav tab bar
+ * is owned by ISI-3651 E5 (`projectSubnav`, still exported below, unchanged); and Settings becomes a
+ * SECTION HEADER grouping OTel/Credentials/Plugins/Users&Roles instead of a single
+ * Settings→Configuration accordion. "OTel" retargets the OTLP config surface (`/settings/configuration`,
+ * story 8.12 / OtlpConfigScreen — the same screen ISI-3717 Track 2 enriches).
  */
 export function navTree(): NavNode[] {
   return [
-    { id: "dashboard", label: "Dashboard", href: "/", scope: "global" },
     { id: "overview", label: "Overview", href: "/overview", scope: "global" },
     {
-      id: "project",
-      label: "Project",
-      href: `/projects/${PROJECT_TOKEN}`,
-      scope: "project",
-      children: PROJECT_SECTIONS.map((s) => ({
-        id: s.id,
-        label: s.label,
-        href: `/projects/${PROJECT_TOKEN}/${s.id}`,
-        scope: "project" as const,
-      })),
-    },
-    { id: "agents", label: "Agents", href: "/agents", scope: "global" },
-    {
       // Compose (story 8.5 / UX screen 04-compose-crd): the CRD authoring surface for
-      // Team/Project/Agent/Role/Skill. Like Settings → Configuration it is a write surface with NO
+      // Team/Project/Agent/Role/Skill. Like Settings → OTel it is a write surface with NO
       // requiredAccess — the apiserver's write-tier membership gate (§13 choke point) is the real
       // wall (viewer → 403, Team creation admin-only), so hiding it in nav would only mislead a
       // contributor who legitimately composes.
@@ -72,28 +76,33 @@ export function navTree(): NavNode[] {
       href: "/compose",
       scope: "global",
     },
+    { id: "teams", label: "Teams", href: "/teams", scope: "global" },
+    { id: "projects", label: "Projects", href: "/projects", scope: "global" },
+    { id: "agents", label: "Agents", href: "/agents", scope: "global" },
+    { id: "runs", label: "Runs", href: "/runs", scope: "global" },
     {
-      // Users & Roles (stories 8.15 + 8.16): the admin identity surface. requiredAccess "admin"
-      // means visibleNav removes it from the tree for a non-admin BEFORE any breakpoint expresses
-      // it — hidden = absent from the DOM (never display:none-as-authz), and the Go apiserver's
-      // requireAdmin gate stays the real wall (§13 choke point).
-      id: "users",
-      label: "Users & Roles",
-      href: "/users",
-      scope: "global",
-      requiredAccess: "admin",
-    },
-    {
+      // SETTINGS — a non-navigating section header (see NavNode.section), NOT the old
+      // Settings→Configuration accordion. Its children render as normal rail links beneath a
+      // small-caps heading, matching the ISI-3641 mock's grouped settings block.
       id: "settings",
       label: "Settings",
-      href: "/settings",
-      scope: "global",
+      href: "",
+      section: true,
       children: [
+        { id: "otel", label: "OTel", href: "/settings/configuration", scope: "global" },
+        { id: "credentials", label: "Credentials", href: "/credentials", scope: "global" },
+        { id: "plugins", label: "Plugins", href: "/plugins", scope: "global" },
         {
-          id: "configuration",
-          label: "Configuration",
-          href: "/settings/configuration",
+          // Users & Roles (stories 8.15 + 8.16): the admin identity surface. requiredAccess "admin"
+          // means visibleNav removes it from the tree for a non-admin BEFORE any breakpoint expresses
+          // it — hidden = absent from the DOM (never display:none-as-authz), and the Go apiserver's
+          // requireAdmin gate stays the real wall (§13 choke point). Moving it under SETTINGS does not
+          // change the seam: visibleNav prunes recursively.
+          id: "users",
+          label: "Users & Roles",
+          href: "/users",
           scope: "global",
+          requiredAccess: "admin",
         },
       ],
     },
@@ -132,7 +141,9 @@ export function mobileNav(
   tree: NavNode[] = navTree(),
 ): { bottom: NavNode[]; drawer: NavNode[] } {
   const visible = visibleNav(tree, access);
-  const bottom = visible.slice(0, 5);
+  // Section headers (SETTINGS) don't navigate, so they never spend a bottom-nav slot — the budget is
+  // the first 5 real destinations. The section's children still reach the drawer via the flatten below.
+  const bottom = visible.filter((n) => !n.section).slice(0, 5);
   const drawer: NavNode[] = [];
   for (const node of visible) {
     drawer.push(node.children ? { ...node, children: undefined } : node);
@@ -158,7 +169,10 @@ const SECTION_LABEL: Record<string, string> = {
   overview: "Overview",
   agents: "Agents",
   compose: "Compose",
+  teams: "Teams",
+  projects: "Projects",
   runs: "Runs",
+  plugins: "Plugins",
   settings: "Settings",
   configuration: "Configuration",
   build: "Build",

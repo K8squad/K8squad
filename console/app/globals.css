@@ -13,21 +13,39 @@
   --status-blocked: #fb7185;
   --status-idle: #64748b;
   /* Run-provenance chip hue (story 10.3) — a distinct, theme-invariant violet so
-   * a Run deep-link chip never collapses onto the azure accent in either theme. */
-  --ksq-run: #a855f7;
+   * a Run deep-link chip never collapses onto the azure accent in either theme.
+   * Aligned to the visual-system sheet (#A78BFA) per the ISI-3545 gap report. */
+  --ksq-run: #a78bfa;
 
-  --radius: 10px;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --font-sans: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  /* Radius scale (visual-system §Components, ISI-3545 P1-2): 6 chip · 8 control · 12 card · 999
+   * for dots/avatars. `--radius` stays as the default *control* radius so existing btn/input
+   * rules keep working; cards opt into the larger --radius-card for shape hierarchy. */
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius: var(--radius-control);
+
+  /* Geist Sans / Geist Mono (self-hosted via next/font, wired on <html> in app/layout.tsx). The
+   * --font-geist-* vars come from GeistSans.variable / GeistMono.variable; system stack is the
+   * fallback if the font asset fails to load. */
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
-/* Dark: navy canvas, light text (default). */
+/* Dark: navy canvas, light text (default). Surfaces are a 4-step elevation ramp and text a 3-step
+ * legibility ramp, matching the visual-system sheet (ISI-3545 P1-3). --text-1/--text-2 are kept as
+ * aliases (primary/secondary) so existing components need no edits. */
 [data-theme="dark"] {
   --canvas: #0b1220;
-  --surface: #111a2e;
-  --border: #22304d;
-  --text-1: #e6edf7;
-  --text-2: #9fb0c9;
+  --surface: #131d31;
+  --raised: #1a2842;
+  --inset: #0e1626;
+  --border: #25324b;
+  --muted: #7e8ca6;
+  --text: #b6c3d8;
+  --text-hi: #e8eef9;
+  --text-1: var(--text);
+  --text-2: var(--muted);
 }
 
 /* Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns here in
@@ -35,9 +53,14 @@
 [data-theme="light"] {
   --canvas: #f6f8fc;
   --surface: #ffffff;
+  --raised: #ffffff;
+  --inset: #eef2f8;
   --border: #d6deec;
-  --text-1: #0b1220;
-  --text-2: #4b5b76;
+  --muted: #5b6b86;
+  --text: #2a3852;
+  --text-hi: #0b1220;
+  --text-1: var(--text);
+  --text-2: var(--muted);
 }
 
 * {
@@ -57,26 +80,488 @@ body {
   min-height: 100vh;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+ * NAV SHELL (ConsoleShell — markup from ISI-2908/2911/2912; CSS authored here for ISI-3549 from the
+ * ISI-3545 visual-gap report P0-1: the shell shipped its React markup but never its stylesheet).
+ *
+ * ONE adaptive tree, re-expressed per canonical breakpoint by media queries — no UA sniffing, same
+ * DOM at every width (mirrors the component's own header comment):
+ *   mobile  <768px    top bar + fixed 5-item bottom nav + slide-in drawer (rail hidden)
+ *   tablet  768–1023  fixed 64px icon rail; tap `.rail__expand` → 240px OVERLAY (no layout shift)
+ *   desktop ≥1024     persistent 240px labeled left rail, in flow beside the content column
+ *
+ * The approved IA (mock 00/01, README §2) is a persistent left rail beside a FULL-WIDTH dense
+ * content surface — deliberately anti-center, so the legacy `.shell__main{max-width:1100px;
+ * margin:auto}` centering is intentionally gone. This one stylesheet is ~70% of the mock fidelity. */
+
 .shell {
-  display: flex;
-  flex-direction: column;
   min-height: 100vh;
 }
 
-.topbar {
+/* Base = mobile: the rail is hidden; nav lives in the top bar + bottom nav + drawer. */
+.rail {
+  display: none;
+}
+
+.shell__body {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 20px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  min-height: 100vh;
+  min-width: 0; /* allow the content column to shrink instead of overflowing the rail */
 }
 
 .shell__main {
-  padding: 24px;
-  max-width: 1100px;
-  margin: 0 auto;
   flex: 1;
+  width: 100%;
+  padding: 20px 16px calc(20px + 68px); /* bottom clears the fixed mobile bottom nav */
+}
+
+/* Bright headings only inside the content surface (textHi ramp). Scoped to the shell so pre-auth
+ * pages on the bare root layout (login / 404) keep the body ramp — the report's "don't touch login". */
+.shell__main h1,
+.shell__main h2 {
+  color: var(--text-hi);
+}
+
+/* — Mobile top bar — */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.topbar .gsearch {
+  flex: 1;
+  min-width: 0;
+}
+.topbar__menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.topbar__menu:hover {
+  border-color: var(--accent);
+}
+
+/* Desktop/tablet content header — replaced by the top bar on mobile. */
+.contentbar {
+  display: none;
+}
+
+/* — Shared nav-link styling (used by the rail, the bottom nav, and the drawer) — */
+.rail__link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-control);
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.rail__link:hover {
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+  text-decoration: none;
+}
+.rail__link[data-active] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  font-weight: 600;
+}
+.rail__link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rail__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+.rail__sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 6px 30px; /* indent children under the icon column */
+}
+.rail__sub .rail__link {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+/* SETTINGS section header (ISI-3725 / ISI-3641 mock): a small-caps muted group label above its
+ * links, with a hairline separator so the grouped block reads distinct from the primary items. */
+.rail__group--section {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.rail__section {
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+/* Namespace scope chip in the content top bar (mock's `● ns: all`). Static indicator for now. */
+.nschip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--raised);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.nschip__dot {
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* Avatar-only UserMenu variant (top-bar identity glyph, ISI-3725). */
+.usermenu--avatar {
+  display: inline-flex;
+  flex: none;
+}
+.usermenu--avatar .usermenu__avatar {
+  cursor: default;
+}
+
+/* Placeholder landing for not-yet-built nav destinations (Teams/Projects/Runs/Plugins, ISI-3725). */
+.stub {
+  max-width: 60ch;
+}
+.stub p {
+  color: var(--text-2);
+  margin-top: 8px;
+}
+
+/* Breadcrumb + project selector — chrome the shell renders; kept minimal so the frame reads whole. */
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.crumbs a {
+  color: var(--text-2);
+}
+.crumbs a:hover {
+  color: var(--accent);
+}
+.projselect {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.projselect__caption {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-2);
+}
+.projselect__select {
+  width: 100%;
+  min-height: 34px;
+  background: var(--inset);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+/* — Mobile bottom nav (story 8.20): fixed 5-item row — */
+.bottomnav {
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 4px 6px calc(4px + env(safe-area-inset-bottom, 0px));
+}
+.bottomnav .rail__link {
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 8px 2px;
+  font-size: 11px;
+  border-radius: var(--radius-chip);
+}
+.bottomnav .rail__link[data-active] {
+  background: transparent; /* the accent text colour is enough at this size */
+}
+
+/* — Mobile drawer (overflow: project sub-nav, settings children, past 5-item budget) — */
+.drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+}
+.drawer__scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 7, 18, 0.6);
+}
+.drawer__panel {
+  position: relative;
+  z-index: 1;
+  width: min(300px, 84vw);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+.drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.drawer__close {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  color: var(--text-1);
+  cursor: pointer;
+}
+.drawer__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+/* ── Tablet + desktop: the rail appears; top bar / bottom nav step aside ──────────────────────── */
+@media (min-width: 768px) {
+  /* .drawer is included so a mobile drawer left open across a resize/rotate to tablet/desktop
+   * (its React state survives the breakpoint change) cannot cover the page with stale UI. */
+  .topbar,
+  .bottomnav,
+  .drawer {
+    display: none;
+  }
+  .shell__main {
+    padding: 24px;
+  }
+
+  .contentbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 24px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  .contentbar .crumbs {
+    margin-right: auto; /* push search + theme toggle to the right edge */
+  }
+  .contentbar .gsearch {
+    flex: 0 1 360px;
+  }
+
+  /* Tablet: fixed 64px icon rail. Fixed (not in-flow) + a matching body margin so the tap-expand
+   * below can grow the rail OVER the content with zero layout shift. */
+  .rail {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    width: 64px;
+    padding: 12px 10px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+    z-index: 30;
+  }
+  .shell__body {
+    margin-left: 64px;
+  }
+  .rail__brand {
+    display: flex;
+    align-items: center;
+    justify-content: center; /* collapsed: only the expand button remains — centre it */
+    gap: 8px;
+    min-height: 32px;
+    margin-bottom: 8px;
+  }
+  /* The 64px icon rail has only ~44px of content width — not enough for the home lockup
+   * (24px mark + wordmark) beside the 32px expand button, which would overlap/clip. Hide the
+   * lockup while collapsed; it returns when the rail expands (below) and on desktop. */
+  .rail__homelink {
+    display: none;
+  }
+  .rail__expand {
+    display: inline-flex;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-control);
+    background: var(--raised);
+    color: var(--text-1);
+    cursor: pointer;
+  }
+  .rail__nav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+  }
+  .rail__group {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Collapsed icon rail: hide labels, sub-nav, section headers and the project selector; centre
+   * each link on its icon. */
+  .rail__label,
+  .rail__sub,
+  .rail__section,
+  .rail .projselect {
+    display: none;
+  }
+  .rail__link {
+    justify-content: center;
+    padding: 10px;
+  }
+
+  /* Tap-to-expand (data-expanded): grow to 240px as an overlay; a scrim closes it. */
+  .rail[data-expanded] {
+    width: 240px;
+    box-shadow: 8px 0 24px rgba(3, 7, 18, 0.35);
+  }
+  .rail[data-expanded] .rail__label,
+  .rail[data-expanded] .rail__sub,
+  .rail[data-expanded] .rail__section {
+    display: flex;
+  }
+  .rail[data-expanded] .rail__label {
+    display: inline;
+  }
+  .rail[data-expanded] .projselect {
+    display: flex;
+  }
+  .rail[data-expanded] .rail__brand {
+    justify-content: space-between; /* room for the lockup again once expanded to 240px */
+  }
+  .rail[data-expanded] .rail__homelink {
+    display: inline-flex;
+  }
+  .rail[data-expanded] .rail__link {
+    justify-content: flex-start;
+    padding: 8px 10px;
+  }
+  .rail__scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 25;
+    background: rgba(3, 7, 18, 0.4);
+  }
+}
+
+/* ── Desktop: persistent labeled 240px rail, in flow (no overlay, no expand button) ──────────── */
+@media (min-width: 1024px) {
+  .shell {
+    display: flex;
+    flex-direction: row;
+  }
+  .rail {
+    position: sticky;
+    align-self: flex-start;
+    flex: none;
+    width: 240px;
+    padding: 16px 12px;
+    overflow-y: auto;
+    box-shadow: none;
+  }
+  .shell__body {
+    margin-left: 0;
+    flex: 1;
+  }
+  .rail__expand {
+    display: none;
+  }
+  /* Persistent 240px rail: bring the home lockup back and left-align it (overrides the
+   * collapsed-tablet rules above, which also match at >=1024). */
+  .rail__brand {
+    justify-content: space-between;
+  }
+  .rail__homelink {
+    display: inline-flex;
+  }
+  .rail__label {
+    display: inline;
+  }
+  .rail__sub {
+    display: flex;
+  }
+  .rail__section {
+    display: block;
+  }
+  .rail .projselect {
+    display: flex;
+  }
+  .rail__link {
+    justify-content: flex-start;
+    padding: 8px 10px;
+  }
+  .rail__scrim {
+    display: none;
+  }
+  .shell__main {
+    padding: 24px 28px;
+  }
 }
 
 .theme-toggle {
@@ -103,7 +588,7 @@ a:hover {
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card);
   padding: 16px 18px;
   margin-bottom: 14px;
 }
@@ -320,6 +805,26 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+/* "Edit" deep-link into the compose Agent form (ISI-3554) — pinned to the head's trailing edge. */
+.agent-detail__edit {
+  margin-left: auto;
+}
+
+/* Agents landing header: title/description block + trailing "+ New Agent" action (ISI-3554). */
+.agents-page__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.agents-page__head-text {
+  min-width: 0;
+}
+.agents-page__new {
+  flex: none;
+  white-space: nowrap;
 }
 
 /* Settings / OTLP form (8.12) */
@@ -816,6 +1321,42 @@ a:hover {
   margin-top: 12px;
 }
 
+/* Story B (ISI-3555): guided model selector + BYO endpoint. */
+.compose__model-back {
+  align-self: flex-start;
+  margin-top: -4px;
+  padding: 4px 10px;
+  min-height: 0;
+}
+.btn--ghost {
+  background: transparent;
+  border-color: var(--border);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.compose__byo {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.compose__byo > .btn {
+  align-self: flex-start;
+}
+.compose__byo-region {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--canvas);
+}
+.compose__byo-note {
+  font-size: 12px;
+  margin: 0;
+}
+
 /* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
 .tool-usage__note {
   font-size: 12px;
@@ -869,4 +1410,269 @@ a:hover {
 .tool-usage__mcp-title {
   font-size: 13px;
   margin: 8px 0 8px;
+}
+
+/* ── Welcome + sign-in screen (ISI-3523 / parent ISI-3520) ────────────────────
+ * The shell-free first impression for unauthenticated visitors. Rendered OUTSIDE
+ * <ConsoleShell> by the login route group's bare layout (Architect child 7021f975).
+ * Split layout: a branded welcome hero (left) + the sign-in card (right); it
+ * collapses to a single, form-first column below 860px. Every color rides the SAME
+ * token roles the shell uses — no new hues, azure accent invariant across themes. */
+.login {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  background: var(--canvas);
+  color: var(--text-1);
+}
+
+/* Brand panel — a subtle azure-into-canvas wash anchored on the theme accent so the
+ * gradient never drifts off-brand. Decorative only (aria-hidden in the markup). */
+.login__brand {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 48px;
+  overflow: hidden;
+  background:
+    radial-gradient(
+      120% 100% at 0% 0%,
+      color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+      transparent 55%
+    ),
+    var(--surface);
+  border-right: 1px solid var(--border);
+}
+.login__brand::after {
+  /* faint hairline grid — reads as "infrastructure" without competing for contrast. */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(120% 90% at 10% 10%, #000 0%, transparent 70%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.login__brand-inner {
+  position: relative;
+  max-width: 460px;
+}
+/* Brand lockup — the shared <Logo> mark + wordmark. Layout + accent live here (not inline
+ * styles) so theming/token overrides flow through the same --accent role as the rest of the shell. */
+.brand-lockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand-wordmark__accent {
+  color: var(--accent);
+}
+.login__eyebrow {
+  margin: 20px 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.login__hero {
+  margin: 0 0 16px;
+  font-size: clamp(28px, 3.2vw, 40px);
+  line-height: 1.12;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.login__lede {
+  margin: 0 0 24px;
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.login__points {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.login__points li {
+  position: relative;
+  padding-left: 22px;
+  font-size: 14px;
+  color: var(--text-1);
+}
+.login__points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.45em;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Form panel */
+.login__panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 48px 24px;
+}
+.login__card {
+  width: 100%;
+  max-width: 380px;
+  margin-bottom: 0;
+  padding: 28px 26px 24px;
+}
+.login__wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.login__brandname {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.login__title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700;
+}
+.login__subtitle {
+  margin: 0 0 20px;
+  font-size: 14px;
+}
+.login__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.login__field input {
+  min-height: 44px;
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font: inherit;
+}
+.login__field input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.login__field input:disabled {
+  opacity: 0.6;
+}
+.login__submit {
+  width: 100%;
+  margin-top: 4px;
+}
+.login__error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--status-blocked);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--status-blocked) 12%, transparent);
+  color: var(--text-1);
+  font-size: 13px;
+}
+.login__sso {
+  margin: 18px 0 0;
+  font-size: 12.5px;
+  text-align: center;
+}
+.login__legal {
+  font-size: 12px;
+}
+
+/* Below 860px: drop the brand panel, lead with the form (mobile-first sign-in). */
+@media (max-width: 860px) {
+  .login {
+    grid-template-columns: 1fr;
+  }
+  .login__brand {
+    display: none;
+  }
+  .login__panel {
+    padding: 32px 20px;
+    min-height: 100vh;
+  }
+}
+
+/* Account footer + sign-out control (ISI-3570) — the nav shell's session-exit affordance.
+   Self-contained (uses only the shared token contract) so it renders correctly whether or not the
+   full rail stylesheet (ISI-3549) is present. The rail foot is pinned to the bottom; the drawer foot
+   sits below the mobile nav list. */
+.rail__foot {
+  margin-top: auto;
+  padding: 12px;
+  border-top: 1px solid var(--border);
+}
+.drawer__foot {
+  padding: 12px 4px 4px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.usermenu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.usermenu__id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.usermenu__avatar {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.usermenu__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-1);
+  font-weight: 600;
+}
+.usermenu__signout {
+  width: 100%;
+}
+.usermenu__signout:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Collapsed icon-rail (tablet, 768–1024): hide the username label; avatar + sign-out stay reachable.
+   The expanded overlay (rail[data-expanded]) restores the full footer. */
+@media (min-width: 768px) and (max-width: 1024px) {
+  .rail:not([data-expanded]) .usermenu__name {
+    display: none;
+  }
 }

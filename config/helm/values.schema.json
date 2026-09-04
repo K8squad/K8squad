@@ -22,6 +22,55 @@
         "supportedClasses": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "exposure": {
+      "type": "object",
+      "description": "Gateway API exposure for the console + apiserver (ISI-3515). OFF by default; the chart references an existing GatewayClass and never creates one.",
+      "additionalProperties": false,
+      "properties": {
+        "gateway": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "description": "Render a Gateway + HTTPRoutes. Requires gatewayClassName; hostnames are optional (omit to expose by IP)." },
+            "gatewayClassName": { "type": "string", "description": "Existing GatewayClass to reference (e.g. kgateway). REQUIRED when enabled." },
+            "hostnames": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "console": { "type": "string" },
+                "apiserver": { "type": "string" }
+              }
+            },
+            "listeners": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "http": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+                  }
+                },
+                "https": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "certSecretName": { "type": "string" }
+                  }
+                }
+              }
+            },
+            "httpsRedirect": { "type": "boolean" },
+            "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
     "tools": {
       "type": "object",
       "description": "Toolchain capability plane (plan §2.2/§2.2b).",
@@ -92,6 +141,46 @@
               "description": "Explicit platform opt-in for cluster-scope toolchain RBAC (rbac.scope=cluster on a cluster-catalog Toolchain). Injected as KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED on the webhook and operator. Never default-on.",
               "default": false
             }
+          }
+        }
+      }
+    },
+    "observability": {
+      "type": "object",
+      "description": "GitOps-declared telemetry target (Story B, ISI-3619). Renders a cluster-scoped OTelConfig CR from opt-in observability.otel.*; absent/empty emits no CR.",
+      "additionalProperties": false,
+      "properties": {
+        "otel": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "OTel routing. Populate any of traces/metrics/logs with an endpoint to opt in.",
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 253, "description": "OTelConfig metadata.name (cluster-scoped). Defaults to 'default'." },
+            "traces": { "$ref": "#/$defs/otelSignal" },
+            "metrics": { "$ref": "#/$defs/otelSignal" },
+            "logs": { "$ref": "#/$defs/otelSignal" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "otelSignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One signal routing. Reference-only auth: authSecretRef names a Secret, never a token value.",
+      "properties": {
+        "endpoint": { "type": "string", "minLength": 1, "maxLength": 2048, "description": "grpc: host[:port] (optional http(s) scheme, no path); http: full http(s) URL." },
+        "protocol": { "type": "string", "enum": ["grpc", "http", "http/protobuf", "http/json"], "description": "Wire enum grpc|http; http canonicalizes to CRD http/protobuf (W1)." },
+        "authSecretRef": { "type": "string", "minLength": 1, "description": "Secret name, or 'namespace/name'. Referenced only — never a token value." },
+        "authSecretKey": { "type": "string", "minLength": 1, "description": "Secret key holding the auth value. Defaults to 'token' (W2)." },
+        "resourceAttributes": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Merged into the exported resource. Platform-owned keys (service.instance.id) are rejected by the webhook." },
+        "sampling": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Head sampling, traces only. Rejected by the webhook on metrics/logs.",
+          "properties": {
+            "ratio": { "type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "null/absent -> unset; 0 -> always_off; 1 -> always_on; (0,1) -> probabilistic{ratio} (W3)." }
           }
         }
       }

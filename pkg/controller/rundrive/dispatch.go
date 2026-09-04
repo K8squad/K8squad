@@ -35,6 +35,11 @@ import (
 	"github.com/K8squad/K8squad/internal/a2a"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
+	"github.com/K8squad/K8squad/pkg/contextasm"
+	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
+	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -91,6 +96,31 @@ type OperatorDispatchConfig struct {
 	// Source overrides the coord read-side (nil = sqlDispatchSource over
 	// DB) — the seam tests bind a fake against instead of a live Postgres.
 	Source dispatchSource
+	// ContextAssemblers builds the §8.5 context assembler used to re-read
+	// the Run's pinned context snapshot and inject it as
+	// wire.Envelope.SystemContext (story S1, ISI-3600, seam A —
+	// recompute-from-snapshot). Nil ships title+body only, the pre-S1
+	// behavior, so the field is opt-in and non-regressing.
+	ContextAssemblers ContextAssemblers
+	// TaskIOMinter, when set, mints the run-scoped task-io token (ISI-3601 S2)
+	// injected into the shim env as KSQUAD_COORD_TOKEN. Nil disables task-io
+	// env injection entirely — the agent simply gets no token (fail-safe: an
+	// absent token makes the coord API refuse the call, never fail-open).
+	TaskIOMinter *taskio.Minter
+	// TaskIOCoordURL is the in-cluster coord/apiserver base URL injected as
+	// KSQUAD_COORD_URL (§AC7: an in-cluster Service, not a public surface).
+	// Empty disables task-io injection — both the minter and the URL are
+	// needed together for the seam to be usable.
+	TaskIOCoordURL string
+}
+
+// ContextAssemblers builds a per-namespace §8.5 context assembler over the
+// production Sources (pkg/controller/contextsource.Deps implements it). The
+// dispatcher re-reads the Run's pinned snapshot through it (Existing set) so
+// the injected SystemContext is byte-identical to what the reconciler pinned
+// (deterministic resume, AC3).
+type ContextAssemblers interface {
+	For(namespace string) *contextasm.Assembler
 }
 
 // NewOperatorDispatcher resolves the config, verifies the shim binary is
@@ -214,6 +244,58 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.Input = title // a titled-but-bodiless item still carries its instruction
 	}
 
+	// §8.5 context injection (story S1, ISI-3600, seam A): whenever the
+	// context side-channel is wired, assemble the tier-framed system/context
+	// string. With a pinned snapshot (the normal case — the reconciler pins at
+	// Claiming) it re-reads the PINNED revisions/doc-ids + budget/window for a
+	// byte-identical resume; WITHOUT one (the status reconciler has not pinned
+	// yet — the two controllers race) it assembles fresh rather than silently
+	// shipping title+body only. This makes a configured assembler a hard
+	// prerequisite of a fully-contextualised dispatch, not a best-effort
+	// add-on. SystemContext is ADDITIVE — env.Input still carries the concrete
+	// work instruction (AC1). Fail-closed on assembly error (AC4). With the
+	// side-channel OFF, SystemContext stays empty: the bare title+body
+	// dispatch is unchanged (AC6).
+	if d.cfg.ContextAssemblers != nil {
+		sysCtx, err := d.assembleSystemContext(ctx, run)
+		if err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: assemble system context for run %s/%s: %w", run.Namespace, run.Name, err)
+		}
+		env.SystemContext = sysCtx
+	}
+
+	// Resolve the BYO model endpoint (§11, §10.3, ADR-026). An Agent with no
+	// modelEndpointRef resolves to an empty ModelRoute (the runtime's own
+	// provider default). When a modelEndpointRef IS set, resolution is
+	// fail-closed per the modelendpoint contract: a dangling Secret, a missing
+	// endpointURL, or a malformed URL aborts the dispatch rather than silently
+	// routing the Run to a paid provider default (weak local models must never
+	// fail silently mid-Run — the story 5.7 acceptance).
+	var modelRoute wire.ModelRoute
+	if len(run.Spec.Agents) > 0 {
+		ref := run.Spec.Agents[0]
+		ns := ref.Namespace
+		if ns == "" {
+			ns = run.Namespace
+		}
+		var agent api.Agent
+		if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
+		}
+		resolver := modelendpoint.Resolver{Reader: d.cfg.Client}
+		endpoint, err := resolver.Resolve(ctx, &agent)
+		if err != nil {
+			return wire.Task{}, fmt.Errorf("rundrive: resolve model endpoint for Agent %s/%s: %w", ns, agent.Name, err)
+		}
+		if endpoint.BaseURL != "" {
+			modelRoute = wire.ModelRoute{
+				Endpoint: endpoint.BaseURL,
+				Model:    endpoint.Model,
+				Token:    endpoint.Token,
+			}
+		}
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
@@ -225,9 +307,9 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// operator pod, so this is honestly false — the pod-side supervisor
 		// topology (follow-up ADR) is where it flips true.
 		CredentialsMounted: false,
-		// ModelRoute stays zero for fixed-vendor runtimes (spec §11); the
-		// BYO-endpoint resolution rides the same follow-up seam.
-		ModelRoute: wire.ModelRoute{},
+		// ModelRoute carries the resolved BYO endpoint (§11, §10.3). Empty
+		// means the runtime's own provider default (fixed-vendor).
+		ModelRoute: modelRoute,
 	}, nil
 }
 
@@ -236,8 +318,16 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 // before dispatch, so this is a cache hit in practice). A Run deleted
 // mid-dispatch is an error: dispatch must fail loudly, never drive a ghost.
 func (d *operatorDispatch) runByUID(ctx context.Context, runID string) (*api.Run, error) {
+	return runByUIDFrom(ctx, d.cfg.Client, runID)
+}
+
+// runByUIDFrom resolves the Run CR whose UID matches runID over the given client
+// (the Run drive loop keys on the Run's real uid, not name). Shared by the shim
+// dispatch path and the warm-pool Bind-path credential writer, which is handed
+// only the run-id string from the coord bind frame.
+func runByUIDFrom(ctx context.Context, c client.Client, runID string) (*api.Run, error) {
 	var runs api.RunList
-	if err := d.cfg.Client.List(ctx, &runs); err != nil {
+	if err := c.List(ctx, &runs); err != nil {
 		return nil, fmt.Errorf("list Runs: %w", err)
 	}
 	for i := range runs.Items {
@@ -315,6 +405,40 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 			env = append(env, envName+"="+v)
 		}
 	}
+	// Task-io seam (ISI-3601 S2, AC6): the run-scoped bootstrap vars mirror
+	// Paperclip's PAPERCLIP_API_URL / PAPERCLIP_API_KEY / PAPERCLIP_TASK_ID
+	// injection so an agent can re-read its task, comment, update status, and
+	// check out mid-run. The token is minted per task, bound to (RUN_ID,
+	// WORK_ITEM_ID) — own-run only. It joins THIS curated env, never os.Environ,
+	// so the minimal-env invariant holds (no DATABASE_URL / operator secret
+	// reaches the subprocess). Injection is skipped wholesale unless both a
+	// minter and a coord URL are configured, and the Run names a work item —
+	// fail-safe (an absent token makes the coord API refuse the call, never
+	// fail-open).
+	if d.cfg.TaskIOMinter != nil && d.cfg.TaskIOCoordURL != "" && run.Spec.WorkItemRef != "" {
+		// The ONE coord token also carries the ISI-3626 role-derived scope
+		// (org:write/project:write) the org-ops seam enforces; IC runs mint an
+		// empty scope so only the own-task task-io verbs work.
+		scopes := d.deriveRunScopes(ctx, run)
+		token, err := d.cfg.TaskIOMinter.MintWithScopes(runID, run.Spec.WorkItemRef, d.agentName(ctx, runID), scopes)
+		if err != nil {
+			return nil, fmt.Errorf("rundrive: mint task-io token for Run %s: %w", runID, err)
+		}
+		// Render the credential content through the shared taskio.RunCredential so
+		// the env carrier here and the warmpool/sandbox Secret carrier (topology 2,
+		// ADR-0007) stay byte-identical — same fields, same order. The trace carrier
+		// is left off here because the shim emits TRACEPARENT/TRACESTATE
+		// unconditionally above (out of band of task-io); the Secret carrier folds it
+		// into the same struct when it wires the Bind path.
+		cred := taskio.RunCredential{
+			CoordURL:   d.cfg.TaskIOCoordURL,
+			Token:      token,
+			WorkItemID: run.Spec.WorkItemRef,
+			RunID:      runID,
+		}
+		env = append(env, cred.EnvKV()...)
+	}
+
 	env = append(env, d.cfg.ExtraEnv...)
 
 	// #nosec G204 -- d.shimBin is the operator's own pod-spec env/config
@@ -324,6 +448,63 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	cmd := exec.CommandContext(ctx, d.shimBin, "run")
 	cmd.Env = env
 	return cmd, nil
+}
+
+// assembleSystemContext renders the tier-framed system/context string (seam
+// A, story S1). With a pinned snapshot it runs Assemble with Existing set, so
+// the same revisions/doc-ids/window/budget the reconciler pinned are re-read —
+// the render is byte-identical to the first drive (deterministic resume, AC3),
+// and a pinned revision that no longer resolves errors loudly (Sources
+// contract). Without a snapshot (the reconciler has not pinned yet) it
+// assembles fresh so the dispatch is still fully contextualised, never
+// title+body only.
+func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.Run) (string, error) {
+	if len(run.Spec.Agents) == 0 {
+		return "", fmt.Errorf("run %s/%s: context side-channel is configured but the Run has no dispatch agent to resolve the model window", run.Namespace, run.Name)
+	}
+	agentRef := run.Spec.Agents[0]
+	agentNS := agentRef.Namespace
+	if agentNS == "" {
+		agentNS = run.Namespace
+	}
+	var agent api.Agent
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: agentNS, Name: agentRef.Name}, &agent); err != nil {
+		return "", fmt.Errorf("read Agent %s/%s: %w", agentNS, agentRef.Name, err)
+	}
+
+	projNS := run.Spec.ProjectRef.Namespace
+	if projNS == "" {
+		projNS = run.Namespace
+	}
+	var project api.Project
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: projNS, Name: run.Spec.ProjectRef.Name}, &project); err != nil {
+		return "", fmt.Errorf("read Project %s/%s: %w", projNS, run.Spec.ProjectRef.Name, err)
+	}
+
+	// On resume the window comes from the pinned snapshot, not the live Agent:
+	// a spec.model / contextBudgetOverride change after the snapshot was
+	// stored must not silently re-budget the resumed envelope (the assembler
+	// pins the budget off Existing too). Fresh dispatch resolves from the
+	// live model.
+	window := contextsource.WindowForModel(agent.Spec.Model)
+	if snap := run.Status.ContextSnapshot; snap != nil && snap.ContextWindow != nil {
+		window = *snap.ContextWindow
+	}
+
+	// The Source resolves the Project CRD in projNS (which honors a
+	// cross-namespace projectRef), not the Run's own namespace.
+	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
+		Run:           run,
+		Agent:         &agent,
+		Project:       &project,
+		TeamID:        run.Spec.TeamRef.Name,
+		ContextWindow: window,
+		Existing:      run.Status.ContextSnapshot,
+	})
+	if err != nil {
+		return "", err
+	}
+	return res.Injection.SystemPrompt(), nil
 }
 
 // agentModel resolves the dispatch agent's spec.model (empty = runtime
@@ -342,6 +523,69 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 		return "" // model resolution is best-effort on this seam; the shim defaults
 	}
 	return agent.Spec.Model
+}
+
+// deriveRunScopes computes the ISI-3626 role-derived privilege scopes stamped
+// into the Run's coord token (ADR-0005 D2): org:write for CEO + manager roles,
+// project:write for the CEO role, neither for IC roles. It resolves the dispatch
+// Agent's Role, lists every Role in that namespace to decide manager/CEO
+// structurally, and applies orgops.DeriveScopes — so the grant follows the Role
+// graph and NEVER Agent.spec.skillRefs (closing the skill-union loophole). It is
+// fail-closed to least privilege: any read failure, or a Role that is not among
+// the listed namespace's Roles, yields no scope, so a lookup glitch can never
+// widen a token.
+func (d *operatorDispatch) deriveRunScopes(ctx context.Context, run *api.Run) []string {
+	return runScopesFor(ctx, d.cfg.Client, run)
+}
+
+// runScopesFor derives the ISI-3626 role scopes (org:write/project:write) for a
+// Run from its first Agent's Role, over the given client. It is the SINGLE scope
+// source both dispatch topologies mint against — the operator-spawned shim
+// (operatorDispatch.deriveRunScopes) and the warm-pool Bind-path credential
+// writer — so a warm-pool agent gets byte-identical scopes to a shim agent
+// (scope parity). Fail-closed: any resolution gap returns nil (IC/no-scope).
+func runScopesFor(ctx context.Context, c client.Client, run *api.Run) []string {
+	if len(run.Spec.Agents) == 0 {
+		return nil
+	}
+	ref := run.Spec.Agents[0]
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var agent api.Agent
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
+		return nil
+	}
+	roleName := agent.Spec.RoleRef.Name
+	if roleName == "" {
+		return nil
+	}
+	roleNS := agent.Spec.RoleRef.Namespace
+	if roleNS == "" {
+		roleNS = ns
+	}
+	var roles api.RoleList
+	if err := c.List(ctx, &roles, client.InNamespace(roleNS)); err != nil {
+		return nil
+	}
+	views := make([]orgops.RoleView, 0, len(roles.Items))
+	var target orgops.RoleView
+	found := false
+	for i := range roles.Items {
+		rv := orgops.RoleView{
+			Name:      roles.Items[i].Name,
+			ReportsTo: roles.Items[i].Labels[orgops.LabelReportsTo],
+		}
+		views = append(views, rv)
+		if roles.Items[i].Name == roleName {
+			target, found = rv, true
+		}
+	}
+	if !found {
+		return nil // cross-namespace roleRef we could not situate in the graph — fail closed.
+	}
+	return orgops.DeriveScopes(target, views)
 }
 
 // materializeMCPConfig copies the Run's projected MCP IR ConfigMap to a temp

@@ -1,0 +1,856 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    app.kubernetes.io/part-of: k8squad
+  annotations:
+    {{- if .Values.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: runs.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: Run
+    listKind: RunList
+    plural: runs
+    shortNames:
+    - run
+    singular: run
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Run is the Schema for the runs API — the unit of squad work (arch §5.1,
+          §8), reconciled by the Run state machine. It is namespaced by default.
+          Run.spec.workItemRef is an opaque coordination-DB pointer (ADR-001): the
+          Run references the work item, it never owns or embeds it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              RunSpec defines the desired state of Run (arch §5.1, §8, story 1.2 AC6).
+
+              The Run is the unit of squad work and the ONLY CRD that touches
+              coordination data — strictly through the opaque spec.workItemRef and
+              status.artifactRefs references (ADR-001/ADR-002).
+            properties:
+              agents:
+                description: |-
+                  Agents selects the Agent CRs to dispatch; empty lets the reconciler
+                  default from the Team's composition (story 1.3).
+                items:
+                  description: ObjectRef is a light cross-CRD reference to another
+                    ksquad.io object.
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced object. Empty means the referring object's
+                        own namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              inputs:
+                additionalProperties:
+                  type: string
+                description: |-
+                  Inputs are free-form run parameters folded into the §8.5 context
+                  envelope by the Context Assembler. Modeled as an opaque structured
+                  field in story 1.2 (open question OQ1); refined in story 1.3.
+                type: object
+              ownedBy:
+                description: |-
+                  OwnedBy is the owner principal ref (story 1.6, ISI-2522): the
+                  authoritative ownership signal for resource-scoped permission checks
+                  (Epic 15.3) — not a display field. Mutable: ownership may be
+                  transferred after creation (e.g. "kill own Runs" contributor checks
+                  resolve against it, Epic 15.3 role matrix). Defaults to the
+                  created-by principal at admission (internal/webhook
+                  AttributionWebhook) and is indexed for RBAC scope queries
+                  (internal/index).
+                maxLength: 253
+                minLength: 1
+                type: string
+              projectRef:
+                description: |-
+                  ProjectRef references the Project supplying the repo, workspace PVC
+                  and context budget for this Run.
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              retryPolicy:
+                description: |-
+                  RetryPolicy bounds automatic retries with backoff for sandbox/agent
+                  failures (§8, FR-A5).
+                properties:
+                  backoffSeconds:
+                    default: 60
+                    description: |-
+                      BackoffSeconds is the base delay for the exponential backoff with
+                      jitter applied between retries (§8).
+                      Default: 60 seconds
+                    format: int32
+                    type: integer
+                  maxRetries:
+                    default: 5
+                    description: |-
+                      MaxRetries bounds automatic retries; 0 means no automatic retry.
+                      Default: 5 (safety limit to prevent infinite loops)
+                    format: int32
+                    type: integer
+                type: object
+                x-kubernetes-validations:
+                - message: retryPolicy.maxRetries must be >= 0 and <= 20 (0 means
+                    no automatic retry, 20 is safety limit)
+                  rule: '!has(self.maxRetries) || (self.maxRetries >= 0 && self.maxRetries
+                    <= 20)'
+                - message: retryPolicy.backoffSeconds must be >= 1 and <= 3600; set
+                    a reasonable base delay for the exponential backoff
+                  rule: '!has(self.backoffSeconds) || (self.backoffSeconds >= 1 &&
+                    self.backoffSeconds <= 3600)'
+              sandboxPolicy:
+                description: |-
+                  SandboxPolicy is the RuntimeClass/isolation selection input to §9.1
+                  sandbox assembly (also opaque-structured per OQ1; semantics land with
+                  the Run reconciler, story 1.3).
+                properties:
+                  class:
+                    default: interactive
+                    description: |-
+                      Class routes the warm-pool regime (§9.2 hybrid): interactive Runs
+                      draw from the warm pool; batch/non-interactive Runs may cold-start.
+                      Unset defaults to interactive at admission (story 1.3 structural
+                      defaulting).
+                    enum:
+                    - interactive
+                    - batch
+                    type: string
+                  runtimeClass:
+                    default: gvisor
+                    description: |-
+                      RuntimeClass selects the isolation runtime (§9.1): gVisor is the
+                      default, Kata the high-assurance opt-in, runc only for
+                      explicitly-trusted dev. Unset defaults to gvisor at admission
+                      (story 1.3 structural defaulting).
+                    enum:
+                    - gvisor
+                    - kata
+                    - runc
+                    type: string
+                type: object
+              teamRef:
+                description: |-
+                  TeamRef references the Team under whose tenancy this Run executes
+                  (namespace, RBAC, NetworkPolicy, quota — §12.1).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+              toolCredentials:
+                description: |-
+                  ToolCredentials are the auxiliary, non-model credentials projected from
+                  the dispatched Agent(s) (Agent.spec.toolCredentials, ISI-3565) onto the
+                  Run so the resolved Run self-describes which aux tokens its agent
+                  container carries — name-only by reference, ADR-045 D5, the same
+                  discipline the MCP credential projection uses. pkg/capability.AssemblePod
+                  reads these and injects GH_TOKEN/GITHUB_TOKEN into the agent container
+                  by reference via pkg/toolcred.
+                items:
+                  description: |-
+                    ToolCredential declares one auxiliary, non-model credential to inject into
+                    a Run's agent container for a local CLI tool (ISI-3565). Purpose is a
+                    closed enum the injection seam (pkg/toolcred) maps to a fixed set of
+                    runtime env var names — users pick the tool, never the env name — and
+                    SecretRef names the BYO Secret carrying the token by reference.
+                  properties:
+                    purpose:
+                      description: |-
+                        Purpose selects WHICH local tool the credential is for, and therefore
+                        which env var name(s) the token is injected under. It is a closed enum
+                        the seam owns (pkg/toolcred.KnownPurposes); an unknown purpose fails
+                        closed at admission (webhook) and at injection (AssemblePod). Empty is
+                        invalid — there is no safe default tool to guess.
+                      enum:
+                      - github-token
+                      type: string
+                    secretRef:
+                      description: |-
+                        SecretRef is the BYO Secret carrying the token. Injected by reference
+                        (SecretKeySelector) — the control plane never reads the bytes. Key
+                        defaults to "token" when empty.
+                      properties:
+                        key:
+                          description: Key inside the Secret; empty means the consumer-defined
+                            default key.
+                          type: string
+                        name:
+                          description: Name of the referenced Secret.
+                          minLength: 1
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - purpose
+                  - secretRef
+                  type: object
+                type: array
+              workItemRef:
+                description: |-
+                  WorkItemRef is an opaque id into the apiserver/coordination Postgres
+                  (§4/§6); the Run references the work item, it does not own or embed it
+                  (ADR-001). Work items, comments, claims, artifacts and memory records
+                  are Postgres rows, NOT CRDs — embedding the work item here, or making
+                  this an owned etcd object, would reintroduce the dual-write
+                  split-brain ADR-001 exists to prevent (story 1.2 AC6/AC7).
+                minLength: 1
+                type: string
+            required:
+            - projectRef
+            - teamRef
+            - workItemRef
+            type: object
+          status:
+            description: |-
+              RunStatus defines the observed state of Run (arch §5.1 status subresource,
+              §8; story 1.2 AC6). Written only by the Run reconciler via the status
+              subresource.
+            properties:
+              artifactRefs:
+                description: |-
+                  ArtifactRefs are refs to artifact rows in the coordination Postgres
+                  (§6.1) — the artifacts themselves are NOT embedded in the CRD
+                  (story 1.2 AC7). Name carries the opaque artifact id.
+                items:
+                  description: ObjectRef is a light cross-CRD reference to another
+                    ksquad.io object.
+                  properties:
+                    name:
+                      description: Name of the referenced object.
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace of the referenced object. Empty means the referring object's
+                        own namespace.
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+              capabilityManifest:
+                description: |-
+                  CapabilityManifest is the resolved capability envelope this Run was
+                  dispatched with (plan §2.3, ADR-044 step 5): resolved toolchain
+                  images, resolved MCP endpoints with their EFFECTIVE tool filters,
+                  and the capabilityHash that keys warm-pool inventory. Computed
+                  pre-dispatch and IMMUTABLE for the life of the Run — mid-flight
+                  changes to Skills/Toolchains/MCPServers never widen a running
+                  sandbox; they apply to the next Run. Unlike GrantedToolchainRBAC it
+                  is NOT cleared at terminal: it is the reproducibility record of
+                  what the sandbox actually ran with (ADR-017 discipline).
+                properties:
+                  capabilityHash:
+                    description: |-
+                      CapabilityHash is sha256 of the manifest's canonical JSON. It keys
+                      warm-pool inventory (ADR-044 step 7: identical capability envelopes
+                      share pool stock) and gives consoles/audits a cheap equality handle.
+                    minLength: 1
+                    type: string
+                  mcpEndpoints:
+                    description: |-
+                      MCPEndpoints is the resolved MCP server set with each server's
+                      EFFECTIVE tool filter (server envelope − deny globs, computed
+                      fail-closed at assembly — ADR-042/044).
+                    items:
+                      description: |-
+                        ResolvedMCPEndpoint is one MCP server a Run resolved, recorded without
+                        credential material: the transport and endpoint/command, the effective
+                        allow/deny tool globs, the sidecar flag, and the Secret/EgressPolicy
+                        NAMES involved (provenance, never contents — ADR-045).
+                      properties:
+                        allowTools:
+                          description: |-
+                            AllowTools is the EFFECTIVE allow set after the server envelope was
+                            intersected with observed tools and deny globs subtracted
+                            (fail-closed on empty — ADR-044 step 4).
+                          items:
+                            type: string
+                          maxItems: 256
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        args:
+                          description: Args are the stdio command arguments.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        command:
+                          description: Command is the stdio server executable (empty
+                            for streamable-http).
+                          type: string
+                        credentialSecretRef:
+                          description: |-
+                            CredentialSecretRef names the BYO Secret backing this server's
+                            credential (name only — never material; ADR-045 D5).
+                          properties:
+                            key:
+                              description: Key inside the Secret; empty means the
+                                consumer-defined default key.
+                              type: string
+                            name:
+                              description: Name of the referenced Secret.
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        denyTools:
+                          description: |-
+                            DenyTools is the deny-glob set recorded verbatim from the server
+                            envelope (already subtracted from AllowTools).
+                          items:
+                            type: string
+                          maxItems: 256
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        egressPolicyRef:
+                          description: |-
+                            EgressPolicyRef names the EgressPolicy covering a streamable-http
+                            endpoint's egress (R1: MCP rides the existing egress story).
+                          properties:
+                            name:
+                              description: Name of the referenced object.
+                              minLength: 1
+                              type: string
+                            namespace:
+                              description: |-
+                                Namespace of the referenced object. Empty means the referring object's
+                                own namespace.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        headers:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            Headers are the static non-secret HTTP headers sent to a
+                            streamable-http endpoint (secret-bearing header names are rejected
+                            at MCPServer admission — nothing sensitive is recorded here).
+                          type: object
+                        image:
+                          description: |-
+                            Image is the stdio server's packaged image; when set, Run assembly
+                            stages it as a native sidecar container (ADR-044 step 6). Empty for
+                            streamable-http, or stdio servers whose command must exist inside
+                            the runtime image.
+                          type: string
+                        name:
+                          description: Name is the MCPServer object's name.
+                          minLength: 1
+                          type: string
+                        sidecar:
+                          description: |-
+                            Sidecar records whether assembly staged a dedicated sidecar
+                            container for this endpoint (stdio with image).
+                          type: boolean
+                        transport:
+                          description: Transport is the server's transport (stdio
+                            | streamable-http).
+                          enum:
+                          - stdio
+                          - streamable-http
+                          type: string
+                        url:
+                          description: URL is the streamable-http endpoint (empty
+                            for stdio).
+                          type: string
+                      required:
+                      - name
+                      - transport
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  toolchains:
+                    description: |-
+                      Toolchains is the resolved, pinned toolchain set staged as init
+                      containers (sorted by name for stable bytes).
+                    items:
+                      description: |-
+                        ResolvedToolchainRef pins one toolchain a Run resolved (plan §2.2
+                        reproducibility): the name@version the skills demanded, the image Run
+                        assembly stages, and the catalog namespace the winning entry came from.
+                      properties:
+                        image:
+                          description: Image is the resolved OCI reference (digest
+                            pins recommended).
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the catalog name ("kubectl").
+                          minLength: 1
+                          type: string
+                        sourceNamespace:
+                          description: |-
+                            SourceNamespace is the namespace of the winning catalog entry (the
+                            override when one applied, else the cluster catalog).
+                          minLength: 1
+                          type: string
+                        version:
+                          description: Version is the pinned version ("1.31").
+                          minLength: 1
+                          type: string
+                      required:
+                      - image
+                      - name
+                      - sourceNamespace
+                      - version
+                      type: object
+                    maxItems: 64
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              claimedAt:
+                description: |-
+                  ClaimedAt records when the Run's fenced claim was acquired (§6.2/§6.3,
+                  §8).
+                format: date-time
+                type: string
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of a Run's
+                  state (§5.2 — e.g. Paused(auth_failure), Paused(rate_limited)).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              contextSnapshot:
+                description: |-
+                  ContextSnapshot pins the resolved §8.5 context envelope inputs
+                  (work-item rev, goal rev, memory doc-ids, resolved budget, model
+                  window) for audit + re-entrant reuse (stories 3.6/5.9). Written by
+                  the Run reconciler at the Claiming → Running transition; a resumed
+                  Run re-assembles from it instead of re-querying latest.
+                properties:
+                  artifactRefs:
+                    description: |-
+                      ArtifactRefs are the linked artifacts injected in the
+                      untrusted-external tier (uri + digest, §5.4 mirror).
+                    items:
+                      description: ObjectRef is a light cross-CRD reference to another
+                        ksquad.io object.
+                      properties:
+                        name:
+                          description: Name of the referenced object.
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace of the referenced object. Empty means the referring object's
+                            own namespace.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  assembledAt:
+                    description: |-
+                      AssembledAt records when the envelope was assembled (the Claiming →
+                      Running transition that consumed this snapshot).
+                    format: date-time
+                    type: string
+                  budget:
+                    description: |-
+                      Budget is the per-tier allocation actually applied after the
+                      Project → Agent → clamp-by-window resolution (§8.5).
+                    properties:
+                      artifacts:
+                        description: Artifacts tier allocation (build outputs, PR
+                          refs from the §5.4 mirror).
+                        format: int64
+                        type: integer
+                      memoryRecall:
+                        description: |-
+                          MemoryRecall tier allocation (scoped §7 semantic recall, untrusted
+                          provenance tier).
+                        format: int64
+                        type: integer
+                      projectDocs:
+                        description: ProjectDocs tier allocation (architecture docs,
+                          conventions).
+                        format: int64
+                        type: integer
+                      workItem:
+                        description: |-
+                          WorkItem tier allocation. Must-include content (work item + acceptance
+                          criteria + goals) is never truncated (§8.5).
+                        format: int64
+                        type: integer
+                    type: object
+                    x-kubernetes-validations:
+                    - message: context budget tiers must be >= 0 when set; remove
+                        or raise the negative tier
+                      rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
+                        || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
+                        >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+                  contextWindow:
+                    description: |-
+                      ContextWindow is the resolved model contextWindow (tokens, §10.1 —
+                      model-keyed, not runtime-keyed) the envelope was budgeted against.
+                    format: int64
+                    type: integer
+                  goalRevision:
+                    description: |-
+                      GoalRevision is the Project CRD revision the goals were read from
+                      (metadata.generation of the Project at assembly time).
+                    minLength: 1
+                    type: string
+                  memoryDocIds:
+                    description: |-
+                      MemoryDocIDs are the exact memory-recall record ids injected in the
+                      untrusted-recall tier, in relevance order.
+                    items:
+                      type: string
+                    type: array
+                  workItemRevision:
+                    description: |-
+                      WorkItemRevision is the work item's revision at assembly time (the
+                      coordination-DB revision token, opaque here per ADR-001).
+                    minLength: 1
+                    type: string
+                required:
+                - goalRevision
+                - workItemRevision
+                type: object
+              grantedToolchainRBAC:
+                description: |-
+                  GrantedToolchainRBAC records the toolchain RBAC the operator
+                  rendered for this Run (plan §2.2b): which catalog entries
+                  contributed, and the exact unioned rule set bound to the pod's
+                  ServiceAccount — the full audit of "which Run got which permissions
+                  through which toolchain". Cleared when the Run goes terminal and
+                  the per-Run Role is garbage-collected.
+                properties:
+                  clusterRoleRef:
+                    description: |-
+                      ClusterRoleRef names the per-Run ClusterRole rendered for
+                      cluster-scope rules (platform opt-in only). Absent in the default
+                      posture — the curated catalog is namespace-scoped.
+                    properties:
+                      name:
+                        description: Name of the referenced object.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the referenced object. Empty means the referring object's
+                          own namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  roleRef:
+                    description: |-
+                      RoleRef names the per-Run Role (ksquad-run-<run-name>) in the Run's
+                      namespace. Absent when no resolved toolchain declared RBAC.
+                    properties:
+                      name:
+                        description: Name of the referenced object.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: |-
+                          Namespace of the referenced object. Empty means the referring object's
+                          own namespace.
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  rules:
+                    description: |-
+                      Rules is the exact unioned grant — what `kubectl auth can-i
+                      --as=system:serviceaccount:<ns>:ksquad-agent` shows for this Run's
+                      toolchain surface (plus the Team baseline, which stays empty).
+                    items:
+                      description: |-
+                        PolicyRule holds information that describes a policy rule, but does not contain information
+                        about who the rule applies to or which namespace the rule applies to.
+                      properties:
+                        apiGroups:
+                          description: |-
+                            apiGroups is the name of the APIGroup that contains the resources.  If multiple API groups are specified, any action requested against one of
+                            the enumerated resources in any API group will be allowed. "" represents the core API group and "*" represents all API groups.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        nonResourceURLs:
+                          description: |-
+                            nonResourceURLs is a set of partial urls that a user should have access to.  *s are allowed, but only as the full, final step in the path
+                            Since non-resource URLs are not namespaced, this field is only applicable for ClusterRoles referenced from a ClusterRoleBinding.
+                            Rules can either apply to API resources (such as "pods" or "secrets") or non-resource URL paths (such as "/api"),  but not both.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        resourceNames:
+                          description: resourceNames is an optional white list of
+                            names that the rule applies to.  An empty set means that
+                            everything is allowed.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        resources:
+                          description: resources is a list of resources this rule
+                            applies to. '*' represents all resources.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        verbs:
+                          description: verbs is a list of Verbs that apply to ALL
+                            the ResourceKinds contained in this rule. '*' represents
+                            all verbs.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                      required:
+                      - verbs
+                      type: object
+                    maxItems: 256
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  toolchains:
+                    description: |-
+                      Toolchains is the resolved provenance set: which catalog entry
+                      (name@version → image) contributed to the grant, for reproducibility
+                      and the Epic C capability manifest.
+                    items:
+                      description: |-
+                        ResolvedToolchainRef pins one toolchain a Run resolved (plan §2.2
+                        reproducibility): the name@version the skills demanded, the image Run
+                        assembly stages, and the catalog namespace the winning entry came from.
+                      properties:
+                        image:
+                          description: Image is the resolved OCI reference (digest
+                            pins recommended).
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is the catalog name ("kubectl").
+                          minLength: 1
+                          type: string
+                        sourceNamespace:
+                          description: |-
+                            SourceNamespace is the namespace of the winning catalog entry (the
+                            override when one applied, else the cluster catalog).
+                          minLength: 1
+                          type: string
+                        version:
+                          description: Version is the pinned version ("1.31").
+                          minLength: 1
+                          type: string
+                      required:
+                      - image
+                      - name
+                      - sourceNamespace
+                      - version
+                      type: object
+                    maxItems: 32
+                    type: array
+                    x-kubernetes-list-type: atomic
+                type: object
+              modelSegments:
+                description: |-
+                  ModelSegments is the 5.11 mid-Run provenance ledger: which model
+                  served which portion of the Run, in order. The reconciler opens a
+                  segment at dispatch and at every fallback switch, and closes it when
+                  the portion ends (rate_limited switch or Run terminal). The endpoint
+                  rides as the Secret NAME (never the URL with credentials echoed);
+                  consumption attribution (7.6) and the 8.8 fallback indicators read
+                  this. Bounded (MaxItems) so a pathological switch loop cannot bloat
+                  the status subresource.
+                items:
+                  description: |-
+                    ModelSegment is one portion of a Run served by one model (5.11
+                    provenance). A segment is OPEN while its model serves (EndedAt nil) and
+                    CLOSED when the portion ends — Reason names why (rate_limited on a
+                    switch, terminal on completion).
+                  properties:
+                    endedAt:
+                      description: EndedAt is when the portion ended; nil while serving.
+                      format: date-time
+                      type: string
+                    model:
+                      description: Model is the model name that served this portion.
+                      minLength: 1
+                      type: string
+                    reason:
+                      description: |-
+                        Reason names why the portion ended (e.g. rate_limited on a fallback
+                        switch); empty on the still-open segment or a clean terminal handoff
+                        stamped by the reconciler.
+                      type: string
+                    secretName:
+                      description: |-
+                        SecretName names the per-user endpoint Secret this model was served
+                        from ("" = the runtime's provider default). Provenance only — never
+                        Secret contents.
+                      type: string
+                    startedAt:
+                      description: StartedAt is when the portion began.
+                      format: date-time
+                      type: string
+                  required:
+                  - model
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-type: atomic
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the generation most recently observed by the
+                  Run reconciler (§5.2).
+                format: int64
+                type: integer
+              phase:
+                description: |-
+                  Phase is the §8 state machine value. Enum-validated so an unknown
+                  phase fails admission (fail-closed).
+                enum:
+                - Pending
+                - Claiming
+                - Running
+                - Paused
+                - Canceling
+                - Succeeded
+                - Failed
+                - Cancelled
+                type: string
+              sandboxRef:
+                description: SandboxRef references the sandbox pod serving the Run
+                  (§9 warm pool).
+                properties:
+                  name:
+                    description: Name of the referenced object.
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace of the referenced object. Empty means the referring object's
+                      own namespace.
+                    type: string
+                required:
+                - name
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

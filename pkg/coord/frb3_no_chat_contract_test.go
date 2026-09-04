@@ -231,6 +231,7 @@ var allowedSurface = map[string]string{
 	"ProdEffects.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
 	"SandboxBinder":           "§9 physical warm-pool bind port (custody/execution, run-id only)",
 	"TaskDispatcher":          "§10.1 physical A2A shim submit port (run-execution dispatch, no content)",
+	"RunCredentialWriter":     "ADR-0007 topology-2 Bind-path task-io credential delivery port (custody/execution, run-id + sandbox_ref only, no content)",
 
 	// §8.7c build-snapshot capture at Collecting (Story 8.7c / ISI-2903). At Collecting
 	// ProdEffects additionally upserts a content-addressed kind='build-snapshot' artifact
@@ -238,10 +239,11 @@ var allowedSurface = map[string]string{
 	// snapshotter reads the Run's OWN worktree git-natively (read-only) and returns a
 	// content hash + summary meta — no worker-authored content, nothing re-enters
 	// coordination (no-P2P). A capture failure is a legible audit row, never a channel.
-	"BuildSnapshot":               "§8.7c content-addressed build-snapshot (uri/sha256 + summary meta)",
-	"BuildSnapshotter":            "§8.7c read-only worktree capture seam (custody/execution, no content)",
-	"NewBuildbrowserSnapshotter":  "§8.7c constructor binding the git read-model to one Run's worktree",
-	"ProdEffects.WithSnapshotter": "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
+	"BuildSnapshot":                       "§8.7c content-addressed build-snapshot (uri/sha256 + summary meta)",
+	"BuildSnapshotter":                    "§8.7c read-only worktree capture seam (custody/execution, no content)",
+	"NewBuildbrowserSnapshotter":          "§8.7c constructor binding the git read-model to one Run's worktree",
+	"ProdEffects.WithSnapshotter":         "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
+	"ProdEffects.WithRunCredentialWriter": "ADR-0007 opt-in the Bind-path task-io Secret delivery (custody-only)",
 
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause
@@ -301,6 +303,21 @@ var allowedSurface = map[string]string{
 	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
 	"NewHumanStateStore":              "§8.6 constructor",
 	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",
+	// §8.6/§6.5 AGENT-initiated lane move (ISI-3601 S2 update-status): the SAME
+	// custody-only lane CAS + audit as the human op, differing only in audit
+	// initiator="agent"; own-run only (token-scoped, teamID ""). Not a channel —
+	// a card's own lane change carries no worker-authored content (§6.1/§8.4).
+	"HumanStateStore.AgentTransitionState": "§8.6/§6.5 agent-initiated lane CAS + audit (initiator=agent), own-run",
+
+	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
+	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own
+	// content + claim/fence state; AppendComment is the SANCTIONED handoff half
+	// (a provenanced coord.comment, author server-supplied) — the same §6.1
+	// surface RecordComment already pins. Neither is an agent-to-agent channel.
+	"ReadTaskDetail": "§6.1 shared richer read of one work item + its claim/fence state (S1 push / S2 pull)",
+	"AppendComment":  "§6.1 append a provenanced coord.comment (sanctioned handoff half, server-authored author)",
+	"TaskDetail":     "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
+	"TaskComment":    "§6.1 one append-only provenanced note on a work item (read projection)",
 
 	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
 	// (Stories 7.4+7.6 / ISI-2898, gap ISI-2876). Reuses the 2.11/3.7 resume

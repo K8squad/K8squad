@@ -8,7 +8,9 @@ name: Build Images
 # consumer of the reusable component-matrix (Story 14.7 / ISI-2742), so "what components does
 # KSquad ship" lives in exactly ONE place (component-matrix.yml) and can never drift lane to
 # lane. We union its `go` (deployable Go binaries) and `node` (Node/TS surfaces) families into
-# the image build set — shims (14.x) and helm are not container-image lanes here.
+# the image build set. Helm is not a container-image lane here; the per-runtime A2A shim
+# images ARE (build-shim lane below, ISI-3653) — driven by the component-matrix `shims`
+# family from that same single source of truth.
 #
 # Toolchain lane (ISI-3413): a second matrix from the component-matrix `toolchains`
 # family builds/pushes ghcr.io/<owner>/toolchains/<tool>:<catalog-version> — the images
@@ -56,6 +58,7 @@ jobs:
     outputs:
       images: ${{ steps.union.outputs.images }}
       toolchains: ${{ steps.toolchains.outputs.tools }}
+      shims: ${{ steps.shims.outputs.shims }}
     steps:
       # Needed to read images/toolchains/matrix.json and diff the push range for the
       # toolchain change gate. Shallow-skip: the diff needs the before/after commits.
@@ -161,6 +164,57 @@ jobs:
           PY
           echo "::notice::toolchain image matrix planned from component-matrix + images/toolchains/matrix.json"
 
+      # ISI-3653 shim image lane planning. The A2A shim sidecar was previously NOT a
+      # container-image lane here (see the header) — it is now. One row per runtime from the
+      # component-matrix `shims` family; every row builds the SAME Dockerfile.shim with a
+      # RUNTIME build-arg selecting the CLI layer, and publishes ghcr.io/k8squad/ksquad-shim-
+      # <runtime>. Real CLI layers today: codex (static-musl codex@rust-v0.152.0 + the
+      # ksquad-codex-exec wrapper, ISI-3653), opencode (sst/opencode@v1.18.27) and claude
+      # (Claude Code@2.1.236, sha256-verified) per ISI-3667; openclaw/hermes intentionally
+      # ship the shim main only (no upstream CLI artifact — see Dockerfile.shim). Change-gated
+      # on plain main pushes (mirrors the
+      # toolchain lane) so 5 multi-arch legs don't starve the 2-runner fleet on unrelated pushes.
+      - name: Plan the shim image matrix (ISI-3653)
+        id: shims
+        env:
+          SHIMS: ${{ needs.components.outputs.shims }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
+              'Dockerfile.shim' \
+              'cmd/shim/**' \
+              'cmd/ksquad-codex-exec/**' \
+              'pkg/shim/**' \
+              '.github/workflows/build-images.yml' \
+              '.github/workflows/component-matrix.yml')
+            if [ -z "$CHANGED" ]; then
+              echo 'shims=[]' >> "$GITHUB_OUTPUT"
+              echo "::notice::no shim-relevant changes in this push — shim image lane skipped."
+              exit 0
+            fi
+            echo "::notice::shim-relevant changes detected:"; echo "$CHANGED"
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          shims = json.loads(os.environ["SHIMS"])
+          rows = []
+          for s in shims:
+              rt = s["runtime"]
+              rows.append({
+                  "runtime": rt,
+                  # OCI refs must be lowercase — hardcode the lowercased owner path (the raw
+                  # owner is 'K8squad'; same reasoning as the imgref steps below).
+                  "image": f"ghcr.io/k8squad/ksquad-shim-{rt}",
+                  "buildargs": f"RUNTIME={rt}",
+              })
+          rows.sort(key=lambda r: r["runtime"])
+          print("shims=" + json.dumps(rows, separators=(",", ":")))
+          PY
+          echo "::notice::shim image matrix planned from component-matrix shims family"
+
   build:
     name: image / ${{ matrix.component }}
     needs: plan
@@ -248,7 +302,7 @@ jobs:
 
       - name: Generate SBOM (Syft)
         if: steps.guard.outputs.present == 'true' && github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           format: spdx-json
@@ -281,7 +335,7 @@ jobs:
         # §6.1/§6.6: Trivy is the primary gate on every image; Grype is an independent
         # second-scanner cross-check on release images so a single scanner's DB gap doesn't
         # silently ship a known-vulnerable release. Same fixable-only posture as Trivy.
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           severity-cutoff: high
@@ -373,7 +427,7 @@ jobs:
 
       - name: Generate SBOM (Syft)
         if: github.event_name != 'pull_request'
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           format: spdx-json
@@ -403,7 +457,7 @@ jobs:
         if: github.event_name != 'pull_request'
         # Toolchain images have no git release tags, so the second-scanner cross-check
         # runs on every publish (the platform lane gates it on refs/tags/v).
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ steps.imgref.outputs.ref }}
           severity-cutoff: high
@@ -428,6 +482,126 @@ jobs:
         if: github.event_name != 'pull_request'
         # Keyless (OIDC) SLSA build-provenance attestation on the published digest,
         # pushed to the registry. Every publish attests — see the lane header.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.imgref.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # ISI-3653 shim image lane. Builds and publishes the per-runtime A2A shim sidecars
+  # (ghcr.io/k8squad/ksquad-shim-<runtime>) from the single Dockerfile.shim, selecting the
+  # CLI layer with a RUNTIME build-arg. The matrix comes from the plan leg (component-matrix
+  # shims family, change-gated); it is empty on plain main pushes with no shim-relevant diff.
+  # Supply-chain posture mirrors the toolchain lane: sign/attest/provenance on EVERY publish
+  # (not just v* tags) because the sha tag / digest IS the shim release artifact here.
+  # AC1/AC2 (ISI-3653): the codex leg yields a digest-pinned ksquad-shim-codex with
+  # codex@rust-v0.152.0 + ksquad-codex-exec on $PATH, referenced downstream by digest.
+  build-shim:
+    name: shim-image / ${{ matrix.runtime }}
+    needs: plan
+    if: ${{ needs.plan.outputs.shims != '[]' && needs.plan.outputs.shims != '' }}
+    runs-on: [self-hosted, linux, x64]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.shims) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push shim image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.shim
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ matrix.image }}:sha-${{ github.sha }}
+          build-args: ${{ matrix.buildargs }}
+          cache-from: type=gha,scope=shim-${{ matrix.runtime }}
+          cache-to: type=gha,mode=max,scope=shim-${{ matrix.runtime }}
+
+      - name: Resolve pushed image ref (by digest)
+        if: github.event_name != 'pull_request'
+        id: imgref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          # Pin every downstream step (SBOM/scan/sign) to the immutable pushed digest —
+          # same reason as the platform/toolchain lanes' imgref steps. AC2 (ISI-3653):
+          # consumers reference the shim by this digest, never a floating tag.
+          echo "name=${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+          echo "ref=${{ matrix.image }}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM (Syft)
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          image: ${{ steps.imgref.outputs.ref }}
+          format: spdx-json
+          output-file: sbom-shim-${{ matrix.runtime }}.spdx.json
+
+      - name: Upload SBOM artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-shim-${{ matrix.runtime }}
+          path: sbom-shim-${{ matrix.runtime }}.spdx.json
+          if-no-files-found: ignore
+
+      - name: CVE scan (Trivy) — gate on CRITICAL/HIGH fixable
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 — SHA-pinned setup-trivy; v0.28.0's tag ref is broken
+        with:
+          image-ref: ${{ steps.imgref.outputs.ref }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          # Same single escape hatch as the other lanes: the curated, expiry-dated
+          # .trivyignore validated by security.yml's trivyignore expiry lint.
+          trivyignores: .trivyignore
+
+      - name: Grype cross-check
+        if: github.event_name != 'pull_request'
+        # Shim images have no git release tags of their own, so the second-scanner
+        # cross-check runs on every publish (mirrors the toolchain lane).
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: ${{ steps.imgref.outputs.ref }}
+          severity-cutoff: high
+          only-fixed: true
+          fail-build: true
+          output-format: table
+
+      - name: cosign install
+        if: github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign + attest SBOM
+        if: github.event_name != 'pull_request'
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+        run: |
+          IMG=${{ steps.imgref.outputs.ref }}
+          cosign sign --yes "$IMG"
+          cosign attest --yes --predicate sbom-shim-${{ matrix.runtime }}.spdx.json --type spdxjson "$IMG"
+
+      - name: Attest build provenance (SLSA)
+        if: github.event_name != 'pull_request'
+        # Keyless (OIDC) SLSA build-provenance attestation on the published digest.
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.imgref.outputs.name }}

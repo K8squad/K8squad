@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # GitHub CLI toolchain image (ISI-3413). Static upstream release binary, staged on alpine.
 FROM alpine:3.21 AS fetch
-ARG GH_VERSION=v2.62.0
+ARG GH_VERSION=v2.98.0
 ARG TARGETARCH
 RUN apk add --no-cache curl tar \
  && curl -fsSL "https://github.com/cli/cli/releases/download/${GH_VERSION}/gh_${GH_VERSION#v}_linux_${TARGETARCH}.tar.gz" \
