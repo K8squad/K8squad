@@ -60,6 +60,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
+	otelegress "github.com/K8squad/K8squad/pkg/controller/otelegress"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
@@ -384,6 +385,17 @@ func main() {
 	// restart (story D2).
 	if err := (&otelgate.Reconciler{}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up otelgate reconciler")
+		os.Exit(1)
+	}
+
+	// Story 13.8 (ISI-3724, ADR-0008 M1(b)): the otelegress reconciler renders
+	// the applied OTelConfig's per-signal routing into the collector's
+	// operator-owned `<collector>-egress` overlay ConfigMap (second `--config`
+	// source) and rolls the collector — so the CRD, not Helm values, is the
+	// source of truth for vendor egress, with redaction (13.7) always upstream.
+	// The collector lives in the operator's own namespace (POD_NAMESPACE).
+	if err := (&otelegress.Reconciler{Namespace: os.Getenv("POD_NAMESPACE")}).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up otelegress reconciler")
 		os.Exit(1)
 	}
 
