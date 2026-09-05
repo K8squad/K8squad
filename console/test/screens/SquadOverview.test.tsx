@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi, beforeEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { SquadOverview, classifyOverviewStatus, phaseTone } from "@/components/SquadOverview";
 
 afterEach(() => {
@@ -68,8 +68,16 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
 
   it("renders the empty-Projects card when the Team has none (wire sends null)", async () => {
     stubFetch(200, { team: overviewPayload.team, projects: null });
+    const originalLocation = window.location;
+    const fakeLocation = { href: "" };
+    Object.defineProperty(window, "location", { value: fakeLocation, configurable: true });
     render(<SquadOverview />);
     await waitFor(() => expect(screen.getByTestId("overview-empty")).toBeTruthy());
+    // ISI-3686: never a dead-end — the empty card carries a one-click fix into the E0
+    // shared create form (Compose deep-link contract, parseComposeParams).
+    fireEvent.click(screen.getByRole("button", { name: "Create a project" }));
+    expect(fakeLocation.href).toBe("/compose?kind=project");
+    Object.defineProperty(window, "location", { value: originalLocation, configurable: true });
   });
 
   it("renders a Project's no-Runs row without crashing when the wire sends runs: null", async () => {

@@ -166,6 +166,8 @@ export function SquadOverview() {
           testId="overview-empty"
           title="No Projects yet"
           why="No Projects in this Team's namespace yet."
+          ctaLabel="Create a project"
+          onCta={() => (window.location.href = "/compose?kind=project")}
         />
       ) : (
         projects.map((p) => (
