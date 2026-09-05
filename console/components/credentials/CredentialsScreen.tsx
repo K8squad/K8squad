@@ -22,7 +22,6 @@ import {
   type AgentCredentialRow,
   type CredentialsOutcome,
 } from "@/lib/credentials";
-import { EmptyState } from "@/components/forms/EmptyState";
 import "./credentials.css";
 
 export interface CredentialsScreenProps {
@@ -170,24 +169,31 @@ export function CredentialsScreen({
       {state === "loading" && <p className="muted" data-testid="creds-loading">Loading credential state…</p>}
 
       {state === "unconfigured" && (
-        <EmptyState
-          title="Credential read model not configured"
-          why="The apiserver answers its documented 501 — no credential read model is wired on this host (cluster-less run). The screen lights up when the informer cache backs GET /api/credentials."
-        />
+        <div className="card creds__empty" data-testid="creds-unconfigured">
+          <h2>Credential read model not configured</h2>
+          <p className="muted">
+            The apiserver answers its documented 501 — no credential read model
+            is wired on this host (cluster-less run). The screen lights up when
+            the informer cache backs <code>GET /api/credentials</code>.
+          </p>
+        </div>
       )}
 
       {state === "not-found" && (
-        <EmptyState
-          title="No credential surface for this session"
-          why="Sign in with a squad-scoped session — deny and missing are indistinguishable here by design."
-        />
+        <div className="card creds__empty" data-testid="creds-not-found">
+          <h2>No credential surface for this session</h2>
+          <p className="muted">
+            Sign in with a squad-scoped session — deny and missing are
+            indistinguishable here by design.
+          </p>
+        </div>
       )}
 
       {state === "error" && (
-        <EmptyState
-          title="Credential state unavailable"
-          why="The apiserver could not serve the read model — retry shortly."
-        />
+        <div className="card creds__empty" data-testid="creds-error">
+          <h2>Credential state unavailable</h2>
+          <p className="muted">The apiserver could not serve the read model — retry shortly.</p>
+        </div>
       )}
 
       {state === "ok" && (

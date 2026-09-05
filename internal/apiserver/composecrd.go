@@ -406,40 +406,42 @@ type applyPlan struct {
 	existing client.Object // fresh zero of the same type
 }
 
-// run is the shared handler tail: validate → authorize → resolve namespace →
-// apply (create or upsert) → provenance → respond. `create` selects POST vs PUT.
-func (s *ComposeService) run(w http.ResponseWriter, r *http.Request, create bool, plan applyPlan) {
-	author, ok := discussion.AuthFromContext(r.Context())
-	if !ok || author.Principal == "" {
-		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
-		return
-	}
+// applyOutcome is the result of applying one plan against the cluster. Exactly
+// one of the shapes is populated: success (status 0, result set), a field-level
+// validation failure (status 422, fields set), or a single-status failure
+// (status + msg) carrying the SAME status the single-object endpoints answer.
+type applyOutcome struct {
+	result composeResult
+	status int          // 0 ⇒ applied
+	msg    string       // failure message when status != 0 and no fields
+	fields []fieldError // field-level 422 when validation failed
+}
+
+// apply is the shared apply tail factored out of run(): validate → authorize →
+// resolve namespace → apply (create or upsert) → provenance. `create` selects
+// POST vs PUT semantics. It never writes a response, so multi-object flows
+// (POST /api/compose/squad, ISI-3677) can apply N plans and report each
+// outcome verbatim (NFR-5) instead of one response swallowing the rest.
+func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorContext, create bool, plan applyPlan) applyOutcome {
 	// 1. Field validation BEFORE any cluster contact (never a partial apply).
 	if len(plan.errs) > 0 {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":  "validation failed",
-			"fields": plan.errs,
-		})
-		return
+		return applyOutcome{status: http.StatusUnprocessableEntity, fields: plan.errs}
 	}
 	// 2. RBAC write-tier. For a Project the membership scope IS the object name
 	// (already bound: body name on POST, {name} path var on PUT).
 	if plan.scope.scopeIsName {
 		plan.scope.project = plan.desired.GetName()
 	}
-	if status, msg := s.authorizeWrite(r.Context(), author, plan.scope); status != 0 {
-		writeJSONError(w, status, msg)
-		return
+	if status, msg := s.authorizeWrite(ctx, author, plan.scope); status != 0 {
+		return applyOutcome{status: status, msg: msg}
 	}
 	// 3. Team-namespace scope (cross-tenant is structurally a 404).
-	ns, err := s.teamNamespace(r.Context(), author.TeamID.String())
+	ns, err := s.teamNamespace(ctx, author.TeamID.String())
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
-		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
-		return
+		return applyOutcome{status: http.StatusNotFound, msg: "no team namespace for this caller"}
 	}
 	if err != nil {
-		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
-		return
+		return applyOutcome{status: http.StatusBadGateway, msg: "team scope resolution unavailable"}
 	}
 	name := plan.desired.GetName()
 	plan.desired.SetNamespace(ns)
@@ -452,39 +454,57 @@ func (s *ComposeService) run(w http.ResponseWriter, r *http.Request, create bool
 		operation = "created"
 	)
 	if create {
-		rev, applyErr = s.create(r.Context(), plan.desired)
+		rev, applyErr = s.create(ctx, plan.desired)
 	} else {
-		rev, updated, applyErr = s.upsert(r.Context(), ns, name, plan.desired, plan.existing)
+		rev, updated, applyErr = s.upsert(ctx, ns, name, plan.desired, plan.existing)
 	}
 	switch {
 	case errors.Is(applyErr, errConflict):
-		writeJSONError(w, http.StatusConflict, plan.kind+" already exists in this team")
-		return
+		return applyOutcome{status: http.StatusConflict, msg: plan.kind + " already exists in this team"}
 	case apierrors.IsConflict(applyErr):
-		writeJSONError(w, http.StatusConflict, "concurrent modification; reload and retry")
-		return
+		return applyOutcome{status: http.StatusConflict, msg: "concurrent modification; reload and retry"}
 	case apierrors.IsInvalid(applyErr):
 		// Admission (CEL/webhook) rejected the CR — surface as a 422, not a 502.
-		writeJSONError(w, http.StatusUnprocessableEntity, applyErr.Error())
-		return
+		return applyOutcome{status: http.StatusUnprocessableEntity, msg: applyErr.Error()}
 	case applyErr != nil:
-		writeJSONError(w, http.StatusBadGateway, "apply failed")
-		return
+		return applyOutcome{status: http.StatusBadGateway, msg: "apply failed"}
 	}
 	if updated {
 		operation = "updated"
 	}
 
 	// 5. Durable provenance row (who/what/when).
-	s.recordProvenance(r.Context(), author.Principal, plan.kind, name, ns, rev, operation, plan.scope.project)
+	s.recordProvenance(ctx, author.Principal, plan.kind, name, ns, rev, operation, plan.scope.project)
 
-	code := http.StatusCreated
-	if updated {
-		code = http.StatusOK
-	}
-	writeJSON(w, code, composeResult{
+	return applyOutcome{result: composeResult{
 		Kind: plan.kind, Name: name, Namespace: ns, Revision: rev, Operation: operation,
-	})
+	}}
+}
+
+// run is the shared handler tail: authenticate, then apply via apply() and
+// render the outcome. `create` selects POST vs PUT.
+func (s *ComposeService) run(w http.ResponseWriter, r *http.Request, create bool, plan applyPlan) {
+	author, ok := discussion.AuthFromContext(r.Context())
+	if !ok || author.Principal == "" {
+		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	out := s.apply(r.Context(), author, create, plan)
+	switch {
+	case out.status == 0:
+		code := http.StatusCreated
+		if out.result.Operation == "updated" {
+			code = http.StatusOK
+		}
+		writeJSON(w, code, out.result)
+	case len(out.fields) > 0:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "validation failed",
+			"fields": out.fields,
+		})
+	default:
+		writeJSONError(w, out.status, out.msg)
+	}
 }
 
 // recordProvenance appends the §6.5 apply event on a context DETACHED from the
@@ -727,4 +747,231 @@ func (s *ComposeService) applyEdit(w http.ResponseWriter, r *http.Request, creat
 		}
 	}
 	s.run(w, r, create, plan)
+}
+
+// ============================================================================
+// Squad materialize (ISI-3677, AD-3) — POST /api/compose/squad
+// ============================================================================
+//
+// One authorized call turns a chosen template into a Team (if absent) + N
+// Agents, each Agent referencing a seeded Role preset (E2-S1: role-boss /
+// role-implementer / role-manager) and the ONE shared credentialSecretRef
+// (AD-5). The handler composes the existing planTeam/planAgent planners and
+// the apply() tail — no new CR-write primitive.
+//
+// Conventions (AC3): same write middleware as the rest of the compose surface
+// (authz + sameOriginGuard + maxBytesBody(64<<10), mounted in server.go),
+// provenance server-stamped per applied object, tenancy resolved from
+// AuthorContext.TeamID (cross-tenant is a 404), JSON via writeJSON/writeJSONError.
+// Partial failures are reported VERBATIM (AC4, NFR-5): a 403/409/422 on one
+// object is surfaced per-object in `errors`, never masked, and the response is
+// 207 Multi-Status.
+
+// squadRequest is the typed wire contract for POST /api/compose/squad (R6:
+// typed shape, no raw YAML).
+type squadRequest struct {
+	// Template selects the agent set: minimal-trio (D1 default) | bmad | solo.
+	Template string `json:"template"`
+	// Team, when present, is created first if absent (an existing Team of the
+	// same name is reported as "existing", not an error).
+	Team *teamRequest `json:"team,omitempty"`
+	// Project is the write-tier membership scope for the Agents (the same
+	// `project` field the single-Agent compose carries). Required for
+	// non-admin callers; admins compose fleet-wide.
+	Project string `json:"project,omitempty"`
+	// RuntimeRef applies to every Agent (default: claude-code).
+	RuntimeRef objectRefWire `json:"runtimeRef,omitempty"`
+	// CredentialSecretRef is the ONE shared credential across all agents
+	// (AD-5; default: model-credentials/token, matching examples/bmad-team).
+	CredentialSecretRef secretRefWire `json:"credentialSecretRef,omitempty"`
+	// Models optionally overrides the per-preset default model
+	// (boss/implementer/manager). The console supplies these from the
+	// presets table (console/lib/presets.ts, FR-6.1); absent ⇒ the
+	// server-side defaults below.
+	Models map[string]string `json:"models,omitempty"`
+}
+
+// squadObjectError is one object's verbatim failure inside a 207 response.
+type squadObjectError struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Status int    `json:"status"` // the HTTP status the single-object endpoint would answer
+	Error  string `json:"error"`
+}
+
+// squadResponse is the materialize result: what was created, what failed.
+type squadResponse struct {
+	Team   *composeResult     `json:"team,omitempty"`
+	Agents []composeResult    `json:"agents"`
+	Errors []squadObjectError `json:"errors,omitempty"`
+}
+
+// squadAgentTemplate is one agent in a template: its CR name and the seeded
+// Role preset it references (role-<preset>).
+type squadAgentTemplate struct {
+	Name   string
+	Preset string // boss | implementer | manager
+}
+
+const (
+	// squadRolePrefix turns a preset key into the seeded Role CR name (E2-S1).
+	squadRolePrefix = "role-"
+	// Defaults matching examples/bmad-team so the endpoint works standalone.
+	defaultSquadRuntime          = "claude-code"
+	defaultSquadCredentialSecret = "model-credentials" // #nosec G101 -- a Secret NAME (metadata), not a credential value.
+	defaultSquadCredentialKey    = "token"
+)
+
+// defaultSquadModels is the server-side fallback for the console's preset →
+// default-model table (console/lib/presets.ts, FR-6.1): Boss → Opus-5,
+// Implementer/Manager → Sonnet-5.
+var defaultSquadModels = map[string]string{
+	"boss":        "claude-opus-5",
+	"implementer": "claude-sonnet-5",
+	"manager":     "claude-sonnet-5",
+}
+
+// squadTemplates is the template-set mapping (AC2). Minimal Trio is the D1
+// default; Solo is Boss+Impl; BMAD is the examples/bmad-team persona set,
+// each persona mapped onto the nearest seeded Role preset.
+var squadTemplates = map[string][]squadAgentTemplate{
+	"minimal-trio": {
+		{Name: "boss", Preset: "boss"},
+		{Name: "implementer", Preset: "implementer"},
+		{Name: "manager", Preset: "manager"},
+	},
+	"solo": {
+		{Name: "boss", Preset: "boss"},
+		{Name: "implementer", Preset: "implementer"},
+	},
+	"bmad": {
+		{Name: "sam", Preset: "boss"},        // ceo
+		{Name: "john", Preset: "manager"},    // product-manager
+		{Name: "winston", Preset: "boss"},    // architect (planning)
+		{Name: "uma", Preset: "implementer"}, // ux-designer
+		{Name: "mary", Preset: "manager"},    // brainstormer (analysis)
+		{Name: "cade", Preset: "manager"},    // challenger (review)
+		{Name: "quill", Preset: "implementer"},
+		{Name: "amelia", Preset: "manager"}, // code-reviewer
+		{Name: "tess", Preset: "implementer"},
+		{Name: "ada", Preset: "implementer"}, // coder
+	},
+}
+
+// handleComposeSquad materializes a squad from a template in one authorized
+// transaction. Validation of EVERY planned object happens before any apply
+// (invariant 1); applies then proceed object-by-object (Team first, then
+// Agents) with per-object outcomes reported verbatim.
+func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Request) {
+	author, ok := discussion.AuthFromContext(r.Context())
+	if !ok || author.Principal == "" {
+		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	var req squadRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		return
+	}
+
+	agents, ok := squadTemplates[req.Template]
+	if !ok {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "validation failed",
+			"fields": []fieldError{{"template", "must be one of minimal-trio, bmad, solo"}},
+		})
+		return
+	}
+
+	// Wire defaults (AD-5 shared credential; claude-code runtime).
+	if req.RuntimeRef.Name == "" {
+		req.RuntimeRef.Name = defaultSquadRuntime
+	}
+	if req.CredentialSecretRef.Name == "" {
+		req.CredentialSecretRef.Name = defaultSquadCredentialSecret
+	}
+	if req.CredentialSecretRef.Key == "" {
+		req.CredentialSecretRef.Key = defaultSquadCredentialKey
+	}
+
+	// Request-level tenancy check (AC3): a caller whose Team UID resolves to no
+	// namespace has nowhere to apply — 404 before touching anything, exactly
+	// like the single-kind compose endpoints.
+	if _, err := s.teamNamespace(r.Context(), author.TeamID.String()); errors.Is(err, ErrTeamNamespaceUnresolved) {
+		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
+		return
+	} else if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
+		return
+	}
+
+	// 1. Field validation across EVERY planned object BEFORE any apply
+	//    (invariant 1 — never a partial-validation apply).
+	var fields []fieldError
+	var teamPlan applyPlan
+	if req.Team != nil {
+		teamPlan = s.planTeam(*req.Team)
+		for _, fe := range teamPlan.errs {
+			fields = append(fields, fieldError{"team." + fe.Field, fe.Message})
+		}
+	}
+	if !author.IsAdmin && req.Project == "" {
+		fields = append(fields, fieldError{"project", "is required (the write-tier membership scope for the squad's agents)"})
+	}
+	plans := make([]applyPlan, 0, len(agents))
+	for _, a := range agents {
+		model := req.Models[a.Preset]
+		if model == "" {
+			model = defaultSquadModels[a.Preset]
+		}
+		plan := s.planAgent(agentRequest{
+			Project:             req.Project,
+			Name:                a.Name,
+			RuntimeRef:          req.RuntimeRef,
+			RoleRef:             objectRefWire{Name: squadRolePrefix + a.Preset},
+			Model:               model,
+			CredentialSecretRef: req.CredentialSecretRef,
+		})
+		for _, fe := range plan.errs {
+			fields = append(fields, fieldError{"agents[" + a.Name + "]." + fe.Field, fe.Message})
+		}
+		plans = append(plans, plan)
+	}
+	if len(fields) > 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":  "validation failed",
+			"fields": fields,
+		})
+		return
+	}
+
+	// 2. Apply: Team first (if requested), then each Agent — composing the
+	//    existing planners + apply() tail (AD-3). Failures are verbatim (AC4).
+	resp := squadResponse{Agents: []composeResult{}}
+	if req.Team != nil {
+		out := s.apply(r.Context(), author, true, teamPlan)
+		switch out.status {
+		case 0:
+			team := out.result
+			resp.Team = &team
+		case http.StatusConflict:
+			// "creates a Team (if absent)" — an existing Team is not a failure.
+			resp.Team = &composeResult{Kind: "Team", Name: req.Team.Name, Operation: "existing"}
+		default:
+			resp.Errors = append(resp.Errors, squadObjectError{Kind: "Team", Name: req.Team.Name, Status: out.status, Error: out.msg})
+		}
+	}
+	for i, plan := range plans {
+		out := s.apply(r.Context(), author, true, plan)
+		if out.status == 0 {
+			resp.Agents = append(resp.Agents, out.result)
+			continue
+		}
+		resp.Errors = append(resp.Errors, squadObjectError{Kind: "Agent", Name: agents[i].Name, Status: out.status, Error: out.msg})
+	}
+
+	code := http.StatusCreated
+	if len(resp.Errors) > 0 {
+		code = http.StatusMultiStatus // 207 — partial materialize; errors carried verbatim
+	}
+	writeJSON(w, code, resp)
 }

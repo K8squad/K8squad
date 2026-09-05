@@ -15,7 +15,6 @@
 
 import { useEffect, useState } from "react";
 import { KillRun } from "@/components/KillRun";
-import { EmptyState } from "@/components/forms/EmptyState";
 
 /** GET /api/squad/overview response (apiserver SquadOverview, overview.go).
  *
@@ -162,10 +161,11 @@ export function SquadOverview() {
       </header>
 
       {projects.length === 0 ? (
-        <EmptyState
-          title="No Projects yet"
-          why="No Projects in this Team's namespace yet."
-        />
+        <div className="card" data-testid="overview-empty">
+          <p className="muted" style={{ margin: 0 }}>
+            No Projects in this Team&apos;s namespace yet.
+          </p>
+        </div>
       ) : (
         projects.map((p) => (
           <section className="card" key={p.name} data-testid="overview-project">
