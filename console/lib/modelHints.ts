@@ -68,3 +68,35 @@ export function modelShapeHint(id: string): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Coarse provider token for a model id, used ONLY for the same-provider fallback resilience
+ * warning (ISI-3681 E3-S3 / FR-4.1). This is a soft heuristic, never a gate:
+ *   - a "vendor/model" id → the vendor prefix ("ollama/llama3.1:8b" → "ollama");
+ *   - a bare Claude id → "claude"; an OpenAI-family id → "openai";
+ *   - anything else → the leading dash-delimited token, lowercased.
+ * Returns "" for an empty id (no provider to compare).
+ */
+export function modelProvider(id: string): string {
+  const v = id.trim().toLowerCase();
+  if (!v) return "";
+  const slash = v.indexOf("/");
+  if (slash > 0) return v.slice(0, slash);
+  if (v.startsWith("claude")) return "claude";
+  if (v.startsWith("gpt") || v.startsWith("o1") || v.startsWith("o3") || v.startsWith("openai")) {
+    return "openai";
+  }
+  const dash = v.indexOf("-");
+  return dash > 0 ? v.slice(0, dash) : v;
+}
+
+/**
+ * True when primary and fallback resolve to the SAME coarse provider — the case the fallback
+ * resilience warning flags (a provider-wide rate limit would take out both). Both ids must be
+ * non-empty; an unset fallback is not a warning.
+ */
+export function sameProvider(primary: string, fallback: string): boolean {
+  const a = modelProvider(primary);
+  const b = modelProvider(fallback);
+  return a !== "" && b !== "" && a === b;
+}

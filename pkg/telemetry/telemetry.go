@@ -29,10 +29,16 @@ limitations under the License.
 //     structured log emitted with a span-bearing context automatically carries
 //     trace_id/span_id, correlating logs to traces without a manual field.
 //
-// All three signals export to stdout by default ("stdout exporter is fine for
-// now", ISI-3103 AC). The call sites — Tracer(), Meter(), Extract(), Inject(),
-// and the slog logger — never name an exporter, so swapping stdout for OTLP
-// later is a one-line change in Setup and nothing else moves.
+// All three signals export to stdout by DEFAULT ("stdout exporter is fine for
+// now", ISI-3103 AC). Per-signal OTLP export is OPT-IN (ISI-3620): each of
+// Options.Traces/Metrics/Logs is a *SignalExport describing one signal's OTLP
+// target; a nil *SignalExport keeps that signal on the stdout default. Those
+// exports are sourced, once at process start, from the cluster-scoped OTelConfig
+// CR by the kube-aware pkg/telemetry/otelcr layer — this package stays a pure,
+// kube-free spine. The call sites — Tracer(), Meter(), Extract(), Inject(), and
+// the slog logger — never name an exporter, honoring the original "swap is a
+// one-line change" intent: the selection is exactly one line per signal in Setup
+// and nothing else moves.
 package telemetry
 
 import (
@@ -69,6 +75,24 @@ const (
 	defaultServiceName = "ksquad-operator"
 )
 
+// SamplerSpec is a neutral, kube-free description of a head sampler (traces
+// only).
+type SamplerSpec struct {
+	Type  string  // "always_on" | "always_off" | "probabilistic"
+	Ratio float64 // fraction kept when Type == "probabilistic"; ignored otherwise
+}
+
+// SignalExport describes an OTLP export target for ONE signal. A nil
+// *SignalExport on Options means: keep the stdout default for that signal
+// (opt-in, C-AC2). Headers carry already-resolved auth (e.g. "Authorization")
+// and are NEVER logged.
+type SignalExport struct {
+	Protocol string // "grpc" | "http/protobuf" | "http/json"
+	Endpoint string
+	Headers  map[string]string
+	Sampler  *SamplerSpec // traces only; ignored on metrics/logs
+}
+
 // Options configures the telemetry spine. The zero value is valid and yields a
 // stdout-exporting spine named "ksquad-operator".
 type Options struct {
@@ -80,6 +104,13 @@ type Options struct {
 	Writer io.Writer
 	// Pretty indents the stdout JSON. Convenient for local runs, noisy in prod.
 	Pretty bool
+	// Traces, Metrics, Logs each opt one signal into OTLP export (ISI-3620). A
+	// nil *SignalExport keeps that signal on the stdout default (C-AC2). These
+	// are populated once at process start from the OTelConfig CR by the
+	// pkg/telemetry/otelcr layer; this package never touches kube.
+	Traces  *SignalExport
+	Metrics *SignalExport
+	Logs    *SignalExport
 }
 
 // ShutdownFunc flushes and stops the trace, metric and log pipelines. Call it
@@ -112,18 +143,33 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	}
 
 	// --- traces ---
-	traceExpOpts := []stdouttrace.Option{stdouttrace.WithWriter(w)}
-	if opts.Pretty {
-		traceExpOpts = append(traceExpOpts, stdouttrace.WithPrettyPrint())
+	// Per-signal selection (ISI-3620): a nil opts.Traces keeps the stdout
+	// default; a non-nil one swaps in the OTLP exporter (one line, as promised).
+	var traceExp sdktrace.SpanExporter
+	if opts.Traces == nil {
+		traceExpOpts := []stdouttrace.Option{stdouttrace.WithWriter(w)}
+		if opts.Pretty {
+			traceExpOpts = append(traceExpOpts, stdouttrace.WithPrettyPrint())
+		}
+		traceExp, err = stdouttrace.New(traceExpOpts...)
+	} else {
+		traceExp, err = buildTraceExporter(ctx, opts.Traces)
 	}
-	traceExp, err := stdouttrace.New(traceExpOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("telemetry: stdout trace exporter: %w", err)
+		return nil, nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 	}
-	tp := sdktrace.NewTracerProvider(
+	traceProviderOpts := []sdktrace.TracerProviderOption{
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
-	)
+	}
+	// Apply a head sampler ONLY when the CR specified one; otherwise leave the
+	// SDK's default sampler untouched (unchanged pre-ISI-3620 behavior).
+	if opts.Traces != nil {
+		if s := samplerFor(opts.Traces.Sampler); s != nil {
+			traceProviderOpts = append(traceProviderOpts, sdktrace.WithSampler(s))
+		}
+	}
+	tp := sdktrace.NewTracerProvider(traceProviderOpts...)
 	otel.SetTracerProvider(tp)
 
 	// W3C trace-context is the propagation format the ACs call for; baggage
@@ -136,15 +182,20 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	// collected and flushed on an interval (and on Shutdown). The default
 	// interval is fine for a bootstrap-path spine; the reader export cadence,
 	// like the exporter itself, is a one-line change when this moves to OTLP.
-	metricExpOpts := []stdoutmetric.Option{stdoutmetric.WithWriter(w)}
-	if opts.Pretty {
-		metricExpOpts = append(metricExpOpts, stdoutmetric.WithPrettyPrint())
+	var metricExp sdkmetric.Exporter
+	if opts.Metrics == nil {
+		metricExpOpts := []stdoutmetric.Option{stdoutmetric.WithWriter(w)}
+		if opts.Pretty {
+			metricExpOpts = append(metricExpOpts, stdoutmetric.WithPrettyPrint())
+		}
+		metricExp, err = stdoutmetric.New(metricExpOpts...)
+	} else {
+		metricExp, err = buildMetricExporter(ctx, opts.Metrics)
 	}
-	metricExp, err := stdoutmetric.New(metricExpOpts...)
 	if err != nil {
 		// Best-effort: don't leak the trace pipeline we already started.
 		_ = tp.Shutdown(ctx)
-		return nil, nil, fmt.Errorf("telemetry: stdout metric exporter: %w", err)
+		return nil, nil, fmt.Errorf("telemetry: metric exporter: %w", err)
 	}
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
@@ -153,15 +204,20 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	otel.SetMeterProvider(mp)
 
 	// --- logs (otelslog bridge) ---
-	logExpOpts := []stdoutlog.Option{stdoutlog.WithWriter(w)}
-	if opts.Pretty {
-		logExpOpts = append(logExpOpts, stdoutlog.WithPrettyPrint())
+	var logExp sdklog.Exporter
+	if opts.Logs == nil {
+		logExpOpts := []stdoutlog.Option{stdoutlog.WithWriter(w)}
+		if opts.Pretty {
+			logExpOpts = append(logExpOpts, stdoutlog.WithPrettyPrint())
+		}
+		logExp, err = stdoutlog.New(logExpOpts...)
+	} else {
+		logExp, err = buildLogExporter(ctx, opts.Logs)
 	}
-	logExp, err := stdoutlog.New(logExpOpts...)
 	if err != nil {
 		// Best-effort: don't leak the trace and metric pipelines we already started.
 		_ = errors.Join(tp.Shutdown(ctx), mp.Shutdown(ctx))
-		return nil, nil, fmt.Errorf("telemetry: stdout log exporter: %w", err)
+		return nil, nil, fmt.Errorf("telemetry: log exporter: %w", err)
 	}
 	lp := sdklog.NewLoggerProvider(
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),

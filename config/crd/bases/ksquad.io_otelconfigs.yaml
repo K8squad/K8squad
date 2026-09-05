@@ -432,6 +432,44 @@ spec:
                   reconciled.
                 format: int64
                 type: integer
+              signals:
+                additionalProperties:
+                  description: |-
+                    SignalStatus is one signal's observed export health. Detail is a
+                    human-readable reason for a non-healthy state (e.g. "endpoint unreachable",
+                    "auth Secret 'otlp-token' not found") and MUST NEVER contain token values or
+                    Secret contents (D-AC3).
+                  properties:
+                    detail:
+                      description: Detail is a human-readable, secret-free reason
+                        for a non-healthy state.
+                      type: string
+                    state:
+                      description: "SignalState is the per-signal export health the
+                        operator reports on status\n(story ISI-3557 D-AC1, W4 enum).
+                        Populated by the export reconciler (Story C /\nISI-3724),
+                        NOT by otelgate.\n\n\thealthy  — the most recent export for
+                        this signal succeeded.\n\terroring — the most recent export
+                        failed (export/auth error); Detail carries\n\t           a
+                        human-readable, secret-free reason (D-AC3).\n\tpending  —
+                        configured but not yet exercised (no export observed since
+                        start).\n\tdisabled — no exporter is configured for this signal."
+                      enum:
+                      - healthy
+                      - erroring
+                      - pending
+                      - disabled
+                      type: string
+                  required:
+                  - state
+                  type: object
+                description: |-
+                  Signals reports per-signal export health, keyed by signal name
+                  ("traces", "metrics", "logs"). The export reconciler (Story C / ISI-3724)
+                  writes it via SetSignal; the apiserver read model surfaces it verbatim as
+                  status.signals[key] to the Console "Export state" card (D-AC1/D-AC4). An
+                  absent key means "not yet observed".
+                type: object
             type: object
         type: object
     served: true

@@ -157,6 +157,26 @@ func (s secretRefWire) toRef() ksquadv1.SecretRef {
 	return ksquadv1.SecretRef{Name: s.Name, Key: s.Key}
 }
 
+// fallbackModelWire is the compose wire shape for Agent.spec.fallbackModel
+// (ISI-3681 E3-S3 / AD-4): a secondary model for mid-Run switches on a
+// rate_limited signal, optionally with its own BYO endpoint Secret. It mirrors
+// the FallbackModel CRD type (api/v1alpha1/common_types.go): Model is required,
+// the endpoint ref is optional (unset ⇒ the fallback resolves against the
+// Agent's own endpoint).
+type fallbackModelWire struct {
+	Model            string         `json:"model"`
+	ModelEndpointRef *secretRefWire `json:"modelEndpointRef,omitempty"`
+}
+
+func (f fallbackModelWire) toSpec() *ksquadv1.FallbackModel {
+	fb := &ksquadv1.FallbackModel{Model: f.Model}
+	if f.ModelEndpointRef != nil {
+		ref := f.ModelEndpointRef.toRef()
+		fb.ModelEndpointRef = &ref
+	}
+	return fb
+}
+
 type projectRequest struct {
 	Name string `json:"name"`
 	Repo struct {
@@ -179,6 +199,16 @@ type agentRequest struct {
 	Model               string          `json:"model"`
 	ModelEndpointRef    *secretRefWire  `json:"modelEndpointRef,omitempty"`
 	CredentialSecretRef secretRefWire   `json:"credentialSecretRef"`
+	// CredentialClass persists the human-seat vs service-account axis onto
+	// spec.credentialClass (agent_types.go:65, read by the injector resolve.go
+	// and webhook validator.go). Empty ⇒ default (service-account) at injection
+	// time. Persisting it is MANDATORY: an advisory-only value would leave the
+	// D2 auth-mode fork inert (ISI-3681 E3-S3 AC5, R-CR1 C1).
+	CredentialClass string `json:"credentialClass,omitempty"`
+	// FallbackModel persists spec.fallbackModel (agent_types.go:104) — the
+	// secondary model for mid-Run rate_limited recovery, mirroring the
+	// modelEndpointRef optional-pointer round-trip.
+	FallbackModel *fallbackModelWire `json:"fallbackModel,omitempty"`
 }
 
 type roleRequest struct {
@@ -552,6 +582,7 @@ func (s *ComposeService) planAgent(req agentRequest) applyPlan {
 		RuntimeRef:          req.RuntimeRef.toRef(),
 		RoleRef:             req.RoleRef.toRef(),
 		CredentialSecretRef: req.CredentialSecretRef.toRef(),
+		CredentialClass:     req.CredentialClass,
 		Model:               req.Model,
 	}
 	for _, sr := range req.SkillRefs {
@@ -560,6 +591,9 @@ func (s *ComposeService) planAgent(req agentRequest) applyPlan {
 	if req.ModelEndpointRef != nil {
 		ref := req.ModelEndpointRef.toRef()
 		spec.ModelEndpointRef = &ref
+	}
+	if req.FallbackModel != nil {
+		spec.FallbackModel = req.FallbackModel.toSpec()
 	}
 	agent := &ksquadv1.Agent{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},

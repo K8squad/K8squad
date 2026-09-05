@@ -19,7 +19,8 @@ export type NavIconId =
   | "plugins"
   | "users"
   | "menu"
-  | "close";
+  | "close"
+  | "lock";
 
 const P: Record<NavIconId, string> = {
   dashboard: "M3 12h7V3H3v9zm0 9h7v-7H3v7zm11 0h7V10h-7v11zm0-18v6h7V3h-7z",
@@ -51,6 +52,8 @@ const P: Record<NavIconId, string> = {
   users:
     "M9 11a3 3 0 100-6 3 3 0 000 6zm7 0a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm14 0v-1c0-1.3-.6-2.4-1.5-3.2 2.1.3 4.5 1.4 4.5 3.2v1h-3z",
   menu: "M4 6h16M4 12h16M4 18h16",
+  // Padlock (E1-S3 nav lock): rounded shackle + body, stroke style matching the set.
+  lock: "M8 11V7a4 4 0 118 0v4M5 11h14v10H5V11z",
   close: "M6 6l12 12M18 6L6 18",
 };
 
