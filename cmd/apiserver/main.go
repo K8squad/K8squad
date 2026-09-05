@@ -178,6 +178,9 @@ func main() {
 	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
 	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
 	var org apiserver.OrgReader
+	// E1 onboarding-progress (ISI-3673, AD-2): one more projection over the SAME
+	// cache — no second watch, no second in-memory copy.
+	var onboarding apiserver.OnboardingReader
 	// Story A / 13.8 OTelConfig read model (ISI-2917): a projection over the SAME
 	// cache — the cluster-scoped OTelConfig CR the Settings page reads.
 	var otelConfig apiserver.OTelConfigSource
@@ -192,6 +195,7 @@ func main() {
 		overview = apiserver.NewClientOverviewReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
+		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
@@ -387,6 +391,7 @@ func main() {
 		Credentials:   credentials,
 		SecretWriter:  secretWriter,
 		Org:           org,
+		Onboarding:    onboarding,
 		OTelConfig:    otelConfig,
 		Builds:        builds,
 		Artifacts:     artifacts,

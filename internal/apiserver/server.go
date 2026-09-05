@@ -127,6 +127,13 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// Onboarding is the E1 onboarding-progress read model (ISI-3673, AD-2): the
+	// derived 4-milestone projection over CRD existence (Team / preset Agents /
+	// credentials / Project-with-repo-auth) plus the non-CR-derivable flags held
+	// as Team annotations (ksquad.io/onboarding-*). Nil ⇒ GET
+	// /api/onboarding/progress keeps the documented 501 (a cluster-less dev run),
+	// exactly like the other read models.
+	Onboarding OnboardingReader
 	// OTelConfig is the Story A / 13.8 OTLP-exporter read model (ISI-2917, child of
 	// ISI-3586 under Option A): GET /api/otelconfig serves the current cluster-scoped
 	// OTelConfig CR mapped to the client wire shape (console/lib/otelconfig.ts). Nil ⇒
@@ -348,6 +355,21 @@ func (s *Server) routes(opts Options) {
 			statusStream.HandleFunc("", h).Methods(http.MethodGet)
 			agentOne.HandleFunc("", h).Methods(http.MethodGet)
 			agentRunsR.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// E1 onboarding-progress (ISI-3673, AD-2): GET /api/onboarding/progress is
+		// the server-truth 4-milestone projection the Launchpad (E1-S2) and the
+		// "Finish setup (n/4)" chip (E1-S3) render against. Derived purely from
+		// CRD existence in the caller's team namespace, so resume-across-devices
+		// falls out of the cluster being the source of truth (no client flag that
+		// could drift). Rides the SAME §13 choke point; a nil reader keeps the
+		// documented 501, exactly like the other read models.
+		onboardingProgress := s.router.Path("/api/onboarding/progress").Subrouter()
+		onboardingProgress.Use(authz)
+		if opts.Onboarding != nil {
+			onboardingProgress.HandleFunc("", s.onboardingProgress(opts.Onboarding)).Methods(http.MethodGet)
+		} else {
+			onboardingProgress.HandleFunc("", notImplemented("onboarding-progress read model", "ISI-3673: wire an OnboardingReader (informer cache) to enable")).Methods(http.MethodGet)
 		}
 
 		// Story A / 13.8 (ISI-2917) OTelConfig read model: GET /api/otelconfig
