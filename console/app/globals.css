@@ -86,9 +86,11 @@ body {
  *
  * ONE adaptive tree, re-expressed per canonical breakpoint by media queries — no UA sniffing, same
  * DOM at every width (mirrors the component's own header comment):
- *   mobile  <768px    top bar + fixed 5-item bottom nav + slide-in drawer (rail hidden)
- *   tablet  768–1023  fixed 64px icon rail; tap `.rail__expand` → 240px OVERLAY (no layout shift)
- *   desktop ≥1024     persistent 240px labeled left rail, in flow beside the content column
+ *   mobile  <768px    top bar + fixed 5-item bottom nav + slide-in drawer (appbar+rail hidden)
+ *   tablet  768–1023  full-width appbar (h=56) + fixed 64px icon rail; tap `.rail__expand` →
+ *                     232px OVERLAY (no layout shift)
+ *   desktop ≥1024     full-width appbar + persistent 232px labeled left rail (nav-only), in flow
+ *                     beside the content column (ISI-3871 / ISI-3641 frames 01+06)
  *
  * The approved IA (mock 00/01, README §2) is a persistent left rail beside a FULL-WIDTH dense
  * content surface — deliberately anti-center, so the legacy `.shell__main{max-width:1100px;
@@ -98,9 +100,15 @@ body {
   min-height: 100vh;
 }
 
-/* Base = mobile: the rail is hidden; nav lives in the top bar + bottom nav + drawer. */
+/* Base = mobile: the appbar + rail are hidden; nav lives in the top bar + bottom nav + drawer. */
+.appbar,
 .rail {
   display: none;
+}
+
+/* Desktop/tablet row under the full-width appbar: rail + content column (ISI-3871). */
+.shell__row {
+  min-width: 0;
 }
 
 .shell__body {
@@ -179,9 +187,27 @@ body {
   text-decoration: none;
 }
 .rail__link[data-active] {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
-  font-weight: 600;
+  color: var(--text-hi);
+  font-weight: 700;
+}
+/* Mock active pill (frames 01/06): filled accent-tinted pill (≈ #16244A on dark) with a 3px
+ * accent bar on the left edge, bright bold label. Scoped to the rail + drawer so the mobile
+ * bottom nav keeps its own minimal active treatment below. */
+.rail .rail__link[data-active],
+.drawer .rail__link[data-active] {
+  position: relative;
+  background: color-mix(in srgb, var(--accent) 14%, var(--inset));
+}
+.rail .rail__link[data-active]::before,
+.drawer .rail__link[data-active]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
 }
 .rail__link:focus-visible {
   outline: 2px solid var(--accent);
@@ -216,8 +242,8 @@ body {
 .rail__section {
   padding: 4px 10px;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-weight: 700;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--text-2);
 }
@@ -269,6 +295,23 @@ body {
   font-size: 13px;
   color: var(--text-2);
 }
+/* The trail reads `Dashboard › Overview` — reset the ol's UA numbering (list markers leaked
+ * through ISI-3725's ship; the slimmer ISI-3871 contentbar exposes them) and inline the items
+ * with a muted › separator. */
+.crumbs ol {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.crumbs li + li::before {
+  content: "›";
+  margin-right: 6px;
+  color: var(--border);
+}
 .crumbs a {
   color: var(--text-2);
 }
@@ -280,11 +323,27 @@ body {
   flex-direction: column;
   gap: 4px;
 }
+/* In the ISI-3871 nav-only rail the selector sits BELOW the nav as a quiet deviation —
+ * separated from the mock geometry above it by the same rhythm the SETTINGS group uses. */
+.rail .projselect {
+  margin-top: 10px;
+}
 .projselect__caption {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-2);
+}
+/* Icon + select share one row (without this the 100%-width select wraps the icon onto its
+ * own line — the "stray folder" glitch the ISI-3871 rail expose found). */
+.projselect__control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.projselect__control .projselect__select {
+  flex: 1;
+  min-width: 0;
 }
 .projselect__select {
   width: 100%;
@@ -296,6 +355,10 @@ body {
   padding: 4px 8px;
   font: inherit;
   font-size: 13px;
+}
+/* Native select chrome (dropdown arrow + popup list) follows the theme instead of the OS. */
+[data-theme="dark"] .projselect__select {
+  color-scheme: dark;
 }
 
 /* — Mobile bottom nav (story 8.20): fixed 5-item row — */
@@ -321,6 +384,10 @@ body {
 }
 .bottomnav .rail__link[data-active] {
   background: transparent; /* the accent text colour is enough at this size */
+  color: var(--accent);
+}
+.bottomnav .rail__link[data-active]::before {
+  display: none; /* the mock pill bar belongs to the rail/drawer only */
 }
 
 /* — Mobile drawer (overflow: project sub-nav, settings children, past 5-item budget) — */
@@ -374,7 +441,7 @@ body {
   overflow-y: auto;
 }
 
-/* ── Tablet + desktop: the rail appears; top bar / bottom nav step aside ──────────────────────── */
+/* ── Tablet + desktop: the full-width appbar + rail appear; top bar / bottom nav step aside ── */
 @media (min-width: 768px) {
   /* .drawer is included so a mobile drawer left open across a resize/rotate to tablet/desktop
    * (its React state survives the breakpoint change) cannot cover the page with stale UI. */
@@ -383,38 +450,109 @@ body {
   .drawer {
     display: none;
   }
+
+  /* ISI-3871: the shell becomes appbar (full-width bar) + row(rail + content). */
+  .shell {
+    display: flex;
+    flex-direction: column;
+  }
+  .shell__row {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    min-width: 0;
+  }
   .shell__main {
     padding: 24px;
+  }
+
+  /* Full-width top bar (ISI-3641 frames 01+06): h=56 spanning rail+content, brand lockup +
+   * `console · <host>` env chip left · search + username + avatar right. */
+  .appbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    height: 56px;
+    padding: 0 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 40;
+  }
+  .appbar__brand {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+    text-decoration: none;
+  }
+  /* Mock wordmark (frame 01): 18px bold, solid text-hi — the lockup's accent "8" matches. */
+  .appbar .brand-wordmark {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: var(--text-hi);
+  }
+  .appbar .brand-wordmark__accent {
+    color: inherit;
+  }
+  /* Muted env chip `console · <host>` — the mock's inset well (h=22, rx=6, 12px muted). */
+  .appbar__env {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 10px;
+    border-radius: 6px;
+    background: var(--inset);
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .appbar__spacer {
+    margin-left: auto;
+  }
+  .appbar .gsearch {
+    flex: 0 1 360px;
+    min-width: 160px;
+  }
+  /* Mock right cluster: muted `admin` label beside the avatar circle. */
+  .appbar__user {
+    flex: none;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-2);
+    font-size: 13px;
   }
 
   .contentbar {
     display: flex;
     align-items: center;
     gap: 16px;
-    padding: 12px 24px;
+    padding: 10px 24px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     position: sticky;
-    top: 0;
+    top: 56px; /* sits flush under the full-width appbar */
     z-index: 10;
   }
   .contentbar .crumbs {
-    margin-right: auto; /* push search + theme toggle to the right edge */
-  }
-  .contentbar .gsearch {
-    flex: 0 1 360px;
+    margin-right: auto; /* push the namespace chip + theme toggle to the right edge */
   }
 
-  /* Tablet: fixed 64px icon rail. Fixed (not in-flow) + a matching body margin so the tap-expand
-   * below can grow the rail OVER the content with zero layout shift. */
+  /* Tablet: fixed 64px icon rail BELOW the appbar. Fixed (not in-flow) + a matching body margin
+   * so the tap-expand below can grow the rail OVER the content with zero layout shift. */
   .rail {
     display: flex;
     flex-direction: column;
     gap: 6px;
     position: fixed;
-    top: 0;
+    top: 56px;
     left: 0;
-    height: 100vh;
+    height: calc(100vh - 56px);
     width: 64px;
     padding: 12px 10px;
     background: var(--surface);
@@ -425,19 +563,14 @@ body {
   .shell__body {
     margin-left: 64px;
   }
-  .rail__brand {
+  /* ISI-3871: the rail is NAV-ONLY — the brand block lives in the appbar. This head exists
+   * solely to host the tablet expand affordance (hidden on desktop). */
+  .rail__head {
     display: flex;
     align-items: center;
     justify-content: center; /* collapsed: only the expand button remains — centre it */
-    gap: 8px;
     min-height: 32px;
     margin-bottom: 8px;
-  }
-  /* The 64px icon rail has only ~44px of content width — not enough for the home lockup
-   * (24px mark + wordmark) beside the 32px expand button, which would overlap/clip. Hide the
-   * lockup while collapsed; it returns when the rail expands (below) and on desktop. */
-  .rail__homelink {
-    display: none;
   }
   .rail__expand {
     display: inline-flex;
@@ -476,9 +609,10 @@ body {
     padding: 10px;
   }
 
-  /* Tap-to-expand (data-expanded): grow to 240px as an overlay; a scrim closes it. */
+  /* Tap-to-expand (data-expanded): grow to 232px (mock rail width) as an overlay; a scrim
+   * closes it. */
   .rail[data-expanded] {
-    width: 240px;
+    width: 232px;
     box-shadow: 8px 0 24px rgba(3, 7, 18, 0.35);
   }
   .rail[data-expanded] .rail__label,
@@ -492,12 +626,6 @@ body {
   .rail[data-expanded] .projselect {
     display: flex;
   }
-  .rail[data-expanded] .rail__brand {
-    justify-content: space-between; /* room for the lockup again once expanded to 240px */
-  }
-  .rail[data-expanded] .rail__homelink {
-    display: inline-flex;
-  }
   .rail[data-expanded] .rail__link {
     justify-content: flex-start;
     padding: 8px 10px;
@@ -510,18 +638,16 @@ body {
   }
 }
 
-/* ── Desktop: persistent labeled 240px rail, in flow (no overlay, no expand button) ──────────── */
+/* ── Desktop: appbar + persistent labeled 232px nav-only rail, in flow (no overlay) ─────────── */
 @media (min-width: 1024px) {
-  .shell {
-    display: flex;
-    flex-direction: row;
-  }
   .rail {
     position: sticky;
+    top: 56px; /* sticks flush below the full-width appbar */
     align-self: flex-start;
     flex: none;
-    width: 240px;
-    padding: 16px 12px;
+    width: 232px;
+    height: calc(100vh - 56px);
+    padding: 10px 12px 16px;
     overflow-y: auto;
     box-shadow: none;
   }
@@ -529,16 +655,10 @@ body {
     margin-left: 0;
     flex: 1;
   }
+  /* Persistent rail: no expand affordance needed (mock frame 01/06 rail is nav-only). */
+  .rail__head,
   .rail__expand {
     display: none;
-  }
-  /* Persistent 240px rail: bring the home lockup back and left-align it (overrides the
-   * collapsed-tablet rules above, which also match at >=1024). */
-  .rail__brand {
-    justify-content: space-between;
-  }
-  .rail__homelink {
-    display: inline-flex;
   }
   .rail__label {
     display: inline;
