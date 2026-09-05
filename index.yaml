@@ -5,14 +5,14 @@ entries:
       k8squad.io/min-crds-version: 0.1.0
     apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-05T08:38:53.106863906Z"
+    created: "2026-09-05T13:02:29.806591225Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
       NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
       k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
       (ADR-0002, Option B). '
-    digest: 615dbe80ce395841142e9f16c6774f9312e0b25b88c9ecd04edea05b0a238bdb
+    digest: 4391720a3812e8e9b0269edf55ee65f71edf114a579c22f4ce4ba5763355a805
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -34,7 +34,7 @@ entries:
   k8squad-crds:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-05T08:38:53.107968834Z"
+    created: "2026-09-05T13:02:29.807603157Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -42,7 +42,7 @@ entries:
       chart, and upgrade it independently to roll CRD schema changes forward on their
       own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
       deletes the CRDs or the user''s custom resources. '
-    digest: 760e3db04a313902162ad460882c67c553feb9de87efb77a8efe760bd02a1422
+    digest: 4eae3114a15e9f32c8dd191faad06d79b70aa8bcc41193fa82c88bb339589017
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -61,4 +61,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-05T08:38:53.104852922Z"
+generated: "2026-09-05T13:02:29.803197291Z"
