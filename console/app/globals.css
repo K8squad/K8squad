@@ -597,23 +597,6 @@ a:hover {
   color: var(--text-2);
 }
 
-/* ---- EmptyState (ISI-3686) ---- */
-.empty-state__title {
-  margin: 0 0 6px;
-  font-size: 1rem;
-  font-weight: 600;
-}
-.empty-state__why {
-  margin: 0 0 12px;
-}
-.empty-state__nudge {
-  margin-bottom: 12px;
-  font-size: 0.85rem;
-}
-.empty-state__cta {
-  margin-top: 4px;
-}
-
 /* ---- Run stream (story 8.2) ---- */
 .run-stream__head {
   display: flex;

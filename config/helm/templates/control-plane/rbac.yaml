@@ -11,6 +11,9 @@ metadata:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
 rules:
 - apiGroups: [""]
+  # configmaps patch + namespaces merged into this rule: ISI-3724 (story 13.8,
+  # ADR-0008 M1b) — otelegress upserts the operator-owned collector-egress
+  # ConfigMap; controller-gen merged the namespace grant here.
   resources: [configmaps, namespaces]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
@@ -29,8 +32,9 @@ rules:
   resources: [pods]
   verbs: [get, list, watch]
 - apiGroups: [apps]
-  # ISI-3724 / story 13.8: the otelegress controller patches the collector
-  # Deployment (rollout restart annotation) when the egress overlay changes.
+  # ISI-3724 (story 13.8, ADR-0008 M1b): otelegress rolls the no-hot-reload
+  # collector by patching its Deployment with the otelconfig-generation
+  # annotation (collector located via the component label in POD_NAMESPACE).
   resources: [deployments]
   verbs: [get, list, patch, watch]
 - apiGroups: [batch]
