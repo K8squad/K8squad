@@ -82,7 +82,7 @@ func TestRenderInitContainersOrderAndContract(t *testing.T) {
 
 func TestAssemblePodKubectlOnPathAndROTools(t *testing.T) {
 	run := newRun()
-	asm, err := AssemblePod(run, resolvedToolchains(), nil)
+	asm, err := AssemblePod(run, resolvedToolchains(), nil, nil)
 	require.NoError(t, err)
 
 	// PATH wiring lands on the agent env, tools mount read-only.
@@ -109,7 +109,7 @@ func TestAssemblePodKubectlOnPathAndROTools(t *testing.T) {
 
 func TestAssemblePodMCPSidecarAndCredentials(t *testing.T) {
 	run := newRun()
-	asm, err := AssemblePod(run, resolvedToolchains(), []Endpoint{stdioEndpoint(), httpEndpoint()})
+	asm, err := AssemblePod(run, resolvedToolchains(), []Endpoint{stdioEndpoint(), httpEndpoint()}, nil)
 	require.NoError(t, err)
 
 	// Init order: staging first, then the stdio sidecar.
@@ -147,14 +147,14 @@ func TestAssemblePodMCPSidecarAndCredentials(t *testing.T) {
 func TestAssemblePodNoSidecarForHTTPOrBareStdio(t *testing.T) {
 	run := newRun()
 	bare := Endpoint{Name: "in-image", Transport: "stdio", Command: "bundled-mcp"}
-	asm, err := AssemblePod(run, nil, []Endpoint{httpEndpoint(), bare})
+	asm, err := AssemblePod(run, nil, []Endpoint{httpEndpoint(), bare}, nil)
 	require.NoError(t, err)
 	assert.Empty(t, asm.InitContainers, "no sidecar for http or stdio-without-image")
 	assert.NotEmpty(t, asm.AgentEnv)
 }
 
 func TestAssemblePodEmptyEnvelopeIsBare(t *testing.T) {
-	asm, err := AssemblePod(newRun(), nil, nil)
+	asm, err := AssemblePod(newRun(), nil, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, asm.InitContainers)
 	assert.Empty(t, asm.Volumes)
@@ -164,7 +164,7 @@ func TestAssemblePodEmptyEnvelopeIsBare(t *testing.T) {
 
 func TestApplyToPodCollisionFailsClosed(t *testing.T) {
 	run := newRun()
-	asm, err := AssemblePod(run, resolvedToolchains(), []Endpoint{stdioEndpoint()})
+	asm, err := AssemblePod(run, resolvedToolchains(), []Endpoint{stdioEndpoint()}, nil)
 	require.NoError(t, err)
 
 	shadowed := sandboxShapedPod()
@@ -191,7 +191,7 @@ func TestAssemblePodInjectsToolCredentialsByReference(t *testing.T) {
 	run.Spec.ToolCredentials = []api.ToolCredential{
 		{Purpose: "github-token", SecretRef: api.SecretRef{Name: "github-writepath-token"}},
 	}
-	asm, err := AssemblePod(run, nil, nil)
+	asm, err := AssemblePod(run, nil, nil, nil)
 	require.NoError(t, err)
 
 	// GH_TOKEN + GITHUB_TOKEN land on the agent container by reference.
@@ -211,7 +211,7 @@ func TestAssemblePodToolCredentialUnknownPurposeFailsClosed(t *testing.T) {
 	run.Spec.ToolCredentials = []api.ToolCredential{
 		{Purpose: "gitlab-token", SecretRef: api.SecretRef{Name: "x"}},
 	}
-	_, err := AssemblePod(run, nil, nil)
+	_, err := AssemblePod(run, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "toolCredentials[0]")
 	assert.Contains(t, err.Error(), "gitlab-token")
@@ -222,7 +222,7 @@ func TestAssemblePodToolCredentialEmptySecretFailsClosed(t *testing.T) {
 	run.Spec.ToolCredentials = []api.ToolCredential{
 		{Purpose: "github-token", SecretRef: api.SecretRef{}},
 	}
-	_, err := AssemblePod(run, nil, nil)
+	_, err := AssemblePod(run, nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Secret name")
 }
@@ -232,7 +232,7 @@ func TestApplyToPodToolCredentialCollisionFailsClosed(t *testing.T) {
 	run.Spec.ToolCredentials = []api.ToolCredential{
 		{Purpose: "github-token", SecretRef: api.SecretRef{Name: "github-writepath-token"}},
 	}
-	asm, err := AssemblePod(run, nil, nil)
+	asm, err := AssemblePod(run, nil, nil, nil)
 	require.NoError(t, err)
 
 	// A pod whose agent already carries GH_TOKEN (e.g. a model-cred or a

@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -64,12 +65,21 @@ func seedAssemblyWorld(t *testing.T) (client.Client, *api.Run, *fakeStepSource) 
 		Spec: api.SkillSpec{
 			Requires:    api.SkillRequires{Toolchains: []string{"kubectl@1.31"}},
 			McpToolRefs: []api.ObjectRef{{Name: "github-mcp"}},
+			Source: api.SkillSource{
+				Type:        api.SkillSourceInline,
+				Inline:      "# restart-deploy\nRoll a deployment back.\n",
+			},
+			Permissions: []string{"apps:patch"},
 		},
 	}
 	skillGit := &api.Skill{
 		ObjectMeta: metav1.ObjectMeta{Name: "gh-ops", Namespace: asmRunNS},
 		Spec: api.SkillSpec{
 			Requires: api.SkillRequires{Toolchains: []string{"git@2.62"}},
+			Source: api.SkillSource{
+				Type: api.SkillSourceGit,
+				Git:  &api.GitSkillSource{RepoRef: "github.com/acme/squad-skills", Ref: "1234567890abcdef"},
+			},
 		},
 	}
 	toolchainKubectl := &api.Toolchain{
@@ -168,6 +178,25 @@ func TestAssemblerEnsureManifestComputesAndProjects(t *testing.T) {
 	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "ksquad-run-asm1-mcp"}, cm))
 	require.Len(t, cm.OwnerReferences, 1)
 	assert.Contains(t, cm.Data["config.json"], "github-mcp")
+
+	// ADR-0004 S-B: the granted INLINE skill (restart-deploy) is projected
+	// as its own ConfigMap with body + CR envelope; the git-sourced skill
+	// (gh-ops) is NOT projected here (S-D owns git delivery).
+	scm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "ksquad-run-asm1-skill-restart-deploy"}, scm))
+	require.Len(t, scm.OwnerReferences, 1)
+	assert.Equal(t, "# restart-deploy\nRoll a deployment back.\n", scm.Data["SKILL.md"])
+	assert.JSONEq(t, `{"version":1,"permissions":["apps:patch"]}`, scm.Data["permissions.json"])
+
+	var liveSkill corev1.ConfigMapList
+	require.NoError(t, c.List(context.Background(), &liveSkill, client.InNamespace(asmRunNS), client.MatchingLabels{"ksquad.io/component": "skill"}))
+	assert.Len(t, liveSkill.Items, 1)
+
+	// Release sweeps both projections.
+	require.NoError(t, asm.ReleaseConfig(context.Background(), run))
+	err = c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "ksquad-run-asm1-skill-restart-deploy"}, scm)
+	require.Error(t, err)
+	assert.True(t, apierrors.IsNotFound(err))
 }
 
 func TestAssemblerManifestImmutableOnceSet(t *testing.T) {
