@@ -123,7 +123,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
 
       - name: Create kind cluster
         if: steps.guard.outputs.present == 'true'

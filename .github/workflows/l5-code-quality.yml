@@ -82,7 +82,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: covgate teeth (-race)
         if: steps.guard.outputs.present == 'true'
         run: go test -race ./pkg/covgate/...
@@ -116,7 +119,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: go vet
         if: steps.guard.outputs.present == 'true'
         run: go vet ./...
@@ -159,7 +165,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: Test with race + coverage (whole module)
         if: steps.guard.outputs.present == 'true'
         # -race is REQUIRED (Q4). Atomic covermode is mandatory under -race and is
