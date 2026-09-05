@@ -1,0 +1,10 @@
+# Codex example namespace. Everything in this example lives here so a single
+# `kubectl delete namespace codex-squad` tears the whole demo down.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codex-squad
+  labels:
+    app.kubernetes.io/part-of: k8squad
+    app.kubernetes.io/managed-by: codex-example
+    ksquad.io/example: codex

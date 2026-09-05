@@ -1,0 +1,96 @@
+{{- /* RBAC for ksquad-apiserver (AD-6 / ISI-3671) — the first Secret-write in
+       the apiserver. POST /api/credentials (E3-S1, internal/apiserver/secretwrite.go)
+       creates managed-credential Secrets in the caller's team namespace, so the
+       apiserver runs under its own least-privilege ServiceAccount holding
+       `secrets:create` — CREATE ONLY. No get/list/watch/update/patch/delete: the
+       SA can never read or modify an existing Secret, and a create over an
+       existing name fails with AlreadyExists.
+
+       Team namespaces are provisioned dynamically by the operator
+       (ksquad-team-*, labelled ksquad.io/tenancy=squad), so Helm cannot bind
+       per-namespace Roles at install time; the grant is a create-only
+       ClusterRole. Team-namespace + label scoping is enforced server-side in
+       secretwrite.go (writes only Secrets labelled
+       ksquad.io/managed-credential=true, cross-tenant 404). The optional
+       ValidatingAdmissionPolicy (apiserver.rbac.secretWriteAdmissionPolicy,
+       k8s >= 1.30) re-enforces both invariants cluster-side.
+
+       The apiserver ServiceAccount itself is created in rbac.yaml (ISI-3546);
+       this template only adds the create-only credential-writer grant and the
+       optional VAP, both bound to that same SA (ksquad.apiserver.fullname). */ -}}
+{{- if .Values.apiserver.enabled -}}
+{{- if .Values.apiserver.rbac.secretsCreate }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+rules:
+  # AD-6: label-scoped Secret CREATE only. Deliberately no read/update verbs —
+  # the credential handler needs exactly one verb to do its one job.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ksquad.apiserver.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if .Values.apiserver.rbac.secretWriteAdmissionPolicy }}
+---
+# Cluster-side defense-in-depth (k8s >= 1.30, VAP GA). Intercepts every Secret
+# CREATE; any author other than the apiserver SA passes untouched, while the
+# apiserver SA may only create Secrets that BOTH live in a squad team namespace
+# (ksquad.io/tenancy=squad) AND carry ksquad.io/managed-credential=true — the
+# AD-6 label-scoped write contract enforced even if the handler regresses.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["secrets"]
+        operations: ["CREATE"]
+        scope: "Namespaced"
+  validations:
+    - expression: >-
+        request.userInfo.username != "system:serviceaccount:{{ .Release.Namespace }}:{{ include "ksquad.apiserver.fullname" . }}"
+        || (namespaceObject.metadata.?labels["ksquad.io/tenancy"].orValue("") == "squad"
+            && object.metadata.?labels["ksquad.io/managed-credential"].orValue("") == "true")
+      message: >-
+        the ksquad apiserver may only create Secrets labelled
+        ksquad.io/managed-credential=true in squad team namespaces (AD-6)
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+spec:
+  policyName: {{ include "ksquad.apiserver.fullname" . }}-credential-writer
+  validationActions: [Deny]
+{{- end }}
+{{- end }}

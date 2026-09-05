@@ -181,6 +181,37 @@ type OTelConfigSpec struct {
 	ToolUsage *ToolUsageConfig `json:"toolUsage,omitempty"`
 }
 
+// SignalState is the per-signal export health the operator reports on status
+// (story ISI-3557 D-AC1, W4 enum). Populated by the export reconciler (Story C /
+// ISI-3724), NOT by otelgate.
+//
+//	healthy  — the most recent export for this signal succeeded.
+//	erroring — the most recent export failed (export/auth error); Detail carries
+//	           a human-readable, secret-free reason (D-AC3).
+//	pending  — configured but not yet exercised (no export observed since start).
+//	disabled — no exporter is configured for this signal.
+type SignalState string
+
+const (
+	SignalStateHealthy  SignalState = "healthy"
+	SignalStateErroring SignalState = "erroring"
+	SignalStatePending  SignalState = "pending"
+	SignalStateDisabled SignalState = "disabled"
+)
+
+// SignalStatus is one signal's observed export health. Detail is a
+// human-readable reason for a non-healthy state (e.g. "endpoint unreachable",
+// "auth Secret 'otlp-token' not found") and MUST NEVER contain token values or
+// Secret contents (D-AC3).
+type SignalStatus struct {
+	// +kubebuilder:validation:Enum=healthy;erroring;pending;disabled
+	State SignalState `json:"state"`
+
+	// Detail is a human-readable, secret-free reason for a non-healthy state.
+	// +optional
+	Detail string `json:"detail,omitempty"`
+}
+
 // OTelConfigStatus defines the observed state of OTelConfig.
 type OTelConfigStatus struct {
 	// ObservedGeneration is the metadata.generation most recently reconciled.
@@ -192,6 +223,25 @@ type OTelConfigStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Signals reports per-signal export health, keyed by signal name
+	// ("traces", "metrics", "logs"). The export reconciler (Story C / ISI-3724)
+	// writes it via SetSignal; the apiserver read model surfaces it verbatim as
+	// status.signals[key] to the Console "Export state" card (D-AC1/D-AC4). An
+	// absent key means "not yet observed".
+	// +optional
+	Signals map[string]SignalStatus `json:"signals,omitempty"`
+}
+
+// SetSignal records one signal's export health, lazily initialising the map so
+// the export reconciler can write it without a nil check (Story C seam, D-AC2).
+// key is a signal name ("traces", "metrics", "logs"); detail must be secret-free
+// (D-AC3).
+func (s *OTelConfigStatus) SetSignal(key string, state SignalState, detail string) {
+	if s.Signals == nil {
+		s.Signals = make(map[string]SignalStatus, 3)
+	}
+	s.Signals[key] = SignalStatus{State: state, Detail: detail}
 }
 
 // +kubebuilder:object:root=true

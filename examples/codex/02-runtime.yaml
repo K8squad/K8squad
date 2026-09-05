@@ -1,0 +1,20 @@
+# AgentRuntime = the coding-agent flavor + CLI version policy an Agent points
+# at via spec.runtimeRef (arch §5.3). This example runs the `codex` flavor —
+# OpenAI's official Rust coding agent (epic ISI-3647, arch ISI-3646).
+#
+# `codex` is a CONFORMANT, first-class runtime: it is in the built-in set
+# [openclaw claude-code opencode hermes codex], so it admits WITHOUT
+# spec.experimental=true (FR-D3). Setting experimental here would wrongly mark
+# the generated Agent Card as a vendor shim — leave it unset.
+#
+# cliVersion pins the official Rust `codex` revision the shim adapter serves,
+# as an immutable tag (the reproducibility discipline of ADR-017). This matches
+# the adapter's single-sourced pin (pkg/shim/runtimes/codex.go).
+apiVersion: ksquad.io/v1alpha1
+kind: AgentRuntime
+metadata:
+  name: codex
+  namespace: codex-squad
+spec:
+  type: codex
+  cliVersion: rust-v0.152.0

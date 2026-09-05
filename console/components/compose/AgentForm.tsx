@@ -51,6 +51,8 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
         model={cf.form.model}
         modelEndpointRef={cf.form.modelEndpointRef}
         byoEnabled={cf.form.byoEnabled}
+        fallbackModel={cf.form.fallbackModel}
+        fallbackModelEndpointRef={cf.form.fallbackModelEndpointRef}
         errors={errors}
         patch={patch}
       />
@@ -60,6 +62,22 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
           onChange={(e) => patch({ credentialSecretRef: e.target.value })}
           aria-invalid={!!errors["credentialSecretRef.name"]}
         />
+      </Field>
+      <Field
+        label="Credential class"
+        hint="how the runtime injects the credential — blank defaults to a service-account API key"
+        error={errors["credentialClass"]}
+      >
+        <select
+          value={cf.form.credentialClass}
+          onChange={(e) => patch({ credentialClass: e.target.value })}
+          aria-invalid={!!errors["credentialClass"]}
+          aria-label="Credential class"
+        >
+          <option value="">Default (service account)</option>
+          <option value="service-account">Service account (API key)</option>
+          <option value="human-seat">Human seat (interactive OAuth)</option>
+        </select>
       </Field>
       <Field label="Skill refs" hint="optional — one name (or namespace/name) per line">
         <textarea

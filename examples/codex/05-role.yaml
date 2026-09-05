@@ -1,0 +1,14 @@
+# Role = the reusable behavior profile an Agent assumes (arch §5.1). It carries
+#   - promptRef      → its behavior ConfigMap (04-prompt.yaml)
+#   - defaultSkills  → Skills granted to any Agent assuming the role (unioned
+#                      with the Agent's own spec.skillRefs, ADR-044 step 1)
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: codex-coder
+  namespace: codex-squad
+  labels:
+    ksquad.io/example: codex
+spec:
+  promptRef:
+    name: codex-coder-prompt
