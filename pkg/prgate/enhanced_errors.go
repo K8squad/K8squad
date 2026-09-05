@@ -37,24 +37,24 @@ func (e *EnhancedError) JSON() string {
 func (e *EnhancedError) String() string {
 	var builder strings.Builder
 	
-	builder.WriteString(fmt.Sprintf("[%s] %s\n", e.Type, e.Message))
-	
+	fmt.Fprintf(&builder, "[%s] %s\n", e.Type, e.Message)
+
 	if len(e.Details) > 0 {
 		builder.WriteString("Details:\n")
 		for key, value := range e.Details {
-			builder.WriteString(fmt.Sprintf("  %s: %v\n", key, value))
+			fmt.Fprintf(&builder, "  %s: %v\n", key, value)
 		}
 	}
-	
+
 	if len(e.Suggestions) > 0 {
 		builder.WriteString("Suggestions:\n")
 		for i, suggestion := range e.Suggestions {
-			builder.WriteString(fmt.Sprintf("  %d. %s\n", i+1, suggestion))
+			fmt.Fprintf(&builder, "  %d. %s\n", i+1, suggestion)
 		}
 	}
-	
+
 	if e.ErrorID != "" {
-		builder.WriteString(fmt.Sprintf("Error ID: %s\n", e.ErrorID))
+		fmt.Fprintf(&builder, "Error ID: %s\n", e.ErrorID)
 	}
 	
 	if e.Stack != "" {

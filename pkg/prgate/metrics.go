@@ -386,5 +386,9 @@ func StartMetricsServer(port int, registry prometheus.Registerer) error {
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("Starting metrics server on %s\n", addr)
 	
-	return http.ListenAndServe(addr, nil)
+	server := &http.Server{
+		Addr:              addr,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	return server.ListenAndServe()
 }

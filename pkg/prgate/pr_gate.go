@@ -225,14 +225,16 @@ func (g *PRValidationGate) validateCIStatus(prData *PullRequestData) CheckResult
 			
 			// Determine check status
 			checkStatus := "pass"
-			if status == "completed" {
-				if conclusion == "failure" || conclusion == "cancelled" {
+			switch status {
+			case "completed":
+				switch conclusion {
+				case "failure", "cancelled":
 					checkStatus = "fail"
 					allPassing = false
-				} else if conclusion == "neutral" || conclusion == "timed_out" {
+				case "neutral", "timed_out":
 					checkStatus = "warning"
 				}
-			} else if status == "failure" {
+			case "failure":
 				checkStatus = "fail"
 				allPassing = false
 			}
@@ -370,18 +372,19 @@ func (g *PRValidationGate) generateSummary(result *ValidationResult) string {
 		summary.WriteString("❌ PR validation FAILED\n")
 	}
 	
-	summary.WriteString(fmt.Sprintf("Duration: %v\n", result.Duration))
-	summary.WriteString(fmt.Sprintf("Checks performed: %d\n", len(result.CheckResults)))
+	fmt.Fprintf(&summary, "Duration: %v\n", result.Duration)
+	fmt.Fprintf(&summary, "Checks performed: %d\n", len(result.CheckResults))
 	
 	for _, check := range result.CheckResults {
 		statusIcon := "✅"
-		if check.Status == "fail" {
+		switch check.Status {
+		case "fail":
 			statusIcon = "❌"
-		} else if check.Status == "warning" {
+		case "warning":
 			statusIcon = "⚠️"
 		}
 		
-		summary.WriteString(fmt.Sprintf("%s %s: %s\n", statusIcon, check.Name, check.Message))
+		fmt.Fprintf(&summary, "%s %s: %s\n", statusIcon, check.Name, check.Message)
 	}
 	
 	return summary.String()
