@@ -59,7 +59,7 @@ metadata:
   namespace: my-team
 spec:
   type: claude-code
-  cliVersion: rust-v0.152.0
+  # cliVersion unset: shim resolves the default channel (ADR-017)
   model: claude-3-5-sonnet-20241022
 ```
 
@@ -165,7 +165,7 @@ metadata:
   namespace: my-team
 spec:
   type: claude-code
-  cliVersion: rust-v0.152.0
+  # cliVersion unset: shim resolves the default channel (ADR-017)
   model: claude-3-5-sonnet-20241022
 ```
 
@@ -391,7 +391,7 @@ kubectl -n <namespace> describe team <team-name>
 See the following examples for inspiration:
 - [Basic team composition](../examples/bmad-team/)
 - [Codex-specific example](../examples/codex/)
-- [Mixed runtime squad](../examples/mixed-runtime/)
+- [Mixed runtime squads](./supported-agents.md#mixed-runtime-squads)
 
 ## Next Steps
 

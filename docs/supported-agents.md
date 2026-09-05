@@ -4,13 +4,17 @@ KSquad supports multiple conformant agent runtimes, allowing you to mix differen
 
 ## Supported Runtimes
 
+The CRD admits exactly these conformant runtime types (see the `spec.type` validation in `api/v1alpha1/agentruntime_types.go`); anything else requires `spec.experimental=true` and is treated as a vendor shim:
+
 | Runtime | Type | Status | Credential Class | Description |
 |---------|------|--------|------------------|-------------|
 | **claude-code** | Conformant | ✅ Stable | `human-seat` ⚡, `service-account` | Anthropic's Claude Code CLI for coding assistance |
 | **codex** | Conformant | ✅ Stable | `service-account` only 🔄 | OpenAI's official Rust coding agent (GPT models) |
-| **ollama** | Conformant | ✅ Stable | `service-account` | Local open-source model runner |
+| **opencode** | Conformant | ✅ Stable | `service-account` | Open-source terminal coding agent (opencode) |
 | **openclaw** | Conformant | ✅ Stable | `service-account` | Anthropic's Claude CLI (open-source variant) |
 | **hermes** | Conformant | ✅ Stable | `service-account` | Custom runtime implementation |
+
+> **Local models (Ollama and friends):** there is no `ollama` runtime *type*. Local or OpenAI-compatible endpoints are routed per-runtime via `spec.modelEndpointRef`, which projects `OPENAI_BASE_URL` (and a placeholder token when none is needed) into the run. See [BYO credentials](./getting-started/getting-started-byo-cred.md#alternative-byo-endpoints).
 
 ## Runtime Details
 
@@ -22,10 +26,10 @@ KSquad supports multiple conformant agent runtimes, allowing you to mix differen
 - `service-account` (manual rotation)
 
 **Features**:
-- Anthropic's official CLI for Claude 3.5 Sonnet
+- Anthropic's official CLI for Claude models
 - Zero-touch OAuth refresh (human-seat)
 - Best-in-class coding assistance
-- Human-seat auth supports interactive ChatGPT-style experience
+- Human-seat auth supports an interactive, subscription-backed experience
 
 **Usage**:
 ```yaml
@@ -35,7 +39,8 @@ metadata:
   name: claude-code-runtime
 spec:
   type: claude-code
-  cliVersion: rust-v0.152.0
+  # cliVersion unset: the shim resolves the default channel (ADR-017).
+  # Pin an immutable tag/SHA for reproducibility when you need it.
 ```
 
 ### Codex (`codex`)
@@ -63,30 +68,29 @@ metadata:
   name: codex-runtime
 spec:
   type: codex
-  cliVersion: rust-v0.152.0
+  cliVersion: rust-v0.152.0  # pins the official Rust codex revision
 ```
 
-### Ollama (`ollama`)
+### OpenCode (`opencode`)
 
 **Status**: Stable, conformant runtime  
 **Credential Classes**: 
-- `service-account` (local model access)
+- `service-account` (BYO provider API key)
 
 **Features**:
-- Runs open-source models locally
-- Supports Llama, Mistral, Mixtral, and others
-- No external API dependencies
-- Local model deployment required
+- Open-source terminal-based coding agent
+- Provider-agnostic: works with Anthropic, OpenAI, and other backends
+- Same envelope contract (`KSQUAD_SYSTEM_CONTEXT` / `KSQUAD_INPUT`) as the other v1 runtimes
 
 **Usage**:
 ```yaml
 apiVersion: ksquad.io/v1alpha1
 kind: AgentRuntime
 metadata:
-  name: ollama-runtime
+  name: opencode-runtime
 spec:
-  type: ollama
-  cliVersion: rust-v0.152.0
+  type: opencode
+  # cliVersion unset: the shim resolves the default channel.
 ```
 
 ### OpenClaw (`openclaw`)
@@ -108,7 +112,6 @@ metadata:
   name: openclaw-runtime
 spec:
   type: openclaw
-  cliVersion: rust-v0.152.0
 ```
 
 ### Hermes (`hermes`)
@@ -130,7 +133,6 @@ metadata:
   name: hermes-runtime
 spec:
   type: hermes
-  cliVersion: rust-v0.152.0
 ```
 
 ## Mixed Runtime Squads
@@ -170,8 +172,7 @@ spec:
 
 ### Choose Claude Code if:
 - You need the most advanced coding assistance
-- You have access to Anthropic's ChatGPT-style interface
-- You prefer zero-touch credential management
+- You have an Anthropic plan and want zero-touch credential management (human-seat)
 - You're building complex software systems
 
 ### Choose Codex if:
@@ -180,11 +181,10 @@ spec:
 - You prefer BYO API key management
 - You're working with OpenAI-compatible endpoints
 
-### Choose Ollama if:
-- You need offline/local execution
-- You prefer open-source models
-- You have privacy requirements
-- You want to avoid external API dependencies
+### Choose OpenCode if:
+- You want an open-source, provider-agnostic coding agent
+- You need to swap model providers without changing runtime types
+- You're aligning with the same tooling your local teams already use
 
 ### Choose OpenClaw if:
 - You need Anthropic model access but prefer CLI tooling

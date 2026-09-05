@@ -11,9 +11,13 @@ BYO credentials allow you to use your own API keys with KSquad, giving you full 
 | Runtime | Credential Class | Environment Variable | Notes |
 |---------|------------------|---------------------|-------|
 | **codex** | `service-account` | `OPENAI_API_KEY` | OpenAI's official Rust coding agent |
-| **ollama** | `service-account` | `OLLAMA_HOST` | Local model runner |
+| **opencode** | `service-account` | Provider-specific | Open-source, provider-agnostic coding agent |
 | **openclaw** | `service-account` | `ANTHROPIC_API_KEY` | Anthropic CLI variant |
 | **hermes** | `service-account` | Runtime-specific | Custom implementation |
+
+Local model runners such as Ollama are not runtime *types*; route them through a
+`ModelEndpoint` (see [Alternative BYO Endpoints](#alternative-byo-endpoints)), which
+projects `OPENAI_BASE_URL` into the run.
 
 ## Prerequisites
 
