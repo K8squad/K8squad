@@ -95,6 +95,9 @@ func TestCredentialMapping(t *testing.T) {
 		apiv1alpha1.RuntimeTypeOpenClaw: "OPENCLAW_API_KEY",
 		apiv1alpha1.RuntimeTypeHermes:   "HERMES_API_KEY",
 		apiv1alpha1.RuntimeTypeOpenCode: "OPENCODE_API_KEY",
+		// Codex speaks the OpenAI wire natively, so the per-user credential maps
+		// onto OPENAI_API_KEY (ShapeAPIKey, D1; epic ISI-3647, gate ISI-3660).
+		apiv1alpha1.RuntimeTypeCodex: "OPENAI_API_KEY",
 	}
 	for typ, wantVar := range cases {
 		rt, _ := Get(typ)
@@ -144,6 +147,69 @@ func TestBYOModelEndpointWire(t *testing.T) {
 	if !hasArg(spec.Args, "llama3.1") {
 		t.Errorf("expected route model llama3.1 in args; got %v", spec.Args)
 	}
+}
+
+// TestCodexBYOModelEndpointWire pins the codex BYO endpoint wire (story 5.7/D6,
+// epic ISI-3647): a resolved model route maps onto the OpenAI-compatible env,
+// the route's own token becomes OPENAI_API_KEY, the route model wins over the
+// runtime default, and a config.toml is rendered so the CLI's
+// [model_providers.*] block points at the endpoint. Critically, a per-user
+// credential present alongside a route must NOT also emit OPENAI_API_KEY —
+// glibc getenv is first-wins, so a second key would shadow the route token.
+func TestCodexBYOModelEndpointWire(t *testing.T) {
+	rt, _ := Get(apiv1alpha1.RuntimeTypeCodex)
+	spec, err := rt.Command(LaunchContext{
+		Envelope:   a2a.Envelope{Input: "do the thing"},
+		Credential: "per-user-key-should-be-shadowed",
+		ModelRoute: a2a.ModelRoute{Endpoint: "http://ollama:11434/v1", Model: "qwen3", Token: "route-token"},
+		WorkDir:    "/tmp/codex-work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasEnv(spec.Env, "OPENAI_BASE_URL=http://ollama:11434/v1") {
+		t.Errorf("expected OPENAI_BASE_URL on the endpoint wire; env=%v", spec.Env)
+	}
+	if !hasEnv(spec.Env, "OPENAI_API_KEY=route-token") {
+		t.Errorf("expected the route token to become OPENAI_API_KEY; env=%v", spec.Env)
+	}
+	// Exactly one OPENAI_API_KEY — the per-user credential must not shadow the route.
+	if n := countEnvKey(spec.Env, "OPENAI_API_KEY"); n != 1 {
+		t.Errorf("expected exactly one OPENAI_API_KEY (route wins, no shadow), got %d; env=%v", n, spec.Env)
+	}
+	if hasEnv(spec.Env, "OPENAI_API_KEY=per-user-key-should-be-shadowed") {
+		t.Error("per-user credential leaked as OPENAI_API_KEY alongside the route token (would shadow it)")
+	}
+	// The route's model wins over the runtime default.
+	if !hasArg(spec.Args, "qwen3") {
+		t.Errorf("expected route model qwen3 in args; got %v", spec.Args)
+	}
+	// A config.toml is rendered so the CLI routes to the BYO endpoint (D6).
+	var gotConfig bool
+	for _, f := range spec.WorkDirFiles {
+		if f.Name == "config.toml" {
+			gotConfig = true
+		}
+	}
+	if !gotConfig {
+		t.Errorf("expected a rendered config.toml for the BYO endpoint; files=%v", spec.WorkDirFiles)
+	}
+	// The prompt rides env, never argv (no leak into the process table).
+	for _, a := range spec.Args {
+		if strings.Contains(a, "do the thing") {
+			t.Errorf("work instruction leaked into argv %q", a)
+		}
+	}
+}
+
+func countEnvKey(env []string, key string) int {
+	n := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			n++
+		}
+	}
+	return n
 }
 
 func hasEnv(env []string, kv string) bool {
