@@ -57,7 +57,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: P1-P4 verdict table (mutations M1-M4 re-RED)
         if: steps.guard.outputs.present == 'true'
         run: go test -v ./pkg/perfgate/
@@ -101,7 +104,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: Run P1/P4 benchmarks (chaos tag, real PG, DATABASE_URL exported)
         if: steps.guard.outputs.present == 'true'
         env:
@@ -170,7 +176,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: Run P2 benchmark
         if: steps.guard.outputs.present == 'true'
         run: |
@@ -228,7 +237,10 @@ jobs:
         if: steps.guard.outputs.present == 'true'
         with:
           go-version-file: go.mod
-          cache: true
+          # Self-hosted runners keep a persistent ~/go/pkg/mod; restoring a
+          # multi-GB setup-go archive over it floods tar ("Cannot open: File
+          # exists") and kills the job on disk pressure. The dir IS the cache.
+          cache: false
       - name: Run P3 SSE throughput benchmark (race on, zero-drop asserted)
         if: steps.guard.outputs.present == 'true'
         run: |

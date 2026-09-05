@@ -30,7 +30,7 @@ import (
 )
 
 func TestBuildManifestRecordsEnvelopeWithoutSecretMaterial(t *testing.T) {
-	m := BuildManifest(resolvedToolchains(), []Endpoint{stdioEndpoint(), httpEndpoint()})
+	m := BuildManifest(resolvedToolchains(), []Endpoint{stdioEndpoint(), httpEndpoint()}, []GrantedSkill{})
 
 	require.Len(t, m.Toolchains, 2)
 	assert.Equal(t, "kubectl", m.Toolchains[0].Name)
@@ -54,20 +54,20 @@ func TestBuildManifestRecordsEnvelopeWithoutSecretMaterial(t *testing.T) {
 }
 
 func TestManifestHashDeterministicAndSensitive(t *testing.T) {
-	a := BuildManifest(resolvedToolchains(), scopedEndpoints())
-	b := BuildManifest(resolvedToolchains(), scopedEndpoints())
+	a := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})
+	b := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})
 	assert.Equal(t, a.CapabilityHash, b.CapabilityHash, "identical envelopes hash identically")
 
 	// Any envelope change (a version pin) changes the hash → new pool key.
 	bumped := resolvedToolchains()
 	bumped[1].Version = "2.63"
-	c := BuildManifest(bumped, scopedEndpoints())
+	c := BuildManifest(bumped, scopedEndpoints(), []GrantedSkill{})
 	assert.NotEqual(t, a.CapabilityHash, c.CapabilityHash)
 
 	// A filter change changes the hash.
 	narrowed := scopedEndpoints()
 	narrowed[0].AllowTools = narrowed[0].AllowTools[:1]
-	d := BuildManifest(resolvedToolchains(), narrowed)
+	d := BuildManifest(resolvedToolchains(), narrowed, []GrantedSkill{})
 	assert.NotEqual(t, a.CapabilityHash, d.CapabilityHash)
 
 	// The hash itself does not feed the hash (self-reference elision).
@@ -75,7 +75,7 @@ func TestManifestHashDeterministicAndSensitive(t *testing.T) {
 }
 
 func TestEmptyManifestStillHashes(t *testing.T) {
-	m := BuildManifest(nil, nil)
+	m := BuildManifest(nil, nil, []GrantedSkill{})
 	assert.Empty(t, m.Toolchains)
 	assert.Empty(t, m.MCPEndpoints)
 	assert.NotEmpty(t, m.CapabilityHash)

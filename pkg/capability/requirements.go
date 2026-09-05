@@ -54,6 +54,11 @@ type Requirements struct {
 	// Sidecars is the union of Skill.spec.requires.sidecars (deduped,
 	// first-seen order) — capability-gated service sidecars (§5.3.3).
 	Sidecars []string
+
+	// Skills are the granted skills collected during capability union (ADR-0004
+	// Phase 1 keystone): identity, source type, and permissions copied verbatim
+	// from Skill.spec.permissions only (never from body content — AC4/AC7 D8).
+	Skills []GrantedSkill
 }
 
 func (r *Requirements) mcpKey(ref api.ObjectRef, defaultNS string) string {
@@ -126,6 +131,21 @@ func Collect(ctx context.Context, reader client.Reader, run *api.Run) (*Requirem
 			}
 			seenSkills[skillKey] = true
 
+			// Collect granted skill (ADR-0004 Phase 1 keystone): identity,
+			// source type, and permissions copied verbatim from Skill.spec
+			// permissions only (never from body content — AC4/AC7 D8).
+			grantedSkill := GrantedSkill{
+				Namespace:   skillNS,
+				Name:        skillRef.Name,
+				SourceType:  skill.Spec.Source.Type,
+				Inline:      skill.Spec.Source.Inline,
+				Permissions: skill.Spec.Permissions,
+			}
+			if skill.Spec.Source.Git != nil {
+				grantedSkill.Git = skill.Spec.Source.Git
+			}
+			reqs.Skills = append(reqs.Skills, grantedSkill)
+
 			for _, ref := range skill.Spec.Requires.Toolchains {
 				if _, seen := reqs.ToolchainSources[ref]; !seen {
 					reqs.ToolchainRefs = append(reqs.ToolchainRefs, ref)
@@ -150,6 +170,26 @@ func Collect(ctx context.Context, reader client.Reader, run *api.Run) (*Requirem
 		}
 	}
 	return reqs, nil
+}
+
+// GrantedSkill records a skill's identity, source type, and permissions
+// for capability assembly (ADR-0004 Phase 1 keystone). Permissions are copied
+// verbatim from Skill.spec.permissions ONLY (never from body content — AC4/AC7 D8).
+type GrantedSkill struct {
+	// Namespace is the skill's namespace.
+	Namespace string
+	// Name is the skill's name.
+	Name string
+	// SourceType is how the skill body is obtained (inline|git).
+	SourceType api.SkillSourceType
+	// Inline is the skill body when sourceType=inline (empty for git).
+	Inline string
+	// Git is the git source when sourceType=git (nil for inline).
+	Git *api.GitSkillSource
+	// Permissions are the CRD-authorized capability envelope copied verbatim
+	// from Skill.spec.permissions — trust boundary (D8): never widened by
+	// untrusted body content.
+	Permissions []string
 }
 
 func containsString(xs []string, want string) bool {

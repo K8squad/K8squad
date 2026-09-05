@@ -343,6 +343,14 @@ type CapabilityManifest struct {
 	// +kubebuilder:validation:MaxItems=32
 	MCPEndpoints []ResolvedMCPEndpoint `json:"mcpEndpoints,omitempty"`
 
+	// Skills are the granted skills collected during capability assembly
+	// (ADR-0004 Phase 1 keystone): identity, source type, and permissions
+	// copied verbatim from Skill.spec.permissions only (never from body
+	// content — AC4/AC7 D8). Records NO credential material — only provenance.
+	// +optional
+	// +listType=atomic
+	Skills []GrantedSkill `json:"skills,omitempty"`
+
 	// CapabilityHash is sha256 of the manifest's canonical JSON. It keys
 	// warm-pool inventory (ADR-044 step 7: identical capability envelopes
 	// share pool stock) and gives consoles/audits a cheap equality handle.
@@ -420,6 +428,40 @@ type ResolvedMCPEndpoint struct {
 	// endpoint's egress (R1: MCP rides the existing egress story).
 	// +optional
 	EgressPolicyRef *ObjectRef `json:"egressPolicyRef,omitempty"`
+}
+
+// GrantedSkill records a skill's identity, source type, and permissions
+// for capability assembly (ADR-0004 Phase 1 keystone). Permissions are copied
+// verbatim from Skill.spec.permissions ONLY (never from body content — AC4/AC7 D8).
+type GrantedSkill struct {
+	// Namespace is the skill's namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+
+	// Name is the skill's name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// SourceType is how the skill body is obtained (inline|git).
+	// +kubebuilder:validation:Required
+	SourceType SkillSourceType `json:"sourceType"`
+
+	// Inline is the skill body when sourceType=inline (empty for git).
+	// +optional
+	Inline string `json:"inline,omitempty"`
+
+	// Git is the git source when sourceType=git (nil for inline).
+	// +optional
+	Git *GitSkillSource `json:"git,omitempty"`
+
+	// Permissions are the CRD-authorized capability envelope copied verbatim
+	// from Skill.spec.permissions — trust boundary (D8): never widened by
+	// untrusted body content.
+	// +optional
+	// +listType=atomic
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // ModelSegment is one portion of a Run served by one model (5.11
