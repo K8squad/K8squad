@@ -117,6 +117,9 @@ func (a *Assembler) EnsureManifest(ctx context.Context, run *api.Run) (*api.Capa
 		if err := capability.EnsureMCPConfigMap(ctx, a.Client, run, endpointsFromManifest(run.Status.CapabilityManifest)); err != nil {
 			return nil, err
 		}
+		if err := capability.EnsureSkillConfigMaps(ctx, a.Client, run, inlineSkillsFromManifest(run.Status.CapabilityManifest)); err != nil {
+			return nil, err
+		}
 		return run.Status.CapabilityManifest, nil
 	}
 
@@ -127,14 +130,44 @@ func (a *Assembler) EnsureManifest(ctx context.Context, run *api.Run) (*api.Capa
 	if err := capability.EnsureMCPConfigMap(ctx, a.Client, run, env.Endpoints); err != nil {
 		return nil, err
 	}
+	if err := capability.EnsureSkillConfigMaps(ctx, a.Client, run, inlineSkillsFromManifest(env.Manifest)); err != nil {
+		return nil, err
+	}
 	return env.Manifest, nil
 }
 
-// ReleaseConfig drops the projected IR ConfigMap when a Run goes
-// terminal (the owner reference GC covers object deletion; this is the
-// explicit, idempotent sweep for the drift case).
+// ReleaseConfig drops the projected IR ConfigMap and the per-skill
+// ConfigMaps when a Run goes terminal (the owner reference GC covers
+// object deletion; this is the explicit, idempotent sweep for the drift
+// case).
 func (a *Assembler) ReleaseConfig(ctx context.Context, run *api.Run) error {
-	return capability.EnsureMCPConfigMap(ctx, a.Client, run, nil)
+	if err := capability.EnsureMCPConfigMap(ctx, a.Client, run, nil); err != nil {
+		return err
+	}
+	return capability.EnsureSkillConfigMaps(ctx, a.Client, run, nil)
+}
+
+// inlineSkillsFromManifest rebuilds the INLINE granted-skill set from a
+// recorded manifest for per-skill ConfigMap convergence (the manifest is
+// the audit truth; git-sourced skills are S-D and skip this projection).
+func inlineSkillsFromManifest(m *api.CapabilityManifest) []capability.GrantedSkill {
+	if m == nil || len(m.Skills) == 0 {
+		return nil
+	}
+	var out []capability.GrantedSkill
+	for _, s := range m.Skills {
+		if s.SourceType != api.SkillSourceInline {
+			continue
+		}
+		out = append(out, capability.GrantedSkill{
+			Namespace:   s.Namespace,
+			Name:        s.Name,
+			SourceType:  s.SourceType,
+			Inline:      s.Inline,
+			Permissions: s.Permissions,
+		})
+	}
+	return out
 }
 
 // endpointsFromManifest rebuilds the IR endpoints from a recorded

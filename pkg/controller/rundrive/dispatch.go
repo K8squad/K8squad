@@ -397,6 +397,18 @@ func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.
 	} else if path != "" {
 		env = append(env, capability.MCPConfigEnvVar+"="+path)
 	}
+	// The per-skill body+envelope projection (ADR-0004 S-B): the reconciler
+	// projects one ConfigMap per granted INLINE skill
+	// (ksquad-run-<name>-skill-<skill>); the sandbox topology mounts them as
+	// volumes. Operator-spawned we materialize the whole
+	// ${KSQUAD_SKILLS_DIR}/<name>/{SKILL.md,permissions.json} tree into a
+	// temp dir, exactly the materializeMCPConfig discipline. Fail-closed: a
+	// Run whose manifest granted inline skills MUST see its skill tree.
+	if dir, err := d.materializeSkills(ctx, run); err != nil {
+		return nil, err
+	} else if dir != "" {
+		env = append(env, capability.SkillsDirEnvVar+"="+dir)
+	}
 	// D1: the W3C trace carrier — same convention as warmpool's sandbox env.
 	carrier := map[string]string{}
 	telemetry.Inject(ctx, carrier)
@@ -613,6 +625,61 @@ func (d *operatorDispatch) materializeMCPConfig(ctx context.Context, run *api.Ru
 		return "", fmt.Errorf("rundrive: write MCP IR: %w", err)
 	}
 	return path, nil
+}
+
+// materializeSkills copies the Run's per-skill projection ConfigMaps into
+// the on-disk tree the shim reads ("" when the Run granted no inline
+// skills): ${dir}/<name>/SKILL.md + ${dir}/<name>/permissions.json at mode
+// 0o600, KSQUAD_SKILLS_DIR=<dir>. v1 rough edge mirroring
+// materializeMCPConfig, deliberately bounded: the tree lives in os.TempDir
+// for the task's lifetime; the pod-side topology replaces this with the
+// real volume mounts. Fail-closed: a projected skill whose ConfigMap or
+// file keys are missing aborts the dispatch, never a silent partial tree.
+func (d *operatorDispatch) materializeSkills(ctx context.Context, run *api.Run) (string, error) {
+	if run.Status.CapabilityManifest == nil {
+		return "", nil
+	}
+	var inline []api.GrantedSkill
+	for _, s := range run.Status.CapabilityManifest.Skills {
+		if s.SourceType == api.SkillSourceInline {
+			inline = append(inline, s)
+		}
+	}
+	if len(inline) == 0 {
+		return "", nil
+	}
+	dir, err := os.MkdirTemp("", "ksquad-skills-*")
+	if err != nil {
+		return "", fmt.Errorf("rundrive: temp dir for skills tree: %w", err)
+	}
+	for _, s := range inline {
+		var cm corev1.ConfigMap
+		if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: capability.SkillsConfigMapName(run, s.Name)}, &cm); err != nil {
+			return "", fmt.Errorf("rundrive: read skill configmap for run %s/%s skill %s: %w", run.Namespace, run.Name, s.Name, err)
+		}
+		body, ok := cm.Data[capability.SkillBodyFile]
+		if !ok {
+			return "", fmt.Errorf("rundrive: skill configmap %s lacks key %s", cm.Name, capability.SkillBodyFile)
+		}
+		perms, ok := cm.Data[capability.SkillPermissionsFile]
+		if !ok {
+			return "", fmt.Errorf("rundrive: skill configmap %s lacks key %s", cm.Name, capability.SkillPermissionsFile)
+		}
+		skillDir := filepath.Join(dir, s.Name)
+		if err := os.MkdirAll(skillDir, 0o700); err != nil {
+			return "", fmt.Errorf("rundrive: mkdir for skill %s: %w", s.Name, err)
+		}
+		// Two files, two sources, one dir (D8): the body is data copied
+		// verbatim; the envelope is the reconciler-authored authority the
+		// ConfigMap already carries — neither is derived from the other.
+		if err := os.WriteFile(filepath.Join(skillDir, capability.SkillBodyFile), []byte(body), 0o600); err != nil {
+			return "", fmt.Errorf("rundrive: write body for skill %s: %w", s.Name, err)
+		}
+		if err := os.WriteFile(filepath.Join(skillDir, capability.SkillPermissionsFile), []byte(perms), 0o600); err != nil {
+			return "", fmt.Errorf("rundrive: write permissions for skill %s: %w", s.Name, err)
+		}
+	}
+	return dir, nil
 }
 
 // sinkFor wraps the run-event sink with the operator's mapper — the exact
