@@ -173,6 +173,7 @@ export function CredentialsScreen({
         <EmptyState
           title="Credential read model not configured"
           why="The apiserver answers its documented 501 — no credential read model is wired on this host (cluster-less run). The screen lights up when the informer cache backs GET /api/credentials."
+          testId="creds-unconfigured"
         />
       )}
 
@@ -180,6 +181,7 @@ export function CredentialsScreen({
         <EmptyState
           title="No credential surface for this session"
           why="Sign in with a squad-scoped session — deny and missing are indistinguishable here by design."
+          testId="creds-not-found"
         />
       )}
 
@@ -187,6 +189,7 @@ export function CredentialsScreen({
         <EmptyState
           title="Credential state unavailable"
           why="The apiserver could not serve the read model — retry shortly."
+          testId="creds-error"
         />
       )}
 

@@ -165,6 +165,7 @@ export function SquadOverview() {
         <EmptyState
           title="No Projects yet"
           why="No Projects in this Team's namespace yet."
+          testId="overview-empty"
         />
       ) : (
         projects.map((p) => (
