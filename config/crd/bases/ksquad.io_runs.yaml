@@ -415,6 +415,98 @@ spec:
                     maxItems: 32
                     type: array
                     x-kubernetes-list-type: atomic
+                  skills:
+                    description: |-
+                      Skills are the granted skills collected during capability assembly
+                      (ADR-0004 Phase 1 keystone): identity, source type, and permissions
+                      copied verbatim from Skill.spec.permissions only (never from body
+                      content — AC4/AC7 D8). Records NO credential material — only provenance.
+                    items:
+                      description: |-
+                        GrantedSkill records a skill's identity, source type, and permissions
+                        for capability assembly (ADR-0004 Phase 1 keystone). Permissions are copied
+                        verbatim from Skill.spec.permissions ONLY (never from body content — AC4/AC7 D8).
+                      properties:
+                        git:
+                          description: Git is the git source when sourceType=git (nil
+                            for inline).
+                          properties:
+                            credentialSecretRef:
+                              description: |-
+                                CredentialSecretRef is an optional BYO read-only token Secret for
+                                private repositories (§11 — never a shared KSquad token).
+                              properties:
+                                key:
+                                  description: Key inside the Secret; empty means
+                                    the consumer-defined default key.
+                                  type: string
+                                name:
+                                  description: Name of the referenced Secret.
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            path:
+                              description: Path to the skill inside the repository,
+                                e.g. "skills/pg-migrate".
+                              type: string
+                            ref:
+                              description: |-
+                                Ref is the immutable revision to fetch — PINNED to a commit SHA, never
+                                a floating branch (§5.3.6): a Run resolves a skill to an immutable
+                                revision so a repo force-push cannot silently alter in-flight
+                                behavior. Moving refs are admitted only behind an explicit
+                                experimental/dev posture, resolved-and-recorded per Run by the
+                                reconciler (story 1.3).
+                              minLength: 1
+                              type: string
+                            repoRef:
+                              description: |-
+                                RepoRef is the repository reference via the pkg/scm provider, e.g.
+                                "github.com/acme/squad-skills". GitHub is the v1 provider; GitLab and
+                                Gitea drop in behind the same seam (§5.4, ADR-018).
+                              minLength: 1
+                              type: string
+                          required:
+                          - ref
+                          - repoRef
+                          type: object
+                        inline:
+                          description: Inline is the skill body when sourceType=inline
+                            (empty for git).
+                          type: string
+                        name:
+                          description: Name is the skill's name.
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: Namespace is the skill's namespace.
+                          minLength: 1
+                          type: string
+                        permissions:
+                          description: |-
+                            Permissions are the CRD-authorized capability envelope copied verbatim
+                            from Skill.spec.permissions — trust boundary (D8): never widened by
+                            untrusted body content.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        sourceType:
+                          description: SourceType is how the skill body is obtained
+                            (inline|git).
+                          enum:
+                          - inline
+                          - git
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      - sourceType
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
                   toolchains:
                     description: |-
                       Toolchains is the resolved, pinned toolchain set staged as init

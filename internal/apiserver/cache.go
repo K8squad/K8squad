@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -96,6 +97,34 @@ func NewCRDApplier() (CRDApplier, error) {
 	c, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {
 		return nil, fmt.Errorf("build write client: %w", err)
+	}
+	return c, nil
+}
+
+// NewSecretWriter builds the DIRECT (uncached) client the E3-S1
+// managed-credential write surface (ISI-3679, AD-6) uses. Like the CRD-apply
+// write path, writes hit the API server live — a just-created Secret must be
+// durable before the handler answers, so a cache is a staleness hazard. The
+// scheme carries BOTH corev1 (the Secret being created) and ksquadv1 (the
+// Team list behind UID→namespace resolution). It resolves rest.Config the
+// standard way (in-cluster SA, then KUBECONFIG) and fails rather than
+// degrading silently; the caller decides whether that is fatal or a fall-back
+// to the documented 501.
+func NewSecretWriter() (SecretWriteClient, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build secret-write client: %w", err)
 	}
 	return c, nil
 }

@@ -466,6 +466,48 @@ the squad's `requires.toolchains` refs resolve against.
 
 ---
 
+## Running a different runtime — Codex (OpenAI)
+
+The BMAD squad above runs on the `claude-code` runtime, but a squad can mix
+runtimes. **Codex** — OpenAI's official Rust coding agent — is a conformant,
+first-class `AgentRuntime`, documented here the same way as `claude-code`.
+
+A minimal, applyable one-agent example lives at
+[`examples/codex/`](../examples/codex/) (namespace, credential, runtime, prompt,
+role, agent — the `bmad-team` shape reduced to a single runtime):
+
+```bash
+# 1. Put a real OpenAI API key in examples/codex/01-credentials.yaml
+#    (replace REPLACE_ME under stringData.token).
+# 2. Apply the whole folder in order (namespace first).
+kubectl apply -f examples/codex/
+```
+
+What differs from the Claude Code path:
+
+- **Runtime.** `AgentRuntime{spec.type: codex, cliVersion: rust-v0.152.0}`.
+  `codex` is in the built-in runtime set, so it admits **without**
+  `spec.experimental=true` — setting the experimental flag would wrongly mark
+  the Agent Card as a vendor shim.
+- **Credential — BYO OpenAI API key, service-account class.** Codex speaks the
+  OpenAI wire natively, so the Agent sets `spec.credentialClass:
+  service-account` and its `credentialSecretRef` points at a Secret holding a
+  long-lived OpenAI API key. The credential-injection contract (`pkg/credinject`)
+  maps that Secret value onto the runtime-native env var **`OPENAI_API_KEY`** by
+  reference — the control plane never reads the bytes. Rotate it like any
+  service-account key ([credential-rotation runbook §5.1](runbooks/credential-rotation.md)).
+- **No human-seat auth in v1.** There is no ChatGPT-subscription (OAuth) path
+  for Codex yet — a `human-seat` class on a codex Agent **fails closed**. It is
+  a ToS-gated roadmap item (ISI-3647 S9); use `service-account` today.
+- **Network egress.** Codex Run pods need egress to **`api.openai.com`** (or,
+  for a BYO OpenAI-compatible endpoint set via `modelEndpointRef`, that host) —
+  allow it in the squad `NetworkPolicy`.
+
+See [`examples/codex/README.md`](../examples/codex/README.md) for the full
+walkthrough and the per-file breakdown.
+
+---
+
 ## Next steps
 
 - Read the [architecture overview](../README.md#-architecture).

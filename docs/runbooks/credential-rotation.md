@@ -139,9 +139,12 @@ with a **BYO OpenAI API key** and is therefore a plain **`service-account`**
 credential — rotate it exactly as §5 above. Codex-specific details
 (`pkg/credinject`, `pkg/shim/runtimes/codex.go`):
 
-- The per-user Secret's `apiKey` value is injected by reference as
-  **`OPENAI_API_KEY`** (the OpenAI-standard env, ADR-026 OpenAI wire). Rotation
-  is the same `kubectl patch secret … stringData.apiKey` as §5.
+- The per-user Secret value is injected by reference as **`OPENAI_API_KEY`**
+  (the OpenAI-standard env, ADR-026 OpenAI wire). The Secret **key** is whatever
+  the Agent's `credentialSecretRef.key` names — the injection default is `apiKey`
+  when it is left unset, while the [`examples/codex/`](../../examples/codex/) set
+  uses `token`. Rotate by patching that same key, e.g.
+  `kubectl -n <ns> patch secret <name> --type merge -p '{"stringData":{"token":"<new key>"}}'`.
 - **Human-seat (ChatGPT-subscription) auth is not available in v1.** It is a
   ToS-gated fast-follow (ISI-3661). A `credentialClass: human-seat` on a `codex`
   Agent **fails closed** — the pair is deliberately unmapped, so no Run

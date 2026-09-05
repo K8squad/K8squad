@@ -319,6 +319,19 @@ func main() {
 		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints)")
 	}
 
+	// E3-S1 managed-credential write (ISI-3679, AD-6): POST /api/credentials
+	// creates ONE label-scoped Secret in the caller's team namespace. Its own
+	// direct client — the CRD-apply client's scheme has no corev1, and the
+	// create-only SA grant (ISI-3671) is scoped to exactly this job. A
+	// cluster-less dev run leaves it nil → the route keeps the documented 501.
+	var secretWriter *apiserver.SecretWriteService
+	if sw, swerr := apiserver.NewSecretWriter(); swerr != nil {
+		log.Printf("ksquad-apiserver: managed-credential write disabled (POST /api/credentials → 501): %v", swerr)
+	} else {
+		secretWriter = apiserver.NewSecretWriteService(sw)
+		log.Printf("ksquad-apiserver: managed-credential write ready (E3-S1, label-scoped Secret create)")
+	}
+
 	// Audit log read model (ISI-2881). The DB connection is already available.
 	var auditLog apiserver.AuditLogReader
 	if db != nil {
@@ -376,6 +389,7 @@ func main() {
 		Ready:         dbReady{db},
 		Overview:      overview,
 		Credentials:   credentials,
+		SecretWriter:  secretWriter,
 		Org:           org,
 		Onboarding:    onboarding,
 		OTelConfig:    otelConfig,

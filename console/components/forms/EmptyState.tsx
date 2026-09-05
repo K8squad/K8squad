@@ -6,13 +6,13 @@ export interface EmptyStateProps {
   ctaLabel?: string;
   onCta?: () => void;
   dependencyNudge?: React.ReactNode;
-  /** Stable observability id; defaults to "empty-state". */
+  /** Override the default data-testid so callers keep their context-specific hook. */
   testId?: string;
 }
 
-export function EmptyState({ title, why, ctaLabel, onCta, dependencyNudge, testId }: EmptyStateProps) {
+export function EmptyState({ title, why, ctaLabel, onCta, dependencyNudge, testId = "empty-state" }: EmptyStateProps) {
   return (
-    <div className="card empty-state" data-testid={testId ?? "empty-state"}>
+    <div className="card empty-state" data-testid={testId}>
       <h2 className="empty-state__title">{title}</h2>
       <p className="muted empty-state__why">{why}</p>
       {dependencyNudge && (
