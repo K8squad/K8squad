@@ -61,7 +61,6 @@ metadata:
   labels:
     {{- include "ksquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: apiserver
-    app.kubernetes.io/name: ksquad-apiserver-egress
 spec:
   policyTypes:
     - Egress

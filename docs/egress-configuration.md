@@ -211,6 +211,7 @@ spec:
           - 10.0.0.0/8
           - 172.16.0.0/12
           - 192.168.0.0/16
+          - 100.64.0.0/10       # RFC 6598 CGNAT (node/pod/LB ranges on GKE/EKS/Tailscale)
           - 169.254.0.0/16       # link-local incl. the cloud metadata service
       ports:
         - protocol: TCP
