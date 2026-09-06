@@ -10,13 +10,17 @@
   runtime (story 4.6 / ISI-2884) — that is where it belongs, NOT in this chart.
 
   Consequently this blanket default-deny is OPT-IN and OFF by default
-  (egress.networkPolicy.releaseNamespaceDefaultDeny). Rendering it without a
-  matching allow (carve-out) policy for EVERY control-plane component starves
-  the entire control plane on any enforcing CNI. Only the apiserver (below)
-  and the otel-collector (otel-collector-networkpolicy.yaml) have carve-outs
-  today; the full set (operator/console/gateway/NATS/event-relay/scm-webhook +
-  CNPG replication) is tracked in ISI-3910. Do NOT enable in production until
-  ISI-3910 lands.
+  (egress.networkPolicy.releaseNamespaceDefaultDeny). Rendering it REQUIRES a
+  matching allow (carve-out) policy for every control-plane component, or it
+  starves the entire control plane on an enforcing CNI. That full carve-out set
+  is now implemented (ISI-3910): enabling releaseNamespaceDefaultDeny also
+  renders templates/networkpolicy-carveouts.yaml (intra-CP chatter, the
+  kube-apiserver hop, north/south Gateway/Ingress ingress and Prometheus scrape)
+  plus the apiserver (below) and otel-collector governed external hops, keeping
+  every component functional under the deny. Verified end-to-end on an enforcing
+  CNI (kind + Calico) by test/cp-lockdown/run.sh and the cp-lockdown CI job.
+  Before enabling, tune controlPlaneCarveOuts.dataplaneNamespaceSelector and
+  apiserverEgress.exceptCIDRs to your CNI/gateway.
 */}}
 {{- if and .Values.egress.enabled (dig "networkPolicy" "releaseNamespaceDefaultDeny" false .Values.egress) }}
 apiVersion: networking.k8s.io/v1
