@@ -1,0 +1,10 @@
+# Seeded Role presets (AD-3, FR-6.1, ISI-3676) — the three starter Roles the
+# template-gallery fast path (E2) materializes Agents from. Apply into the
+# squad/team namespace, e.g.:
+#   kubectl apply -k config/roles/ -n <team-namespace>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - role-boss.yaml
+  - role-implementer.yaml
+  - role-manager.yaml
