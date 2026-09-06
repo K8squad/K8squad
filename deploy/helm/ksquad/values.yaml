@@ -393,7 +393,27 @@ egress:
     defaultDenyName: "ksquad-default-deny"
     # Project-specific egress policy name prefix
     projectEgressPrefix: "ksquad-egress"
-    
+
+    # Apiserver egress carve-out over the release-namespace default-deny
+    # (ISI-3906). The default-deny also selects the apiserver pod, but the
+    # architecture grants the control plane high-trust egress (arch §12.2;
+    # pkg/probeegress assumes it). Without this allow, the credential
+    # test-connection probe to model providers (api.anthropic.com,
+    # api.openai.com, BYO endpoints) is starved on any CNI that enforces
+    # NetworkPolicy. Mirrors the otel-collector vendorEgress pattern.
+    apiserverEgress:
+      # Render the <apiserver>-egress allow policy
+      enabled: true
+      # Governed external hop: 443/TCP to destinations OUTSIDE the
+      # excepted (private/in-cluster) ranges only. Tune exceptCIDRs to
+      # your CNI's pod/service/node CIDRs. RFC1918 + CGNAT + link-local
+      # (the cloud metadata service) are the safe defaults.
+      exceptCIDRs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+
   # Allowed egress destinations by default
   defaultAllow:
     # DNS resolution is always allowed
@@ -402,7 +422,7 @@ egress:
       ports:
         - protocol: "TCP"
           port: 53
-        - protocol: "UDP" 
+        - protocol: "UDP"
           port: 53
     # Control plane communication (API server, health checks)
     controlPlane:

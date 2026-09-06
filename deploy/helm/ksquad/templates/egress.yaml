@@ -6,6 +6,17 @@
   carve out allowlists for specific destinations like egress proxies.
   
   See story 4.6 and ISI-2888 for details on the egress architecture.
+
+  NOTE (ISI-3906): this policy renders into the RELEASE namespace — the
+  control plane — where it also selects the apiserver pod. The
+  architecture grants the control plane high-trust egress (arch §12.2;
+  pkg/probeegress's confused-deputy guard assumes it and adds its own
+  declarative containment at the dial seam), so the apiserver gets an
+  explicit carve-out below (ksquad-apiserver-egress): DNS, in-cluster
+  peers, and a governed external 443 hop for the credential
+  test-connection probe to model providers. Without it, any CNI that
+  enforces NetworkPolicy starves the probe ("Unreachable" reds) the
+  moment the default-deny is enforced.
 */}}
 {{- if .Values.egress.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -29,26 +40,72 @@ spec:
   # Apply to all pods in the namespace as baseline
 ---
 {{/*
-  Global default-deny policy template for team namespaces.
-  
-  This is used as a base template that can be applied to different namespaces
-  to provide the baseline egress isolation.
+  Apiserver egress carve-out over the release-namespace default-deny
+  (ISI-3906). Mirrors the otel-collector pattern: the governed hop to
+  model providers (credential test-connection, ISI-3680/ISI-3891) is
+  443/TCP to destinations OUTSIDE the excepted in-cluster/private ranges
+  only — RFC1918, CGNAT and link-local (the cloud metadata service) are
+  denied by rule, and pkg/probeegress adds its own declarative
+  SSRF/DNS-rebind containment at the dial seam on top. DNS, in-namespace
+  peers (Postgres) and kube-system (kube-api on 443/6443) ride along so
+  the carve-out keeps the apiserver functional, not just probeable.
 */}}
+{{- if and .Values.egress.enabled
+           (dig "networkPolicy" "apiserverEgress" "enabled" false .Values.egress) }}
+{{- $apiserverName := include "ksquad.apiserver.fullname" . -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ .Values.egress.networkPolicy.defaultDenyName }}
+  name: {{ $apiserverName }}-egress
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ksquad.labels" . | nindent 4 }}
-    app.kubernetes.io/component: networkpolicy
-    app.kubernetes.io/name: egress-default-deny
+    app.kubernetes.io/component: apiserver
+    app.kubernetes.io/name: ksquad-apiserver-egress
 spec:
   policyTypes:
-  - Egress
-  - Ingress
-  egress: []
-  ingress: []
-  podSelector: {}
-  namespaceSelector: {}
-  # This is a template - it will be applied to specific namespaces by the operator
+    - Egress
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: apiserver
+  egress:
+    # DNS resolution (always) — CoreDNS lives in kube-system.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-cluster peers: the release namespace's own services (Postgres,
+    # NATS, console BFF targets) on any port.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+    # Kubernetes API — the default Service VIP resolves to hostNetwork
+    # control-plane nodes (kube-system) on 443/6443.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # Governed hop to model providers (ISI-3906): external 443 only —
+    # private/in-cluster/link-local ranges are carved out so the probe
+    # cannot become a control-plane-internal reachability oracle at the
+    # NetworkPolicy layer.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- toYaml (dig "networkPolicy" "apiserverEgress" "exceptCIDRs" (list) .Values.egress) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
 {{- end }}
