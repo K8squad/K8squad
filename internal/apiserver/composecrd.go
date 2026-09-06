@@ -180,11 +180,28 @@ func (f fallbackModelWire) toSpec() *ksquadv1.FallbackModel {
 	return fb
 }
 
+// repoAuthWire is the compose wire shape for spec.repo.auth (ISI-3683 E4-S1 /
+// AD-8, F-API-1): the per-Project BYO provider credential ref the
+// connect-repo wizard captures. It maps 1:1 onto the CRD RepoAuth
+// (project_types.go) — camelCase credentialSecretRef reusing secretRefWire so
+// the console round-trips the same ref form the repo-auth test endpoint
+// (repoauthtest.go) accepts. Optional: absent repo.auth means an anonymous /
+// not-yet-connected repo, exactly like the CRD leaves spec.repo.auth nil.
+type repoAuthWire struct {
+	CredentialSecretRef secretRefWire `json:"credentialSecretRef"`
+}
+
+// toSpec maps the wire auth onto the CRD RepoAuth.
+func (a repoAuthWire) toSpec() *ksquadv1.RepoAuth {
+	return &ksquadv1.RepoAuth{CredentialSecretRef: a.CredentialSecretRef.toRef()}
+}
+
 type projectRequest struct {
 	Name string `json:"name"`
 	Repo struct {
-		URL string `json:"url"`
-		Ref string `json:"ref,omitempty"`
+		URL  string        `json:"url"`
+		Ref  string        `json:"ref,omitempty"`
+		Auth *repoAuthWire `json:"auth,omitempty"`
 	} `json:"repo"`
 	Goals           []string       `json:"goals,omitempty"`
 	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
@@ -556,6 +573,14 @@ func (s *ComposeService) planProject(req projectRequest) applyPlan {
 	spec := ksquadv1.ProjectSpec{
 		Repo:  ksquadv1.RepoSpec{URL: req.Repo.URL, Ref: req.Repo.Ref},
 		Goals: req.Goals,
+	}
+	if req.Repo.Auth != nil {
+		// AD-8: repo.auth capture — the ref must name a Secret (the wizard's
+		// PAT-paste stored through the E3-S1 credential surface) before it can
+		// ride the Project spec; an empty name is a field-level 422, mirroring
+		// agentRequest.credentialSecretRef.
+		errs = required("repo.auth.credentialSecretRef.name", req.Repo.Auth.CredentialSecretRef.Name, errs)
+		spec.Repo.Auth = req.Repo.Auth.toSpec()
 	}
 	if req.EgressPolicyRef != nil {
 		ref := req.EgressPolicyRef.toRef()

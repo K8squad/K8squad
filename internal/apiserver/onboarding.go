@@ -82,6 +82,12 @@ const (
 	// Distinct from the per-agent prefix so an agent and a credential that
 	// happen to share a name can never shadow each other's flag.
 	onboardingCredentialTestPrefix = "ksquad.io/onboarding-credential-test-"
+	// RepoTestConnectionAnnotation is the AD-7 repo (connect-repo step, E4-S1) last
+	// test-connection result: "passed" | "failed" | absent. It deliberately sits OUTSIDE
+	// the <agentName> suffix namespace — agent names are user-controlled DNS labels, so
+	// the repo flag gets its own fixed key rather than a reserved agent name that could
+	// collide (repoauthtest.go SetRepoTestConnectionFlag writes it).
+	RepoTestConnectionAnnotation = "ksquad.io/onboarding-test-connection-repo"
 )
 
 // OnboardingProgress is the projection payload (AC2). Step is the 1-based first INCOMPLETE
@@ -306,11 +312,31 @@ func CredentialTestFlag(team *ksquadv1.Team, credentialName string) (recorded, p
 	}
 }
 
+// RepoTestConnectionFlag reads the AD-7 repo connect-repo last test result from the Team CR:
+// (false, false) when no repo test was ever recorded, otherwise the recorded outcome.
+func RepoTestConnectionFlag(team *ksquadv1.Team) (recorded, passed bool) {
+	switch team.Annotations[RepoTestConnectionAnnotation] {
+	case "passed":
+		return true, true
+	case "failed":
+		return true, false
+	default:
+		return false, false
+	}
+}
+
 // SetCredentialTestFlag records the AD-7 (E3-S2) last test-connection result
 // for credentialName on the Team CR. The caller persists with its writer
 // client.
 func SetCredentialTestFlag(team *ksquadv1.Team, credentialName string, passed bool) {
 	setOnboardingAnnotation(team, onboardingCredentialTestPrefix+credentialName, true, map[bool]string{true: "passed", false: "failed"}[passed])
+}
+
+// SetRepoTestConnectionFlag records the AD-7 repo connect-repo last test result on the Team
+// CR (written by the E4-S1 repo-auth test endpoint, repoauthtest.go). The caller persists
+// with its writer client.
+func SetRepoTestConnectionFlag(team *ksquadv1.Team, passed bool) {
+	setOnboardingAnnotation(team, RepoTestConnectionAnnotation, true, map[bool]string{true: "passed", false: "failed"}[passed])
 }
 
 // setOnboardingAnnotation writes a ksquad.io/onboarding-* annotation, allocating the map when

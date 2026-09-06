@@ -69,7 +69,13 @@ type Options struct {
 	// server-side and caches the last result as Team annotations. Nil ⇒ the
 	// route keeps its documented 501 (cluster-less dev run).
 	CredentialTester *CredentialTestService
-	Hub              *Hub // optional; NewServer allocates one when nil
+	// RepoAuthTest is the E4-S1 repo auth Test-connection surface (ISI-3683,
+	// AD-7): POST /api/projects/repo-auth/test probes a STORED provider
+	// credential server-side ({ok,detail}, secret never returned) and caches
+	// the last result on the Team annotation. Nil ⇒ the POST keeps its
+	// documented 501 (cluster-less dev run), exactly like SecretWriter.
+	RepoAuthTest *RepoAuthTestService
+	Hub          *Hub // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -469,6 +475,23 @@ func (s *Server) routes(opts Options) {
 			credTest.HandleFunc("", opts.CredentialTester.handleCredentialTest).Methods(http.MethodPost)
 		} else {
 			credTest.HandleFunc("", notImplemented("credential test-connection", "ISI-3680: wire a CredentialTestService (direct client) to enable")).
+				Methods(http.MethodPost)
+		}
+
+		// E4-S1 repo auth Test-connection (ISI-3683, AD-7): POST
+		// /api/projects/repo-auth/test probes the STORED provider credential
+		// server-side (GET /user + repo-count) and answers {ok,detail} — the
+		// connect-repo wizard's green/red without the secret ever crossing
+		// back. Same choke point + CSRF guard; the body ceiling matches the
+		// credential surfaces (a ref, not material, but bounded is bounded).
+		repoAuthTest := s.router.Path("/api/projects/repo-auth/test").Subrouter()
+		repoAuthTest.Use(authz)
+		repoAuthTest.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		repoAuthTest.Use(maxBytesBody(4 << 10))
+		if opts.RepoAuthTest != nil {
+			repoAuthTest.HandleFunc("", opts.RepoAuthTest.handleRepoAuthTest).Methods(http.MethodPost)
+		} else {
+			repoAuthTest.HandleFunc("", notImplemented("repo-auth test", "ISI-3683: wire a RepoAuthTestService (direct client + prober) to enable")).
 				Methods(http.MethodPost)
 		}
 

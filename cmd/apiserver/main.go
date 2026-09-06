@@ -346,6 +346,22 @@ func main() {
 		log.Printf("ksquad-apiserver: credential test-connection ready (E3-S2, stateless server-side probe)")
 	}
 
+	// E4-S1 repo auth Test-connection (ISI-3683, AD-7): POST
+	// /api/projects/repo-auth/test probes a STORED provider credential
+	// server-side and answers {ok,detail}. Its own direct client (Secret get +
+	// Team list/update). NOTE: the probe READ needs a secrets:get grant the
+	// apiserver SA does not hold yet — until that lands the route is wired but
+	// a probe on a real cluster answers 502 naming the missing grant (the
+	// shared E3-S2/E4-S1 DevOps+Security follow-up owns it). A cluster-less
+	// dev run leaves it nil → the documented 501.
+	var repoAuthTest *apiserver.RepoAuthTestService
+	if tc, terr := apiserver.NewRepoAuthTestClient(); terr != nil {
+		log.Printf("ksquad-apiserver: repo-auth test disabled (POST /api/projects/repo-auth/test → 501): %v", terr)
+	} else {
+		repoAuthTest = apiserver.NewRepoAuthTestService(tc, apiserver.GitHubRepoProber{})
+		log.Printf("ksquad-apiserver: repo-auth test ready (E4-S1, server-side PAT probe)")
+	}
+
 	// Audit log read model (ISI-2881). The DB connection is already available.
 	var auditLog apiserver.AuditLogReader
 	if db != nil {
@@ -405,6 +421,7 @@ func main() {
 		Credentials:      credentials,
 		SecretWriter:     secretWriter,
 		CredentialTester: credentialTester,
+		RepoAuthTest:     repoAuthTest,
 		Org:              org,
 		Onboarding:       onboarding,
 		OTelConfig:       otelConfig,
