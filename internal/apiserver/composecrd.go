@@ -40,11 +40,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -870,24 +872,33 @@ var squadTemplates = map[string][]squadAgentTemplate{
 // (invariant 1); applies then proceed object-by-object (Team first, then
 // Agents) with per-object outcomes reported verbatim.
 func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Request) {
+	// Funnel span + metric (ISI-3669, obs plan §3/§4): the M2 squad-materialize
+	// step. team.id is span-only; template is the bounded preset enum.
+	ctx, span := funnelSpan(r.Context(), "ksquad.compose.squad")
+	defer span.End()
 	author, ok := discussion.AuthFromContext(r.Context())
 	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeUnauthenticated)
 		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
 	var req squadRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeSquadInvalid)
 		return
 	}
 
 	agents, ok := squadTemplates[req.Template]
 	if !ok {
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeSquadInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": []fieldError{{"template", "must be one of minimal-trio, bmad, solo"}},
 		})
 		return
 	}
+	funnelAttrs(span, attribute.String("compose.template", req.Template))
 
 	// Wire defaults (AD-5 shared credential; claude-code runtime).
 	if req.RuntimeRef.Name == "" {
@@ -904,9 +915,12 @@ func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Reque
 	// namespace has nowhere to apply — 404 before touching anything, exactly
 	// like the single-kind compose endpoints.
 	if _, err := s.teamNamespace(r.Context(), author.TeamID.String()); errors.Is(err, ErrTeamNamespaceUnresolved) {
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeSquadNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
 		return
 	} else if err != nil {
+		slog.WarnContext(ctx, "team scope resolution unavailable", "error", err)
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeSquadNoNamespace)
 		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
 		return
 	}
@@ -944,12 +958,17 @@ func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Reque
 		plans = append(plans, plan)
 	}
 	if len(fields) > 0 {
+		funnelOutcome(ctx, span, funnelInst().composeSquad, outcomeSquadInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": fields,
 		})
 		return
 	}
+	funnelAttrs(span,
+		attribute.Int("compose.agents_planned", len(agents)),
+		attribute.Bool("compose.team_requested", req.Team != nil),
+	)
 
 	// 2. Apply: Team first (if requested), then each Agent — composing the
 	//    existing planners + apply() tail (AD-3). Failures are verbatim (AC4).
@@ -977,8 +996,16 @@ func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Reque
 	}
 
 	code := http.StatusCreated
+	outcome := outcomeSquadCreated
 	if len(resp.Errors) > 0 {
 		code = http.StatusMultiStatus // 207 — partial materialize; errors carried verbatim
+		outcome = outcomeSquadPartial
 	}
+	funnelAttrs(span, attribute.Int("compose.agents_applied", len(resp.Agents)))
+	funnelInst().composeAgents.Record(ctx, int64(len(resp.Agents)))
+	slog.InfoContext(ctx, "squad materialize complete",
+		"template", req.Template, "outcome", outcome,
+		"agents_planned", len(agents), "agents_applied", len(resp.Agents))
+	funnelOutcome(ctx, span, funnelInst().composeSquad, outcome)
 	writeJSON(w, code, resp)
 }
