@@ -20,6 +20,12 @@
 // Yield (AC5): at 4/4 the normal Overview renders. The in-session celebration (frame 07) lives
 // inside the Launchpad; its "Go to Overview" CTA flips `yielded` here so the same mount swaps
 // to SquadOverview without a navigation.
+//
+// Server persistence (E1-S4, ISI-3780, AC3 client half): each on-device dismissal write ALSO
+// fires POST /api/onboarding/dismiss (the BFF write-path, ISI-3761) so the flag persists
+// cross-device — E1-S3's nav chip reads the SERVER flag this sets. Fire-and-forget: localStorage
+// stays the offline floor, the POST surfaces no blocking error, and the projection re-reads the
+// server flag on next mount. Harmless before the route lands (404/501 are swallowed).
 
 import { useEffect, useState } from "react";
 import { SquadOverview } from "@/components/SquadOverview";
@@ -32,6 +38,17 @@ import {
   writeLocalDismissed,
   type OnboardingProgress,
 } from "@/lib/onboarding";
+
+// Fire-and-forget cross-device persistence for the dismissal flag (E1-S4, ISI-3780, AC3).
+// localStorage is the offline floor; this is the durable write E1-S3's server-flag chip reads.
+// Errors (offline, 404 first-run, 501 not-wired) are intentionally swallowed — never blocking.
+function postDismiss(dismissed: boolean) {
+  fetch("/api/onboarding/dismiss", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ dismissed }),
+  }).catch(() => {});
+}
 
 export function OverviewSwitch() {
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
@@ -71,6 +88,7 @@ export function OverviewSwitch() {
         initialProgress={progress}
         onDismiss={() => {
           writeLocalDismissed(true);
+          postDismiss(true);
           setLocalDismissed(true);
         }}
         onYield={() => setYielded(true)}
@@ -95,6 +113,7 @@ export function OverviewSwitch() {
           className="launchpad__banner"
           onClick={() => {
             writeLocalDismissed(false);
+            postDismiss(false);
             setLocalDismissed(false);
           }}
         >
