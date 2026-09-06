@@ -156,3 +156,31 @@ func NewCredentialTester() (CredentialTestClient, error) {
 	}
 	return c, nil
 }
+
+// NewRepoAuthTestClient builds the DIRECT (uncached) controller-runtime client
+// the E4-S1 repo auth Test-connection surface (ISI-3683, AD-7) uses. The probe
+// must read the Secret exactly as the API server holds it (never a cache
+// snapshot) and write the Team annotation cache live. The scheme carries BOTH
+// corev1 (the Secret read) and ksquadv1 (the Team list/update behind
+// UID→namespace resolution and the cached annotation). It resolves rest.Config
+// the standard way (in-cluster SA, then KUBECONFIG) and fails rather than
+// degrading silently; the caller decides whether that is fatal or a fall-back
+// to the documented 501.
+func NewRepoAuthTestClient() (RepoAuthTestClient, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build repo-auth test client: %w", err)
+	}
+	return c, nil
+}

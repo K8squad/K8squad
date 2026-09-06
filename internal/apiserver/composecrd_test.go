@@ -127,6 +127,51 @@ func TestComposeCreateProject_HappyPath(t *testing.T) {
 	}
 }
 
+// ── repo.auth capture (ISI-3683 E4-S1 / AD-8, F-API-1) ──────────────────────
+
+// TestComposeCreateProject_RepoAuth — an optional repo.auth.credentialSecretRef
+// rides the wire onto spec.repo.auth (the onboarding "project" milestone's
+// derived signal), defaulting the data key exactly like the wire ref states.
+func TestComposeCreateProject_RepoAuth(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := validProject("widget")
+	req.Repo.Auth = &repoAuthWire{CredentialSecretRef: secretRefWire{Name: "alpha-repo-pat", Key: "token"}}
+	w := do(svc.handleProject(true), http.MethodPost, "/api/projects",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got ksquadv1.Project
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "widget"}, &got); err != nil {
+		t.Fatalf("project not applied: %v", err)
+	}
+	auth := got.Spec.Repo.Auth
+	if auth == nil {
+		t.Fatal("spec.repo.auth not mapped from the wire")
+	}
+	if auth.CredentialSecretRef.Name != "alpha-repo-pat" || auth.CredentialSecretRef.Key != "token" {
+		t.Fatalf("auth ref mapped wrong: %+v", auth.CredentialSecretRef)
+	}
+}
+
+// TestComposeCreateProject_RepoAuthEmptyRefFailsClosed — a present repo.auth
+// whose credentialSecretRef names nothing is a field-level 422 (mirrors
+// agentRequest.credentialSecretRef), never a Project carrying an unusable ref.
+func TestComposeCreateProject_RepoAuthEmptyRefFailsClosed(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := validProject("widget")
+	req.Repo.Auth = &repoAuthWire{}
+	w := do(svc.handleProject(true), http.MethodPost, "/api/projects",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "repo.auth.credentialSecretRef.name") {
+		t.Fatalf("422 must name the field: %s", w.Body.String())
+	}
+}
+
 // ── viewer → 403 (invariant 2, DoD) ──────────────────────────────────────────
 
 func TestComposeViewerForbidden(t *testing.T) {
