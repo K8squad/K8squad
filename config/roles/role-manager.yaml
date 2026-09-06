@@ -1,0 +1,27 @@
+# Seeded Role preset: Manager (AD-3, FR-6.1, ISI-3676).
+#
+# Manager grooms the backlog, reviews work and unblocks the squad. It carries
+# review+board default skills. The Role CRD has NO model field (F-CRD-1) —
+# the preset default model (Sonnet-5) lives console-side in
+# console/lib/presets.ts and is set on Agent.spec.model by the
+# template-materialize flow (POST /api/compose/squad).
+#
+# defaultSkills are UNIONED onto Agent.spec.skillRefs at materialize/run time
+# (ADR-044 step 1; api/v1alpha1/role_types.go), never replaced.
+#
+# Namespace is intentionally unset: apply this manifest into the squad/team
+# namespace where the Agents live — ObjectRefs are namespace-local.
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: role-manager
+  labels:
+    ksquad.io/role-preset: manager
+spec:
+  promptRef:
+    name: role-manager-prompt
+  defaultSkills:
+    - name: review
+    - name: board
+  runtimeClassHint: gvisor
