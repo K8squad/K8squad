@@ -88,6 +88,13 @@ const (
 	// cluster-scoped grants and no Secret access at all (see agentRole).
 	AgentServiceAccount = "ksquad-agent"
 
+	// ApiserverSecretReader names the per-squad-namespace Role + RoleBinding that
+	// grants the apiserver ServiceAccount secrets:get (AD-7, ISI-3883). It is the
+	// read counterpart to the create-only apiserver grant (ISI-3671,
+	// apiserver-rbac.yaml) and is deliberately distinct from AgentServiceAccount
+	// so it never touches the squad agent's empty least-privilege Role.
+	ApiserverSecretReader = "ksquad-apiserver-secret-reader"
+
 	// SystemNamespace is the control-plane namespace (arch §4: operator,
 	// apiserver, memory service, Postgres). The reconciler never provisions
 	// into it and fail-closes if a Team would resolve onto it (AC7).
@@ -134,6 +141,21 @@ type Reconciler struct {
 	// DNSNamespace is the namespace the allow-DNS companion opens egress to.
 	// Defaults to kube-system (cluster DNS).
 	DNSNamespace string
+	// ApiserverSecretsRead gates provisioning of the per-squad-namespace
+	// secrets:get Role + RoleBinding for the apiserver ServiceAccount (AD-7,
+	// ISI-3883). Off by default: the read grant is provisioned only when the
+	// Helm value apiserver.rbac.secretsRead is set, mirroring how
+	// apiserver.rbac.secretsCreate gates the create-only grant (ISI-3671).
+	ApiserverSecretsRead bool
+	// ApiserverServiceAccount is the name of the apiserver ServiceAccount named
+	// as the subject of the secrets:get RoleBinding (release-dependent, e.g.
+	// "ksquad-apiserver"). Empty leaves the read grant unprovisioned even when
+	// ApiserverSecretsRead is set — a binding with no subject SA would be inert.
+	ApiserverServiceAccount string
+	// ApiserverNamespace is the namespace the apiserver ServiceAccount lives in
+	// (the control-plane / release namespace). Defaults to controlPlaneNamespace()
+	// when empty.
+	ApiserverNamespace string
 }
 
 //+kubebuilder:rbac:groups=ksquad.io,resources=teams,verbs=get;list;watch;update;patch
@@ -252,6 +274,18 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 		defaultDenyNetworkPolicy(nsName, teamObj),
 		allowDNSNetworkPolicy(nsName, teamObj, r.dnsNamespace()),
 		allowControlPlaneNetworkPolicy(nsName, teamObj, r.controlPlaneNamespace()),
+	}
+	// AD-7 (ISI-3883): the apiserver Test-connection probes read a stored
+	// managed-credential Secret server-side. When the cluster opted into the
+	// read grant (apiserver.rbac.secretsRead), provision a per-squad-namespace
+	// secrets:get Role + RoleBinding for the apiserver SA — containment is squad
+	// namespaces only, never a cluster-wide secrets:get. A binding with no
+	// subject SA name is inert, so require the SA name too.
+	if r.ApiserverSecretsRead && r.ApiserverServiceAccount != "" {
+		objects = append(objects,
+			apiserverSecretReaderRole(nsName, teamObj),
+			apiserverSecretReaderRoleBinding(nsName, teamObj, r.ApiserverServiceAccount, r.apiserverNamespace()),
+		)
 	}
 	for _, obj := range objects {
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
@@ -385,6 +419,16 @@ func (r *Reconciler) controlPlaneNamespace() string {
 		return SystemNamespace
 	}
 	return r.ControlPlaneNamespace
+}
+
+// apiserverNamespace is the namespace the apiserver ServiceAccount lives in —
+// the namespace named as the RoleBinding subject for the secrets:get grant
+// (AD-7). Defaults to the control-plane namespace.
+func (r *Reconciler) apiserverNamespace() string {
+	if r.ApiserverNamespace == "" {
+		return r.controlPlaneNamespace()
+	}
+	return r.ApiserverNamespace
 }
 
 // SetupWithManager registers the Team reconciler. The manager-managed client
@@ -527,6 +571,60 @@ func agentRoleBinding(ns string, teamObj *api.Team) *rbacv1.RoleBinding {
 			APIGroup: rbacv1.GroupName,
 			Kind:     "Role",
 			Name:     AgentServiceAccount,
+		},
+	}
+}
+
+// apiserverSecretReaderRole is the AD-7 (ISI-3883) read counterpart to the
+// apiserver's create-only ClusterRole (ISI-3671, apiserver-rbac.yaml). The
+// Test-connection endpoints — E3-S2 POST /api/credentials/{name}/test and E4-S1
+// POST /api/projects/repo-auth/test — read a STORED managed-credential Secret
+// server-side to probe it; the apiserver SA otherwise holds secrets:create
+// ONLY. This grant is deliberately a NAMESPACED Role — never a cluster-wide
+// secrets:get ClusterRole, which would let the apiserver read certs/DB
+// passwords cluster-wide (the ISI-3672 security stance that praised create-only).
+// Containment: squad team namespaces only, provisioned per-namespace by this
+// reconciler exactly as apiserver-rbac.yaml anticipated ("Helm cannot bind
+// per-namespace Roles at install time"). The label scope
+// (ksquad.io/managed-credential=true) is not expressible in an RBAC rule and
+// stays enforced in the handler, which resolves the caller's own squad
+// namespace and refuses to name anything outside it.
+func apiserverSecretReaderRole(ns string, teamObj *api.Team) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      ApiserverSecretReader,
+			Labels:    managedLabels(teamObj),
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		}},
+	}
+}
+
+// apiserverSecretReaderRoleBinding binds the secrets:get Role to the apiserver
+// ServiceAccount ONLY — never the squad agent SA, never a group. The subject SA
+// lives in the control-plane namespace, not this squad namespace; a RoleBinding
+// may name a subject from another namespace, and the grant still applies only
+// within this squad namespace (containment holds).
+func apiserverSecretReaderRoleBinding(ns string, teamObj *api.Team, apiserverSA, apiserverNS string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      ApiserverSecretReader,
+			Labels:    managedLabels(teamObj),
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Namespace: apiserverNS,
+			Name:      apiserverSA,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     ApiserverSecretReader,
 		},
 	}
 }

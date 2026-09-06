@@ -90,6 +90,25 @@ spec:
             - name: KSQUAD_RUNTIME_TYPE
               value: {{ . | quote }}
             {{- end }}
+            {{- /* AD-7 / ISI-3883: the apiserver Test-connection probes read a
+                   STORED managed-credential Secret server-side. When
+                   apiserver.rbac.secretsRead is set, the Team reconciler
+                   provisions a per-squad-namespace secrets:get Role +
+                   RoleBinding for the apiserver SA (containment: squad
+                   namespaces only — never a cluster-wide secrets:get, which
+                   would let the apiserver read certs/DB passwords cluster-wide,
+                   regressing the ISI-3672 create-only stance). These env vars
+                   tell the operator whether to provision it and which SA /
+                   namespace to name as the RoleBinding subject. Gated exactly
+                   like apiserver.rbac.secretsCreate gates the create grant. */}}
+            {{- if .Values.apiserver.rbac.secretsRead }}
+            - name: KSQUAD_APISERVER_SECRETS_READ
+              value: "true"
+            - name: KSQUAD_APISERVER_SA
+              value: {{ include "ksquad.apiserver.fullname" . }}
+            - name: KSQUAD_APISERVER_NAMESPACE
+              value: {{ .Release.Namespace }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

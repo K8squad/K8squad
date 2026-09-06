@@ -122,6 +122,17 @@ apiserver:
     # Bind the create-only `secrets` ClusterRole to the apiserver SA. Required for
     # POST /api/credentials to function; without it the handler 403s → 502.
     secretsCreate: true
+    # ── Scoped Secret-read grant (AD-7 / ISI-3883) ──────────────────────────
+    # The Test-connection probes (E3-S2 POST /api/credentials/{name}/test, E4-S1
+    # POST /api/projects/repo-auth/test) read a STORED managed-credential Secret
+    # server-side. When true, the operator's Team reconciler provisions a
+    # per-squad-namespace `secrets:get` Role + RoleBinding for the apiserver SA —
+    # containment is squad team namespaces ONLY, never a cluster-wide
+    # secrets:get (which would let the apiserver read certs/DB passwords
+    # cluster-wide). Without it the probes degrade honestly to the documented
+    # 502 "credential read grant is not configured on this cluster". Default off
+    # pending Security sign-off (ISI-3672 reviewer / ISI-3883 AC).
+    secretsRead: false
     # Cluster-side defense-in-depth: a ValidatingAdmissionPolicy (k8s >= 1.30, VAP
     # GA at 1.30) that constrains the apiserver SA to creating only Secrets
     # labelled ksquad.io/managed-credential=true in squad team namespaces

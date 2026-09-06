@@ -775,3 +775,94 @@ func TestConditionTransitionTimePinnedByClock(t *testing.T) {
 		}
 	}
 }
+
+// squadNamespaceOf reconciles the team and returns its provisioned namespace.
+func squadNamespaceOf(t *testing.T, r *Reconciler, c client.Client, name string) string {
+	t.Helper()
+	if err := reconcileTeam(t, r, name); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, &team); err != nil {
+		t.Fatalf("get team: %v", err)
+	}
+	return team.Status.Namespace
+}
+
+// TestApiserverSecretReaderGrantOffByDefault (AD-7 / ISI-3883): without the
+// opt-in, no per-squad-namespace secrets:get grant for the apiserver SA is
+// provisioned — the create-only stance (ISI-3672) is preserved.
+func TestApiserverSecretReaderGrantOffByDefault(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	ns := squadNamespaceOf(t, r, c, "alpha")
+
+	var role rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: ApiserverSecretReader, Namespace: ns}, &role); err == nil {
+		t.Errorf("secrets:get Role provisioned without opt-in: %+v", role.Rules)
+	}
+	var binding rbacv1.RoleBinding
+	if err := c.Get(context.Background(), types.NamespacedName{Name: ApiserverSecretReader, Namespace: ns}, &binding); err == nil {
+		t.Errorf("secrets:get RoleBinding provisioned without opt-in: %+v", binding.Subjects)
+	}
+}
+
+// TestApiserverSecretReaderGrantRequiresSAName (AD-7): the gate alone is inert
+// without an apiserver SA name — a binding with no subject would grant nothing,
+// so nothing is provisioned.
+func TestApiserverSecretReaderGrantRequiresSAName(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	r.ApiserverSecretsRead = true // SA name deliberately left empty
+	ns := squadNamespaceOf(t, r, c, "alpha")
+
+	var role rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: ApiserverSecretReader, Namespace: ns}, &role); err == nil {
+		t.Errorf("secrets:get Role provisioned with no apiserver SA name: %+v", role.Rules)
+	}
+}
+
+// TestApiserverSecretReaderGrantProvisioned (AD-7 / ISI-3883): with the opt-in
+// and an apiserver SA, the reconciler provisions a NAMESPACED Role granting
+// exactly secrets:get and a RoleBinding whose only subject is the apiserver SA
+// in the control-plane namespace. Containment: the grant is a Role/RoleBinding,
+// never a ClusterRole/ClusterRoleBinding.
+func TestApiserverSecretReaderGrantProvisioned(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	r.ApiserverSecretsRead = true
+	r.ApiserverServiceAccount = "ksquad-apiserver"
+	r.ApiserverNamespace = "ksquad-system"
+	ns := squadNamespaceOf(t, r, c, "alpha")
+
+	var role rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: ApiserverSecretReader, Namespace: ns}, &role); err != nil {
+		t.Fatalf("get secrets:get Role: %v", err)
+	}
+	if len(role.Rules) != 1 {
+		t.Fatalf("Role rules = %+v, want exactly one", role.Rules)
+	}
+	rule := role.Rules[0]
+	if len(rule.Resources) != 1 || rule.Resources[0] != "secrets" {
+		t.Errorf("Role resources = %v, want [secrets]", rule.Resources)
+	}
+	if len(rule.Verbs) != 1 || rule.Verbs[0] != "get" {
+		t.Errorf("Role verbs = %v, want [get] ONLY (no list/watch — no namespace-wide enumeration)", rule.Verbs)
+	}
+
+	var binding rbacv1.RoleBinding
+	if err := c.Get(context.Background(), types.NamespacedName{Name: ApiserverSecretReader, Namespace: ns}, &binding); err != nil {
+		t.Fatalf("get secrets:get RoleBinding: %v", err)
+	}
+	if binding.RoleRef.Kind != "Role" {
+		t.Errorf("RoleRef.Kind = %q, want Role (never ClusterRole — no cluster-wide read)", binding.RoleRef.Kind)
+	}
+	if len(binding.Subjects) != 1 {
+		t.Fatalf("RoleBinding subjects = %+v, want exactly the apiserver SA", binding.Subjects)
+	}
+	sub := binding.Subjects[0]
+	if sub.Kind != rbacv1.ServiceAccountKind || sub.Name != "ksquad-apiserver" || sub.Namespace != "ksquad-system" {
+		t.Errorf("RoleBinding subject = %+v, want the apiserver SA ksquad-system/ksquad-apiserver", sub)
+	}
+	// The squad agent SA must never gain Secret access via this grant.
+	if sub.Name == AgentServiceAccount {
+		t.Errorf("secrets:get bound to the squad agent SA (AD-7 violation)")
+	}
+}

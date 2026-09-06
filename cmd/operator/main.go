@@ -427,7 +427,17 @@ func main() {
 	// allow-DNS + allow-control-plane NetworkPolicy baseline — and tears the
 	// namespace down finalizer-driven on Team delete. Unlike the Run
 	// projector it needs no coordination DB, so it registers unconditionally.
-	if err := (&teamctrl.Reconciler{}).SetupWithManager(mgr); err != nil {
+	// AD-7 (ISI-3883): when apiserver.rbac.secretsRead is set, the Team
+	// reconciler also provisions a per-squad-namespace secrets:get Role +
+	// RoleBinding for the apiserver SA, so the Test-connection probes can read a
+	// stored managed-credential Secret server-side. Containment is squad
+	// namespaces only — never a cluster-wide grant. The SA name/namespace are
+	// release-dependent, so Helm passes them through these env vars.
+	if err := (&teamctrl.Reconciler{
+		ApiserverSecretsRead:    os.Getenv("KSQUAD_APISERVER_SECRETS_READ") == "true",
+		ApiserverServiceAccount: os.Getenv("KSQUAD_APISERVER_SA"),
+		ApiserverNamespace:      os.Getenv("KSQUAD_APISERVER_NAMESPACE"),
+	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Team reconciler")
 		os.Exit(1)
 	}
