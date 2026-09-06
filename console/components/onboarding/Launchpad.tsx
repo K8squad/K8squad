@@ -24,7 +24,6 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   ONBOARDING_MILESTONES,
-  SUGGESTED_AGENT_ROLES,
   heroCopy,
   isJourneyComplete,
   isOnboardingProgress,
@@ -48,6 +47,7 @@ import {
 import { TeamForm } from "@/components/compose/TeamForm";
 import { AgentForm } from "@/components/compose/AgentForm";
 import { ProjectForm } from "@/components/compose/ProjectForm";
+import { TemplateGallery } from "@/components/onboarding/TemplateGallery";
 
 /** Which on-ramp Nadia picked (FR-1.2). "template" carries the starter-squad guidance into the
  * Agents step; "manual" is the plain step-by-step path. */
@@ -123,6 +123,25 @@ export function Launchpad({
       // The CREATE succeeded but the re-read failed — keep the panel open with the honest ack
       // (the object exists server-side); the spine refreshes on the next load. Never fake a
       // done state (NFR-5).
+      return;
+    }
+    setProgress(p);
+    if (isJourneyComplete(p)) {
+      setOpenStep(null);
+      return;
+    }
+    setOpenStep(nextMilestoneId(p));
+  }
+
+  /** One-call squad materialize (E2-S3 template gallery): the same server-truth walk
+   * as a form create — re-read the projection, then advance to the NEW next
+   * milestone. With the Minimal Trio that collapses the journey to review &
+   * connect: Team + Agents are done server-side, so the walk lands on Models. */
+  async function onSquadApplied(note: string) {
+    setLastCreated(note);
+    const p = await refreshProgress();
+    if (!p) {
+      // The materialize succeeded but the re-read failed — keep the ack honest.
       return;
     }
     setProgress(p);
@@ -219,7 +238,9 @@ export function Launchpad({
             milestone={m}
             state={states[m.id]}
             onStart={() => {
-              setRamp((r) => r ?? "manual");
+              // Unchosen ramp defaults to the template path (D1: the starter squad
+              // is the recommended default, FR-2.1) — an explicit manual pick sticks.
+              setRamp((r) => r ?? "template");
               setLastCreated(null);
               setOpenStep(m.id);
             }}
@@ -258,7 +279,7 @@ export function Launchpad({
               <button
                 type="button"
                 className="btn btn--primary launchpad__resume"
-                onClick={() => startFlow(ramp ?? "manual")}
+                onClick={() => startFlow(ramp ?? "template")}
               >
                 {resumeLabel(progress)} →
               </button>
@@ -278,6 +299,7 @@ export function Launchpad({
           createdNote={lastCreated}
           onClose={() => setOpenStep(null)}
           onCreated={onCreated}
+          onSquadApplied={onSquadApplied}
           onRecheck={recheck}
         />
       )}
@@ -356,6 +378,7 @@ function StepPanel({
   createdNote,
   onClose,
   onCreated,
+  onSquadApplied,
   onRecheck,
 }: {
   milestone: OnboardingMilestone;
@@ -363,9 +386,16 @@ function StepPanel({
   createdNote: string | null;
   onClose: () => void;
   onCreated: (r: ComposeResult) => void;
+  onSquadApplied: (note: string) => void;
   onRecheck: () => void;
 }) {
   const kind = MILESTONE_FORM_KIND[milestone.id];
+  // "Start blank" (FR-2.2): the template on-ramp can drop to the shared form —
+  // the manual path always stays one click away from the gallery (E2-S3). The
+  // gallery is the Agents milestone's default presentation (D1 recommended
+  // path, FR-2.1); only an explicit manual ramp or Start blank hides it.
+  const [blank, setBlank] = useState(false);
+  const showGallery = milestone.id === "agents" && ramp !== "manual" && !blank;
   return (
     <section
       className="launchpad-step"
@@ -389,25 +419,18 @@ function StepPanel({
         </p>
       )}
 
-      {milestone.id === "agents" && ramp === "template" && (
-        <div className="launchpad-step__guide" role="note">
-          <strong>Starter squad (Minimal Trio ★):</strong> create these three agents —{" "}
-          {SUGGESTED_AGENT_ROLES.map((r) => (
-            <span key={r.roleRef} className="launchpad-step__preset">
-              <strong>{r.label}</strong> <code>{r.roleRef}</code> — {r.summary}
-            </span>
-          ))}
-          <span className="muted">
-            One-click templates arrive with the template gallery; until then the shared form
-            below creates each agent (Role ref = the preset name).
-          </span>
-        </div>
+      {milestone.id === "agents" && showGallery && (
+        <TemplateGallery
+          onApplied={onSquadApplied}
+          onStartBlank={() => setBlank(true)}
+        />
       )}
 
       {milestone.id === "agents" && (
         <p className="muted">
-          Each agent needs a credential Secret — create one under Settings › Credentials, then
-          reference it here.
+          {showGallery
+            ? "Each template pre-wires the agents' Role refs, models and the shared squad credential — tune them afterwards from Agents."
+            : "Each agent needs a credential Secret — create one under Settings › Credentials, then reference it here."}
         </p>
       )}
 
@@ -436,7 +459,7 @@ function StepPanel({
         </p>
       )}
 
-      {kind && <ComposeCreatePanel kind={kind} onCreated={onCreated} />}
+      {kind && !showGallery && <ComposeCreatePanel kind={kind} onCreated={onCreated} />}
     </section>
   );
 }

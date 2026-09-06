@@ -211,3 +211,76 @@ describe("a11y (AC6, NFR-4)", () => {
     expect(locked!.textContent).toContain("Locked");
   });
 });
+
+describe("E2-S3 — template gallery on the Agents milestone (frame 03, ISI-3678)", () => {
+  const atAgents: OnboardingProgress = {
+    step: 2,
+    done: 1,
+    total: 4,
+    nextMilestone: "agents",
+    dismissed: false,
+  };
+
+  it("the ⚡ on-ramp surfaces the 3-card gallery (AC1, FR-2.1)", () => {
+    render(<Launchpad initialProgress={atAgents} onDismiss={noop} onYield={noop} />);
+    fireEvent.click(screen.getByRole("button", { name: /Resume setup — Add your agents/i }));
+    const panel = screen.getByRole("region", { name: /Add your agents — setup step 2 of 4/i });
+    expect(panel.querySelector('[data-testid="template-gallery"]')).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Minimal Trio/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Start blank/i })).toBeTruthy();
+    // The gallery replaces the shared form on the template ramp (not stacked under it).
+    expect(panel.querySelector('input[placeholder="my-resource"]')).toBeNull();
+  });
+
+  it("Start blank drops to the E0 shared AgentForm (FR-2.2)", () => {
+    render(<Launchpad initialProgress={atAgents} onDismiss={noop} onYield={noop} />);
+    fireEvent.click(screen.getByRole("button", { name: /Resume setup — Add your agents/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Start blank/i }));
+    const panel = screen.getByRole("region", { name: /Add your agents — setup step 2 of 4/i });
+    expect(panel.querySelector('input[placeholder="my-resource"]')).toBeTruthy();
+    expect(panel.querySelector('[data-testid="template-gallery"]')).toBeNull();
+  });
+
+  it("a full materialize reduces the journey to review & connect (AC2, FR-2.3)", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/onboarding/progress") {
+        // After the squad materializes, Team + Agents are done server-side.
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ step: 3, done: 2, total: 4, nextMilestone: "models" }),
+        });
+      }
+      if (url === "/api/compose/squad") {
+        return Promise.resolve({
+          status: 201,
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              team: { kind: "Team", name: "acme-squad", operation: "existing" },
+              agents: [
+                { kind: "Agent", name: "boss", operation: "created" },
+                { kind: "Agent", name: "implementer", operation: "created" },
+                { kind: "Agent", name: "manager", operation: "created" },
+              ],
+            }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 501, text: () => Promise.resolve("") });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<Launchpad initialProgress={atAgents} onDismiss={noop} onYield={noop} />);
+    fireEvent.click(screen.getByRole("button", { name: /Resume setup — Add your agents/i }));
+    fireEvent.change(screen.getByLabelText(/Project scope/i), { target: { value: "acme" } });
+    fireEvent.click(screen.getByRole("button", { name: /Use Minimal Trio/i }));
+
+    // The walk lands on Models (review & connect: confirm models, drop a credential).
+    await waitFor(() => {
+      expect(
+        screen.getByRole("region", { name: /Choose models — setup step 3 of 4/i }),
+      ).toBeTruthy();
+    });
+    expect(screen.getByRole("link", { name: /Open Credentials/i })).toBeTruthy();
+    expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
+  });
+});
