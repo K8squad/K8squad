@@ -23,12 +23,14 @@ import (
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 )
 
-// v1ShimSet is the runtime set story 5.6 certifies: OpenClaw + Hermes (5.5) and
-// opencode (5.8). Every one MUST pass every check on the default lane.
+// v1ShimSet is the runtime set story 5.6 certifies: OpenClaw + Hermes (5.5),
+// opencode (5.8), and codex (epic ISI-3647, S8/ISI-3660 — the final integration
+// gate). Every one MUST pass every check on the default lane.
 var v1ShimSet = []string{
 	"openclaw",
 	"hermes",
 	"opencode",
+	"codex",
 }
 
 // TestConformance_V1ShimSet_DefaultLane is the gate-blocking assertion: the
@@ -52,6 +54,49 @@ func TestConformance_V1ShimSet_DefaultLane(t *testing.T) {
 			}
 			if !rep.OK() {
 				t.Errorf("runtime %q is NOT conformant on the default lane\n%s", name, rep)
+			}
+		})
+	}
+}
+
+// TestConformance_Codex_IsAutoEnumerated is the ISI-3660 AC1 hook: the codex
+// adapter (epic ISI-3647) is present in runtimes.Registered() — the set
+// cmd/conformance auto-enumerates — so the vendor-facing `conformance` CLI
+// certifies it with zero flag. A registry that dropped codex would silently
+// exclude it from the gate; this catches that regression.
+func TestConformance_Codex_IsAutoEnumerated(t *testing.T) {
+	for _, name := range runtimes.Registered() {
+		if name == "codex" {
+			return
+		}
+	}
+	t.Fatalf("codex not in runtimes.Registered() = %v — cmd/conformance would never certify it (AC1)", runtimes.Registered())
+}
+
+// TestConformance_Codex_A2ALifecycle is the ISI-3660 AC1 assertion: with the
+// codex adapter registered, the conformance suite runs and codex passes every
+// A2A capability/lifecycle check on BOTH the default (fixed OpenAI wire) and the
+// $0 Ollama (BYO endpoint, story 5.7/D6) lanes. This is the final integration
+// gate the epic's S1–S7 feed.
+func TestConformance_Codex_A2ALifecycle(t *testing.T) {
+	rt, err := runtimes.Get("codex")
+	if err != nil {
+		t.Fatalf("codex not registered: %v", err)
+	}
+	for _, lane := range []Lane{LaneDefault, LaneOllama} {
+		lane := lane
+		t.Run(string(lane), func(t *testing.T) {
+			rep := VerifyRuntime(rt, Options{Lane: lane})
+			if len(rep.Results) != len(AllChecks()) {
+				t.Fatalf("report has %d results, want %d (a dimension was skipped)", len(rep.Results), len(AllChecks()))
+			}
+			for _, res := range rep.Results {
+				if !res.Pass {
+					t.Errorf("[codex lane=%s] %s FAILED: %s", lane, res.Check, res.Detail)
+				}
+			}
+			if !rep.OK() {
+				t.Errorf("codex is NOT conformant on the %s lane\n%s", lane, rep)
 			}
 		})
 	}
