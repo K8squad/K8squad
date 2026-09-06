@@ -342,13 +342,16 @@ egress:
     #
     # Leave this false (the safe default) unless you run an enforcing CNI AND
     # deliberately want a locked-down control plane. Enabling it renders the
-    # blanket Egress+Ingress default-deny into the release namespace and
-    # therefore REQUIRES a matching allow (carve-out) policy for EVERY
-    # control-plane component. Today only the apiserver (below) and the
-    # otel-collector (observability.collector.networkPolicy) have carve-outs;
-    # the full set for operator/console/gateway/NATS/event-relay/scm-webhook
-    # and CNPG replication is tracked in ISI-3910. A partial carve-out set WILL
-    # starve every component that lacks one — do not enable until ISI-3910 lands.
+    # blanket Egress+Ingress default-deny into the release namespace, together
+    # with the full control-plane carve-out set (controlPlaneCarveOuts below,
+    # ISI-3910) that keeps every component functional under the deny: intra-CP
+    # chatter (operator↔postgres↔NATS↔otel↔apiserver↔console↔event-relay↔
+    # scm-webhook + CNPG replication), the kube-apiserver hop, north/south
+    # ingress from the Gateway/Ingress dataplane, and Prometheus scrape — plus
+    # the apiserver (below) and otel-collector governed external hops. Verified
+    # on an enforcing CNI (kind + Calico) by the cp-lockdown CI job. Tune
+    # controlPlaneCarveOuts.dataplaneNamespaceSelector and
+    # apiserverEgress.exceptCIDRs to your CNI/gateway before enabling.
     releaseNamespaceDefaultDeny: false
 
     # Apiserver egress carve-out over the release-namespace default-deny
@@ -371,6 +374,43 @@ egress:
         - 172.16.0.0/12
         - 192.168.0.0/16
         - 169.254.0.0/16
+
+    # Control-plane full-lockdown carve-outs (ISI-3910). Only render when
+    # releaseNamespaceDefaultDeny=true — they are the matching allow policies
+    # that keep the WHOLE control plane functional under the rendered
+    # default-deny on an enforcing CNI (see templates/networkpolicy-carveouts.yaml
+    # for the design). Additive to the apiserver + otel-collector governed
+    # external hops. Verified on kind + Calico by the cp-lockdown CI job.
+    controlPlaneCarveOuts:
+      # Render the cp-* allow policies (requires releaseNamespaceDefaultDeny).
+      enabled: true
+      # Egress to the kube-apiserver for every client-go component (operator,
+      # apiserver, scm-webhook, event-relay, CNPG instance manager).
+      kubeApi:
+        ports:
+          - 443
+          - 6443
+      # North/south ingress to console (3000) + apiserver/scm-webhook (8080)
+      # from the Gateway/Ingress dataplane, which runs in the gateway
+      # controller's OWN namespace (cilium→kube-system,
+      # envoy-gateway→envoy-gateway-system, …). Default {} = all namespaces
+      # (functional on any gateway implementation); tighten to your controller's
+      # namespace label for a stricter lockdown, e.g.:
+      #   matchLabels:
+      #     kubernetes.io/metadata.name: envoy-gateway-system
+      dataplaneNamespaceSelector: {}
+      # Ingress to the CP metrics/health ports for Prometheus scrape. Default
+      # {} = all namespaces; tighten to your monitoring namespace to scope it.
+      monitoringNamespaceSelector: {}
+      # The CP metrics/health ports allowed by monitoringNamespaceSelector.
+      metricsPorts:
+        - 8000  # CNPG instance status
+        - 8080  # apiserver
+        - 8081  # operator health/metrics
+        - 8222  # NATS monitor
+        - 8889  # otel-collector prometheus exporter
+        - 9090  # event-relay metrics
+        - 9187  # CNPG postgres exporter
 
   # Allowed egress destinations by default
   defaultAllow:

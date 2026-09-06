@@ -1,0 +1,61 @@
+name: CP Lockdown (ISI-3910)
+
+# Enforcing-CNI verification for the OPT-IN control-plane full-lockdown carve-outs
+# (ISI-3910, follow-up to ISI-3907). Renders the REAL chart NetworkPolicies with
+# egress.networkPolicy.releaseNamespaceDefaultDeny=true into kind + Calico and
+# proves, on an enforcing CNI, that the control plane stays fully functional under
+# the default-deny (conformance arm) AND that the guards have teeth (mutation arm:
+# deleting a carve-out flips the matching probe RED). See test/cp-lockdown/.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'deploy/helm/ksquad/templates/egress.yaml'
+      - 'deploy/helm/ksquad/templates/networkpolicy-carveouts.yaml'
+      - 'deploy/helm/ksquad/templates/otel-collector-networkpolicy.yaml'
+      - 'deploy/helm/ksquad/values.yaml'
+      - 'test/cp-lockdown/**'
+      - '.github/workflows/cp-lockdown.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * *'   # nightly (after the 04:00 blast-radius run)
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded PR pushes to free the self-hosted slots, but NEVER cancel a
+  # `main` run. Mirrors blast-radius.yml / ci.yml (ISI-3235 / ISI-2748 R2).
+  group: cp-lockdown-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  cp-lockdown:
+    name: cp-lockdown (kind + Calico)
+    # Self-hosted gitrunner (ISI-2602/ISI-2612): GitHub-hosted ubuntu-latest is
+    # not serviceable on this repo (a hosted target startup-fails in ~2s with zero
+    # steps). Every kind/heavy job here uses this label — see blast-radius.yml.
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # kind with the default CNI disabled; run.sh bootstraps Calico so
+      # NetworkPolicy enforcement is the real primitive under test.
+      - uses: helm/kind-action@a1b0e391336a6ee6713a0583f8c6240d70863de3 # v1.12.0
+        with:
+          cluster_name: cp-lockdown
+          config: test/cp-lockdown/kind-config.yaml
+
+      - name: Verify CP lockdown (conformance + mutation arms)
+        run: test/cp-lockdown/run.sh all
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cp-lockdown-report
+          path: cp-lockdown-report.txt
+          if-no-files-found: warn
