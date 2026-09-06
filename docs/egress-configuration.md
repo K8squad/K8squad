@@ -187,6 +187,81 @@ Existing Projects can be migrated by adding the `egressPolicyRef` field. The Pro
 4. The apiserver logs the precise denial server-side
    (`credential test BYO probe blocked`)
 
+### The EgressPolicy to ship for BYO model endpoints (ISI-3906)
+
+Public model providers (api.anthropic.com, api.openai.com,
+generativelanguage.googleapis.com, BYO OpenAI-compatible gateways) publish
+rotating A records, so a hostname-pinned CIDR allowlist rots. The workable
+shape — the same governed-public-internet pattern the Helm chart uses for the
+otel-collector vendor hop and the apiserver probe carve-out — is
+**443/TCP to the public internet with the private/in-cluster/link-local
+ranges carved out**:
+
+```yaml
+apiVersion: ksquad.io/v1alpha1
+kind: EgressPolicy
+metadata:
+  name: model-providers
+  namespace: <squad-namespace>   # the squad a Run (and the probe) dials from
+spec:
+  allow:
+    - to:
+        cidr: 0.0.0.0/0
+        except:                  # never re-open control-plane internals
+          - 10.0.0.0/8
+          - 172.16.0.0/12
+          - 192.168.0.0/16
+          - 100.64.0.0/10       # RFC 6598 CGNAT (node/pod/LB ranges on GKE/EKS/Tailscale)
+          - 169.254.0.0/16       # link-local incl. the cloud metadata service
+      ports:
+        - protocol: TCP
+          port: 443
+```
+
+Why this is safe here:
+
+- the probe-egress guard hard-blocks loopback, link-local, unspecified and
+  multicast addresses **regardless of the allowlist**, so the carved-out
+  ranges are belt-and-braces on top of the guard's own denials;
+- the guard still requires **every** resolved address of the endpoint host to
+  be covered, so an endpoint whose DNS folds in a private address is denied;
+- tighten `except` to your cluster's actual pod/service/node CIDRs if those
+  differ, and narrow `cidr` to provider ranges you can commit to maintaining
+  if your posture requires it.
+
+Reference it from the Project (or apply it directly in the squad namespace):
+
+```yaml
+apiVersion: ksquad.io/v1alpha1
+kind: Project
+metadata:
+  name: my-project
+  namespace: <squad-namespace>
+spec:
+  egressPolicyRef:
+    name: model-providers
+```
+
+The console deliberately does NOT auto-create this policy: egress is a
+declaration the squad's operator owns (§12.2 — "egress is policy, not
+hardcode"), and a green test-connection on an endpoint the squad's Runs could
+not reach would be a false green.
+
+### The apiserver's own egress (chart)
+
+The Helm chart's `egress.yaml` renders the `ksquad-default-deny` baseline
+into the release namespace, which also selects the apiserver pod. Because the
+control plane is architected for high-trust egress (§12.2), the chart ships a
+carve-out policy (`ksquad-apiserver-egress`, gated by
+`egress.networkPolicy.apiserverEgress.enabled`, default `true`) that opens:
+DNS, in-namespace peers (Postgres), kube-system 443/6443 (the Kubernetes
+API), and a governed external 443 hop with the private/link-local ranges
+excepted (`egress.networkPolicy.apiserverEgress.exceptCIDRs`). Without this
+carve-out, any CNI that enforces NetworkPolicy starves the test-connection
+probe — every provider test answers
+`Unreachable — the endpoint could not be reached (network error)`.
+
+
 ### NetworkPolicy not created
 
 1. Check the Project controller logs for errors
