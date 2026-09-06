@@ -95,6 +95,75 @@ describe("dismissal (FR-1.3 v1 floor)", () => {
     expect(banner).toBeTruthy();
   });
 
+  it("Skip for now also POSTs the server-side dismissal (E1-S4, ISI-3780, AC3)", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) =>
+      url === "/api/onboarding/progress" && (!init || init.method === undefined)
+        ? progressOk(halfway)
+        : notWired(),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OverviewSwitch />);
+    await waitFor(() => screen.getByText("Finish setting up your squad"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/onboarding/dismiss",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ dismissed: true }),
+        }),
+      ),
+    );
+  });
+
+  it("the resume banner also POSTs the cleared server-side flag (E1-S4, ISI-3780, AC3)", async () => {
+    window.localStorage.setItem(ONBOARDING_DISMISS_KEY, "true");
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) =>
+      url === "/api/onboarding/progress" && (!init || init.method === undefined)
+        ? progressOk(halfway)
+        : notWired(),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<OverviewSwitch />);
+
+    const banner = await waitFor(() =>
+      screen.getByRole("button", { name: /Finish setup \(2\/4\)/i }),
+    );
+    fireEvent.click(banner);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/onboarding/dismiss",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ dismissed: false }),
+        }),
+      ),
+    );
+  });
+
+  it("dismissal survives a rejected server POST (fire-and-forget offline floor)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/onboarding/dismiss")
+          return Promise.reject(new Error("offline"));
+        return url === "/api/onboarding/progress" ? progressOk(halfway) : notWired();
+      }),
+    );
+    render(<OverviewSwitch />);
+    await waitFor(() => screen.getByText("Finish setting up your squad"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now" }));
+
+    expect(window.localStorage.getItem(ONBOARDING_DISMISS_KEY)).toBe("true");
+    expect(
+      screen.getByRole("button", { name: /Finish setup \(2\/4\)/i }),
+    ).toBeTruthy();
+  });
+
   it("the resume banner returns to the Launchpad and clears the flag", async () => {
     window.localStorage.setItem(ONBOARDING_DISMISS_KEY, "true");
     mockFetch((url) =>
