@@ -74,6 +74,12 @@ const (
 	// onboardingTestConnectionPrefix prefixes the AD-7 per-agent last test-connection
 	// result: ksquad.io/onboarding-test-connection-<agentName> = "passed" | "failed".
 	onboardingTestConnectionPrefix = "ksquad.io/onboarding-test-connection-"
+	// onboardingCredentialTestPrefix prefixes the AD-7 per-CREDENTIAL last
+	// test-connection result (E3-S2, ISI-3680):
+	// ksquad.io/onboarding-credential-test-<credentialName> = "passed" | "failed".
+	// Distinct from the per-agent prefix so an agent and a credential that
+	// happen to share a name can never shadow each other's flag.
+	onboardingCredentialTestPrefix = "ksquad.io/onboarding-credential-test-"
 )
 
 // OnboardingProgress is the projection payload (AC2). Step is the 1-based first INCOMPLETE
@@ -282,6 +288,27 @@ func TestConnectionFlag(team *ksquadv1.Team, agentName string) (recorded, passed
 // CR. The caller persists with its writer client.
 func SetTestConnectionFlag(team *ksquadv1.Team, agentName string, passed bool) {
 	setOnboardingAnnotation(team, onboardingTestConnectionPrefix+agentName, true, map[bool]string{true: "passed", false: "failed"}[passed])
+}
+
+// CredentialTestFlag reads the AD-7 (E3-S2) last test-connection result for
+// credentialName from the Team CR: (false, false) when no test was ever
+// recorded, otherwise the recorded outcome.
+func CredentialTestFlag(team *ksquadv1.Team, credentialName string) (recorded, passed bool) {
+	switch team.Annotations[onboardingCredentialTestPrefix+credentialName] {
+	case "passed":
+		return true, true
+	case "failed":
+		return true, false
+	default:
+		return false, false
+	}
+}
+
+// SetCredentialTestFlag records the AD-7 (E3-S2) last test-connection result
+// for credentialName on the Team CR. The caller persists with its writer
+// client.
+func SetCredentialTestFlag(team *ksquadv1.Team, credentialName string, passed bool) {
+	setOnboardingAnnotation(team, onboardingCredentialTestPrefix+credentialName, true, map[bool]string{true: "passed", false: "failed"}[passed])
 }
 
 // setOnboardingAnnotation writes a ksquad.io/onboarding-* annotation, allocating the map when

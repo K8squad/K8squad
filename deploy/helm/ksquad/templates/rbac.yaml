@@ -93,8 +93,11 @@ metadata:
     {{- include "ksquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: apiserver
 rules:
+  # egresspolicies is read by the E3-S2 credential-test BYO probe guard
+  # (pkg/probeegress, ISI-3891); the wide verb set mirrors this chart's
+  # existing apiserver grant style while config/helm stays least-privilege.
   - apiGroups: ["ksquad.io"]
-    resources: ["teams", "projects", "agents", "roles", "skills"]
+    resources: ["teams", "projects", "agents", "roles", "skills", "egresspolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

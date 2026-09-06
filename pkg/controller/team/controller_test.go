@@ -775,3 +775,81 @@ func TestConditionTransitionTimePinnedByClock(t *testing.T) {
 		}
 	}
 }
+
+// TestProvisionCredentialTesterScaffold (E3-S2, ISI-3680, AD-7): every squad
+// namespace carries the get-only credential-tester Role + RoleBinding — the
+// CONTAINED Secret read the apiserver's test-connection probe depends on.
+// The grant is get-only (never list/watch/write), namespaced (the apiserver's
+// cluster-wide posture stays create-only, ISI-3671), and binds the
+// control-plane apiserver SA (exact subject from the reconciler fields,
+// chart-rendered env in prod).
+func TestProvisionCredentialTesterScaffold(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	r.ApiserverNamespace = "k8squad-system"
+	r.ApiserverServiceAccount = "k8squad-apiserver"
+
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team); err != nil {
+		t.Fatalf("get team: %v", err)
+	}
+	ns := team.Status.Namespace
+
+	var role rbacv1.Role
+	if err := c.Get(context.Background(), types.NamespacedName{Name: CredentialTesterRole, Namespace: ns}, &role); err != nil {
+		t.Fatalf("get credential-tester Role: %v", err)
+	}
+	if len(role.Rules) != 1 {
+		t.Fatalf("credential-tester Role rules = %v, want exactly one", role.Rules)
+	}
+	rule := role.Rules[0]
+	if len(rule.Verbs) != 1 || rule.Verbs[0] != "get" {
+		t.Errorf("credential-tester verbs = %v, want [get] ONLY (no list/watch/write)", rule.Verbs)
+	}
+	if len(rule.Resources) != 1 || rule.Resources[0] != "secrets" {
+		t.Errorf("credential-tester resources = %v, want [secrets]", rule.Resources)
+	}
+	if len(rule.APIGroups) != 1 || rule.APIGroups[0] != "" {
+		t.Errorf("credential-tester apiGroups = %v, want core (\"\")", rule.APIGroups)
+	}
+
+	var binding rbacv1.RoleBinding
+	if err := c.Get(context.Background(), types.NamespacedName{Name: CredentialTesterRole, Namespace: ns}, &binding); err != nil {
+		t.Fatalf("get credential-tester RoleBinding: %v", err)
+	}
+	if len(binding.Subjects) != 1 {
+		t.Fatalf("subjects = %v, want exactly one", binding.Subjects)
+	}
+	subj := binding.Subjects[0]
+	if subj.Kind != rbacv1.ServiceAccountKind || subj.Namespace != "k8squad-system" || subj.Name != "k8squad-apiserver" {
+		t.Errorf("subject = %+v, want the control-plane apiserver SA", subj)
+	}
+	if binding.RoleRef.Kind != "Role" || binding.RoleRef.Name != CredentialTesterRole {
+		t.Errorf("roleRef = %+v, want the namespaced credential-tester Role", binding.RoleRef)
+	}
+}
+
+// TestProvisionCredentialTesterDefaults — empty reconciler fields fall back
+// to the default install shape (ksquad-system / ksquad-apiserver) so a bare
+// dev run still provisions a working grant.
+func TestProvisionCredentialTesterDefaults(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team); err != nil {
+		t.Fatalf("get team: %v", err)
+	}
+
+	var binding rbacv1.RoleBinding
+	if err := c.Get(context.Background(), types.NamespacedName{Name: CredentialTesterRole, Namespace: team.Status.Namespace}, &binding); err != nil {
+		t.Fatalf("get credential-tester RoleBinding: %v", err)
+	}
+	if binding.Subjects[0].Namespace != DefaultApiserverNamespace || binding.Subjects[0].Name != DefaultApiserverServiceAccount {
+		t.Errorf("default subject = %+v, want %s/%s", binding.Subjects[0], DefaultApiserverNamespace, DefaultApiserverServiceAccount)
+	}
+}

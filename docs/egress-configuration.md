@@ -121,6 +121,48 @@ spec:
 3. **Auditability**: All traffic goes through egress proxies where it can be logged
 4. **Isolation**: Each team/Project's egress rules are isolated from others
 
+## Credential test-connection probe egress (ISI-3891)
+
+The E3-S2 test-connection endpoint (`POST /api/credentials/{name}/test`) dials a
+BYO model endpoint **from the apiserver**, which runs in the control-plane
+namespace with high-trust egress. To keep the probe from acting as a confused
+deputy (an authenticated tenant probing control-plane-internal reachability by
+status class), the probe applies the egress story's own rule at the dial seam:
+
+**test-connection only reaches what a Run could reach.**
+
+Concretely (`pkg/probeegress`): before dialing a BYO `endpointURL`, the
+apiserver resolves the host and requires every resolved address (and the URL's
+port) to fall inside the squad's DECLARED allowlist — the `EgressPolicy` CRs in
+the caller's namespace plus any `EgressPolicy` a Project in the namespace
+references via `spec.egressPolicyRef`. The same declaration drives the squad
+NetworkPolicy story (§12.2 / story 4.6), so the probe and Runs cannot disagree.
+
+Behavior squads will observe:
+
+- **No EgressPolicy applies** → every BYO test-connection answers
+  `ok: false` with a `Blocked — …` detail. This is the honest red: the squad's
+  Runs could not reach the endpoint either, so a green would be a lie.
+- **Endpoint outside the declared CIDRs** (or on a port the rules do not open)
+  → same `Blocked` red.
+- **Proxy-routed or namespaceSelector-only policies** → `Blocked`: the probe
+  never rides the squad's egress proxy and cannot reproduce selector-based
+  routes; declare the endpoint by CIDR to make it probeable.
+- **Loopback, link-local (including `169.254.169.254`), unspecified and
+  multicast targets are never probeable**, even when an allowlist entry covers
+  them.
+- Hostnames that do not resolve fail closed (a red, never a maybe).
+
+The public provider probes (`api.anthropic.com`, `api.openai.com`) are pinned
+constants, not caller-chosen, and are not affected.
+
+The apiserver ServiceAccount needs read-only `egresspolicies` access for this
+check (both charts grant `get`/`list`; the canonical chart's least-privilege
+set is pinned by `TestApiserverClusterRoleLeastPrivilege`). A missing grant
+surfaces as a `502 squad egress policy unavailable`, not a silent allow.
+
+
+
 ## Migration
 
 Existing Projects can be migrated by adding the `egressPolicyRef` field. The Project controller will automatically create the corresponding NetworkPolicies.
@@ -133,6 +175,17 @@ Existing Projects can be migrated by adding the `egressPolicyRef` field. The Pro
 2. Verify the NetworkPolicy was created successfully
 3. Check egress proxy logs for blocked connections
 4. Ensure the egress proxy is running and accessible
+
+### BYO test-connection answers "Blocked"
+
+1. Check that an `EgressPolicy` exists in the squad's namespace (or is
+   referenced by a Project in it via `spec.egressPolicyRef`)
+2. Verify a CIDR rule covers EVERY address the endpoint's hostname resolves
+   to (a split multi-A answer is denied), on the port the URL uses
+3. Loopback, link-local and metadata addresses are never probeable — point the
+   endpoint Secret at a real address
+4. The apiserver logs the precise denial server-side
+   (`credential test BYO probe blocked`)
 
 ### NetworkPolicy not created
 

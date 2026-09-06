@@ -37,6 +37,17 @@ spec:
         env:
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         {{- include "k8squad.otelEnv" . | nindent 8 }}
+        {{- /* ISI-3680 (E3-S2, AD-7): exact apiserver ServiceAccount name and
+               control-plane namespace for the get-only credential-tester
+               RoleBinding the Team reconciler provisions inside every squad
+               namespace (the contained Secret read behind POST
+               /api/credentials/{name}/test). Rendered from the chart's own
+               serviceaccount naming + namespace so they cannot drift from the
+               real subject. */}}
+        - name: KSQUAD_APISERVER_SERVICE_ACCOUNT
+          value: ksquad-apiserver
+        - name: KSQUAD_APISERVER_NAMESPACE
+          value: {{ include "k8squad.namespace" . | quote }}
         - name: KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED
           value: {{ .Values.tools.rbac.clusterScopeEnabled | default false | quote }}
         {{- /* ISI-3745: hand the operator the workspace PVC StorageClass / size /

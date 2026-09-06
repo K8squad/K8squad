@@ -54,6 +54,15 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            {{- /* ISI-3680 (E3-S2, AD-7): exact apiserver ServiceAccount name
+                   for the get-only credential-tester RoleBinding the Team
+                   reconciler provisions inside every squad namespace (the
+                   contained Secret read behind POST
+                   /api/credentials/{name}/test). Rendered from the chart's
+                   own fullname so a non-default release name cannot drift
+                   from the real subject. */}}
+            - name: KSQUAD_APISERVER_SERVICE_ACCOUNT
+              value: {{ include "ksquad.apiserver.fullname" . }}
             {{- /* ISI-3352: the operator-side A2A dispatch feed. The operator
                    image ships the shim binary (/usr/local/bin/shim); the drive
                    loop spawns `shim run` per dispatched Run (operator-spawned

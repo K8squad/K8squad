@@ -173,8 +173,22 @@ rules:
   resources: [teams]
   verbs: [get, list, create, update]
 - apiGroups: [ksquad.io]
-  resources: [projects, agents, roles, skills]
+  resources: [agents]
+  verbs: [get, list, create, update]
+- apiGroups: [ksquad.io]
+  resources: [projects]
+  verbs: [get, list, create, update]
+- apiGroups: [ksquad.io]
+  resources: [roles, skills]
   verbs: [get, create, update]
+# egresspolicies is READ-ONLY (ISI-3891): the E3-S2 credential-test BYO
+# probe guard (pkg/probeegress) lists EgressPolicies in the caller's squad
+# namespace and follows Project egressPolicyRefs to decide whether the
+# apiserver may dial a caller-chosen endpoint. No watch/patch/delete: the
+# probe never writes egress declarations.
+- apiGroups: [ksquad.io]
+  resources: [egresspolicies]
+  verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
