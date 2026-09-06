@@ -92,9 +92,9 @@ func TestNFR2SecretNeverInTelemetry(t *testing.T) {
 	var spanBuf strings.Builder
 	for _, s := range spanExp.GetSpans() {
 		spanBuf.WriteString(s.Name)
-		spanBuf.WriteString(fmt.Sprint(s.Attributes))
-		spanBuf.WriteString(fmt.Sprint(s.Events))
-		spanBuf.WriteString(fmt.Sprint(s.Status))
+		fmt.Fprint(&spanBuf, s.Attributes)
+		fmt.Fprint(&spanBuf, s.Events)
+		fmt.Fprint(&spanBuf, s.Status)
 	}
 	spans := spanBuf.String()
 	logs := logBuf.String()
