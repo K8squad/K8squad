@@ -19,6 +19,7 @@ package probeegress
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,7 +77,7 @@ func newGuard(t *testing.T, objs []client.Object, r IPResolver) *Guard {
 
 func runAllow(t *testing.T, g *Guard, rawURL string) *Denial {
 	t.Helper()
-	d, err := g.Allow(context.Background(), ns, rawURL)
+	_, d, err := g.Allow(context.Background(), ns, rawURL)
 	if err != nil {
 		t.Fatalf("Allow(%q): infra error, want a decision: %v", rawURL, err)
 	}
@@ -238,5 +239,108 @@ func TestMalformedURLs(t *testing.T) {
 		if d := runAllow(t, g, u); d == nil || d.Kind != DenyMalformedURL {
 			t.Fatalf("%q must be malformed, got %+v", u, d)
 		}
+	}
+}
+
+// TestAllowReturnsValidatedAddrs (ISI-3899 F-A) — the guard must hand
+// back EXACTLY the address set it validated, because the probe dial is
+// pinned to it: validate-time and dial-time resolution must be one
+// resolution. A denial must return no addresses (nothing may be dialed).
+func TestAllowReturnsValidatedAddrs(t *testing.T) {
+	res := staticResolver{"ollama.svc": {net.ParseIP("10.0.0.5"), net.ParseIP("10.0.0.6")}}
+	g := newGuard(t, []client.Object{cidrPolicy("lan", "10.0.0.0/8")}, res)
+
+	addrs, d, err := g.Allow(context.Background(), ns, "http://ollama.svc:11434/")
+	if err != nil || d != nil {
+		t.Fatalf("allow: d=%+v err=%v", d, err)
+	}
+	want := []netip.Addr{netip.MustParseAddr("10.0.0.5"), netip.MustParseAddr("10.0.0.6")}
+	if len(addrs) != len(want) || addrs[0] != want[0] || addrs[1] != want[1] {
+		t.Fatalf("validated addrs: got %v, want %v", addrs, want)
+	}
+
+	// A literal URL pins to itself, unmapped from any 4-in-6 form.
+	addrs, d, err = g.Allow(context.Background(), ns, "http://10.0.0.185:11434/")
+	if err != nil || d != nil {
+		t.Fatalf("literal allow: d=%+v err=%v", d, err)
+	}
+	if len(addrs) != 1 || addrs[0] != netip.MustParseAddr("10.0.0.185") {
+		t.Fatalf("literal addrs: got %v, want [10.0.0.185]", addrs)
+	}
+
+	// Denials never yield a dialable set.
+	for _, u := range []string{
+		"http://192.168.1.1:8080/",    // not covered
+		"http://ghost.invalid:11434/", // unresolvable
+		"http://127.0.0.1:5432/",      // hard-blocked
+		"http://10.0.0.185:9999/",     // wrong port vs a port-restricted policy below
+	} {
+		g2 := newGuard(t, []client.Object{cidrPolicy("lan", "10.0.0.0/8")}, res)
+		if u == "http://10.0.0.185:9999/" {
+			p := cidrPolicy("ports", "10.0.0.0/8")
+			p.Spec.Allow[0].Ports = []ksquadv1.EgressPort{{Port: "443"}}
+			g2 = newGuard(t, []client.Object{p}, res)
+		}
+		addrs, d, err := g2.Allow(context.Background(), ns, u)
+		if err != nil {
+			t.Fatalf("%s: err %v", u, err)
+		}
+		if d == nil {
+			t.Fatalf("%s: want denial", u)
+		}
+		if len(addrs) != 0 {
+			t.Fatalf("%s: denial must return no addrs, got %v", u, addrs)
+		}
+	}
+}
+
+// TestOverlappingRulesAdmitPortFromAnyRule (ISI-3899 F-B) — two allow
+// entries with overlapping CIDRs but different port sets compose: a
+// broad 10/8 for :443 declared FIRST must not shadow a later host-CIDR
+// entry for :11434. The old matchRules returned deny-port on the first
+// containing rule — a false red against a legitimately declared
+// endpoint.
+func TestOverlappingRulesAdmitPortFromAnyRule(t *testing.T) {
+	broad := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "broad"}}
+	broad.Spec.Allow = []ksquadv1.EgressRule{{
+		To:    ksquadv1.EgressDestination{CIDR: "10.0.0.0/8"},
+		Ports: []ksquadv1.EgressPort{{Port: "443"}},
+	}}
+	host := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "host-ollama"}}
+	host.Spec.Allow = []ksquadv1.EgressRule{{
+		To:    ksquadv1.EgressDestination{CIDR: "10.0.0.185/32"},
+		Ports: []ksquadv1.EgressPort{{Port: "11434"}},
+	}}
+	g := newGuard(t, []client.Object{broad, host}, staticResolver{})
+
+	if d := runAllow(t, g, "http://10.0.0.185:11434/v1"); d != nil {
+		t.Fatalf("host rule must admit the declared Ollama port despite the overlapping broad rule, got %+v", d)
+	}
+	if d := runAllow(t, g, "https://10.0.0.185/"); d != nil {
+		t.Fatalf("broad rule must admit 443 for the same host, got %+v", d)
+	}
+	if d := runAllow(t, g, "http://10.0.0.185:8080/"); d == nil || d.Kind != DenyPort {
+		t.Fatalf("port declared by NO rule must deny with port kind, got %+v", d)
+	}
+	if d := runAllow(t, g, "https://10.0.0.9/"); d != nil {
+		t.Fatalf("broad rule covers other hosts on 443, got %+v", d)
+	}
+	if d := runAllow(t, g, "http://10.0.0.9:11434/"); d == nil || d.Kind != DenyPort {
+		t.Fatalf("host rule must not leak its port outside its CIDR, got %+v", d)
+	}
+
+	// Carve-out + overlap: the broad rule carves out the host IP; the
+	// host rule still admits it on its own port.
+	carved := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "carved"}}
+	carved.Spec.Allow = []ksquadv1.EgressRule{{
+		To:    ksquadv1.EgressDestination{CIDR: "10.0.0.0/8", Except: []string{"10.0.0.185/32"}},
+		Ports: []ksquadv1.EgressPort{{Port: "443"}},
+	}}
+	g2 := newGuard(t, []client.Object{carved, host}, staticResolver{})
+	if d := runAllow(t, g2, "http://10.0.0.185:11434/"); d != nil {
+		t.Fatalf("carved broad rule must not shadow the host rule, got %+v", d)
+	}
+	if d := runAllow(t, g2, "https://10.0.0.185/"); d == nil || d.Kind != DenyPort {
+		t.Fatalf("carved-out host on the broad rule's port must deny (only the host rule covers the IP), got %+v", d)
 	}
 }

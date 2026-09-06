@@ -53,8 +53,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/netip"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -105,13 +108,19 @@ const (
 
 // probeTarget is one provider ping dialect: the models-list URL, the header
 // that carries the credential, whether it rides as a Bearer token, and any
-// extra headers the provider requires.
+// extra headers the provider requires. For BYO targets, pinned carries the
+// guard-validated address set (ISI-3899 F-A): the dial connects ONLY to
+// these addresses, never to a fresh resolution of the URL's host.
 type probeTarget struct {
 	url       string
 	header    string
 	bearer    bool
 	extraName string
 	extraVal  string
+	// pinned is non-empty exactly when the egress guard validated this
+	// target (BYO path). nil/empty = public provider path, dialed by the
+	// default client (the target is not caller-chosen).
+	pinned []netip.Addr
 }
 
 // probeTargets maps the injected env-var family to its ping dialect. Both
@@ -310,8 +319,17 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 		// false green for every Run), answered with one curated string
 		// that never echoes the URL; the precise reason is logged
 		// server-side.
+		//
+		// The guard also returns the address set it validated
+		// (ISI-3899 F-A): the probe dial is PINNED to it. The tenant
+		// controls BYO DNS, so a second, independent resolution inside
+		// the dialer (low-TTL rebind or split-answer) could otherwise
+		// validate one address and connect to another — resurrecting
+		// the reachability oracle this guard exists to remove. Pinning
+		// makes validate-time and dial-time resolution one resolution.
+		var pinned []netip.Addr
 		if s.probeEgress != nil {
-			denial, gerr := s.probeEgress.Allow(r.Context(), ns, endpointURL)
+			addrs, denial, gerr := s.probeEgress.Allow(r.Context(), ns, endpointURL)
 			if gerr != nil {
 				log.Printf("apiserver: credential test egress read failed ns=%s name=%s endpointRef=%s: %v", ns, name, req.ModelEndpointRef, gerr)
 				writeJSON(w, http.StatusBadGateway, "squad egress policy unavailable")
@@ -323,8 +341,9 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 				writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Detail: credentialTestBlockedDetail})
 				return
 			}
+			pinned = addrs
 		}
-		target = probeTarget{url: endpointURL, header: "Authorization", bearer: true}
+		target = probeTarget{url: endpointURL, header: "Authorization", bearer: true, pinned: pinned}
 	}
 
 	probe := probeRequest{target: target, material: material}
@@ -488,12 +507,67 @@ func (p *httpCredentialProber) probe(ctx context.Context, req probeRequest) (int
 	if req.target.extraName != "" {
 		httpReq.Header.Set(req.target.extraName, req.target.extraVal)
 	}
-	resp, err := p.client.Do(httpReq)
+	// Guard-validated BYO targets dial through a PINNED transport
+	// (ISI-3899 F-A): the DialContext connects only to the addresses the
+	// egress guard validated and never re-resolves the URL's host, so a
+	// DNS rebind or split-answer between guard and dial has nothing to
+	// hit. Public provider targets (pinned empty) keep the plain client.
+	client := p.client
+	if len(req.target.pinned) > 0 {
+		client = &http.Client{
+			Timeout:   p.client.Timeout,
+			Transport: pinnedProbeTransport(req.target.pinned),
+		}
+	}
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+// pinnedProbeTransport is the dial plan for a guard-validated BYO probe
+// (ISI-3899 F-A). The DialContext takes ONLY the port from the address
+// the transport asks for and dials the guard-validated IPs by literal —
+// the hostname the transport hands over is never resolved, never
+// consulted. TLS keeps the URL host as ServerName and the request keeps
+// its Host header, so certificate and virtual-host behavior are exactly
+// what a Run dialing the same URL would see. Proxy is nil on purpose:
+// the guard already refuses proxy-shaped egress, and an env-var proxy
+// would redirect the dial away from the validated addresses.
+func pinnedProbeTransport(addrs []netip.Addr) *http.Transport {
+	return &http.Transport{
+		DisableKeepAlives: true, // one-shot probe; leave no idle sockets
+		Proxy:             nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			_, portStr, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, fmt.Errorf("pinned probe dial: malformed address %q: %w", addr, err)
+			}
+			port, err := strconv.Atoi(portStr)
+			if err != nil || port < 1 || port > 65535 {
+				return nil, fmt.Errorf("pinned probe dial: bad port in %q", addr)
+			}
+			var dialer net.Dialer
+			var firstErr error
+			for _, a := range addrs {
+				// netip.AddrPort.String() renders the bracketed v6
+				// form; dialing a literal skips DNS entirely.
+				conn, derr := dialer.DialContext(ctx, "tcp", netip.AddrPortFrom(a, uint16(port)).String())
+				if derr == nil {
+					return conn, nil
+				}
+				if firstErr == nil {
+					firstErr = derr
+				}
+			}
+			if firstErr == nil {
+				firstErr = errors.New("pinned probe dial: no validated addresses to dial")
+			}
+			return nil, firstErr
+		},
+	}
 }
 
 // muxVarsName reads a gorilla/mux path variable, matching the house pattern

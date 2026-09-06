@@ -33,7 +33,12 @@ limitations under the License.
 // materialization into NetworkPolicies rides the same declaration, so
 // the two layers cannot disagree once it lands). The guard resolves the
 // BYO URL's host to IPs and requires every resolved address to fall
-// inside an allowed CIDR on the URL's port.
+// inside an allowed CIDR on the URL's port — and RETURNS that validated
+// address set (ISI-3899 F-A): the caller must pin its dial to exactly
+// these addresses, collapsing validate-time and dial-time resolution
+// into one so a low-TTL rebind or split-answer between the guard's
+// lookup and the prober's dial cannot smuggle a blocked destination
+// past a validated green.
 //
 // Deliberate fail-closed corners, all honest reds for the caller:
 //
@@ -122,13 +127,19 @@ func (d *Denial) Error() string {
 }
 
 // Allow answers whether the apiserver may dial rawURL on behalf of the
-// squad namespace. A nil Denial means allowed. A non-nil error means the
-// allowlist itself could not be read (kube API failure) — map it to a
-// 502-class response, not a red.
-func (g *Guard) Allow(ctx context.Context, namespace, rawURL string) (*Denial, error) {
+// squad namespace, and returns the VALIDATED address set the dial must
+// be pinned to (ISI-3899 F-A). A nil Denial means allowed, and addrs is
+// then the non-empty set of guard-resolved addresses the caller MUST
+// dial — connecting to anything else re-opens the TOCTOU/DNS-rebinding
+// seam this guard exists to close (validate-time and dial-time
+// resolution must be one resolution). A non-nil Denial means refused
+// and addrs is nil. A non-nil error means the allowlist itself could
+// not be read (kube API failure) — map it to a 502-class response, not
+// a red.
+func (g *Guard) Allow(ctx context.Context, namespace, rawURL string) ([]netip.Addr, *Denial, error) {
 	host, port, d := parseTarget(rawURL)
 	if d != nil {
-		return d, nil
+		return nil, d, nil
 	}
 
 	// The allowlist is consulted BEFORE resolution: a squad with no CIDR
@@ -136,31 +147,31 @@ func (g *Guard) Allow(ctx context.Context, namespace, rawURL string) (*Denial, e
 	// declaration is the useful one (no DNS on a foregone conclusion).
 	rules, sawProxyOrSelector, err := g.allowlist(ctx, namespace)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(rules) == 0 {
 		if sawProxyOrSelector {
-			return &Denial{Kind: DenyProxyOnly, Detail: "the squad's egress is declared via a proxy or namespace selector, which test-connection cannot reproduce"}, nil
+			return nil, &Denial{Kind: DenyProxyOnly, Detail: "the squad's egress is declared via a proxy or namespace selector, which test-connection cannot reproduce"}, nil
 		}
-		return &Denial{Kind: DenyNoPolicy, Detail: "no EgressPolicy applies to this squad; declare the endpoint in one"}, nil
+		return nil, &Denial{Kind: DenyNoPolicy, Detail: "no EgressPolicy applies to this squad; declare the endpoint in one"}, nil
 	}
 
 	ips, d := g.resolve(ctx, host)
 	if d != nil {
-		return d, nil
+		return nil, d, nil
 	}
 	addrs := make([]netip.Addr, 0, len(ips))
 	for _, ip := range ips {
 		// Unmap so a 4-in-6 form compares against IPv4 prefixes.
 		a, ok := netip.AddrFromSlice(ip)
 		if !ok {
-			return &Denial{Kind: DenyUnresolvable, Detail: "unusable address in resolution result"}, nil
+			return nil, &Denial{Kind: DenyUnresolvable, Detail: "unusable address in resolution result"}, nil
 		}
 		addrs = append(addrs, a.Unmap())
 	}
 	for _, a := range addrs {
 		if hardBlocked(a) {
-			return &Denial{Kind: DenyHardBlock, Detail: "loopback, link-local, unspecified and multicast addresses are never probeable"}, nil
+			return nil, &Denial{Kind: DenyHardBlock, Detail: "loopback, link-local, unspecified and multicast addresses are never probeable"}, nil
 		}
 	}
 
@@ -170,13 +181,13 @@ func (g *Guard) Allow(ctx context.Context, namespace, rawURL string) (*Denial, e
 	for _, a := range addrs {
 		covered, portOK := matchRules(rules, a, port)
 		if !covered {
-			return &Denial{Kind: DenyNotCovered, Detail: "no allow rule covers every resolved address"}, nil
+			return nil, &Denial{Kind: DenyNotCovered, Detail: "no allow rule covers every resolved address"}, nil
 		}
 		if !portOK {
-			return &Denial{Kind: DenyPort, Detail: fmt.Sprintf("an allow rule covers the address but not port %d", port)}, nil
+			return nil, &Denial{Kind: DenyPort, Detail: fmt.Sprintf("an allow rule covers the address but not port %d", port)}, nil
 		}
 	}
-	return nil, nil
+	return addrs, nil, nil
 }
 
 // parseTarget extracts host and port from a BYO URL, defaulting the port
@@ -328,9 +339,16 @@ func (g *Guard) namespacePolicies(ctx context.Context, namespace string) ([]ksqu
 }
 
 // matchRules reports whether one address is inside an allow rule
-// (respecting except carve-outs), and whether that same rule also
-// admits the port.
+// (respecting except carve-outs), and whether a containing rule also
+// admits the port. Overlapping rules compose (ISI-3899 F-B): a broad
+// CIDR entry for :443 and a host CIDR entry for :11434 BOTH apply, so
+// the port scan must run across every containing rule — a wrong-port
+// match on the FIRST containing rule is not a deny when a later,
+// narrower rule admits the port. Only "no containing rule at all"
+// denies coverage, and "no containing rule admits the port" denies the
+// port.
 func matchRules(rules []allowRule, a netip.Addr, port int) (covered, portOK bool) {
+	covered = false
 	for _, r := range rules {
 		if !r.prefix.Contains(a) {
 			continue
@@ -345,6 +363,7 @@ func matchRules(rules []allowRule, a netip.Addr, port int) (covered, portOK bool
 		if carved {
 			continue
 		}
+		covered = true
 		if len(r.ports) == 0 {
 			return true, true
 		}
@@ -353,9 +372,10 @@ func matchRules(rules []allowRule, a netip.Addr, port int) (covered, portOK bool
 				return true, true
 			}
 		}
-		return true, false // covered by CIDR, wrong port
+		// This rule covers the address but not the port — keep
+		// scanning: a later overlapping rule may admit it.
 	}
-	return false, false
+	return covered, false
 }
 
 // hardBlocked names the address classes the apiserver must never probe,

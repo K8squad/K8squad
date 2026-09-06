@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -385,6 +386,123 @@ func allowAllPolicy(ns string) *ksquadv1.EgressPolicy {
 	p := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "allow-all"}}
 	p.Spec.Allow = []ksquadv1.EgressRule{{To: ksquadv1.EgressDestination{CIDR: "0.0.0.0/0"}}}
 	return p
+}
+
+// TestCredentialTestBYOProbeDialPinned (ISI-3899 F-A) — the address set
+// the guard validated is the address set handed to the dial: the
+// probeRequest the prober receives carries pinned == the guard's
+// resolution, collapsing validate-time and dial-time resolution. The
+// public-provider path carries NO pin (not caller-chosen, default dial).
+func TestCredentialTestBYOProbeDialPinned(t *testing.T) {
+	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555561")
+	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
+	endpoint := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-alpha", Name: "byo"},
+		Data:       map[string][]byte{"endpointURL": []byte("http://ollama.lan:11434/v1/")},
+	}
+	svc, _, fp := newCredentialTester(t, tm, cred, endpoint, byoAllowPolicy("ksquad-team-alpha"))
+	h := testCredentialTestServer(t, teamID, svc)
+
+	rec := postCredentialTest(t, h, "k", `{"runtime":"opencode","modelEndpointRef":"byo"}`, true)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("byo pinned: got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if fp.calls != 1 {
+		t.Fatalf("byo pinned: probe calls %d", fp.calls)
+	}
+	// staticTestResolver answers 203.0.113.10; the dial plan must be
+	// exactly that validated set — not a re-resolution at dial time.
+	if len(fp.last.target.pinned) != 1 || fp.last.target.pinned[0].String() != "203.0.113.10" {
+		t.Fatalf("pinned addrs: got %v, want [203.0.113.10]", fp.last.target.pinned)
+	}
+
+	// Public provider path: no pin.
+	svc2, _, fp2 := newCredentialTester(t, tm, cred)
+	h2 := testCredentialTestServer(t, teamID, svc2)
+	rec2 := postCredentialTest(t, h2, "k", `{"runtime":"claude-code"}`, true)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("public path: got %d", rec2.Code)
+	}
+	if len(fp2.last.target.pinned) != 0 {
+		t.Fatalf("public provider dial must not be pinned, got %v", fp2.last.target.pinned)
+	}
+}
+
+// TestPinnedProbeDialIgnoresHostnameResolution (ISI-3899 F-A) — the
+// rebinding-divergence proof against the REAL httpCredentialProber: the
+// pinned DialContext must never consult DNS, so the hostname in the URL
+// and the address actually dialed CANNOT diverge.
+//
+//   - constructive: a URL host that does not resolve at all
+//     (no-such-host.invalid) still connects when the pin points at the
+//     listening server — DNS is bypassed entirely.
+//   - divergent: a URL host that DOES resolve to a listening server
+//     (localhost) must NOT be dialed when the pin points elsewhere
+//     (127.0.0.2, refused) — the rebound/blocked answer is refused, not
+//     attempted. This is exactly "guard resolves to [allowed]; dialer
+//     asked for the host resolves to [blocked] → connection must be
+//     refused".
+func TestPinnedProbeDialIgnoresHostnameResolution(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	_, portStr, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("listener addr: %v", err)
+	}
+	prober := &httpCredentialProber{client: &http.Client{Timeout: credentialProbeTimeout}}
+
+	// Constructive: unresolvable host, pin on the listening loopback
+	// server → the dial still lands (no DNS at dial time).
+	req := probeRequest{
+		target: probeTarget{
+			url:    "http://no-such-host.invalid:" + portStr + "/models",
+			header: "Authorization",
+			bearer: true,
+			pinned: []netip.Addr{netip.MustParseAddr("127.0.0.1")},
+		},
+		material: secretValueCanary,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), credentialProbeTimeout)
+	defer cancel()
+	status, perr := prober.probe(ctx, req)
+	if perr != nil || status != http.StatusOK {
+		t.Fatalf("pinned dial must reach the listening server despite an unresolvable URL host: status=%d err=%v", status, perr)
+	}
+
+	// Divergent: host resolves to a LISTENING server (localhost), but the
+	// guard-validated pin is 127.0.0.2 (nothing there) → refused. The
+	// listening 127.0.0.1 socket must never be reached through the host.
+	reqDivergent := probeRequest{
+		target: probeTarget{
+			url:    "http://localhost:" + portStr + "/models",
+			header: "Authorization",
+			bearer: true,
+			pinned: []netip.Addr{netip.MustParseAddr("127.0.0.2")},
+		},
+		material: secretValueCanary,
+	}
+	if _, perr := prober.probe(ctx, reqDivergent); perr == nil {
+		t.Fatalf("dial pinned to a non-listening address must fail even when the URL host resolves to a listener (rebind must be refused, not attempted)")
+	}
+
+	// Sanity for the divergent case: WITHOUT the pin the same request
+	// succeeds — proving the failure above came from pin enforcement,
+	// not an unreachable fixture.
+	reqUnpinned := probeRequest{
+		target: probeTarget{
+			url:    "http://localhost:" + portStr + "/models",
+			header: "Authorization",
+			bearer: true,
+		},
+		material: secretValueCanary,
+	}
+	status, perr = prober.probe(ctx, reqUnpinned)
+	if perr != nil || status != http.StatusOK {
+		t.Fatalf("unpinned control dial must reach the localhost fixture: status=%d err=%v", status, perr)
+	}
 }
 
 // TestCredentialTestMissingAndForeign — a missing name in the caller's
