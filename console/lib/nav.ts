@@ -274,12 +274,16 @@ export const ONBOARDING_MILESTONE_HREF: Record<string, string> = {
  * stay open on purpose: Overview carries the setup hub (Launchpad, E1-S2) and Compose is
  * where milestone ① (the Team CR) is authored — locking them would strand first-run Nadia.
  * The lock clears the moment the Team-exists signal flips true.
+ *
+ * Settings and its children stay OPEN pre-Team (ISI-3870, board report ISI-3867 #1): OTel
+ * config is a deployment-level concern and Credentials is milestone ③'s own surface, so an
+ * admin on an empty tenant must still reach them — the padlock is a journey affordance, not
+ * RBAC, and the approved ISI-3641 mock frames 01/06 show no rail padlocks. Only projects and
+ * agents keep the FR-1.4 gate.
  */
 const LOCKED_UNTIL_TEAM: ReadonlySet<string> = new Set([
   "projects",
   "agents",
-  "settings",
-  "users",
 ]);
 
 /**

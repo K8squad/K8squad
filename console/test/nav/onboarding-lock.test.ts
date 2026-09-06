@@ -21,14 +21,15 @@ function byId(nodes: NavNode[]): Map<string, NavNode> {
 }
 
 describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
-  it("locks the non-setup surfaces but keeps Dashboard, Overview and Compose open", () => {
+  it("locks projects/agents but keeps Dashboard, Overview, Compose and Settings open", () => {
     const locked = byId(withOnboardingLock(navTree(), false));
     expect(locked.get("projects")?.locked).toBe(true);
     expect(locked.get("agents")?.locked).toBe(true);
-    expect(locked.get("settings")?.locked).toBe(true);
-    // "users" is a child of the "settings" section (ISI-3725); it inherits the lock.
+    // Settings + children stay OPEN pre-Team (ISI-3870): an admin on an empty tenant must
+    // reach OTel config / Credentials; the padlock is a journey affordance, not RBAC.
+    expect(locked.get("settings")?.locked).toBeFalsy();
     const usersNode = locked.get("settings")?.children?.find((c) => c.id === "users");
-    expect(usersNode?.locked).toBe(true);
+    expect(usersNode?.locked).toBeFalsy();
     // Setup surfaces stay reachable: Compose authors milestone ① (the Team CR), Overview
     // carries the Launchpad (E1-S2), Dashboard is the landing root.
     expect(locked.get("dashboard")?.locked).toBeFalsy();
@@ -36,10 +37,10 @@ describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
     expect(locked.get("compose")?.locked).toBeFalsy();
   });
 
-  it("inherits the lock into a gated node's children (settings children)", () => {
+  it("keeps a gated section's children open when the section is open (settings children)", () => {
     const locked = byId(withOnboardingLock(navTree(), false));
     for (const child of locked.get("settings")?.children ?? []) {
-      expect(child.locked).toBe(true);
+      expect(child.locked).toBeFalsy();
     }
   });
 
