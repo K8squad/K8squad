@@ -53,6 +53,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -61,6 +62,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -196,14 +198,25 @@ type credentialTestResult struct {
 
 // handleCredentialTest is the handler behind POST /api/credentials/{name}/test.
 func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *http.Request) {
+	// Funnel span + metric (ISI-3669/ISI-3680, obs plan §3/§4): the M3
+	// credential test-connection step. team.id + the bounded (class, runtime)
+	// pair ride the span; the credential VALUE stays telemetry-dark (NFR-2,
+	// §5.3 — TestNFR2CredentialTestSecretNeverInTelemetry sweeps span AND log).
+	ctx, span := funnelSpan(r.Context(), "ksquad.credential.test")
+	defer span.End()
+	fn := funnelInst()
+
 	author, ok := discussion.AuthFromContext(r.Context())
 	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeUnauthenticated)
 		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
 
 	var req credentialTestRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestInvalid)
 		return
 	}
 
@@ -211,10 +224,13 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 
 	team, err := s.resolveTeam(r.Context(), author.TeamID.String())
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
 		return
 	}
 	if err != nil {
+		slog.WarnContext(ctx, "credential test: team scope resolution unavailable", "error", err)
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
 		return
 	}
@@ -227,12 +243,16 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 		case apierrors.IsNotFound(err):
 			// Existence-hiding: a foreign, mistyped or non-credential
 			// Secret is indistinguishable from "no such credential".
+			funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestNotFound)
 			writeJSONError(w, http.StatusNotFound, "no such credential")
 		case apierrors.IsForbidden(err):
-			log.Printf("apiserver: credential test GET FORBIDDEN for %s/%s principal=%s: check team-namespace credential-tester Role (E3-S2)", ns, name, author.Principal)
+			slog.ErrorContext(ctx, "credential test GET FORBIDDEN — check team-namespace credential-tester Role (E3-S2)",
+				"namespace", ns, "name", name, "principal", author.Principal)
+			funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 			writeJSONError(w, http.StatusBadGateway, "credential store rejected the read")
 		default:
-			log.Printf("apiserver: credential test read failed for %s/%s: %v", ns, name, err)
+			slog.ErrorContext(ctx, "credential test read failed", "namespace", ns, "name", name, "error", err)
+			funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
 		}
 		return
@@ -242,16 +262,19 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	// probeable, and only in the caller's own namespace (enforced by the
 	// object key above). Anything else is a 404, never a 403.
 	if secret.Labels[credential.LabelManagedCredential] != credential.LabelManagedCredentialValue {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestNotFound)
 		writeJSONError(w, http.StatusNotFound, "no such credential")
 		return
 	}
 
 	class := credinject.Resolve(credinject.CredentialClass(secret.Labels[credential.LabelCredentialClass]))
+	funnelAttrs(span, attribute.String("credential.class", string(class)))
 
 	// Honest degrade (the S1/AC4 posture): a human-seat credential is an
 	// interactive OAuth lifecycle, not a probeable paste-key. Same
 	// documented 501 as the create path.
 	if class == credinject.ClassHumanSeat {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestUnsupported)
 		writeJSON(w, http.StatusNotImplemented, map[string]string{
 			"error":    "not implemented",
 			"detail":   "human-seat credentials follow the Connect Claude OAuth lifecycle and cannot be probe-tested",
@@ -265,26 +288,34 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	// cannot drift from what a Run would actually inject.
 	key, mapped := credinject.DefaultSecretKey(req.Runtime, class)
 	if !mapped {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": []fieldError{{Field: "runtime", Message: "no credential mapping for this runtime and class"}},
 		})
 		return
 	}
+	// (runtime, class) is now a validated injection-table pair — both bounded
+	// enums, safe as a span attribute (mirrors the create path).
+	funnelAttrs(span, attribute.String("credential.runtime", req.Runtime))
 	injection, err := credinject.Inject(req.Runtime, class, ksquadv1.SecretRef{Name: name})
 	if err != nil {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 		writeJSONError(w, http.StatusBadGateway, "credential mapping unavailable")
 		return
 	}
 	target, known := probeTargets[injection.Env[0].Name]
 	if !known {
-		log.Printf("apiserver: no probe mapping for injected env %q (runtime=%s class=%s)", injection.Env[0].Name, req.Runtime, class)
+		slog.ErrorContext(ctx, "credential test: no probe mapping for injected env",
+			"env", injection.Env[0].Name, "runtime", req.Runtime, "class", string(class))
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 		writeJSONError(w, http.StatusBadGateway, "no probe mapping for this credential family")
 		return
 	}
 
 	material := strings.TrimSpace(string(secret.Data[key]))
 	if material == "" {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "credential shape mismatch",
 			"fields": []fieldError{{Field: "runtime", Message: "stored credential has no material under the key this runtime reads"}},
@@ -299,6 +330,7 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	if req.ModelEndpointRef != "" {
 		endpointURL, err := s.byoEndpointURL(r.Context(), ns, req.ModelEndpointRef)
 		if errors.Is(err, errNoEndpointURL) {
+			funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestInvalid)
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 				"error":  "validation failed",
 				"fields": []fieldError{{Field: "modelEndpointRef", Message: "endpoint Secret has no endpointURL (arch §11 / story 7.5 shape)"}},
@@ -306,6 +338,7 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 			return
 		}
 		if err != nil {
+			funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 			writeJSON(w, http.StatusBadGateway, "endpoint read unavailable")
 			return
 		}
@@ -331,13 +364,20 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 		if s.probeEgress != nil {
 			addrs, denial, gerr := s.probeEgress.Allow(r.Context(), ns, endpointURL)
 			if gerr != nil {
-				log.Printf("apiserver: credential test egress read failed ns=%s name=%s endpointRef=%s: %v", ns, name, req.ModelEndpointRef, gerr)
+				slog.ErrorContext(ctx, "credential test egress read failed",
+					"namespace", ns, "name", name, "endpointRef", req.ModelEndpointRef, "error", gerr)
+				funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestError)
 				writeJSON(w, http.StatusBadGateway, "squad egress policy unavailable")
 				return
 			}
 			if denial != nil {
-				log.Printf("apiserver: credential test BYO probe blocked ns=%s name=%s endpointRef=%s url=%s: %v", ns, name, req.ModelEndpointRef, endpointURL, denial)
+				// The raw endpointURL is telemetry-dark (§5.3): a BYO URL can
+				// carry a token in userinfo, so the log names the ref and the
+				// guard's reason, never the URL.
+				slog.WarnContext(ctx, "credential test BYO probe blocked by squad egress policy",
+					"namespace", ns, "name", name, "endpointRef", req.ModelEndpointRef, "reason", denial)
 				s.recordResult(r.Context(), team, name, s.agentsReferencing(r.Context(), ns, name), false)
+				funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestBlocked)
 				writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Detail: credentialTestBlockedDetail})
 				return
 			}
@@ -347,13 +387,15 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	}
 
 	probe := probeRequest{target: target, material: material}
-	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	probeCtx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
-	status, perr := s.prober.probe(ctx, probe)
+	status, perr := s.prober.probe(probeCtx, probe)
 	if perr != nil {
-		// Server-side only: net errors carry hostnames, never headers —
-		// the response detail stays curated (foldProbeResult, NFR-2).
-		log.Printf("apiserver: credential test probe transport failure ns=%s name=%s url=%s: %v", ns, name, target.url, perr)
+		// Server-side only, and telemetry-dark on the target URL (§5.3): net
+		// errors carry hostnames, never headers; a BYO URL may carry userinfo,
+		// so it is not logged. The response detail stays curated
+		// (foldProbeResult, NFR-2).
+		slog.WarnContext(ctx, "credential test probe transport failure", "namespace", ns, "name", name, "error", perr)
 	}
 	result := foldProbeResult(target, status, perr)
 
@@ -364,7 +406,13 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	referencing := s.agentsReferencing(r.Context(), ns, name)
 	s.recordResult(r.Context(), team, name, referencing, result.OK)
 
-	log.Printf("apiserver: credential test ns=%s name=%s runtime=%s class=%s ok=%t by=%s", ns, name, req.Runtime, class, result.OK, author.Principal)
+	outcome := outcomeCredTestFailed
+	if result.OK {
+		outcome = outcomeCredTestPassed
+	}
+	slog.InfoContext(ctx, "credential test",
+		"namespace", ns, "name", name, "runtime", req.Runtime, "class", string(class), "ok", result.OK, "principal", author.Principal)
+	funnelOutcome(ctx, span, fn.credentialTest, outcome)
 	writeJSON(w, http.StatusOK, result)
 }
 

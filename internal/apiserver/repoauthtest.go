@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/google/go-github/v57/github"
 	corev1 "k8s.io/api/core/v1"
@@ -177,33 +180,66 @@ func supportedRepoHost(raw string) bool {
 	return host == "github.com" || host == "www.github.com"
 }
 
+// redactRepoURL returns the repo URL with any userinfo, query, and fragment
+// stripped — obs plan §5.3 telemetry hygiene. A token smuggled as
+// https://TOKEN@github.com/owner/repo (or ?access_token=…) must never reach a
+// span attribute or a log line; only scheme://host/path survives. Unparseable
+// or hostless input degrades to the "invalid-url" sentinel rather than echoing
+// the raw string.
+func redactRepoURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "invalid-url"
+	}
+	return u.Scheme + "://" + u.Host + u.Path
+}
+
 // handleRepoAuthTest is the handler behind POST /api/projects/repo-auth/test.
 func (s *RepoAuthTestService) handleRepoAuthTest(w http.ResponseWriter, r *http.Request) {
+	// Funnel span + metric (ISI-3669/ISI-3683, obs plan §3/§4): the M4 repo-auth
+	// test-connection step. team.id + the REDACTED repo URL ride the span; the
+	// stored token stays telemetry-dark, and the URL is stripped of any userinfo
+	// before it touches a span or a log (§5.3 —
+	// TestNFR2RepoAuthTestSecretNeverInTelemetry sweeps span AND log).
+	ctx, span := funnelSpan(r.Context(), "ksquad.repo.auth.test")
+	defer span.End()
+	fn := funnelInst()
+
 	author, ok := discussion.AuthFromContext(r.Context())
 	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeUnauthenticated)
 		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
 
 	var req repoAuthTestRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestInvalid)
 		return
 	}
 
 	if errs := validateRepoAuthTest(req); len(errs) > 0 {
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": errs,
 		})
 		return
 	}
+	// The URL is validated github.com now; the REDACTED form (userinfo + query
+	// stripped, §5.3) is the only shape that rides telemetry.
+	funnelAttrs(span, attribute.String("repo.url", redactRepoURL(req.URL)))
 
 	team, ns, err := s.resolveTeam(r.Context(), author.TeamID.String())
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
 		return
 	}
 	if err != nil {
+		slog.WarnContext(ctx, "repo-auth test: team scope resolution unavailable", "error", err)
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestError)
 		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
 		return
 	}
@@ -220,18 +256,29 @@ func (s *RepoAuthTestService) handleRepoAuthTest(w http.ResponseWriter, r *http.
 	if err := s.client.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: req.CredentialSecretRef.Name}, secret); err != nil {
 		switch {
 		case apierrors.IsNotFound(err):
+			funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestNotFound)
 			writeJSONError(w, http.StatusNotFound, "credential not found in this team")
 		case apierrors.IsForbidden(err):
-			log.Printf("apiserver: repo-auth test read FORBIDDEN for %s/%s principal=%s: the apiserver SA lacks the scoped secrets:get grant (E3-S2/E4-S1 follow-up)", ns, req.CredentialSecretRef.Name, author.Principal)
+			slog.ErrorContext(ctx, "repo-auth test read FORBIDDEN — the apiserver SA lacks the scoped secrets:get grant (E3-S2/E4-S1 follow-up)",
+				"namespace", ns, "name", req.CredentialSecretRef.Name, "principal", author.Principal)
+			funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestRejected)
 			writeJSONError(w, http.StatusBadGateway, "credential read grant is not configured on this cluster")
 		default:
-			log.Printf("apiserver: repo-auth test read failed for %s/%s: %v", ns, req.CredentialSecretRef.Name, err)
+			slog.ErrorContext(ctx, "repo-auth test read failed", "namespace", ns, "name", req.CredentialSecretRef.Name, "error", err)
+			funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestError)
 			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
 		}
 		return
 	}
 
 	result := s.probe(r, req.URL, key, secret.Data[key])
+	outcome := outcomeRepoTestFailed
+	if result.OK {
+		outcome = outcomeRepoTestPassed
+	}
+	slog.InfoContext(ctx, "repo-auth test",
+		"namespace", ns, "name", req.CredentialSecretRef.Name, "repo", redactRepoURL(req.URL), "ok", result.OK, "principal", author.Principal)
+	funnelOutcome(ctx, span, fn.repoAuthTest, outcome)
 	writeJSON(w, http.StatusOK, result)
 	s.cacheResult(r.Context(), team, result.OK)
 }

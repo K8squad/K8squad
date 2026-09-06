@@ -72,6 +72,29 @@ const (
 	outcomeCredRejected    = "rejected"          // RBAC/admission forbade the write
 	outcomeCredError       = "store_error"       // 502 — store unavailable
 	outcomeCredCreated     = "created"           // 201
+
+	// POST /api/credentials/{name}/test (ISI-3680, AD-7) — span
+	// ksquad.credential.test. A probe that ANSWERS is 200 either way, so the
+	// green/red split is a first-class bounded outcome, distinct from the
+	// pre-probe failure modes.
+	outcomeCredTestInvalid     = "invalid"           // 400/422 — decode/runtime-map/empty-material/endpointRef
+	outcomeCredTestNoNamespace = "no_namespace"      // 404 — team scope unresolved
+	outcomeCredTestNotFound    = "not_found"         // 404 — no such managed credential (existence-hiding)
+	outcomeCredTestUnsupported = "unsupported_class" // 501 — human-seat OAuth class
+	outcomeCredTestBlocked     = "blocked"           // 200 ok=false — BYO target outside the squad egress allowlist
+	outcomeCredTestError       = "store_error"       // 502 — store/mapping/egress read unavailable
+	outcomeCredTestPassed      = "passed"            // 200 ok=true  — provider accepted the stored credential
+	outcomeCredTestFailed      = "failed"            // 200 ok=false — provider declined / unreachable
+
+	// POST /api/projects/repo-auth/test (ISI-3683, AD-7) — span
+	// ksquad.repo.auth.test. Same green/red-as-outcome shape as the model test.
+	outcomeRepoTestInvalid     = "invalid"      // 422 — url/ref validation
+	outcomeRepoTestNoNamespace = "no_namespace" // 404 — team scope unresolved
+	outcomeRepoTestNotFound    = "not_found"    // 404 — credential not found in the team
+	outcomeRepoTestRejected    = "rejected"     // 502 — scoped secrets:get grant missing (Forbidden read)
+	outcomeRepoTestError       = "store_error"  // 502 — credential store unavailable
+	outcomeRepoTestPassed      = "passed"       // 200 ok=true  — provider authenticated the stored token
+	outcomeRepoTestFailed      = "failed"       // 200 ok=false — empty material / provider declined / probe failed
 )
 
 // funnel holds the activation-funnel instruments (obs plan §4). Created once,
@@ -82,6 +105,8 @@ type funnel struct {
 	composeSquad       metric.Int64Counter   // ksquad.compose.squad.requests{outcome}
 	composeAgents      metric.Int64Histogram // ksquad.compose.squad.agents_applied
 	credentialCreate   metric.Int64Counter   // ksquad.credential.create.requests{outcome}
+	credentialTest     metric.Int64Counter   // ksquad.credential.test.requests{outcome}
+	repoAuthTest       metric.Int64Counter   // ksquad.repo.auth.test.requests{outcome}
 }
 
 var (
@@ -110,6 +135,12 @@ func funnelInst() *funnel {
 		f.credentialCreate, _ = m.Int64Counter("ksquad.credential.create.requests",
 			metric.WithUnit("{request}"),
 			metric.WithDescription("Managed-credential creates by bounded outcome (ISI-3669, obs plan §4 / M3 funnel)."))
+		f.credentialTest, _ = m.Int64Counter("ksquad.credential.test.requests",
+			metric.WithUnit("{request}"),
+			metric.WithDescription("Managed-credential test-connection probes by bounded outcome (ISI-3669/ISI-3680, obs plan §4 / M3 funnel)."))
+		f.repoAuthTest, _ = m.Int64Counter("ksquad.repo.auth.test.requests",
+			metric.WithUnit("{request}"),
+			metric.WithDescription("Repo-auth test-connection probes by bounded outcome (ISI-3669/ISI-3683, obs plan §4 / M4 funnel)."))
 		funnelOnceVal = f
 	})
 	return funnelOnceVal
