@@ -427,7 +427,26 @@ func main() {
 	// allow-DNS + allow-control-plane NetworkPolicy baseline — and tears the
 	// namespace down finalizer-driven on Team delete. Unlike the Run
 	// projector it needs no coordination DB, so it registers unconditionally.
-	if err := (&teamctrl.Reconciler{}).SetupWithManager(mgr); err != nil {
+	// E3-S2 (ISI-3680): the scaffold also provisions the get-only
+	// credential-tester Role + RoleBinding in every squad namespace — the
+	// contained Secret read the apiserver's test-connection probe needs. The
+	// subject is the chart-rendered apiserver SA (exact when the charts set
+	// KSQUAD_APISERVER_SERVICE_ACCOUNT; defaults match the default installs).
+	apiserverSA := os.Getenv("KSQUAD_APISERVER_SERVICE_ACCOUNT")
+	if apiserverSA == "" {
+		apiserverSA = teamctrl.DefaultApiserverServiceAccount
+	}
+	apiserverNS := os.Getenv("KSQUAD_APISERVER_NAMESPACE")
+	if apiserverNS == "" {
+		apiserverNS = os.Getenv("POD_NAMESPACE")
+	}
+	if apiserverNS == "" {
+		apiserverNS = teamctrl.DefaultApiserverNamespace
+	}
+	if err := (&teamctrl.Reconciler{
+		ApiserverNamespace:      apiserverNS,
+		ApiserverServiceAccount: apiserverSA,
+	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Team reconciler")
 		os.Exit(1)
 	}

@@ -88,6 +88,30 @@ const (
 	// cluster-scoped grants and no Secret access at all (see agentRole).
 	AgentServiceAccount = "ksquad-agent"
 
+	// CredentialTesterRole is the namespaced Role the E3-S2 test-connection
+	// surface (ISI-3680, AD-7) depends on: the control-plane apiserver holds
+	// NO cluster-wide Secret read (ISI-3671 grants create-only on purpose —
+	// the S1 security gate's containment), so its probe path gets a GET-ONLY
+	// grant that exists ONLY inside squad team namespaces, provisioned here
+	// because Helm cannot bind per-namespace Roles for dynamically created
+	// namespaces (same reason the apiserver-writer grant is a ClusterRole:
+	// only this reconciler knows the namespace set). get only — no list, no
+	// watch, no write: the probe fetches ONE named managed credential.
+	CredentialTesterRole = "ksquad-credential-tester"
+
+	// DefaultApiserverServiceAccount is the fallback subject for the
+	// credential-tester RoleBinding when the operator is not told the
+	// chart-rendered apiserver ServiceAccount name (KSQUAD_APISERVER_
+	// SERVICE_ACCOUNT, set exactly by both Helm charts). It matches both
+	// charts' default install (ksquad-apiserver / k8squad-apiserver shape).
+	DefaultApiserverServiceAccount = "ksquad-apiserver"
+
+	// DefaultApiserverNamespace is the fallback control-plane namespace for
+	// the credential-tester RoleBinding subject when POD_NAMESPACE is not
+	// set (bare `go run` dev runs; both charts inject POD_NAMESPACE via
+	// fieldRef, which is exact).
+	DefaultApiserverNamespace = "ksquad-system"
+
 	// SystemNamespace is the control-plane namespace (arch §4: operator,
 	// apiserver, memory service, Postgres). The reconciler never provisions
 	// into it and fail-closes if a Team would resolve onto it (AC7).
@@ -134,6 +158,16 @@ type Reconciler struct {
 	// DNSNamespace is the namespace the allow-DNS companion opens egress to.
 	// Defaults to kube-system (cluster DNS).
 	DNSNamespace string
+	// ApiserverNamespace is the control-plane namespace the E3-S2
+	// credential-tester RoleBinding's ServiceAccount subject lives in (the
+	// apiserver runs there). Defaults to DefaultApiserverNamespace; the
+	// charts inject POD_NAMESPACE, which is exact.
+	ApiserverNamespace string
+	// ApiserverServiceAccount is the apiserver ServiceAccount name the
+	// credential-tester RoleBinding binds. Defaults to
+	// DefaultApiserverServiceAccount; the charts render the exact fullname
+	// into KSQUAD_APISERVER_SERVICE_ACCOUNT.
+	ApiserverServiceAccount string
 }
 
 //+kubebuilder:rbac:groups=ksquad.io,resources=teams,verbs=get;list;watch;update;patch
@@ -247,6 +281,8 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 		agentServiceAccount(nsName, teamObj),
 		agentRole(nsName, teamObj),
 		agentRoleBinding(nsName, teamObj),
+		credentialTesterRole(nsName, teamObj),
+		credentialTesterRoleBinding(nsName, teamObj, r.apiserverNamespace(), r.apiserverServiceAccount()),
 		squadResourceQuota(nsName, teamObj),
 		squadLimitRange(nsName, teamObj),
 		defaultDenyNetworkPolicy(nsName, teamObj),
@@ -438,6 +474,20 @@ func (r *Reconciler) dnsNamespace() string {
 	return r.DNSNamespace
 }
 
+func (r *Reconciler) apiserverNamespace() string {
+	if r.ApiserverNamespace == "" {
+		return DefaultApiserverNamespace
+	}
+	return r.ApiserverNamespace
+}
+
+func (r *Reconciler) apiserverServiceAccount() string {
+	if r.ApiserverServiceAccount == "" {
+		return DefaultApiserverServiceAccount
+	}
+	return r.ApiserverServiceAccount
+}
+
 // --- desired objects -------------------------------------------------------
 
 // namespaceLabels is the desired label set of a squad namespace.
@@ -527,6 +577,52 @@ func agentRoleBinding(ns string, teamObj *api.Team) *rbacv1.RoleBinding {
 			APIGroup: rbacv1.GroupName,
 			Kind:     "Role",
 			Name:     AgentServiceAccount,
+		},
+	}
+}
+
+// credentialTesterRole is the E3-S2 containment grant (ISI-3680, AD-7): a
+// GET-ONLY Secret Role that exists only inside the squad namespace, so the
+// apiserver's stateless probe can fetch the stored managed credential it is
+// asked to test. The apiserver's cluster-wide posture stays create-only
+// (ISI-3671): it can never enumerate (no list), never touch Secrets outside
+// squad team namespaces (this Role is the only Secret read it holds), and
+// the handler still verifies the managed-credential label + team scope
+// server-side before using any material.
+func credentialTesterRole(ns string, teamObj *api.Team) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      CredentialTesterRole,
+			Labels:    managedLabels(teamObj),
+		},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		}},
+	}
+}
+
+// credentialTesterRoleBinding binds the credential-tester Role to the
+// control-plane apiserver ServiceAccount (cross-namespace subject — the
+// apiserver never runs inside a squad namespace).
+func credentialTesterRoleBinding(ns string, teamObj *api.Team, apiserverNamespace, apiserverSA string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      CredentialTesterRole,
+			Labels:    managedLabels(teamObj),
+		},
+		Subjects: []rbacv1.Subject{{
+			Kind:      rbacv1.ServiceAccountKind,
+			Namespace: apiserverNamespace,
+			Name:      apiserverSA,
+		}},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: rbacv1.GroupName,
+			Kind:     "Role",
+			Name:     CredentialTesterRole,
 		},
 	}
 }

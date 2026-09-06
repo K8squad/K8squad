@@ -332,6 +332,20 @@ func main() {
 		log.Printf("ksquad-apiserver: managed-credential write ready (E3-S1, label-scoped Secret create)")
 	}
 
+	// E3-S2 test-connection (ISI-3680, AD-7): POST
+	// /api/credentials/{name}/test probes the STORED managed credential
+	// server-side and caches the last result as Team annotations. Own direct
+	// client (Secret reads must be live; the annotation write must not race
+	// a stale cache). A cluster-less dev run leaves it nil → the route keeps
+	// the documented 501.
+	var credentialTester *apiserver.CredentialTestService
+	if ct, cterr := apiserver.NewCredentialTester(); cterr != nil {
+		log.Printf("ksquad-apiserver: credential test-connection disabled (POST /api/credentials/{name}/test → 501): %v", cterr)
+	} else {
+		credentialTester = apiserver.NewCredentialTestService(ct)
+		log.Printf("ksquad-apiserver: credential test-connection ready (E3-S2, stateless server-side probe)")
+	}
+
 	// Audit log read model (ISI-2881). The DB connection is already available.
 	var auditLog apiserver.AuditLogReader
 	if db != nil {
@@ -384,20 +398,21 @@ func main() {
 	}
 
 	srv := apiserver.NewServer(apiserver.Options{
-		Authenticator: authn,
-		Discussion:    discussion.NewHandler(discussion.NewStore(db)),
-		Ready:         dbReady{db},
-		Overview:      overview,
-		Credentials:   credentials,
-		SecretWriter:  secretWriter,
-		Org:           org,
-		Onboarding:    onboarding,
-		OTelConfig:    otelConfig,
-		Builds:        builds,
-		Artifacts:     artifacts,
-		AuditTrail:    apiserver.NewPostgresAuditTrailReader(db),
-		WorkItemState: workItemState,
-		Search:        searcher,
+		Authenticator:    authn,
+		Discussion:       discussion.NewHandler(discussion.NewStore(db)),
+		Ready:            dbReady{db},
+		Overview:         overview,
+		Credentials:      credentials,
+		SecretWriter:     secretWriter,
+		CredentialTester: credentialTester,
+		Org:              org,
+		Onboarding:       onboarding,
+		OTelConfig:       otelConfig,
+		Builds:           builds,
+		Artifacts:        artifacts,
+		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
+		WorkItemState:    workItemState,
+		Search:           searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.

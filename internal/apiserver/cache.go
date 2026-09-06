@@ -128,3 +128,31 @@ func NewSecretWriter() (SecretWriteClient, error) {
 	}
 	return c, nil
 }
+
+// NewCredentialTester builds the DIRECT (uncached) client the E3-S2
+// test-connection surface (ISI-3680, AD-7) uses. The Secret read must see
+// just-written material (a create-then-test flow in the credential sheet),
+// and the Team annotation write must not race a stale cache — so the probe
+// path runs on a live client, same discipline as the write surfaces. The
+// scheme carries corev1 (the Secret reads) and ksquadv1 (Team/Agent). It
+// resolves rest.Config the standard way and fails rather than degrading
+// silently; the caller decides whether that is fatal or a fall-back to the
+// documented 501.
+func NewCredentialTester() (CredentialTestClient, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register ksquad scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build credential-test client: %w", err)
+	}
+	return c, nil
+}

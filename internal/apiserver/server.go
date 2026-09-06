@@ -64,7 +64,12 @@ type Options struct {
 	// POST /api/credentials creates one label-scoped Secret in the caller's team
 	// namespace. Nil ⇒ the POST keeps its documented 501 (cluster-less dev run).
 	SecretWriter *SecretWriteService
-	Hub          *Hub // optional; NewServer allocates one when nil
+	// CredentialTester is the E3-S2 test-connection surface (ISI-3680, AD-7):
+	// POST /api/credentials/{name}/test probes the STORED managed credential
+	// server-side and caches the last result as Team annotations. Nil ⇒ the
+	// route keeps its documented 501 (cluster-less dev run).
+	CredentialTester *CredentialTestService
+	Hub              *Hub // optional; NewServer allocates one when nil
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -449,6 +454,23 @@ func (s *Server) routes(opts Options) {
 		connect := s.router.Path("/api/credentials/connect").Subrouter()
 		connect.Use(authz)
 		connect.HandleFunc("", s.connectClaude()).Methods(http.MethodPost)
+
+		// E3-S2 test-connection (ISI-3680, AD-7): POST
+		// /api/credentials/{name}/test probes the STORED managed credential
+		// server-side (the client never re-sends the value) and answers
+		// {ok, detail}, caching the last result as Team annotations (AD-2).
+		// Same choke point + CSRF guard; the body ceiling is tiny because the
+		// body carries routing hints only ({runtime, modelEndpointRef}).
+		credTest := s.router.Path("/api/credentials/{name}/test").Subrouter()
+		credTest.Use(authz)
+		credTest.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		credTest.Use(maxBytesBody(credentialTestMaxBodyBytes))
+		if opts.CredentialTester != nil {
+			credTest.HandleFunc("", opts.CredentialTester.handleCredentialTest).Methods(http.MethodPost)
+		} else {
+			credTest.HandleFunc("", notImplemented("credential test-connection", "ISI-3680: wire a CredentialTestService (direct client) to enable")).
+				Methods(http.MethodPost)
+		}
 
 		// 2.6 audit-trail query API (ISI-2881): the read side of coord.audit_log —
 		// who/what/when/result across work items, actors, and time. Behind the same
