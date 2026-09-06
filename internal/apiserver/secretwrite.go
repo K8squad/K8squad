@@ -3,9 +3,10 @@ package apiserver
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
+	"go.opentelemetry.io/otel/attribute"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -107,14 +108,22 @@ type credentialCreateResult struct {
 
 // handleCredentialCreate is the handler behind POST /api/credentials.
 func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *http.Request) {
+	// Funnel span + metric (ISI-3669, obs plan §3/§4): the M3 credential-create
+	// step. team.id is span-only; the credential VALUE is telemetry-dark (NFR-2,
+	// §5.3 — TestNFR2SecretNeverInTelemetry sweeps span AND log output).
+	ctx, span := funnelSpan(r.Context(), "ksquad.credential.create")
+	defer span.End()
 	author, ok := discussion.AuthFromContext(r.Context())
 	if !ok || author.Principal == "" {
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeUnauthenticated)
 		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 		return
 	}
+	funnelAttrs(span, attribute.String("team.id", author.TeamID.String()))
 
 	var req credentialCreateRequest
 	if err := decodeJSON(w, r, &req); err != nil {
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredInvalid)
 		return
 	}
 
@@ -125,6 +134,8 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 	// pasted value. Checked BEFORE any other validation so the caller gets the
 	// actionable pointer, not a field error.
 	if credinject.Resolve(class) == credinject.ClassHumanSeat {
+		funnelAttrs(span, attribute.String("credential.class", string(class)))
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredUnsupported)
 		writeJSON(w, http.StatusNotImplemented, map[string]string{
 			"error":    "not implemented",
 			"detail":   "human-seat credentials are provisioned by the Connect Claude OAuth flow, not by pasting a key",
@@ -134,19 +145,29 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 	}
 
 	if errs := validateCredentialCreate(req, class); len(errs) > 0 {
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredInvalid)
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
 			"error":  "validation failed",
 			"fields": errs,
 		})
 		return
 	}
+	// (runtime, class) is now a validated injection-table pair: both are
+	// bounded enums, safe as span attributes.
+	funnelAttrs(span,
+		attribute.String("credential.class", string(class)),
+		attribute.String("credential.runtime", req.Runtime),
+	)
 
 	ns, err := s.teamNamespace(r.Context(), author.TeamID.String())
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
 		return
 	}
 	if err != nil {
+		slog.WarnContext(ctx, "team scope resolution unavailable", "error", err)
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
 		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
 		return
 	}
@@ -171,21 +192,28 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 	if err := s.client.Create(r.Context(), secret); err != nil {
 		switch {
 		case apierrors.IsAlreadyExists(err):
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredConflict)
 			writeJSONError(w, http.StatusConflict, "a credential with this name already exists")
 		case apierrors.IsForbidden(err):
 			// RBAC/VAP regression: the create-only grant or the admission
 			// policy rejected a write this handler already scoped. Loud in
 			// logs (ns/name/class only — NFR-2), opaque to the caller.
-			log.Printf("apiserver: managed-credential create FORBIDDEN for %s/%s class=%s principal=%s: check apiserver-rbac.yaml grant + admission policy", ns, req.Name, class, author.Principal)
+			slog.ErrorContext(ctx, "managed-credential create FORBIDDEN — check apiserver-rbac.yaml grant + admission policy",
+				"namespace", ns, "name", req.Name, "class", string(class), "principal", author.Principal)
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredRejected)
 			writeJSONError(w, http.StatusBadGateway, "credential store rejected the write")
 		default:
-			log.Printf("apiserver: managed-credential create failed for %s/%s class=%s: %v", ns, req.Name, class, err)
+			slog.ErrorContext(ctx, "managed-credential create failed",
+				"namespace", ns, "name", req.Name, "class", string(class), "error", err)
+			funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredError)
 			writeJSONError(w, http.StatusBadGateway, "credential store unavailable")
 		}
 		return
 	}
 
-	log.Printf("apiserver: managed credential created ns=%s name=%s class=%s principal=%s", ns, req.Name, class, author.Principal)
+	slog.InfoContext(ctx, "managed credential created",
+		"namespace", ns, "name", req.Name, "class", string(class), "principal", author.Principal)
+	funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredCreated)
 	writeJSON(w, http.StatusCreated, credentialCreateResult{
 		SecretRef: "secret://" + ns + "/" + req.Name,
 		Name:      req.Name,

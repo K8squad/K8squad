@@ -3,9 +3,11 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 
+	"go.opentelemetry.io/otel/attribute"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -302,15 +304,32 @@ func setOnboardingAnnotation(team *ksquadv1.Team, key string, present bool, valu
 // failure answers 502 (same discipline as the org handlers).
 func (s *Server) onboardingProgress(reader OnboardingReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Funnel span + metric (ISI-3669, obs plan §3/§4): the M1 read the
+		// Launchpad + "Finish setup" chip drive. team.id is span-only.
+		ctx, span := funnelSpan(r.Context(), "ksquad.onboarding.progress")
+		defer span.End()
 		teamUID, ok := authScope(w, r)
 		if !ok {
+			funnelOutcome(ctx, span, funnelInst().onboardingProgress, outcomeUnauthenticated)
 			return
 		}
-		progress, err := reader.Progress(r.Context(), teamUID)
+		progress, err := reader.Progress(ctx, teamUID)
 		if err != nil {
+			slog.WarnContext(ctx, "onboarding progress read failed", "error", err)
+			funnelOutcome(ctx, span, funnelInst().onboardingProgress, outcomeProgressError)
 			writeJSONError(w, http.StatusBadGateway, "onboarding read model unavailable")
 			return
 		}
+		funnelAttrs(span,
+			attribute.String("team.id", teamUID),
+			attribute.Int("onboarding.step", progress.Step),
+			attribute.Int("onboarding.done", progress.Done),
+			attribute.Int("onboarding.total", progress.Total),
+			attribute.String("onboarding.next_milestone", progress.NextMilestone),
+			attribute.Bool("onboarding.dismissed", progress.Dismissed),
+		)
+		funnelInst().onboardingDone.Record(ctx, int64(progress.Done))
+		funnelOutcome(ctx, span, funnelInst().onboardingProgress, outcomeProgressOK)
 		writeJSON(w, http.StatusOK, progress)
 	}
 }
