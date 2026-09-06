@@ -1,12 +1,15 @@
 // app/overview/page.tsx — Overview (squad status/activity), the story 8.1 GLOBAL surface.
 //
-// This route mounts the SAME live read-model screen as the console root (app/page.tsx):
-// SquadOverview fetches GET /api/squad/overview through the BFF and renders the caller's
-// Team-scoped Teams→Projects→Run-status projection, with a distinct honest state for every
-// terminal HTTP status (401/404/501/5xx). No scaffold/story-scaffold copy reaches the UI.
+// D5 (E1-S2, ISI-3674): while a tenant's setup is incomplete and not dismissed, this route
+// renders the Launchpad hub (frames 01/06/07) INSTEAD of the squad overview; once the journey
+// completes it yields back to the normal Overview. OverviewSwitch owns that decision against
+// the server-truth projection (GET /api/onboarding/progress, E1-S1) and fails open to the
+// SquadOverview when the projection is unavailable — the same live read-model screen as the
+// console root (app/page.tsx), with a distinct honest state for every terminal HTTP status
+// (401/404/501/5xx). No scaffold/story-scaffold copy reaches the UI.
 
-import { SquadOverview } from "@/components/SquadOverview";
+import { OverviewSwitch } from "@/components/onboarding/OverviewSwitch";
 
 export default function OverviewPage() {
-  return <SquadOverview />;
+  return <OverviewSwitch />;
 }
