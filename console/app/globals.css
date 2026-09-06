@@ -2334,6 +2334,136 @@ a:hover {
 .launchpad-step__form {
   margin: 0;
 }
+/* ── Template gallery (frame 03, E2-S3 / ISI-3678) ─────────────────────────── */
+.launchpad-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.launchpad-gallery__cards {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+}
+.launchpad-gallery__card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 14px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text-hi);
+}
+.launchpad-gallery__card:hover {
+  border-color: var(--accent);
+}
+.launchpad-gallery__card--selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.launchpad-gallery__card-title {
+  font-weight: 700;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.launchpad-gallery__badge {
+  color: var(--accent);
+  font-size: 13px;
+}
+.launchpad-gallery__blurb {
+  font-size: 13px;
+  color: var(--text);
+}
+.launchpad-gallery__preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--inset);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.launchpad-gallery__agent {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.launchpad-gallery__agent strong {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.launchpad-gallery__count {
+  font-size: 12px;
+}
+.launchpad-gallery__apply {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 12px;
+}
+.launchpad-gallery__project {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+.launchpad-gallery__field-error {
+  color: var(--status-blocked);
+  font-size: 12px;
+}
+.launchpad-gallery__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.launchpad-gallery__partial {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--status-blocked);
+  border-radius: var(--radius-control);
+  padding: 12px;
+  font-size: 13px;
+}
+.launchpad-gallery__partial p {
+  margin: 0;
+}
+.launchpad-gallery__outcomes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.launchpad-gallery__ok {
+  color: var(--text-hi);
+}
+.launchpad-gallery__fail {
+  color: var(--status-blocked);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.launchpad-gallery code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
 .launchpad__cards--summary .launchpad-card__why {
   color: var(--text-hi);
   font-weight: 600;
