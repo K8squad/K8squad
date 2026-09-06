@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { SessionTeamOrg } from "@/components/agents/SessionTeamOrg";
 
 // Companion to sessionTeamOrg.test.ts (which pins the pure resolveTeamState mapper). Copilot review
@@ -82,6 +82,21 @@ describe("<SessionTeamOrg> — landing wiring (ISI-3543, PR #224 Copilot review)
     const urls = fetchSpy.mock.calls.map((c) => String(c[0]));
     expect(urls.some((u) => u.startsWith("/api/squad/overview"))).toBe(true);
     expect(urls.some((u) => u.startsWith("/api/teams/u1/org"))).toBe(true);
+  });
+
+  it("renders a zero-agent Team with an EmptyState CTA into Compose (ISI-3686)", async () => {
+    const originalLocation = window.location;
+    const fakeLocation = { href: "" };
+    Object.defineProperty(window, "location", { value: fakeLocation, configurable: true });
+    stubRoutes({
+      "/api/squad/overview": { status: 200, body: { team: { uid: "u1" } } },
+      "/api/teams/u1/org": { status: 200, body: { ...teamOrg, agents: [] } },
+    });
+    render(<SessionTeamOrg />);
+    await waitFor(() => expect(screen.getByTestId("org-empty-agents")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Add an agent" }));
+    expect(fakeLocation.href).toBe("/compose?kind=agent");
+    Object.defineProperty(window, "location", { value: originalLocation, configurable: true });
   });
 
   it("renders the unauthenticated surface on 401", async () => {

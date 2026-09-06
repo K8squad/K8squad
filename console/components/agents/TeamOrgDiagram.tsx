@@ -15,6 +15,7 @@ import type { TeamOrg, OrgAgent } from "@/lib/agents/types";
 import { createAgentsClient, AgentsApiError } from "@/lib/agents/api";
 import { useTeamStatus } from "@/lib/agents/useTeamStatus";
 import { StatusChip } from "./StatusChip";
+import { EmptyState } from "@/components/forms/EmptyState";
 
 type LoadState =
   | { kind: "loading" }
@@ -87,7 +88,13 @@ export function TeamOrgDiagram({ teamId }: { teamId: string }) {
       </header>
 
       {org.agents.length === 0 ? (
-        <p className="muted">No agents composed on this team yet.</p>
+        <EmptyState
+          testId="org-empty-agents"
+          title="No agents on this team yet"
+          why="No agents composed on this Team yet — runs need at least one agent."
+          ctaLabel="Add an agent"
+          onCta={() => (window.location.href = "/compose?kind=agent")}
+        />
       ) : (
         <ul className="org-diagram__agents">
           {org.agents.map((a) => {
