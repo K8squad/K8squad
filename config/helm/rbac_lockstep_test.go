@@ -178,6 +178,11 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // agents also carries `list` (ISI-3680 F1): credentialtest.go agentsReferencing()
 // lists agents to mirror per-agent test-result annotations — without it the
 // canonical chart 403s that List and the per-agent mirror silently no-ops.
+// projects carries `list` and egresspolicies is a read-only get+list grant
+// (ISI-3891): the credential-test BYO probe guard (pkg/probeegress) lists
+// EgressPolicies and Projects in the caller's namespace to constrain probe
+// egress to the squad's declared allowlist — a silent 403 there would
+// fail-close every BYO test-connection with a 502.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -188,7 +193,9 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	want := []rbacv1.PolicyRule{
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agents"}, Verbs: []string{"get", "list", "create", "update"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects", "roles", "skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles", "skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+

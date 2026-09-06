@@ -25,6 +25,13 @@ package apiserver
 //     resume, mirrored onto the per-AGENT flags the onboarding read model
 //     (modelsMilestoneComplete) already consumes — so a recorded failure
 //     honestly un-completes milestone ③ with zero reader changes.
+//   - BYO targets are egress-contained (ISI-3891, the ISI-3887 N1
+//     advisory): the apiserver dials a caller-chosen URL only when the
+//     destination sits inside the squad's declared EgressPolicy allowlist
+//     (pkg/probeegress) — the probe can never reach anything a Run
+//     could not, so it cannot serve as a confused deputy against
+//     control-plane internals, and a green always means a Run could
+//     actually use the endpoint.
 //
 // NFR-2 discipline, structural here as in secretwrite.go:
 //
@@ -61,6 +68,7 @@ import (
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/controller/credential"
 	"github.com/K8squad/K8squad/pkg/credinject"
+	"github.com/K8squad/K8squad/pkg/probeegress"
 )
 
 // credentialProbeTimeout bounds one provider ping. A test-connection is a
@@ -72,6 +80,13 @@ const credentialProbeTimeout = 5 * time.Second
 // hints only ({runtime}, optional modelEndpointRef}) — never a value — so a
 // small ceiling is generous.
 const credentialTestMaxBodyBytes = 1 << 10
+
+// credentialTestBlockedDetail is the ONE curated string for every BYO egress
+// guard denial (ISI-3891). Same vocabulary discipline as foldProbeResult:
+// the reason the guard refused (no policy, not covered, unresolvable,
+// proxy-only, hard-blocked address class) is server-side log material — the
+// caller gets the fix, not an oracle on the apiserver's network vantage.
+const credentialTestBlockedDetail = "Blocked — this endpoint is not in your squad's egress policy, so a Run could not reach it either; declare the endpoint in an EgressPolicy for your squad and test again"
 
 // Provider ping endpoints for the credential families the injection table
 // maps. Keyed by the ENV VAR NAME credinject.Inject yields, so the probe
@@ -133,16 +148,22 @@ type CredentialTestService struct {
 	client  CredentialTestClient
 	prober  credentialProber
 	timeout time.Duration
+	// probeEgress constrains BYO probe targets to the squad's declared
+	// egress allowlist (ISI-3891). Nil disables the guard — only tests
+	// may do that, and only to pin the unguarded legacy shape.
+	probeEgress *probeegress.Guard
 }
 
 // NewCredentialTestService builds the test-connection model. The client's
 // scheme MUST have corev1 and ksquadv1 registered (NewCredentialTester
-// guarantees both).
+// guarantees both). The BYO egress guard rides the same client (it reads
+// EgressPolicy/Project CRs from the caller's namespace).
 func NewCredentialTestService(c CredentialTestClient) *CredentialTestService {
 	return &CredentialTestService{
-		client:  c,
-		prober:  &httpCredentialProber{client: &http.Client{Timeout: credentialProbeTimeout}},
-		timeout: credentialProbeTimeout,
+		client:      c,
+		prober:      &httpCredentialProber{client: &http.Client{Timeout: credentialProbeTimeout}},
+		timeout:     credentialProbeTimeout,
+		probeEgress: &probeegress.Guard{Reader: c},
 	}
 }
 
@@ -276,8 +297,32 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusBadGateway, "endpoint read unavailable")
+			writeJSON(w, http.StatusBadGateway, "endpoint read unavailable")
 			return
+		}
+		// Egress containment (ISI-3891, the ISI-3887 N1 advisory): the
+		// apiserver has high-trust egress, so a caller-chosen URL must
+		// not turn the probe into a confused deputy against
+		// control-plane internals. The target must sit inside the
+		// squad's DECLARED egress allowlist (EgressPolicy CRs + Project
+		// refs) — exactly what a Run could reach. A denial is an honest
+		// red (a green on an endpoint the squad cannot reach would be a
+		// false green for every Run), answered with one curated string
+		// that never echoes the URL; the precise reason is logged
+		// server-side.
+		if s.probeEgress != nil {
+			denial, gerr := s.probeEgress.Allow(r.Context(), ns, endpointURL)
+			if gerr != nil {
+				log.Printf("apiserver: credential test egress read failed ns=%s name=%s endpointRef=%s: %v", ns, name, req.ModelEndpointRef, gerr)
+				writeJSON(w, http.StatusBadGateway, "squad egress policy unavailable")
+				return
+			}
+			if denial != nil {
+				log.Printf("apiserver: credential test BYO probe blocked ns=%s name=%s endpointRef=%s url=%s: %v", ns, name, req.ModelEndpointRef, endpointURL, denial)
+				s.recordResult(r.Context(), team, name, s.agentsReferencing(r.Context(), ns, name), false)
+				writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Detail: credentialTestBlockedDetail})
+				return
+			}
 		}
 		target = probeTarget{url: endpointURL, header: "Authorization", bearer: true}
 	}

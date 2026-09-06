@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,10 +53,35 @@ func newCredentialTester(t *testing.T, objs ...client.Object) (*CredentialTestSe
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(secretWriteScheme(t)).WithObjects(objs...).Build()
 	svc := NewCredentialTestService(c)
+	// The BYO egress guard's DNS seam answers one fixed TEST-NET-3
+	// address for every hostname (ISI-3891): tests never dial a real
+	// resolver, and fixtures allow 203.0.113.0/24 when a BYO probe is
+	// expected to be dialed.
+	svc.probeEgress.Resolver = staticTestResolver{}
 	fp := &fakeProber{status: http.StatusOK}
 	svc.prober = fp
 	svc.timeout = 0
 	return svc, c, fp
+}
+
+// staticTestResolver maps every hostname to 203.0.113.10 (TEST-NET-3),
+// except RFC-2606 .invalid names, which it refuses — the unresolvable-host
+// fail-closed path needs a hostname that genuinely does not resolve.
+type staticTestResolver struct{}
+
+func (staticTestResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	if strings.HasSuffix(host, ".invalid") {
+		return nil, &net.DNSError{Err: "no such host", Name: host}
+	}
+	return []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}, nil
+}
+
+// byoAllowPolicy is the fixture EgressPolicy that opens BYO probing in
+// tests: TEST-NET-3, the range staticTestResolver answers with.
+func byoAllowPolicy(ns string) *ksquadv1.EgressPolicy {
+	p := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "byo-test-allow"}}
+	p.Spec.Allow = []ksquadv1.EgressRule{{To: ksquadv1.EgressDestination{CIDR: "203.0.113.0/24"}}}
+	return p
 }
 
 func testCredentialTestServer(t *testing.T, teamID uuid.UUID, tester *CredentialTestService) http.Handler {
@@ -247,7 +273,8 @@ func TestCredentialTestOpenAIFamily(t *testing.T) {
 
 // TestCredentialTestBYOEndpoint — a modelEndpointRef names a 7.5 endpoint
 // Secret; its base URL replaces the public provider and the credential
-// rides Bearer. A ref without endpointURL is a 422 naming the field.
+// rides Bearer — provided the squad's EgressPolicy declares the endpoint
+// (ISI-3891). A ref without endpointURL is a 422 naming the field.
 func TestCredentialTestBYOEndpoint(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555558")
 	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
@@ -256,7 +283,7 @@ func TestCredentialTestBYOEndpoint(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-alpha", Name: "glm-endpoint"},
 		Data:       map[string][]byte{"endpointURL": []byte("https://open.bigmodel.cn/api/paas/v4/")},
 	}
-	svc, _, fp := newCredentialTester(t, tm, cred, endpoint)
+	svc, _, fp := newCredentialTester(t, tm, cred, endpoint, byoAllowPolicy("ksquad-team-alpha"))
 	h := testCredentialTestServer(t, teamID, svc)
 
 	rec := postCredentialTest(t, h, "k", `{"runtime":"opencode","modelEndpointRef":"glm-endpoint"}`, true)
@@ -281,6 +308,83 @@ func TestCredentialTestBYOEndpoint(t *testing.T) {
 	if fp2.calls != 0 {
 		t.Fatalf("bare endpoint must not dial")
 	}
+}
+
+// TestCredentialTestBYOEndpointEgressBlocked (ISI-3891) — the confused-deputy
+// containment: a BYO endpoint outside the squad's declared egress allowlist
+// is answered with the curated Blocked red and NO dial, including the
+// control-plane internals the apiserver itself can reach (Postgres-style
+// private ports, the link-local metadata service, loopback). A recorded red
+// honestly un-completes the milestone, and the response never echoes the URL.
+func TestCredentialTestBYOEndpointEgressBlocked(t *testing.T) {
+	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555560")
+	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
+	shared := agentWithCredential("ksquad-team-alpha", "boss", "k")
+
+	cases := []struct {
+		name     string
+		endpoint string
+		policy   *ksquadv1.EgressPolicy // nil = squad declares nothing
+	}{
+		{"undeclared squad, LAN target", "http://10.0.0.185:11434/v1", nil},
+		{"outside the declared range", "http://192.168.1.1:8080/v1", byoAllowPolicy("ksquad-team-alpha")},
+		{"metadata service despite allow-all", "http://169.254.169.254/latest/meta-data/", allowAllPolicy("ksquad-team-alpha")},
+		{"loopback despite allow-all", "http://127.0.0.1:5432/", allowAllPolicy("ksquad-team-alpha")},
+		{"unresolvable host", "http://no-such-host.invalid:11434/", byoAllowPolicy("ksquad-team-alpha")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-alpha", Name: "byo"},
+				Data:       map[string][]byte{"endpointURL": []byte(tc.endpoint)},
+			}
+			objs := []client.Object{tm, cred, shared, endpoint}
+			if tc.policy != nil {
+				objs = append(objs, tc.policy)
+			}
+			svc, c, fp := newCredentialTester(t, objs...)
+			h := testCredentialTestServer(t, teamID, svc)
+
+			rec := postCredentialTest(t, h, "k", `{"runtime":"opencode","modelEndpointRef":"byo"}`, true)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("blocked byo: got %d (body %s)", rec.Code, rec.Body.String())
+			}
+			var result credentialTestResult
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if result.OK || result.Detail != credentialTestBlockedDetail {
+				t.Fatalf("blocked byo detail: %+v", result)
+			}
+			if strings.Contains(rec.Body.String(), secretValueCanary) {
+				t.Fatalf("NFR-2 breach: %s", rec.Body.String())
+			}
+			if fp.calls != 0 {
+				t.Fatalf("blocked byo must not dial, dialed %d", fp.calls)
+			}
+			// The blocked red is CACHED like any red (AC2): the
+			// per-credential and per-agent flags flip to failed.
+			var team ksquadv1.Team
+			if err := c.Get(context.Background(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &team); err != nil {
+				t.Fatalf("read team: %v", err)
+			}
+			if recorded, passed := CredentialTestFlag(&team, "k"); !recorded || passed {
+				t.Fatalf("per-credential flag must record the red: recorded=%t passed=%t", recorded, passed)
+			}
+			if recorded, passed := TestConnectionFlag(&team, "boss"); !recorded || passed {
+				t.Fatalf("per-agent mirror must record the red: recorded=%t passed=%t", recorded, passed)
+			}
+		})
+	}
+}
+
+// allowAllPolicy declares 0.0.0.0/0 — the guard's hard-blocked classes
+// (loopback, link-local) must still refuse to dial.
+func allowAllPolicy(ns string) *ksquadv1.EgressPolicy {
+	p := &ksquadv1.EgressPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "allow-all"}}
+	p.Spec.Allow = []ksquadv1.EgressRule{{To: ksquadv1.EgressDestination{CIDR: "0.0.0.0/0"}}}
+	return p
 }
 
 // TestCredentialTestMissingAndForeign — a missing name in the caller's
