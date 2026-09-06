@@ -190,4 +190,27 @@ else
   echo "  skip — otelcol-contrib not on PATH (render assertions cover the split)"
 fi
 
+echo "== release-namespace default-deny posture (ISI-3907) =="
+# DEFAULT: the control plane is high-trust (arch §12.2) and the release namespace
+# is NOT a tenant Run-workload namespace, so the blanket default-deny must NOT
+# render — otherwise any enforcing CNI starves operator/apiserver/console/gateway/
+# NATS/event-relay/scm-webhook. egress.yaml renders empty by default.
+out="$(helm template t "$CHART" "${CORE[@]}" 2>&1)" || { echo "$out"; fail "render (default egress posture)"; }
+grep -q 'ksquad-default-deny' <<<"$out" && { echo "$out"; fail "egress(default): default-deny must NOT render (CP high-trust §12.2)"; }
+grep -q 'ksquad-apiserver-egress' <<<"$out" && { echo "$out"; fail "egress(default): apiserver carve-out must NOT render without a deny"; }
+pass "egress(default): no release-ns default-deny / no lone apiserver carve-out"
+
+# apiserverEgress.enabled alone (no default-deny) still renders nothing — a lone
+# egress allow policy would ITSELF over-restrict the high-trust apiserver.
+out="$(helm template t "$CHART" "${CORE[@]}" --set egress.networkPolicy.apiserverEgress.enabled=true 2>&1)" \
+  || { echo "$out"; fail "render (apiserverEgress-only)"; }
+grep -q 'ksquad-apiserver-egress' <<<"$out" && { echo "$out"; fail "egress: apiserver carve-out must stay gated on releaseNamespaceDefaultDeny"; }
+pass "egress: apiserver carve-out stays gated without default-deny"
+
+# OPT-IN: enabling releaseNamespaceDefaultDeny renders the deny AND its carve-out.
+render_ok "egress(opt-in): renders release-ns default-deny" 'name: ksquad-default-deny' \
+  "${CORE[@]}" --set egress.networkPolicy.releaseNamespaceDefaultDeny=true
+render_ok "egress(opt-in): renders apiserver carve-out over the deny" 'ksquad-apiserver-egress' \
+  "${CORE[@]}" --set egress.networkPolicy.releaseNamespaceDefaultDeny=true
+
 echo "ALL CHECKS PASSED"

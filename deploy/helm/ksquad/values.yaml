@@ -309,76 +309,14 @@ nats:
       memory: 256Mi
 
 # Egress configuration for Projects (story 4.6, ISI-2888)
-# This controls the default-deny + allowlist egress policy structure applied
-# to each Project's Run workloads. When enabled, the operator will create
-# NetworkPolicies for Projects that specify egressPolicyRef.
+# This controls the default-deny + allowlist egress policy STRUCTURE. These
+# values feed ONLY templates/egress.yaml (the release-namespace control-plane
+# policies). Tenant (squad/team) namespace default-deny + allowlists are
+# stamped by the OPERATOR at runtime (story 4.6 / ISI-2884), not by this chart.
 egress:
-  # Enable egress policy reconciliation for Projects
+  # Kept for backward-compat; gates the (opt-in) release-namespace policies.
   enabled: true
-  
-  # Default egress proxy configuration. Projects can override this by
-  # specifying their own egressPolicyRef.
-  defaultEgressProxy:
-    # Service name of the egress proxy in each team namespace
-    service: "egress-proxy"
-    # Port the egress proxy listens on
-    port: 8080
-    
-  # NetworkPolicy configuration for egress control
-  networkPolicy:
-    # Default-deny policy name prefix
-    defaultDenyName: "ksquad-default-deny"
-    # Project-specific egress policy name prefix
-    projectEgressPrefix: "ksquad-egress"
-    
-  # Allowed egress destinations by default
-  defaultAllow:
-    # DNS resolution is always allowed
-    dns:
-      enabled: true
-      ports:
-        - protocol: "TCP"
-          port: 53
-        - protocol: "UDP" 
-          port: 53
-    # Control plane communication (API server, health checks)
-    controlPlane:
-      enabled: true
-      ports:
-        - protocol: "TCP"
-          port: 443  # HTTPS (API server)
-        - protocol: "TCP"
-          port: 8080 # Health/proxy ports
-  image: nats:2.10-alpine
-  port: 4222
-  jetstream:
-    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
-    # Max on-disk JetStream file store. Keep ≤ storage.nats.size (5Gi).
-    # This is a nats-server config size, emitted UNQUOTED into nats.conf (see
-    # templates/nats.yaml): 4GB == 4Gi == 4*1024^3 bytes to nats. Do NOT quote
-    # a multi-char suffix in the template — nats fails to parse "4GB"/"4Gi".
-    maxFileStore: 4GB
-  # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
-  # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
-  # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.
-  ha:
-    enabled: false
-    replicas: 3
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
 
-# Egress configuration for Projects (story 4.6, ISI-2888)
-# This controls the default-deny + allowlist egress policy structure applied
-# to each Project's Run workloads. When enabled, the operator will create
-# NetworkPolicies for Projects that specify egressPolicyRef.
-egress:
-  # Enable egress policy reconciliation for Projects
-  enabled: true
-  
   # Default egress proxy configuration. Projects can override this by
   # specifying their own egressPolicyRef.
   defaultEgressProxy:
@@ -386,28 +324,48 @@ egress:
     service: "egress-proxy"
     # Port the egress proxy listens on
     port: 8080
-    
+
   # NetworkPolicy configuration for egress control
   networkPolicy:
     # Default-deny policy name prefix
     defaultDenyName: "ksquad-default-deny"
     # Project-specific egress policy name prefix
     projectEgressPrefix: "ksquad-egress"
+
+    # Control-plane (release-namespace) default-deny posture (ISI-3907).
+    #
+    # arch §12.2: the control plane is HIGH-TRUST and the release namespace is
+    # NOT a tenant Run-workload namespace, so it does NOT receive the blanket
+    # default-deny baseline — the operator stamps default-deny + allowlists into
+    # squad/team (tenant) namespaces per story 4.6 / ISI-2884, which is where
+    # the baseline belongs.
+    #
+    # Leave this false (the safe default) unless you run an enforcing CNI AND
+    # deliberately want a locked-down control plane. Enabling it renders the
+    # blanket Egress+Ingress default-deny into the release namespace and
+    # therefore REQUIRES a matching allow (carve-out) policy for EVERY
+    # control-plane component. Today only the apiserver (below) and the
+    # otel-collector (observability.collector.networkPolicy) have carve-outs;
+    # the full set for operator/console/gateway/NATS/event-relay/scm-webhook
+    # and CNPG replication is tracked in ISI-3910. A partial carve-out set WILL
+    # starve every component that lacks one — do not enable until ISI-3910 lands.
+    releaseNamespaceDefaultDeny: false
 
     # Apiserver egress carve-out over the release-namespace default-deny
-    # (ISI-3906). The default-deny also selects the apiserver pod, but the
-    # architecture grants the control plane high-trust egress (arch §12.2;
-    # pkg/probeegress assumes it). Without this allow, the credential
-    # test-connection probe to model providers (api.anthropic.com,
-    # api.openai.com, BYO endpoints) is starved on any CNI that enforces
-    # NetworkPolicy. Mirrors the otel-collector vendorEgress pattern.
+    # (ISI-3906). Only takes effect when releaseNamespaceDefaultDeny=true (a
+    # carve-out is meaningless — and would itself over-restrict the apiserver —
+    # without a deny to carve). The architecture grants the control plane
+    # high-trust egress (arch §12.2; pkg/probeegress assumes it). Without this
+    # allow, under a rendered default-deny the credential test-connection probe
+    # to model providers (api.anthropic.com, api.openai.com, BYO endpoints) is
+    # starved. Mirrors the otel-collector vendorEgress pattern.
     apiserverEgress:
-      # Render the <apiserver>-egress allow policy
+      # Render the <apiserver>-egress allow policy (requires releaseNamespaceDefaultDeny)
       enabled: true
-      # Governed external hop: 443/TCP to destinations OUTSIDE the
-      # excepted (private/in-cluster) ranges only. Tune exceptCIDRs to
-      # your CNI's pod/service/node CIDRs. RFC1918 + CGNAT + link-local
-      # (the cloud metadata service) are the safe defaults.
+      # Governed external hop: 443/TCP to destinations OUTSIDE the excepted
+      # (private/in-cluster) ranges only. Tune exceptCIDRs to your CNI's
+      # pod/service/node CIDRs. RFC1918 + CGNAT + link-local (the cloud
+      # metadata service) are the safe defaults.
       exceptCIDRs:
         - 10.0.0.0/8
         - 172.16.0.0/12
@@ -432,27 +390,6 @@ egress:
           port: 443  # HTTPS (API server)
         - protocol: "TCP"
           port: 8080 # Health/proxy ports
-  image: nats:2.10-alpine
-  port: 4222
-  jetstream:
-    enabled: true # JetStream ON — replay/catch-up for plugins (§17.4)
-    # Max on-disk JetStream file store. Keep ≤ storage.nats.size (5Gi).
-    # This is a nats-server config size, emitted UNQUOTED into nats.conf (see
-    # templates/nats.yaml): 4GB == 4Gi == 4*1024^3 bytes to nats. Do NOT quote
-    # a multi-char suffix in the template — nats fails to parse "4GB"/"4Gi".
-    maxFileStore: 4GB
-  # SINGLE-REPLICA DEFAULT. HA = ha.enabled:true → a clustered JetStream RAFT
-  # quorum (odd replicas ≥ 3). Same toggle SHAPE as storage.postgres.instances
-  # (CNPG). Off = one lightweight replica, keeping the ≤4h install (S1) true.
-  ha:
-    enabled: false
-    replicas: 3
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      memory: 256Mi
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Event relay — apiserver outbox → NATS (Epic 12.1 / §17.4 / ADR-023)
