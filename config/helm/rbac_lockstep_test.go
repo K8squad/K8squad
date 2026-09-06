@@ -175,6 +175,9 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // does get+create+update on every compose kind and list only on teams; no
 // watch (no informers), no patch, no delete. Update this expectation only when
 // the compose client's verb usage actually changes (internal/apiserver/composecrd.go).
+// agents also carries `list` (ISI-3680 F1): credentialtest.go agentsReferencing()
+// lists agents to mirror per-agent test-result annotations — without it the
+// canonical chart 403s that List and the per-agent mirror silently no-ops.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -184,7 +187,8 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 
 	want := []rbacv1.PolicyRule{
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects", "agents", "roles", "skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agents"}, Verbs: []string{"get", "list", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects", "roles", "skills"}, Verbs: []string{"get", "create", "update"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+
