@@ -3,10 +3,17 @@
 // components/nav/ConsoleShell.tsx — the ONE adaptive nav shell (stories 8.13 + 8.20 / ADR-038).
 //
 // CSS-first single tree: the server renders ONE shell; the browser re-expresses it at each
-// canonical breakpoint — desktop >1024 full labeled left rail · tablet 768–1024 collapsible
-// icon rail (tap-to-expand OVERLAY — no layout shift, no bottom nav) · mobile <768 top bar +
-// 5-item bottom nav + slide-in drawer for overflow. No UA sniffing; the variants below are all
-// in the DOM and globals.css media queries decide — the same markup, same BFF/RBAC/SSE path.
+// canonical breakpoint — desktop >1024 full-width top bar + labeled left rail · tablet 768–1024
+// the same top bar + collapsible icon rail (tap-to-expand OVERLAY — no layout shift, no bottom
+// nav) · mobile <768 top bar + 5-item bottom nav + slide-in drawer for overflow. No UA sniffing;
+// the variants below are all in the DOM and globals.css media queries decide — the same markup,
+// same BFF/RBAC/SSE path.
+//
+// ISI-3871 (ISI-3867 #2/#3, mocks ISI-3641 frames 01/06): desktop/tablet carry a FULL-WIDTH top
+// bar (`.appbar`, h=56) spanning rail+content — 8-Crest logo + K8squad wordmark + muted
+// `console · <host>` env chip on the left, GlobalSearch + username + avatar on the right. The
+// left rail is NAV-ONLY below it: brand block removed (it lives in the appbar now), active item
+// = filled accent-tinted pill with a 3px accent bar per the mock.
 //
 // RBAC composition (8.16 seam): nodes a role cannot see are removed by visibleNav BEFORE any
 // breakpoint expression, so a non-admin on mobile sees the role-filtered surface fit the
@@ -137,11 +144,24 @@ export function ConsoleShell({
   // E1-S3: the AD-2 onboarding projection drives the nav lock + "Finish setup" chip.
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
 
+  // ISI-3871: the appbar's env chip reads `console · <host>` from the CURRENT origin at render
+  // time (mock frame 01/06 literal is `console · 10.0.0.219`). SSR-safe: the first paint uses
+  // the NEXT_PUBLIC_CONSOLE_HOST build-time fallback (empty string when unset — the chip then
+  // reads just `console`), and the effect swaps in window.location.hostname AFTER hydration so
+  // server and client's first render agree (no hydration mismatch), then it becomes exact.
+  const [consoleHost, setConsoleHost] = useState(
+    process.env.NEXT_PUBLIC_CONSOLE_HOST ?? "",
+  );
+
   // Close transient surfaces on navigation.
   useEffect(() => {
     setRailExpanded(false);
     setDrawerOpen(false);
   }, [pathname]);
+
+  useEffect(() => {
+    setConsoleHost(window.location.hostname);
+  }, []);
 
   // Read the onboarding projection once per mount (E1-S1 BFF proxy). Fail-open: if the
   // endpoint is unreachable, unauthenticated, or not yet wired (E1-S1 still landing), the
@@ -175,16 +195,36 @@ export function ConsoleShell({
 
   return (
     <div className="shell">
-      {/* Desktop/tablet left rail (labels on desktop; icon-only on tablet, tap expands overlay) */}
+      {/* Desktop/tablet FULL-WIDTH top bar (ISI-3871 / ISI-3641 frames 01+06, h=56, spans rail
+          and content): brand lockup + `console · <host>` env chip left · search + username +
+          avatar right. Hidden on mobile (<768), where `.topbar` (below) keeps story 8.20 intact. */}
+      <header className="appbar">
+        <Link href="/overview" className="appbar__brand" aria-label="K8squad home">
+          <Logo size={24} />
+        </Link>
+        {/* Muted env chip — the mock's `console · 10.0.0.219`. Host is the live origin
+            (see consoleHost above); empty host degrades to just `console`. */}
+        <span className="appbar__env" title="Console host">
+          console{consoleHost ? ` · ${consoleHost}` : ""}
+        </span>
+        <span className="appbar__spacer" />
+        <GlobalSearch />
+        {username && <span className="appbar__user">{username}</span>}
+        {/* Identity indicator (mock's top-right `admin` + avatar circle). Sign-out stays in the
+            rail foot / drawer (ISI-3570) — avatar-only reuse of UserMenu, not a second control. */}
+        <UserMenu username={username} variant="avatar" />
+      </header>
+
+      <div className="shell__row">
+      {/* Desktop/tablet left rail (labels on desktop; icon-only on tablet, tap expands overlay).
+          ISI-3871: NAV-ONLY — the brand block moved up into the appbar; only the tablet expand
+          affordance remains at the rail's head (hidden on desktop where the rail is persistent). */}
       <aside
         className="rail"
         data-expanded={railExpanded || undefined}
         aria-label="Primary"
       >
-        <div className="rail__brand">
-          <Link href="/" className="rail__homelink">
-            <Logo size={24} />
-          </Link>
+        <div className="rail__head">
           <button
             type="button"
             className="rail__expand"
@@ -195,7 +235,6 @@ export function ConsoleShell({
             <NavIcon id={railExpanded ? "close" : "menu"} />
           </button>
         </div>
-        <NavigatingProjectSelector activeId={activeProject} />
         <nav className="rail__nav">
           {nodes.map((n) =>
             n.section ? (
@@ -236,6 +275,10 @@ export function ConsoleShell({
             ),
           )}
         </nav>
+        {/* Functional deviations the mock predates (ISI-3871): ProjectSelector + SetupChip stay,
+            but restyled to sit QUIETLY BELOW the mock's nav geometry — the rail top now reads
+            exactly like frames 01/06 (nav first, then SETTINGS). */}
+        <NavigatingProjectSelector activeId={activeProject} />
         {/* E1-S3: persistent way back to setup (renders only when incomplete + dismissed). */}
         <SetupChip progress={progress} />
         {/* Account footer + sign-out (ISI-3570) — always at the rail's foot. */}
@@ -267,14 +310,12 @@ export function ConsoleShell({
           <ThemeToggle />
         </header>
 
-        {/* Desktop/tablet content header. Right cluster matches the ISI-3641 mock top bar
-            (search · namespace chip · avatar); breadcrumb + theme toggle kept as a product decision
-            (spec §2 left the call to the Architect). */}
+        {/* Desktop/tablet content header — a slim breadcrumb strip (ISI-3871). The mock elements
+            (search · username · avatar) moved UP into the full-width appbar; Breadcrumb +
+            ThemeToggle stay as the recorded product decisions (ISI-3716 §2) and the namespace
+            chip remains a quiet functional indicator — none of them displace mock elements. */}
         <header className="contentbar">
           <Breadcrumb pathname={pathname} />
-          <GlobalSearch />
-          {/* Namespace scope chip. Static "all" for now — the namespace selector is a later surface;
-              this is the mock's `● ns: all` indicator, not a wired control (ISI-3725). */}
           <span className="nschip" title="Namespace scope">
             <span className="nschip__dot" aria-hidden="true">
               ●
@@ -282,12 +323,10 @@ export function ConsoleShell({
             ns: all
           </span>
           <ThemeToggle />
-          {/* Identity indicator (mock's top-right avatar). Sign-out itself lives in the rail foot
-              (ISI-3570) — this is an avatar-only reuse of UserMenu, not a duplicate control. */}
-          <UserMenu username={username} variant="avatar" />
         </header>
 
         <main className="shell__main">{children}</main>
+      </div>
       </div>
 
       {/* Mobile 5-item bottom nav (story 8.20) — role-filtered, overflow → drawer */}
