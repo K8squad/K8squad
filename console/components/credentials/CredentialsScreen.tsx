@@ -81,10 +81,10 @@ export function CredentialsScreen({
     try {
       const res = await connect();
       if (res.status === 501) {
-        const body = await res.json().catch(() => null);
+        // OAuth endpoint not hosted (ISI-2899 / story 7.7): never surface the raw
+        // apiserver detail string — a legible, actionable fallback keeps users unblocked.
         setConnectMsg(
-          body?.detail ??
-            "Connect Claude is not configured yet — the OAuth flow is not available in this deployment.",
+          "Connect Claude is not yet available — use the ksquad auth login CLI command for now.",
         );
       } else if (res.status >= 200 && res.status < 300) {
         setConnectMsg("Connect Claude flow started — check the opened authorization window.");
@@ -120,7 +120,9 @@ export function CredentialsScreen({
           >
             Connect Claude
           </button>
-          <span className="creds__connect-hint muted">or `ksquad auth login` (CLI parity)</span>
+          <span className="creds__connect-hint muted">
+            or <code>ksquad auth login</code> (CLI parity)
+          </span>
         </div>
       </header>
 
