@@ -1,24 +1,28 @@
 {{/*
-  Default-deny NetworkPolicy for all namespaces managed by KSquad.
-  
-  This creates the baseline "no egress" policy that all namespaces inherit.
-  Project-specific egress policies (created by the Project controller) then
-  carve out allowlists for specific destinations like egress proxies.
-  
-  See story 4.6 and ISI-2888 for details on the egress architecture.
+  Control-plane (release-namespace) default-deny NetworkPolicy.
 
-  NOTE (ISI-3906): this policy renders into the RELEASE namespace — the
-  control plane — where it also selects the apiserver pod. The
-  architecture grants the control plane high-trust egress (arch §12.2;
-  pkg/probeegress's confused-deputy guard assumes it and adds its own
-  declarative containment at the dial seam), so the apiserver gets an
-  explicit carve-out below (ksquad-apiserver-egress): DNS, in-cluster
-  peers, and a governed external 443 hop for the credential
-  test-connection probe to model providers. Without it, any CNI that
-  enforces NetworkPolicy starves the probe ("Unreachable" reds) the
-  moment the default-deny is enforced.
+  POSTURE (ISI-3907): the release namespace is the CONTROL PLANE — operator,
+  apiserver, console, gateway, NATS, event-relay, scm-webhook and Postgres
+  (CNPG) all run here. arch §12.2 grants the control plane HIGH-TRUST egress,
+  and this namespace is NOT a tenant Run-workload namespace, so it must NOT
+  inherit the blanket default-deny baseline. The tenant baseline (default-deny
+  + allowlists) is stamped by the OPERATOR into squad/team namespaces at
+  runtime (story 4.6 / ISI-2884) — that is where it belongs, NOT in this chart.
+
+  Consequently this blanket default-deny is OPT-IN and OFF by default
+  (egress.networkPolicy.releaseNamespaceDefaultDeny). Rendering it REQUIRES a
+  matching allow (carve-out) policy for every control-plane component, or it
+  starves the entire control plane on an enforcing CNI. That full carve-out set
+  is now implemented (ISI-3910): enabling releaseNamespaceDefaultDeny also
+  renders templates/networkpolicy-carveouts.yaml (intra-CP chatter, the
+  kube-apiserver hop, north/south Gateway/Ingress ingress and Prometheus scrape)
+  plus the apiserver (below) and otel-collector governed external hops, keeping
+  every component functional under the deny. Verified end-to-end on an enforcing
+  CNI (kind + Calico) by test/cp-lockdown/run.sh and the cp-lockdown CI job.
+  Before enabling, tune controlPlaneCarveOuts.dataplaneNamespaceSelector and
+  apiserverEgress.exceptCIDRs to your CNI/gateway.
 */}}
-{{- if .Values.egress.enabled }}
+{{- if and .Values.egress.enabled (dig "networkPolicy" "releaseNamespaceDefaultDeny" false .Values.egress) }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -41,16 +45,21 @@ spec:
 ---
 {{/*
   Apiserver egress carve-out over the release-namespace default-deny
-  (ISI-3906). Mirrors the otel-collector pattern: the governed hop to
-  model providers (credential test-connection, ISI-3680/ISI-3891) is
-  443/TCP to destinations OUTSIDE the excepted in-cluster/private ranges
-  only — RFC1918, CGNAT and link-local (the cloud metadata service) are
-  denied by rule, and pkg/probeegress adds its own declarative
-  SSRF/DNS-rebind containment at the dial seam on top. DNS, in-namespace
-  peers (Postgres) and kube-system (kube-api on 443/6443) ride along so
-  the carve-out keeps the apiserver functional, not just probeable.
+  (ISI-3906). Only meaningful when releaseNamespaceDefaultDeny is ON — a
+  carve-out with no deny to carve would ITSELF restrict the high-trust
+  apiserver (any egress policy selecting a pod restricts it to the listed
+  destinations), so it is gated on the default-deny toggle. Mirrors the
+  otel-collector pattern: the governed hop to model providers (credential
+  test-connection, ISI-3680/ISI-3891) is 443/TCP to destinations OUTSIDE the
+  excepted in-cluster/private ranges only — RFC1918, CGNAT and link-local
+  (the cloud metadata service) are denied by rule, and pkg/probeegress adds
+  its own declarative SSRF/DNS-rebind containment at the dial seam on top.
+  DNS, in-namespace peers (Postgres) and kube-system (kube-api on 443/6443)
+  ride along so the carve-out keeps the apiserver functional, not just
+  probeable.
 */}}
 {{- if and .Values.egress.enabled
+           (dig "networkPolicy" "releaseNamespaceDefaultDeny" false .Values.egress)
            (dig "networkPolicy" "apiserverEgress" "enabled" false .Values.egress) }}
 {{- $apiserverName := include "ksquad.apiserver.fullname" . -}}
 apiVersion: networking.k8s.io/v1
@@ -61,6 +70,7 @@ metadata:
   labels:
     {{- include "ksquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: apiserver
+    app.kubernetes.io/name: ksquad-apiserver-egress
 spec:
   policyTypes:
     - Egress

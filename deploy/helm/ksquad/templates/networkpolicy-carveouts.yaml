@@ -1,0 +1,182 @@
+{{/*
+  Control-plane full-lockdown carve-outs (ISI-3910, follow-up to ISI-3907).
+
+  POSTURE. The release namespace IS the control plane (operator, apiserver,
+  console, gateway dataplane, NATS, event-relay, scm-webhook and CNPG Postgres).
+  arch §12.2 grants the control plane HIGH-TRUST egress, so by default it does
+  NOT inherit the tenant default-deny baseline (that is stamped by the operator
+  into squad/team Run-workload namespaces per story 4.6 / ISI-2884). The blanket
+  release-namespace default-deny (egress.yaml) is therefore OPT-IN and OFF by
+  default.
+
+  These carve-outs are what make that opt-in lockdown actually USABLE on an
+  enforcing CNI: a rendered default-deny with no matching allows starves the
+  whole control plane. They render ONLY when releaseNamespaceDefaultDeny=true,
+  so the default (high-trust CP, no default-deny) is completely unaffected.
+
+  DESIGN. Rather than N brittle per-component egress/ingress policies (each of
+  which, by NetworkPolicy semantics, would confine the pod it selects to exactly
+  the destinations enumerated and is easy to get subtly wrong), we model the
+  actual trust boundary of a high-trust control plane with a small, composable
+  set of ADDITIVE policies (NetworkPolicies union their allows):
+
+    1. cp-intra-namespace  — all intra-CP chatter (podSelector: {}). Covers
+       operator→postgres/NATS/otel/apiserver, console→apiserver, the NATS client
+       mesh + JetStream HA cluster routes, event-relay→postgres/NATS, scm-webhook
+       →apiserver AND CNPG instance-to-instance replication — every same-namespace
+       hop the issue enumerates — plus DNS. Intra-CP traffic is high-trust (§12.2).
+    2. cp-kube-api-egress  — the out-of-namespace hop to the kube-apiserver that
+       every client-go component needs (operator, apiserver, scm-webhook,
+       event-relay, and the CNPG instance manager).
+    3. cp-dataplane-ingress — north/south ingress to the externally-exposed
+       services (console 3000, apiserver 8080, scm-webhook 8080) FROM the
+       Gateway/Ingress dataplane. This is the "gateway → console/apiserver" and
+       "scm-webhook ingress from gateway" allow: the Gateway is a Gateway API
+       resource whose dataplane pods live in the gateway-controller's OWN
+       namespace (cilium→kube-system, envoy-gateway→envoy-gateway-system, …),
+       not the release namespace, so it needs an explicit cross-namespace allow.
+    4. cp-monitoring-ingress — Prometheus scrape of the CP metrics ports.
+
+  The apiserver's governed external hop (443 to model providers, ISI-3906) stays
+  in egress.yaml, and the otel-collector's vendor hop stays in
+  otel-collector-networkpolicy.yaml — both compose additively with the above.
+
+  Verified on an enforcing CNI (kind + Calico) by test/cp-lockdown/run.sh and
+  .github/workflows/cp-lockdown.yml: a conformance arm proves the CP is fully
+  functional with the default-deny ON, and a mutation arm proves the guards have
+  teeth (deleting a carve-out flips the matching probe RED).
+*/}}
+{{- if and .Values.egress.enabled
+           (dig "networkPolicy" "releaseNamespaceDefaultDeny" false .Values.egress)
+           (dig "networkPolicy" "controlPlaneCarveOuts" "enabled" true .Values.egress) }}
+{{- $cp := dig "networkPolicy" "controlPlaneCarveOuts" (dict) .Values.egress -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ksquad-cp-intra-namespace
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: cp-intra-namespace
+spec:
+  policyTypes:
+    - Egress
+    - Ingress
+  # All control-plane pods in the release namespace.
+  podSelector: {}
+  egress:
+    # DNS resolution (always) — CoreDNS lives in kube-system.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Every control-plane peer in this namespace, any port: operator↔postgres↔
+    # NATS↔otel↔apiserver↔console↔event-relay↔scm-webhook, CNPG instance-to-
+    # instance replication and the NATS JetStream HA cluster routes. High-trust
+    # intra-CP chatter (arch §12.2) — the tenant boundary is squad/team namespaces.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+  ingress:
+    # Symmetric intra-namespace ingress so every CP peer can reach every other
+    # (client→server for all of the above hops, both directions of replication).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ksquad-cp-kube-api-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: cp-kube-api-egress
+spec:
+  policyTypes:
+    - Egress
+  # Every client-go component: operator, apiserver, scm-webhook, event-relay and
+  # the CNPG instance manager all watch/patch the kube-apiserver.
+  podSelector: {}
+  egress:
+    # Kubernetes API — the default Service VIP resolves to the hostNetwork
+    # control-plane nodes' apiserver (kube-system) on 443/6443.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        {{- range (dig "kubeApi" "ports" (list 443 6443) $cp) }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ksquad-cp-dataplane-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: cp-dataplane-ingress
+spec:
+  policyTypes:
+    - Ingress
+  # The externally-exposed control-plane services.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [console, apiserver, scm-webhook]
+  ingress:
+    # North/south from the Gateway/Ingress dataplane. Default {} = all
+    # namespaces (functional out-of-the-box on any gateway implementation);
+    # tighten dataplaneNamespaceSelector to your controller's namespace label
+    # (e.g. kubernetes.io/metadata.name: envoy-gateway-system) for a stricter
+    # lockdown. Ports are the union — console 3000, apiserver/scm-webhook 8080.
+    - from:
+        - namespaceSelector:
+            {{- toYaml (dig "dataplaneNamespaceSelector" (dict) $cp) | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.console.service.targetPort }}
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ksquad-cp-monitoring-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: networkpolicy
+    app.kubernetes.io/name: cp-monitoring-ingress
+spec:
+  policyTypes:
+    - Ingress
+  podSelector: {}
+  ingress:
+    # Prometheus scrape of the CP metrics/health endpoints (operator 8081,
+    # apiserver 8080, NATS 8222, otel-collector 8889, event-relay 9090, CNPG
+    # 9187 metrics + 8000 status). Default {} = all namespaces; tighten
+    # monitoringNamespaceSelector to your monitoring namespace to scope it.
+    - from:
+        - namespaceSelector:
+            {{- toYaml (dig "monitoringNamespaceSelector" (dict) $cp) | nindent 12 }}
+      ports:
+        {{- range (dig "metricsPorts" (list 8000 8080 8081 8222 8889 9090 9187) $cp) }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+{{- end }}

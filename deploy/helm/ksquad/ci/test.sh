@@ -190,4 +190,63 @@ else
   echo "  skip — otelcol-contrib not on PATH (render assertions cover the split)"
 fi
 
+echo "== release-namespace default-deny posture (ISI-3907) =="
+# DEFAULT: the control plane is high-trust (arch §12.2) and the release namespace
+# is NOT a tenant Run-workload namespace, so the blanket default-deny must NOT
+# render — otherwise any enforcing CNI starves operator/apiserver/console/gateway/
+# NATS/event-relay/scm-webhook. egress.yaml renders empty by default.
+out="$(helm template t "$CHART" "${CORE[@]}" 2>&1)" || { echo "$out"; fail "render (default egress posture)"; }
+grep -q 'ksquad-default-deny' <<<"$out" && { echo "$out"; fail "egress(default): default-deny must NOT render (CP high-trust §12.2)"; }
+grep -q 'ksquad-apiserver-egress' <<<"$out" && { echo "$out"; fail "egress(default): apiserver carve-out must NOT render without a deny"; }
+pass "egress(default): no release-ns default-deny / no lone apiserver carve-out"
+
+# apiserverEgress.enabled alone (no default-deny) still renders nothing — a lone
+# egress allow policy would ITSELF over-restrict the high-trust apiserver.
+out="$(helm template t "$CHART" "${CORE[@]}" --set egress.networkPolicy.apiserverEgress.enabled=true 2>&1)" \
+  || { echo "$out"; fail "render (apiserverEgress-only)"; }
+grep -q 'ksquad-apiserver-egress' <<<"$out" && { echo "$out"; fail "egress: apiserver carve-out must stay gated on releaseNamespaceDefaultDeny"; }
+pass "egress: apiserver carve-out stays gated without default-deny"
+
+# OPT-IN: enabling releaseNamespaceDefaultDeny renders the deny AND its carve-out.
+render_ok "egress(opt-in): renders release-ns default-deny" 'name: ksquad-default-deny' \
+  "${CORE[@]}" --set egress.networkPolicy.releaseNamespaceDefaultDeny=true
+render_ok "egress(opt-in): renders apiserver carve-out over the deny" 'ksquad-apiserver-egress' \
+  "${CORE[@]}" --set egress.networkPolicy.releaseNamespaceDefaultDeny=true
+
+echo "== control-plane full-lockdown carve-outs (ISI-3910) =="
+CARVE=templates/networkpolicy-carveouts.yaml
+LOCKDOWN=(--set egress.networkPolicy.releaseNamespaceDefaultDeny=true)
+# DEFAULT (high-trust CP): the carve-outs must render NOTHING — a lone allow set
+# with no deny would itself over-restrict the CP, and the default posture must be
+# completely unaffected (only the deny toggle activates lockdown). Grep the FULL
+# render (an empty --show-only would make helm error "template not found").
+out="$(helm template t "$CHART" "${CORE[@]}" 2>&1)" || { echo "$out"; fail "render (carveouts default)"; }
+grep -q 'ksquad-cp-' <<<"$out" && { echo "$out"; fail "carveouts(default): must NOT render without the deny"; }
+pass "carveouts(default): nothing renders without the deny"
+# OPT-IN: the full carve-out set renders over the deny.
+render_ok "carveouts(opt-in): intra-namespace allow renders" 'name: ksquad-cp-intra-namespace' \
+  "${CORE[@]}" "${LOCKDOWN[@]}"
+render_ok "carveouts(opt-in): kube-apiserver egress renders" 'name: ksquad-cp-kube-api-egress' \
+  "${CORE[@]}" "${LOCKDOWN[@]}"
+render_ok "carveouts(opt-in): Gateway/Ingress dataplane ingress renders" 'name: ksquad-cp-dataplane-ingress' \
+  "${CORE[@]}" "${LOCKDOWN[@]}"
+render_ok "carveouts(opt-in): Prometheus scrape ingress renders" 'name: ksquad-cp-monitoring-ingress' \
+  "${CORE[@]}" "${LOCKDOWN[@]}"
+# Intra-namespace allow carries DNS + same-namespace egress (the CP chatter path).
+render_ok "carveouts(opt-in): intra allow carries same-namespace egress" 'kubernetes.io/metadata.name: default' \
+  "${CORE[@]}" "${LOCKDOWN[@]}" --show-only "$CARVE"
+# North/south ingress targets the externally-exposed console+apiserver+scm-webhook.
+render_ok "carveouts(opt-in): dataplane ingress selects console/apiserver/scm-webhook" 'values: \[console, apiserver, scm-webhook\]' \
+  "${CORE[@]}" "${LOCKDOWN[@]}" --show-only "$CARVE"
+# The carve-out set is independently gate-able (defense-in-depth off-switch).
+out="$(helm template t "$CHART" "${CORE[@]}" "${LOCKDOWN[@]}" \
+  --set egress.networkPolicy.controlPlaneCarveOuts.enabled=false 2>&1)" \
+  || { echo "$out"; fail "render (carveouts disabled)"; }
+grep -q 'ksquad-cp-' <<<"$out" && { echo "$out"; fail "carveouts: controlPlaneCarveOuts.enabled=false must suppress them"; }
+pass "carveouts: controlPlaneCarveOuts.enabled=false suppresses them"
+# dataplaneNamespaceSelector is tunable (stricter lockdown to a named gateway ns).
+render_ok "carveouts(opt-in): dataplaneNamespaceSelector is tunable" 'kubernetes.io/metadata.name: envoy-gateway-system' \
+  "${CORE[@]}" "${LOCKDOWN[@]}" --show-only "$CARVE" \
+  --set egress.networkPolicy.controlPlaneCarveOuts.dataplaneNamespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name=envoy-gateway-system
+
 echo "ALL CHECKS PASSED"
