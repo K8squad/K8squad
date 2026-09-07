@@ -20,6 +20,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -33,8 +34,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver "pgx"
 
+	"github.com/go-logr/logr"
 	"github.com/google/uuid"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
@@ -106,6 +109,16 @@ func main() {
 			log.Printf("ksquad-apiserver: OpenTelemetry shutdown: %v", serr)
 		}
 	}()
+
+	// Give controller-runtime a logger. The informer cache below (NewCacheReader) and the
+	// client-go machinery behind it log through controller-runtime's global logr sink; if it is
+	// never set, controller-runtime prints the one-shot "log.SetLogger(...) was never called;
+	// logs will not be displayed" stack trace and then silently drops every cache/watch diagnostic
+	// (watch resets, list failures) — a real debuggability hole for the read-model informer.
+	// telemetry.Setup just installed the otelslog bridge as slog.Default, so bridge controller-runtime
+	// through the same handler: its logs become trace-correlated structured records like the rest of
+	// this host, rather than a divergent zap stream (cmd/operator, cmd/webhook use zap.New here).
+	ctrllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	// Fail closed at start: connect + ping the store of record before serving.
 	db, err := sql.Open("pgx", cfg.DatabaseURL)
