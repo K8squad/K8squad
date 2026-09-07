@@ -117,7 +117,11 @@ type CredentialsOverview struct {
 // object UID — the AuthorContext.TeamID). Production wires the cache-backed reader; tests wire a
 // fake client.Reader. A reader MUST scope strictly to teamUID.
 type CredentialOverviewReader interface {
-	Credentials(ctx context.Context, teamUID string) (CredentialsOverview, error)
+	// Credentials projects the per-agent credential surface. A bound caller (admin or
+	// non-admin) always scopes to teamUID's own namespace. A fleet-wide admin whose own
+	// team is unresolvable (ISI-3937) targets an explicit team via requestedTeamID, or
+	// the single team by default; more than one team and no requestedTeamID → ErrSelectTeam.
+	Credentials(ctx context.Context, teamUID string, admin bool, requestedTeamID string) (CredentialsOverview, error)
 }
 
 // ClientCredentialReader is the production CredentialOverviewReader over any client.Reader (the
@@ -140,8 +144,15 @@ func NewClientCredentialReader(r client.Reader) *ClientCredentialReader {
 // Credentials resolves the Team by UID (same rename-proof scoping as overview.go), then projects
 // every Agent in the Team's namespace into a credential row, joining Paused Runs whose
 // spec.agents select that Agent. Deterministic: rows sort by agent name, paused runs by name.
-func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string) (CredentialsOverview, error) {
+func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string, admin bool, requestedTeamID string) (CredentialsOverview, error) {
 	ns, err := r.teamNamespace(ctx, teamUID)
+	if errors.Is(err, ErrTeamNotFound) && admin {
+		// Fleet-wide admin (ISI-3937): no home tenancy, so the projection targets an
+		// explicit team from the fleet (defaulting to the single team). Reached only
+		// when the caller's own team is unresolvable, so requestedTeamID cannot widen
+		// a bound caller's scope.
+		ns, err = r.fleetTeamNamespace(ctx, requestedTeamID)
+	}
 	if err != nil {
 		return CredentialsOverview{}, err
 	}
@@ -244,6 +255,30 @@ func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID stri
 	return "", ErrTeamNotFound
 }
 
+// fleetTeamNamespace resolves the namespace a fleet-wide admin's credential list
+// targets (ISI-3937). It is called ONLY after the caller's own team proved
+// unresolvable AND the caller is an admin, so it never widens a bound caller's
+// scope. Selection follows fleetAdminTeam (explicit teamId, or the single team by
+// default, or ErrSelectTeam when the admin must choose). The target's own namespace
+// is returned — the same tenancy root a bound list uses — and fleetAdminTeam's
+// existence-hiding "unresolved" is mapped to this reader's ErrTeamNotFound vocabulary.
+// Not memoized: the fleet-admin selection is request-shaped (it depends on teamId and
+// the current team set), not a stable per-UID fact.
+func (r *ClientCredentialReader) fleetTeamNamespace(ctx context.Context, requestedTeamID string) (string, error) {
+	var teams ksquadv1.TeamList
+	if err := r.reader.List(ctx, &teams); err != nil {
+		return "", err
+	}
+	team, err := fleetAdminTeam(teams.Items, requestedTeamID)
+	if errors.Is(err, ErrTeamNamespaceUnresolved) {
+		return "", ErrTeamNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return team.Namespace, nil
+}
+
 // credentialHold extracts the paused-on-credential signal from one Run: phase Paused AND a
 // Paused-type condition whose reason names a credential failure. Anything else (rate_limited,
 // pending, running) is not a credential hold.
@@ -278,7 +313,11 @@ func (s *Server) credentials(reader CredentialOverviewReader) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		overview, err := reader.Credentials(r.Context(), auth.TeamID.String())
+		overview, err := reader.Credentials(r.Context(), auth.TeamID.String(), auth.IsAdmin, r.URL.Query().Get("teamId"))
+		if errors.Is(err, ErrSelectTeam) {
+			writeJSONError(w, http.StatusBadRequest, "select a team for this credential")
+			return
+		}
 		if errors.Is(err, ErrTeamNotFound) {
 			writeJSONError(w, http.StatusNotFound, "no credential surface for this team")
 			return
