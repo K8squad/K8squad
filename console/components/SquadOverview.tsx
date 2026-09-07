@@ -13,6 +13,7 @@
 //   401 → unauthenticated (no session) · 404 → session's Team has no projection yet ·
 //   501 → the read model is not wired in this deployment (dev run) · 5xx → retryable error.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { KillRun } from "@/components/KillRun";
 import { EmptyState } from "@/components/forms/EmptyState";
@@ -172,7 +173,21 @@ export function SquadOverview() {
       ) : (
         projects.map((p) => (
           <section className="card" key={p.name} data-testid="overview-project">
-            <h2 style={{ margin: "0 0 4px" }}>{p.name}</h2>
+            <h2 style={{ margin: "0 0 4px" }}>
+              {/* S6 (ISI-3960): the card title is the entry point into the S1 workspace.
+                  Link the TITLE only — the card also holds /runs/{id} row anchors, so wrapping
+                  the whole card would create invalid nested anchors and steal the run clicks.
+                  Route param is the project CR name; page.tsx decodeURIComponent's it, so encode
+                  here for symmetry. TODO(ISI-3941): Overview is team-scoped so a bare name is
+                  unambiguous here; the fleet-wide Projects list (ISI-3943) must team/namespace-
+                  qualify this same link once ISI-3941 lands a qualified route. */}
+              <Link
+                href={`/projects/${encodeURIComponent(p.name)}`}
+                data-testid="overview-project-link"
+              >
+                {p.name}
+              </Link>
+            </h2>
             {p.repoUrl ? (
               <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
                 <code>{p.repoUrl}</code>
