@@ -309,6 +309,20 @@ var allowedSurface = map[string]string{
 	// a card's own lane change carries no worker-authored content (§6.1/§8.4).
 	"HumanStateStore.AgentTransitionState": "§8.6/§6.5 agent-initiated lane CAS + audit (initiator=agent), own-run",
 
+	// §6.1/§8.6 human work-item CREATE + FIELD-EDIT (S3, ISI-3959): the write
+	// siblings of the lane transition. Create authors a card in the default entry
+	// lane; edit changes title/body/parent only (state stays on the lane path).
+	// Both are custody ops (§6.5 audit, no-fence ADR-037, Team-scoped), NOT an
+	// agent-to-agent channel — a card's fields carry no worker-authored handoff.
+	"WorkItemRecord":                    "§6.1 persisted work-item a create/edit returns (board projection columns, read-only)",
+	"CreateWorkItemInput":               "§6.1 human create input (project/team/parent/title/body + provenance)",
+	"UpdateWorkItemInput":               "§6.1 human field-edit input (title/body/parent pointers + optimistic guard)",
+	"ErrInvalidWorkItem":                "§6.1 guard: malformed create/edit (empty title, self/cyclic parent) (→400)",
+	"WorkItemWriteStore":                "§6.1/§13 human work-item create+edit store bound to the prod schema",
+	"NewWorkItemWriteStore":             "§6.1 constructor",
+	"WorkItemWriteStore.CreateWorkItem": "§6.1/§6.5 insert in default entry lane + audit, no-fence, Team-scoped",
+	"WorkItemWriteStore.UpdateWorkItem": "§6.1/§6.5 conditional field CAS (expectedUpdatedAt) + audit, Team-scoped",
+
 	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
 	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own
 	// content + claim/fence state; AppendComment is the SANCTIONED handoff half

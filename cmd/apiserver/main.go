@@ -298,6 +298,14 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item state store: %v", err)
 	}
 
+	// S3 human work-item create + field-edit write path (ISI-3959): the write siblings
+	// of the lane transition above. Same DB hard-dependency, so the store is always
+	// bound (the documented-501 fallback exists only for a store-less host shape).
+	workItemWrites, err := coord.NewWorkItemWriteStore(db)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: work-item write store: %v", err)
+	}
+
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
 	// (migration 0012). The DB is a hard start dependency here, so the searcher is
 	// always bound (the documented-501 fallback exists only for a searcher-less host
@@ -448,6 +456,7 @@ func main() {
 		Artifacts:        artifacts,
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
+		WorkItemWrites:   workItemWrites,
 		Search:           searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the

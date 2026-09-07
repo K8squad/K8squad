@@ -6,7 +6,13 @@
 // PATCH /api/work-items/{id}/state {to, expectedFrom} (8.14a, ADR-037) — no
 // claim/lease call is ever issued from the console (distinct authority path, §6.2).
 
-import type { StateTransitionBody, WorkItem, WorkItemState } from "./types";
+import type {
+  CreateWorkItemBody,
+  StateTransitionBody,
+  UpdateWorkItemBody,
+  WorkItem,
+  WorkItemState,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -59,6 +65,50 @@ export async function patchWorkItemState(
   );
   await jsonOrThrow(res);
   return { state: body.to };
+}
+
+/**
+ * Create a work item (S3 / ISI-3959). 201 ⇒ created; the apiserver returns the new
+ * item (with its server-assigned id). A viewer/non-member is refused server-side
+ * (403/404) — the UI also fail-closed-hides the action, but the wall is the server.
+ * `parentId` in the body makes it a sub-issue.
+ */
+export async function createWorkItem(
+  projectId: string,
+  body: CreateWorkItemBody,
+): Promise<WorkItem> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/work-items`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    },
+  );
+  return (await jsonOrThrow(res)) as WorkItem;
+}
+
+/**
+ * Edit a work item's fields (S3 / ISI-3959). 200 ⇒ persisted; the apiserver returns
+ * the re-synced item. 409 (ApiError) ⇒ a concurrent edit changed it since
+ * `expectedUpdatedAt`; the caller re-reads server truth rather than clobbering
+ * (mirrors patchWorkItemState's discipline). State is NOT editable here.
+ */
+export async function updateWorkItem(
+  workItemId: string,
+  patch: UpdateWorkItemBody,
+): Promise<WorkItem> {
+  const res = await fetch(
+    `/api/work-items/${encodeURIComponent(workItemId)}`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+      cache: "no-store",
+    },
+  );
+  return (await jsonOrThrow(res)) as WorkItem;
 }
 
 /** Resolve the caller's role for the UI RBAC gate; any failure ⇒ viewer (FAIL-CLOSED, §12.3). */
