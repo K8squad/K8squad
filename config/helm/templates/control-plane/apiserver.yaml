@@ -31,6 +31,15 @@ spec:
         env:
         - name: HTTP_PORT
           value: "8080"
+        # The control-plane namespace this pod runs in. The apiserver applies Team
+        # CRs (the tenancy root, ADR-011) into THIS namespace; without it the code
+        # falls back to a hardcoded default ("ksquad-system") that need not match the
+        # release namespace, so onboarding step 1 "Create a Team" fails with a generic
+        # 502 "apply failed" when the CR targets a non-existent namespace (ISI-3919).
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         - name: KSQUAD_OPERATOR_METRICS_URL
           value: "http://ksquad-operator-metrics.{{ $ns }}.svc:8080/metrics"
