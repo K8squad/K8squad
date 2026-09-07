@@ -340,6 +340,20 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// ISI-3943 Projects-tab list: the fleet-aware Project list the console's Projects tab
+		// renders against (a second projection over the SAME informer cache as squad-overview —
+		// overview.go Projects()). Admin ⇒ fleet-wide (ADR-0010); tenant ⇒ their Team namespace.
+		// Rides the SAME §13 authz choke point; GET-only. Absent a reader it keeps the documented
+		// 501 (honest cluster-less contract), matching squad-overview.
+		projects := s.router.Path("/api/squad/projects").Subrouter()
+		projects.Use(authz)
+		if opts.Overview != nil {
+			projects.HandleFunc("", s.squadProjects(opts.Overview)).Methods(http.MethodGet)
+		} else {
+			projects.HandleFunc("", notImplemented("squad-projects read model", "ISI-3943: fleet-aware Projects list (over the squad-overview cache)")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four
 		// read-only routes the Console Agents surface renders against — the
 		// Team→Agent→Role org diagram, its live per-agent status SSE, and the agent
