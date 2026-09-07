@@ -1636,6 +1636,46 @@ a:hover {
   min-width: 0;
 }
 
+/* ISI-3964 — compose no-own-team gate (shown in place of a team-scoped form). */
+.compose__gate {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.compose__gate h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+/* ISI-3964 — fleet team picker (Agents view, admin). */
+.fleet-team-picker__list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fleet-team-picker__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  text-decoration: none;
+  color: inherit;
+}
+.fleet-team-picker__item:hover {
+  border-color: var(--accent, var(--border));
+}
+.fleet-team-picker__name {
+  font-weight: 600;
+  color: var(--text-1);
+}
+.fleet-team-picker__meta {
+  font-size: 12px;
+}
+
 .compose__yaml-pane {
   background: var(--canvas);
   border: 1px solid var(--border);
