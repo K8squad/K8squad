@@ -119,7 +119,7 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     expect(screen.getByText(/No agents with credentials/)).toBeTruthy();
   });
 
-  it("Connect Claude surfaces the 7.7 seam's legible not-configured message (501)", async () => {
+  it("Connect Claude shows a friendly fallback on 501 — never the raw apiserver detail (ISI-3935)", async () => {
     render(
       <CredentialsScreen
         load={async () => jsonResponse(200, overview([]))}
@@ -133,8 +133,30 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     const btn = screen.getByTestId("connect-claude") as HTMLButtonElement;
     btn.click();
     await waitFor(() => screen.getByTestId("connect-msg"));
-    expect(screen.getByTestId("connect-msg").textContent).toContain("not yet hosted");
-    expect(screen.getByTestId("connect-msg").textContent).not.toMatch(/token|secret/i);
+    const msg = screen.getByTestId("connect-msg").textContent ?? "";
+    // Friendly, actionable copy pointing at the CLI-parity path.
+    expect(msg).toContain("not yet available");
+    expect(msg).toContain("ksquad auth login");
+    // The raw backend detail never reaches the user.
+    expect(msg).not.toContain("not yet hosted");
+    expect(msg).not.toContain("story 7.7");
+    expect(msg).not.toContain("zero-touch");
+    expect(msg).not.toMatch(/token|secret/i);
+  });
+
+  it("separates Connect Claude from the CLI hint — code-styled command, no raw backticks (ISI-3935)", async () => {
+    render(
+      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+    );
+    await waitFor(() => screen.getByTestId("creds-table"));
+    const btn = screen.getByTestId("connect-claude");
+    const hint = screen.getByText(/CLI parity/);
+    // Button and hint are distinct siblings in the creds__connect flex row, not run-together text.
+    expect(btn.parentElement).toBe(hint.parentElement);
+    expect(hint.textContent).toContain("or ");
+    // The CLI command is a <code> element instead of literal backtick characters.
+    expect(hint.querySelector("code")?.textContent).toBe("ksquad auth login");
+    expect((hint.parentElement as HTMLElement)?.textContent).not.toContain("`");
   });
 
   it("network failure of the loader degrades to the error state (never a crash)", async () => {
