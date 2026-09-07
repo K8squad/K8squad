@@ -179,8 +179,28 @@ rules:
   resources: [projects]
   verbs: [get, list, create, update]
 - apiGroups: [ksquad.io]
-  resources: [roles, skills]
+  resources: [skills]
   verbs: [get, create, update]
+# roles carries `list` (ISI-3932): besides the compose write path (get+create+
+# update), the Agents org read model (internal/apiserver/org.go load()) Lists
+# Roles through the shared informer cache to paint each Agent's Role badge —
+# without `list` that informer never syncs and agent detail 502s.
+- apiGroups: [ksquad.io]
+  resources: [roles]
+  verbs: [get, list, create, update]
+# agentruntimes + runs are READ-ONLY, informer-cache-backed (ISI-3932): the
+# Agents org read model (org.go load()/AgentRuns/AgentStatuses) and the squad
+# overview read model (overview.go), both wired over NewCacheReader, List these
+# cluster-wide. The admin fleet-wide projections (ADR-039 / ISI-3932) List Runs
+# across ALL namespaces; even the team-scoped reads go through the SAME
+# cluster-scoped informer, so a namespaced List still triggers a cluster-wide
+# Run/AgentRuntime informer. As with otelconfigs below (ISI-3916), `list` is what
+# unblocks the cache — without it the LIST 403s at the cluster scope, the
+# informer never syncs, and GET /api/squad/overview + /api/agents/* fail. No
+# create/update/patch/delete: the operator owns these CRs, the apiserver reads.
+- apiGroups: [ksquad.io]
+  resources: [agentruntimes, runs]
+  verbs: [get, list]
 # egresspolicies is READ-ONLY (ISI-3891): the E3-S2 credential-test BYO
 # probe guard (pkg/probeegress) lists EgressPolicies in the caller's squad
 # namespace and follows Project egressPolicyRefs to decide whether the
