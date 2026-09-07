@@ -189,6 +189,15 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // initial LIST, so without `list` the cache never syncs and GET /api/otelconfig
 // hangs then 504s (Settings › OTel export-state). No write verbs — the operator
 // owns this CR.
+// roles adds `list` and agentruntimes+runs are read-only get+list grants
+// (ISI-3932): the Agents org read model (org.go load()/AgentRuns/AgentStatuses)
+// and the squad overview read model (overview.go) List Roles, AgentRuntimes and
+// Runs through the SAME shared informer cache. The admin fleet-wide projections
+// (ADR-039) List Runs across all namespaces, and even the team-scoped reads use
+// the cluster-scoped informer — so, exactly like otelconfigs, `list` is what
+// unblocks each cache; without it the cluster-scoped LIST 403s, the informer
+// never syncs, and /api/squad/overview + /api/agents/* fail. roles keeps its
+// compose write verbs; agentruntimes/runs are read-only (operator-owned CRs).
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -200,7 +209,9 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agents"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles", "skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list"}},
 	}
