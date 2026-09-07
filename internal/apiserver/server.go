@@ -57,6 +57,10 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
+	// Teams is the Teams LIST read model (ISI-3953, gap G4): GET /api/teams
+	// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒ own
+	// Team). nil ⇒ documented 501, exactly like Overview.
+	Teams TeamsReader
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
@@ -337,6 +341,23 @@ func (s *Server) routes(opts Options) {
 			squad.HandleFunc("", s.squadOverview(opts.Overview)).Methods(http.MethodGet)
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
+				Methods(http.MethodGet)
+		}
+
+		// Teams LIST read model (ISI-3953, gap G4 of ISI-3949): GET /api/teams
+		// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒
+		// own Team only, existence-hiding), from the SAME informer cache as the
+		// other read models. Rides the SAME §13 BFF choke point; a nil reader
+		// keeps the documented 501 so the contract stays honest. This is a
+		// distinct GET subrouter from the POST /api/teams compose collection
+		// (mountComposeRoutes) — mux routes them by method, exactly as
+		// /api/credentials has GET (here) + POST (compose) on separate subrouters.
+		teamsList := s.router.Path("/api/teams").Subrouter()
+		teamsList.Use(authz)
+		if opts.Teams != nil {
+			teamsList.HandleFunc("", s.teams(opts.Teams)).Methods(http.MethodGet)
+		} else {
+			teamsList.HandleFunc("", notImplemented("teams read model", "ISI-3953: wire a TeamsReader (informer cache) to enable")).
 				Methods(http.MethodGet)
 		}
 

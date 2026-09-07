@@ -1,26 +1,18 @@
-// app/teams/page.tsx — Teams nav destination (ISI-3725 rail realignment to the ISI-3641 mock).
+// app/teams/page.tsx — the Teams nav destination (ISI-3725 rail item), now a
+// real listing surface (ISI-3953, gap G4 of the ISI-3949 fleet-admin audit).
 //
-// The ISI-3641 rail promotes Teams to a top-level item. A dedicated Teams listing surface is not yet
-// built (Team data lives server-side as SquadOverview/teamOrg and is rendered today inside the Agents
-// org diagram). This is the honest landing so the rail link resolves instead of 404-ing; the real
-// listing is a follow-up story. ponytail: placeholder route, no data fetch — upgrade to a Team list
-// when the Teams surface lands.
+// Replaces the former non-fetching stub. Thin by design: the client screen owns
+// fetch/state so every render path (ok / empty / unconfigured 501 / deny-collapsed
+// not-found / error) is testable at the component boundary. Admin ⇒ fleet-wide
+// Teams; tenant ⇒ own Team only (the apiserver enforces the scoping). This is the
+// enumeration source the fleet Team picker (ISI-3950, gap G1) consumes.
 
-import Link from "next/link";
+import { TeamsScreen } from "@/components/teams/TeamsScreen";
 
 export const metadata = {
   title: "Teams — K8squad Console",
 };
 
 export default function TeamsPage() {
-  return (
-    <section className="stub">
-      <h1>Teams</h1>
-      <p>
-        A dedicated Teams surface is coming. Today, a session resolves to one Team and its org chart
-        renders under <Link href="/agents">Agents</Link>; the fleet view lives on{" "}
-        <Link href="/overview">Overview</Link>.
-      </p>
-    </section>
-  );
+  return <TeamsScreen />;
 }
