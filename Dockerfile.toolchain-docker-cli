@@ -6,4 +6,8 @@ ARG DOCKER_IMAGE=docker:29-cli
 FROM ${DOCKER_IMAGE}
 LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
       org.opencontainers.image.title="k8squad toolchain: docker-cli"
+# ISI-3923: pull the current alpine openssl fix (libcrypto3 >= 3.5.8-r0, CVE-2026-14456)
+# at build time instead of waiting on the rolling docker:29-cli base ref — same pattern
+# as Dockerfile.toolchain-python (ISI-3444).
+RUN apk upgrade --no-cache libcrypto3 libssl3
 ENTRYPOINT ["/usr/local/bin/docker"]
