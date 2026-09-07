@@ -9,11 +9,14 @@
 // (ADR-0010), tenant ⇒ their Team namespace — so this screen never asks for or receives a Team
 // selector; cross-Team data is absent by construction, not filtered client-side.
 //
-// Each row deep-links two ways: into the project's sub-nav (/projects/{namespace/name}/tickets —
-// the same {namespace}/{name} id ProjectSelector uses) and, when the owning Team's UID resolved,
-// into that Team's agents org (/agents?team={teamUid}) so an admin can jump from a fleet project
-// straight to its squad's agents (AC2). Every terminal HTTP state the BFF relays gets a distinct
-// honest rendering, mirroring SquadOverview.
+// Each row deep-links two ways: the PRIMARY click (S6/ISI-3967 AC2 — was the interim
+// /agents?team= jump while the workspace didn't exist) opens the project's S1 workspace at
+// /projects/{namespace/name} — the same {namespace}/{name} id ProjectSelector uses, and the
+// strongest fleet-wide qualifier available pre-ISI-3941. The sub-nav there reaches tickets,
+// runs et al. Secondarily, when the owning Team's UID resolved, the row keeps the jump into
+// that Team's agents org (/agents?team={teamUid}, ISI-3943 AC2) so an admin can hop from a
+// fleet project straight to its squad's agents. Every terminal HTTP state the BFF relays gets
+// a distinct honest rendering, mirroring SquadOverview.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -158,7 +161,20 @@ export function ProjectsList() {
               data-team-uid={p.teamUid ?? ""}
             >
               <h2 style={{ margin: "0 0 4px" }}>
-                <Link href={`/projects/${encodeURIComponent(id)}/tickets`}>{p.name}</Link>
+                {/* S6 (ISI-3967, AC2 of ISI-3960): the row title is the primary entry into the
+                    S1 workspace (Landing). Same encodeURIComponent idiom as SquadOverview
+                    (ISI-3960 AC1): the route decodeURIComponent's the param, so encode here for
+                    symmetry. The id is namespace-qualified (projectId()) — unlike the
+                    team-scoped Overview, this list is fleet-wide, so a bare name could collide
+                    across squads. TODO(ISI-3941): if a namespace/team-UID-qualified route lands,
+                    build this link from the ProjectListEntry owning Team UID instead — same seam
+                    ISI-3960 marks in SquadOverview. */}
+                <Link
+                  href={`/projects/${encodeURIComponent(id)}`}
+                  data-testid="projects-row-link"
+                >
+                  {p.name}
+                </Link>
               </h2>
               <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
                 {state.data.fleet && p.teamName ? (
