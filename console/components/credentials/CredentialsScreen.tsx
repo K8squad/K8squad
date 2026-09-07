@@ -81,10 +81,11 @@ export function CredentialsScreen({
     try {
       const res = await connect();
       if (res.status === 501) {
-        const body = await res.json().catch(() => null);
+        // Honest + friendly: the OAuth flow isn't hosted yet (ISI-2899). We do
+        // NOT surface the raw apiserver `detail` (leaks internals) and we do NOT
+        // point at a `ksquad auth login` CLI — no such CLI ships today (ISI-3945).
         setConnectMsg(
-          body?.detail ??
-            "Connect Claude is not configured yet — the OAuth flow is not available in this deployment.",
+          "Connect Claude isn't available yet — one-click sign-in is coming soon (ISI-2899).",
         );
       } else if (res.status >= 200 && res.status < 300) {
         setConnectMsg("Connect Claude flow started — check the opened authorization window.");
