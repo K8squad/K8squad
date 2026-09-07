@@ -20,7 +20,11 @@ package apiserver
 //  3. Team-scoped: every CR is applied into the CALLER'S Team namespace (resolved
 //     from AuthorContext.TeamID, the §12.1 tenancy root). A caller can only ever
 //     read/write their own namespace, so a cross-tenant name is structurally a
-//     404 (existence-hiding), never a 200.
+//     404 (existence-hiding), never a 200. The ONE exception is the Team kind
+//     itself: a Team IS the tenancy root (ADR-011) that mints the squad namespace,
+//     so it cannot be namespaced inside it — Team CRs land in the control-plane
+//     namespace (systemNS) and never require a pre-existing caller namespace
+//     (that requirement broke first-run onboarding step 1 — ISI-3919).
 //  4. Idempotent by (kind, team, name): PUT is an upsert keyed on the CR name in
 //     the Team namespace — it never duplicates. Each apply is a NEW revision.
 //  5. Every apply writes a durable provenanced row (who/what/when) to the
@@ -42,6 +46,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"time"
@@ -86,14 +91,29 @@ type ComposeService struct {
 	applier CRDApplier
 	roles   ProjectRoleResolver
 	audit   ComposeProvenance
+	// systemNS is the control-plane namespace (arch §4 / ADR-011) where Team CRs —
+	// the tenancy roots — live. Every other kind is applied into the caller's own
+	// squad namespace, but a Team is what MINTS that namespace, so it cannot be
+	// namespaced inside it (see apply()). Overridable via $POD_NAMESPACE (downward
+	// API); defaults to the ksquad-system control-plane namespace.
+	systemNS string
 }
+
+// defaultSystemNamespace is the control-plane namespace Team CRs are applied into
+// when $POD_NAMESPACE is unset (dev / test), matching the operator's own default
+// (cmd/operator/main.go) and the Team reconciler's SystemNamespace.
+const defaultSystemNamespace = "ksquad-system"
 
 // NewComposeService builds the compose write model. applier MUST have
 // api/v1alpha1 registered on its scheme. roles is the 15.4 membership resolver
 // (nil ⇒ the write-tier gate fails closed: only admins may compose). audit is the
 // provenance sink (nil ⇒ provenance is logged only).
 func NewComposeService(applier CRDApplier, roles ProjectRoleResolver, audit ComposeProvenance) *ComposeService {
-	return &ComposeService{applier: applier, roles: roles, audit: audit}
+	systemNS := os.Getenv("POD_NAMESPACE")
+	if systemNS == "" {
+		systemNS = defaultSystemNamespace
+	}
+	return &ComposeService{applier: applier, roles: roles, audit: audit, systemNS: systemNS}
 }
 
 // ============================================================================
@@ -455,13 +475,26 @@ func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorCont
 	if status, msg := s.authorizeWrite(ctx, author, plan.scope); status != 0 {
 		return applyOutcome{status: status, msg: msg}
 	}
-	// 3. Team-namespace scope (cross-tenant is structurally a 404).
-	ns, err := s.teamNamespace(ctx, author.TeamID.String())
-	if errors.Is(err, ErrTeamNamespaceUnresolved) {
-		return applyOutcome{status: http.StatusNotFound, msg: "no team namespace for this caller"}
-	}
-	if err != nil {
-		return applyOutcome{status: http.StatusBadGateway, msg: "team scope resolution unavailable"}
+	// 3. Namespace resolution. A Team IS the tenancy root (ADR-011): the Team CR
+	// itself lives in the control-plane namespace and its reconciler provisions the
+	// squad namespace FROM it — so a Team apply must NOT require a caller team
+	// namespace. During first-run onboarding the caller has no squad namespace yet,
+	// so requiring one made "Create a Team" (onboarding step 1) fail closed with a
+	// 404 for every fresh tenant (ISI-3919). Team is admin-only (step 2 gate), and
+	// lands in systemNS; every OTHER kind is team-scoped into the caller's own
+	// namespace (a cross-tenant name is structurally a 404, existence-hiding).
+	var ns string
+	if plan.kind == "Team" {
+		ns = s.systemNS
+	} else {
+		resolved, err := s.teamNamespace(ctx, author.TeamID.String())
+		if errors.Is(err, ErrTeamNamespaceUnresolved) {
+			return applyOutcome{status: http.StatusNotFound, msg: "no team namespace for this caller"}
+		}
+		if err != nil {
+			return applyOutcome{status: http.StatusBadGateway, msg: "team scope resolution unavailable"}
+		}
+		ns = resolved
 	}
 	name := plan.desired.GetName()
 	plan.desired.SetNamespace(ns)

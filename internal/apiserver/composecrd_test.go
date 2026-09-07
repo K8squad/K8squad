@@ -331,6 +331,36 @@ func TestComposeTeamAdminOnly(t *testing.T) {
 	}
 }
 
+// ── first-run onboarding: creating the FIRST Team must not require a caller
+//
+//	namespace (ISI-3919 regression) ───────────────────────────────────────────
+//
+// A Team is the tenancy root that MINTS the squad namespace, so it lands in the
+// control-plane namespace (systemNS) and must never require a pre-existing caller
+// namespace. Before the fix, apply() resolved the caller's Team namespace for
+// EVERY kind including Team — so a fresh tenant (whose UID resolves to no Team
+// with a reconciled namespace) got a 404, breaking onboarding step 1.
+func TestComposeTeamFirstRunNoCallerNamespace(t *testing.T) {
+	// Admin caller whose Team UID is NOT among the seeded Teams ⇒ teamNamespace()
+	// would return ErrTeamNamespaceUnresolved. The first Team create must still 201.
+	const freshUID = "99999999-9999-9999-9999-999999999999"
+	svc, _ := newComposeFixture(t, nil)
+	w := do(svc.handleTeam(true), http.MethodPost, "/api/teams",
+		caller("root", freshUID, true), teamRequest{Name: "isitobservable"}, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first-run Team compose must be 201 (ISI-3919), got %d: %s", w.Code, w.Body.String())
+	}
+	// The Team CR lands in the control-plane namespace, not a per-team namespace.
+	var got ksquadv1.Team
+	if err := svc.applier.Get(context.Background(),
+		client.ObjectKey{Namespace: defaultSystemNamespace, Name: "isitobservable"}, &got); err != nil {
+		t.Fatalf("first Team not applied into %s: %v", defaultSystemNamespace, err)
+	}
+	if got.Spec.NamespaceStrategy != "perTeam" {
+		t.Fatalf("default namespaceStrategy want perTeam, got %q", got.Spec.NamespaceStrategy)
+	}
+}
+
 // ── contributor may compose an Agent scoped to a project they can write ──────
 
 func TestComposeAgentContributorAllowed(t *testing.T) {
@@ -634,8 +664,10 @@ func TestComposeSquadMaterialize_NoTeamNamespace404(t *testing.T) {
 }
 
 func TestComposeSquadMaterialize_TeamAlreadyExisting(t *testing.T) {
+	// The pre-existing Team lives in the control-plane namespace (systemNS), where
+	// Team CRs are applied (ISI-3919) — NOT in a per-team namespace.
 	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer),
-		&ksquadv1.Team{ObjectMeta: metav1.ObjectMeta{Name: "acme-squad", Namespace: teamNS}})
+		&ksquadv1.Team{ObjectMeta: metav1.ObjectMeta{Name: "acme-squad", Namespace: defaultSystemNamespace}})
 	// Admin so the (admin-only) Team plan authorizes; the existing Team is
 	// reported as "existing", not a 409 failure (AC1: created if absent).
 	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
