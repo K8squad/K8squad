@@ -315,8 +315,14 @@ func main() {
 		log.Printf("ksquad-apiserver: CRD-apply write surface disabled (POST/PUT /api/{teams,projects,agents,roles,skills} → 501): %v", aerr)
 	} else {
 		crdApplier = applier
-		composeCRD = apiserver.NewComposeService(applier, memberships, coordAuditWriter(db))
-		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints)")
+		// ISI-3924 / ADR-0009: the first Team an admin whose team_id backs no Team
+		// creates rebinds their dangling tenancy root (team_id → new Team uid) and
+		// invalidates their sessions. The rebinder is the one seam the compose write
+		// model reaches into the auth DB; wired only when the cluster client is up
+		// (a cluster-less dev run has no compose surface to rebind from).
+		rebinder := auth.NewTenancyRebinder(auth.NewPostgresUserStore(db), auth.NewPostgresSessionStore(db))
+		composeCRD = apiserver.NewComposeService(applier, memberships, coordAuditWriter(db)).WithAdminRebinder(rebinder)
+		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints; first-team-create tenancy rebind on)")
 	}
 
 	// E3-S1 managed-credential write (ISI-3679, AD-6): POST /api/credentials
