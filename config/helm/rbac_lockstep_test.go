@@ -183,6 +183,12 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // EgressPolicies and Projects in the caller's namespace to constrain probe
 // egress to the squad's declared allowlist — a silent 403 there would
 // fail-close every BYO test-connection with a 502.
+// otelconfigs is a read-only get+list grant (ISI-3916): the Story A OTelConfig
+// read model Lists the cluster-scoped OTelConfig through the shared informer
+// cache (its only reader — no direct-client path). The informer syncs on its
+// initial LIST, so without `list` the cache never syncs and GET /api/otelconfig
+// hangs then 504s (Settings › OTel export-state). No write verbs — the operator
+// owns this CR.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -196,6 +202,7 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles", "skills"}, Verbs: []string{"get", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+

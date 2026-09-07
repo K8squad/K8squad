@@ -189,6 +189,19 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [egresspolicies]
   verbs: [get, list]
+# otelconfigs is READ-ONLY, informer-cache-backed (ISI-3916): the Story A
+# OTelConfig read model (internal/apiserver/otelconfig.go ClientOTelConfigSource,
+# wired in cmd/apiserver/main.go over NewCacheReader) Lists the cluster-scoped
+# OTelConfig the Settings › OTel export-state card reads. Unlike the compose
+# kinds above this read has NO direct-client path — the shared informer cache is
+# its only reader. A controller-runtime informer marks HasSynced after its
+# initial LIST, so `list` is what unblocks the cache; without it the LIST 403s,
+# the informer never syncs, GET /api/otelconfig hangs ~15s then 504s. No
+# create/update/patch/delete: the operator owns this CR, the apiserver only
+# reads it.
+- apiGroups: [ksquad.io]
+  resources: [otelconfigs]
+  verbs: [get, list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
