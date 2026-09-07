@@ -109,7 +109,9 @@ type OnboardingProgress struct {
 type OnboardingReader interface {
 	// Progress derives the 4-milestone projection for teamUID. A teamUID that resolves to no
 	// Team CR returns the zero-progress projection (milestone ① incomplete), NOT an error.
-	Progress(ctx context.Context, teamUID string) (OnboardingProgress, error)
+	// admin ⇒ onboarding is N/A (reported COMPLETE): a fleet admin has no home tenancy to
+	// onboard, so the Launchpad must never park them at a false step 1 (ISI-3932, from ISI-3919).
+	Progress(ctx context.Context, teamUID string, admin bool) (OnboardingProgress, error)
 }
 
 // ClientOnboardingReader is the production OnboardingReader over any client.Reader (the informer
@@ -159,7 +161,18 @@ func (r *ClientOnboardingReader) resolveTeam(ctx context.Context, teamUID string
 
 // Progress derives the projection. A missing Team is the zero-progress answer, not an error —
 // the first-run tenant IS the primary audience of this endpoint.
-func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string) (OnboardingProgress, error) {
+func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string, admin bool) (OnboardingProgress, error) {
+	if admin {
+		// Fleet admin (ISI-3932, product decision from ISI-3919): onboarding is a per-tenant
+		// setup journey and a global admin has no home tenancy to set up — so the journey is
+		// N/A, reported COMPLETE (4/4, no next milestone). This is what stops the admin's
+		// dangling team_id (ISI-3921) from parking the Launchpad at a false "step 1 of 4".
+		return OnboardingProgress{
+			Step:  OnboardingTotalMilestones,
+			Done:  OnboardingTotalMilestones,
+			Total: OnboardingTotalMilestones,
+		}, nil
+	}
 	team, err := r.resolveTeam(ctx, teamUID)
 	if errors.Is(err, ErrTeamNotFound) {
 		return OnboardingProgress{
@@ -361,12 +374,12 @@ func (s *Server) onboardingProgress(reader OnboardingReader) http.HandlerFunc {
 		// Launchpad + "Finish setup" chip drive. team.id is span-only.
 		ctx, span := funnelSpan(r.Context(), "ksquad.onboarding.progress")
 		defer span.End()
-		teamUID, ok := authScope(w, r)
+		teamUID, admin, ok := authScopeAdmin(w, r)
 		if !ok {
 			funnelOutcome(ctx, span, funnelInst().onboardingProgress, outcomeUnauthenticated)
 			return
 		}
-		progress, err := reader.Progress(ctx, teamUID)
+		progress, err := reader.Progress(ctx, teamUID, admin)
 		if err != nil {
 			slog.WarnContext(ctx, "onboarding progress read failed", "error", err)
 			funnelOutcome(ctx, span, funnelInst().onboardingProgress, outcomeProgressError)

@@ -132,13 +132,20 @@ var ErrAgentNotFound = errors.New("apiserver: no agent matches the caller's team
 // value AuthorContext.TeamID carries). Every method scopes STRICTLY to teamUID and never leaks
 // another Team's Agents/Roles/Runs. Production wires the cache-backed reader; tests wire a fake
 // client.Reader.
+// A global admin (ADR-039 / ISI-3932) is fleet-wide: they carry no home tenancy (the bootstrap
+// admin's team_id backs no Team CR, ISI-3921), so the agent-detail read models resolve the target
+// Agent CLUSTER-WIDE for them rather than fencing to a — for the admin, empty — Team namespace. The
+// Org/AgentStatuses projections stay per-Team by construction (they answer for a {teamId} the admin
+// may name directly, gated in teamScope), so only the caller-scoped Agent lookups take the flag.
 type OrgReader interface {
 	// Org projects the Team → Agent → Role hierarchy for teamUID.
 	Org(ctx context.Context, teamUID string) (TeamOrg, error)
-	// Agent projects a single Agent (by UID) within teamUID's namespace.
-	Agent(ctx context.Context, teamUID, agentUID string) (OrgAgent, error)
-	// AgentRuns lists an Agent's Runs (most-recent-first), paginated by limit/offset.
-	AgentRuns(ctx context.Context, teamUID, agentUID string, limit, offset int) ([]RunSummary, error)
+	// Agent projects a single Agent (by UID). admin ⇒ located fleet-wide (any namespace);
+	// non-admin ⇒ only within teamUID's namespace (existence-hiding 404 otherwise).
+	Agent(ctx context.Context, teamUID, agentUID string, admin bool) (OrgAgent, error)
+	// AgentRuns lists an Agent's Runs (most-recent-first), paginated by limit/offset. admin ⇒
+	// the Agent is located fleet-wide; non-admin ⇒ within teamUID's namespace.
+	AgentRuns(ctx context.Context, teamUID, agentUID string, limit, offset int, admin bool) ([]RunSummary, error)
 	// AgentStatuses is the light per-agent status projection the SSE stream polls: it lists only
 	// Agents + Runs (no Role/Runtime resolution), so a repeated poll stays cheap.
 	AgentStatuses(ctx context.Context, teamUID string) ([]AgentStatusDelta, error)
@@ -216,15 +223,45 @@ func (r *ClientOrgReader) Org(ctx context.Context, teamUID string) (TeamOrg, err
 	return out, nil
 }
 
-// Agent resolves a single Agent by UID within the caller's Team namespace and projects it. A UID
-// that resolves to no Agent in this namespace (missing, or belonging to another Team) yields
-// ErrAgentNotFound — existence-hiding.
-func (r *ClientOrgReader) Agent(ctx context.Context, teamUID, agentUID string) (OrgAgent, error) {
-	team, err := r.resolveTeam(ctx, teamUID)
+// resolveAgentScope locates the Agent identified by agentUID, returning its namespace and name.
+// admin ⇒ the Agent is searched CLUSTER-WIDE (fleet-wide, ADR-039 / ISI-3932): the bootstrap
+// admin has no backing Team namespace to fence to, so a namespace filter would (correctly for a
+// tenant, wrongly for the fleet admin) hide every Agent. non-admin ⇒ the search is fenced to
+// teamUID's namespace (a UID outside it is structurally ErrAgentNotFound — existence-hiding). The
+// returned namespace is always the FOUND Agent's own namespace, so downstream Run/Role/Runtime
+// reads scope to the Agent's squad regardless of caller.
+func (r *ClientOrgReader) resolveAgentScope(ctx context.Context, teamUID, agentUID string, admin bool) (ns, name string, err error) {
+	var agents ksquadv1.AgentList
+	if admin {
+		if err = r.reader.List(ctx, &agents); err != nil { // no InNamespace ⇒ every namespace
+			return "", "", err
+		}
+	} else {
+		team, terr := r.resolveTeam(ctx, teamUID)
+		if terr != nil {
+			return "", "", terr
+		}
+		if err = r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
+			return "", "", err
+		}
+	}
+	for i := range agents.Items {
+		if string(agents.Items[i].UID) == agentUID {
+			return agents.Items[i].Namespace, agents.Items[i].Name, nil
+		}
+	}
+	return "", "", ErrAgentNotFound
+}
+
+// Agent resolves a single Agent by UID and projects it. admin ⇒ resolved fleet-wide; non-admin ⇒
+// within the caller's Team namespace. A UID that resolves to no in-scope Agent (missing, or
+// belonging to another Team when non-admin) yields ErrAgentNotFound — existence-hiding.
+func (r *ClientOrgReader) Agent(ctx context.Context, teamUID, agentUID string, admin bool) (OrgAgent, error) {
+	ns, _, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
 	if err != nil {
 		return OrgAgent{}, err
 	}
-	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, team.ns)
+	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, ns)
 	if err != nil {
 		return OrgAgent{}, err
 	}
@@ -236,33 +273,20 @@ func (r *ClientOrgReader) Agent(ctx context.Context, teamUID, agentUID string) (
 	return OrgAgent{}, ErrAgentNotFound
 }
 
-// AgentRuns lists the Runs that select the Agent (by UID), most-recent-first, paginated. The Agent
-// must resolve within the caller's Team namespace (existence-hiding 404 otherwise).
-func (r *ClientOrgReader) AgentRuns(ctx context.Context, teamUID, agentUID string, limit, offset int) ([]RunSummary, error) {
-	team, err := r.resolveTeam(ctx, teamUID)
+// AgentRuns lists the Runs that select the Agent (by UID), most-recent-first, paginated. admin ⇒
+// the Agent is located fleet-wide; non-admin ⇒ within the caller's Team namespace (existence-hiding
+// 404 otherwise). Runs are always read from the resolved Agent's OWN namespace.
+func (r *ClientOrgReader) AgentRuns(ctx context.Context, teamUID, agentUID string, limit, offset int, admin bool) ([]RunSummary, error) {
+	ns, agentName, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
 	if err != nil {
 		return nil, err
 	}
-	var agents ksquadv1.AgentList
-	if err := r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
-		return nil, err
-	}
-	var agentName string
-	for i := range agents.Items {
-		if string(agents.Items[i].UID) == agentUID {
-			agentName = agents.Items[i].Name
-			break
-		}
-	}
-	if agentName == "" {
-		return nil, ErrAgentNotFound
-	}
 
 	var runs ksquadv1.RunList
-	if err := r.reader.List(ctx, &runs, client.InNamespace(team.ns)); err != nil {
+	if err := r.reader.List(ctx, &runs, client.InNamespace(ns)); err != nil {
 		return nil, err
 	}
-	selected := runsForAgent(runs.Items, agentName, team.ns)
+	selected := runsForAgent(runs.Items, agentName, ns)
 	// Most-recent-first: by claim time when known, else creation time, tie-broken by name so the
 	// order is stable across identical timestamps.
 	sort.Slice(selected, func(a, b int) bool {
@@ -591,12 +615,12 @@ func (s *Server) teamOrg(reader OrgReader) http.HandlerFunc {
 // agentDetail is the handler behind GET /api/agents/{agentId}.
 func (s *Server) agentDetail(reader OrgReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth, ok := authScope(w, r)
+		auth, admin, ok := authScopeAdmin(w, r)
 		if !ok {
 			return
 		}
 		agentUID := muxVar(r, "agentId")
-		agent, err := reader.Agent(r.Context(), auth, agentUID)
+		agent, err := reader.Agent(r.Context(), auth, agentUID, admin)
 		if errors.Is(err, ErrTeamNotFound) || errors.Is(err, ErrAgentNotFound) {
 			writeJSONError(w, http.StatusNotFound, "no such agent")
 			return
@@ -612,7 +636,7 @@ func (s *Server) agentDetail(reader OrgReader) http.HandlerFunc {
 // agentRuns is the handler behind GET /api/agents/{agentId}/runs?limit=&offset=.
 func (s *Server) agentRuns(reader OrgReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		auth, ok := authScope(w, r)
+		auth, admin, ok := authScopeAdmin(w, r)
 		if !ok {
 			return
 		}
@@ -626,7 +650,7 @@ func (s *Server) agentRuns(reader OrgReader) http.HandlerFunc {
 			limit = 50
 		}
 		offset := queryIntDefault(r, "offset", 0, 0)
-		runs, err := reader.AgentRuns(r.Context(), auth, agentUID, limit, offset)
+		runs, err := reader.AgentRuns(r.Context(), auth, agentUID, limit, offset, admin)
 		if errors.Is(err, ErrTeamNotFound) || errors.Is(err, ErrAgentNotFound) {
 			writeJSONError(w, http.StatusNotFound, "no such agent")
 			return
@@ -748,27 +772,38 @@ func statusFrame(d AgentStatusDelta) string {
 // (teamUID, true) on success; on failure it has already written the response (401 unauthenticated,
 // 404 existence-hiding for a foreign/absent team) and returns false.
 func teamScope(w http.ResponseWriter, r *http.Request) (string, bool) {
-	teamUID, ok := authScope(w, r)
+	teamUID, admin, ok := authScopeAdmin(w, r)
 	if !ok {
 		return "", false
 	}
-	if path := muxVar(r, "teamId"); path != "" && path != teamUID {
-		// A caller may only view their own Team; a foreign UID is hidden as missing (never 403).
+	path := muxVar(r, "teamId")
+	if path == "" {
+		return teamUID, true
+	}
+	if admin {
+		// Fleet admin (ADR-039 / ISI-3932): may view ANY Team's org/status by UID — the
+		// projection is scoped to the NAMED team, not the admin's (dangling) home tenancy.
+		return path, true
+	}
+	if path != teamUID {
+		// A tenant caller may only view their own Team; a foreign UID is hidden as missing (never 403).
 		writeJSONError(w, http.StatusNotFound, "no org for this team")
 		return "", false
 	}
 	return teamUID, true
 }
 
-// authScope returns the caller's server-derived Team UID. Defence in depth: BFFAuthz already
-// guarantees an authenticated principal, but tenant data is never served without a resolved scope.
-func authScope(w http.ResponseWriter, r *http.Request) (string, bool) {
-	auth, ok := discussion.AuthFromContext(r.Context())
-	if !ok || auth.Principal == "" {
+// authScopeAdmin returns the caller's server-derived Team UID plus whether they are a global admin
+// (AuthorContext.IsAdmin, the fleet-wide gate — ADR-039 / ISI-3932). Defence in depth: BFFAuthz
+// already guarantees an authenticated principal, but tenant data is never served without a resolved
+// scope. The admin bit is meaningful only once ok is true.
+func authScopeAdmin(w http.ResponseWriter, r *http.Request) (teamUID string, admin, ok bool) {
+	auth, present := discussion.AuthFromContext(r.Context())
+	if !present || auth.Principal == "" {
 		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
-		return "", false
+		return "", false, false
 	}
-	return auth.TeamID.String(), true
+	return auth.TeamID.String(), auth.IsAdmin, true
 }
 
 // queryIntDefault reads a non-negative integer query param, clamped to [0, max] when max > 0, with
