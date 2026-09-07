@@ -78,7 +78,7 @@ func TestOverviewProjection(t *testing.T) {
 		run("squad-a", "run-3", "api", "ISI-3", "", nil), // empty phase ⇒ coalesced to Pending
 	)
 
-	ov, err := r.Overview(context.Background(), teamUID)
+	ov, err := r.Overview(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Overview: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestOverviewTeamScopeIsolation(t *testing.T) {
 		run("squad-b", "run-b", "secret", "ISI-B", ksquadv1.RunPhaseRunning, nil),
 	)
 
-	ovA, err := r.Overview(context.Background(), uidA)
+	ovA, err := r.Overview(context.Background(), uidA, false)
 	if err != nil {
 		t.Fatalf("Overview A: %v", err)
 	}
@@ -146,12 +146,52 @@ func TestOverviewTeamScopeIsolation(t *testing.T) {
 		t.Fatalf("team A leaked cross-tenant projects: %+v", ovA.Projects)
 	}
 
-	ovB, err := r.Overview(context.Background(), uidB)
+	ovB, err := r.Overview(context.Background(), uidB, false)
 	if err != nil {
 		t.Fatalf("Overview B: %v", err)
 	}
 	if ovB.Team.Name != "beta" || len(ovB.Projects) != 1 || ovB.Projects[0].Name != "secret" {
 		t.Fatalf("team B scope wrong: %+v", ovB)
+	}
+}
+
+// TestOverviewAdminFleetWide — a global-admin caller (ADR-039 / ISI-3932) sees EVERY squad's
+// Projects/Runs, not one Team's. teamUID is ignored for admin (the bootstrap admin's is dangling):
+// the projection spans all namespaces, marks Fleet, keeps each Project's real namespace, and never
+// merges same-named Projects across squads.
+func TestOverviewAdminFleetWide(t *testing.T) {
+	r := newReader(t,
+		team("squad-a", "alpha", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+		team("squad-b", "beta", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+		project("squad-a", "web", "https://github.com/acme/web"),
+		project("squad-b", "web", "https://github.com/acme/other-web"), // same NAME, different squad
+		project("squad-b", "secret", "https://github.com/acme/secret"),
+		run("squad-a", "run-a", "web", "ISI-A", ksquadv1.RunPhaseRunning, nil),
+		run("squad-b", "run-b", "web", "ISI-B", ksquadv1.RunPhaseSucceeded, nil),
+	)
+
+	// The admin's own team scope is dangling (backs no Team CR) — fleet-wide regardless.
+	ov, err := r.Overview(context.Background(), "deadbeef-0000-0000-0000-000000000000", true)
+	if err != nil {
+		t.Fatalf("Overview(admin): %v", err)
+	}
+	if !ov.Fleet || ov.Team.Name != "*" {
+		t.Fatalf("admin overview must be a fleet projection: %+v", ov.Team)
+	}
+	if len(ov.Projects) != 3 {
+		t.Fatalf("fleet projects: got %d, want 3 (%+v)", len(ov.Projects), ov.Projects)
+	}
+	// Sorted by (namespace, name): squad-a/web, squad-b/secret, squad-b/web.
+	if ov.Projects[0].Namespace != "squad-a" || ov.Projects[0].Name != "web" ||
+		ov.Projects[2].Namespace != "squad-b" || ov.Projects[2].Name != "web" {
+		t.Fatalf("fleet project order/keying wrong: %+v", ov.Projects)
+	}
+	// The two same-named "web" Projects must NOT merge: each carries only its own squad's Run.
+	if len(ov.Projects[0].Runs) != 1 || ov.Projects[0].Runs[0].Name != "run-a" {
+		t.Fatalf("squad-a/web runs leaked/merged: %+v", ov.Projects[0].Runs)
+	}
+	if len(ov.Projects[2].Runs) != 1 || ov.Projects[2].Runs[0].Name != "run-b" {
+		t.Fatalf("squad-b/web runs leaked/merged: %+v", ov.Projects[2].Runs)
 	}
 }
 
@@ -164,7 +204,7 @@ func TestOverviewOrphanRunDropped(t *testing.T) {
 		project("squad-a", "web", "https://github.com/acme/web"),
 		run("squad-a", "run-x", "ghost", "ISI-X", ksquadv1.RunPhaseRunning, nil),
 	)
-	ov, err := r.Overview(context.Background(), teamUID)
+	ov, err := r.Overview(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Overview: %v", err)
 	}
@@ -178,7 +218,7 @@ func TestOverviewOrphanRunDropped(t *testing.T) {
 func TestOverviewTeamNotFound(t *testing.T) {
 	r := newReader(t, team("squad-a", "alpha", "33333333-3333-3333-3333-333333333333"))
 	for _, uid := range []string{"", "99999999-9999-9999-9999-999999999999"} {
-		if _, err := r.Overview(context.Background(), uid); !errors.Is(err, ErrTeamNotFound) {
+		if _, err := r.Overview(context.Background(), uid, false); !errors.Is(err, ErrTeamNotFound) {
 			t.Fatalf("uid %q: got err %v, want ErrTeamNotFound", uid, err)
 		}
 	}

@@ -31,9 +31,13 @@ import (
 // Team's namespace; the projection lists that namespace and groups Runs under their Project.
 
 // SquadOverview is the Team→Project→Run-status projection returned by GET /api/squad/overview.
+// Fleet is set only for a global-admin caller (ADR-039 / ISI-3932): the projection then spans
+// EVERY squad's Projects/Runs (each row keeps its own Namespace) rather than one Team, and Team
+// is a synthetic fleet marker (Name "*"). A tenant caller leaves Fleet false and Team named.
 type SquadOverview struct {
 	Team     TeamRef           `json:"team"`
 	Projects []ProjectOverview `json:"projects"`
+	Fleet    bool              `json:"fleet,omitempty"`
 }
 
 // TeamRef identifies the Team the overview is scoped to. UID is the K8s object UID that the
@@ -58,11 +62,11 @@ type ProjectOverview struct {
 // "Pending" when the Run has not yet been reconciled (empty status.phase) so the console never
 // renders a blank cell.
 type RunStatus struct {
-	Name             string     `json:"name"`
-	WorkItem         string     `json:"workItem,omitempty"`
-	Phase            string     `json:"phase"`
-	ClaimedAt        *time.Time `json:"claimedAt,omitempty"`
-	ReasonCancelled  string     `json:"reasonCancelled,omitempty"`
+	Name            string     `json:"name"`
+	WorkItem        string     `json:"workItem,omitempty"`
+	Phase           string     `json:"phase"`
+	ClaimedAt       *time.Time `json:"claimedAt,omitempty"`
+	ReasonCancelled string     `json:"reasonCancelled,omitempty"`
 }
 
 // ErrTeamNotFound is returned by a SquadOverviewReader when no Team resolves to the caller's Team
@@ -75,7 +79,9 @@ var ErrTeamNotFound = errors.New("apiserver: no team matches the caller's team s
 // production wires the cache-backed reader; tests wire a fake client.Reader. A reader MUST scope
 // strictly to teamUID and never leak another Team's Projects/Runs.
 type SquadOverviewReader interface {
-	Overview(ctx context.Context, teamUID string) (SquadOverview, error)
+	// Overview projects the squad overview. admin ⇒ fleet-wide (every squad's Projects/Runs,
+	// ADR-039 / ISI-3932); non-admin ⇒ fenced to teamUID's Team.
+	Overview(ctx context.Context, teamUID string, admin bool) (SquadOverview, error)
 }
 
 // ClientOverviewReader is the production SquadOverviewReader. It reads from any client.Reader — in
@@ -96,7 +102,13 @@ func NewClientOverviewReader(r client.Reader) *ClientOverviewReader {
 // Project their spec.projectRef names; a Run referencing a Project not present in the namespace is
 // dropped (an inconsistent reference, not a row the dashboard can place). Output is deterministic:
 // Projects and Runs are sorted by name.
-func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string) (SquadOverview, error) {
+func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, admin bool) (SquadOverview, error) {
+	if admin {
+		// Fleet admin (ADR-039 / ISI-3932): fleet-wide, exactly as search.go widens to AllTeams
+		// for an admin. Unconditional — an admin has no home tenancy (the bootstrap admin's
+		// team_id backs no Team CR, ISI-3921), so scoping to teamUID would read empty.
+		return r.fleetOverview(ctx)
+	}
 	if teamUID == "" {
 		return SquadOverview{}, ErrTeamNotFound
 	}
@@ -160,6 +172,56 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string) (Sq
 	return out, nil
 }
 
+// fleetOverview is the global-admin projection (ADR-039 / ISI-3932): every Project and Run across
+// EVERY squad namespace, not one Team's. Runs are grouped under their Project by the (namespace,
+// name) pair — a Run's spec.projectRef carries no namespace (a Run and its Project are co-tenant,
+// §12.1), so the Run's OWN namespace IS the Project's, and keying on it stops same-named Projects
+// in different squads from merging. Team is a synthetic fleet marker; each ProjectOverview keeps
+// its real Namespace so the console can still group by squad. Deterministic: Projects sort by
+// (namespace, name).
+func (r *ClientOverviewReader) fleetOverview(ctx context.Context) (SquadOverview, error) {
+	var projects ksquadv1.ProjectList
+	if err := r.reader.List(ctx, &projects); err != nil { // no InNamespace ⇒ every squad
+		return SquadOverview{}, err
+	}
+	var runs ksquadv1.RunList
+	if err := r.reader.List(ctx, &runs); err != nil {
+		return SquadOverview{}, err
+	}
+
+	runsByProject := make(map[string][]RunStatus, len(projects.Items))
+	for i := range runs.Items {
+		run := &runs.Items[i]
+		key := run.Namespace + "/" + run.Spec.ProjectRef.Name
+		runsByProject[key] = append(runsByProject[key], projectRunStatus(run))
+	}
+
+	out := SquadOverview{Team: TeamRef{Name: "*"}, Fleet: true}
+	for i := range projects.Items {
+		p := &projects.Items[i]
+		rows := runsByProject[p.Namespace+"/"+p.Name]
+		sort.Slice(rows, func(a, b int) bool { return rows[a].Name < rows[b].Name })
+		counts := make(map[string]int, len(rows))
+		for _, row := range rows {
+			counts[row.Phase]++
+		}
+		out.Projects = append(out.Projects, ProjectOverview{
+			Name:        p.Name,
+			Namespace:   p.Namespace,
+			RepoURL:     p.Spec.Repo.URL,
+			Runs:        rows,
+			PhaseCounts: counts,
+		})
+	}
+	sort.Slice(out.Projects, func(a, b int) bool {
+		if out.Projects[a].Namespace != out.Projects[b].Namespace {
+			return out.Projects[a].Namespace < out.Projects[b].Namespace
+		}
+		return out.Projects[a].Name < out.Projects[b].Name
+	})
+	return out, nil
+}
+
 // projectRunStatus projects a single Run's live status. status.phase is coalesced to Pending when
 // empty (a Run the reconciler has not yet observed) so the projection never carries a blank phase.
 func projectRunStatus(run *ksquadv1.Run) RunStatus {
@@ -202,7 +264,7 @@ func (s *Server) squadOverview(reader SquadOverviewReader) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		overview, err := reader.Overview(r.Context(), auth.TeamID.String())
+		overview, err := reader.Overview(r.Context(), auth.TeamID.String(), auth.IsAdmin)
 		if errors.Is(err, ErrTeamNotFound) {
 			writeJSONError(w, http.StatusNotFound, "no squad overview for this team")
 			return

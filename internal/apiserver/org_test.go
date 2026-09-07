@@ -250,7 +250,7 @@ func TestAgentDetailScope(t *testing.T) {
 		orgAgent("squad-b", "b-agent", "ag-b", "rt", "", "m"),
 	)
 
-	got, err := r.Agent(context.Background(), uidA, "ag-a")
+	got, err := r.Agent(context.Background(), uidA, "ag-a", false)
 	if err != nil {
 		t.Fatalf("Agent(own): %v", err)
 	}
@@ -258,8 +258,18 @@ func TestAgentDetailScope(t *testing.T) {
 		t.Fatalf("agent: %+v", got)
 	}
 	// Team A caller asking for Team B's agent UID ⇒ not found (existence-hiding).
-	if _, err := r.Agent(context.Background(), uidA, "ag-b"); !errors.Is(err, ErrAgentNotFound) {
+	if _, err := r.Agent(context.Background(), uidA, "ag-b", false); !errors.Is(err, ErrAgentNotFound) {
 		t.Fatalf("foreign agent: got %v, want ErrAgentNotFound", err)
+	}
+
+	// A global admin (ADR-039 / ISI-3932) resolves ANY Agent fleet-wide — including one in a
+	// squad their (dangling) home tenancy does not back — without leaking to non-admins above.
+	adminB, err := r.Agent(context.Background(), "deadbeef-0000-0000-0000-000000000000", "ag-b", true)
+	if err != nil {
+		t.Fatalf("Agent(admin, cross-squad): %v", err)
+	}
+	if adminB.ID != "ag-b" || adminB.Name != "b-agent" {
+		t.Fatalf("admin fleet-wide agent: %+v", adminB)
 	}
 }
 
@@ -276,7 +286,7 @@ func TestAgentRuns(t *testing.T) {
 		agentRun("squad-a", "run-old", "solo", "ISI-1", ksquadv1.RunPhaseSucceeded, &older, ""),
 	)
 
-	runs, err := r.AgentRuns(context.Background(), teamUID, "ag-solo", 0, 0)
+	runs, err := r.AgentRuns(context.Background(), teamUID, "ag-solo", 0, 0, false)
 	if err != nil {
 		t.Fatalf("AgentRuns: %v", err)
 	}
@@ -296,18 +306,47 @@ func TestAgentRuns(t *testing.T) {
 	}
 
 	// limit=1 returns only the freshest; offset=1 skips it.
-	one, _ := r.AgentRuns(context.Background(), teamUID, "ag-solo", 1, 0)
+	one, _ := r.AgentRuns(context.Background(), teamUID, "ag-solo", 1, 0, false)
 	if len(one) != 1 || one[0].ID != "run-new" {
 		t.Fatalf("limit=1: %+v", one)
 	}
-	off, _ := r.AgentRuns(context.Background(), teamUID, "ag-solo", 1, 1)
+	off, _ := r.AgentRuns(context.Background(), teamUID, "ag-solo", 1, 1, false)
 	if len(off) != 1 || off[0].ID != "run-old" {
 		t.Fatalf("offset=1: %+v", off)
 	}
 
 	// An unknown agent UID is existence-hidden.
-	if _, err := r.AgentRuns(context.Background(), teamUID, "nope", 0, 0); !errors.Is(err, ErrAgentNotFound) {
+	if _, err := r.AgentRuns(context.Background(), teamUID, "nope", 0, 0, false); !errors.Is(err, ErrAgentNotFound) {
 		t.Fatalf("unknown agent: got %v, want ErrAgentNotFound", err)
+	}
+}
+
+// TestAgentRunsAdminFleetWide — a global admin (ISI-3932) reads an Agent's Runs from another
+// squad's namespace (the Runs are always taken from the resolved Agent's OWN namespace), whereas
+// a non-admin caller from a different team is existence-hidden.
+func TestAgentRunsAdminFleetWide(t *testing.T) {
+	const uidA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const uidB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	start := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	r := newOrgReader(t,
+		team("squad-a", "alpha", uidA),
+		team("squad-b", "beta", uidB),
+		orgAgent("squad-b", "b-agent", "ag-b", "rt", "", "m"),
+		agentRun("squad-b", "run-b", "b-agent", "ISI-B", ksquadv1.RunPhaseRunning, &start, ""),
+	)
+
+	// Admin (dangling home tenancy) reads squad-b's agent runs fleet-wide.
+	runs, err := r.AgentRuns(context.Background(), "deadbeef-0000-0000-0000-000000000000", "ag-b", 0, 0, true)
+	if err != nil {
+		t.Fatalf("AgentRuns(admin): %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != "run-b" {
+		t.Fatalf("admin fleet-wide runs: %+v", runs)
+	}
+
+	// A non-admin caller scoped to squad-a cannot see squad-b's agent (existence-hiding).
+	if _, err := r.AgentRuns(context.Background(), uidA, "ag-b", 0, 0, false); !errors.Is(err, ErrAgentNotFound) {
+		t.Fatalf("non-admin cross-squad: got %v, want ErrAgentNotFound", err)
 	}
 }
 

@@ -64,7 +64,7 @@ func newOnboardingReader(t *testing.T, objs ...client.Object) *ClientOnboardingR
 // projection: step 1, done 0, nextMilestone "team" — NOT a 404 (milestone ① IS the absence).
 func TestOnboardingNoTeamZeroProgress(t *testing.T) {
 	r := newOnboardingReader(t)
-	p, err := r.Progress(context.Background(), "99999999-9999-9999-9999-999999999999")
+	p, err := r.Progress(context.Background(), "99999999-9999-9999-9999-999999999999", false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -74,11 +74,26 @@ func TestOnboardingNoTeamZeroProgress(t *testing.T) {
 	}
 }
 
+// TestOnboardingAdminComplete — a global admin (ISI-3932) is fleet-wide with no home tenancy to
+// onboard: the journey is N/A, reported COMPLETE (4/4, no next milestone), even when their team
+// scope is dangling (backs no Team CR). This is what stops the false "step 1 of 4" stall (ISI-3919).
+func TestOnboardingAdminComplete(t *testing.T) {
+	r := newOnboardingReader(t) // no Team CR at all — the admin's dangling-tenancy case
+	p, err := r.Progress(context.Background(), "deadbeef-0000-0000-0000-000000000000", true)
+	if err != nil {
+		t.Fatalf("Progress(admin): %v", err)
+	}
+	want := OnboardingProgress{Step: 4, Done: 4, Total: 4}
+	if p != want {
+		t.Fatalf("admin onboarding must be complete/N-A: got %+v, want %+v", p, want)
+	}
+}
+
 // TestOnboardingTeamOnly — a tenant with only a Team is at step 2 (agents next).
 func TestOnboardingTeamOnly(t *testing.T) {
 	const teamUID = "11111111-1111-1111-1111-111111111111"
 	r := newOnboardingReader(t, team("squad-a", "alpha", teamUID))
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -97,7 +112,7 @@ func TestOnboardingAgentsNeedsAllPresets(t *testing.T) {
 		presetAgent("squad-a", "impl", "role-implementer"),
 		presetAgent("squad-a", "extra", "role-custom"),
 	)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -120,7 +135,7 @@ func TestOnboardingModelsNeedsCredentialRef(t *testing.T) {
 		mgr,
 	}
 	r := newOnboardingReader(t, objs...)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -138,7 +153,7 @@ func TestOnboardingFailedTestConnectionBlocks(t *testing.T) {
 	objs := append(fullSquad("squad-a", teamUID), onboardingProject("squad-a", "proj"))
 	objs[0] = tm
 	r := newOnboardingReader(t, objs...)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -155,7 +170,7 @@ func TestOnboardingPassedTestConnectionOK(t *testing.T) {
 	objs := append(fullSquad("squad-a", teamUID), onboardingProject("squad-a", "proj"))
 	objs[0] = tm
 	r := newOnboardingReader(t, objs...)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -169,7 +184,7 @@ func TestOnboardingComplete(t *testing.T) {
 	const teamUID = "66666666-6666-6666-6666-666666666666"
 	objs := append(fullSquad("squad-a", teamUID), onboardingProject("squad-a", "proj"))
 	r := newOnboardingReader(t, objs...)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -184,7 +199,7 @@ func TestOnboardingProjectNeedsRepoAuth(t *testing.T) {
 	const teamUID = "77777777-7777-7777-7777-777777777777"
 	objs := append(fullSquad("squad-a", teamUID), project("squad-a", "proj", "https://example.com/r.git"))
 	r := newOnboardingReader(t, objs...)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -200,7 +215,7 @@ func TestOnboardingDismissedFlagSurfaced(t *testing.T) {
 	tm := team("squad-a", "alpha", teamUID)
 	SetOnboardingDismissed(tm, true)
 	r := newOnboardingReader(t, tm)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
@@ -217,7 +232,7 @@ func TestOnboardingOutOfOrderMilestones(t *testing.T) {
 		team("squad-a", "alpha", teamUID),
 		onboardingProject("squad-a", "proj"),
 	)
-	p, err := r.Progress(context.Background(), teamUID)
+	p, err := r.Progress(context.Background(), teamUID, false)
 	if err != nil {
 		t.Fatalf("Progress: %v", err)
 	}
