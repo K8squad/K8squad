@@ -76,7 +76,7 @@ func TestCredentialsProjection(t *testing.T) {
 		pausedRun("squad-a", "run-140", "reviewer-openclaw", "rate_limited", since),
 	)
 
-	ov, err := r.Credentials(context.Background(), teamUID)
+	ov, err := r.Credentials(context.Background(), teamUID, false, "")
 	if err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestCredentialsCredentialClassDualRead(t *testing.T) {
 	bothAgent.Annotations = map[string]string{"ksquad.io/credential-class": "human-seat"}
 
 	r := newCredReader(t, team("squad-a", "alpha", teamUID), specAgent, legacyAgent, bothAgent)
-	ov, err := r.Credentials(context.Background(), teamUID)
+	ov, err := r.Credentials(context.Background(), teamUID, false, "")
 	if err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestCredentialsZeroKnowledgeIsUnknown(t *testing.T) {
 		team("squad-a", "alpha", teamUID),
 		agent("squad-a", "idle-agent", "hermes", "sam-idle-oauth"),
 	)
-	ov, err := r.Credentials(context.Background(), teamUID)
+	ov, err := r.Credentials(context.Background(), teamUID, false, "")
 	if err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestCredentialsCrossNamespaceRefSkipped(t *testing.T) {
 		},
 		pausedRun("squad-a", "run-local", "fixer-hermes", "credential_expired", since), // own ns — join
 	)
-	ov, err := r.Credentials(context.Background(), teamUID)
+	ov, err := r.Credentials(context.Background(), teamUID, false, "")
 	if err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestCredentialsTeamNamespaceMemoized(t *testing.T) {
 
 	reader := NewClientCredentialReader(counting)
 	for i := 0; i < 3; i++ {
-		if _, err := reader.Credentials(context.Background(), teamUID); err != nil {
+		if _, err := reader.Credentials(context.Background(), teamUID, false, ""); err != nil {
 			t.Fatalf("Credentials #%d: %v", i, err)
 		}
 	}
@@ -273,7 +273,7 @@ func TestCredentialsHandlerUnavailable(t *testing.T) {
 // errReader always fails with a generic error (backing down).
 type errReader struct{}
 
-func (errReader) Credentials(context.Context, string) (CredentialsOverview, error) {
+func (errReader) Credentials(context.Context, string, bool, string) (CredentialsOverview, error) {
 	return CredentialsOverview{}, errors.New("backing store down")
 }
 
@@ -287,7 +287,7 @@ func TestCredentialsTeamScopeIsolation(t *testing.T) {
 		agent("squad-a", "a-agent", "hermes", "sam-a-oauth"),
 		agent("squad-b", "b-agent", "openclaw", "eve-b-oauth"),
 	)
-	ov, err := r.Credentials(context.Background(), uidA)
+	ov, err := r.Credentials(context.Background(), uidA, false, "")
 	if err != nil {
 		t.Fatalf("Credentials A: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestCredentialsTeamScopeIsolation(t *testing.T) {
 func TestCredentialsTeamNotFound(t *testing.T) {
 	r := newCredReader(t, team("squad-a", "alpha", "cccccccc-3333-3333-3333-333333333333"))
 	for _, uid := range []string{"", "99999999-9999-9999-9999-999999999999"} {
-		if _, err := r.Credentials(context.Background(), uid); !errors.Is(err, ErrTeamNotFound) {
+		if _, err := r.Credentials(context.Background(), uid, false, ""); !errors.Is(err, ErrTeamNotFound) {
 			t.Fatalf("uid %q: got %v, want ErrTeamNotFound", uid, err)
 		}
 	}
@@ -428,7 +428,7 @@ func TestCredentialsReadModelIsReadOnly(t *testing.T) {
 	).Build()
 	recording := &countingWriter{Client: base, writes: &writes}
 
-	if _, err := NewClientCredentialReader(recording).Credentials(context.Background(), teamUID); err != nil {
+	if _, err := NewClientCredentialReader(recording).Credentials(context.Background(), teamUID, false, ""); err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
 	if writes != 0 {
@@ -478,7 +478,7 @@ func TestCredentialsConcurrentTeamNSMemoization(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := r.Credentials(context.Background(), teamUID); err != nil {
+			if _, err := r.Credentials(context.Background(), teamUID, false, ""); err != nil {
 				t.Errorf("Credentials: %v", err)
 			}
 		}()

@@ -187,6 +187,10 @@ func NewCredentialTestService(c CredentialTestClient) *CredentialTestService {
 type credentialTestRequest struct {
 	Runtime          string `json:"runtime"`
 	ModelEndpointRef string `json:"modelEndpointRef"`
+	// TeamID is a fleet-wide-admin routing hint (ISI-3937): honoured ONLY for an
+	// admin whose own team is unresolvable, ignored on every other caller's path
+	// (no tenancy hijack). A bound caller always probes its own team's credential.
+	TeamID string `json:"teamId"`
 }
 
 // credentialTestResult is the response body (AC1): a boolean and a curated,
@@ -223,6 +227,18 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 	name := muxVarsName(r, "name")
 
 	team, err := s.resolveTeam(r.Context(), author.TeamID.String())
+	if errors.Is(err, ErrTeamNamespaceUnresolved) && author.IsAdmin {
+		// Fleet-wide admin (ISI-3937): no home tenancy, so the probe targets an
+		// explicit team from the fleet (defaulting to the single team). Reached
+		// only when the caller's own team is unresolvable, so requestedTeamID
+		// cannot widen a bound caller's scope.
+		team, err = s.resolveFleetTeam(r.Context(), req.TeamID)
+	}
+	if errors.Is(err, ErrSelectTeam) {
+		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestNoNamespace)
+		writeJSONError(w, http.StatusBadRequest, "select a team for this credential")
+		return
+	}
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
 		funnelOutcome(ctx, span, fn.credentialTest, outcomeCredTestNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
@@ -518,6 +534,20 @@ func (s *CredentialTestService) resolveTeam(ctx context.Context, teamUID string)
 		}
 	}
 	return nil, ErrTeamNamespaceUnresolved
+}
+
+// resolveFleetTeam resolves the target Team for a fleet-wide admin's test-connection
+// (ISI-3937). It is called ONLY after the caller's own team proved unresolvable AND
+// the caller is an admin, so it never widens a bound caller's scope. Selection follows
+// fleetAdminTeam (explicit teamId, or the single team by default, or ErrSelectTeam when
+// the admin must choose); the returned Team's status.namespace is the same tenancy root
+// the stored Secret was written into, so the probe reads exactly what the write wrote.
+func (s *CredentialTestService) resolveFleetTeam(ctx context.Context, requestedTeamID string) (*ksquadv1.Team, error) {
+	var teams ksquadv1.TeamList
+	if err := s.client.List(ctx, &teams); err != nil {
+		return nil, err
+	}
+	return fleetAdminTeam(teams.Items, requestedTeamID)
 }
 
 // ── probe seam ─────────────────────────────────────────────────────────────

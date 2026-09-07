@@ -88,12 +88,16 @@ func NewSecretWriteService(c SecretWriteClient) *SecretWriteService {
 }
 
 // credentialCreateRequest is the POST /api/credentials wire body. Value is
-// write-only: it is decoded, stored, and NEVER serialised back out.
+// write-only: it is decoded, stored, and NEVER serialised back out. TeamID is a
+// fleet-wide-admin routing hint (ISI-3937): it is honoured ONLY for an admin whose
+// own team is unresolvable, and ignored on every other caller's path (no tenancy
+// hijack) — a bound caller always writes to its own team's namespace.
 type credentialCreateRequest struct {
 	Name    string `json:"name"`
 	Runtime string `json:"runtime"`
 	Class   string `json:"class"`
 	Value   string `json:"value"`
+	TeamID  string `json:"teamId"`
 }
 
 // credentialCreateResult is the response body — a reference, never the
@@ -160,6 +164,18 @@ func (s *SecretWriteService) handleCredentialCreate(w http.ResponseWriter, r *ht
 	)
 
 	ns, err := s.teamNamespace(r.Context(), author.TeamID.String())
+	if errors.Is(err, ErrTeamNamespaceUnresolved) && author.IsAdmin {
+		// Fleet-wide admin (ISI-3937): no home tenancy, so the write targets an
+		// explicit team from the fleet (defaulting to the single team when there
+		// is exactly one). requestedTeamID is trusted ONLY here — a bound caller
+		// never reaches this branch, so it cannot target a foreign namespace.
+		ns, err = s.fleetTeamNamespace(r.Context(), req.TeamID)
+	}
+	if errors.Is(err, ErrSelectTeam) {
+		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredNoNamespace)
+		writeJSONError(w, http.StatusBadRequest, "select a team for this credential")
+		return
+	}
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
 		funnelOutcome(ctx, span, funnelInst().credentialCreate, outcomeCredNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
@@ -279,4 +295,22 @@ func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) 
 		}
 	}
 	return "", ErrTeamNamespaceUnresolved
+}
+
+// fleetTeamNamespace resolves the squad namespace a fleet-wide admin's credential
+// write targets (ISI-3937). It is called ONLY after the caller's own team proved
+// unresolvable AND the caller is an admin, so it never widens a bound caller's
+// scope. Selection follows fleetAdminTeam (explicit teamId, or the single team by
+// default, or ErrSelectTeam when the admin must choose); the Secret lands in the
+// target team's reconciled status.namespace, the same tenancy root a bound write uses.
+func (s *SecretWriteService) fleetTeamNamespace(ctx context.Context, requestedTeamID string) (string, error) {
+	var teams ksquadv1.TeamList
+	if err := s.client.List(ctx, &teams); err != nil {
+		return "", err
+	}
+	team, err := fleetAdminTeam(teams.Items, requestedTeamID)
+	if err != nil {
+		return "", err
+	}
+	return team.Status.Namespace, nil
 }
