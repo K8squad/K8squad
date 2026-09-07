@@ -81,10 +81,10 @@ export function CredentialsScreen({
     try {
       const res = await connect();
       if (res.status === 501) {
-        // OAuth endpoint not hosted (ISI-2899 / story 7.7): never surface the raw
-        // apiserver detail string — a legible, actionable fallback keeps users unblocked.
+        const body = await res.json().catch(() => null);
         setConnectMsg(
-          "Connect Claude is not yet available — use the ksquad auth login CLI command for now.",
+          body?.detail ??
+            "Connect Claude is not configured yet — the OAuth flow is not available in this deployment.",
         );
       } else if (res.status >= 200 && res.status < 300) {
         setConnectMsg("Connect Claude flow started — check the opened authorization window.");
@@ -120,9 +120,7 @@ export function CredentialsScreen({
           >
             Connect Claude
           </button>
-          <span className="creds__connect-hint muted">
-            or <code>ksquad auth login</code> (CLI parity)
-          </span>
+          <span className="creds__connect-hint muted">Zero-touch OAuth — coming soon (ISI-2899). No CLI is shipped yet.</span>
         </div>
       </header>
 
@@ -159,10 +157,10 @@ export function CredentialsScreen({
             <details className="creds__howto">
               <summary>How to (setup-token)</summary>
               <p className="muted">
-                Re-login is one click once the zero-touch OAuth lifecycle
-                is wired: <code>ksquad auth login</code> or the button above
-                writes fresh tokens into the same per-user Secret — you never
-                handle token strings.
+                Re-login becomes one click once the zero-touch OAuth lifecycle
+                is wired (ISI-2899): the Connect Claude button above will write
+                fresh tokens into the same per-user Secret — you never handle
+                token strings. No <code>ksquad auth</code> CLI ships today.
               </p>
             </details>
           </div>
