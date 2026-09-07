@@ -51,9 +51,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -84,6 +86,24 @@ type CRDApplier interface {
 // landed); a failed append is logged loudly, never a silent drop.
 type ComposeProvenance func(ctx context.Context, eventType, principal string, payload map[string]any)
 
+// AdminTenancyRebinder is the ONE seam where the k8s-CR tenancy root meets the
+// auth DB (ISI-3924 / ADR-0009). The bootstrap admin is seeded with an invented
+// team_id (cmd/apiserver/main.go bootstrapAdmin) that no server-assigned Team CR
+// uid can ever match, so every team-scoped op 404s until the admin acquires a
+// backing Team. The first Team an admin creates closes that loop: on a
+// successful create, if the caller is a global admin whose current team_id backs
+// no Team, RebindTeamID moves their team_id to the new Team's uid and invalidates
+// their sessions so the next login mints a JWT with the correct tid.
+//
+// A nil rebinder disables the rebind entirely (cluster-less dev / pre-3924
+// behavior): Teams are still created, admins just never rebound.
+type AdminTenancyRebinder interface {
+	// RebindTeamID compare-and-swaps `principal`'s team_id from `from` to `to`,
+	// invalidating their sessions on a successful swap, and reports whether a row
+	// was rebound. The CAS on `from` means an already-bound admin is never moved.
+	RebindTeamID(ctx context.Context, principal string, from, to uuid.UUID) (bool, error)
+}
+
 // ComposeService is the 8.5 write model. It applies typed CRDs into the caller's
 // Team namespace behind the membership write-tier gate, recording a provenance
 // row per apply.
@@ -97,6 +117,9 @@ type ComposeService struct {
 	// namespaced inside it (see apply()). Overridable via $POD_NAMESPACE (downward
 	// API); defaults to the ksquad-system control-plane namespace.
 	systemNS string
+	// rebinder closes the first-team-create tenancy loop (ISI-3924 / ADR-0009).
+	// nil ⇒ rebind disabled (Teams still create; admins are never rebound).
+	rebinder AdminTenancyRebinder
 }
 
 // defaultSystemNamespace is the control-plane namespace Team CRs are applied into
@@ -114,6 +137,16 @@ func NewComposeService(applier CRDApplier, roles ProjectRoleResolver, audit Comp
 		systemNS = defaultSystemNamespace
 	}
 	return &ComposeService{applier: applier, roles: roles, audit: audit, systemNS: systemNS}
+}
+
+// WithAdminRebinder installs the first-team-create tenancy rebinder (ISI-3924 /
+// ADR-0009) and returns the service for chaining. It is a separate wiring step
+// (not a NewComposeService param) because the rebind spans the auth DB, a
+// dependency the compose write model otherwise never touches — the seam is
+// opt-in and stays nil in cluster-less dev.
+func (s *ComposeService) WithAdminRebinder(r AdminTenancyRebinder) *ComposeService {
+	s.rebinder = r
+	return s
 }
 
 // ============================================================================
@@ -363,6 +396,11 @@ type composeResult struct {
 	Namespace string `json:"namespace"`
 	Revision  int    `json:"revision"`
 	Operation string `json:"operation"` // "created" | "updated"
+	// Warning carries a non-fatal post-apply advisory (ISI-3924): the CR landed,
+	// but a follow-on best-effort step (the tenancy-root rebind) did not fully
+	// complete. Empty ⇒ nothing to report. Surfaced so a failed rebind is never
+	// silently swallowed — the admin can retry login.
+	Warning string `json:"warning,omitempty"`
 }
 
 // errConflict is the sentinel a POST create returns when the CR already exists.
@@ -529,9 +567,55 @@ func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorCont
 	// 5. Durable provenance row (who/what/when).
 	s.recordProvenance(ctx, author.Principal, plan.kind, name, ns, rev, operation, plan.scope.project)
 
+	// 6. First-team-create tenancy rebind (ISI-3924 / ADR-0009). Runs ONLY on a
+	// fresh Team create by a global admin whose current team_id backs no Team —
+	// the bootstrap admin's dangling tenancy root. Best-effort AFTER the CR exists;
+	// a failure is logged loudly and surfaced as a result warning, never swallowed
+	// (the Team is real; only re-login is deferred). See rebindAdminTenancy.
+	warning := ""
+	if create && plan.kind == "Team" && author.IsAdmin && s.rebinder != nil {
+		warning = s.rebindAdminTenancy(ctx, author, plan.desired.GetUID())
+	}
+
 	return applyOutcome{result: composeResult{
 		Kind: plan.kind, Name: name, Namespace: ns, Revision: rev, Operation: operation,
+		Warning: warning,
 	}}
+}
+
+// rebindAdminTenancy rebinds the creating admin's dangling tenancy root to the
+// Team CR they just created (ISI-3924 / ADR-0009). It is called ONLY for a fresh
+// Team create by a global admin; the remaining guardrail — that the admin's
+// current team_id actually resolves to NO Team — is checked here so an
+// already-bound admin creating a 2nd Team is never moved (that would be a
+// cross-tenant hijack). Returns a non-empty warning to surface on the response
+// when the rebind was attempted but did not fully succeed; "" otherwise.
+func (s *ComposeService) rebindAdminTenancy(ctx context.Context, author discussion.AuthorContext, newUID types.UID) string {
+	// Guardrail: rebind ONLY a dangling root. If the caller's team_id already
+	// resolves to a Team (bound tenant), or resolution is merely unavailable, do
+	// NOT rebind — a bound admin's 2nd Team create is a normal scoped create.
+	if _, err := s.teamNamespace(ctx, author.TeamID.String()); !errors.Is(err, ErrTeamNamespaceUnresolved) {
+		return ""
+	}
+	newTeamID, perr := uuid.Parse(string(newUID))
+	if perr != nil || newTeamID == uuid.Nil {
+		msg := "tenancy rebind skipped: created Team has no server-assigned uid"
+		slog.ErrorContext(ctx, msg, "principal", author.Principal, "uid", string(newUID),
+			"detail", "re-login will still 404 until remediated")
+		return msg
+	}
+	rebound, err := s.rebinder.RebindTeamID(ctx, author.Principal, author.TeamID, newTeamID)
+	if err != nil {
+		msg := "tenancy rebind FAILED; re-login may still 404 until retried"
+		slog.ErrorContext(ctx, msg, "principal", author.Principal,
+			"from", author.TeamID.String(), "to", newTeamID.String(), "error", err)
+		return msg
+	}
+	if rebound {
+		slog.InfoContext(ctx, "tenancy root rebound; sessions invalidated, re-login required to pick up the new tid",
+			"principal", author.Principal, "from", author.TeamID.String(), "to", newTeamID.String())
+	}
+	return ""
 }
 
 // run is the shared handler tail: authenticate, then apply via apply() and

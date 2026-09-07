@@ -259,6 +259,31 @@ func (s *PostgresUserStore) Count(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// UpdateTeamID rebinds a caller's tenancy root (team_id) via compare-and-swap
+// (ISI-3924 / ADR-0009): it moves the row identified by `principal` from `from`
+// to `to` ONLY while its team_id still equals `from`, and returns the affected
+// user's id so the caller can invalidate their sessions. The CAS on `from` is
+// the security guardrail — it makes the rebind idempotent and race-safe (a
+// concurrent rebind, or an already-bound admin whose team_id no longer equals
+// the dangling root, matches zero rows) and can NEVER blind-overwrite a valid
+// tenancy binding. team_id is the ONLY column this can touch. A caller whose
+// team_id does not match `from` (or is unknown) is ErrNotFound — not an error,
+// the "nothing to rebind" signal.
+func (s *PostgresUserStore) UpdateTeamID(ctx context.Context, principal string, from, to uuid.UUID) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE auth.user SET team_id = $1
+		 WHERE principal = $2 AND team_id = $3
+		RETURNING id`, to, principal, from).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return uuid.Nil, ErrNotFound
+	}
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("auth: rebind team_id: %w", err)
+	}
+	return id, nil
+}
+
 // ============================================================================
 // Session store (15.1) over auth.session — the WRITE side of what
 // PostgresSessionResolver reads. Tokens are 32 random bytes, base64url-encoded,
