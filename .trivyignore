@@ -29,3 +29,79 @@ CVE-2026-28389
 CVE-2026-28390
 # CVE-2026-45447   expires:2026-09-18   justification:HIGH openssl PKCS7_verify use-after-free; runtime-base-only, patch pending distroless rebuild of nodejs24-debian12
 CVE-2026-45447
+
+# --- ISI-3923: 2026-09 CVE batch surfaced by the Trivy DB across the toolchain images ---
+# These are baked into UPSTREAM release binaries we download by pinned version (helm, kubectl,
+# gh, dtctl, docker-cli) or bundled inside npm shipped in node:22-alpine — none are patchable in
+# this repo, they clear only when the upstream tool ships a rebuild compiled with the fixed dep.
+# All toolchain-image-only (no runtime/console exposure). Tracked by ISI-3923; a remediation
+# follow-up bumps the pinned upstream versions / npm as patched releases land. Re-justify before
+# expiry rather than blind-renew.
+#
+# Go stdlib / x-net advisories fixed in Go 1.26.6 — present in the helm v3.21.4 and kubectl
+# v1.36.4 release binaries (compiled with Go 1.26.5). Download-only, not rebuildable in-repo.
+# CVE-2026-33818   expires:2026-09-21   justification:HIGH Go encoding/asn1 DoS; upstream helm/kubectl binary compiled with Go 1.26.5, fix rides next release built on Go 1.26.6
+CVE-2026-33818
+# CVE-2026-39821   expires:2026-09-21   justification:HIGH Go net/http via x/net/idna; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-39821
+# CVE-2026-46600   expires:2026-09-21   justification:HIGH Go x/net/dns/dnsmessage DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-46600
+# CVE-2026-56853   expires:2026-09-21   justification:HIGH Go net/http unencrypted HTTP/2; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-56853
+# CVE-2026-56858   expires:2026-09-21   justification:HIGH Go html/template XSS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-56858
+# CVE-2026-56859   expires:2026-09-21   justification:HIGH Go encoding/xml DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-56859
+# CVE-2026-56860   expires:2026-09-21   justification:HIGH Go net/url DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-56860
+# CVE-2026-56862   expires:2026-09-21   justification:HIGH Go crypto/tls DoS; upstream helm/kubectl binary, fix rides next Go-1.26.6 release
+CVE-2026-56862
+#
+# helm v3.21.4 binary vendored modules (fixes in x/crypto 0.55.0 / oras-go 2.6.2).
+# CVE-2026-56854   expires:2026-09-21   justification:CRITICAL golang.org/x/crypto/ssh; vendored in upstream helm v3.21.4 binary (helm exposes no SSH server), fix rides next helm release
+CVE-2026-56854
+# CVE-2026-50163   expires:2026-09-21   justification:HIGH oras.land/oras-go/v2 info disclosure/arbitrary-file; vendored in upstream helm v3.21.4 binary, fix rides next helm release
+CVE-2026-50163
+#
+# gh v2.98.0 binary vendored golang.org/x/mod (fix 0.40.0).
+# CVE-2026-56864   expires:2026-09-21   justification:HIGH golang.org/x/mod malicious GOSUMDB arbitrary module; vendored in upstream gh v2.98.0 binary, fix rides next gh release
+CVE-2026-56864
+# CVE-2026-56865   expires:2026-09-21   justification:HIGH golang.org/x/mod/sumdb/tlog; vendored in upstream gh v2.98.0 binary, fix rides next gh release
+CVE-2026-56865
+#
+# grpc-go (fix 1.83.1) vendored in the gh v2.98.0 and dtctl v0.38.0 upstream binaries.
+# CVE-2026-84304   expires:2026-09-21   justification:HIGH google.golang.org/grpc; vendored in upstream gh v2.98.0 / dtctl v0.38.0 binaries, fix rides next upstream release
+CVE-2026-84304
+#
+# docker:29-cli binary vendored github.com/moby/go-archive (fix 0.3.0).
+# CVE-2026-17106   expires:2026-09-21   justification:HIGH github.com/moby/go-archive arbitrary-file; vendored in upstream docker:29-cli binary, fix rides next docker-cli release
+CVE-2026-17106
+#
+# npm 12.0.2 bundled deps in the node:22-alpine toolchain image; patched versions ride a future
+# npm release the node toolchain then re-pins (Dockerfile.toolchain-node NPM_VERSION, ISI-3444).
+# CVE-2026-14257   expires:2026-09-21   justification:HIGH brace-expansion DoS (fix 5.0.8); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
+CVE-2026-14257
+# CVE-2026-69152   expires:2026-09-21   justification:HIGH brace-expansion DoS bypass of CVE-2026-14257 (fix 5.0.9); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
+CVE-2026-69152
+# CVE-2026-69192   expires:2026-09-21   justification:HIGH ip-address inconsistent IP parsing (fix 10.3.1); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
+CVE-2026-69192
+# CVE-2026-73566   expires:2026-09-21   justification:HIGH node-tar DoS via crafted long-path (fix 7.5.21); bundled in npm 12.0.2, toolchain-image-only, rides next npm re-pin
+CVE-2026-73566
+#
+# alpine util-linux (libuuid) in the python:3.12-alpine toolchain base; fix (util-linux 2.42.3)
+# pending in the alpine repo. Dockerfile.toolchain-python apk-upgrades util-linux, so these
+# clear automatically once the repo carries 2.42.3 — kept as a dated backstop until then.
+# CVE-2026-53612   expires:2026-09-21   justification:HIGH util-linux TOCTOU in mount (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-53612
+# CVE-2026-53613   expires:2026-09-21   justification:HIGH util-linux TOCTOU in mount (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-53613
+# CVE-2026-53614   expires:2026-09-21   justification:HIGH util-linux SUID mount nosuid/noexec bypass (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-53614
+# CVE-2026-76642   expires:2026-09-21   justification:HIGH util-linux failed external mount helper (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-76642
+# CVE-2026-78408   expires:2026-09-21   justification:HIGH util-linux nsenter --join-cgroup leaks root (fix 2.42.3-r1); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-78408
+# CVE-2026-78409   expires:2026-09-21   justification:HIGH util-linux X-mount.subdir detached-tree (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-78409
+# CVE-2026-78410   expires:2026-09-21   justification:HIGH util-linux restricted bind mounts not pinned (fix 2.42.3-r0); python:3.12-alpine base, toolchain-image-only, apk-upgrade pending repo
+CVE-2026-78410
