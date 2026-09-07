@@ -57,6 +57,11 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
+	// FleetList is the ISI-3963 fleet-aware Teams/Agents/Skills/Roles list read
+	// model (GET /api/squad/{teams,teams/{uid},agents,skills,roles}, ADR-0010 /
+	// ISI-3941 Phase 1). Admin ⇒ fleet-wide, tenant ⇒ own squad. Nil ⇒ the routes
+	// keep their documented 501 (cluster-less dev run), exactly like Overview.
+	FleetList FleetListReader
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
@@ -338,6 +343,39 @@ func (s *Server) routes(opts Options) {
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
 				Methods(http.MethodGet)
+		}
+
+		// ISI-3963 fleet-aware list read models (ISI-3941 Phase 1 extension, sibling
+		// of ISI-3943's /api/squad/projects): the Teams/Agents/Skills/Roles lists a
+		// global admin browses the whole fleet with (admin ⇒ every squad; tenant ⇒
+		// own squad, no leak). They ride the SAME §13 choke point as squad-overview
+		// and sit under /api/squad/* — the read namespace — because /api/{teams,
+		// agents,skills,roles} are the write-only compose collections (GET ⇒ 405),
+		// exactly the collision ISI-3943 sidestepped. A nil reader keeps the
+		// documented 501 so the contract stays honest on a cluster-less dev run.
+		fleetTeams := s.router.Path("/api/squad/teams").Subrouter()
+		fleetTeams.Use(authz)
+		fleetTeamOne := s.router.Path("/api/squad/teams/{uid}").Subrouter()
+		fleetTeamOne.Use(authz)
+		fleetAgents := s.router.Path("/api/squad/agents").Subrouter()
+		fleetAgents.Use(authz)
+		fleetSkills := s.router.Path("/api/squad/skills").Subrouter()
+		fleetSkills.Use(authz)
+		fleetRoles := s.router.Path("/api/squad/roles").Subrouter()
+		fleetRoles.Use(authz)
+		if opts.FleetList != nil {
+			fleetTeams.HandleFunc("", s.squadTeams(opts.FleetList)).Methods(http.MethodGet)
+			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
+			fleetAgents.HandleFunc("", s.squadAgents(opts.FleetList)).Methods(http.MethodGet)
+			fleetSkills.HandleFunc("", s.squadSkills(opts.FleetList)).Methods(http.MethodGet)
+			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
+		} else {
+			h := notImplemented("fleet-list read model", "ISI-3963: wire a FleetListReader (informer cache) to enable")
+			fleetTeams.HandleFunc("", h).Methods(http.MethodGet)
+			fleetTeamOne.HandleFunc("", h).Methods(http.MethodGet)
+			fleetAgents.HandleFunc("", h).Methods(http.MethodGet)
+			fleetSkills.HandleFunc("", h).Methods(http.MethodGet)
+			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
 		}
 
 		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four

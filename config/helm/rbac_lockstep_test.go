@@ -198,6 +198,9 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // unblocks each cache; without it the cluster-scoped LIST 403s, the informer
 // never syncs, and /api/squad/overview + /api/agents/* fail. roles keeps its
 // compose write verbs; agentruntimes/runs are read-only (operator-owned CRs).
+// skills adds `list` (ISI-3963) for the same reason: the fleet-aware skill list
+// read model (fleetlist.go Skills()) Lists Skills through the shared informer
+// cache, so GET /api/squad/skills needs the cluster-scoped LIST to unblock it.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -209,7 +212,7 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agents"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},

@@ -191,6 +191,10 @@ func main() {
 	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
 	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
 	var org apiserver.OrgReader
+	// ISI-3963 fleet-aware Teams/Agents/Skills/Roles list read model (ISI-3941
+	// Phase 1): one more projection over the SAME cache — admin ⇒ fleet-wide,
+	// tenant ⇒ own squad (GET /api/squad/{teams,agents,skills,roles}).
+	var fleetList apiserver.FleetListReader
 	// E1 onboarding-progress (ISI-3673, AD-2): one more projection over the SAME
 	// cache — no second watch, no second in-memory copy.
 	var onboarding apiserver.OnboardingReader
@@ -208,6 +212,7 @@ func main() {
 		overview = apiserver.NewClientOverviewReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
+		fleetList = apiserver.NewClientFleetListReader(cacheReader)
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
@@ -437,6 +442,7 @@ func main() {
 		Discussion:       discussion.NewHandler(discussion.NewStore(db)),
 		Ready:            dbReady{db},
 		Overview:         overview,
+		FleetList:        fleetList,
 		Credentials:      credentials,
 		SecretWriter:     secretWriter,
 		CredentialTester: credentialTester,
