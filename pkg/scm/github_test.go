@@ -552,3 +552,132 @@ func TestSnapshotReleasesOptIn(t *testing.T) {
 		t.Fatalf("explicit release snapshot missing the release record: %+v", recs2)
 	}
 }
+
+// fetchBranches normalizes GitHub branches into RecordTypeBranch with the
+// branch name as ExternalID+Title, the default-branch flag on State
+// ("default" | "active"), and the head commit SHA on HeadRef — the shape the
+// GitHub-status tab projects (ISI-4026).
+func TestFetchBranchesNormalizes(t *testing.T) {
+	var branchCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"default_branch":"main"}`)
+	})
+	mux.HandleFunc("/repos/acme/app/branches", func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&branchCalls, 1)
+		if r.URL.Query().Get("per_page") != "100" {
+			t.Errorf("branches per_page = %q, want 100", r.URL.Query().Get("per_page"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[
+			{"name":"main","commit":{"sha":"abc1234def5678abc1234def5678abc1234def56","html_url":"https://github.com/acme/app/commit/abc1234"}},
+			{"name":"feat/x","commit":{"sha":"fff2345fff5678fff2345fff5678fff2345fff56"}}
+		]`)
+	})
+
+	p, _ := newTestGitHubProvider(t, mux)
+	records, err := p.fetchBranches(context.Background(), "acme", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&branchCalls); got != 1 {
+		t.Fatalf("ListBranches must be called exactly once, got %d", got)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 branch records, got %d: %+v", len(records), records)
+	}
+	byName := map[string]NormalizedRecord{}
+	for _, r := range records {
+		if r.Kind != RecordTypeBranch {
+			t.Errorf("record %s kind = %q, want branch", r.ExternalID, r.Kind)
+		}
+		// Branches have no author; Actor must stay empty so echo suppression
+		// is a no-op on them.
+		if r.Actor != "" {
+			t.Errorf("branch %s actor = %q, want empty", r.ExternalID, r.Actor)
+		}
+		byName[r.ExternalID] = r
+	}
+	// Default branch: state=default, head SHA on HeadRef, html_url on URL.
+	if got := byName["main"]; got.Title != "main" || got.State != "default" ||
+		got.HeadRef != "abc1234def5678abc1234def5678abc1234def56" ||
+		got.URL != "https://github.com/acme/app/commit/abc1234" {
+		t.Errorf("default branch normalized wrong: %+v", got)
+	}
+	// Non-default branch: state=active, no html_url in the payload ⇒ empty URL.
+	if got := byName["feat/x"]; got.State != "active" || got.URL != "" ||
+		got.HeadRef != "fff2345fff5678fff2345fff5678fff2345fff56" {
+		t.Errorf("active branch normalized wrong: %+v", got)
+	}
+}
+
+// Snapshot fetches branches ONLY when RecordTypeBranch is explicitly
+// requested — the empty-Types default (nil Mirror) spends no branch-list API
+// budget (ISI-4026, opt-in, same posture as releases).
+func TestSnapshotBranchesOptIn(t *testing.T) {
+	var branchCalls int32
+	newMux := func() *http.ServeMux {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		})
+		for _, path := range []string{"/repos/acme/app/issues", "/repos/acme/app/pulls"} {
+			mux.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprint(w, `[]`)
+			})
+		}
+		mux.HandleFunc("/repos/acme/app/actions/artifacts", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"total_count":0,"artifacts":[]}`)
+		})
+		mux.HandleFunc("/repos/acme/app/commits/main/check-runs", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"total_count":0,"check_runs":[]}`)
+		})
+		mux.HandleFunc("/repos/acme/app/branches", func(w http.ResponseWriter, _ *http.Request) {
+			atomic.AddInt32(&branchCalls, 1)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `[{"name":"main","commit":{"sha":"abc1234def5678abc1234def5678abc1234def56"}}]`)
+		})
+		return mux
+	}
+
+	// Default (empty Types): branches NOT fetched.
+	p, _ := newTestGitHubProvider(t, newMux())
+	recs, err := p.Snapshot(context.Background(), "https://github.com/acme/app", SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&branchCalls); got != 0 {
+		t.Fatalf("default snapshot must not fetch branches (opt-in), got %d calls", got)
+	}
+	for _, r := range recs {
+		if r.Kind == RecordTypeBranch {
+			t.Fatalf("branch leaked into default snapshot: %+v", r)
+		}
+	}
+
+	// Explicit request: branches fetched (repo get + one branch page).
+	atomic.StoreInt32(&branchCalls, 0)
+	p2, _ := newTestGitHubProvider(t, newMux())
+	recs2, err := p2.Snapshot(context.Background(), "https://github.com/acme/app",
+		SnapshotOptions{Types: []RecordType{RecordTypeBranch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&branchCalls); got != 1 {
+		t.Fatalf("explicit branch snapshot must fetch branches once, got %d", got)
+	}
+	var seen bool
+	for _, r := range recs2 {
+		if r.Kind == RecordTypeBranch && r.ExternalID == "main" && r.State == "default" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("explicit branch snapshot missing the default branch record: %+v", recs2)
+	}
+}

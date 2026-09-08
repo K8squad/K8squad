@@ -52,6 +52,13 @@ export type GithubRelease = {
   publishedAt?: string;
 };
 
+export type GithubBranch = {
+  name: string;
+  default?: boolean;
+  headSha?: string;
+  url?: string;
+};
+
 export type GithubFreshness = {
   lastMirrorTime?: string;
   lastWebhookTime?: string;
@@ -68,6 +75,7 @@ export type GithubStatus = {
   checkRuns: GithubCheck[];
   artifacts: GithubArtifact[];
   releases: GithubRelease[];
+  branches: GithubBranch[];
   freshness: GithubFreshness;
 };
 

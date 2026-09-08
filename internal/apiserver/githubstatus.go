@@ -37,6 +37,7 @@ type GithubStatus struct {
 	CheckRuns    []GithubCheck    `json:"checkRuns"`
 	Artifacts    []GithubArtifact `json:"artifacts"`
 	Releases     []GithubRelease  `json:"releases"`
+	Branches     []GithubBranch   `json:"branches"`
 	Freshness    GithubFreshness  `json:"freshness"`
 }
 
@@ -92,6 +93,17 @@ type GithubRelease struct {
 	URL         string     `json:"url,omitempty"`
 	Actor       string     `json:"actor,omitempty"`
 	PublishedAt *time.Time `json:"publishedAt,omitempty"`
+}
+
+// GithubBranch is one mirrored branch ref (present iff the Project opted into
+// Mirror.Branches, ISI-4026). Default marks the repo's default branch; HeadSHA
+// is the branch head commit — both projected from the fetcher's normalization
+// (default flag on State, head SHA on the payload's HeadRef).
+type GithubBranch struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default,omitempty"`
+	HeadSHA string `json:"headSha,omitempty"`
+	URL     string `json:"url,omitempty"`
 }
 
 // GithubFreshness is the honest mirror freshness the tab renders as "synced Ns
@@ -155,6 +167,7 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 		CheckRuns:    []GithubCheck{},
 		Artifacts:    []GithubArtifact{},
 		Releases:     []GithubRelease{},
+		Branches:     []GithubBranch{},
 	}
 
 	rows, err := s.mirror.ListRecords(ctx, ns, name)
@@ -235,6 +248,13 @@ func projectRow(out *GithubStatus, row *scm.MirrorRow) {
 			URL:         p.URL,
 			Actor:       row.Actor,
 			PublishedAt: nonZeroTime(p.CreatedAt),
+		})
+	case scm.RecordTypeBranch:
+		out.Branches = append(out.Branches, GithubBranch{
+			Name:    row.Title,
+			Default: row.State == "default",
+			HeadSHA: p.HeadRef,
+			URL:     p.URL,
 		})
 	}
 }

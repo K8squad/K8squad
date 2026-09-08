@@ -3,7 +3,7 @@
 // components/GitHubStatusTab.tsx — ISI-3956 S5c: the Project GitHub-status tab.
 //
 // Renders the scm-mirror projection (PRs / issues / check-runs / artifacts /
-// releases) the S5b read model returns, with HONEST freshness: "synced Ns ago"
+// releases / branches) the S5b read model returns, with HONEST freshness: "synced Ns ago"
 // from the mirror's own timestamps (ADR-0013 §D4), never a fabricated "live"
 // badge. A short (~30s) client-side interval re-fetches the CACHED read model
 // (S5b) — it never reaches GitHub, so freshness updates without burning rate
@@ -85,7 +85,8 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
     data.issues.length === 0 &&
     data.checkRuns.length === 0 &&
     data.artifacts.length === 0 &&
-    data.releases.length === 0;
+    data.releases.length === 0 &&
+    data.branches.length === 0;
 
   const stale = isStale(data.freshness, now);
 
@@ -107,7 +108,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
         <EmptyState
           testId="github-empty"
           title="No GitHub activity yet"
-          why="The mirror has no PRs, issues, checks, artifacts or releases for this project's repo yet."
+          why="The mirror has no PRs, issues, checks, artifacts, releases or branches for this project's repo yet."
         />
       ) : (
         <div className="github-status__panels">
@@ -116,6 +117,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
           <CheckPanel checks={data.checkRuns} />
           <ArtifactPanel artifacts={data.artifacts} />
           <ReleasePanel releases={data.releases} />
+          <BranchPanel branches={data.branches} />
         </div>
       )}
     </section>
@@ -223,6 +225,26 @@ function ReleasePanel({ releases }: { releases: GithubStatus["releases"] }) {
             <span className="muted">
               {r.state}
               {r.tag ? ` · ${r.tag}` : ""}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function BranchPanel({ branches }: { branches: GithubStatus["branches"] }) {
+  if (branches.length === 0) return null;
+  return (
+    <div className="card" data-testid="panel-branches">
+      <h2>Branches</h2>
+      <ul>
+        {branches.map((b) => (
+          <li key={`branch-${b.name}`} data-testid="branch-row">
+            <Link url={b.url}>{b.name}</Link>{" "}
+            <span className="muted">
+              {b.default ? "default" : ""}
+              {b.headSha ? ` · ${b.headSha.slice(0, 7)}` : ""}
             </span>
           </li>
         ))}

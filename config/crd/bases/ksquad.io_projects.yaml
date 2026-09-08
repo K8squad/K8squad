@@ -187,6 +187,13 @@ spec:
                             description: Artifacts mirrors release/build artifacts
                               by URI + sha (FR-H2).
                             type: boolean
+                          branches:
+                            description: |-
+                              Branches mirrors the repo's branch refs (name/head SHA/default flag,
+                              ISI-4026). OPT-IN exactly like Releases: a nil or false value does NOT
+                              fetch branches (the bounded branch-list call costs an extra API class
+                              per sync tick). Set true to include RecordTypeBranch in the mirror.
+                            type: boolean
                           checkRuns:
                             description: CheckRuns mirrors CI check runs (FR-H2).
                             type: boolean

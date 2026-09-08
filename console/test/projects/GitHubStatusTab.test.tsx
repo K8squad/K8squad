@@ -36,6 +36,10 @@ const projection: GithubStatus = {
   checkRuns: [{ name: "ci", state: "completed", conclusion: "success", url: "https://gh/runs/101" }],
   artifacts: [{ name: "logs", url: "https://gh/artifact/55", sizeBytes: 4096 }],
   releases: [{ name: "v1.0.0", tag: "v1.0.0", state: "published", url: "https://gh/releases/v1.0.0" }],
+  branches: [
+    { name: "main", default: true, headSha: "abc1234def5678", url: "https://gh/tree/main" },
+    { name: "feat/x", headSha: "fff2345fff5678" },
+  ],
   freshness: {
     lastMirrorTime: new Date(Date.now() - 5_000).toISOString(),
     lastWebhookTime: new Date(Date.now() - 5_000).toISOString(),
@@ -54,6 +58,7 @@ describe("GitHubStatusTab", () => {
     expect(screen.getByTestId("panel-checks")).toBeTruthy();
     expect(screen.getByTestId("panel-artifacts")).toBeTruthy();
     expect(screen.getByTestId("panel-releases")).toBeTruthy();
+    expect(screen.getByTestId("panel-branches")).toBeTruthy();
 
     // PRs both rendered; open shows review state, merged shows merged.
     expect(screen.getAllByTestId("pr-row")).toHaveLength(2);
@@ -65,6 +70,20 @@ describe("GitHubStatusTab", () => {
     // Links point at the normalized GitHub url.
     const pr7 = screen.getByText(/#7 add feature/).closest("a");
     expect(pr7?.getAttribute("href")).toBe("https://gh/pull/7");
+
+    // Branches: default badge + short head SHA, default branch links out.
+    expect(screen.getAllByTestId("branch-row")).toHaveLength(2);
+    const main = screen.getByText(/main/).closest("a");
+    expect(main?.getAttribute("href")).toBe("https://gh/tree/main");
+    expect(screen.getByText(/default/)).toBeTruthy();
+    expect(screen.getByText(/abc1234/)).toBeTruthy();
+  });
+
+  it("hides the branch panel when the mirror has no branch rows", async () => {
+    stub(200, { ...projection, branches: [] });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    expect(screen.queryByTestId("panel-branches")).toBeNull();
   });
 
   it("shows honest freshness 'synced Ns ago' from timestamps, not a live badge (AC2)", async () => {
@@ -93,6 +112,7 @@ describe("GitHubStatusTab", () => {
       checkRuns: [],
       artifacts: [],
       releases: [],
+      branches: [],
       freshness: { mirrorRecordCount: 0 },
     });
     render(<GitHubStatusTab projectId="web" />);
