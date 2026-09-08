@@ -179,6 +179,13 @@ type RepoMirrorSpec struct {
 	// include RecordTypeRelease in the mirror.
 	// +optional
 	Releases *bool `json:"releases,omitempty"`
+
+	// Branches mirrors the repo's branch refs (name/head SHA/default flag,
+	// ISI-4026). OPT-IN exactly like Releases: a nil or false value does NOT
+	// fetch branches (the bounded branch-list call costs an extra API class
+	// per sync tick). Set true to include RecordTypeBranch in the mirror.
+	// +optional
+	Branches *bool `json:"branches,omitempty"`
 }
 
 // RepoIssueSyncSpec configures the issue⇄work-item sync loop (story 11.2,

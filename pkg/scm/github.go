@@ -191,6 +191,18 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 		records = append(records, releaseRecords...)
 	}
 
+	// Fetch branches — OPT-IN only (ISI-4026), same posture as releases: a
+	// branch list costs an extra paginated API class per sync tick, so it is
+	// fetched solely when RecordTypeBranch is explicitly requested
+	// (Mirror.Branches=true).
+	if contains(options.Types, RecordTypeBranch) {
+		branchRecords, err := p.fetchBranches(ctx, repoOwner, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch branches: %w", err)
+		}
+		records = append(records, branchRecords...)
+	}
+
 	return records, nil
 }
 
@@ -724,6 +736,56 @@ func releaseState(release *github.RepositoryRelease) string {
 	default:
 		return "published"
 	}
+}
+
+// fetchBranches pulls the repo's branch refs (ISI-4026) and normalizes them to
+// RecordTypeBranch: one Repositories.Get for the default-branch flag, then ONE
+// bounded paginated ListBranches pass — the same call surface the fetcher
+// already walks (default branch + open PR heads are all in the branch list).
+// The branch name is the ExternalID (stable mirror key, so renamed/deleted
+// branches converge), the default flag rides State ("default" | "active"), and
+// the head commit SHA rides HeadRef — the same "ref detail without a new
+// column" precedent fetchReleases set with the tag. Branches have no author;
+// Actor stays empty (never the bot identity, so echo suppression is a no-op).
+func (p *GitHubProvider) fetchBranches(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
+	repoInfo, _, err := p.client.Repositories.Get(ctx, owner, repo)
+	if err != nil {
+		return nil, wrapRateLimit(err)
+	}
+	defaultBranch := repoInfo.GetDefaultBranch()
+
+	var records []NormalizedRecord
+	opt := &github.BranchListOptions{
+		ListOptions: github.ListOptions{PerPage: githubPerPage},
+	}
+	for {
+		branches, resp, err := p.client.Repositories.ListBranches(ctx, owner, repo, opt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, branch := range branches {
+			name := branch.GetName()
+			state := "active"
+			if name == defaultBranch {
+				state = "default"
+			}
+			record := NormalizedRecord{
+				Kind:       RecordTypeBranch,
+				ExternalID: name,
+				State:      state,
+				Title:      name,
+				URL:        branch.GetCommit().GetHTMLURL(),
+				HeadRef:    branch.GetCommit().GetSHA(),
+			}
+			records = append(records, record)
+		}
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	return records, nil
 }
 
 // Helper functions

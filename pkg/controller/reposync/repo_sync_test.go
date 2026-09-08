@@ -415,6 +415,36 @@ func TestSnapshotOptionsReleasesOptIn(t *testing.T) {
 	}
 }
 
+// Branches are OPT-IN exactly like releases (ISI-4026): a nil or false toggle
+// must not add RecordTypeBranch, and only an explicit true includes it.
+func TestSnapshotOptionsBranchesOptIn(t *testing.T) {
+	r := &Reconciler{}
+	has := func(types []scm.RecordType, want scm.RecordType) bool {
+		for _, tp := range types {
+			if tp == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	// nil Branches (all other kinds default-on): no branch type.
+	on := r.snapshotOptions(&ksquadapi.RepoSyncSpec{Mirror: &ksquadapi.RepoMirrorSpec{}})
+	if has(on.Types, scm.RecordTypeBranch) {
+		t.Fatalf("nil Branches must not include branch type, got %+v", on.Types)
+	}
+	// explicit false: still excluded.
+	off := r.snapshotOptions(&ksquadapi.RepoSyncSpec{Mirror: &ksquadapi.RepoMirrorSpec{Branches: ptrBool(false)}})
+	if has(off.Types, scm.RecordTypeBranch) {
+		t.Fatalf("Branches=false must not include branch type, got %+v", off.Types)
+	}
+	// explicit true: included.
+	yes := r.snapshotOptions(&ksquadapi.RepoSyncSpec{Mirror: &ksquadapi.RepoMirrorSpec{Branches: ptrBool(true)}})
+	if !has(yes.Types, scm.RecordTypeBranch) {
+		t.Fatalf("Branches=true must include branch type, got %+v", yes.Types)
+	}
+}
+
 // REGRESSION (Cursor review, blocking): patchStatus used to mutate the
 // condition through the slice's shared backing array before DeepCopy, so
 // the DeepEqual guard suppressed every status write after the first and

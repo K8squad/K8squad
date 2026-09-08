@@ -3,7 +3,7 @@ package apiserver
 // githubstatus_test.go — ISI-3956 S5b: the GitHub-status read model over the
 // scm mirror. Covers:
 //   AC1  mirror projection: PRs(review_state)/issues/check-runs(conclusion)/
-//        artifacts/releases from seeded mirror rows,
+//        artifacts/releases/branches from seeded mirror rows,
 //   AC2/AC6  no GitHub in the request path / no credential in the response
 //        (the reader depends ONLY on the mirror store),
 //   AC3  honest freshness passthrough from Project.Status.Sync,
@@ -107,6 +107,10 @@ func TestGithubStatusProjection(t *testing.T) {
 			scm.MirrorPayload{URL: "https://x/artifact/55", Size: 4096, CreatedAt: updated}),
 		mirrorRow(scm.RecordTypeRelease, "9", "published", "v1.0.0", "dev",
 			scm.MirrorPayload{URL: "https://github.com/acme/web/releases/tag/v1.0.0", HeadRef: "v1.0.0", CreatedAt: synced}),
+		mirrorRow(scm.RecordTypeBranch, "main", "default", "main", "",
+			scm.MirrorPayload{HeadRef: "abc1234def5678abc1234def5678abc1234def56", URL: "https://github.com/acme/web/commit/abc1234"}),
+		mirrorRow(scm.RecordTypeBranch, "feat/x", "active", "feat/x", "",
+			scm.MirrorPayload{HeadRef: "fff2345fff5678fff2345fff5678fff2345fff56"}),
 	)
 
 	h := testGithubStatusServer(t, teamID, reader, store)
@@ -147,6 +151,20 @@ func TestGithubStatusProjection(t *testing.T) {
 	// Release: tag on Tag, state published.
 	if len(st.Releases) != 1 || st.Releases[0].Tag != "v1.0.0" || st.Releases[0].State != "published" {
 		t.Errorf("release projected wrong: %+v", st.Releases)
+	}
+	// Branches: default flag from State, head SHA from HeadRef, name from Title.
+	if len(st.Branches) != 2 {
+		t.Fatalf("want 2 branches, got %+v", st.Branches)
+	}
+	brByName := map[string]GithubBranch{}
+	for _, br := range st.Branches {
+		brByName[br.Name] = br
+	}
+	if got := brByName["main"]; !got.Default || got.HeadSHA != "abc1234def5678abc1234def5678abc1234def56" || got.URL == "" {
+		t.Errorf("default branch projected wrong: %+v", got)
+	}
+	if got := brByName["feat/x"]; got.Default || got.HeadSHA != "fff2345fff5678fff2345fff5678fff2345fff56" {
+		t.Errorf("active branch projected wrong: %+v", got)
 	}
 	// AC3 freshness passthrough.
 	if st.Freshness.LastMirrorTime == nil || !st.Freshness.LastMirrorTime.Equal(synced) || st.Freshness.MirrorRecordCount != 5 {
