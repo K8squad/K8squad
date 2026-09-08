@@ -3,10 +3,12 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -88,12 +90,6 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 	if len(prov) == 0 {
 		prov = json.RawMessage(`{}`)
 	}
-
-	const q = `
-		INSERT INTO memory.memory_records
-			(squad_id, project_id, principal_id, run_id, agent_id, kind, content, embedding, provenance)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
-		RETURNING id, created_at`
 	rec := Record{
 		SquadID:     req.SquadID,
 		ProjectID:   req.ProjectID,
@@ -105,6 +101,41 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 		Embedding:   req.Embedding,
 		Provenance:  prov,
 	}
+
+	// Idempotent path (Story J-C AC2): a caller-supplied deterministic id makes a re-projection an
+	// ON CONFLICT no-op. On conflict the row already exists (a crash-replay re-scan), so we fetch its
+	// server-stamped created_at and return the durable record — never a second row.
+	if req.DedupeID != nil {
+		rec.ID = *req.DedupeID
+		const qi = `
+			INSERT INTO memory.memory_records
+				(id, squad_id, project_id, principal_id, run_id, agent_id, kind, content, embedding, provenance)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector, $10)
+			ON CONFLICT (id) DO NOTHING
+			RETURNING id, created_at`
+		err := s.pool.QueryRow(ctx, qi,
+			*req.DedupeID, req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
+			req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),
+		).Scan(&rec.ID, &rec.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			if err := s.pool.QueryRow(ctx,
+				`SELECT created_at FROM memory.memory_records WHERE id = $1`, *req.DedupeID,
+			).Scan(&rec.CreatedAt); err != nil {
+				return Record{}, fmt.Errorf("load existing idempotent memory_record: %w", err)
+			}
+			return rec, nil
+		}
+		if err != nil {
+			return Record{}, fmt.Errorf("idempotent insert memory_record: %w", err)
+		}
+		return rec, nil
+	}
+
+	const q = `
+		INSERT INTO memory.memory_records
+			(squad_id, project_id, principal_id, run_id, agent_id, kind, content, embedding, provenance)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
+		RETURNING id, created_at`
 	if err := s.pool.QueryRow(ctx, q,
 		req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
 		req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),

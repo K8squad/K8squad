@@ -145,7 +145,11 @@ func startDiscussionIndexer(ctx context.Context, dsn string, store *memory.PgVec
 		log.Printf("ksquad-memory: discussion indexer disabled (open db: %v)", err)
 		return
 	}
-	ix := discussionindex.NewIndexer(discussion.NewStore(db), store, embedder, 0)
+	// Attach the durable watermark (Story J-C AC1): the indexer resumes from its last committed position
+	// across a restart instead of re-scanning from zero or skipping a window. The *memory.PgVectorStore
+	// backs the projection_cursor table; the projection is idempotent on the derived record id (AC2), so
+	// a crash between a batch write and the cursor save re-projects each message exactly once.
+	ix := discussionindex.NewIndexer(discussion.NewStore(db), store, embedder, 0).WithCursor(store)
 	interval := 15 * time.Second
 	if v := os.Getenv("DISCUSSION_INDEX_INTERVAL"); v != "" {
 		if d, perr := time.ParseDuration(v); perr == nil {

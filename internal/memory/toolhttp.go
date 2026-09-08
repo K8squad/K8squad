@@ -11,6 +11,11 @@ import (
 // same ReadService plugs into the MCP tool registry unchanged (the tool logic is the ReadService, not
 // this transport).
 //
+// S2 HANDOFF (Story J-C / ISI-4010, blocked on Story 6.2): when the shared MCP transport lands, register
+// this same ReadService on the real MCP registry (pkg/capability/mcp.go ResolveMCP) with team-from-
+// transport scoping (INV3, mirroring the X-Team-Id header discipline below), then retire this surface or
+// reduce it to a thin compatibility shim. Do NOT build the transport here — track it against Story 6.2.
+//
 // The caller's Team scope is taken from the X-Team-Id header — the server-authenticated tenant stamped
 // by the §13 BFF, exactly as the discussion apiserver's headerAuth does. It is NEVER read from the
 // request body, so a caller cannot widen past its tenant (INV3). project_id/query/top_k are body args.
