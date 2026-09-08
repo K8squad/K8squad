@@ -28,6 +28,8 @@ import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
+import { TeamsNavTree } from "@/components/nav/TeamsNavTree";
+import { NavErrorBoundary } from "@/components/nav/NavErrorBoundary";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
 import { UserMenu } from "@/components/nav/UserMenu";
@@ -237,7 +239,25 @@ export function ConsoleShell({
         </div>
         <nav className="rail__nav">
           {nodes.map((n) =>
-            n.section ? (
+            n.dynamicChildren === "teams" ? (
+              // Teams (ISI-4001 / ISI-3995): the rail's first DYNAMIC, lazy-loaded sub-tree. The
+              // static NodeLink accordion is replaced by the TeamsNavTree island (team(s) → agents),
+              // wrapped so a fetch/render failure degrades to the plain Teams link, never blanking
+              // the rail. The label still links to /teams; the island owns expand + fetched children.
+              <div key={n.id} className="rail__group">
+                <NavErrorBoundary
+                  fallback={
+                    <NodeLink
+                      node={n}
+                      active={ids.has(n.id)}
+                      projectId={activeProject}
+                    />
+                  }
+                >
+                  <TeamsNavTree active={ids.has(n.id)} pathname={pathname} />
+                </NavErrorBoundary>
+              </div>
+            ) : n.section ? (
               // SETTINGS group (ISI-3725): a small-caps heading + its children as full rail links,
               // NOT the project accordion. The heading is presentational (no link, no icon).
               <div key={n.id} className="rail__group rail__group--section">
