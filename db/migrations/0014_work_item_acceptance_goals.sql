@@ -1,0 +1,44 @@
+-- 0014_work_item_acceptance_goals.sql — per-work-item acceptance criteria + goals
+-- (ISI-3606, shared S1/S2 coord read model). Arch §6.1 / §8.5.
+--
+-- WHY (risk-gate finding, ISI-3600 S1): coord.work_item carried only
+-- title/body/state, so the §8.5 context assembler (pkg/controller/contextsource)
+-- and the agent-facing get-task read (pkg/coord.ReadTaskDetail) both returned
+-- acceptance criteria and work-item-level goals EMPTY — honest-degraded, never
+-- faked from body text. This migration adds the two first-class columns both
+-- read models were designed against (their AcceptanceCriteria/Goals fields are
+-- already typed []string and were left nil pending exactly this surface).
+--
+-- SHAPE — text[], not jsonb, not a child table:
+--   * text[] maps 1:1 onto the read models' []string fields — zero parse seam,
+--     no per-caller body-scraping (the anti-goal both file headers call out).
+--   * A child table (like coord.comment) would make AC/goals an append-only
+--     event stream needing its OWN resume cursor — the very complexity the
+--     ISI-3606 brief flags as "may be needed". Columns avoid it (see REVISION).
+--   * AC/goals are ATTRIBUTES authored on the item (edited as a set, like
+--     title/body), not provenanced append-only history — so a column is the
+--     honest model. ponytail ceiling: if a criterion ever needs independent
+--     structure (checked-state, per-criterion id/provenance), that is a forward
+--     migration to a child table + its own cursor — deliberately deferred (YAGNI).
+--
+-- REVISION DISCIPLINE (the heart of the brief — deterministic resume, AC3):
+--   These are plain columns on coord.work_item, so an edit is an UPDATE, and the
+--   EXISTING `work_item_touch_updated_at` BEFORE UPDATE trigger (0001) bumps
+--   updated_at. The context assembler's WorkItemRevision token already encodes
+--   updated_at (contextsource.encodeRev), so AC/goals are pinned for free:
+--     - a resumed Run re-reads the same row; if AC/goals changed post-assembly,
+--       updated_at moved → the pinned-revision check fails LOUD (never a silent
+--       fall back to latest), identical to how a title/body edit behaves today.
+--     - NO new ContextSnapshot field, NO new AC/comment cursor. The comment
+--       cutoff stays separate only because comment INSERTs hit coord.comment,
+--       which the work_item UPDATE trigger does not cover — AC/goals are not a
+--       separate table, so they need no separate cursor. This is the win.
+--
+-- Additive + forward-only + backfill-safe: NOT NULL DEFAULT '{}' means every
+-- existing row reads back as an empty list (byte-identical to today's degraded
+-- behaviour), so this migration is a no-op for in-flight Runs until a write
+-- populates the columns.
+
+ALTER TABLE coord.work_item
+    ADD COLUMN acceptance_criteria text[] NOT NULL DEFAULT '{}',  -- ordered AC list (§8.5); '{}' = none, never NULL
+    ADD COLUMN goals               text[] NOT NULL DEFAULT '{}';  -- work-item-level goals (§8.5); project-level goals stay on the Project CRD
