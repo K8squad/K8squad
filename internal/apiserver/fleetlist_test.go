@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -51,6 +52,23 @@ func skillObj(ns, name, uid string, source ksquadv1.SkillSourceType, perms ...st
 		Spec: ksquadv1.SkillSpec{
 			Source:      ksquadv1.SkillSource{Type: source},
 			Permissions: perms,
+		},
+	}
+}
+
+// gitSkillObj builds a fully-populated git-sourced Skill so the detail projection
+// (source provenance + capability envelope + pod-assembly requires) can be asserted.
+func gitSkillObj(ns, name, uid string) *ksquadv1.Skill {
+	return &ksquadv1.Skill{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID(uid)},
+		Spec: ksquadv1.SkillSpec{
+			Source: ksquadv1.SkillSource{
+				Type: ksquadv1.SkillSourceGit,
+				Git:  &ksquadv1.GitSkillSource{RepoRef: "github.com/acme/skills", Ref: "abc123", Path: "skills/pg"},
+			},
+			McpToolRefs: []ksquadv1.ObjectRef{{Name: "pg-mcp"}},
+			Permissions: []string{"net:egress", "fs:write"},
+			Requires:    ksquadv1.SkillRequires{Toolchains: []string{"go@1.25"}, Sidecars: []string{"dockerd"}},
 		},
 	}
 }
@@ -177,6 +195,10 @@ func TestFleetSkillsScoping(t *testing.T) {
 		len(admin.Skills[0].Permissions) != 1 {
 		t.Fatalf("sk-a projection: %+v", admin.Skills[0])
 	}
+	// ISI-3961 AC1: each row is stamped with its owning Team (ns → Team map).
+	if admin.Skills[0].TeamUID != fleetUIDA || admin.Skills[0].TeamName != "alpha" {
+		t.Fatalf("sk-a owning team not stamped: %+v", admin.Skills[0])
+	}
 
 	tenant, err := r.Skills(context.Background(), fleetUIDA, false)
 	if err != nil {
@@ -184,6 +206,63 @@ func TestFleetSkillsScoping(t *testing.T) {
 	}
 	if len(tenant.Skills) != 1 || tenant.Skills[0].Namespace != "squad-a" {
 		t.Fatalf("tenant A must see only squad-a skills: %+v", tenant.Skills)
+	}
+}
+
+// --- reader: single-skill view (ISI-3961 AC4) ----------------------------------------------------
+
+func TestFleetSkillViewGitProjection(t *testing.T) {
+	objs := append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))
+	r := newFleetReader(t, objs...)
+
+	v, err := r.Skill(context.Background(), "", "pg-migrate", true)
+	if err != nil {
+		t.Fatalf("Skill(admin, pg-migrate): %v", err)
+	}
+	if v.SourceType != string(ksquadv1.SkillSourceGit) ||
+		v.RepoRef != "github.com/acme/skills" || v.Ref != "abc123" || v.Path != "skills/pg" {
+		t.Fatalf("git provenance: %+v", v)
+	}
+	if len(v.McpToolRefs) != 1 || v.McpToolRefs[0] != "pg-mcp" ||
+		len(v.Permissions) != 2 || len(v.Toolchains) != 1 || len(v.Sidecars) != 1 {
+		t.Fatalf("capability envelope / requires: %+v", v)
+	}
+	// AC4: owning Team stamped.
+	if v.TeamUID != fleetUIDA || v.TeamName != "alpha" {
+		t.Fatalf("owning team not stamped: %+v", v)
+	}
+}
+
+func TestFleetSkillViewTenantScopingAndHiding(t *testing.T) {
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+
+	// Tenant A reads their own skill by name.
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-a", false); err != nil {
+		t.Fatalf("tenant A own skill: %v", err)
+	}
+	// Tenant A asking for squad-b's skill name is existence-hiding, not a 403 leak.
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-b", false); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("tenant A foreign skill must be ErrSkillNotFound, got %v", err)
+	}
+	// Absent name ⇒ ErrSkillNotFound (identical to forbidden).
+	if _, err := r.Skill(context.Background(), fleetUIDA, "nope", false); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("absent skill must be ErrSkillNotFound, got %v", err)
+	}
+	// A tenant whose UID resolves to no Team is hidden as missing (not ErrTeamNotFound).
+	if _, err := r.Skill(context.Background(), "no-such-uid", "sk-a", false); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("unresolved tenant must be ErrSkillNotFound, got %v", err)
+	}
+}
+
+func TestFleetSkillViewSliceFieldsNonNil(t *testing.T) {
+	// A minimal inline skill (no mcp/perms/requires) must still marshal [] not null.
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	v, err := r.Skill(context.Background(), fleetUIDB, "sk-b", false)
+	if err != nil {
+		t.Fatalf("Skill(sk-b): %v", err)
+	}
+	if v.McpToolRefs == nil || v.Toolchains == nil || v.Sidecars == nil || v.Permissions == nil {
+		t.Fatalf("slice fields must be non-nil: %+v", v)
 	}
 }
 
@@ -336,6 +415,39 @@ func TestFleetTeamDetailHandlerNotFound(t *testing.T) {
 	}
 }
 
+func TestFleetSkillDetailHandlerOK(t *testing.T) {
+	adminID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	objs := append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))
+	reader := newFleetReader(t, objs...)
+	h := testFleetServer(t, adminID, true, reader)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/skills/pg-migrate", nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("skill detail: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var v SkillView
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v.Name != "pg-migrate" || v.RepoRef != "github.com/acme/skills" || v.TeamName != "alpha" {
+		t.Fatalf("skill detail body: %+v", v)
+	}
+}
+
+func TestFleetSkillDetailHandlerNotFound(t *testing.T) {
+	tenantID := uuid.MustParse(fleetUIDA)
+	reader := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	h := testFleetServer(t, tenantID, false, reader)
+
+	// Tenant A asking for squad-b's skill by name ⇒ existence-hiding 404.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/skills/sk-b", nil), devToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign skill detail: got %d, want 404", rec.Code)
+	}
+}
+
 func TestFleetHandlersUnauthenticated(t *testing.T) {
 	adminID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	reader := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
@@ -354,7 +466,8 @@ func TestFleetHandlersNilReaderStill501(t *testing.T) {
 
 	for _, path := range []string{
 		"/api/squad/teams", "/api/squad/teams/" + fleetUIDA,
-		"/api/squad/agents", "/api/squad/skills", "/api/squad/roles",
+		"/api/squad/agents", "/api/squad/skills", "/api/squad/skills/sk-a",
+		"/api/squad/roles",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, path, nil), devToken))
