@@ -1,12 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   bannerHold,
+  classifyCreateStatus,
   classifyCredentialsStatus,
+  credentialCreateBody,
   expiryLabel,
   expiringSoon,
   formatDuration,
   healthBadge,
   tokenTypeLabel,
+  CREATE_CLASS,
+  CREATE_RUNTIME_OPTIONS,
   type AgentCredentialRow,
 } from "@/lib/credentials";
 
@@ -147,5 +151,37 @@ describe("classifyCredentialsStatus — deny collapse + documented 501", () => {
   it("5xx/other ⇒ error", () => {
     expect(classifyCredentialsStatus(500)).toBe("error");
     expect(classifyCredentialsStatus(503)).toBe("error");
+  });
+});
+
+describe("credentialCreateBody — the BYO write body (ISI-3983)", () => {
+  it("pins the service-account class, trims the name, and forwards runtime + value", () => {
+    const body = credentialCreateBody({ name: "  team-anthropic  ", runtime: "claude-code", value: "sk-abc" });
+    expect(body).toEqual({ name: "team-anthropic", runtime: "claude-code", class: CREATE_CLASS, value: "sk-abc" });
+    // class is always service-account — human-seat is never pasted.
+    expect(CREATE_CLASS).toBe("service-account");
+  });
+  it("includes teamId ONLY when a fleet admin picked one (empty hint stays inert upstream)", () => {
+    expect(credentialCreateBody({ name: "k", runtime: "hermes", value: "v" }).teamId).toBeUndefined();
+    expect(credentialCreateBody({ name: "k", runtime: "hermes", value: "v", teamId: "" }).teamId).toBeUndefined();
+    expect(credentialCreateBody({ name: "k", runtime: "hermes", value: "v", teamId: "t-1" }).teamId).toBe("t-1");
+  });
+  it("offers exactly the credinject service-account runtimes (claude-code/openclaw/hermes)", () => {
+    expect(CREATE_RUNTIME_OPTIONS.map((o) => o.value)).toEqual(["claude-code", "openclaw", "hermes"]);
+  });
+});
+
+describe("classifyCreateStatus — honest write outcomes", () => {
+  it("2xx ⇒ created, and the specific rejections map distinctly", () => {
+    expect(classifyCreateStatus(201)).toBe("created");
+    expect(classifyCreateStatus(200)).toBe("created");
+    expect(classifyCreateStatus(400)).toBe("select-team");
+    expect(classifyCreateStatus(409)).toBe("conflict");
+    expect(classifyCreateStatus(422)).toBe("invalid");
+    expect(classifyCreateStatus(501)).toBe("unsupported");
+  });
+  it("401/403/404 collapse to denied; 5xx/other ⇒ error", () => {
+    for (const s of [401, 403, 404]) expect(classifyCreateStatus(s)).toBe("denied");
+    expect(classifyCreateStatus(502)).toBe("error");
   });
 });

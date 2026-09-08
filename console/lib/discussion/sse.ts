@@ -21,12 +21,12 @@ export function streamUrl(projectId: string): string {
 }
 
 /**
- * Subscribe to a room's live message events over the shared 8.2 channel.
- * Returns an unsubscribe function. Events for other rooms are ignored.
+ * Subscribe to a thread's live message events over the shared 8.2 channel.
+ * Returns an unsubscribe function. Events for other threads are ignored.
  */
 export function subscribeRoom(
   projectId: string,
-  roomId: string,
+  threadId: string,
   onEvent: (evt: RoomEvent) => void,
   makeSource: EventSourceFactory,
 ): () => void {
@@ -34,11 +34,12 @@ export function subscribeRoom(
   const handler = (e: { data: string }) => {
     const evt = parseRoomEvent(e.data);
     if (!evt) return;
-    const mid = evt.type === "message.deleted" ? undefined : evt.message.roomId;
-    // Deleted events lack a room id in this minimal envelope; created/updated
-    // carry roomId and are filtered to this room. (A richer envelope can carry
-    // roomId on delete too; then filter it the same way.)
-    if (mid !== undefined && mid !== roomId) return;
+    const tid =
+      evt.type === "message.deleted" ? undefined : evt.message.threadId;
+    // Deleted events lack a thread id in this minimal envelope; created/updated
+    // carry threadId and are filtered to this thread. (A richer envelope can
+    // carry threadId on delete too; then filter it the same way.)
+    if (tid !== undefined && tid !== threadId) return;
     onEvent(evt);
   };
   src.addEventListener("discussion", handler);
