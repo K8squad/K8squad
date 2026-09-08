@@ -158,15 +158,25 @@ function useOrgList(kind: ComposeKind): { entries: ListEntry[]; loading: boolean
     (async () => {
       try {
         if (kind === "agents") {
-          // Use the active team's org read-model (AD-2). The BFF resolves team from session.
-          const res = await fetch("/api/teams/current/org", { cache: "no-store" });
+          // Fleet-aware Agents list (ISI-3985): admin ⇒ every squad, tenant ⇒ own Team. The old
+          // `/api/teams/current/org` path passed the literal string "current" as the teamId — no
+          // endpoint resolves it (teamScope: a tenant's UID never equals "current"; an admin has no
+          // home team), so the list never populated and the pane sat empty ("skills not loading",
+          // ISI-3985). This mirrors the teams/skills/roles kinds already migrated to /api/squad/*
+          // (ISI-3941/3963/3964); agents was the one kind left behind.
+          const res = await fetch("/api/squad/agents", { cache: "no-store" });
           if (res.ok) {
-            const data = (await res.json()) as { agents?: Array<{ name: string; runtimeType?: string }> };
+            const data = (await res.json()) as {
+              agents?: Array<{ name: string; runtime?: string; skillCount?: number }> | null;
+            };
             if (!cancelled) {
               setEntries(
                 (data.agents ?? []).map((a) => ({
                   name: a.name,
-                  subtitle: a.runtimeType,
+                  subtitle:
+                    typeof a.skillCount === "number"
+                      ? `${a.skillCount} skill${a.skillCount === 1 ? "" : "s"}`
+                      : a.runtime,
                 })),
               );
             }
@@ -454,6 +464,19 @@ export function ComposeScreen() {
     setSubmit({ kind: "idle" });
   }
 
+  // Clicking a left-pane object opens it in Edit mode with its name pre-filled (ISI-3985 — "if I
+  // click on an agent I should see his skills"). Full-spec field hydration (populating the skill
+  // refs / role / model from the object's CRD) is tracked separately; here we at least switch into
+  // the correct edit context instead of a dead, unclickable list.
+  function selectEntry(name: string) {
+    setMode("edit");
+    setCf(() => {
+      const base = emptyForm(kind);
+      return { kind: base.kind, form: { ...base.form, name } } as ComposeForm;
+    });
+    setSubmit({ kind: "idle" });
+  }
+
   function patch(p: Record<string, unknown>) {
     setCf((prev) => ({ kind: prev.kind, form: { ...prev.form, ...p } }) as ComposeForm);
     setSubmit({ kind: "idle" });
@@ -541,10 +564,17 @@ export function ComposeScreen() {
             <ul className="compose__list">
               {listEntries.map((e) => (
                 <li key={e.name} className="compose__list-item">
-                  <span className="compose__list-name">{e.name}</span>
-                  {e.subtitle && (
-                    <span className="compose__list-sub muted">{e.subtitle}</span>
-                  )}
+                  <button
+                    type="button"
+                    className="compose__list-select"
+                    onClick={() => selectEntry(e.name)}
+                    title={`Edit ${e.name}`}
+                  >
+                    <span className="compose__list-name">{e.name}</span>
+                    {e.subtitle && (
+                      <span className="compose__list-sub muted">{e.subtitle}</span>
+                    )}
+                  </button>
                 </li>
               ))}
             </ul>
