@@ -232,6 +232,115 @@ body {
   font-size: 13px;
 }
 
+/* — Teams dynamic sub-tree (ISI-4001 / ISI-3995): a two-level lazy tree mounted in the Teams
+ * rail node. Reuses .rail__link / .rail__sub; adds a disclosure chevron beside a leaf link, a
+ * deeper indent for the agent level, and inline honest-state rows. — */
+.rail__tree {
+  display: flex;
+  flex-direction: column;
+}
+/* Row = a leaf link + its disclosure chevron, side by side. The link stays the primary target
+ * (label → destination); the chevron is a distinct, separately-focusable toggle (AC1/AC7). */
+.rail__treerow {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.rail__treerow .rail__link--haschild {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.rail__treerow .rail__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail__disclosure {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.rail__disclosure:hover {
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+}
+.rail__disclosure:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rail__caret {
+  transition: transform 0.12s ease;
+}
+.rail__caret[data-open] {
+  transform: rotate(90deg);
+}
+/* The agent level nests one indent deeper than the team level. */
+.rail__sub--agents {
+  margin-left: 16px;
+}
+.rail__link--leaf {
+  font-size: 13px;
+}
+/* Inline honest-state rows (loading / empty / 501 / not-found / error) per sub-level (AC5). */
+.rail__navstate {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.rail__navstate--muted {
+  color: var(--text-3, var(--text-2));
+  font-style: italic;
+}
+.rail__retry {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.rail__retry:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.rail__spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid color-mix(in srgb, var(--text-2) 40%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: rail-spin 0.7s linear infinite;
+}
+@keyframes rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail__caret {
+    transition: none;
+  }
+  .rail__spinner {
+    animation: none;
+  }
+}
+
 /* SETTINGS section header (ISI-3725 / ISI-3641 mock): a small-caps muted group label above its
  * links, with a hairline separator so the grouped block reads distinct from the primary items. */
 .rail__group--section {
