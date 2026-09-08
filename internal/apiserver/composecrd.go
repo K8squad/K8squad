@@ -354,10 +354,20 @@ func (s *ComposeService) authorizeWrite(ctx context.Context, author discussion.A
 	case err != nil:
 		return http.StatusBadGateway, "authorization check unavailable"
 	}
-	if !auth.RoleAtLeast(role, auth.ProjectRoleContributor) {
+	if !writeTierGranted(role) {
 		return http.StatusForbidden, "insufficient project role (write-level required)"
 	}
 	return 0, ""
+}
+
+// writeTierGranted is the SINGLE project write-tier threshold: a resolved role
+// clears the write tier iff it ranks at least contributor (ADR-035 ordering
+// viewer < contributor < maintainer). Both ComposeService.authorizeWrite (the
+// PUT /api/projects/{id} gate) and canWriteProject (the settings projection's
+// canEdit, ISI-3999 AC6) call it, so the read model's canEdit and the write
+// path's allow/deny can never disagree on the threshold by construction.
+func writeTierGranted(role string) bool {
+	return auth.RoleAtLeast(role, auth.ProjectRoleContributor)
 }
 
 // ============================================================================
