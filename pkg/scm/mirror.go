@@ -111,6 +111,16 @@ type MirrorStore interface {
 	ApplySnapshot(ctx context.Context, projectNamespace, projectName string, rows []MirrorRow) (applied int, err error)
 }
 
+// MirrorReader is the read side of the mirror (ISI-3956 S5b): a filtered
+// SELECT over scm.mirror_record scoped to one Project. It is deliberately a
+// separate seam from MirrorStore — the reconciler is the only writer, the
+// apiserver GitHub-status read model is a reader, and neither depends on the
+// other's surface. Rows come back deterministically ordered (kind, external
+// id) so a projection over them is stable.
+type MirrorReader interface {
+	ListRecords(ctx context.Context, projectNamespace, projectName string) ([]MirrorRow, error)
+}
+
 // BuildMirrorRows maps a normalized provider snapshot onto provenanced,
 // untrusted-external mirror rows for one Project (story 11.1 AC6). Records
 // authored by the bot identity are dropped (echo suppression — the only
@@ -207,6 +217,28 @@ func (s *InMemoryMirrorStore) ApplySnapshot(_ context.Context, ns, name string, 
 		s.rows[mirrorKey(ns, name, row.Kind, row.ExternalID)] = row
 	}
 	return len(rows), nil
+}
+
+// ListRecords implements MirrorReader over the in-memory rows, scoped to one
+// Project and deterministically ordered — the test double for the S5b read
+// path (same contract as SQLMirrorStore.ListRecords).
+func (s *InMemoryMirrorStore) ListRecords(_ context.Context, ns, name string) ([]MirrorRow, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := projectPrefix(ns, name)
+	out := make([]MirrorRow, 0)
+	for key, row := range s.rows {
+		if strings.HasPrefix(key, prefix) {
+			out = append(out, row)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return out[i].ExternalID < out[j].ExternalID
+	})
+	return out, nil
 }
 
 // Rows returns a deterministic (sorted) copy of the stored rows.
@@ -344,4 +376,56 @@ func (s *SQLMirrorStore) ApplySnapshot(ctx context.Context, ns, name string, row
 		return 0, fmt.Errorf("mirror apply commit: %w", err)
 	}
 	return len(rows), nil
+}
+
+// listRecordsSQL is the read side of the mirror (ISI-3956 S5b): a filtered
+// SELECT scoped to one Project, deterministically ordered so the projection
+// over it is stable. It reads the external-owned columns only — no coordination
+// custody is expressible here, so none is returned.
+const listRecordsSQL = `
+SELECT kind, external_id, state, title, actor, external_origin, payload
+  FROM scm.mirror_record
+ WHERE project_namespace = $1 AND project_name = $2
+ ORDER BY kind, external_id`
+
+// ListRecords returns this Project's mirror rows (ISI-3956 S5b). It is a pure
+// read — no GitHub call, no credential — feeding the apiserver GitHub-status
+// projection. external_origin is decoded back into ExternalOrigin; payload is
+// carried through as raw JSON for the reader to project.
+func (s *SQLMirrorStore) ListRecords(ctx context.Context, ns, name string) ([]MirrorRow, error) {
+	rows, err := s.db.QueryContext(ctx, listRecordsSQL, ns, name)
+	if err != nil {
+		return nil, fmt.Errorf("list mirror rows %s/%s: %w", ns, name, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []MirrorRow
+	for rows.Next() {
+		var (
+			row       MirrorRow
+			kind      string
+			originRaw []byte
+			payload   []byte
+		)
+		if err := rows.Scan(&kind, &row.ExternalID, &row.State, &row.Title, &row.Actor, &originRaw, &payload); err != nil {
+			return nil, fmt.Errorf("scan mirror row %s/%s: %w", ns, name, err)
+		}
+		row.ProjectNamespace = ns
+		row.ProjectName = name
+		row.Kind = RecordType(kind)
+		row.Trust = TrustUntrustedExternal
+		if len(originRaw) > 0 {
+			if err := json.Unmarshal(originRaw, &row.ExternalOrigin); err != nil {
+				return nil, fmt.Errorf("decode external_origin %s/%s %s: %w", ns, name, row.ExternalID, err)
+			}
+		}
+		if len(payload) > 0 && string(payload) != "null" {
+			row.Payload = json.RawMessage(payload)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate mirror rows %s/%s: %w", ns, name, err)
+	}
+	return out, nil
 }

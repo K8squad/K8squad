@@ -49,6 +49,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/search"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
@@ -237,6 +238,20 @@ func main() {
 			issueLinks = apiserver.NewIssueLinkService(linkStore, dashboardReader)
 			log.Printf("ksquad-apiserver: issue-link API ready (11.2 GitHub issues ⇄ work items)")
 		}
+	}
+
+	// S5b GitHub-status read model (ISI-3956): GET /api/projects/{id}/github projects
+	// the operator's scm.mirror_record mirror (PRs/issues/check-runs/artifacts/releases)
+	// keyed by Project. It reuses the SAME informer cache the dashboard uses for
+	// existence-hiding tenancy (admin fleet-wide short-circuit; else team-fenced 404) and
+	// reads the mirror over the SAME *sql.DB. It makes NO GitHub call and touches NO BYO
+	// credential — GitHub traffic stays exclusively in the operator reposync reconciler
+	// (§D1). Needs BOTH the DB (mirror reader) and the cache (resolution + freshness); a
+	// dev run without either keeps the documented 501 so the S5c tab renders "not available yet".
+	var githubStatus *apiserver.GithubStatusService
+	if db != nil && dashboardReader != nil {
+		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db))
+		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
 	}
 
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
@@ -489,6 +504,7 @@ func main() {
 		ProjectRoles: memberships,
 		ComposeCRD:   composeCRD,
 		IssueLinks:   issueLinks,
+		GithubStatus: githubStatus,
 		Killer:       apiserver.NewProdRunKiller(db),
 		AuditLog:     auditLog,
 		// Epic D tool-usage panel read model (ISI-3288, D3): aggregates the
