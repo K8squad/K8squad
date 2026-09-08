@@ -183,12 +183,14 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // EgressPolicies and Projects in the caller's namespace to constrain probe
 // egress to the squad's declared allowlist — a silent 403 there would
 // fail-close every BYO test-connection with a 502.
-// otelconfigs is a read-only get+list grant (ISI-3916): the Story A OTelConfig
-// read model Lists the cluster-scoped OTelConfig through the shared informer
-// cache (its only reader — no direct-client path). The informer syncs on its
-// initial LIST, so without `list` the cache never syncs and GET /api/otelconfig
-// hangs then 504s (Settings › OTel export-state). No write verbs — the operator
-// owns this CR.
+// otelconfigs is a get+list+create+update grant (ISI-3916 read half, ISI-3954
+// write half): the Story A OTelConfig read model Lists the cluster-scoped
+// OTelConfig through the shared informer cache (the informer syncs on its initial
+// LIST, so without `list` the cache never syncs and GET /api/otelconfig hangs then
+// 504s), and the ISI-3954 write surface (OTelConfigWriteService, PUT/POST
+// /api/otelconfig) upserts the single CR named "default" via the direct client —
+// name-only Get-then-Create-or-Update — so it adds `create`+`update`. No
+// patch/delete; status stays operator-owned.
 // roles adds `list` and agentruntimes+runs are read-only get+list grants
 // (ISI-3932): the Agents org read model (org.go load()/AgentRuns/AgentStatuses)
 // and the squad overview read model (overview.go) List Roles, AgentRuntimes and
@@ -216,7 +218,7 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+

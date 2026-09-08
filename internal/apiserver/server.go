@@ -156,6 +156,14 @@ type Options struct {
 	// the route keeps the documented 501 (a cluster-less dev run without a kube
 	// client), exactly like the other read models.
 	OTelConfig OTelConfigSource
+	// OTelConfigWriter is the ISI-3954 write half of the OTLP-exporter surface (gap
+	// G5 of the ISI-3949 audit): PUT/POST /api/otelconfig upserts the single
+	// cluster-scoped OTelConfig CR named "default" so the Settings page's "Apply
+	// OTLP configuration" stops returning 405. Admin-tier (cluster-scoped), behind
+	// the SAME §13 choke point + same-origin guard + bounded body as compose writes.
+	// Nil ⇒ the write route keeps the documented 501 (a cluster-less dev run without
+	// a writer client), exactly like the read half and the compose surface.
+	OTelConfigWriter *OTelConfigWriteService
 	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
 	// post-comment / update-status / checkout) mounted under /api/task-io/. It
 	// does NOT ride the cookie BFF authz choke point: it carries its OWN
@@ -443,11 +451,27 @@ func (s *Server) routes(opts Options) {
 		// error. Nil source (cluster-less dev run) keeps the documented 501.
 		otelCfg := s.router.Path("/api/otelconfig").Subrouter()
 		otelCfg.Use(authz)
+		// The write verbs (ISI-3954) ride the SAME same-origin CSRF guard + bounded
+		// body as the compose write surface. sameOriginGuard only guards mutating
+		// methods, so mounting it on the shared subrouter leaves the GET read model
+		// unchanged; maxBytesBody on a bodiless GET is a no-op.
+		otelCfg.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		otelCfg.Use(maxBytesBody(otelConfigMaxBodyBytes))
 		if opts.OTelConfig != nil {
 			otelCfg.HandleFunc("", s.otelConfig(opts.OTelConfig)).Methods(http.MethodGet)
 		} else {
 			otelCfg.HandleFunc("", notImplemented("otel-config read model", "ISI-2917: wire a kube client to enable")).
 				Methods(http.MethodGet)
+		}
+		// ISI-3954 write half (ISI-3949 gap G5): PUT/POST /api/otelconfig upserts the
+		// single cluster-scoped OTelConfig CR named "default", admin-gated in the
+		// handler (cluster-scoped telemetry routing is platform-tier, not per-tenant).
+		// A nil writer keeps the documented 501, exactly like the read half.
+		if opts.OTelConfigWriter != nil {
+			otelCfg.HandleFunc("", s.otelConfigWrite(opts.OTelConfigWriter)).Methods(http.MethodPut, http.MethodPost)
+		} else {
+			otelCfg.HandleFunc("", notImplemented("otel-config write surface", "ISI-3954: wire an OTelConfigWriteService (controller-runtime client) to enable")).
+				Methods(http.MethodPut, http.MethodPost)
 		}
 
 		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the
