@@ -37,3 +37,30 @@ export function buildPostBody(input: ComposerInput): PostMessageBody {
 export function canSubmit(input: ComposerInput): boolean {
   return input.body.trim().length > 0;
 }
+
+/** Everything the composer collects to OPEN a new thread (AC2). */
+export interface OpenThreadInput {
+  title: string;
+  body: string;
+}
+
+/** The exact, minimal wire shape POSTed to the open-thread endpoint. */
+export interface OpenThreadBody {
+  title: string;
+  body: string;
+}
+
+/**
+ * Build the outbound open-thread POST body. Like {@link buildPostBody} this is
+ * the single server-stamp choke point: the result carries ONLY `{ title, body }`
+ * and NEVER any `author*`/`createdBy`/`principal` field — thread creator and
+ * message provenance are stamped server-side from the authenticated principal.
+ */
+export function buildOpenThreadBody(input: OpenThreadInput): OpenThreadBody {
+  return { title: input.title.trim(), body: input.body.trim() };
+}
+
+/** True when an open-thread input is submittable (title AND body non-empty). */
+export function canOpenThread(input: OpenThreadInput): boolean {
+  return input.title.trim().length > 0 && input.body.trim().length > 0;
+}
