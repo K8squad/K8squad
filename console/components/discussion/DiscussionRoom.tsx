@@ -21,10 +21,10 @@ import "./discussion.css";
 
 export interface DiscussionRoomProps {
   projectId: string;
-  roomId: string;
+  threadId: string;
   client: DiscussionClient;
   /**
-   * Subscribe to the room's live event stream (the 8.2 EventSource/BFF proxy).
+   * Subscribe to the thread's live event stream (the 8.2 EventSource/BFF proxy).
    * Returns an unsubscribe fn. Optional — absent means poll-on-focus degrade.
    */
   subscribe?: (onEvent: (evt: RoomEvent) => void) => () => void;
@@ -34,7 +34,7 @@ type LoadState = "loading" | "ready" | "not-found" | "error";
 
 export function DiscussionRoom({
   projectId,
-  roomId,
+  threadId,
   client,
   subscribe,
 }: DiscussionRoomProps) {
@@ -43,9 +43,7 @@ export function DiscussionRoom({
 
   const load = useCallback(async () => {
     try {
-      const flat = await client.getMessages(projectId, roomId, {
-        threadDepth: 100,
-      });
+      const flat = await client.getThread(projectId, threadId);
       setMessages(flat);
       setState("ready");
     } catch (err) {
@@ -56,7 +54,7 @@ export function DiscussionRoom({
         setState("error");
       }
     }
-  }, [client, projectId, roomId]);
+  }, [client, projectId, threadId]);
 
   useEffect(() => {
     void load();
@@ -75,13 +73,13 @@ export function DiscussionRoom({
 
   const post = useCallback(
     async (body: { body: string; parentId?: string }) => {
-      const created = await client.postMessage(projectId, roomId, body);
+      const created = await client.postMessage(projectId, threadId, body);
       // Optimistic upsert; the SSE echo is deduped by id.
       setMessages((cur) =>
         applyRoomEvent(cur, { type: "message.created", message: created }),
       );
     },
-    [client, projectId, roomId],
+    [client, projectId, threadId],
   );
 
   if (state === "loading") {

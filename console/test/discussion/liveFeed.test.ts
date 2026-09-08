@@ -9,7 +9,7 @@ import type { Message } from "@/lib/discussion/types";
 function msg(id: string, createdAt: string, body = id): Message {
   return {
     id,
-    roomId: "room",
+    threadId: "thread",
     parentId: null,
     authorId: "a",
     authorType: "agent",
