@@ -694,7 +694,7 @@ func (p *GitHubProvider) fetchReleases(ctx context.Context, owner, repo string) 
 			}
 			// PublishedAt is zero for a draft; fall back to CreatedAt so the
 			// row always carries a meaningful timestamp.
-			if release.PublishedAt != nil && !release.PublishedAt.Time.IsZero() {
+			if release.PublishedAt != nil && !release.PublishedAt.IsZero() {
 				record.CreatedAt = release.PublishedAt.Time
 			} else if release.CreatedAt != nil {
 				record.CreatedAt = release.CreatedAt.Time
