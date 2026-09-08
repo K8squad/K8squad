@@ -194,6 +194,10 @@ func main() {
 	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
 	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
 	var org apiserver.OrgReader
+	// ISI-3963 fleet-aware Teams/Agents/Skills/Roles list read model (ISI-3941
+	// Phase 1): one more projection over the SAME cache — admin ⇒ fleet-wide,
+	// tenant ⇒ own squad (GET /api/squad/{teams,agents,skills,roles}).
+	var fleetList apiserver.FleetListReader
 	// E1 onboarding-progress (ISI-3673, AD-2): one more projection over the SAME
 	// cache — no second watch, no second in-memory copy.
 	var onboarding apiserver.OnboardingReader
@@ -212,6 +216,7 @@ func main() {
 		teams = apiserver.NewClientTeamsReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
+		fleetList = apiserver.NewClientFleetListReader(cacheReader)
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
@@ -342,6 +347,19 @@ func main() {
 		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints; first-team-create tenancy rebind on)")
 	}
 
+	// ISI-3954 OTelConfig write surface (ISI-3949 gap G5): PUT/POST /api/otelconfig
+	// upserts the cluster-scoped CR "default" through the SAME direct write client
+	// the compose surface uses (one write path into the cluster, never two),
+	// recording provenance to the SAME coord.audit_log. Admin-gated in the handler
+	// (cluster-scoped telemetry routing is platform-tier). When the write client
+	// could not be built (cluster-less dev run) it stays nil → the route keeps the
+	// documented 501, exactly like the compose surface.
+	var otelConfigWriter *apiserver.OTelConfigWriteService
+	if crdApplier != nil {
+		otelConfigWriter = apiserver.NewOTelConfigWriteService(crdApplier, coordAuditWriter(db))
+		log.Printf("ksquad-apiserver: OTelConfig write surface ready (ISI-3954, PUT/POST /api/otelconfig)")
+	}
+
 	// E3-S1 managed-credential write (ISI-3679, AD-6): POST /api/credentials
 	// creates ONE label-scoped Secret in the caller's team namespace. Its own
 	// direct client — the CRD-apply client's scheme has no corev1, and the
@@ -442,6 +460,7 @@ func main() {
 		Ready:            dbReady{db},
 		Overview:         overview,
 		Teams:            teams,
+		FleetList:        fleetList,
 		Credentials:      credentials,
 		SecretWriter:     secretWriter,
 		CredentialTester: credentialTester,
@@ -449,6 +468,7 @@ func main() {
 		Org:              org,
 		Onboarding:       onboarding,
 		OTelConfig:       otelConfig,
+		OTelConfigWriter: otelConfigWriter,
 		Builds:           builds,
 		Artifacts:        artifacts,
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),

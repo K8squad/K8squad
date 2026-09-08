@@ -82,6 +82,12 @@ type SquadOverviewReader interface {
 	// Overview projects the squad overview. admin ⇒ fleet-wide (every squad's Projects/Runs,
 	// ADR-039 / ISI-3932); non-admin ⇒ fenced to teamUID's Team.
 	Overview(ctx context.Context, teamUID string, admin bool) (SquadOverview, error)
+
+	// Projects lists Projects for the Projects-tab surface (ISI-3943). admin ⇒ fleet-wide
+	// (every squad's Projects, ADR-0010, same widening as Overview); non-admin ⇒ fenced to
+	// teamUID's Team namespace. Each entry carries the owning Team's UID so the console can
+	// deep-link to /api/teams/{teamUid}/org for the project's agents.
+	Projects(ctx context.Context, teamUID string, admin bool) (SquadProjectList, error)
 }
 
 // ClientOverviewReader is the production SquadOverviewReader. It reads from any client.Reader — in
@@ -222,6 +228,129 @@ func (r *ClientOverviewReader) fleetOverview(ctx context.Context) (SquadOverview
 	return out, nil
 }
 
+// ============================================================================
+// Projects-tab list read model (ISI-3943, follow-up to ISI-3941 diagnosis).
+// ============================================================================
+//
+// The apiserver had no GET route for the console's Projects tab — /api/projects was write-only
+// (compose create/edit) and the Projects tab had nothing to call, so it rendered empty even though
+// an admin could see the same Projects on the fleet overview (ISI-3941 root cause). This is the
+// dedicated list surface. It is a second projection over the SAME informer cache overview.go
+// already reads (Teams + Projects) — no new watch, no new SQL, no team rebind (board decision
+// ISI-3921/ISI-3925). It mirrors the fleet-aware widening of Overview (ADR-0010 / ISI-3932): an
+// admin lists every squad's Projects; a tenant lists only their own Team namespace's.
+
+// ProjectListEntry is one row of the Projects tab. Beyond identity it carries the owning Team's UID
+// (resolved from the Project's namespace → its Team CR, the same "a squad is a namespace" mapping
+// overview.go and org.go rely on) so the console can deep-link into /api/teams/{teamUid}/org for the
+// project's agents. PhaseCounts is the Run phase rollup so the tab can render a status badge without
+// a second call. TeamUID/TeamName are empty when no Team CR owns the Project's namespace (an orphan
+// namespace) rather than fabricated.
+type ProjectListEntry struct {
+	Name        string         `json:"name"`
+	Namespace   string         `json:"namespace"`
+	TeamUID     string         `json:"teamUid,omitempty"`
+	TeamName    string         `json:"teamName,omitempty"`
+	RepoURL     string         `json:"repoUrl,omitempty"`
+	PhaseCounts map[string]int `json:"phaseCounts"`
+}
+
+// SquadProjectList is the GET /api/squad/projects response. Fleet is set only for the admin
+// projection (ADR-0010) — every squad's Projects, each keeping its own Namespace — so the console
+// can render a fleet-wide banner exactly as it does for the fleet overview. Projects is never nil on
+// the wire (initialized to an empty slice) so the console's empty state is an empty list, not null.
+type SquadProjectList struct {
+	Projects []ProjectListEntry `json:"projects"`
+	Fleet    bool               `json:"fleet,omitempty"`
+}
+
+// Projects lists Projects for the Projects tab (ISI-3943). It first builds a namespace → Team
+// identity map from the Team CRs (Team lives in its squad namespace — §12.1) so every Project row
+// can carry its owning Team's UID. admin ⇒ fleet-wide (every squad's Projects, ADR-0010); non-admin
+// ⇒ the caller's Team namespace only, resolved by UID (rename/collision-safe, existence-hiding 404
+// for an unknown scope). Deterministic: sorted by (namespace, name).
+func (r *ClientOverviewReader) Projects(ctx context.Context, teamUID string, admin bool) (SquadProjectList, error) {
+	var teams ksquadv1.TeamList
+	if err := r.reader.List(ctx, &teams); err != nil {
+		return SquadProjectList{}, err
+	}
+	type teamRef struct{ uid, name string }
+	nsTeam := make(map[string]teamRef, len(teams.Items))
+	for i := range teams.Items {
+		t := &teams.Items[i]
+		nsTeam[t.Namespace] = teamRef{uid: string(t.UID), name: t.Name}
+	}
+
+	// Scope: admin lists every namespace; a tenant is fenced to their Team's namespace, resolved
+	// by object UID (the session's Team scope is a UID, so a rename cannot widen the scope and a
+	// cross-namespace name collision cannot cross tenancy). An unknown/empty tenant scope is a 404.
+	var listOpts []client.ListOption
+	if !admin {
+		if teamUID == "" {
+			return SquadProjectList{}, ErrTeamNotFound
+		}
+		ns := ""
+		for i := range teams.Items {
+			if string(teams.Items[i].UID) == teamUID {
+				ns = teams.Items[i].Namespace
+				break
+			}
+		}
+		if ns == "" {
+			return SquadProjectList{}, ErrTeamNotFound
+		}
+		listOpts = append(listOpts, client.InNamespace(ns))
+	}
+
+	var projects ksquadv1.ProjectList
+	if err := r.reader.List(ctx, &projects, listOpts...); err != nil {
+		return SquadProjectList{}, err
+	}
+	var runs ksquadv1.RunList
+	if err := r.reader.List(ctx, &runs, listOpts...); err != nil {
+		return SquadProjectList{}, err
+	}
+
+	// Phase rollup per (namespace, name) so same-named Projects in different squads never merge
+	// (matches fleetOverview's keying).
+	countsByProject := make(map[string]map[string]int, len(projects.Items))
+	for i := range runs.Items {
+		run := &runs.Items[i]
+		key := run.Namespace + "/" + run.Spec.ProjectRef.Name
+		c := countsByProject[key]
+		if c == nil {
+			c = make(map[string]int)
+			countsByProject[key] = c
+		}
+		c[projectRunStatus(run).Phase]++
+	}
+
+	out := SquadProjectList{Fleet: admin, Projects: []ProjectListEntry{}}
+	for i := range projects.Items {
+		p := &projects.Items[i]
+		counts := countsByProject[p.Namespace+"/"+p.Name]
+		if counts == nil {
+			counts = map[string]int{}
+		}
+		tr := nsTeam[p.Namespace]
+		out.Projects = append(out.Projects, ProjectListEntry{
+			Name:        p.Name,
+			Namespace:   p.Namespace,
+			TeamUID:     tr.uid,
+			TeamName:    tr.name,
+			RepoURL:     p.Spec.Repo.URL,
+			PhaseCounts: counts,
+		})
+	}
+	sort.Slice(out.Projects, func(a, b int) bool {
+		if out.Projects[a].Namespace != out.Projects[b].Namespace {
+			return out.Projects[a].Namespace < out.Projects[b].Namespace
+		}
+		return out.Projects[a].Name < out.Projects[b].Name
+	})
+	return out, nil
+}
+
 // projectRunStatus projects a single Run's live status. status.phase is coalesced to Pending when
 // empty (a Run the reconciler has not yet observed) so the projection never carries a blank phase.
 func projectRunStatus(run *ksquadv1.Run) RunStatus {
@@ -274,5 +403,30 @@ func (s *Server) squadOverview(reader SquadOverviewReader) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, overview)
+	}
+}
+
+// squadProjects is the handler behind GET /api/squad/projects (ISI-3943). Like squadOverview it
+// rides the §13 BFF authz choke point: the AuthorContext is already stamped on the context, the
+// projection is scoped to it (admin ⇒ fleet-wide, tenant ⇒ their Team), and NOTHING is read from
+// the request. A tenant caller whose Team scope resolves to no Team gets 404 (distinct from the 401
+// an unauthenticated caller gets); an admin never 404s (fleet-wide is unconditional).
+func (s *Server) squadProjects(reader SquadOverviewReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, ok := discussion.AuthFromContext(r.Context())
+		if !ok || auth.Principal == "" {
+			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		list, err := reader.Projects(r.Context(), auth.TeamID.String(), auth.IsAdmin)
+		if errors.Is(err, ErrTeamNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no projects for this team")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "projects read model unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, list)
 	}
 }

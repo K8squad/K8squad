@@ -178,13 +178,19 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [projects]
   verbs: [get, list, create, update]
+# skills carries `list` (ISI-3963): besides the compose write path (get+create+
+# update), the fleet-aware skill list read model (internal/apiserver/fleetlist.go
+# Skills()) Lists Skills through the shared informer cache. As with roles/runs,
+# without `list` the LIST 403s at the cluster scope, the informer never syncs,
+# and GET /api/squad/skills fails.
 - apiGroups: [ksquad.io]
   resources: [skills]
-  verbs: [get, create, update]
+  verbs: [get, list, create, update]
 # roles carries `list` (ISI-3932): besides the compose write path (get+create+
 # update), the Agents org read model (internal/apiserver/org.go load()) Lists
 # Roles through the shared informer cache to paint each Agent's Role badge —
-# without `list` that informer never syncs and agent detail 502s.
+# without `list` that informer never syncs and agent detail 502s. The fleet role
+# list read model (fleetlist.go Roles(), ISI-3963) also relies on this `list`.
 - apiGroups: [ksquad.io]
   resources: [roles]
   verbs: [get, list, create, update]
@@ -209,19 +215,22 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [egresspolicies]
   verbs: [get, list]
-# otelconfigs is READ-ONLY, informer-cache-backed (ISI-3916): the Story A
+# otelconfigs is READ+WRITE (ISI-3916 read half, ISI-3954 write half): the Story A
 # OTelConfig read model (internal/apiserver/otelconfig.go ClientOTelConfigSource,
 # wired in cmd/apiserver/main.go over NewCacheReader) Lists the cluster-scoped
-# OTelConfig the Settings › OTel export-state card reads. Unlike the compose
-# kinds above this read has NO direct-client path — the shared informer cache is
-# its only reader. A controller-runtime informer marks HasSynced after its
-# initial LIST, so `list` is what unblocks the cache; without it the LIST 403s,
-# the informer never syncs, GET /api/otelconfig hangs ~15s then 504s. No
-# create/update/patch/delete: the operator owns this CR, the apiserver only
-# reads it.
+# OTelConfig the Settings › OTel export-state card reads via the shared informer
+# cache — a controller-runtime informer marks HasSynced after its initial LIST, so
+# `list` is what unblocks the cache; without it the LIST 403s, the informer never
+# syncs, GET /api/otelconfig hangs ~15s then 504s. The ISI-3954 write half
+# (OTelConfigWriteService, PUT/POST /api/otelconfig) upserts the single CR named
+# "default" via the SAME direct client the compose path uses — name-only
+# Get-then-Create-or-Update — so it adds `create`+`update` (no list needed for the
+# write itself; the read supplies it). No patch/delete: the write surface never
+# patches or deletes. status stays operator-owned (the /status subresource grant
+# above is the operator's, not this SA's).
 - apiGroups: [ksquad.io]
   resources: [otelconfigs]
-  verbs: [get, list]
+  verbs: [get, list, create, update]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

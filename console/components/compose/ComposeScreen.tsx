@@ -182,8 +182,50 @@ function useOrgList(kind: ComposeKind): { entries: ListEntry[]; loading: boolean
               );
             }
           }
+        } else if (kind === "teams") {
+          // Fleet-aware Teams list (ISI-3964): admin ⇒ every squad, tenant ⇒ own Team.
+          const res = await fetch("/api/squad/teams", { cache: "no-store" });
+          if (res.ok) {
+            const data = (await res.json()) as {
+              teams?: Array<{ name: string; namespace?: string }> | null;
+            };
+            if (!cancelled) {
+              setEntries(
+                (data.teams ?? []).map((t) => ({ name: t.name, subtitle: t.namespace })),
+              );
+            }
+          }
+        } else if (kind === "skills") {
+          const res = await fetch("/api/squad/skills", { cache: "no-store" });
+          if (res.ok) {
+            const data = (await res.json()) as {
+              skills?: Array<{ name: string; namespace?: string; sourceType?: string }> | null;
+            };
+            if (!cancelled) {
+              setEntries(
+                (data.skills ?? []).map((s) => ({
+                  name: s.name,
+                  subtitle: s.sourceType ?? s.namespace,
+                })),
+              );
+            }
+          }
+        } else if (kind === "roles") {
+          const res = await fetch("/api/squad/roles", { cache: "no-store" });
+          if (res.ok) {
+            const data = (await res.json()) as {
+              roles?: Array<{ name: string; namespace?: string; prompt?: string }> | null;
+            };
+            if (!cancelled) {
+              setEntries(
+                (data.roles ?? []).map((r) => ({
+                  name: r.name,
+                  subtitle: r.prompt ?? r.namespace,
+                })),
+              );
+            }
+          }
         }
-        // Teams/Roles/Skills: apiserver GET not yet wired in BFF — show empty with note.
       } catch {
         /* silently ignore — left pane is informational */
       } finally {
@@ -197,6 +239,54 @@ function useOrgList(kind: ComposeKind): { entries: ListEntry[]; loading: boolean
   }, [kind]);
 
   return { entries, loading };
+}
+
+// ── Caller team scope (ISI-3964 compose gate) ─────────────────────────────────
+//
+// Compose create/edit is team-scoped server-side from the caller's AuthorContext. A caller with no
+// resolvable OWN Team — a global admin (whose team_id backs no Team CR by design, ISI-3921) or a
+// tenant whose Team is dangling — would submit a form that 404s. This hook reads the fleet-aware
+// GET /api/squad/teams once and reports whether the caller has an own writable Team, so the form can
+// be gated behind a "create your team first" prompt instead. (Full admin-write-into-any-team is
+// Phase 3 / ISI-3955.) A tenant WITH a Team (fleet:false + ≥1 row) is the only "has own team" case;
+// an admin response carries fleet:true (no home tenancy). Fails OPEN (unknown ⇒ show the form) so a
+// transient error or an un-wired dev deployment never blocks composing.
+type CallerScope =
+  | { kind: "loading" }
+  | { kind: "unknown" }
+  | { kind: "resolved"; hasOwnTeam: boolean; fleet: boolean };
+
+function useCallerScope(): CallerScope {
+  const [scope, setScope] = useState<CallerScope>({ kind: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/squad/teams", { cache: "no-store" });
+        if (!res.ok) {
+          if (!cancelled) setScope({ kind: "unknown" });
+          return;
+        }
+        const data = (await res.json()) as {
+          teams?: Array<unknown> | null;
+          fleet?: boolean;
+        };
+        const fleet = data.fleet ?? false;
+        const count = (data.teams ?? []).length;
+        if (!cancelled) {
+          setScope({ kind: "resolved", fleet, hasOwnTeam: !fleet && count >= 1 });
+        }
+      } catch {
+        if (!cancelled) setScope({ kind: "unknown" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return scope;
 }
 
 // ── Tab bar ──────────────────────────────────────────────────────────────────
@@ -341,6 +431,16 @@ export function ComposeScreen() {
   }, [cf]);
 
   const { entries: listEntries, loading: listLoading } = useOrgList(kind);
+  const callerScope = useCallerScope();
+
+  // Gate every team-scoped kind (agents/projects/roles/skills) behind a resolvable OWN team: a
+  // global admin (no home tenancy, ISI-3921) or a dangling-team tenant would otherwise submit a form
+  // the apiserver 404s. Teams themselves are the escape hatch — never gated. Fails open (loading /
+  // unknown ⇒ form) so a transient error never blocks composing (ISI-3964).
+  const composeGated =
+    kind !== "teams" &&
+    callerScope.kind === "resolved" &&
+    !callerScope.hasOwnTeam;
 
   function selectKind(next: ComposeKind) {
     setKind(next);
@@ -437,8 +537,26 @@ export function ComposeScreen() {
           )}
         </aside>
 
-        {/* Center pane: form */}
+        {/* Center pane: form (or the no-own-team gate, ISI-3964) */}
         <main className="compose__form-pane">
+          {composeGated ? (
+            <div className="card compose__gate" data-testid="compose-no-team-gate">
+              <h2>Create your team first</h2>
+              <p className="muted">
+                {callerScope.kind === "resolved" && callerScope.fleet
+                  ? `You’re signed in as a fleet admin with no home team, so there’s nowhere to place this ${KIND_LABEL[kind]} yet. Create a team to author into, or pick an existing squad from the Agents view. (Authoring directly into another squad is coming in a later phase.)`
+                  : `You need a team before you can add a ${KIND_LABEL[kind]} — everything you compose is scoped to a team.`}
+              </p>
+              <button
+                type="button"
+                className="btn btn--primary"
+                onClick={() => selectKind("teams")}
+                data-testid="compose-gate-create-team"
+              >
+                Create a Team
+              </button>
+            </div>
+          ) : (
           <form
             className="card compose__form"
             onSubmit={(e) => {
@@ -470,9 +588,10 @@ export function ComposeScreen() {
               )}
             </div>
           </form>
+          )}
 
           {/* AC4: Verbatim error with recovery CTA */}
-          {submit.kind === "error" && (
+          {!composeGated && submit.kind === "error" && (
             <ErrorBanner
               status={submit.status}
               message={submit.message}

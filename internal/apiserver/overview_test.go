@@ -302,3 +302,142 @@ func TestSquadOverviewNilReaderStill501(t *testing.T) {
 		t.Fatalf("overview(nil reader): got %d, want 501", rec.Code)
 	}
 }
+
+// --- Projects-tab list read model (ISI-3943) -----------------------------------------------------
+
+// TestProjectsTenantScopeAndTeamUID — a tenant caller sees ONLY their Team namespace's Projects,
+// each row carries the owning Team's UID/name (so the console can deep-link to the team's agents),
+// and the Run phase rollup is present. Another Team's Project must never leak.
+func TestProjectsTenantScopeAndTeamUID(t *testing.T) {
+	const uidA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const uidB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	r := newReader(t,
+		team("squad-a", "alpha", uidA),
+		team("squad-b", "beta", uidB),
+		project("squad-a", "web", "https://github.com/acme/web"),
+		project("squad-b", "secret", "https://github.com/acme/secret"),
+		run("squad-a", "run-a", "web", "ISI-A", ksquadv1.RunPhaseRunning, nil),
+	)
+
+	list, err := r.Projects(context.Background(), uidA, false)
+	if err != nil {
+		t.Fatalf("Projects(tenant): %v", err)
+	}
+	if list.Fleet {
+		t.Fatalf("tenant projection must not set Fleet: %+v", list)
+	}
+	if len(list.Projects) != 1 || list.Projects[0].Name != "web" {
+		t.Fatalf("tenant leaked/missing projects: %+v", list.Projects)
+	}
+	p := list.Projects[0]
+	if p.TeamUID != uidA || p.TeamName != "alpha" || p.Namespace != "squad-a" {
+		t.Fatalf("project team context wrong: %+v", p)
+	}
+	if p.RepoURL != "https://github.com/acme/web" || p.PhaseCounts["Running"] != 1 {
+		t.Fatalf("project repo/phase rollup wrong: %+v", p)
+	}
+}
+
+// TestProjectsAdminFleetWide — a global-admin caller sees EVERY squad's Projects (ADR-0010), each
+// keeping its own namespace and resolved to its own Team UID; same-named Projects across squads do
+// not merge; Fleet is marked. teamUID is ignored for admin (the bootstrap admin's is dangling).
+func TestProjectsAdminFleetWide(t *testing.T) {
+	const uidA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const uidB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	r := newReader(t,
+		team("squad-a", "alpha", uidA),
+		team("squad-b", "beta", uidB),
+		project("squad-a", "web", "https://github.com/acme/web"),
+		project("squad-b", "web", "https://github.com/acme/other-web"), // same NAME, different squad
+		project("squad-b", "secret", "https://github.com/acme/secret"),
+		run("squad-b", "run-b", "secret", "ISI-B", ksquadv1.RunPhaseSucceeded, nil),
+	)
+
+	list, err := r.Projects(context.Background(), "deadbeef-0000-0000-0000-000000000000", true)
+	if err != nil {
+		t.Fatalf("Projects(admin): %v", err)
+	}
+	if !list.Fleet {
+		t.Fatalf("admin projection must set Fleet: %+v", list)
+	}
+	if len(list.Projects) != 3 {
+		t.Fatalf("fleet projects: got %d, want 3 (%+v)", len(list.Projects), list.Projects)
+	}
+	// Sorted by (namespace, name): squad-a/web, squad-b/secret, squad-b/web.
+	if list.Projects[0].Namespace != "squad-a" || list.Projects[0].Name != "web" || list.Projects[0].TeamUID != uidA {
+		t.Fatalf("row 0 wrong: %+v", list.Projects[0])
+	}
+	if list.Projects[1].Namespace != "squad-b" || list.Projects[1].Name != "secret" || list.Projects[1].TeamUID != uidB {
+		t.Fatalf("row 1 wrong: %+v", list.Projects[1])
+	}
+	if list.Projects[2].Namespace != "squad-b" || list.Projects[2].Name != "web" || list.Projects[2].TeamUID != uidB {
+		t.Fatalf("row 2 wrong (same-named web merged across squads?): %+v", list.Projects[2])
+	}
+	// The phase rollup must land on squad-b/secret only, not the same-named squad-a/web.
+	if list.Projects[1].PhaseCounts["Succeeded"] != 1 {
+		t.Fatalf("squad-b/secret phase rollup wrong: %+v", list.Projects[1])
+	}
+	if len(list.Projects[0].PhaseCounts) != 0 {
+		t.Fatalf("squad-a/web must have no runs: %+v", list.Projects[0])
+	}
+}
+
+// TestProjectsTenantNotFound — an unknown or empty tenant Team scope yields ErrTeamNotFound (→ 404),
+// never a blank list or another team's Projects. Admin is exempt (fleet-wide is unconditional).
+func TestProjectsTenantNotFound(t *testing.T) {
+	r := newReader(t, team("squad-a", "alpha", "33333333-3333-3333-3333-333333333333"))
+	for _, uid := range []string{"", "99999999-9999-9999-9999-999999999999"} {
+		if _, err := r.Projects(context.Background(), uid, false); !errors.Is(err, ErrTeamNotFound) {
+			t.Fatalf("uid %q: got err %v, want ErrTeamNotFound", uid, err)
+		}
+	}
+}
+
+// TestSquadProjectsHandlerOK — a session whose Team scope resolves serves 200 + the list.
+func TestSquadProjectsHandlerOK(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	reader := newReader(t,
+		team("squad-a", "alpha", teamID.String()),
+		project("squad-a", "web", "https://github.com/acme/web"),
+	)
+	h := testOverviewServer(t, teamID, reader)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/projects", nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projects: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var list SquadProjectList
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(list.Projects) != 1 || list.Projects[0].Name != "web" || list.Projects[0].TeamUID != teamID.String() {
+		t.Fatalf("body: %+v", list)
+	}
+}
+
+// TestSquadProjectsHandlerTeamNotFound — an authenticated tenant whose Team has no projection gets
+// 404 (distinct from the 401 an unauthenticated caller gets).
+func TestSquadProjectsHandlerTeamNotFound(t *testing.T) {
+	teamID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	reader := newReader(t, team("squad-a", "alpha", "66666666-6666-6666-6666-666666666666"))
+	h := testOverviewServer(t, teamID, reader)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/projects", nil), devToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("projects(no team): got %d, want 404", rec.Code)
+	}
+}
+
+// TestSquadProjectsNilReaderStill501 — with no read model wired the route keeps its documented 501.
+func TestSquadProjectsNilReaderStill501(t *testing.T) {
+	teamID := uuid.MustParse("88888888-8888-8888-8888-888888888888")
+	h := testOverviewServer(t, teamID, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/projects", nil), devToken))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("projects(nil reader): got %d, want 501", rec.Code)
+	}
+}

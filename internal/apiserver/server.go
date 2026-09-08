@@ -61,6 +61,11 @@ type Options struct {
 	// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒ own
 	// Team). nil ⇒ documented 501, exactly like Overview.
 	Teams TeamsReader
+	// FleetList is the ISI-3963 fleet-aware Teams/Agents/Skills/Roles list read
+	// model (GET /api/squad/{teams,teams/{uid},agents,skills,roles}, ADR-0010 /
+	// ISI-3941 Phase 1). Admin ⇒ fleet-wide, tenant ⇒ own squad. Nil ⇒ the routes
+	// keep their documented 501 (cluster-less dev run), exactly like Overview.
+	FleetList FleetListReader
 	// Credentials is the 8.6 credential/auth-state read model; nil ⇒ GET /api/credentials
 	// keeps its documented 501 (cluster-less dev run), exactly like Overview.
 	Credentials CredentialOverviewReader // 8.6 credential read model; nil ⇒ documented 501
@@ -155,6 +160,14 @@ type Options struct {
 	// the route keeps the documented 501 (a cluster-less dev run without a kube
 	// client), exactly like the other read models.
 	OTelConfig OTelConfigSource
+	// OTelConfigWriter is the ISI-3954 write half of the OTLP-exporter surface (gap
+	// G5 of the ISI-3949 audit): PUT/POST /api/otelconfig upserts the single
+	// cluster-scoped OTelConfig CR named "default" so the Settings page's "Apply
+	// OTLP configuration" stops returning 405. Admin-tier (cluster-scoped), behind
+	// the SAME §13 choke point + same-origin guard + bounded body as compose writes.
+	// Nil ⇒ the write route keeps the documented 501 (a cluster-less dev run without
+	// a writer client), exactly like the read half and the compose surface.
+	OTelConfigWriter *OTelConfigWriteService
 	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
 	// post-comment / update-status / checkout) mounted under /api/task-io/. It
 	// does NOT ride the cookie BFF authz choke point: it carries its OWN
@@ -361,6 +374,53 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// ISI-3963 fleet-aware list read models (ISI-3941 Phase 1 extension, sibling
+		// of ISI-3943's /api/squad/projects): the Teams/Agents/Skills/Roles lists a
+		// global admin browses the whole fleet with (admin ⇒ every squad; tenant ⇒
+		// own squad, no leak). They ride the SAME §13 choke point as squad-overview
+		// and sit under /api/squad/* — the read namespace — because /api/{teams,
+		// agents,skills,roles} are the write-only compose collections (GET ⇒ 405),
+		// exactly the collision ISI-3943 sidestepped. A nil reader keeps the
+		// documented 501 so the contract stays honest on a cluster-less dev run.
+		fleetTeams := s.router.Path("/api/squad/teams").Subrouter()
+		fleetTeams.Use(authz)
+		fleetTeamOne := s.router.Path("/api/squad/teams/{uid}").Subrouter()
+		fleetTeamOne.Use(authz)
+		fleetAgents := s.router.Path("/api/squad/agents").Subrouter()
+		fleetAgents.Use(authz)
+		fleetSkills := s.router.Path("/api/squad/skills").Subrouter()
+		fleetSkills.Use(authz)
+		fleetRoles := s.router.Path("/api/squad/roles").Subrouter()
+		fleetRoles.Use(authz)
+		if opts.FleetList != nil {
+			fleetTeams.HandleFunc("", s.squadTeams(opts.FleetList)).Methods(http.MethodGet)
+			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
+			fleetAgents.HandleFunc("", s.squadAgents(opts.FleetList)).Methods(http.MethodGet)
+			fleetSkills.HandleFunc("", s.squadSkills(opts.FleetList)).Methods(http.MethodGet)
+			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
+		} else {
+			h := notImplemented("fleet-list read model", "ISI-3963: wire a FleetListReader (informer cache) to enable")
+			fleetTeams.HandleFunc("", h).Methods(http.MethodGet)
+			fleetTeamOne.HandleFunc("", h).Methods(http.MethodGet)
+			fleetAgents.HandleFunc("", h).Methods(http.MethodGet)
+			fleetSkills.HandleFunc("", h).Methods(http.MethodGet)
+			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
+		}
+
+		// ISI-3943 Projects-tab list: the fleet-aware Project list the console's Projects tab
+		// renders against (a second projection over the SAME informer cache as squad-overview —
+		// overview.go Projects()). Admin ⇒ fleet-wide (ADR-0010); tenant ⇒ their Team namespace.
+		// Rides the SAME §13 authz choke point; GET-only. Absent a reader it keeps the documented
+		// 501 (honest cluster-less contract), matching squad-overview.
+		projects := s.router.Path("/api/squad/projects").Subrouter()
+		projects.Use(authz)
+		if opts.Overview != nil {
+			projects.HandleFunc("", s.squadProjects(opts.Overview)).Methods(http.MethodGet)
+		} else {
+			projects.HandleFunc("", notImplemented("squad-projects read model", "ISI-3943: fleet-aware Projects list (over the squad-overview cache)")).
+				Methods(http.MethodGet)
+		}
+
 		// 8.10/8.11 Agents org read model (ISI-3548, child of ISI-3543): the four
 		// read-only routes the Console Agents surface renders against — the
 		// Team→Agent→Role org diagram, its live per-agent status SSE, and the agent
@@ -412,11 +472,27 @@ func (s *Server) routes(opts Options) {
 		// error. Nil source (cluster-less dev run) keeps the documented 501.
 		otelCfg := s.router.Path("/api/otelconfig").Subrouter()
 		otelCfg.Use(authz)
+		// The write verbs (ISI-3954) ride the SAME same-origin CSRF guard + bounded
+		// body as the compose write surface. sameOriginGuard only guards mutating
+		// methods, so mounting it on the shared subrouter leaves the GET read model
+		// unchanged; maxBytesBody on a bodiless GET is a no-op.
+		otelCfg.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		otelCfg.Use(maxBytesBody(otelConfigMaxBodyBytes))
 		if opts.OTelConfig != nil {
 			otelCfg.HandleFunc("", s.otelConfig(opts.OTelConfig)).Methods(http.MethodGet)
 		} else {
 			otelCfg.HandleFunc("", notImplemented("otel-config read model", "ISI-2917: wire a kube client to enable")).
 				Methods(http.MethodGet)
+		}
+		// ISI-3954 write half (ISI-3949 gap G5): PUT/POST /api/otelconfig upserts the
+		// single cluster-scoped OTelConfig CR named "default", admin-gated in the
+		// handler (cluster-scoped telemetry routing is platform-tier, not per-tenant).
+		// A nil writer keeps the documented 501, exactly like the read half.
+		if opts.OTelConfigWriter != nil {
+			otelCfg.HandleFunc("", s.otelConfigWrite(opts.OTelConfigWriter)).Methods(http.MethodPut, http.MethodPost)
+		} else {
+			otelCfg.HandleFunc("", notImplemented("otel-config write surface", "ISI-3954: wire an OTelConfigWriteService (controller-runtime client) to enable")).
+				Methods(http.MethodPut, http.MethodPost)
 		}
 
 		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the

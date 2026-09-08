@@ -8,6 +8,7 @@
 
 import Link from "next/link";
 
+import { FleetTeamPicker } from "@/components/agents/FleetTeamPicker";
 import { SessionTeamOrg } from "@/components/agents/SessionTeamOrg";
 import { TeamOrgDiagram } from "@/components/agents/TeamOrgDiagram";
 import { canCompose, viewer } from "@/lib/session";
@@ -20,9 +21,14 @@ export default async function AgentsPage({
   searchParams: Promise<{ team?: string }>;
 }) {
   const { team } = await searchParams;
+  const v = await viewer();
   // "+ New Agent" is the discoverable entry point into the compose Agent form (ISI-3554 Story A).
   // Gated on a resolved session identity; the apiserver stays the write authority (see canCompose).
-  const may = canCompose(await viewer());
+  const may = canCompose(v);
+  // A global admin has no home tenancy (ISI-3921), so SessionTeamOrg's own-team resolve dead-ends
+  // on the fleet overview's synthetic Team ("no team org"). For admins we render the fleet team
+  // picker instead (ISI-3964); a tenant path is UNCHANGED — one session, one Team, no selector.
+  const isAdmin = v.access === "admin";
   return (
     <main className="agents-page">
       <header className="agents-page__head">
@@ -55,7 +61,13 @@ export default async function AgentsPage({
         )}
       </header>
       <div className="card">
-        {team ? <TeamOrgDiagram teamId={team} /> : <SessionTeamOrg />}
+        {team ? (
+          <TeamOrgDiagram teamId={team} />
+        ) : isAdmin ? (
+          <FleetTeamPicker />
+        ) : (
+          <SessionTeamOrg />
+        )}
       </div>
     </main>
   );

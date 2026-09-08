@@ -53,6 +53,14 @@ import (
 // foreign-Project caller cannot distinguish deny from not-found.
 var ErrProjectNotFound = errors.New("apiserver: no project matches the caller's team scope")
 
+// ErrProjectAmbiguous is returned only on the admin fleet-wide path (ISI-3951)
+// when a bare Project *name* matches more than one squad. The handler answers
+// 409 and tells the caller to address the Project by UID. Existence-hiding is a
+// non-admin property (ErrProjectNotFound); an admin is supra-tenant and trusted,
+// so surfacing "this name spans squads" is acceptable — and never serving the
+// wrong squad's data silently is the point (no first-match-wins).
+var ErrProjectAmbiguous = errors.New("apiserver: project name matches more than one squad")
+
 // ============================================================================
 // Tile envelope — every tile carries its own availability, never a fake value.
 // ============================================================================
@@ -279,37 +287,39 @@ func NewDashboardService(reader client.Reader, tickets TicketSource, prs PRSourc
 	return &DashboardService{reader: reader, tickets: tickets, prs: prs, metrics: metrics}
 }
 
-// Dashboard composes the per-Project payload. It resolves the caller's Team by
-// UID (the §7.3.3 tenancy root), requires the named Project to live in that
-// Team's namespace (else ErrProjectNotFound → 404 existence-hiding), then
-// fills the four tiles independently: the live-Runs tile from the cache, the
-// seam-backed tiles from their wired sources with per-tile error capture.
+// Dashboard composes the per-Project payload. A non-admin caller resolves their
+// Team by UID (the §7.3.3 tenancy root) and requires the named Project to live in
+// that Team's namespace (else ErrProjectNotFound → 404 existence-hiding). A global
+// admin (ADR-0010/ISI-3951) is supra-tenant and resolves the Project cluster-wide
+// by UID or name (ErrProjectAmbiguous → 409 on a cross-squad name collision).
+// Either way it then fills the four tiles independently from the resolved
+// namespace: the live-Runs tile from the cache, the seam-backed tiles from their
+// wired sources with per-tile error capture.
 func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.AuthorContext, projectID string) (ProjectDashboard, error) {
-	ns, err := s.teamNamespace(ctx, auth.TeamID.String())
+	// Resolve the scope namespace + the concrete Project name. An admin
+	// (global_role=admin, ADR-0010/ISI-3932) is supra-tenant: their Team is
+	// dangling (ISI-3921), so teamNamespace() would ErrTeamNotFound — they
+	// resolve the Project cluster-wide instead, exactly as overview.go's admin
+	// branch does. A non-admin stays team-fenced with the existence-hiding 404.
+	//
+	// name is the resolved Project's .Name (which differs from projectID when the
+	// admin addressed it by UID) — ProjectRef and every seam key on the name, not
+	// the raw path variable.
+	var ns, name string
+	var err error
+	if auth.IsAdmin {
+		ns, name, err = s.resolveProjectFleetWide(ctx, projectID)
+	} else {
+		ns, name, err = s.resolveProjectInTeam(ctx, auth.TeamID.String(), projectID)
+	}
 	if err != nil {
 		return ProjectDashboard{}, err
 	}
 
-	// Existence + tenancy of the Project: must be in the caller's Team namespace.
-	var projects ksquadv1.ProjectList
-	if err := s.reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
-		return ProjectDashboard{}, err
-	}
-	found := false
-	for i := range projects.Items {
-		if projects.Items[i].Name == projectID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return ProjectDashboard{}, ErrProjectNotFound
-	}
-
-	out := ProjectDashboard{Project: ProjectRef{Name: projectID, Namespace: ns}}
+	out := ProjectDashboard{Project: ProjectRef{Name: name, Namespace: ns}}
 
 	// ── 8.8f live Runs: informer cache, no seam — serves whenever the Team resolves.
-	live, err := s.liveRuns(ctx, ns, projectID)
+	live, err := s.liveRuns(ctx, ns, name)
 	switch {
 	case err != nil:
 		// Runs stays a non-nil empty slice so the tile marshals "runs":[] not
@@ -325,7 +335,7 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	case nil:
 		out.Tickets = TicketsTile{TileStatus: degradedTile("source not wired: coordination store (Epic 2 §6.5)")}
 	default:
-		facts, terr := s.tickets.TicketFacts(ctx, auth.Principal, ns, projectID)
+		facts, terr := s.tickets.TicketFacts(ctx, auth.Principal, ns, name)
 		switch {
 		case terr != nil:
 			out.Tickets = TicketsTile{TileStatus: degradedTile(terr.Error())}
@@ -346,7 +356,7 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	case nil:
 		out.PullRequests = PRTile{TileStatus: degradedTile("source not wired: scm PR mirror (Epic 11.3, §5.4)")}
 	default:
-		prs, perr := s.prs.PullRequests(ctx, ns, projectID)
+		prs, perr := s.prs.PullRequests(ctx, ns, name)
 		switch {
 		case perr != nil:
 			out.PullRequests = PRTile{TileStatus: degradedTile(perr.Error())}
@@ -374,7 +384,7 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	case nil:
 		out.Consumption = ConsumptionTile{TileStatus: degradedTile("source not wired: metrics query seam (Epic 13.4, §17.2)")}
 	default:
-		total, cost, currency, trend, merr := s.metrics.TokenConsumption(ctx, ns, projectID)
+		total, cost, currency, trend, merr := s.metrics.TokenConsumption(ctx, ns, name)
 		if merr != nil {
 			out.Consumption = ConsumptionTile{TileStatus: degradedTile(merr.Error())}
 		} else {
@@ -389,6 +399,70 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	}
 
 	return out, nil
+}
+
+// resolveProjectInTeam is the NON-ADMIN scope resolver (unchanged semantics from
+// the original inline block): resolve the caller's Team by UID to its namespace,
+// then require the named Project to live in that namespace. A Project outside it
+// — or a wholly unknown one — is ErrProjectNotFound (404), indistinguishable
+// (existence-hiding, NFR-SEC5). Returns the resolved (namespace, Project name).
+func (s *DashboardService) resolveProjectInTeam(ctx context.Context, teamUID, projectID string) (string, string, error) {
+	ns, err := s.teamNamespace(ctx, teamUID)
+	if err != nil {
+		return "", "", err
+	}
+	var projects ksquadv1.ProjectList
+	if err := s.reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
+		return "", "", err
+	}
+	for i := range projects.Items {
+		if projects.Items[i].Name == projectID {
+			return ns, projects.Items[i].Name, nil
+		}
+	}
+	return "", "", ErrProjectNotFound
+}
+
+// resolveProjectFleetWide is the ADMIN scope resolver (ISI-3951, extends
+// ADR-0010). It lists Projects cluster-wide through the same informer cache (no
+// InNamespace ⇒ no new watch, no new RBAC — the apiserver ClusterRole already
+// has cluster-wide list on projects) and matches by UID OR name:
+//
+//   - a UID match is unique ⇒ return its (namespace, name) immediately, even if a
+//     name also collides (UID-first, so AC3 is unambiguous);
+//   - exactly one name match ⇒ return its (namespace, name);
+//   - more than one name match ⇒ ErrProjectAmbiguous (409, address by UID) — never
+//     a silent first-match-wins that would serve the wrong squad's data;
+//   - no match ⇒ ErrProjectNotFound (404).
+//
+// Returns the concrete Project's own namespace (fed to liveRuns + every seam) and
+// its .Name (the seams key on the name, never the raw path variable which may be
+// a UID on this path).
+func (s *DashboardService) resolveProjectFleetWide(ctx context.Context, projectID string) (string, string, error) {
+	var projects ksquadv1.ProjectList
+	if err := s.reader.List(ctx, &projects); err != nil {
+		return "", "", err
+	}
+	var nameNS, nameName string
+	nameMatches := 0
+	for i := range projects.Items {
+		p := &projects.Items[i]
+		if string(p.UID) == projectID && projectID != "" {
+			return p.Namespace, p.Name, nil // UID match is unique — wins over any name collision.
+		}
+		if p.Name == projectID {
+			nameNS, nameName = p.Namespace, p.Name
+			nameMatches++
+		}
+	}
+	switch nameMatches {
+	case 0:
+		return "", "", ErrProjectNotFound
+	case 1:
+		return nameNS, nameName, nil
+	default:
+		return "", "", ErrProjectAmbiguous
+	}
 }
 
 // teamNamespace resolves the caller's Team UID to its namespace (the §12.1
@@ -508,6 +582,10 @@ func (s *Server) projectDashboard(svc *DashboardService) http.HandlerFunc {
 			writeJSONError(w, http.StatusNotFound, "no dashboard for this team scope")
 		case errors.Is(err, ErrProjectNotFound):
 			writeJSONError(w, http.StatusNotFound, "no dashboard for this project")
+		case errors.Is(err, ErrProjectAmbiguous):
+			// Admin fleet-wide only (ISI-3951): a bare name spans squads. Tell the
+			// caller to re-address by Project UID rather than serve the wrong tenant.
+			writeJSONError(w, http.StatusConflict, "project name ambiguous across squads; address by uid")
 		case err != nil:
 			writeJSONError(w, http.StatusBadGateway, "dashboard read model unavailable")
 		default:

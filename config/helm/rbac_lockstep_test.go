@@ -183,12 +183,14 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // EgressPolicies and Projects in the caller's namespace to constrain probe
 // egress to the squad's declared allowlist — a silent 403 there would
 // fail-close every BYO test-connection with a 502.
-// otelconfigs is a read-only get+list grant (ISI-3916): the Story A OTelConfig
-// read model Lists the cluster-scoped OTelConfig through the shared informer
-// cache (its only reader — no direct-client path). The informer syncs on its
-// initial LIST, so without `list` the cache never syncs and GET /api/otelconfig
-// hangs then 504s (Settings › OTel export-state). No write verbs — the operator
-// owns this CR.
+// otelconfigs is a get+list+create+update grant (ISI-3916 read half, ISI-3954
+// write half): the Story A OTelConfig read model Lists the cluster-scoped
+// OTelConfig through the shared informer cache (the informer syncs on its initial
+// LIST, so without `list` the cache never syncs and GET /api/otelconfig hangs then
+// 504s), and the ISI-3954 write surface (OTelConfigWriteService, PUT/POST
+// /api/otelconfig) upserts the single CR named "default" via the direct client —
+// name-only Get-then-Create-or-Update — so it adds `create`+`update`. No
+// patch/delete; status stays operator-owned.
 // roles adds `list` and agentruntimes+runs are read-only get+list grants
 // (ISI-3932): the Agents org read model (org.go load()/AgentRuns/AgentStatuses)
 // and the squad overview read model (overview.go) List Roles, AgentRuntimes and
@@ -198,6 +200,9 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // unblocks each cache; without it the cluster-scoped LIST 403s, the informer
 // never syncs, and /api/squad/overview + /api/agents/* fail. roles keeps its
 // compose write verbs; agentruntimes/runs are read-only (operator-owned CRs).
+// skills adds `list` (ISI-3963) for the same reason: the fleet-aware skill list
+// read model (fleetlist.go Skills()) Lists Skills through the shared informer
+// cache, so GET /api/squad/skills needs the cluster-scoped LIST to unblock it.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -209,11 +214,11 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agents"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "create", "update"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
-		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list"}},
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+
