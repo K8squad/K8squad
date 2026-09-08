@@ -79,21 +79,6 @@ func buildFilesServer(reader WorkspaceReader, resolver ProjectRoleResolver, auth
 	return NewServer(opts)
 }
 
-// get issues a GET to the server and returns the recorder.
-func get(srv *Server, path string, authn *stubAuthenticator) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(http.MethodGet, path, nil)
-	w := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(w, r)
-	return w
-}
-
-// getAs issues a GET with a specific identity baked into the authenticator.
-func getAs(srv *Server, path, principal string, isAdmin bool) *httptest.ResponseRecorder {
-	// Swap the server's authenticator to return this identity.
-	// Since we build a fresh server per test this is safe.
-	return get(srv, path, filesAuthn(principal, isAdmin))
-}
-
 // ---- workspaceJailPath ---------------------------------------------------
 
 func TestWorkspaceJailPath(t *testing.T) {
