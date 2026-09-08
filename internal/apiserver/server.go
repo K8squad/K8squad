@@ -91,6 +91,10 @@ type Options struct {
 	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
 	// route keeps answering the documented 501 (dev run without an informer cache wired).
 	Dashboard *DashboardService
+	// GithubStatus is the S5b GitHub-status read model over the scm mirror (ISI-3956). When nil
+	// the /github route keeps answering the documented 501 (dev run without the mirror reader
+	// wired) so the S5c tab renders "not available yet".
+	GithubStatus *GithubStatusService
 	// ProjectSettings is the S1 per-Project settings read model (ISI-3999): GET
 	// /api/projects/{projectId}/settings projects a single Project's SCM/config
 	// state (repo url/ref/provider/sync + auth.connected + last-test tri-state +
@@ -544,6 +548,23 @@ func (s *Server) routes(opts Options) {
 			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
 		} else {
 			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// S5b GitHub-status read model: PRs/issues/check-runs/artifacts(/releases) projected
+		// from the scm mirror (githubstatus.go, ISI-3956), behind the SAME choke point and the
+		// SAME viewer-or-admin RBAC as the dashboard — the mirror read reuses the dashboard's
+		// existence-hiding tenancy, no bespoke path. Nil service (mirror reader unwired) keeps
+		// the documented 501 so the S5c tab degrades honestly.
+		ghStatus := s.router.Path("/api/projects/{projectId}/github").Subrouter()
+		ghStatus.Use(authz)
+		if opts.ProjectRoles != nil {
+			ghStatus.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.GithubStatus != nil {
+			ghStatus.HandleFunc("", s.projectGithubStatus(opts.GithubStatus)).Methods(http.MethodGet)
+		} else {
+			ghStatus.HandleFunc("", notImplemented("github-status read model", "ISI-3956 S5b: wire a GithubStatusService (scm mirror reader) to enable")).
 				Methods(http.MethodGet)
 		}
 

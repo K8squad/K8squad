@@ -225,3 +225,42 @@ func TestNormalizedRecordTimeZero(t *testing.T) {
 		t.Fatal("zero CreatedAt expected")
 	}
 }
+
+// ListRecords (ISI-3956 S5b read seam) returns only the queried Project's rows,
+// deterministically ordered by (kind, external id), decoding the payload back.
+func TestInMemoryMirrorStoreListRecords(t *testing.T) {
+	store := NewInMemoryMirrorStore()
+	ctx := context.Background()
+	provider := &stubProvider{"github"}
+
+	want, err := store.ApplySnapshot(ctx, "ns", "proj",
+		BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", sampleSnapshot(), ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second project's rows must not bleed into the first's read.
+	if _, err := store.ApplySnapshot(ctx, "ns2", "proj2",
+		BuildMirrorRows("ns2", "proj2", provider, "github.com/acme/other", sampleSnapshot(), "")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.ListRecords(ctx, "ns", "proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != want {
+		t.Fatalf("ListRecords scope: got %d rows, want %d (cross-project leak?)", len(got), want)
+	}
+	// Deterministic ordering by (kind, external id).
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Kind > got[i].Kind ||
+			(got[i-1].Kind == got[i].Kind && got[i-1].ExternalID > got[i].ExternalID) {
+			t.Fatalf("ListRecords not ordered by (kind, external id): %+v", got)
+		}
+	}
+	// An unknown project reads empty, never an error.
+	empty, err := store.ListRecords(ctx, "ns", "nope")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("unknown project: got (%v, %v), want (empty, nil)", empty, err)
+	}
+}
