@@ -27,6 +27,18 @@ type MessageSource interface {
 	AllForMemoryIndex(ctx context.Context, since time.Time, limit int) ([]discussion.MemoryIndexable, error)
 }
 
+// CursorStore is the durable-watermark seam (satisfied by *memory.PgVectorStore). It persists the
+// projection's position so a restart resumes from the last committed watermark rather than re-scanning
+// from zero or skipping a window (Story J-C AC1). Optional: a nil store keeps the pre-J-C in-process
+// watermark only — used by unit tests and any sink without a cursor table.
+type CursorStore interface {
+	LoadProjectionCursor(ctx context.Context, name string) (memory.ProjectionCursor, bool, error)
+	SaveProjectionCursor(ctx context.Context, name string, at time.Time, id string) error
+}
+
+// cursorName is the projection_cursor key for the discussion→memory indexer.
+const cursorName = "discussion"
+
 // principalNamespace is a fixed UUIDv5 namespace: the memory substrate columns (principal_id/agent_id/
 // run_id) are uuid NOT NULL, but the discussion provenance is TEXT ("alice@corp", "agent:coordinator").
 // We derive a STABLE uuid from each text identity for the substrate columns; the honest text triple is
@@ -41,16 +53,22 @@ func deriveUUID(prefix, text string) string {
 
 // Indexer projects committed discussion messages into the memory pgvector index. It keeps an in-process
 // watermark (max created_at indexed) plus a seen-set of message ids, so ties at the watermark boundary
-// are never double-indexed within a process. A persistent cursor (survive restart without re-projecting)
-// is a fast-follow behind this same seam; re-projection is non-destructive (deterministic ids/content).
+// are never double-indexed within a process. When a CursorStore is attached (WithCursor), the watermark
+// also survives a restart: it is loaded once on the first sweep and persisted after each advancing
+// sweep, so a crash/redeploy resumes from the last committed position (Story J-C AC1). Re-projection is
+// non-destructive — the deterministic record id (deriveUUID) makes the memory write idempotent (AC2).
 type Indexer struct {
 	src   MessageSource
 	sink  memory.Backend
 	embed memory.Embedder
 
-	watermark time.Time
-	seen      map[uuid.UUID]struct{}
-	batchSize int
+	cursor       CursorStore // nil ⇒ in-process watermark only (unit tests / sink without a cursor table)
+	cursorLoaded bool
+
+	watermark   time.Time
+	watermarkID uuid.UUID // source id at the watermark — persisted as tie provenance
+	seen        map[uuid.UUID]struct{}
+	batchSize   int
 }
 
 // NewIndexer wires the bridge. batchSize<=0 defaults to 200 (the store's cap).
@@ -67,10 +85,21 @@ func NewIndexer(src MessageSource, sink memory.Backend, embed memory.Embedder, b
 	}
 }
 
+// WithCursor attaches a durable watermark, making the projection restart-surviving (Story J-C AC1). The
+// persisted cursor is loaded lazily on the first Sweep and advanced after each sweep that moves the
+// watermark. A nil store is a no-op (in-process watermark only). Returns the indexer for chaining.
+func (ix *Indexer) WithCursor(store CursorStore) *Indexer {
+	ix.cursor = store
+	return ix
+}
+
 // Sweep projects one batch of not-yet-indexed messages into the memory index and returns how many were
 // newly indexed. It is best-effort: a single message that fails to embed or write is logged and skipped
 // (it will be retried on the next sweep), never aborting the batch — the room is never blocked (AC5).
 func (ix *Indexer) Sweep(ctx context.Context) (int, error) {
+	ix.ensureCursorLoaded(ctx)
+
+	before := ix.watermark
 	msgs, err := ix.src.AllForMemoryIndex(ctx, ix.watermark, ix.batchSize)
 	if err != nil {
 		return 0, err
@@ -85,7 +114,7 @@ func (ix *Indexer) Sweep(ctx context.Context) (int, error) {
 		if _, done := ix.seen[m.MessageID]; done {
 			// Already indexed (a watermark-boundary tie) — skip re-projecting; advance only if not frozen.
 			if !frozen {
-				ix.advance(m.CreatedAt)
+				ix.advance(m.CreatedAt, m.MessageID)
 			}
 			continue
 		}
@@ -96,17 +125,58 @@ func (ix *Indexer) Sweep(ctx context.Context) (int, error) {
 		}
 		ix.seen[m.MessageID] = struct{}{}
 		if !frozen {
-			ix.advance(m.CreatedAt)
+			ix.advance(m.CreatedAt, m.MessageID)
 		}
 		indexed++
+	}
+	// Persist the watermark AFTER the batch's writes are committed (AC1/AC2). A crash before this saves
+	// leaves the durable cursor behind the writes, so a restart re-scans the tail and the idempotent
+	// projection collapses the re-scan to a no-op — never a drop, never a duplicate. Only save when the
+	// watermark actually advanced this sweep, to avoid churning the cursor row every idle tick.
+	if ix.cursor != nil && ix.watermark.After(before) {
+		if err := ix.cursor.SaveProjectionCursor(ctx, cursorName, ix.watermark, ix.watermarkID.String()); err != nil {
+			// Fail-open (AC3): the in-process watermark still advanced, so recall is unaffected; the only
+			// cost of a lost save is a bounded idempotent re-scan on the next restart.
+			log.Printf("discussionindex: persist cursor failed (best-effort, in-process watermark retained): %v", err)
+		}
 	}
 	return indexed, nil
 }
 
-// advance moves the watermark forward monotonically (never backward).
-func (ix *Indexer) advance(t time.Time) {
+// ensureCursorLoaded loads the durable watermark once, on the first sweep, seeding the in-process
+// watermark so the projection resumes from its last committed position (AC1). A load error is fail-open
+// (AC3): the sweep falls back to a zero watermark and re-scans from the beginning, which the idempotent
+// projection makes safe (no duplicate rows) — only a bounded one-time re-scan.
+func (ix *Indexer) ensureCursorLoaded(ctx context.Context) {
+	if ix.cursor == nil || ix.cursorLoaded {
+		return
+	}
+	ix.cursorLoaded = true
+	c, ok, err := ix.cursor.LoadProjectionCursor(ctx, cursorName)
+	if err != nil {
+		log.Printf("discussionindex: load cursor failed (best-effort, sweeping from zero): %v", err)
+		return
+	}
+	if !ok {
+		return // never saved — first boot; sweep from zero
+	}
+	ix.watermark = c.LastProjectedAt
+	// Seed the seen-set with the boundary id so the exact watermark row is not even re-written (its
+	// idempotent write would be a no-op anyway; this just skips the round-trip). The source query is
+	// `created_at >= watermark`, so any OTHER rows sharing that timestamp are still re-fetched and
+	// deduplicated by the idempotent write.
+	if id, perr := uuid.Parse(c.LastProjectedID); perr == nil {
+		ix.watermarkID = id
+		ix.seen[id] = struct{}{}
+	}
+}
+
+// advance moves the watermark forward monotonically (never backward), recording the source id at the
+// new high-water mark for persistence as tie provenance.
+func (ix *Indexer) advance(t time.Time, id uuid.UUID) {
 	if t.After(ix.watermark) {
 		ix.watermark = t
+		ix.watermarkID = id
 	}
 }
 
@@ -125,6 +195,10 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		m.AuthorAgentID, m.AuthorRunID, m.CreatedAt)
 
 	projectID := m.ProjectID.String()
+	// The record id is DERIVED deterministically from the message id (same UUIDv5 namespace as the
+	// substrate columns), so re-projecting a message on a crash-replay upserts the SAME row rather than
+	// duplicating it — the AC2 exactly-once-into-recall guarantee, paired with the store's ON CONFLICT.
+	recordID := deriveUUID("discussion-record", m.MessageID.String())
 	req := memory.WriteRequest{
 		SquadID:     m.TeamID.String(),
 		ProjectID:   &projectID,
@@ -133,6 +207,7 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		Content:     m.Body,
 		Embedding:   vec,
 		Provenance:  prov,
+		DedupeID:    &recordID,
 	}
 	if m.AuthorAgentID != nil {
 		a := deriveUUID("agent", *m.AuthorAgentID)

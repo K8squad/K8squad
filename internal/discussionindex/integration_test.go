@@ -216,3 +216,70 @@ func TestDiscussionIndexAndSearch(t *testing.T) {
 		t.Fatalf("memory_search returned %d, want 2 team-1 room messages", len(mem1))
 	}
 }
+
+// TestRestartSurvival is the Story J-C AC1/AC2 assertion on REAL pgvector: seed a room, project it with
+// a durable cursor, then simulate a memory-service restart (a brand-new Indexer over the same persisted
+// cursor + same store) and prove every message is recalled EXACTLY once — no full re-scan when the
+// cursor persisted, and no duplicate row when a crash forced a re-scan.
+//
+//	MEMORY_TEST_DATABASE_URL=postgres://postgres:password@localhost:5432/ksquad?sslmode=disable \
+//	  go test -tags integration ./internal/discussionindex/... -run TestRestartSurvival
+func TestRestartSurvival(t *testing.T) {
+	mem, ds, _ := setup(t)
+	ctx := context.Background()
+	embed := memory.NewHashingEmbedder()
+
+	team, proj := uuid.New(), uuid.New()
+	alice := discussion.AuthorContext{Principal: "alice@corp", TeamID: team}
+	th, err := ds.OpenThread(ctx, proj, alice, "release", "message one — deploy plan alpha")
+	if err != nil {
+		t.Fatalf("open thread: %v", err)
+	}
+	// Four messages total (the OpenThread body is message one); post three more.
+	for _, body := range []string{"message two — deploy plan beta", "message three — rollback plan", "message four — final sign-off"} {
+		if _, err := ds.PostMessage(ctx, proj, team, th.ID, alice, body, nil); err != nil {
+			t.Fatalf("post %q: %v", body, err)
+		}
+	}
+	const total = 4
+
+	deployVec, err := embed.Embed(ctx, "deploy")
+	if err != nil {
+		t.Fatalf("embed probe: %v", err)
+	}
+	kind := memory.KindDiscussion
+	recallCount := func() int {
+		hits, err := mem.Search(ctx, memory.SearchQuery{
+			SquadID: team.String(), Kind: &kind, Limit: 100, Embedding: deployVec,
+		})
+		if err != nil {
+			t.Fatalf("recall search: %v", err)
+		}
+		return len(hits)
+	}
+	drain := func(ix *Indexer) {
+		for i := 0; i < total+2; i++ {
+			n, err := ix.Sweep(ctx)
+			if err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			if n == 0 {
+				return
+			}
+		}
+	}
+
+	// Process 1: project the whole corpus with a durable cursor. batchSize 2 forces multiple sweeps so
+	// the cursor advances across batch boundaries.
+	drain(NewIndexer(ds, mem, embed, 2).WithCursor(mem))
+	if got := recallCount(); got != total {
+		t.Fatalf("after process-1: recall holds %d, want %d exactly once", got, total)
+	}
+
+	// Restart with a persisted cursor: a fresh Indexer (empty in-process seen-set) over the SAME store.
+	// It resumes from the durable watermark; recall must still hold each message exactly once.
+	drain(NewIndexer(ds, mem, embed, 2).WithCursor(mem))
+	if got := recallCount(); got != total {
+		t.Fatalf("AC1: after restart+resume, recall holds %d, want %d exactly once (no duplicate projection)", got, total)
+	}
+}

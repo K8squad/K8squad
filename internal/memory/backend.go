@@ -39,6 +39,13 @@ type WriteRequest struct {
 	Content     string
 	Embedding   []float32
 	Provenance  json.RawMessage
+
+	// DedupeID, when non-nil, is a deterministic record id (a caller-derived UUID) that makes the write
+	// idempotent: re-writing the same derived id is an ON CONFLICT no-op that returns the existing row,
+	// never a duplicate. The out-of-band projections use it (the 10.2 discussion indexer derives it from
+	// the message id) so a crash-replay re-scan re-projects each source row EXACTLY once (Story J-C AC2).
+	// Nil ⇒ the id is server-assigned (gen_random_uuid), the default for authored writes.
+	DedupeID *string
 }
 
 // SearchQuery is a scoped semantic search. It is ALWAYS scoped by SquadID (the tenancy root, AC3);
