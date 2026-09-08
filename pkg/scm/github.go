@@ -179,6 +179,18 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 		records = append(records, artifactRecords...)
 	}
 
+	// Fetch releases — OPT-IN only (ISI-3956 S5a AC2): unlike the other kinds,
+	// releases are NOT part of the empty-Types default set. They are fetched
+	// solely when RecordTypeRelease is explicitly requested (Mirror.Releases=true),
+	// so the default full sync spends no extra API budget on them.
+	if contains(options.Types, RecordTypeRelease) {
+		releaseRecords, err := p.fetchReleases(ctx, repoOwner, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch releases: %w", err)
+		}
+		records = append(records, releaseRecords...)
+	}
+
 	return records, nil
 }
 
@@ -645,6 +657,73 @@ func (p *GitHubProvider) fetchArtifacts(ctx context.Context, owner, repo string)
 	}
 
 	return records, nil
+}
+
+// fetchReleases pulls the repo's published releases (ISI-3956 S5a) and
+// normalizes them to RecordTypeRelease. It mirrors the shape of fetchArtifacts:
+// paginated via go-github/v57, bounded by maxRecordsPerKind, and rate-limit
+// errors wrapped through wrapRateLimit so releases share the one repo rate
+// budget per sync tick (AC4). State encodes the release lifecycle
+// (draft | prerelease | published); the tag ref rides HeadRef so the mirror
+// carries it without a new column, and PublishedAt (falling back to CreatedAt)
+// answers "when did this ship".
+func (p *GitHubProvider) fetchReleases(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
+	var records []NormalizedRecord
+
+	opt := &github.ListOptions{PerPage: githubPerPage}
+	for {
+		releases, resp, err := p.client.Repositories.ListReleases(ctx, owner, repo, opt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, release := range releases {
+			// Title prefers the human name, falling back to the tag so the row
+			// is never blank (an unnamed release still shows its tag).
+			title := release.GetName()
+			if title == "" {
+				title = release.GetTagName()
+			}
+			record := NormalizedRecord{
+				Kind:       RecordTypeRelease,
+				ExternalID: fmt.Sprintf("%d", release.GetID()),
+				State:      releaseState(release),
+				Title:      title,
+				URL:        release.GetHTMLURL(),
+				Actor:      getGitHubActor(release.GetAuthor()),
+				HeadRef:    release.GetTagName(),
+			}
+			// PublishedAt is zero for a draft; fall back to CreatedAt so the
+			// row always carries a meaningful timestamp.
+			if release.PublishedAt != nil && !release.PublishedAt.IsZero() {
+				record.CreatedAt = release.PublishedAt.Time
+			} else if release.CreatedAt != nil {
+				record.CreatedAt = release.CreatedAt.Time
+			}
+			record.UpdatedAt = record.CreatedAt
+			records = append(records, record)
+		}
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	return records, nil
+}
+
+// releaseState maps a GitHub release's draft/prerelease flags onto the mirror
+// state string the GitHub-status tab groups by: a draft is "draft", an
+// unpublished-but-flagged prerelease is "prerelease", everything else is
+// "published".
+func releaseState(release *github.RepositoryRelease) string {
+	switch {
+	case release.GetDraft():
+		return "draft"
+	case release.GetPrerelease():
+		return "prerelease"
+	default:
+		return "published"
+	}
 }
 
 // Helper functions
