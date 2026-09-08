@@ -1622,6 +1622,24 @@ a:hover {
   background: var(--surface, var(--canvas));
   border: 1px solid var(--border);
 }
+/* ISI-3985 — list rows are clickable: clicking an object opens it in Edit mode. */
+.compose__list-select {
+  all: unset;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.compose__list-select:hover .compose__list-name {
+  text-decoration: underline;
+}
+.compose__list-select:focus-visible {
+  outline: 2px solid var(--accent, var(--ring, #6ea8fe));
+  outline-offset: 2px;
+  border-radius: calc(var(--radius) - 2px);
+}
 .compose__list-name {
   font-size: 13px;
   font-weight: 500;
