@@ -406,7 +406,8 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 // model (projectsettings.go, ISI-3999) and the S5b GitHub-status read model
 // (githubstatus.go, ISI-3956) also use, so every project-scoped read resolves
 // the same Project identically. The thin method wrappers keep the call sites
-// above unchanged.
+// above unchanged. (Team-namespace resolution is reached transitively via the
+// free resolveProjectInTeam; there is no DashboardService.teamNamespace wrapper.)
 func (s *DashboardService) resolveProjectInTeam(ctx context.Context, teamUID, projectID string) (string, string, error) {
 	return resolveProjectInTeam(ctx, s.reader, teamUID, projectID)
 }
