@@ -14,6 +14,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJson, proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -24,7 +25,7 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string; roomId: string }> },
 ): Promise<Response> {
   const { projectId: p, roomId: r } = await params;
-  const projectId = encodeURIComponent(p);
+  const projectId = encodeProjectId(p); // collapse "ns%2Fname" to one layer (ISI-3982)
   const roomId = encodeURIComponent(r);
   // Forward the caller's query (?limit=, ?offset=, ?threadDepth=) verbatim.
   const search = req.nextUrl.search; // includes leading '?' or ''
@@ -39,7 +40,7 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string; roomId: string }> },
 ): Promise<Response> {
   const { projectId: p, roomId: r } = await params;
-  const projectId = encodeURIComponent(p);
+  const projectId = encodeProjectId(p); // collapse "ns%2Fname" to one layer (ISI-3982)
   const roomId = encodeURIComponent(r);
   return proxyJsonWrite(
     req,

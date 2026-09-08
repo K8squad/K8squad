@@ -17,6 +17,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { KillRun } from "@/components/KillRun";
 import { EmptyState } from "@/components/forms/EmptyState";
+import { encodeProjectId } from "@/lib/projectId";
 
 /** GET /api/squad/overview response (apiserver SquadOverview, overview.go).
  *
@@ -95,7 +96,7 @@ function ProjectSection({ project: p }: { project: ProjectOverview }) {
             from different squads, so a bare name is ambiguous there; ISI-3967 retargets these
             rows to a namespace-qualified /projects/{ns}/{name} route once it lands. */}
         <Link
-          href={`/projects/${encodeURIComponent(p.name)}`}
+          href={`/projects/${encodeProjectId(p.name)}`}
           data-testid="overview-project-link"
         >
           {p.name}

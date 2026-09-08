@@ -4,6 +4,7 @@
 // project root lands there (UX screen 14 — Project → Tickets).
 
 import { redirect } from "next/navigation";
+import { encodeProjectId } from "@/lib/projectId";
 
 export default async function ProjectRootPage({
   params,
@@ -11,5 +12,8 @@ export default async function ProjectRootPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  redirect(`/projects/${encodeURIComponent(projectId)}/tickets`);
+  // Next.js hands us the still-encoded "ns%2Fname" segment; re-encoding it here
+  // double-encoded the redirect target ("ns%252Fname") and 404'd downstream
+  // (ISI-3982). Normalize to exactly one layer of encoding.
+  redirect(`/projects/${encodeProjectId(projectId)}/tickets`);
 }

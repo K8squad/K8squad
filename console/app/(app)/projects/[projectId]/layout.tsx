@@ -7,6 +7,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { projectSubnav } from "@/lib/nav";
+import { decodeProjectId } from "@/lib/projectId";
 
 export default async function ProjectLayout({
   children,
@@ -16,7 +17,7 @@ export default async function ProjectLayout({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  const decoded = decodeURIComponent(projectId);
+  const decoded = decodeProjectId(projectId);
   const subnav = projectSubnav(decoded);
   return (
     <div className="project">

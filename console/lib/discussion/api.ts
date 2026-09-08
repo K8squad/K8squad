@@ -9,6 +9,7 @@
 // single "not found" outcome so the UI has exactly one deny path and can never
 // leak the existence of a foreign room.
 
+import { encodeProjectId } from "@/lib/projectId";
 import type { Message, Room } from "./types";
 import { buildPostBody, type ComposerInput } from "./compose";
 
@@ -65,7 +66,7 @@ export interface DiscussionClient {
 
 /** The BFF base path for a Project's rooms (server enforces the authz choke). */
 function roomsBase(projectId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/rooms`;
+  return `/api/projects/${encodeProjectId(projectId)}/rooms`;
 }
 
 async function readJson<T>(res: {

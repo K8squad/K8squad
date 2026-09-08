@@ -8,6 +8,7 @@
 // room view.
 
 import { DiscussionRoomClient } from "./RoomClient";
+import { decodeProjectId } from "@/lib/projectId";
 
 // Next.js 15: dynamic params arrive as a Promise; the route is per-request
 // (never statically cached) because the room is a live, authz-scoped surface.
@@ -28,7 +29,7 @@ export default async function DiscussionPage({
           is server-stamped; this surface carries no coordination control.
         </p>
       </header>
-      <DiscussionRoomClient projectId={projectId} />
+      <DiscussionRoomClient projectId={decodeProjectId(projectId)} />
     </main>
   );
 }

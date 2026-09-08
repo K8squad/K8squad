@@ -11,6 +11,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyEventStream } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 // Never statically cache; this is a live stream.
 export const dynamic = "force-dynamic";
@@ -21,6 +22,6 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  const projectId = encodeProjectId((await params).projectId);
   return proxyEventStream(req, `/api/projects/${projectId}/stream`);
 }
