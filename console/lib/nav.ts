@@ -55,6 +55,7 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "tickets", label: "Tickets" },
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
+  { id: "github", label: "GitHub" },
 ];
 
 /**
