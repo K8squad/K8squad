@@ -109,6 +109,11 @@ type Options struct {
 	// ISI-2909). Nil ⇒ PATCH /api/work-items/{id}/state keeps its documented 501 (a
 	// DB-less dev run), exactly like the read models above.
 	WorkItemState WorkItemStateTransitioner
+	// WorkItemWrites is the S3 human create + field-edit op (coord.WorkItemWriteStore,
+	// ISI-3959): POST /api/projects/{projectId}/work-items and PATCH /api/work-items/{id}.
+	// Nil ⇒ those routes keep the documented 501 (a DB-less dev run), exactly like the
+	// state route above. State edits stay on the separate .../state path.
+	WorkItemWrites WorkItemWriter
 	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
 	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models. RBAC scoping (admin fleet-wide vs Team-fenced) is
@@ -596,6 +601,41 @@ func (s *Server) routes(opts Options) {
 			workItemState.HandleFunc("", workItemStateHandler(opts.WorkItemState)).Methods(http.MethodPatch)
 		} else {
 			workItemState.HandleFunc("", notImplemented("work-item state transition", "ISI-2909: wire a coord.HumanStateStore (Postgres) to enable")).
+				Methods(http.MethodPatch)
+		}
+
+		// S3 human work-item CREATE (ISI-3959): POST /api/projects/{projectId}/work-items,
+		// the write side that authors a board item (root or sub-issue). Project-scoped, so
+		// it rides requireProjectRole(Contributor) when a resolver is wired (a viewer /
+		// non-member is refused at the wall); the handler adds the human-only gate and the
+		// store applies Team scoping + a §6.5 audit row. Same CSRF + bounded-body guards as
+		// the other mutation surfaces. Nil writer ⇒ documented 501 (a store-less host shape).
+		workItemCreate := s.router.Path("/api/projects/{projectId}/work-items").Subrouter()
+		workItemCreate.Use(authz)
+		workItemCreate.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		workItemCreate.Use(maxBytesBody(64 << 10))
+		if opts.ProjectRoles != nil {
+			workItemCreate.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+		}
+		if opts.WorkItemWrites != nil {
+			workItemCreate.HandleFunc("", workItemCreateHandler(opts.WorkItemWrites)).Methods(http.MethodPost)
+		} else {
+			workItemCreate.HandleFunc("", notImplemented("work-item create", "ISI-3959: wire a coord.WorkItemWriteStore (Postgres) to enable")).
+				Methods(http.MethodPost)
+		}
+
+		// S3 human work-item FIELD-EDIT (ISI-3959): PATCH /api/work-items/{id} — title /
+		// body / parent only (state stays on .../state). Keyed by item id (no {projectId}),
+		// exactly like the state route, so it relies on the store's Team scoping for tenancy
+		// (cross-tenant → 404) plus the handler's human-only gate. Nil writer ⇒ 501.
+		workItemEdit := s.router.Path("/api/work-items/{id}").Subrouter()
+		workItemEdit.Use(authz)
+		workItemEdit.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		workItemEdit.Use(maxBytesBody(64 << 10))
+		if opts.WorkItemWrites != nil {
+			workItemEdit.HandleFunc("", workItemEditHandler(opts.WorkItemWrites)).Methods(http.MethodPatch)
+		} else {
+			workItemEdit.HandleFunc("", notImplemented("work-item edit", "ISI-3959: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
 		}
 
