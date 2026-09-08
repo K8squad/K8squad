@@ -63,6 +63,16 @@ spec:
                    from the real subject. */}}
             - name: KSQUAD_APISERVER_SERVICE_ACCOUNT
               value: {{ include "ksquad.apiserver.fullname" . }}
+            {{- /* ISI-3984: pin the apiserver namespace explicitly instead of
+                   relying on the operator code's POD_NAMESPACE / `ksquad-system`
+                   fallback. The credential-tester RoleBinding the Team reconciler
+                   provisions in every squad namespace names THIS install's
+                   apiserver SA + namespace as its subject; leaving the namespace
+                   implicit is how a stray second install stomped the production
+                   subject (ISI-3981 RCA). apiserver co-deploys in the release
+                   namespace, so render it from there. */}}
+            - name: KSQUAD_APISERVER_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
             {{- /* ISI-3352: the operator-side A2A dispatch feed. The operator
                    image ships the shim binary (/usr/local/bin/shim); the drive
                    loop spawns `shim run` per dispatched Run (operator-spawned

@@ -50,6 +50,21 @@ controlPlane:
     endpoint: "http://otel-gateway-collector.observability:4317"
     protocol: grpc
 
+  # SINGLE FULL INSTALL PER CLUSTER (ISI-3984). The operator reconciles Team CRs
+  # cluster-wide (the Team ClusterRole is cluster-scoped) and provisions the
+  # per-squad `ksquad-credential-tester` RoleBinding, whose subject is THIS
+  # install's `ksquad-apiserver` ServiceAccount (KSQUAD_APISERVER_NAMESPACE,
+  # operator.yaml). Two full installs in one cluster = two operators fighting
+  # over every squad's credential-tester RoleBinding subject: whichever
+  # reconciles last wins, and the other install's apiserver credential-test read
+  # starts 502'ing ("credential store rejected the read"). This exact stomp took
+  # down the k8squad-system credential-test path when a stray default-ns +
+  # k8squad-preview operator ran alongside it (ISI-3981 RCA).
+  # RULE: run at most ONE install with a live operator per cluster. Secondary /
+  # preview installs that only need the apiserver+console read surface MUST set
+  #   controlPlane.operator.replicas: 0
+  # so they do not reconcile Teams. A cross-install leader-elected / namespace-
+  # scoped Team reconciler is tracked as the durable operator-code fix.
   operator:
     replicas: 1
     leaderElect: true

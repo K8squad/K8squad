@@ -36,6 +36,13 @@ console:
     targetPort: 3000
 
 # ── operator (controller-runtime reconcilers, §9.4 / Epic 2/3/4/11) ─────────
+# SINGLE FULL INSTALL PER CLUSTER (ISI-3984). The operator reconciles Team CRs
+# cluster-wide and provisions each squad's `ksquad-credential-tester` RoleBinding
+# with THIS install's apiserver SA/namespace as the subject. A second full
+# install runs a second operator that fights over that subject, breaking the
+# other install's apiserver credential-test read (ISI-3981 RCA). Run at most one
+# operator per cluster; secondary / preview installs MUST set `operator.enabled:
+# false` (or replicas: 0) so they do not reconcile Teams.
 operator:
   enabled: true
   replicas: 1
