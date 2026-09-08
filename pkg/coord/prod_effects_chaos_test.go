@@ -28,6 +28,7 @@ package coord_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/K8squad/K8squad/pkg/coord"
@@ -56,6 +57,24 @@ type countingDispatcher struct {
 func (d *countingDispatcher) Submit(_ context.Context, a2aTaskID, _ string) error {
 	d.calls++
 	d.tasks = append(d.tasks, a2aTaskID)
+	return nil
+}
+
+// flakyDispatcher fails the first failFirst submits, then succeeds — modelling a
+// transient builder/shim error (ISI-3617). It records every attempt so the test can
+// assert the failed submit left NO marker and the recovery re-submitted.
+type flakyDispatcher struct {
+	failFirst int
+	calls     int
+	tasks     []string
+}
+
+func (d *flakyDispatcher) Submit(_ context.Context, a2aTaskID, _ string) error {
+	d.calls++
+	d.tasks = append(d.tasks, a2aTaskID)
+	if d.calls <= d.failFirst {
+		return fmt.Errorf("flaky submit: transient failure %d", d.calls)
+	}
 	return nil
 }
 
@@ -141,6 +160,66 @@ func TestProdEffects(t *testing.T) {
 		// The dedup key is the bound Run's uuid, not the fixture "run-1".
 		if dispatcher.tasks[0] != run {
 			t.Fatalf("a2a_task_id = %q, want the bound run uuid %q", dispatcher.tasks[0], run)
+		}
+	})
+
+	// E2b: submit-then-mark (ISI-3617). A submit that FAILS must leave NO
+	// coord.a2a_dispatch marker — otherwise a re-drive reattaches on the phantom
+	// marker and skips the dispatch forever. First pass: the shim errors, eff.Err()
+	// is set, zero markers. Recovery pass (fresh eff, shim now healthy): re-submits
+	// and writes exactly one marker + one audit row. Proves the marker records a
+	// SUCCESSFUL dispatch, never a merely-attempted one.
+	t.Run("E2b_failed_submit_leaves_no_marker_then_resubmits", func(t *testing.T) {
+		store, wi := seedItem(t, ctx, dsn)
+		db := openDB(t, dsn)
+		if _, err := db.ExecContext(ctx, migrationFile(t, "0007_reconcile_effects.sql")); err != nil {
+			t.Fatalf("apply 0007: %v", err)
+		}
+		var run string
+		if err := db.QueryRowContext(ctx,
+			`SELECT run_id::text FROM coord.claim WHERE work_item_id=$1::uuid`, wi).Scan(&run); err != nil {
+			t.Fatalf("read run_id: %v", err)
+		}
+		_ = store
+
+		// First pass: the shim rejects the submit.
+		flaky := &flakyDispatcher{failFirst: 1}
+		eff, err := coord.NewProdEffects(ctx, db, wi, run, "principal:test", "", nil, flaky)
+		if err != nil {
+			t.Fatalf("NewProdEffects: %v", err)
+		}
+		eff.Dispatch(reconcile.RunID, true)
+		if eff.Err() == nil {
+			t.Fatal("ISI-3617: a failed submit must surface a sticky error, got nil")
+		}
+		if flaky.calls != 1 {
+			t.Fatalf("submit fired %d times on the failing pass, want 1", flaky.calls)
+		}
+		if got := countEffectRows(t, ctx, dsn,
+			`SELECT count(*) FROM coord.a2a_dispatch WHERE work_item_id=$1::uuid`, wi); got != 0 {
+			t.Fatalf("ISI-3617: a2a_dispatch rows = %d after a FAILED submit, want 0 "+
+				"(marker must not commit before the shim accepts the task)", got)
+		}
+
+		// Recovery: fresh eff (production rebuilds per drive), shim now healthy.
+		eff2, err := coord.NewProdEffects(ctx, db, wi, run, "principal:test", "", nil, flaky)
+		if err != nil {
+			t.Fatalf("NewProdEffects (recovery): %v", err)
+		}
+		eff2.Dispatch(reconcile.RunID, true)
+		if err := eff2.Err(); err != nil {
+			t.Fatalf("recovery dispatch error: %v", err)
+		}
+		if flaky.calls != 2 {
+			t.Fatalf("submit fired %d times total, want 2 (the re-drive must re-submit)", flaky.calls)
+		}
+		if got := countEffectRows(t, ctx, dsn,
+			`SELECT count(*) FROM coord.a2a_dispatch WHERE work_item_id=$1::uuid`, wi); got != 1 {
+			t.Fatalf("a2a_dispatch rows = %d after recovery, want 1", got)
+		}
+		if got := countEffectRows(t, ctx, dsn,
+			`SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='a2a_dispatched'`, wi); got != 1 {
+			t.Fatalf("a2a_dispatched audit rows = %d, want 1 (first successful dispatch only)", got)
 		}
 	})
 
