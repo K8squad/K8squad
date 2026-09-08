@@ -47,6 +47,17 @@ export type NavNode = {
   /** Optional short badge rendered beside the label (AD-10), e.g. a count. */
   badge?: string;
   children?: NavNode[];
+  /**
+   * DYNAMIC, lazy-loaded sub-tree marker (ISI-4001 / ISI-3995). Unlike `children` — which is a
+   * STATIC accordion known at module load (project sub-nav) — a `dynamicChildren` node hosts a
+   * sub-tree whose contents are fetched at runtime by a scoped client island, not by `navTree()`.
+   * `navTree()` stays pure: it only STAMPS this marker; it never carries the fetched data. The
+   * shell (`ConsoleShell.tsx`) reads the marker and mounts the matching island (e.g. `"teams"` →
+   * `<TeamsNavTree/>`, which expands Teams → team(s) → that team's agents) in place of the static
+   * `children` accordion. Additive: it does not disturb the `children`/`section` contracts, and the
+   * node keeps its own `href` so the label still navigates (the island owns only expand + children).
+   */
+  dynamicChildren?: "teams";
 };
 
 /** The project sub-nav sections, in UX order (Build · Tickets · Runs · Discussion). */
@@ -86,7 +97,11 @@ export function navTree(): NavNode[] {
       href: "/compose",
       scope: "global",
     },
-    { id: "teams", label: "Teams", href: "/teams", scope: "global" },
+    // Teams is the rail's first DYNAMIC sub-tree (ISI-4001 / ISI-3995): the label still links to
+    // the Teams list (/teams), and the `dynamicChildren: "teams"` marker tells the shell to mount
+    // the lazy-loading <TeamsNavTree/> island (team(s) → agents) as its expandable children.
+    // navTree() stays pure — the teams/agents are fetched by the island, never by this function.
+    { id: "teams", label: "Teams", href: "/teams", scope: "global", dynamicChildren: "teams" },
     { id: "projects", label: "Projects", href: "/projects", scope: "global" },
     { id: "agents", label: "Agents", href: "/agents", scope: "global" },
     { id: "runs", label: "Runs", href: "/runs", scope: "global" },
