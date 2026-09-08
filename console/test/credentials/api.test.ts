@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { GET as credentialsGET } from "@/app/api/credentials/route";
+import { GET as credentialsGET, POST as credentialsPOST } from "@/app/api/credentials/route";
 import { POST as connectPOST } from "@/app/api/credentials/connect/route";
+import { POST as testPOST } from "@/app/api/credentials/[name]/test/route";
 
 // The 8.6 BFF routes at the proxy boundary: the session cookie rides upstream,
 // the apiserver's status surfaces VERBATIM (501 stays 501 — the documented
@@ -64,6 +65,123 @@ describe("GET /api/credentials — the read proxy", () => {
     globalThis.fetch = stubFetch(403, { error: "denied" }) as unknown as typeof fetch;
     const res = await credentialsGET(makeReq("/api/credentials"));
     expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /api/credentials — the BYO write proxy (ISI-3983)", () => {
+  it("forwards the caller's cookie + body and relays 201 secretRef verbatim (never the value)", async () => {
+    const fetchMock = stubFetch(201, {
+      secretRef: "secret://ksquad-team-x/team-anthropic",
+      name: "team-anthropic",
+      namespace: "ksquad-team-x",
+      class: "service-account",
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await credentialsPOST(
+      makeReq("/api/credentials", {
+        method: "POST",
+        headers: { cookie: "ksquad_session=dev-token-abc", "content-type": "application/json" },
+        body: JSON.stringify({ name: "team-anthropic", runtime: "claude-code", class: "service-account", value: "sk-secret", teamId: "t-1" }),
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const call = fetchMock.mock.calls[0] as unknown[];
+    expect(call[0] as string).toContain("/api/credentials");
+    const init = call[1] as { method: string; headers: Headers; body?: string };
+    expect(init.method).toBe("POST");
+    expect(init.headers.get("cookie")).toBe("ksquad_session=dev-token-abc");
+    // The BFF forwards the body UNCHANGED — the apiserver stores it and never echoes it back.
+    expect(init.body).toContain("team-anthropic");
+    expect(init.body).toContain("t-1");
+    const out = await res.json();
+    expect(out.secretRef).toBe("secret://ksquad-team-x/team-anthropic");
+    expect(JSON.stringify(out)).not.toContain("sk-secret");
+  });
+
+  it("relays the fleet-admin 400 'select a team' verbatim (ISI-3937)", async () => {
+    globalThis.fetch = stubFetch(400, { error: "select a team for this credential" }) as unknown as typeof fetch;
+    const res = await credentialsPOST(
+      makeReq("/api/credentials", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "k", runtime: "hermes", class: "service-account", value: "v" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("select a team");
+  });
+
+  it("fails closed on a cross-origin write BEFORE touching the apiserver (login-CSRF posture)", async () => {
+    const fetchMock = stubFetch(201, {});
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await credentialsPOST(
+      makeReq("/api/credentials", {
+        method: "POST",
+        headers: {
+          host: "console.local",
+          origin: "https://evil.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ name: "k", runtime: "hermes", class: "service-account", value: "v" }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-JSON content-type (the classic simple-request CSRF) with 403", async () => {
+    const fetchMock = stubFetch(201, {});
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await credentialsPOST(
+      makeReq("/api/credentials", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: "name=k",
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/credentials/{name}/test — the probe proxy (ISI-3983 teamId hint)", () => {
+  it("percent-encodes the name, forwards the teamId body, and relays {ok,detail}", async () => {
+    const fetchMock = stubFetch(200, { ok: false, detail: "Rejected — the endpoint declined the credential (HTTP 401)" });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const res = await testPOST(
+      makeReq("/api/credentials/team-anthropic/test", {
+        method: "POST",
+        headers: { cookie: "ksquad_session=dev", "content-type": "application/json" },
+        body: JSON.stringify({ runtime: "claude-code", teamId: "t-1" }),
+      }),
+      { params: Promise.resolve({ name: "team-anthropic" }) },
+    );
+
+    expect(res.status).toBe(200);
+    const call = fetchMock.mock.calls[0] as unknown[];
+    expect(call[0] as string).toContain("/api/credentials/team-anthropic/test");
+    const init = call[1] as { method: string; body?: string };
+    expect(init.method).toBe("POST");
+    expect(init.body).toContain("t-1");
+    expect((await res.json()).ok).toBe(false);
+  });
+
+  it("gates the probe same-origin (403 on cross-origin, no upstream call)", async () => {
+    const fetchMock = stubFetch(200, { ok: true });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const res = await testPOST(
+      makeReq("/api/credentials/x/test", {
+        method: "POST",
+        headers: { host: "console.local", origin: "https://evil.example", "content-type": "application/json" },
+        body: "{}",
+      }),
+      { params: Promise.resolve({ name: "x" }) },
+    );
+    expect(res.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

@@ -12,7 +12,7 @@
 // arbitrary upstream path.
 
 import type { NextRequest } from "next/server";
-import { proxyJsonWrite } from "@/lib/bff";
+import { crossSiteReject, proxyJsonWrite } from "@/lib/bff";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,6 +22,9 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> },
 ): Promise<Response> {
+  // Same-origin gate first: the probe is a POST that acts on the caller's session (ISI-3983).
+  const rejected = crossSiteReject(req);
+  if (rejected) return rejected;
   const { name } = await params;
   return proxyJsonWrite(
     req,
