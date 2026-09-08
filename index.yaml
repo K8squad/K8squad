@@ -5,14 +5,14 @@ entries:
       k8squad.io/min-crds-version: 0.1.0
     apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-08T17:38:45.872358972Z"
+    created: "2026-09-08T17:48:41.87359018Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
       NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
       k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
       (ADR-0002, Option B). '
-    digest: 2ee676d2595d4c1f278b3ade82230daa0b08ba4646b78c0dc08bbd51df99f020
+    digest: 8c88e43bbdb5b4301ff10fc86562bdc9946cb19437ca44c6de3de97884510503
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -34,7 +34,7 @@ entries:
   k8squad-crds:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-08T17:38:45.873318649Z"
+    created: "2026-09-08T17:48:41.874647308Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -42,7 +42,7 @@ entries:
       chart, and upgrade it independently to roll CRD schema changes forward on their
       own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
       deletes the CRDs or the user''s custom resources. '
-    digest: c5bf3621e8cd69ba796011e96cdf3bdbd2b77122df91ec9519b95e4dee8f321d
+    digest: 333524921ac55b08b98cceac1592df23097edad36f252e7056220b8011fc45d7
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -61,4 +61,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-08T17:38:45.870472952Z"
+generated: "2026-09-08T17:48:41.870857649Z"
