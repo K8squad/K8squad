@@ -187,43 +187,79 @@ func TestSourceProjectMeta(t *testing.T) {
 }
 
 type fakeRecaller struct {
-	hits []memory.RecallHit
-	err  error
+	hits     []memory.RecallHit
+	err      error
+	gotQuery string
+	gotIDs   []string
 }
 
-func (f fakeRecaller) ScopedRecallByIDs(_ context.Context, _ string, _ *string, _ []string) ([]memory.RecallHit, error) {
+func (f *fakeRecaller) ScopedRecall(_ context.Context, _ string, _ *string, queryText string, _ int) ([]memory.RecallHit, error) {
+	f.gotQuery = queryText
 	return f.hits, f.err
 }
 
-// #9: memory recall — empty ids and nil service short-circuit; the pinned arm
-// maps hits; an error is wrapped.
+func (f *fakeRecaller) ScopedRecallByIDs(_ context.Context, _ string, _ *string, ids []string) ([]memory.RecallHit, error) {
+	f.gotIDs = ids
+	return f.hits, f.err
+}
+
+// #9: memory recall — nil service short-circuits both arms; the fresh arm runs
+// ScopedRecall over the query (empty query stays tolerant-empty); the pinned arm
+// maps hits via ScopedRecallByIDs; an error is wrapped.
 func TestSourceMemoryRecall(t *testing.T) {
-	// nil memory service → empty, no error.
-	s := &Source{}
-	if docs, err := s.MemoryRecall(context.Background(), "team", "proj", []string{"a"}, 8); err != nil || docs != nil {
-		t.Errorf("nil memory: docs=%v err=%v", docs, err)
-	}
-	// empty ids (fresh arm) → empty even with a service configured.
-	s = &Source{memory: fakeRecaller{}}
-	if docs, err := s.MemoryRecall(context.Background(), "team", "proj", nil, 8); err != nil || docs != nil {
-		t.Errorf("fresh arm: docs=%v err=%v", docs, err)
-	}
-	// pinned ids → mapped.
 	proj := "proj"
-	s = &Source{memory: fakeRecaller{hits: []memory.RecallHit{{
+	// nil memory service → empty, no error, on both arms.
+	s := &Source{}
+	if docs, err := s.MemoryRecall(context.Background(), "team", "proj", "q", []string{"a"}, 8); err != nil || docs != nil {
+		t.Errorf("nil memory pinned: docs=%v err=%v", docs, err)
+	}
+	if docs, err := s.MemoryRecall(context.Background(), "team", "proj", "q", nil, 8); err != nil || docs != nil {
+		t.Errorf("nil memory fresh: docs=%v err=%v", docs, err)
+	}
+	// fresh arm, empty query → tolerant-empty, no store call.
+	fEmpty := &fakeRecaller{hits: []memory.RecallHit{{RecordID: "x"}}}
+	s = &Source{memory: fEmpty}
+	if docs, err := s.MemoryRecall(context.Background(), "team", "proj", "", nil, 8); err != nil || docs != nil {
+		t.Errorf("empty-query fresh arm: docs=%v err=%v", docs, err)
+	}
+	if fEmpty.gotQuery != "" {
+		t.Errorf("empty-query fresh arm must not hit the store, saw query=%q", fEmpty.gotQuery)
+	}
+	// fresh arm, real query → runs ScopedRecall and maps hits.
+	fr := &fakeRecaller{hits: []memory.RecallHit{{
+		RecordID: "f1", Distance: 0.4,
+		Envelope: memory.Envelope{Content: "fresh", Author: memory.Author{Principal: "bob"}, WrittenAt: tComment, Scope: memory.Scope{TeamID: "team", ProjectID: &proj}},
+	}}}
+	s = &Source{memory: fr}
+	docs, err := s.MemoryRecall(context.Background(), "team", "proj", "how to ship", nil, 8)
+	if err != nil {
+		t.Fatalf("fresh MemoryRecall: %v", err)
+	}
+	if fr.gotQuery != "how to ship" {
+		t.Errorf("fresh arm query = %q, want %q", fr.gotQuery, "how to ship")
+	}
+	if len(docs) != 1 || docs[0].ID != "f1" || docs[0].Content != "fresh" || docs[0].Score != -0.4 {
+		t.Errorf("fresh docs = %+v", docs)
+	}
+	// pinned ids → mapped via ScopedRecallByIDs; the query is ignored.
+	pr := &fakeRecaller{hits: []memory.RecallHit{{
 		RecordID: "m1", Distance: 0.25,
 		Envelope: memory.Envelope{Content: "note", Author: memory.Author{Principal: "alice"}, WrittenAt: tComment, Scope: memory.Scope{TeamID: "team", ProjectID: &proj}},
-	}}}}
-	docs, err := s.MemoryRecall(context.Background(), "team", "proj", []string{"m1"}, 8)
+	}}}
+	s = &Source{memory: pr}
+	docs, err = s.MemoryRecall(context.Background(), "team", "proj", "ignored-on-pinned", []string{"m1"}, 8)
 	if err != nil {
 		t.Fatalf("MemoryRecall: %v", err)
 	}
 	if len(docs) != 1 || docs[0].ID != "m1" || docs[0].Content != "note" || docs[0].Author != "alice" || docs[0].Score != -0.25 {
 		t.Errorf("docs = %+v", docs)
 	}
+	if len(pr.gotIDs) != 1 || pr.gotIDs[0] != "m1" || pr.gotQuery != "" {
+		t.Errorf("pinned arm ids=%v query=%q", pr.gotIDs, pr.gotQuery)
+	}
 	// error is wrapped.
-	s = &Source{memory: fakeRecaller{err: errors.New("recall down")}}
-	if _, err := s.MemoryRecall(context.Background(), "team", "proj", []string{"m1"}, 8); err == nil {
+	s = &Source{memory: &fakeRecaller{err: errors.New("recall down")}}
+	if _, err := s.MemoryRecall(context.Background(), "team", "proj", "q", []string{"m1"}, 8); err == nil {
 		t.Error("expected wrapped recall error")
 	}
 }

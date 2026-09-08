@@ -12,7 +12,6 @@ import (
 // pinned arm type-asserts, so both arms run without a live pgvector.
 type fakeSearcher struct {
 	gotQuery   memory.SearchQuery
-	gotText    string
 	gotIDs     []string
 	hits       []memory.SearchHit
 	byIDHits   []memory.SearchHit
@@ -54,29 +53,22 @@ func hit(id, team, project string) memory.SearchHit {
 }
 
 // TestFreshArm_ScopedQueryUntrustedDoc: the fresh arm pushes the Run's tenancy into the
-// query, synthesizes the query text via the QueryBuilder, and projects hits into
+// query, runs the assembler-supplied query text, and projects hits into
 // envelope-verbatim RecallDocs with a distance-derived score.
 func TestFreshArm_ScopedQueryUntrustedDoc(t *testing.T) {
 	fake := &fakeSearcher{hits: []memory.SearchHit{hit("rec-1", "team-1", "proj-A")}}
 	svc := memory.NewReadService(fake, memory.NewHashingEmbedder())
-	var gotTeam, gotProject string
-	src := NewRecallSource(svc, func(_ context.Context, team, project string) string {
-		gotTeam, gotProject = team, project
-		return "work item title + run inputs"
-	})
+	src := NewRecallSource(svc)
 
-	docs, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", nil, 8)
+	docs, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", "work item title + run inputs", nil, 8)
 	if err != nil {
 		t.Fatalf("MemoryRecall fresh: %v", err)
-	}
-	if gotTeam != "team-1" || gotProject != "proj-A" {
-		t.Fatalf("query builder saw %s/%s, want team-1/proj-A", gotTeam, gotProject)
 	}
 	if fake.gotQuery.SquadID != "team-1" || fake.gotQuery.ProjectID == nil || *fake.gotQuery.ProjectID != "proj-A" {
 		t.Fatalf("query plan = %+v — scope must be pushed into the store, never widened", fake.gotQuery)
 	}
-	if fake.gotText != "work item title + run inputs" && fake.gotQuery.Limit != 8 {
-		t.Fatalf("fresh recall must run the synthesized query at topK=8")
+	if fake.gotQuery.Limit != 8 {
+		t.Fatalf("fresh recall must run at topK=8, got limit=%d", fake.gotQuery.Limit)
 	}
 	if len(docs) != 1 {
 		t.Fatalf("docs = %d, want 1 (non-vacuity)", len(docs))
@@ -95,9 +87,9 @@ func TestFreshArm_ScopedQueryUntrustedDoc(t *testing.T) {
 func TestPinnedArm_ExactIDsNoRanking(t *testing.T) {
 	fake := &fakeSearcher{byIDHits: []memory.SearchHit{hit("rec-9", "team-1", "proj-A")}}
 	svc := memory.NewReadService(fake, memory.NewHashingEmbedder())
-	src := NewRecallSource(svc, nil) // pinned arm needs no QueryBuilder
+	src := NewRecallSource(svc)
 
-	docs, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", []string{"rec-9"}, 8)
+	docs, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", "", []string{"rec-9"}, 8)
 	if err != nil {
 		t.Fatalf("MemoryRecall pinned: %v", err)
 	}
@@ -115,13 +107,13 @@ func TestPinnedArm_ExactIDsNoRanking(t *testing.T) {
 	}
 }
 
-// TestFreshArm_RefusesWithoutQueryBuilder: no QueryBuilder + empty ids is an explicit
+// TestFreshArm_RefusesEmptyQuery: an empty query text + empty ids is an explicit
 // error — never a silently-empty recall (that would read as "no memory exists").
-func TestFreshArm_RefusesWithoutQueryBuilder(t *testing.T) {
+func TestFreshArm_RefusesEmptyQuery(t *testing.T) {
 	svc := memory.NewReadService(&fakeSearcher{}, memory.NewHashingEmbedder())
-	src := NewRecallSource(svc, nil)
-	if _, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", nil, 8); err == nil {
-		t.Fatal("expected refusal when fresh recall has no QueryBuilder wired")
+	src := NewRecallSource(svc)
+	if _, err := src.MemoryRecall(context.Background(), "team-1", "proj-A", "", nil, 8); err == nil {
+		t.Fatal("expected refusal when fresh recall has an empty query text")
 	}
 }
 
@@ -129,11 +121,11 @@ func TestFreshArm_RefusesWithoutQueryBuilder(t *testing.T) {
 // must never become a cross-tenant surface.
 func TestRefusesEmptyTeam(t *testing.T) {
 	svc := memory.NewReadService(&fakeSearcher{}, memory.NewHashingEmbedder())
-	src := NewRecallSource(svc, func(context.Context, string, string) string { return "q" })
-	if _, err := src.MemoryRecall(context.Background(), "", "proj-A", nil, 8); err == nil {
+	src := NewRecallSource(svc)
+	if _, err := src.MemoryRecall(context.Background(), "", "proj-A", "q", nil, 8); err == nil {
 		t.Fatal("expected refusal on empty team")
 	}
-	if _, err := src.MemoryRecall(context.Background(), "", "proj-A", []string{"rec-1"}, 8); err == nil {
+	if _, err := src.MemoryRecall(context.Background(), "", "proj-A", "q", []string{"rec-1"}, 8); err == nil {
 		t.Fatal("expected refusal on empty team (pinned arm)")
 	}
 }
@@ -145,8 +137,8 @@ func TestSquadWideFreshRecall(t *testing.T) {
 	h.ProjectID = nil // squad-scoped record
 	fake := &fakeSearcher{hits: []memory.SearchHit{h}}
 	svc := memory.NewReadService(fake, memory.NewHashingEmbedder())
-	src := NewRecallSource(svc, func(context.Context, string, string) string { return "q" })
-	docs, err := src.MemoryRecall(context.Background(), "team-1", "", nil, 5)
+	src := NewRecallSource(svc)
+	docs, err := src.MemoryRecall(context.Background(), "team-1", "", "q", nil, 5)
 	if err != nil {
 		t.Fatalf("squad-wide: %v", err)
 	}

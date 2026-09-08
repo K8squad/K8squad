@@ -20,27 +20,18 @@ import (
 	"github.com/K8squad/K8squad/pkg/contextasm"
 )
 
-// QueryBuilder synthesizes the relevance query for the FRESH recall arm — the
-// assembler's hook carries no query text (its Sources interface is
-// recall-width-shaped), so the reconciler wiring binds this to whatever the
-// envelope is about: typically the work item title + body + the Run's inputs/goal.
-// It runs once per fresh recall; keep it cheap and deterministic for a given Run
-// (same Run ⇒ same query ⇒ same recall set, the re-entrant determinism §6.4 pins).
-type QueryBuilder func(ctx context.Context, teamID, projectID string) string
-
 // RecallSource implements the MemoryRecall slice of contextasm.Sources over the
 // memory ReadService. The reconciler composes it into its full Sources struct
 // (WorkItem/ProjectMeta/Artifacts come from the apiserver/coord store, not here).
 type RecallSource struct {
 	reads *memory.ReadService
-	query QueryBuilder
 }
 
-// NewRecallSource wires the adapter. query may be nil — a nil QueryBuilder makes
-// the FRESH arm refuse (an explicit error, never a silently-empty recall); the
-// pinned arm works without a query.
-func NewRecallSource(reads *memory.ReadService, query QueryBuilder) *RecallSource {
-	return &RecallSource{reads: reads, query: query}
+// NewRecallSource wires the adapter. The FRESH recall query text is now carried
+// by the assembler's hook (ISI-3607) — derived from the work item the envelope
+// is about — so this adapter no longer synthesizes it.
+func NewRecallSource(reads *memory.ReadService) *RecallSource {
+	return &RecallSource{reads: reads}
 }
 
 // MemoryRecall serves the assembler's recall hook:
@@ -48,15 +39,18 @@ func NewRecallSource(reads *memory.ReadService, query QueryBuilder) *RecallSourc
 //   - ids non-empty (snapshot reuse): the EXACT pinned doc set via the scoped
 //     exact-id read — order preserved, missing/retracted ids absent (snapshot
 //     decay, never an error), tenancy still enforced.
-//   - ids empty (fresh): a scoped ANN recall of width topK over the query the
-//     QueryBuilder synthesizes for this Run.
+//   - ids empty (fresh): a scoped ANN recall of width topK over queryText — the
+//     work item the envelope is about, synthesized by the assembler.
 //
 // Every returned RecallDoc is the untrusted envelope verbatim: Author is the
 // envelope's attributed principal (text, e.g. "agent-a" — coord principals — or
 // the discussion/memory author), Score is derived from the pgvector cosine
 // DISTANCE as 1/(1+d) (monotonic: closer ⇒ higher; the pinned arm has no ranking
 // and scores 1.0), and Scope renders "team[/project]" for snapshot bookkeeping.
-func (s *RecallSource) MemoryRecall(ctx context.Context, teamID string, projectID string, ids []string, topK int) ([]contextasm.RecallDoc, error) {
+//
+// A fresh recall with an empty queryText refuses (explicit error, never a
+// silently-empty recall that would read as "no memory exists").
+func (s *RecallSource) MemoryRecall(ctx context.Context, teamID string, projectID string, queryText string, ids []string, topK int) ([]contextasm.RecallDoc, error) {
 	if teamID == "" {
 		return nil, fmt.Errorf("recallsource: teamID is required (the Run's own tenancy, never widened)")
 	}
@@ -74,10 +68,10 @@ func (s *RecallSource) MemoryRecall(ctx context.Context, teamID string, projectI
 		return docs(hits, true), nil
 	}
 
-	if s.query == nil {
-		return nil, fmt.Errorf("recallsource: fresh recall requested but no QueryBuilder is wired (refusing rather than recalling on an empty query)")
+	if queryText == "" {
+		return nil, fmt.Errorf("recallsource: fresh recall requested with an empty query text (refusing rather than recalling on an empty query)")
 	}
-	hits, err := s.reads.ScopedRecall(ctx, teamID, projectPtr, s.query(ctx, teamID, projectID), topK)
+	hits, err := s.reads.ScopedRecall(ctx, teamID, projectPtr, queryText, topK)
 	if err != nil {
 		return nil, fmt.Errorf("recallsource: fresh recall: %w", err)
 	}

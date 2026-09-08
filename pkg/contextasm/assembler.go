@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -107,9 +108,12 @@ type Sources interface {
 	// current; otherwise the pinned generation (snapshot reuse).
 	ProjectMeta(ctx context.Context, projectRef, revision string) (ProjectMeta, error)
 	// MemoryRecall runs the scoped §7 semantic recall (6.6) — project/squad
-	// scope, untrusted tier. ids pins the exact doc set (snapshot reuse);
-	// empty does a fresh relevance query.
-	MemoryRecall(ctx context.Context, teamID string, projectID string, ids []string, topK int) ([]RecallDoc, error)
+	// scope, untrusted tier. ids pins the exact doc set (snapshot reuse) and
+	// takes precedence; when ids is empty the fresh arm runs a relevance query
+	// over queryText (the work item the envelope is about — title/body/AC), so
+	// the untrusted-recall tier is populated on first drive, not just on resume.
+	// queryText is ignored by the pinned arm (ISI-3607).
+	MemoryRecall(ctx context.Context, teamID string, projectID string, queryText string, ids []string, topK int) ([]RecallDoc, error)
 	// Artifacts lists the Run's linked artifacts (§5.4 mirror / §6.1
 	// artifact rows).
 	Artifacts(ctx context.Context, runID string) ([]ArtifactLink, error)
@@ -221,7 +225,7 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 	if err != nil {
 		return nil, fmt.Errorf("contextasm: project meta: %w", err)
 	}
-	recall, err := a.gatherMemoryRecall(ctx, req.TeamID, req.Run.Spec.ProjectRef.Name, pinnedDocIDs)
+	recall, err := a.gatherMemoryRecall(ctx, req.TeamID, req.Run.Spec.ProjectRef.Name, recallQueryText(wi), pinnedDocIDs)
 	if err != nil {
 		return nil, fmt.Errorf("contextasm: memory recall: %w", err)
 	}
@@ -312,11 +316,33 @@ func (a *Assembler) gatherProjectMeta(ctx context.Context, projectRef, revision 
 	return meta, err
 }
 
-func (a *Assembler) gatherMemoryRecall(ctx context.Context, teamID, projectID string, ids []string) ([]RecallDoc, error) {
+func (a *Assembler) gatherMemoryRecall(ctx context.Context, teamID, projectID, queryText string, ids []string) ([]RecallDoc, error) {
 	ctx, span := startSourceSpan(ctx, "memory_recall", len(ids) > 0)
-	recall, err := a.sources.MemoryRecall(ctx, teamID, projectID, ids, a.TopK)
+	// queryText is NEVER emitted on the span: it is derived from work-item
+	// title/body (the highest-PII surface, §8). Only the pinned flag + result
+	// count reach telemetry.
+	recall, err := a.sources.MemoryRecall(ctx, teamID, projectID, queryText, ids, a.TopK)
 	endSourceSpan(span, len(recall), err)
 	return recall, err
+}
+
+// recallQueryText synthesizes the FRESH memory-recall ANN query from the work
+// item the envelope is about (title + body + acceptance criteria). It is
+// deterministic for a given work item, so a re-entrant resume that re-reads the
+// same pinned work-item revision would derive the identical query — though the
+// pinned arm ignores it entirely (ids non-empty), this keeps the fresh arm
+// re-entrant by construction (§6.4). It carries only DATA (task content), never
+// commands — the recall it seeds is untrusted-tier reference (F16, §7.3).
+func recallQueryText(wi WorkItemFacts) string {
+	parts := make([]string, 0, 2+len(wi.AcceptanceCriteria))
+	if wi.Title != "" {
+		parts = append(parts, wi.Title)
+	}
+	if wi.Description != "" {
+		parts = append(parts, wi.Description)
+	}
+	parts = append(parts, wi.AcceptanceCriteria...)
+	return strings.Join(parts, "\n")
 }
 
 func (a *Assembler) gatherArtifacts(ctx context.Context, runID string) ([]ArtifactLink, error) {

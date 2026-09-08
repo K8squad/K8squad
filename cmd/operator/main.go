@@ -60,6 +60,7 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
+	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
@@ -274,10 +275,30 @@ func main() {
 		// shared by the reconciler (which assembles + pins the snapshot at
 		// Claiming → Running) and the dispatcher (which re-reads the pinned
 		// snapshot to inject env.SystemContext — seam A, deterministic
-		// resume). Memory is left nil until the fresh-recall query seam lands
-		// (the pinned-recall arm needs no embedder; the untrusted-recall tier
-		// is simply empty meanwhile).
+		// resume).
+		//
+		// Fresh-recall query seam (ISI-3607): coord + memory share one Postgres
+		// (schemas coord/memory), so the operator's coord DSN reaches the memory
+		// schema. Wiring the §6.6 memory ReadService here populates the
+		// untrusted-recall tier on FIRST drive (the fresh relevance arm), not
+		// just on resume. Best-effort: a memory store that will not open
+		// (pgvector absent, migration gap) leaves Deps.Memory nil and the recall
+		// tier empty rather than crashing the operator — the same tolerant
+		// posture the memory service's own indexers take.
 		ctxDeps := contextsource.Deps{DB: db, Client: mgr.GetClient()}
+		memCfg := memory.Config{
+			DatabaseURL:      coordDSN,
+			EmbedderEndpoint: os.Getenv("KSQUAD_MEMORY_EMBEDDER_ENDPOINT"),
+			EmbedderModel:    os.Getenv("KSQUAD_MEMORY_EMBEDDER_MODEL"),
+		}
+		memCtx, memCancel := context.WithTimeout(ctx, 30*time.Second)
+		if memStore, memErr := memory.Open(memCtx, memCfg); memErr != nil {
+			ctrl.Log.Error(memErr, "memory recall disabled: memory store unavailable (untrusted-recall tier stays empty)")
+		} else {
+			ctxDeps.Memory = memory.NewReadService(memStore, memory.NewEmbedder(memCfg))
+			ctrl.Log.Info("memory recall wired (fresh + pinned arms)", "embedderEndpoint", memCfg.EmbedderEndpoint)
+		}
+		memCancel()
 		if err := (&runctrl.Reconciler{
 			Source:            coord.NewReconcileStepReader(db),
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
