@@ -20,6 +20,7 @@ import (
 //	GET /api/squad/teams/{uid}  → TeamDetail     (admin: any Team by UID; tenant: own)
 //	GET /api/squad/agents       → FleetAgentList (admin: every squad; tenant: own)
 //	GET /api/squad/skills       → FleetSkillList (admin: every squad; tenant: own)
+//	GET /api/squad/skills/{name}→ SkillView      (admin: any by name; tenant: own ns)
 //	GET /api/squad/roles        → FleetRoleList  (admin: every squad; tenant: own)
 //
 // ============================================================================
@@ -97,13 +98,24 @@ type FleetAgentList struct {
 }
 
 // SkillListEntry is one Skill row in the fleet skill list. SourceType is the
-// inline|git discriminator (§5.3.6); Permissions is the CRD-authorized capability
-// envelope (the trust boundary an admin audits fleet-wide).
+// inline|git discriminator (§5.3.6); for a git-sourced skill RepoRef/Ref/Path
+// carry the pinned provenance (ISI-3961 AC1) — the inline body itself is never
+// projected. TeamUID/TeamName are the owning Team (resolved from the Skill's
+// namespace → its Team CR, the "a squad is a namespace" mapping overview.go/org.go
+// rely on) so the console can group/deep-link by squad; they are empty when no
+// Team CR owns the namespace rather than fabricated. Permissions is the
+// CRD-authorized capability envelope (the trust boundary an admin audits
+// fleet-wide).
 type SkillListEntry struct {
 	Name        string   `json:"name"`
 	Namespace   string   `json:"namespace"`
 	UID         string   `json:"uid"`
+	TeamUID     string   `json:"teamUid,omitempty"`
+	TeamName    string   `json:"teamName,omitempty"`
 	SourceType  string   `json:"sourceType,omitempty"`
+	RepoRef     string   `json:"repoRef,omitempty"`
+	Ref         string   `json:"ref,omitempty"`
+	Path        string   `json:"path,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
 }
 
@@ -111,6 +123,30 @@ type SkillListEntry struct {
 type FleetSkillList struct {
 	Skills []SkillListEntry `json:"skills"`
 	Fleet  bool             `json:"fleet,omitempty"`
+}
+
+// SkillView is the GET /api/squad/skills/{name} single-skill detail projection
+// (ISI-3961 AC4). It is the list row plus the full CRD-authorized capability
+// envelope the Compose surface renders when a skill is opened: the granted MCP
+// tool refs, permissions, and the operator's pod-assembly requirements
+// (toolchains + sidecars, §5.3.4). The inline body is NEVER projected — the read
+// model exposes provenance and the capability envelope, not the skill payload.
+// The slice fields are non-nil on the wire ([] never null) so the console never
+// branches on null.
+type SkillView struct {
+	Name        string   `json:"name"`
+	Namespace   string   `json:"namespace"`
+	UID         string   `json:"uid"`
+	TeamUID     string   `json:"teamUid,omitempty"`
+	TeamName    string   `json:"teamName,omitempty"`
+	SourceType  string   `json:"sourceType,omitempty"`
+	RepoRef     string   `json:"repoRef,omitempty"`
+	Ref         string   `json:"ref,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	McpToolRefs []string `json:"mcpToolRefs"`
+	Permissions []string `json:"permissions"`
+	Toolchains  []string `json:"toolchains"`
+	Sidecars    []string `json:"sidecars"`
 }
 
 // RoleListEntry is one Role row in the fleet role list. Prompt is the referenced
@@ -141,8 +177,19 @@ type FleetListReader interface {
 	Team(ctx context.Context, teamUID, targetUID string, admin bool) (TeamDetail, error)
 	Agents(ctx context.Context, teamUID string, admin bool) (FleetAgentList, error)
 	Skills(ctx context.Context, teamUID string, admin bool) (FleetSkillList, error)
+	// Skill projects a single Skill by name within the caller's scope (ISI-3961
+	// AC4). admin ⇒ resolves the name fleet-wide; non-admin ⇒ only within their
+	// own Team namespace. A name the caller may not see (or that does not exist)
+	// is existence-hiding ErrSkillNotFound — identical for "absent" and "forbidden".
+	Skill(ctx context.Context, teamUID, name string, admin bool) (SkillView, error)
 	Roles(ctx context.Context, teamUID string, admin bool) (FleetRoleList, error)
 }
+
+// ErrSkillNotFound is returned by a FleetListReader.Skill when no Skill the caller
+// may see resolves to the requested name. The handler answers 404 — existence-hiding,
+// so "does not exist" and "exists in another squad you may not read" are
+// indistinguishable to a tenant (never a 403 that would confirm the skill exists).
+var ErrSkillNotFound = errors.New("apiserver: no skill matches the caller's scope")
 
 // ClientFleetListReader is the production FleetListReader over any client.Reader
 // (the informer cache in the host; a fake client in tests). Read-only.
@@ -192,6 +239,35 @@ func (r *ClientFleetListReader) teamNamespace(ctx context.Context, teamUID strin
 		}
 	}
 	return "", ErrTeamNotFound
+}
+
+// nsTeamRef is the owning-Team identity stamped onto a namespaced resource row.
+type nsTeamRef struct{ uid, name string }
+
+// nsTeamMap builds a namespace → owning-Team map from every Team CR (a Team lives
+// in its squad namespace, §12.1), so a namespaced resource (Skill, Project, …) can
+// carry its owning Team's UID/name. A namespace with no Team CR is simply absent
+// (the row's TeamUID/TeamName stay empty rather than fabricated).
+func (r *ClientFleetListReader) nsTeamMap(ctx context.Context) (map[string]nsTeamRef, error) {
+	var teams ksquadv1.TeamList
+	if err := r.reader.List(ctx, &teams); err != nil {
+		return nil, err
+	}
+	m := make(map[string]nsTeamRef, len(teams.Items))
+	for i := range teams.Items {
+		t := &teams.Items[i]
+		m[t.Namespace] = nsTeamRef{uid: string(t.UID), name: t.Name}
+	}
+	return m, nil
+}
+
+// nonNil returns s, or an empty (non-nil) slice when s is nil, so a projection's
+// slice fields marshal to [] never null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 // Teams lists Teams: admin ⇒ every squad; non-admin ⇒ only the caller's own Team
@@ -272,8 +348,14 @@ func (r *ClientFleetListReader) Agents(ctx context.Context, teamUID string, admi
 }
 
 // Skills lists Skills: admin ⇒ every squad; non-admin ⇒ the caller's namespace.
+// Each row is stamped with its owning Team (via the namespace → Team map) and, for
+// a git-sourced skill, its pinned provenance (ISI-3961 AC1).
 func (r *ClientFleetListReader) Skills(ctx context.Context, teamUID string, admin bool) (FleetSkillList, error) {
 	opts, err := r.scope(ctx, teamUID, admin)
+	if err != nil {
+		return FleetSkillList{}, err
+	}
+	nsTeam, err := r.nsTeamMap(ctx)
 	if err != nil {
 		return FleetSkillList{}, err
 	}
@@ -284,16 +366,82 @@ func (r *ClientFleetListReader) Skills(ctx context.Context, teamUID string, admi
 	out := FleetSkillList{Skills: []SkillListEntry{}, Fleet: admin}
 	for i := range skills.Items {
 		s := &skills.Items[i]
-		out.Skills = append(out.Skills, SkillListEntry{
+		tr := nsTeam[s.Namespace]
+		entry := SkillListEntry{
 			Name:        s.Name,
 			Namespace:   s.Namespace,
 			UID:         string(s.UID),
+			TeamUID:     tr.uid,
+			TeamName:    tr.name,
 			SourceType:  string(s.Spec.Source.Type),
 			Permissions: s.Spec.Permissions,
-		})
+		}
+		if g := s.Spec.Source.Git; g != nil {
+			entry.RepoRef, entry.Ref, entry.Path = g.RepoRef, g.Ref, g.Path
+		}
+		out.Skills = append(out.Skills, entry)
 	}
 	sortByNamespaceName(out.Skills, func(e SkillListEntry) (string, string) { return e.Namespace, e.Name })
 	return out, nil
+}
+
+// Skill projects a single Skill by name (ISI-3961 AC4). admin ⇒ the name is
+// resolved fleet-wide; non-admin ⇒ only within the caller's Team namespace (a
+// name outside it is invisible). A name resolving to no visible Skill is
+// existence-hiding ErrSkillNotFound. When an admin's name collides across squads
+// (skill names are namespace-scoped, not cluster-unique) the first match by
+// (namespace, name) order is returned deterministically — the fleet skill list is
+// the disambiguating surface for that rare case.
+func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name string, admin bool) (SkillView, error) {
+	if name == "" {
+		return SkillView{}, ErrSkillNotFound
+	}
+	opts, err := r.scope(ctx, teamUID, admin)
+	if err != nil {
+		// A tenant whose UID resolves to no Team is existence-hiding, same as a
+		// missing skill — never surface ErrTeamNotFound as a distinct signal here.
+		if errors.Is(err, ErrTeamNotFound) {
+			return SkillView{}, ErrSkillNotFound
+		}
+		return SkillView{}, err
+	}
+	nsTeam, err := r.nsTeamMap(ctx)
+	if err != nil {
+		return SkillView{}, err
+	}
+	var skills ksquadv1.SkillList
+	if err := r.reader.List(ctx, &skills, opts...); err != nil {
+		return SkillView{}, err
+	}
+	// Deterministic pick on name collision across namespaces (admin fleet view).
+	matches := make([]*ksquadv1.Skill, 0, 1)
+	for i := range skills.Items {
+		if skills.Items[i].Name == name {
+			matches = append(matches, &skills.Items[i])
+		}
+	}
+	if len(matches) == 0 {
+		return SkillView{}, ErrSkillNotFound
+	}
+	sort.Slice(matches, func(a, b int) bool { return matches[a].Namespace < matches[b].Namespace })
+	s := matches[0]
+	tr := nsTeam[s.Namespace]
+	view := SkillView{
+		Name:        s.Name,
+		Namespace:   s.Namespace,
+		UID:         string(s.UID),
+		TeamUID:     tr.uid,
+		TeamName:    tr.name,
+		SourceType:  string(s.Spec.Source.Type),
+		McpToolRefs: objectRefNames(s.Spec.McpToolRefs),
+		Permissions: nonNil(s.Spec.Permissions),
+		Toolchains:  nonNil(s.Spec.Requires.Toolchains),
+		Sidecars:    nonNil(s.Spec.Requires.Sidecars),
+	}
+	if g := s.Spec.Source.Git; g != nil {
+		view.RepoRef, view.Ref, view.Path = g.RepoRef, g.Ref, g.Path
+	}
+	return view, nil
 }
 
 // Roles lists Roles: admin ⇒ every squad; non-admin ⇒ the caller's namespace.
@@ -443,6 +591,32 @@ func (s *Server) squadSkills(reader FleetListReader) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, list)
+	}
+}
+
+// squadSkillDetail is the handler behind GET /api/squad/skills/{name} (ISI-3961
+// AC4). Like the list handlers it rides the §13 choke point; the projection is
+// scoped to the AuthorContext (admin ⇒ any squad by name, tenant ⇒ own ns) and the
+// only request-derived value is the {name} path var. A name the caller may not see
+// (or that does not exist) is existence-hiding 404 — never a 403 that would confirm
+// the skill exists.
+func (s *Server) squadSkillDetail(reader FleetListReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, admin, ok := authScopeAdmin(w, r)
+		if !ok {
+			return
+		}
+		name := muxVar(r, "name")
+		view, err := reader.Skill(r.Context(), auth, name, admin)
+		if errors.Is(err, ErrSkillNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no such skill")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "skill read model unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

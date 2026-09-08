@@ -187,6 +187,9 @@ func main() {
 	// request, so per-page-load work grows with cluster history. A status.phase field index on
 	// this cache is the follow-up once the reconciler writes real Paused conditions (ISI-2898).
 	var overview apiserver.SquadOverviewReader
+	// Teams LIST read model (ISI-3953, gap G4): GET /api/teams enumerates the
+	// caller's visible Teams over the SAME informer cache — no second watch.
+	var teams apiserver.TeamsReader
 	var credentials apiserver.CredentialOverviewReader
 	// 8.10/8.11 Agents org read model (ISI-3548): the same informer cache backs the
 	// Team→Agent→Role org diagram, its live per-agent status SSE, and agent detail/runs.
@@ -210,6 +213,7 @@ func main() {
 	} else {
 		defer stopCache()
 		overview = apiserver.NewClientOverviewReader(cacheReader)
+		teams = apiserver.NewClientTeamsReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
 		fleetList = apiserver.NewClientFleetListReader(cacheReader)
@@ -463,6 +467,7 @@ func main() {
 		Discussion:       discussion.NewHandler(discussion.NewStore(db)),
 		Ready:            dbReady{db},
 		Overview:         overview,
+		Teams:            teams,
 		FleetList:        fleetList,
 		Credentials:      credentials,
 		SecretWriter:     secretWriter,

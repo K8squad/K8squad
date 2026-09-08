@@ -57,6 +57,10 @@ type Options struct {
 	Discussion    *discussion.Handler
 	Ready         ReadinessChecker
 	Overview      SquadOverviewReader // 8.1 squad-overview read model; nil ⇒ documented 501
+	// Teams is the Teams LIST read model (ISI-3953, gap G4): GET /api/teams
+	// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒ own
+	// Team). nil ⇒ documented 501, exactly like Overview.
+	Teams TeamsReader
 	// FleetList is the ISI-3963 fleet-aware Teams/Agents/Skills/Roles list read
 	// model (GET /api/squad/{teams,teams/{uid},agents,skills,roles}, ADR-0010 /
 	// ISI-3941 Phase 1). Admin ⇒ fleet-wide, tenant ⇒ own squad. Nil ⇒ the routes
@@ -358,6 +362,23 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet)
 		}
 
+		// Teams LIST read model (ISI-3953, gap G4 of ISI-3949): GET /api/teams
+		// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒
+		// own Team only, existence-hiding), from the SAME informer cache as the
+		// other read models. Rides the SAME §13 BFF choke point; a nil reader
+		// keeps the documented 501 so the contract stays honest. This is a
+		// distinct GET subrouter from the POST /api/teams compose collection
+		// (mountComposeRoutes) — mux routes them by method, exactly as
+		// /api/credentials has GET (here) + POST (compose) on separate subrouters.
+		teamsList := s.router.Path("/api/teams").Subrouter()
+		teamsList.Use(authz)
+		if opts.Teams != nil {
+			teamsList.HandleFunc("", s.teams(opts.Teams)).Methods(http.MethodGet)
+		} else {
+			teamsList.HandleFunc("", notImplemented("teams read model", "ISI-3953: wire a TeamsReader (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
 		// ISI-3963 fleet-aware list read models (ISI-3941 Phase 1 extension, sibling
 		// of ISI-3943's /api/squad/projects): the Teams/Agents/Skills/Roles lists a
 		// global admin browses the whole fleet with (admin ⇒ every squad; tenant ⇒
@@ -374,6 +395,11 @@ func (s *Server) routes(opts Options) {
 		fleetAgents.Use(authz)
 		fleetSkills := s.router.Path("/api/squad/skills").Subrouter()
 		fleetSkills.Use(authz)
+		// ISI-3961 S1: the single-skill VIEW rides the SAME /api/squad/* read
+		// namespace as the list (not /api/skills/{name}, which is the compose
+		// write route — PUT-only), mirroring /api/squad/teams/{uid}.
+		fleetSkillOne := s.router.Path("/api/squad/skills/{name}").Subrouter()
+		fleetSkillOne.Use(authz)
 		fleetRoles := s.router.Path("/api/squad/roles").Subrouter()
 		fleetRoles.Use(authz)
 		if opts.FleetList != nil {
@@ -381,6 +407,7 @@ func (s *Server) routes(opts Options) {
 			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetAgents.HandleFunc("", s.squadAgents(opts.FleetList)).Methods(http.MethodGet)
 			fleetSkills.HandleFunc("", s.squadSkills(opts.FleetList)).Methods(http.MethodGet)
+			fleetSkillOne.HandleFunc("", s.squadSkillDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
 		} else {
 			h := notImplemented("fleet-list read model", "ISI-3963: wire a FleetListReader (informer cache) to enable")
@@ -388,6 +415,7 @@ func (s *Server) routes(opts Options) {
 			fleetTeamOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetAgents.HandleFunc("", h).Methods(http.MethodGet)
 			fleetSkills.HandleFunc("", h).Methods(http.MethodGet)
+			fleetSkillOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
 		}
 
