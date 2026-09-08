@@ -29,6 +29,7 @@ limitations under the License.
 package reconcile
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -199,6 +200,69 @@ func TestFailedToClaimingRetryLap(t *testing.T) {
 	// A retry is a genuine new attempt: one distinct execution per lap, no cross-lap dedup.
 	if !reflect.DeepEqual(w.AgentExecutions, []string{RunID + "#lap0", RunID + "#lap1"}) {
 		t.Fatalf("retry agent attempts wrong: %v — a retry lap must re-dispatch a fresh execution", w.AgentExecutions)
+	}
+}
+
+// gatedEffects is an Effects that captures a sticky error like the production
+// binding (coord.ProdEffects) and exposes it via Err(). failDispatch makes the
+// dispatching effect fail to apply — the machine's effect-applied gate must then
+// block the step-advance past dispatching (ISI-3617).
+type gatedEffects struct {
+	*World
+	failDispatch bool
+	err          error
+}
+
+func (g *gatedEffects) Dispatch(taskID string, dedup bool) {
+	if g.failDispatch {
+		g.err = fmt.Errorf("submit failed for %s", taskID)
+		return // effect did NOT apply — no execution recorded
+	}
+	g.World.Dispatch(taskID, dedup)
+}
+
+func (g *gatedEffects) Err() error { return g.err }
+
+// (E2) ISI-3617: a durable effect that fails to apply must NOT let the machine
+// advance past it. A failed submit at dispatching leaves the step at dispatching
+// (so a re-drive re-enters and re-submits), returns the error to the caller, and
+// records no agent execution — the machine never sails to a terminal step on an
+// effect that never happened.
+func TestEffectFailureBlocksAdvance(t *testing.T) {
+	g := &gatedEffects{World: NewWorld(), failDispatch: true}
+	s := NewMemStore()
+
+	err := Reconcile(g, s, Options{Durable: true, Fence: 1})
+	if err == nil {
+		t.Fatal("ISI-3617: Reconcile returned nil after the dispatch effect failed to apply — " +
+			"the machine advanced past an effect that never happened")
+	}
+	if s.Step() != StepDispatching {
+		t.Fatalf("ISI-3617: durable step is %s, want dispatching — a failed effect must not advance the step", s.Step())
+	}
+	if len(g.AgentExecutions) != 0 {
+		t.Fatalf("ISI-3617: recorded executions %v after a failed submit — nothing should have dispatched", g.AgentExecutions)
+	}
+
+	// The sandbox bind (the prior step) DID apply and advanced — the gate only
+	// blocks the step whose effect failed, not the whole drive retroactively.
+	if !reflect.DeepEqual(g.SandboxBinds, []string{RunID}) {
+		t.Fatalf("ISI-3617: sandbox bind = %v, want one bind (claiming_sandbox applied before dispatching failed)", g.SandboxBinds)
+	}
+
+	// Recovery: a fresh drive (production rebuilds ProdEffects per pass, so the
+	// sticky error resets) with the submit now succeeding — the re-drive re-enters
+	// dispatching and completes the machine, exactly the at-least-once the fix restores.
+	g.failDispatch = false
+	g.err = nil
+	if err := Reconcile(g, s, Options{Durable: true, Fence: 1}); err != nil {
+		t.Fatalf("ISI-3617: recovery drive errored: %v", err)
+	}
+	if s.Step() != StepSucceeded {
+		t.Fatalf("ISI-3617: recovery drive reached %s, want succeeded", s.Step())
+	}
+	if !reflect.DeepEqual(g.AgentExecutions, []string{RunID}) {
+		t.Fatalf("ISI-3617: executions %v after recovery, want exactly one dispatch", g.AgentExecutions)
 	}
 }
 
