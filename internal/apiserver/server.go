@@ -374,6 +374,13 @@ func (s *Server) routes(opts Options) {
 		fleetAgents.Use(authz)
 		fleetSkills := s.router.Path("/api/squad/skills").Subrouter()
 		fleetSkills.Use(authz)
+		// ISI-3961 single-skill view: GET /api/squad/skills/{name}, the detail sibling
+		// of the fleet skill list above (same §13 choke point, same fleet-aware scoping,
+		// existence-hiding 404). Sits under /api/squad/* — the read namespace — because
+		// /api/skills/{name} is the write-only compose PUT route (ISI-3943's collision
+		// sidestep, adopted fleet-wide by ISI-3963).
+		fleetSkillOne := s.router.Path("/api/squad/skills/{name}").Subrouter()
+		fleetSkillOne.Use(authz)
 		fleetRoles := s.router.Path("/api/squad/roles").Subrouter()
 		fleetRoles.Use(authz)
 		if opts.FleetList != nil {
@@ -381,6 +388,7 @@ func (s *Server) routes(opts Options) {
 			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetAgents.HandleFunc("", s.squadAgents(opts.FleetList)).Methods(http.MethodGet)
 			fleetSkills.HandleFunc("", s.squadSkills(opts.FleetList)).Methods(http.MethodGet)
+			fleetSkillOne.HandleFunc("", s.squadSkill(opts.FleetList)).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
 		} else {
 			h := notImplemented("fleet-list read model", "ISI-3963: wire a FleetListReader (informer cache) to enable")
@@ -388,6 +396,7 @@ func (s *Server) routes(opts Options) {
 			fleetTeamOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetAgents.HandleFunc("", h).Methods(http.MethodGet)
 			fleetSkills.HandleFunc("", h).Methods(http.MethodGet)
+			fleetSkillOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
 		}
 

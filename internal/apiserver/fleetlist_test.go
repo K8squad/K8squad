@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -184,6 +185,151 @@ func TestFleetSkillsScoping(t *testing.T) {
 	}
 	if len(tenant.Skills) != 1 || tenant.Skills[0].Namespace != "squad-a" {
 		t.Fatalf("tenant A must see only squad-a skills: %+v", tenant.Skills)
+	}
+}
+
+// gitSkillObj builds a git-sourced Skill with full detail (source coordinates, MCP
+// tool refs, permissions, and toolchain/sidecar requirements) so the single-skill
+// view projection (ISI-3961 AC4) can be asserted end to end.
+func gitSkillObj(ns, name, uid string) *ksquadv1.Skill {
+	return &ksquadv1.Skill{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID(uid)},
+		Spec: ksquadv1.SkillSpec{
+			Source: ksquadv1.SkillSource{
+				Type: ksquadv1.SkillSourceGit,
+				Git: &ksquadv1.GitSkillSource{
+					RepoRef: "github.com/acme/squad-skills",
+					Ref:     "deadbeef",
+					Path:    "skills/pg-migrate",
+				},
+			},
+			McpToolRefs: []ksquadv1.ObjectRef{{Name: "pg"}, {Name: "fs"}},
+			Permissions: []string{"net:egress", "fs:write"},
+			Requires: ksquadv1.SkillRequires{
+				Toolchains: []string{"go@1.23"},
+				Sidecars:   []string{"dockerd"},
+			},
+		},
+	}
+}
+
+func TestFleetSkillsListEnrichment(t *testing.T) {
+	// The list carries owning Team UID and, for a git skill, the provenance coords
+	// (ISI-3961 AC1) additively over the ISI-3963 envelope.
+	objs := append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))
+	r := newFleetReader(t, objs...)
+	list, err := r.Skills(context.Background(), "", true)
+	if err != nil {
+		t.Fatalf("Skills(admin): %v", err)
+	}
+	var git *SkillListEntry
+	for i := range list.Skills {
+		if list.Skills[i].Name == "pg-migrate" {
+			git = &list.Skills[i]
+		}
+	}
+	if git == nil {
+		t.Fatalf("pg-migrate not listed: %+v", list.Skills)
+	}
+	if git.TeamUID != fleetUIDA {
+		t.Fatalf("owning team UID: got %q want %q", git.TeamUID, fleetUIDA)
+	}
+	if git.SourceType != string(ksquadv1.SkillSourceGit) ||
+		git.SourceRepoRef != "github.com/acme/squad-skills" || git.SourceRef != "deadbeef" || git.SourcePath != "skills/pg-migrate" {
+		t.Fatalf("git provenance not projected: %+v", git)
+	}
+}
+
+func TestFleetSkillViewAdminAnySquad(t *testing.T) {
+	r := newFleetReader(t, append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))...)
+	v, err := r.Skill(context.Background(), "", "pg-migrate", true)
+	if err != nil {
+		t.Fatalf("Skill(admin): %v", err)
+	}
+	if v.Name != "pg-migrate" || v.Namespace != "squad-a" || v.TeamUID != fleetUIDA {
+		t.Fatalf("identity: %+v", v)
+	}
+	if v.Source.Type != "git" || v.Source.RepoRef != "github.com/acme/squad-skills" || v.Source.Ref != "deadbeef" || v.Source.Path != "skills/pg-migrate" {
+		t.Fatalf("source projection: %+v", v.Source)
+	}
+	if len(v.McpToolRefs) != 2 || len(v.Permissions) != 2 {
+		t.Fatalf("refs/permissions: %+v", v)
+	}
+	if len(v.Requires.Toolchains) != 1 || v.Requires.Toolchains[0] != "go@1.23" || len(v.Requires.Sidecars) != 1 {
+		t.Fatalf("requires projection: %+v", v.Requires)
+	}
+}
+
+func TestFleetSkillViewTenantOwnOnly(t *testing.T) {
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	// Tenant A sees its own skill.
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-a", false); err != nil {
+		t.Fatalf("tenant A own skill: %v", err)
+	}
+	// Tenant A must NOT see squad-b's skill — existence-hiding, not a 403.
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-b", false); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("foreign skill: got %v, want ErrSkillNotFound", err)
+	}
+}
+
+func TestFleetSkillViewNotFound(t *testing.T) {
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	if _, err := r.Skill(context.Background(), "", "no-such", true); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("absent skill (admin): got %v, want ErrSkillNotFound", err)
+	}
+	// A tenant whose UID resolves to no Team is existence-hiding too.
+	if _, err := r.Skill(context.Background(), "unknown-uid", "sk-a", false); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("unresolved tenant: got %v, want ErrSkillNotFound", err)
+	}
+}
+
+func TestFleetSkillViewHandler(t *testing.T) {
+	tenantID := uuid.MustParse(fleetUIDA)
+	reader := newFleetReader(t, append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))...)
+	h := testFleetServer(t, tenantID, false, reader)
+
+	// 200 own skill.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/skills/pg-migrate", nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("own skill: got %d want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var v SkillView
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v.Name != "pg-migrate" || v.Source.Ref != "deadbeef" {
+		t.Fatalf("view body: %+v", v)
+	}
+
+	// 404 foreign skill (squad-b) — existence-hiding.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/skills/sk-b", nil), devToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign skill: got %d want 404", rec.Code)
+	}
+}
+
+func TestFleetSkillViewHandlerUnauthenticated(t *testing.T) {
+	adminID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	reader := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	h := testFleetServer(t, adminID, true, reader)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/squad/skills/sk-a", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no session: got %d, want 401", rec.Code)
+	}
+}
+
+func TestFleetSkillViewNilReaderStill501(t *testing.T) {
+	adminID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	h := testFleetServer(t, adminID, true, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/skills/sk-a", nil), devToken))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("nil reader: got %d, want 501", rec.Code)
 	}
 }
 
