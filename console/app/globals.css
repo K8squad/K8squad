@@ -1567,6 +1567,33 @@ a:hover {
   margin-top: 12px;
 }
 
+/* Edit-form hydration (ADR-0016 / ISI-4002): the fieldset wrapper is a layout-neutral
+   reset (no default border/padding) so disabling it while loading dims the form without
+   shifting it. */
+.compose__fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.compose__fieldset:disabled {
+  opacity: 0.6;
+}
+.compose__hydrating {
+  margin: 0 0 12px;
+}
+.compose__hydrate-miss,
+.compose__hydrate-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #333);
+}
+
 /* Story B (ISI-3555): guided model selector + BYO endpoint. */
 .compose__model-back {
   align-self: flex-start;

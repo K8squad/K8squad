@@ -190,3 +190,65 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     expect(screen.queryByTestId("compose-no-team-gate")).toBeNull();
   });
 });
+
+describe("Compose edit-form hydration (ADR-0016 / ISI-4002)", () => {
+  it("tenant edit deep-link hydrates a Role's authoring spec into the form", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=boss");
+    stubRoutes({
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/roles/boss": {
+        status: 200,
+        body: {
+          name: "boss",
+          promptRef: { name: "boss-prompt" },
+          defaultSkills: [{ name: "web-search" }, { namespace: "shared", name: "pg" }],
+          runtimeClassHint: "gvisor",
+        },
+      },
+      // useOrgList also lists roles for the left pane.
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+    });
+    render(<ComposeScreen />);
+    // The real authoring values land in the form (not an empty edit form).
+    await waitFor(() => expect(screen.getByDisplayValue("boss-prompt")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("gvisor")).toBeInTheDocument();
+    // The default-skills textarea is newline-joined "web-search\nshared/pg".
+    const skillsArea = screen
+      .getAllByRole("textbox")
+      .find((el) => (el as HTMLTextAreaElement).value.includes("web-search")) as HTMLTextAreaElement;
+    expect(skillsArea?.value).toBe("web-search\nshared/pg");
+  });
+
+  it("404 on the hydration read shows a not-found notice, form still usable", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=ghost");
+    stubRoutes({
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/roles/ghost": { status: 404 },
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() =>
+      expect(screen.getByTestId("compose-hydrate-notfound")).toBeInTheDocument(),
+    );
+  });
+
+  it("admin edit-browse appends ?team= to the hydration read and is NOT gated", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=boss&team=u-bmad");
+    const spy = stubRoutes({
+      "/api/squad/teams": { status: 200, body: adminTeams },
+      "/api/squad/roles/boss?team=u-bmad": {
+        status: 200,
+        body: { name: "boss", promptRef: { name: "bmad-boss-prompt" } },
+      },
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+    });
+    render(<ComposeScreen />);
+    // The gate must NOT appear (admin is browsing a specific squad, ADR-0016 read).
+    await waitFor(() => expect(screen.getByDisplayValue("bmad-boss-prompt")).toBeInTheDocument());
+    expect(screen.queryByTestId("compose-no-team-gate")).toBeNull();
+    // The read carried the squad selector.
+    expect(
+      spy.mock.calls.some((c) => String(c[0]).includes("/api/squad/roles/boss?team=u-bmad")),
+    ).toBe(true);
+  });
+});

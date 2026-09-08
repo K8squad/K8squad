@@ -468,11 +468,287 @@ func TestFleetHandlersNilReaderStill501(t *testing.T) {
 		"/api/squad/teams", "/api/squad/teams/" + fleetUIDA,
 		"/api/squad/agents", "/api/squad/skills", "/api/squad/skills/sk-a",
 		"/api/squad/roles",
+		"/api/squad/agents/agent-a", "/api/squad/roles/dev", "/api/squad/projects/web",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, path, nil), devToken))
 		if rec.Code != http.StatusNotImplemented {
 			t.Fatalf("%s (nil reader): got %d, want 501", path, rec.Code)
 		}
+	}
+}
+
+// ============================================================================
+// ADR-0016 / ISI-4002 — per-kind authoring-spec detail reads (edit-form hydration)
+// ============================================================================
+
+// agentObjFull builds an Agent with every form-owned field populated so the
+// AgentDetail projection can be asserted for round-trip fidelity (write wire).
+func agentObjFull(ns, name string) *ksquadv1.Agent {
+	return &ksquadv1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID("ag-full")},
+		Spec: ksquadv1.AgentSpec{
+			RuntimeRef:          ksquadv1.ObjectRef{Name: "claude-code"},
+			RoleRef:             ksquadv1.ObjectRef{Name: "boss", Namespace: "shared"},
+			SkillRefs:           []ksquadv1.ObjectRef{{Name: "web-search"}, {Name: "pg", Namespace: "shared"}},
+			Model:               "claude-opus-5",
+			ModelEndpointRef:    &ksquadv1.SecretRef{Name: "byo-endpoint", Key: "url"},
+			CredentialSecretRef: ksquadv1.SecretRef{Name: "model-creds", Key: "token"},
+			CredentialClass:     "human-seat",
+			FallbackModel: &ksquadv1.FallbackModel{
+				Model:            "claude-sonnet-5",
+				ModelEndpointRef: &ksquadv1.SecretRef{Name: "fb-endpoint"},
+			},
+			// Non-form CRD fields the read must NOT surface (drop-on-edit guard).
+			OwnedBy: ksquadv1.PrincipalRef("user:alice"),
+		},
+	}
+}
+
+func projectObjFull(ns, name string) *ksquadv1.Project {
+	p := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, UID: types.UID("proj-full")},
+		Spec: ksquadv1.ProjectSpec{
+			Repo: ksquadv1.RepoSpec{
+				URL:  "https://github.com/acme/widget",
+				Ref:  "main",
+				Auth: &ksquadv1.RepoAuth{CredentialSecretRef: ksquadv1.SecretRef{Name: "gh-pat", Key: "token"}},
+			},
+			Goals:           []string{"ship v1", "raise coverage"},
+			EgressPolicyRef: &ksquadv1.ObjectRef{Name: "default-egress"},
+		},
+	}
+	return p
+}
+
+// detailFixture: squad-a (alpha) owns a fully-populated agent, role and project;
+// squad-b (beta) owns its own so cross-tenant hiding can be exercised.
+func detailFixture() []client.Object {
+	return []client.Object{
+		teamWithMembers("squad-a", "alpha", fleetUIDA, []string{"cade"}, []string{"widget"}),
+		teamWithMembers("squad-b", "beta", fleetUIDB, []string{"cade"}, []string{"widget"}),
+		agentObjFull("squad-a", "cade"),
+		agentObj("squad-b", "cade", "ag-b", "codex", "qa", "gpt-5"), // same name, other squad
+		roleObj("squad-a", "boss", "r-a", "boss-prompt", "gvisor", "web-search"),
+		roleObj("squad-b", "boss", "r-b", "qa-prompt", ""),
+		projectObjFull("squad-a", "widget"),
+		&ksquadv1.Project{ObjectMeta: metav1.ObjectMeta{Namespace: "squad-b", Name: "widget", UID: "proj-b"},
+			Spec: ksquadv1.ProjectSpec{Repo: ksquadv1.RepoSpec{URL: "https://github.com/acme/other"}}},
+	}
+}
+
+func TestAgentDetailProjectionRoundTrip(t *testing.T) {
+	r := newFleetReader(t, detailFixture()...)
+	d, err := r.AgentDetail(context.Background(), fleetUIDA, "cade", "", false)
+	if err != nil {
+		t.Fatalf("tenant AgentDetail: %v", err)
+	}
+	if d.Name != "cade" || d.Model != "claude-opus-5" || d.CredentialClass != "human-seat" {
+		t.Fatalf("core fields: %+v", d)
+	}
+	if d.RuntimeRef.Name != "claude-code" || d.RoleRef.Name != "boss" || d.RoleRef.Namespace != "shared" {
+		t.Fatalf("refs: %+v", d)
+	}
+	if len(d.SkillRefs) != 2 || d.SkillRefs[1].Name != "pg" || d.SkillRefs[1].Namespace != "shared" {
+		t.Fatalf("skillRefs: %+v", d.SkillRefs)
+	}
+	if d.ModelEndpointRef == nil || d.ModelEndpointRef.Name != "byo-endpoint" || d.ModelEndpointRef.Key != "url" {
+		t.Fatalf("modelEndpointRef: %+v", d.ModelEndpointRef)
+	}
+	if d.CredentialSecretRef.Name != "model-creds" || d.CredentialSecretRef.Key != "token" {
+		t.Fatalf("credentialSecretRef: %+v", d.CredentialSecretRef)
+	}
+	if d.FallbackModel == nil || d.FallbackModel.Model != "claude-sonnet-5" ||
+		d.FallbackModel.ModelEndpointRef == nil || d.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" {
+		t.Fatalf("fallbackModel: %+v", d.FallbackModel)
+	}
+	// The write wire is `project`-free and never surfaces non-form CRD fields; a
+	// JSON round-trip of the detail must decode cleanly back into agentRequest.
+	b, _ := json.Marshal(d)
+	var back agentRequest
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("detail JSON must decode as agentRequest: %v", err)
+	}
+	if back.Project != "" {
+		t.Fatalf("detail must not carry the write-only project field, got %q", back.Project)
+	}
+	if s := string(b); contains(s, "ownedBy") || contains(s, "capabilityOverrides") {
+		t.Fatalf("detail leaked a non-form CRD field: %s", s)
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAgentDetailScoping(t *testing.T) {
+	r := newFleetReader(t, detailFixture()...)
+	ctx := context.Background()
+
+	// tenant hit — own squad.
+	if _, err := r.AgentDetail(ctx, fleetUIDA, "cade", "", false); err != nil {
+		t.Fatalf("tenant hit: %v", err)
+	}
+	// admin + ?team= hit — resolves the selected squad, and picks THAT squad's
+	// object even though the name collides across squads.
+	dB, err := r.AgentDetail(ctx, "", "cade", fleetUIDB, true)
+	if err != nil {
+		t.Fatalf("admin+team hit: %v", err)
+	}
+	if dB.RuntimeRef.Name != "codex" {
+		t.Fatalf("admin ?team= must resolve squad-b's agent, got runtime %q", dB.RuntimeRef.Name)
+	}
+	// admin missing ?team= ⇒ 404 (existence-hiding; no squad to resolve in).
+	if _, err := r.AgentDetail(ctx, "", "cade", "", true); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("admin missing team: want ErrTeamNotFound, got %v", err)
+	}
+	// tenant cross-ns ⇒ existence-hiding 404 (a name only in another squad).
+	if _, err := r.AgentDetail(ctx, fleetUIDA, "agent-b-only", "", false); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("tenant miss: want ErrTeamNotFound, got %v", err)
+	}
+	// empty name ⇒ 404.
+	if _, err := r.AgentDetail(ctx, fleetUIDA, "", "", false); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("empty name: want ErrTeamNotFound, got %v", err)
+	}
+	// tenant with a UID that backs no Team ⇒ 404.
+	if _, err := r.AgentDetail(ctx, "no-such-uid", "cade", "", false); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("dangling tenant: want ErrTeamNotFound, got %v", err)
+	}
+}
+
+func TestRoleDetailScoping(t *testing.T) {
+	r := newFleetReader(t, detailFixture()...)
+	ctx := context.Background()
+
+	d, err := r.RoleDetail(ctx, fleetUIDA, "boss", "", false)
+	if err != nil {
+		t.Fatalf("tenant hit: %v", err)
+	}
+	if d.Name != "boss" || d.PromptRef.Name != "boss-prompt" || d.RuntimeClassHint != "gvisor" {
+		t.Fatalf("role detail: %+v", d)
+	}
+	if len(d.DefaultSkills) != 1 || d.DefaultSkills[0].Name != "web-search" {
+		t.Fatalf("defaultSkills: %+v", d.DefaultSkills)
+	}
+	// admin ?team= resolves squad-b's boss (name collision).
+	dB, err := r.RoleDetail(ctx, "", "boss", fleetUIDB, true)
+	if err != nil || dB.PromptRef.Name != "qa-prompt" {
+		t.Fatalf("admin+team: %+v err=%v", dB, err)
+	}
+	if _, err := r.RoleDetail(ctx, "", "boss", "", true); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("admin missing team: want ErrTeamNotFound, got %v", err)
+	}
+	if _, err := r.RoleDetail(ctx, fleetUIDA, "ghost", "", false); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("tenant miss: want ErrTeamNotFound, got %v", err)
+	}
+}
+
+func TestProjectDetailScoping(t *testing.T) {
+	r := newFleetReader(t, detailFixture()...)
+	ctx := context.Background()
+
+	d, err := r.ProjectDetail(ctx, fleetUIDA, "widget", "", false)
+	if err != nil {
+		t.Fatalf("tenant hit: %v", err)
+	}
+	if d.Name != "widget" || d.Repo.URL != "https://github.com/acme/widget" || d.Repo.Ref != "main" {
+		t.Fatalf("project detail repo: %+v", d)
+	}
+	if d.Repo.Auth == nil || d.Repo.Auth.CredentialSecretRef.Name != "gh-pat" {
+		t.Fatalf("repo.auth: %+v", d.Repo.Auth)
+	}
+	if len(d.Goals) != 2 || d.EgressPolicyRef == nil || d.EgressPolicyRef.Name != "default-egress" {
+		t.Fatalf("goals/egress: %+v", d)
+	}
+	// JSON must decode back into projectRequest (write wire, project-free is N/A here).
+	b, _ := json.Marshal(d)
+	var back projectRequest
+	if err := json.Unmarshal(b, &back); err != nil || back.Repo.URL == "" {
+		t.Fatalf("detail JSON must decode as projectRequest: %v (%s)", err, b)
+	}
+	// admin ?team= resolves squad-b's widget.
+	dB, err := r.ProjectDetail(ctx, "", "widget", fleetUIDB, true)
+	if err != nil || dB.Repo.URL != "https://github.com/acme/other" {
+		t.Fatalf("admin+team: %+v err=%v", dB, err)
+	}
+	if _, err := r.ProjectDetail(ctx, "", "widget", "", true); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("admin missing team: want ErrTeamNotFound, got %v", err)
+	}
+	if _, err := r.ProjectDetail(ctx, fleetUIDA, "ghost", "", false); !errors.Is(err, ErrTeamNotFound) {
+		t.Fatalf("tenant miss: want ErrTeamNotFound, got %v", err)
+	}
+}
+
+func TestSkillDetailInlineRoundTrip(t *testing.T) {
+	// An inline skill's body must now be projected (ISI-4002) so an edit-save does
+	// not blow it away. Git skills continue to carry provenance and empty inline.
+	inline := &ksquadv1.Skill{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "squad-a", Name: "greeter", UID: "s-inl"},
+		Spec: ksquadv1.SkillSpec{
+			Source:      ksquadv1.SkillSource{Type: ksquadv1.SkillSourceInline, Inline: "# greeter body\nhello"},
+			Permissions: []string{"fs:read"},
+		},
+	}
+	objs := append(detailFixture(), inline)
+	r := newFleetReader(t, objs...)
+	v, err := r.Skill(context.Background(), fleetUIDA, "greeter", false)
+	if err != nil {
+		t.Fatalf("inline skill view: %v", err)
+	}
+	if v.Inline != "# greeter body\nhello" {
+		t.Fatalf("inline body must be projected for round-trip, got %q", v.Inline)
+	}
+}
+
+func TestFleetAgentDetailHandler(t *testing.T) {
+	adminID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	reader := newFleetReader(t, detailFixture()...)
+	h := testFleetServer(t, adminID, true, reader)
+
+	// admin must pass ?team= — without it, 404.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/agents/cade", nil), devToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("admin no ?team=: got %d, want 404", rec.Code)
+	}
+	// admin + ?team= ⇒ 200, squad-b's agent.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/agents/cade?team="+fleetUIDB, nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin+team: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var d AgentDetail
+	if err := json.Unmarshal(rec.Body.Bytes(), &d); err != nil || d.RuntimeRef.Name != "codex" {
+		t.Fatalf("admin+team body: %+v err=%v", d, err)
+	}
+}
+
+func TestFleetAgentDetailHandlerTenantHiding(t *testing.T) {
+	tenantID := uuid.MustParse(fleetUIDA)
+	reader := newFleetReader(t, detailFixture()...)
+	h := testFleetServer(t, tenantID, false, reader)
+
+	// Tenant A reads its own agent ⇒ 200.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/agents/cade", nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant own agent: got %d, want 200", rec.Code)
+	}
+	// A ?team= pointing at squad-b is ignored for a tenant (scope stays own ns);
+	// squad-a's cade still resolves — the server never trusts the client's team hint.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/squad/agents/cade?team="+fleetUIDB, nil), devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant ?team= must be ignored (own scope): got %d", rec.Code)
+	}
+	var d AgentDetail
+	_ = json.Unmarshal(rec.Body.Bytes(), &d)
+	if d.RuntimeRef.Name != "claude-code" {
+		t.Fatalf("tenant must resolve own squad regardless of ?team=, got runtime %q", d.RuntimeRef.Name)
 	}
 }

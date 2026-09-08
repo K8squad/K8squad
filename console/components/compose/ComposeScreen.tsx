@@ -16,6 +16,7 @@ import {
   KIND_LABEL,
   RUNTIME_CLASS_HINTS,
   emptyForm,
+  fromWire,
   isValid,
   parseComposeParams,
   toWire,
@@ -37,6 +38,13 @@ type SubmitState =
   | { kind: "saving" }
   | { kind: "ok"; result: ComposeResult }
   | { kind: "error"; status: number; message: string; fields: FieldErrors };
+
+/** Edit-form hydration status (ADR-0016 / ISI-4002). */
+type HydrationState =
+  | { kind: "idle" } // not hydrating, or hydrated (form holds the loaded spec)
+  | { kind: "loading" }
+  | { kind: "notfound"; name: string }
+  | { kind: "error" };
 
 /** Parse the apiserver error body into a message + any field-level errors (invariant 1 → 422). */
 function parseError(status: number, body: string): { message: string; fields: FieldErrors } {
@@ -418,6 +426,14 @@ export function ComposeScreen() {
   });
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
+  // Admin act-as-team selector for the edit read (ADR-0016 §D2): a fleet admin
+  // hydrating another squad's object appends ?team={teamUid}; a tenant resolves in
+  // their own squad and the param is ignored server-side. Read once from the deep-link.
+  const seedTeam = useMemo(() => (params.get("team") ?? "").trim(), [params]);
+  // Edit-form hydration status (ADR-0016 / ISI-4002).
+  const [hydration, setHydration] = useState<HydrationState>({ kind: "idle" });
+  // Bumped by the retry CTA to re-run the hydration effect.
+  const [hydrateNonce, setHydrateNonce] = useState(0);
 
   // Fetch onboarding progress for guidance strip (soft dep — graceful on 501).
   useEffect(() => {
@@ -426,6 +442,58 @@ export function ComposeScreen() {
       .then((p) => { if (p) setProgress(p); })
       .catch(() => {});
   }, []);
+
+  // Edit-form hydration (ADR-0016 / ISI-4002): when the deep-link opens an object
+  // to EDIT, load its REAL authoring spec so the form is pre-filled and a PUT does
+  // not silently blow the spec away (the empty-form-on-edit bug, ISI-3985). Fires on
+  // mount and whenever the deep-linked edit target (kind/name/team) changes, and only
+  // for that target — a name typed by hand later is not auto-fetched. The name-seed
+  // stays the optimistic value while loading. Teams hydrate from /api/squad/teams/{id}
+  // (TeamDetail); every other kind from /api/squad/{kind}/{name} (admin appends
+  // ?team=). 404 → "not found in your squad"; any other error → retry — the form is
+  // never wedged.
+  useEffect(() => {
+    const name = seed.name.trim();
+    // Only auto-hydrate the deep-linked edit target: edit mode, and the active kind
+    // still the one the link pre-selected. (selectKind/selectMode reset to a create
+    // form, which correctly ends hydration.)
+    if (mode !== "edit" || kind !== seed.kind || !name) {
+      setHydration({ kind: "idle" });
+      return;
+    }
+    let cancelled = false;
+    setHydration({ kind: "loading" });
+    const teamQS = seedTeam ? `?team=${encodeURIComponent(seedTeam)}` : "";
+    const path =
+      kind === "teams"
+        ? `/api/squad/teams/${encodeURIComponent(name)}${teamQS}`
+        : `/api/squad/${kind}/${encodeURIComponent(name)}${teamQS}`;
+    (async () => {
+      try {
+        const res = await fetch(path, { cache: "no-store" });
+        if (cancelled) return;
+        if (res.status === 404) {
+          setHydration({ kind: "notfound", name });
+          return;
+        }
+        if (!res.ok) {
+          setHydration({ kind: "error" });
+          return;
+        }
+        const body = (await res.json()) as unknown;
+        if (cancelled) return;
+        setCf(fromWire(kind, body));
+        setHydration({ kind: "idle" });
+      } catch {
+        if (!cancelled) setHydration({ kind: "error" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // seed is stable (parsed once); hydrateNonce re-runs on retry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, mode, seed.kind, seed.name, seedTeam, hydrateNonce]);
 
   const clientErrors = useMemo(() => validate(cf), [cf]);
   const serverErrors = submit.kind === "error" ? submit.fields : {};
@@ -451,7 +519,12 @@ export function ComposeScreen() {
   const composeGated =
     kind !== "teams" &&
     callerScope.kind === "resolved" &&
-    !callerScope.hasOwnTeam;
+    !callerScope.hasOwnTeam &&
+    // ADR-0016: a fleet admin browsing a SPECIFIC squad's object to edit (?team=
+    // present, mode=edit) is NOT gated — they get a hydrated, viewable form. SAVE
+    // stays blocked until admin act-as-team writes land (ISI-3955), surfaced by the
+    // existing verbatim error banner rather than pre-empted by the gate.
+    !(mode === "edit" && seedTeam !== "");
 
   function selectKind(next: ComposeKind) {
     setKind(next);
@@ -605,16 +678,42 @@ export function ComposeScreen() {
             className="card compose__form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (valid && submit.kind !== "saving") void apply();
+              if (valid && submit.kind !== "saving" && hydration.kind !== "loading") void apply();
             }}
           >
-            <KindFields cf={cf} errors={errors} patch={patch} />
+            {mode === "edit" && hydration.kind === "loading" && (
+              <p className="compose__hydrating muted" role="status" data-testid="compose-hydrating">
+                Loading current values for <strong>{cf.form.name}</strong>…
+              </p>
+            )}
+            {mode === "edit" && hydration.kind === "notfound" && (
+              <div className="compose__hydrate-miss" role="alert" data-testid="compose-hydrate-notfound">
+                <strong>{hydration.name}</strong> was not found in your squad. It may have been
+                renamed or removed, or belong to another squad. You can still create it below.
+              </div>
+            )}
+            {mode === "edit" && hydration.kind === "error" && (
+              <div className="compose__hydrate-error" role="alert" data-testid="compose-hydrate-error">
+                <span>Couldn’t load the current values.</span>
+                <button
+                  type="button"
+                  className="btn btn--ghost"
+                  onClick={() => setHydrateNonce((n) => n + 1)}
+                  data-testid="compose-hydrate-retry"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            <fieldset className="compose__fieldset" disabled={hydration.kind === "loading"}>
+              <KindFields cf={cf} errors={errors} patch={patch} />
+            </fieldset>
 
             <div className="compose__actions">
               <button
                 type="submit"
                 className="btn btn--primary"
-                disabled={!valid || submit.kind === "saving"}
+                disabled={!valid || submit.kind === "saving" || hydration.kind === "loading"}
               >
                 {submit.kind === "saving"
                   ? "Applying…"

@@ -420,6 +420,17 @@ func (s *Server) routes(opts Options) {
 		fleetSkillOne.Use(authz)
 		fleetRoles := s.router.Path("/api/squad/roles").Subrouter()
 		fleetRoles.Use(authz)
+		// ISI-4002 (ADR-0016): per-kind authoring-spec detail reads the Compose
+		// edit-form hydrates from (GET → the compose WRITE wire shape so fromWire is
+		// the exact inverse of toWire). They ride the SAME /api/squad/* choke point
+		// and scoping as the lists. Skills REUSE /api/squad/skills/{name} above
+		// (SkillView, enriched with the inline body) — no colliding second route.
+		fleetAgentOne := s.router.Path("/api/squad/agents/{name}").Subrouter()
+		fleetAgentOne.Use(authz)
+		fleetRoleOne := s.router.Path("/api/squad/roles/{name}").Subrouter()
+		fleetRoleOne.Use(authz)
+		fleetProjectOne := s.router.Path("/api/squad/projects/{name}").Subrouter()
+		fleetProjectOne.Use(authz)
 		if opts.FleetList != nil {
 			fleetTeams.HandleFunc("", s.squadTeams(opts.FleetList)).Methods(http.MethodGet)
 			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
@@ -427,6 +438,9 @@ func (s *Server) routes(opts Options) {
 			fleetSkills.HandleFunc("", s.squadSkills(opts.FleetList)).Methods(http.MethodGet)
 			fleetSkillOne.HandleFunc("", s.squadSkillDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
+			fleetAgentOne.HandleFunc("", s.squadAgentDetail(opts.FleetList)).Methods(http.MethodGet)
+			fleetRoleOne.HandleFunc("", s.squadRoleDetail(opts.FleetList)).Methods(http.MethodGet)
+			fleetProjectOne.HandleFunc("", s.squadProjectDetail(opts.FleetList)).Methods(http.MethodGet)
 		} else {
 			h := notImplemented("fleet-list read model", "ISI-3963: wire a FleetListReader (informer cache) to enable")
 			fleetTeams.HandleFunc("", h).Methods(http.MethodGet)
@@ -435,6 +449,9 @@ func (s *Server) routes(opts Options) {
 			fleetSkills.HandleFunc("", h).Methods(http.MethodGet)
 			fleetSkillOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
+			fleetAgentOne.HandleFunc("", h).Methods(http.MethodGet)
+			fleetRoleOne.HandleFunc("", h).Methods(http.MethodGet)
+			fleetProjectOne.HandleFunc("", h).Methods(http.MethodGet)
 		}
 
 		// ISI-3943 Projects-tab list: the fleet-aware Project list the console's Projects tab
