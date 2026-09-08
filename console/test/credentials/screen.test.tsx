@@ -119,32 +119,21 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     expect(screen.getByText(/No agents with credentials/)).toBeTruthy();
   });
 
-  it("Connect Claude shows a friendly, honest fallback on 501 — never the raw apiserver detail, never a nonexistent CLI (ISI-3945)", async () => {
+  it("Connect Claude ships disabled — no live click can reach the documented 501 (PM directive, ISI-3983)", async () => {
+    // The connect BFF answers 501 (ISI-2899, board ToS decision). Per John's directive the button
+    // MUST NOT be a live affordance that hits it: it renders disabled with a coming-soon label.
     render(
-      <CredentialsScreen
-        load={async () => jsonResponse(200, overview([]))}
-        connect={async () =>
-          jsonResponse(501, { error: "not implemented", detail: "Connect Claude (zero-touch OAuth lifecycle, story 7.7) is not yet hosted by the apiserver", tracking: "ISI-2899" })
-        }
-        now={clock}
-      />,
+      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     const btn = screen.getByTestId("connect-claude") as HTMLButtonElement;
-    btn.click();
-    await waitFor(() => screen.getByTestId("connect-msg"));
-    const msg = screen.getByTestId("connect-msg").textContent ?? "";
-    // Friendly, honest copy: names the coming-soon tracking, no false present-tense claims.
-    expect(msg).toContain("isn't available yet");
-    expect(msg).toContain("ISI-2899");
-    // ISI-3945: no dangling nonexistent CLI — the honesty fix Henrik asked for.
-    expect(msg).not.toContain("ksquad auth login");
-    expect(msg).not.toContain("auth login");
-    // The raw backend detail never reaches the user (ISI-3935 leak guard, preserved).
-    expect(msg).not.toContain("not yet hosted");
-    expect(msg).not.toContain("story 7.7");
-    expect(msg).not.toContain("zero-touch");
-    expect(msg).not.toMatch(/token|secret/i);
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("aria-disabled")).toBe("true");
+    expect(btn.textContent).toMatch(/coming soon/i);
+    // No 501-fallback message element exists anymore — there is no live click to produce one.
+    expect(screen.queryByTestId("connect-msg")).toBeNull();
+    // The live v1 path is the paste form, always on the page.
+    expect(screen.getByTestId("creds-create-form")).toBeTruthy();
   });
 
   it("Connect Claude hint is honest — states no CLI ships, offers no fake command (ISI-3945)", async () => {
@@ -245,23 +234,37 @@ describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
     expect(screen.getByTestId("creds-test-msg").textContent).toContain("declined the credential");
   });
 
-  it("Connect Claude's honest 501 copy routes the user to the BYO paste form as the v1 path", async () => {
+  it("routes the operator to the BYO paste form as the v1 path — the form is the live CTA, OAuth is demoted", async () => {
+    render(
+      <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
+    );
+    await waitFor(() => screen.getByTestId("creds-create-form"));
+    // The paste form anchors #creds-add so the paused-banner "Re-paste key" recovery link targets it.
+    expect(screen.getByTestId("creds-create-form").getAttribute("id")).toBe("creds-add");
+    // The header hint names the v1 path and the coming-soon tracking, no false present-tense claim.
+    const hint = screen.getByText(/requires OAuth/);
+    expect(hint.textContent).toMatch(/coming soon/i);
+    expect(hint.textContent).toContain("ISI-2899");
+    expect(hint.textContent).toContain("Add a credential");
+    // No nonexistent CLI (ISI-3945 guard preserved).
+    expect(hint.textContent).not.toContain("auth login");
+  });
+
+  it("the paused-banner recovery link points at the BYO form, never a 501 endpoint (ISI-3983)", async () => {
+    const since = new Date("2026-08-20T12:41:00Z").toISOString();
     render(
       <CredentialsScreen
-        load={async () => jsonResponse(200, overview([]))}
-        connect={async () => jsonResponse(501, { error: "not implemented", tracking: "ISI-2899" })}
+        load={async () =>
+          jsonResponse(200, overview([row({ health: "expired", pausedRuns: [{ name: "run-139", reason: "credential_expired", since }] })]))
+        }
         now={clock}
       />,
     );
-    await waitFor(() => screen.getByTestId("creds-create-form"));
-    screen.getByTestId("connect-claude").click();
-    await waitFor(() => screen.getByTestId("connect-msg"));
-    const msg = screen.getByTestId("connect-msg").textContent ?? "";
-    expect(msg).toContain("isn't available yet");
-    expect(msg.toLowerCase()).toContain("service-account key below");
-    // No token/secret leak, no nonexistent CLI (ISI-3945/ISI-3935 guards preserved).
-    expect(msg).not.toMatch(/token|secret/i);
-    expect(msg).not.toContain("auth login");
+    await waitFor(() => screen.getByTestId("paused-banner"));
+    const refresh = screen.getByTestId("refresh-token") as HTMLAnchorElement;
+    // A same-page anchor to the paste form — not a button that POSTs to the connect 501.
+    expect(refresh.tagName).toBe("A");
+    expect(refresh.getAttribute("href")).toBe("#creds-add");
   });
 });
 

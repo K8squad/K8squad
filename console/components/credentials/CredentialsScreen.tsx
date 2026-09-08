@@ -6,9 +6,13 @@
 // per-agent BYO Secret refs with health (connected / refreshing / expired) — AND the v1 WRITE
 // surface: a bring-your-own service-account key paste form (POST /api/credentials, ISI-3679) with
 // a fleet-admin team picker (ISI-3937). The clearest operator signal on the page is still the
-// paused-on-expiry banner (S10 / 7.4): which Run is held, by which credential, and the one-click
-// re-login affordance (7.7 Connect Claude — a legible not-configured state until ISI-2899 lands
-// the OAuth flow; the paste form is the honest v1 path in the meantime).
+// paused-on-expiry banner (S10 / 7.4): which Run is held, by which credential, and how to recover
+// it — which, in v1, is re-pasting a fresh key in the Add-credential form below.
+//
+// Connect Claude (zero-touch OAuth, story 7.7 / ISI-2899) is a BOARD ToS decision and is
+// explicitly NOT v1 (PM directive, ISI-3983). Per that directive NO live click may reach its
+// documented 501: the button ships as a disabled "coming soon" affordance only. The BYO paste
+// form is the sole live credential path.
 //
 // Honesty rules: unknown expiry renders "—", the 501 (read model not wired) renders an explicit
 // unconfigured state, the deny collapse (401/403/404) renders not-found, and a fleet admin who
@@ -41,8 +45,6 @@ export interface CredentialsScreenProps {
   create?: (body: Record<string, string>) => Promise<Response>;
   /** Test-connection probe (BFF POST /api/credentials/{name}/test). Injectable for tests. */
   test?: (name: string, body: { runtime: string; teamId?: string }) => Promise<Response>;
-  /** Connect-Claude action (BFF POST /api/credentials/connect). Injectable for tests. */
-  connect?: () => Promise<Response>;
   /** Clock for deterministic expiry derivations in tests. */
   now?: () => Date;
 }
@@ -60,13 +62,10 @@ export function CredentialsScreen({
   loadTeams = defaultLoadTeams,
   create = defaultCreate,
   test = defaultTest,
-  connect = defaultConnect,
   now,
 }: CredentialsScreenProps) {
   const [state, setState] = useState<LoadState>("loading");
   const [rows, setRows] = useState<AgentCredentialRow[]>([]);
-  const [connectMsg, setConnectMsg] = useState<string | null>(null);
-  const [connectBusy, setConnectBusy] = useState(false);
 
   // Fleet-admin team context (ISI-3937). `teams` is populated lazily when the apiserver asks the
   // admin to select one (400) or when it hands back a fleet team list; a bound single-team caller
@@ -154,30 +153,6 @@ export function CredentialsScreen({
     [load],
   );
 
-  const onConnect = useCallback(async () => {
-    setConnectBusy(true);
-    setConnectMsg(null);
-    try {
-      const res = await connect();
-      if (res.status === 501) {
-        // Honest + friendly: the OAuth flow isn't hosted yet (ISI-2899). We do NOT surface the raw
-        // apiserver `detail` (leaks internals) and we do NOT point at a `ksquad auth login` CLI —
-        // no such CLI ships today (ISI-3945). We DO route to the v1 path: the paste form below.
-        setConnectMsg(
-          "Connect Claude isn't available yet — one-click sign-in is coming soon (ISI-2899). Add a service-account key below to bring your own credential now.",
-        );
-      } else if (res.status >= 200 && res.status < 300) {
-        setConnectMsg("Connect Claude flow started — check the opened authorization window.");
-      } else {
-        setConnectMsg("Connect Claude is unavailable right now — try again.");
-      }
-    } catch {
-      setConnectMsg("Connect Claude is unreachable — try again.");
-    } finally {
-      setConnectBusy(false);
-    }
-  }, [connect]);
-
   const clock = now ?? (() => new Date());
   const hold = state === "ok" ? bannerHold(rows) : null;
   const showForm = state === "ok" || state === "needs-team";
@@ -196,22 +171,20 @@ export function CredentialsScreen({
         <div className="creds__connect">
           <button
             type="button"
-            className="creds__connect-btn"
-            onClick={onConnect}
-            disabled={connectBusy}
+            className="creds__connect-btn creds__connect-btn--soon"
+            disabled
+            aria-disabled="true"
             data-testid="connect-claude"
+            title="Zero-touch OAuth is a board ToS decision (ISI-2899) — not available yet. Add a service-account key below to bring your own credential now."
           >
-            Connect Claude
+            Connect Claude — coming soon
           </button>
-          <span className="creds__connect-hint muted">Zero-touch OAuth — coming soon (ISI-2899). No CLI is shipped yet.</span>
+          <span className="creds__connect-hint muted">
+            Zero-touch OAuth (requires OAuth) is coming soon (ISI-2899) — not available yet. Use
+            “Add a credential” below to bring your own key. No CLI is shipped yet.
+          </span>
         </div>
       </header>
-
-      {connectMsg && (
-        <p className="creds__connect-msg" data-testid="connect-msg" role="status">
-          {connectMsg}
-        </p>
-      )}
 
       {hold && (
         <div className="creds__banner" data-testid="paused-banner" data-tone="bad">
@@ -228,22 +201,21 @@ export function CredentialsScreen({
             </p>
           </div>
           <div className="creds__banner-actions">
-            <button
-              type="button"
+            <a
               className="creds__refresh-btn"
-              onClick={onConnect}
-              disabled={connectBusy}
+              href="#creds-add"
               data-testid="refresh-token"
             >
-              Refresh token
-            </button>
+              Re-paste key
+            </a>
             <details className="creds__howto">
-              <summary>How to (setup-token)</summary>
+              <summary>How to recover</summary>
               <p className="muted">
-                Re-login becomes one click once the zero-touch OAuth lifecycle
-                is wired (ISI-2899): the Connect Claude button above will write
-                fresh tokens into the same per-user Secret — you never handle
-                token strings. No <code>ksquad auth</code> CLI ships today.
+                In v1, recovery is bring-your-own: paste a fresh service-account
+                key under the same name in <strong>Add a credential</strong>{" "}
+                below — KSquad rewrites the per-team Secret and the Run resumes.
+                One-click zero-touch OAuth is coming soon (ISI-2899); no{" "}
+                <code>ksquad auth</code> CLI ships today.
               </p>
             </details>
           </div>
@@ -494,11 +466,11 @@ function CreateCredentialForm({
   }, [created, test, teamId]);
 
   return (
-    <form className="creds__form" data-testid="creds-create-form" onSubmit={onSubmit}>
+    <form id="creds-add" className="creds__form" data-testid="creds-create-form" onSubmit={onSubmit}>
       <h2 className="creds__form-title">Add a credential</h2>
       <p className="muted creds__form-lede">
         Bring your own provider key — the v1 path. KSquad stores it as a per-team Kubernetes Secret
-        and never shows it back. Human-seat OAuth uses Connect Claude above (coming soon).
+        and never shows it back. Zero-touch OAuth (Connect Claude) is coming soon (ISI-2899).
       </p>
       <div className="creds__form-grid">
         <label className="creds__field">
@@ -644,8 +616,4 @@ async function defaultTest(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-}
-
-async function defaultConnect(): Promise<Response> {
-  return fetch("/api/credentials/connect", { method: "POST" });
 }
