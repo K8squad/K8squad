@@ -13,6 +13,7 @@
 //   401 → unauthenticated (no session) · 404 → session's Team has no projection yet ·
 //   501 → the read model is not wired in this deployment (dev run) · 5xx → retryable error.
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { KillRun } from "@/components/KillRun";
 import { EmptyState } from "@/components/forms/EmptyState";
@@ -85,7 +86,21 @@ export function phaseTone(phase: string): string {
 function ProjectSection({ project: p }: { project: ProjectOverview }) {
   return (
     <section className="card" data-testid="overview-project">
-      <h2 style={{ margin: "0 0 4px" }}>{p.name}</h2>
+      <h2 style={{ margin: "0 0 4px" }}>
+        {/* S6 (ISI-3960): the card title is the entry point into the S1 workspace.
+            Link the TITLE only — the card also holds /runs/{id} row anchors, so wrapping
+            the whole card would create invalid nested anchors and steal the run clicks.
+            Route param is the project CR name; page.tsx decodeURIComponent's it, so encode
+            here for symmetry. TODO(ISI-3967): the fleet branch renders same-named projects
+            from different squads, so a bare name is ambiguous there; ISI-3967 retargets these
+            rows to a namespace-qualified /projects/{ns}/{name} route once it lands. */}
+        <Link
+          href={`/projects/${encodeURIComponent(p.name)}`}
+          data-testid="overview-project-link"
+        >
+          {p.name}
+        </Link>
+      </h2>
       {p.repoUrl ? (
         <p className="muted" style={{ margin: "0 0 8px", fontSize: 13 }}>
           <code>{p.repoUrl}</code>

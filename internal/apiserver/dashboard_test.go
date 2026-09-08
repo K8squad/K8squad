@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -131,10 +132,10 @@ func TestDashboardComposesAllSources(t *testing.T) {
 	upd := time.Now().UTC().Truncate(time.Second)
 	h := testDashboardServer(t, teamID, reader,
 		&fakeTicketSource{facts: TicketFacts{
-			ByStatus: map[string]int{"open": 3, "done": 5},
-			Recent:   []TicketSummary{{ID: "T1", Title: "Fix login", Status: "open", UpdatedAt: &upd}},
+			ByStatus:         map[string]int{"open": 3, "done": 5},
+			Recent:           []TicketSummary{{ID: "T1", Title: "Fix login", Status: "open", UpdatedAt: &upd}},
 			PendingApprovals: []PendingApproval{{TicketID: "T4", Title: "Deploy to prod", RequestingAgent: "agent-a", RunID: "run-live", RaisedAt: &upd}},
-			CanAct:  true,
+			CanAct:           true,
 		}},
 		&fakePRSource{prs: []PullRequest{
 			{Number: 12, Title: "Fix cache", ReviewState: PRReadyForReview, Branch: "fix/cache"},
@@ -284,6 +285,159 @@ func TestDashboardNotWired501(t *testing.T) {
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("nil dashboard: got %d, want 501", rec.Code)
 	}
+}
+
+// --- ISI-3951: admin fleet-wide read (extends ADR-0010) -----------------------------------------
+
+// adminDashToken is a second session token whose AuthorContext carries IsAdmin.
+const adminDashToken = "admin-token-xyz"
+
+// testDashboardServerAs builds a dashboard server whose session resolves to the
+// given AuthorContext under adminDashToken (and keeps the non-admin devToken
+// session too, so a single server can exercise both paths). teamID stamps the
+// non-admin devToken session's Team scope.
+func testDashboardServerAs(t *testing.T, teamID uuid.UUID, admin discussion.AuthorContext, reader client.Reader, tickets TicketSource, prs PRSource, metrics MetricsSource) http.Handler {
+	t.Helper()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken:       {Principal: "user:alice", TeamID: teamID},
+		adminDashToken: admin,
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		Dashboard:     NewDashboardService(reader, tickets, prs, metrics),
+	})
+	return srv.Handler()
+}
+
+// projectWithUID is project() plus a K8s object UID, so the by-UID resolution
+// (AC3) can address a specific Project across a cross-squad name collision.
+func projectWithUID(ns, name, repo, uid string) *ksquadv1.Project {
+	p := project(ns, name, repo)
+	p.UID = types.UID(uid)
+	return p
+}
+
+// getDashboardAs GETs the dashboard under an arbitrary session token and returns
+// the raw recorder (caller asserts status), decoding the body only on 200.
+func getDashboardAs(t *testing.T, h http.Handler, token, projectID string) (*httptest.ResponseRecorder, *ProjectDashboard) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/dashboard", nil), token))
+	if rec.Code != http.StatusOK {
+		return rec, nil
+	}
+	var dash ProjectDashboard
+	if err := json.Unmarshal(rec.Body.Bytes(), &dash); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return rec, &dash
+}
+
+// TestDashboardAdminForeignProject — AC1: an admin (no home Team) reads a Project
+// living in a foreign namespace; the payload resolves to that namespace and its
+// Runs, not the admin's own (empty) scope.
+func TestDashboardAdminForeignProject(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t,
+		team("squad-b", "beta", "cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		project("squad-b", "web", "https://github.com/acme/web"),
+		dashboardRun("squad-b", "run-b", "web", "agent-a", "T1", ksquadv1.RunPhaseRunning),
+		// A same-named Run in another squad must NOT leak in.
+		dashboardRun("squad-a", "run-a", "web", "agent-x", "T9", ksquadv1.RunPhaseRunning),
+	)
+	// Seams capture the (namespace, project) they were queried with (AC1 last bullet).
+	seam := &captureSeam{}
+	h := testDashboardServerAs(t, uuid.New(), admin, reader, seam, seam, seam)
+
+	rec, dash := getDashboardAs(t, h, adminDashToken, "web")
+	if dash == nil {
+		t.Fatalf("admin foreign project: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if dash.Project.Name != "web" || dash.Project.Namespace != "squad-b" {
+		t.Fatalf("resolved scope: got %+v, want name=web ns=squad-b", dash.Project)
+	}
+	if !dash.LiveRuns.Available || len(dash.LiveRuns.Runs) != 1 || dash.LiveRuns.Runs[0].Name != "run-b" {
+		t.Fatalf("live runs must come from squad-b only: %+v", dash.LiveRuns)
+	}
+	if seam.ns != "squad-b" || seam.project != "web" {
+		t.Fatalf("seams must be queried with the resolved (ns, project): got (%q, %q)", seam.ns, seam.project)
+	}
+}
+
+// TestDashboardAdminResolvesByUID — AC3: two Projects named "web" in different
+// namespaces; addressing by the squad-b Project's UID resolves uniquely to it.
+func TestDashboardAdminResolvesByUID(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	const uidB = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	reader := newDashboardClient(t,
+		projectWithUID("squad-a", "web", "https://github.com/acme/web-a", "aaaa1111-0000-0000-0000-000000000000"),
+		projectWithUID("squad-b", "web", "https://github.com/acme/web-b", uidB),
+		dashboardRun("squad-b", "run-b", "web", "agent-a", "T1", ksquadv1.RunPhaseRunning),
+	)
+	h := testDashboardServerAs(t, uuid.New(), admin, reader, nil, nil, nil)
+
+	rec, dash := getDashboardAs(t, h, adminDashToken, uidB)
+	if dash == nil {
+		t.Fatalf("admin by-uid: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if dash.Project.Namespace != "squad-b" {
+		t.Fatalf("by-uid must resolve uniquely to squad-b: %+v", dash.Project)
+	}
+}
+
+// TestDashboardAdminAmbiguousNameIs409 — AC4: a bare name matching >1 squad is a
+// 409 (address by uid), never a silent first-match-wins.
+func TestDashboardAdminAmbiguousNameIs409(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t,
+		project("squad-a", "web", "https://github.com/acme/web-a"),
+		project("squad-b", "web", "https://github.com/acme/web-b"),
+	)
+	h := testDashboardServerAs(t, uuid.New(), admin, reader, nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/web/dashboard", nil), adminDashToken))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("ambiguous name: got %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestDashboardAdminUnknownProjectIs404 — AC5: an admin whose projectID matches
+// no Project anywhere (by name or UID) gets 404.
+func TestDashboardAdminUnknownProjectIs404(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t, project("squad-b", "web", "https://github.com/acme/web"))
+	h := testDashboardServerAs(t, uuid.New(), admin, reader, nil, nil, nil)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/no-such/dashboard", nil), adminDashToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("admin unknown project: got %d, want 404 (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// captureSeam is a nil-behaving seam that records the (namespace, project) it was
+// last queried with, so AC1 can assert the admin path passes the resolved
+// namespace (not the admin's empty Team scope). It returns empty facts (available).
+type captureSeam struct {
+	ns      string
+	project string
+}
+
+func (c *captureSeam) TicketFacts(_ context.Context, _, ns, project string) (TicketFacts, error) {
+	c.ns, c.project = ns, project
+	return TicketFacts{}, nil
+}
+
+func (c *captureSeam) PullRequests(_ context.Context, ns, project string) ([]PullRequest, error) {
+	c.ns, c.project = ns, project
+	return nil, nil
+}
+
+func (c *captureSeam) TokenConsumption(_ context.Context, ns, project string) (int64, *float64, string, []TokenTrendPoint, error) {
+	c.ns, c.project = ns, project
+	return 0, nil, "", nil, nil
 }
 
 // --- seam contract helpers ----------------------------------------------------------------------

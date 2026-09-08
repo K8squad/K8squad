@@ -57,6 +57,21 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
     expect(link?.getAttribute("href")).toBe("/runs/run-1?wi=ticket-9");
   });
 
+  it("links each project card title into its S1 workspace /projects/{name} (ISI-3960 AC1)", async () => {
+    stubFetch(200, overviewPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    const links = screen.getAllByTestId("overview-project-link");
+    expect(links.length).toBe(2);
+    // Real, keyboard-focusable anchor (not an onClick div) with the encoded deep-link.
+    expect(links[0].tagName).toBe("A");
+    expect(links[0].getAttribute("href")).toBe("/projects/webapp");
+    expect(links[0].textContent).toBe("webapp");
+    // Run-row /runs/{id} links inside the same card stay intact (no nested-anchor breakage).
+    const runLink = document.querySelector('a[href^="/runs/run-1"]') as HTMLAnchorElement | null;
+    expect(runLink?.getAttribute("href")).toBe("/runs/run-1?wi=ticket-9");
+  });
+
   it("renders run rows deep-linked to Run detail and phase chips toned by phase", async () => {
     stubFetch(200, overviewPayload);
     render(<SquadOverview />);

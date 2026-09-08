@@ -119,7 +119,7 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     expect(screen.getByText(/No agents with credentials/)).toBeTruthy();
   });
 
-  it("Connect Claude shows a friendly fallback on 501 — never the raw apiserver detail (ISI-3935)", async () => {
+  it("Connect Claude shows a friendly, honest fallback on 501 — never the raw apiserver detail, never a nonexistent CLI (ISI-3945)", async () => {
     render(
       <CredentialsScreen
         load={async () => jsonResponse(200, overview([]))}
@@ -134,28 +134,31 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     btn.click();
     await waitFor(() => screen.getByTestId("connect-msg"));
     const msg = screen.getByTestId("connect-msg").textContent ?? "";
-    // Friendly, actionable copy pointing at the CLI-parity path.
-    expect(msg).toContain("not yet available");
-    expect(msg).toContain("ksquad auth login");
-    // The raw backend detail never reaches the user.
+    // Friendly, honest copy: names the coming-soon tracking, no false present-tense claims.
+    expect(msg).toContain("isn't available yet");
+    expect(msg).toContain("ISI-2899");
+    // ISI-3945: no dangling nonexistent CLI — the honesty fix Henrik asked for.
+    expect(msg).not.toContain("ksquad auth login");
+    expect(msg).not.toContain("auth login");
+    // The raw backend detail never reaches the user (ISI-3935 leak guard, preserved).
     expect(msg).not.toContain("not yet hosted");
     expect(msg).not.toContain("story 7.7");
     expect(msg).not.toContain("zero-touch");
     expect(msg).not.toMatch(/token|secret/i);
   });
 
-  it("separates Connect Claude from the CLI hint — code-styled command, no raw backticks (ISI-3935)", async () => {
+  it("Connect Claude hint is honest — states no CLI ships, offers no fake command (ISI-3945)", async () => {
     render(
       <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
     );
     await waitFor(() => screen.getByTestId("creds-table"));
     const btn = screen.getByTestId("connect-claude");
-    const hint = screen.getByText(/CLI parity/);
-    // Button and hint are distinct siblings in the creds__connect flex row, not run-together text.
+    const hint = screen.getByText(/No CLI is shipped/);
+    // Button and hint remain distinct siblings in the creds__connect flex row.
     expect(btn.parentElement).toBe(hint.parentElement);
-    expect(hint.textContent).toContain("or ");
-    // The CLI command is a <code> element instead of literal backtick characters.
-    expect(hint.querySelector("code")?.textContent).toBe("ksquad auth login");
+    // No dangling nonexistent CLI command, in any form (code element or backticks).
+    expect(hint.querySelector("code")).toBeNull();
+    expect(hint.textContent).not.toContain("ksquad auth login");
     expect((hint.parentElement as HTMLElement)?.textContent).not.toContain("`");
   });
 

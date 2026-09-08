@@ -67,8 +67,10 @@ The controller stamps annotations — the operator sees status, never token byte
 
 ## 2. Zero-touch refresh — how it works (no action needed)
 
-1. User connects once: console **"Connect Claude"** browser OAuth **or** CLI
-   `ksquad auth login`. The flow writes the Secret above.
+1. User connects once: console **"Connect Claude"** browser OAuth. (A CLI
+   parity path, `ksquad auth login`, is planned under ISI-2899/ISI-3944 but is
+   **not shipped yet** — no `ksquad` CLI exists today.) The flow writes the
+   Secret above.
 2. The **leader-elected** credential controller (one refresher across all
    operator replicas — leader election guarantees no thundering-refresh race)
    watches expiry and, ~30 min before the access token expires
@@ -93,7 +95,8 @@ terminal case; transient network/5xx failures do **not** expire a credential.
 
 **Resolution (the user, or on their behalf):**
 1. Console screen 05 → the expired agent → **Re-login** (one-click browser
-   OAuth), **or** run `ksquad auth login` for that seat.
+   OAuth). (The `ksquad auth login` CLI parity path is planned but not yet
+   shipped — see ISI-3944.)
 2. The login rewrites `token` / `refreshToken` / `expiresAt` and clears the
    expired state.
 3. Paused Runs resume automatically on the refreshed Secret (story 7.4). No pod
