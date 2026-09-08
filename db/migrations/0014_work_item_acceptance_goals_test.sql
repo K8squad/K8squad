@@ -64,25 +64,34 @@ END $$;
 -- work_item_touch_updated_at BEFORE UPDATE trigger (0001), which bumps
 -- updated_at. (A per-transaction now() comparison can't show this — now() is
 -- frozen per txn and this whole check is one txn; in prod each edit is its own
--- txn.) So we lock the MECHANISM instead: a BEFORE UPDATE row trigger exists on
--- coord.work_item AND is not scoped to a column subset — i.e. it fires for the
--- new acceptance_criteria/goals columns too. If someone ever narrowed it to
--- `UPDATE OF title, body`, AC/goals edits would stop bumping updated_at and
+-- txn.) So we lock the MECHANISM instead: the work_item_touch_updated_at BEFORE
+-- UPDATE row trigger exists AND is not scoped to a column subset — i.e. it fires
+-- for the new acceptance_criteria/goals columns too. If someone ever narrowed it
+-- to `UPDATE OF title, body`, AC/goals edits would stop bumping updated_at and
 -- deterministic resume (AC3) would silently serve stale AC — this fails first.
+--
+-- The check is scoped to work_item_touch_updated_at BY NAME on purpose: this
+-- table carries OTHER, legitimately column-scoped BEFORE UPDATE triggers (e.g.
+-- work_item_enforce_parent_tenancy = UPDATE OF parent_id, project_id, team_id,
+-- 0001). A table-wide count over information_schema.triggered_update_columns
+-- would fold those in and false-fail — the invariant is about the touch trigger
+-- alone, so we name it.
 DO $$
 DECLARE n int; scoped int;
 BEGIN
     SELECT count(*) INTO n FROM information_schema.triggers
      WHERE event_object_schema='coord' AND event_object_table='work_item'
+       AND trigger_name='work_item_touch_updated_at'
        AND action_timing='BEFORE' AND event_manipulation='UPDATE';
-    ASSERT n >= 1, 'no BEFORE UPDATE trigger on coord.work_item — AC/goals edits would not bump updated_at (revision pin broken)';
+    ASSERT n >= 1, 'work_item_touch_updated_at BEFORE UPDATE trigger missing on coord.work_item — AC/goals edits would not bump updated_at (revision pin broken)';
 
-    -- A column-scoped trigger (UPDATE OF ...) would list its columns here; a
-    -- whole-row trigger lists none. AC/goals are covered iff none are scoped.
+    -- A column-scoped trigger (UPDATE OF ...) lists its columns here; a whole-row
+    -- trigger lists none. AC/goals are covered iff the touch trigger has none.
     SELECT count(*) INTO scoped FROM information_schema.triggered_update_columns
-     WHERE event_object_schema='coord' AND event_object_table='work_item';
+     WHERE event_object_schema='coord' AND event_object_table='work_item'
+       AND trigger_name='work_item_touch_updated_at';
     ASSERT scoped = 0,
-        'coord.work_item has a column-scoped BEFORE UPDATE trigger — verify it covers acceptance_criteria/goals or WorkItemRevision will miss AC/goals edits';
+        'work_item_touch_updated_at is column-scoped (UPDATE OF ...) and would miss acceptance_criteria/goals edits — WorkItemRevision pin broken';
 END $$;
 
 ROLLBACK;
