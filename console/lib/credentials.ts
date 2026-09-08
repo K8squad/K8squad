@@ -161,3 +161,86 @@ export function classifyCredentialsStatus(status: number): Exclude<CredentialsOu
   if (status === 501) return "unconfigured";
   return "error";
 }
+
+// ── BYO service-account create form (ISI-3983) ────────────────────────────────
+//
+// The v1 credential WRITE path is a bring-your-own service-account key paste (POST
+// /api/credentials, ISI-3679/ISI-3937). The (runtime, class) options mirror the credinject
+// injection table (pkg/credinject): claude-code / openclaw / hermes carry a service-account
+// key. The human-seat OAuth class is NOT paste-able — it is minted by the Connect Claude flow
+// (ISI-2899) and the apiserver answers a documented 501 for it, so it is deliberately absent
+// from the paste form (the button above stays the honest, coming-soon seam for it).
+
+/** A runtime offered by the paste form (mirror of api.RuntimeType* + the credinject table). */
+export interface CreateRuntimeOption {
+  value: string;
+  label: string;
+}
+
+/** The service-account runtimes the injection table maps for a pasted key. */
+export const CREATE_RUNTIME_OPTIONS: CreateRuntimeOption[] = [
+  { value: "claude-code", label: "Claude Code" },
+  { value: "openclaw", label: "OpenClaw" },
+  { value: "hermes", label: "Hermes" },
+];
+
+/** The only class the paste form writes: a long-lived service-account key (never human-seat). */
+export const CREATE_CLASS = "service-account";
+
+/** The write body for POST /api/credentials. `value` is write-only (never serialised back out). */
+export interface CredentialCreateInput {
+  name: string;
+  runtime: string;
+  value: string;
+  /** Fleet-admin routing hint (ISI-3937). Omitted for a bound single-team caller. */
+  teamId?: string;
+}
+
+/**
+ * Build the POST /api/credentials JSON body from the form input. Pure + unit-testable: trims the
+ * name (a DNS-1123 Secret name), pins the service-account class, forwards the value verbatim, and
+ * includes `teamId` ONLY when a fleet admin has picked a team (an empty hint is inert upstream).
+ */
+export function credentialCreateBody(input: CredentialCreateInput): Record<string, string> {
+  const body: Record<string, string> = {
+    name: input.name.trim(),
+    runtime: input.runtime,
+    class: CREATE_CLASS,
+    value: input.value,
+  };
+  if (input.teamId) body.teamId = input.teamId;
+  return body;
+}
+
+/** Outcome of a create POST, mapped to honest screen copy (status surfaced verbatim by the BFF). */
+export type CreateOutcome =
+  | "created" // 201 — Secret written, secretRef returned (never the value)
+  | "select-team" // 400 — fleet admin must pick a team (ISI-3937 semantics)
+  | "invalid" // 422 — field validation (name/runtime/value)
+  | "conflict" // 409 — a credential with this name already exists
+  | "denied" // 401/403/404 — deny/not-found collapse (existence-hiding)
+  | "unsupported" // 501 — human-seat, provisioned by Connect Claude not a paste
+  | "error"; // 5xx / network — the store itself is unhappy
+
+export function classifyCreateStatus(status: number): CreateOutcome {
+  if (status >= 200 && status < 300) return "created";
+  if (status === 400) return "select-team";
+  if (status === 409) return "conflict";
+  if (status === 422) return "invalid";
+  if (status === 501) return "unsupported";
+  if (status === 401 || status === 403 || status === 404) return "denied";
+  return "error";
+}
+
+/** One squad row for the fleet-admin team picker (mirror of the fleetlist TeamListEntry). */
+export interface CredentialTeamOption {
+  name: string;
+  namespace: string;
+  uid: string;
+}
+
+/** GET /api/squad/teams payload (subset the picker needs). `teams` may arrive null/absent. */
+export interface CredentialTeamList {
+  teams?: CredentialTeamOption[] | null;
+  fleet?: boolean;
+}
