@@ -192,6 +192,13 @@ spec:
                             description: Artifacts mirrors release/build artifacts
                               by URI + sha (FR-H2).
                             type: boolean
+                          branches:
+                            description: |-
+                              Branches mirrors the repo's branch refs (name/head SHA/default flag,
+                              ISI-4026). OPT-IN exactly like Releases: a nil or false value does NOT
+                              fetch branches (the bounded branch-list call costs an extra API class
+                              per sync tick). Set true to include RecordTypeBranch in the mirror.
+                            type: boolean
                           checkRuns:
                             description: CheckRuns mirrors CI check runs (FR-H2).
                             type: boolean
@@ -202,6 +209,14 @@ spec:
                           pullRequests:
                             description: PullRequests mirrors PRs incl. review state
                               (FR-H2).
+                            type: boolean
+                          releases:
+                            description: |-
+                              Releases mirrors published GitHub releases (tag/name/url/published-at,
+                              ISI-3956 S5a). Unlike the other toggles this is OPT-IN: a nil or false
+                              value does NOT fetch releases (they cost an extra API class per sync
+                              tick and the GitHub-status tab is whole without them). Set true to
+                              include RecordTypeRelease in the mirror.
                             type: boolean
                         type: object
                       pollIntervalSeconds:

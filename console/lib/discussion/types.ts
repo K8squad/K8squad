@@ -1,36 +1,43 @@
-// Discussion-room API types — a faithful mirror of the 10.1 apiserver surface
-// (`internal/discussion`, ISI-2147/10.1). These are the JSON shapes the BFF
-// proxies to the console. The console is a PURE CONSUMER of this API (Story
-// 10.3 §"Out of scope"): it never invents provenance and never writes author
-// fields — provenance is server-stamped (§7.3.1 / AC3).
+// Discussion-room API types — the JSON shapes the BFF proxies from the 10.1
+// apiserver surface (`internal/discussion`). The room IS the Project (R1): a
+// Project's THREADS are its room, served at
+// `/api/projects/{projectId}/discussion/threads*` (migration 0004 superseded the
+// naive ISI-2147 rooms shape). The console is a PURE CONSUMER of this API
+// (Story 10.3 §"Out of scope"): it never invents provenance and never writes
+// author fields — provenance is server-stamped (§7.3.1 / AC3).
 
 export type AuthorType = "agent" | "human" | "system";
 
 export type MessageKind = "message" | "announcement" | "decision" | "question";
 
-/** A persistent, Project-scoped discussion space (one room = one Project surface). */
-export interface Room {
+/**
+ * A discussion thread within a Project's room (`discussion.thread`). Field names
+ * match the Go JSON tags (`internal/discussion/store.go`). `messages` is
+ * populated by the get-thread read (its threaded live messages); the list read
+ * omits it.
+ */
+export interface Thread {
   id: string;
   projectId: string;
-  name: string;
+  teamId: string;
+  title: string;
+  createdBy: string;
   createdAt: string;
-  updatedAt: string;
-  archivedAt?: string | null;
+  /** Populated by the get-thread read — the thread's threaded live messages. */
+  messages?: Message[];
 }
 
 /**
- * A single threaded entry. Field names match the Go JSON tags exactly
- * (`internal/discussion/store.go`). `replies` is a derived (client- or
- * server-nested) field, not a stored column.
+ * A single threaded message entry (`discussion.message`). `replies` is a derived
+ * (client- or server-nested) field, not a stored column.
  *
  * Provenance is carried by `authorType` + `authorName` (+ `authorId`), and Run
  * origin — when a message was authored from within a Run — is carried in
- * `metadata.runId` (the landed schema has no dedicated `author_run_id` column;
- * the Run linkage lives in the `metadata` JSONB). See `provenance.ts`.
+ * `metadata.runId`. See `provenance.ts`.
  */
 export interface Message {
   id: string;
-  roomId: string;
+  threadId: string;
   parentId?: string | null;
   authorId: string;
   authorType: AuthorType;

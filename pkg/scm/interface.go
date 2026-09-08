@@ -151,6 +151,7 @@ const (
 	RecordTypeCheckRun RecordType = "check_run"
 	RecordTypeArtifact RecordType = "artifact"
 	RecordTypeRelease  RecordType = "release"
+	RecordTypeBranch   RecordType = "branch"
 )
 
 // NormalizedRecord represents a normalized source control record.

@@ -179,6 +179,30 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 		records = append(records, artifactRecords...)
 	}
 
+	// Fetch releases — OPT-IN only (ISI-3956 S5a AC2): unlike the other kinds,
+	// releases are NOT part of the empty-Types default set. They are fetched
+	// solely when RecordTypeRelease is explicitly requested (Mirror.Releases=true),
+	// so the default full sync spends no extra API budget on them.
+	if contains(options.Types, RecordTypeRelease) {
+		releaseRecords, err := p.fetchReleases(ctx, repoOwner, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch releases: %w", err)
+		}
+		records = append(records, releaseRecords...)
+	}
+
+	// Fetch branches — OPT-IN only (ISI-4026), same posture as releases: a
+	// branch list costs an extra paginated API class per sync tick, so it is
+	// fetched solely when RecordTypeBranch is explicitly requested
+	// (Mirror.Branches=true).
+	if contains(options.Types, RecordTypeBranch) {
+		branchRecords, err := p.fetchBranches(ctx, repoOwner, repoName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch branches: %w", err)
+		}
+		records = append(records, branchRecords...)
+	}
+
 	return records, nil
 }
 
@@ -635,6 +659,123 @@ func (p *GitHubProvider) fetchArtifacts(ctx context.Context, owner, repo string)
 			}
 			if artifact.ExpiresAt != nil {
 				record.ExpiresAt = artifact.ExpiresAt.Time
+			}
+			records = append(records, record)
+		}
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	return records, nil
+}
+
+// fetchReleases pulls the repo's published releases (ISI-3956 S5a) and
+// normalizes them to RecordTypeRelease. It mirrors the shape of fetchArtifacts:
+// paginated via go-github/v57, bounded by maxRecordsPerKind, and rate-limit
+// errors wrapped through wrapRateLimit so releases share the one repo rate
+// budget per sync tick (AC4). State encodes the release lifecycle
+// (draft | prerelease | published); the tag ref rides HeadRef so the mirror
+// carries it without a new column, and PublishedAt (falling back to CreatedAt)
+// answers "when did this ship".
+func (p *GitHubProvider) fetchReleases(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
+	var records []NormalizedRecord
+
+	opt := &github.ListOptions{PerPage: githubPerPage}
+	for {
+		releases, resp, err := p.client.Repositories.ListReleases(ctx, owner, repo, opt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, release := range releases {
+			// Title prefers the human name, falling back to the tag so the row
+			// is never blank (an unnamed release still shows its tag).
+			title := release.GetName()
+			if title == "" {
+				title = release.GetTagName()
+			}
+			record := NormalizedRecord{
+				Kind:       RecordTypeRelease,
+				ExternalID: fmt.Sprintf("%d", release.GetID()),
+				State:      releaseState(release),
+				Title:      title,
+				URL:        release.GetHTMLURL(),
+				Actor:      getGitHubActor(release.GetAuthor()),
+				HeadRef:    release.GetTagName(),
+			}
+			// PublishedAt is zero for a draft; fall back to CreatedAt so the
+			// row always carries a meaningful timestamp.
+			if release.PublishedAt != nil && !release.PublishedAt.IsZero() {
+				record.CreatedAt = release.PublishedAt.Time
+			} else if release.CreatedAt != nil {
+				record.CreatedAt = release.CreatedAt.Time
+			}
+			record.UpdatedAt = record.CreatedAt
+			records = append(records, record)
+		}
+		if resp.NextPage == 0 || len(records) >= maxRecordsPerKind {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	return records, nil
+}
+
+// releaseState maps a GitHub release's draft/prerelease flags onto the mirror
+// state string the GitHub-status tab groups by: a draft is "draft", an
+// unpublished-but-flagged prerelease is "prerelease", everything else is
+// "published".
+func releaseState(release *github.RepositoryRelease) string {
+	switch {
+	case release.GetDraft():
+		return "draft"
+	case release.GetPrerelease():
+		return "prerelease"
+	default:
+		return "published"
+	}
+}
+
+// fetchBranches pulls the repo's branch refs (ISI-4026) and normalizes them to
+// RecordTypeBranch: one Repositories.Get for the default-branch flag, then ONE
+// bounded paginated ListBranches pass — the same call surface the fetcher
+// already walks (default branch + open PR heads are all in the branch list).
+// The branch name is the ExternalID (stable mirror key, so renamed/deleted
+// branches converge), the default flag rides State ("default" | "active"), and
+// the head commit SHA rides HeadRef — the same "ref detail without a new
+// column" precedent fetchReleases set with the tag. Branches have no author;
+// Actor stays empty (never the bot identity, so echo suppression is a no-op).
+func (p *GitHubProvider) fetchBranches(ctx context.Context, owner, repo string) ([]NormalizedRecord, error) {
+	repoInfo, _, err := p.client.Repositories.Get(ctx, owner, repo)
+	if err != nil {
+		return nil, wrapRateLimit(err)
+	}
+	defaultBranch := repoInfo.GetDefaultBranch()
+
+	var records []NormalizedRecord
+	opt := &github.BranchListOptions{
+		ListOptions: github.ListOptions{PerPage: githubPerPage},
+	}
+	for {
+		branches, resp, err := p.client.Repositories.ListBranches(ctx, owner, repo, opt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, branch := range branches {
+			name := branch.GetName()
+			state := "active"
+			if name == defaultBranch {
+				state = "default"
+			}
+			record := NormalizedRecord{
+				Kind:       RecordTypeBranch,
+				ExternalID: name,
+				State:      state,
+				Title:      name,
+				URL:        branch.GetCommit().GetHTMLURL(),
+				HeadRef:    branch.GetCommit().GetSHA(),
 			}
 			records = append(records, record)
 		}

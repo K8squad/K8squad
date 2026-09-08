@@ -307,6 +307,18 @@ func (r *Reconciler) snapshotOptions(sync *ksquadapi.RepoSyncSpec) scm.SnapshotO
 	if include(m.Artifacts) {
 		types = append(types, scm.RecordTypeArtifact)
 	}
+	// Releases are OPT-IN (ISI-3956 S5a): nil/false does NOT include them, so
+	// the extra API class is spent only when explicitly requested — the
+	// inverse of the include() default the other kinds use.
+	if m.Releases != nil && *m.Releases {
+		types = append(types, scm.RecordTypeRelease)
+	}
+	// Branches are OPT-IN exactly like releases (ISI-4026): the bounded
+	// branch-list call is an extra API class per sync tick, spent only when
+	// explicitly requested.
+	if m.Branches != nil && *m.Branches {
+		types = append(types, scm.RecordTypeBranch)
+	}
 	return scm.SnapshotOptions{Types: types}
 }
 

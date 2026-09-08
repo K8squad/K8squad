@@ -171,6 +171,21 @@ type RepoMirrorSpec struct {
 	// Artifacts mirrors release/build artifacts by URI + sha (FR-H2).
 	// +optional
 	Artifacts *bool `json:"artifacts,omitempty"`
+
+	// Releases mirrors published GitHub releases (tag/name/url/published-at,
+	// ISI-3956 S5a). Unlike the other toggles this is OPT-IN: a nil or false
+	// value does NOT fetch releases (they cost an extra API class per sync
+	// tick and the GitHub-status tab is whole without them). Set true to
+	// include RecordTypeRelease in the mirror.
+	// +optional
+	Releases *bool `json:"releases,omitempty"`
+
+	// Branches mirrors the repo's branch refs (name/head SHA/default flag,
+	// ISI-4026). OPT-IN exactly like Releases: a nil or false value does NOT
+	// fetch branches (the bounded branch-list call costs an extra API class
+	// per sync tick). Set true to include RecordTypeBranch in the mirror.
+	// +optional
+	Branches *bool `json:"branches,omitempty"`
 }
 
 // RepoIssueSyncSpec configures the issue⇄work-item sync loop (story 11.2,
