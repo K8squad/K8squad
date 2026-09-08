@@ -320,6 +320,159 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
   }
 }
 
+// ── fromWire: the exact inverse of toWire (ADR-0016 / ISI-4002 edit hydration) ─
+//
+// Reconstruct a ComposeForm from the authoring-spec read body served by
+// GET /api/squad/{kind}/{name} (the compose WRITE wire shape minus the write-only
+// `project` scope). This is what the Compose EDIT form hydrates from so opening an
+// object shows its real spec and a PUT does not blow it away (the empty-form bug,
+// ISI-3985). It is the inverse of toWire: refs → "name" / "namespace/name",
+// secret refs → "name" / "name/key", ref lists → newline-joined, byoEnabled
+// derived from a non-empty modelEndpointRef.
+//
+// `project` is NOT in the read (it is the RBAC membership scope, never persisted
+// on the object) so it comes back "" — the editor re-selects it, exactly as on
+// create. Teams hydrate from GET /api/squad/teams/{uid} (TeamDetail: name +
+// namespaceStrategy). Skills hydrate from GET /api/squad/skills/{name}, whose
+// SkillView is a FLAT shape (sourceType/inline/repoRef/ref/path/permissions), not
+// the nested write `source` — so the skills branch reads that flat shape (the
+// skills authoring read reuses the ISI-3961 endpoint, enriched with the inline
+// body, rather than a colliding second route).
+
+/** Inverse of parseObjectRef: {name, namespace?} → "namespace/name" or "name". */
+function objectRefToString(ref: { name?: string; namespace?: string } | null | undefined): string {
+  if (!ref || !ref.name) return "";
+  return ref.namespace ? `${ref.namespace}/${ref.name}` : ref.name;
+}
+
+/** Inverse of parseSecretRef: {name, key?} → "name/key" or "name". */
+function secretRefToString(ref: { name?: string; key?: string } | null | undefined): string {
+  if (!ref || !ref.name) return "";
+  return ref.key ? `${ref.name}/${ref.key}` : ref.name;
+}
+
+/** Join a ref list into the one-per-line textarea shape lines() splits. */
+function refsToLines(refs: Array<{ name?: string; namespace?: string }> | null | undefined): string {
+  return (refs ?? []).map(objectRefToString).filter((s) => s.length > 0).join("\n");
+}
+
+type WireObjectRef = { name?: string; namespace?: string };
+type WireSecretRef = { name?: string; key?: string };
+
+/** The agents/roles/projects authoring-read bodies (write wire minus `project`). */
+interface AgentWire {
+  name?: string;
+  runtimeRef?: WireObjectRef;
+  roleRef?: WireObjectRef;
+  skillRefs?: WireObjectRef[];
+  model?: string;
+  modelEndpointRef?: WireSecretRef | null;
+  credentialSecretRef?: WireSecretRef;
+  credentialClass?: string;
+  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
+}
+interface RoleWire {
+  name?: string;
+  promptRef?: WireObjectRef;
+  defaultSkills?: WireObjectRef[];
+  runtimeClassHint?: string;
+}
+interface ProjectWire {
+  name?: string;
+  repo?: { url?: string; ref?: string };
+  goals?: string[];
+  egressPolicyRef?: WireObjectRef | null;
+}
+/** Team detail (GET /api/squad/teams/{uid}). */
+interface TeamWire {
+  name?: string;
+  namespaceStrategy?: string;
+}
+/** Skill view (GET /api/squad/skills/{name}) — the FLAT ISI-3961 shape + inline. */
+interface SkillWire {
+  name?: string;
+  sourceType?: string;
+  inline?: string;
+  repoRef?: string;
+  ref?: string;
+  path?: string;
+  permissions?: string[];
+}
+
+export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
+  const w = (wire ?? {}) as Record<string, unknown>;
+  switch (kind) {
+    case "teams": {
+      const t = w as TeamWire;
+      return { kind, form: { name: t.name ?? "", namespaceStrategy: t.namespaceStrategy ?? "" } };
+    }
+    case "projects": {
+      const p = w as ProjectWire;
+      return {
+        kind,
+        form: {
+          name: p.name ?? "",
+          repoUrl: p.repo?.url ?? "",
+          repoRef: p.repo?.ref ?? "",
+          goals: (p.goals ?? []).join("\n"),
+          egressPolicyRef: objectRefToString(p.egressPolicyRef),
+        },
+      };
+    }
+    case "agents": {
+      const a = w as AgentWire;
+      return {
+        kind,
+        form: {
+          project: "",
+          name: a.name ?? "",
+          runtimeRef: objectRefToString(a.runtimeRef),
+          roleRef: objectRefToString(a.roleRef),
+          skillRefs: refsToLines(a.skillRefs),
+          model: a.model ?? "",
+          modelEndpointRef: secretRefToString(a.modelEndpointRef),
+          credentialSecretRef: secretRefToString(a.credentialSecretRef),
+          credentialClass: a.credentialClass ?? "",
+          fallbackModel: a.fallbackModel?.model ?? "",
+          fallbackModelEndpointRef: secretRefToString(a.fallbackModel?.modelEndpointRef),
+          // UI-only: BYO is on iff a primary model endpoint ref is present.
+          byoEnabled: !!(a.modelEndpointRef && a.modelEndpointRef.name),
+        },
+      };
+    }
+    case "roles": {
+      const r = w as RoleWire;
+      return {
+        kind,
+        form: {
+          project: "",
+          name: r.name ?? "",
+          promptRef: objectRefToString(r.promptRef),
+          defaultSkills: refsToLines(r.defaultSkills),
+          runtimeClassHint: r.runtimeClassHint ?? "",
+        },
+      };
+    }
+    case "skills": {
+      const s = w as SkillWire;
+      const sourceType: SkillSourceType = s.sourceType === "git" ? "git" : "inline";
+      return {
+        kind,
+        form: {
+          project: "",
+          name: s.name ?? "",
+          sourceType,
+          inline: s.inline ?? "",
+          gitRepoRef: s.repoRef ?? "",
+          gitRef: s.ref ?? "",
+          gitPath: s.path ?? "",
+          permissions: (s.permissions ?? []).join("\n"),
+        },
+      };
+    }
+  }
+}
+
 // ── validate: mirror composecrd.go's plan*() field checks ─────────────────────
 
 export function validate(cf: ComposeForm): FieldErrors {
