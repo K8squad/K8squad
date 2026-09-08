@@ -217,8 +217,14 @@ jobs:
           POSTGRES_USER: ksquad
           POSTGRES_PASSWORD: ksquad
           POSTGRES_DB: ksquad_test
+        # ISI-3978: publish 5432 to an EPHEMERAL host port, not a fixed 5432:5432.
+        # Two service-Postgres jobs sharing a self-hosted runner (concurrency, or a
+        # leaked container from a hard-killed prior job) both tried to bind
+        # 127.0.0.1:5432 → "port is already allocated" → "Docker start fail" before
+        # the test binary ever ran. A random host port makes that collision
+        # structurally impossible; steps read the mapping from the job context.
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
@@ -250,7 +256,7 @@ jobs:
       - name: Apply migrations + run self-checks
         if: steps.guard.outputs.present == 'true'
         env:
-          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_test
         run: |
           set -euo pipefail
           # Apply migrations in version order (persisted), then run each companion *_test.sql against
