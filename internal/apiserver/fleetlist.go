@@ -129,10 +129,19 @@ type FleetSkillList struct {
 // (ISI-3961 AC4). It is the list row plus the full CRD-authorized capability
 // envelope the Compose surface renders when a skill is opened: the granted MCP
 // tool refs, permissions, and the operator's pod-assembly requirements
-// (toolchains + sidecars, §5.3.4). The inline body is NEVER projected — the read
-// model exposes provenance and the capability envelope, not the skill payload.
-// The slice fields are non-nil on the wire ([] never null) so the console never
-// branches on null.
+// (toolchains + sidecars, §5.3.4). The slice fields are non-nil on the wire ([]
+// never null) so the console never branches on null.
+//
+// Inline carries the inline skill body (ADR-0016 / ISI-4007) so the Compose EDIT
+// form can hydrate and round-trip an inline-sourced skill. ISI-3961 deliberately
+// withheld it (the view was a capability-audit projection, not an authoring one),
+// but the edit-form hydration needs it: an inline skill whose body was withheld
+// would re-save as an empty source.inline → a 422, or worse silently blank the
+// body. It is empty for a git-sourced skill (the body lives in the repo). This is
+// why the skills detail reuses THIS route rather than adding a colliding second
+// /api/squad/skills/{name} — the view already carries sourceType/repoRef/ref/path/
+// permissions, so with Inline added it now holds everything the compose Skill form
+// owns, and console fromWire('skills', view) reconstructs the SkillForm from it.
 type SkillView struct {
 	Name        string   `json:"name"`
 	Namespace   string   `json:"namespace"`
@@ -140,6 +149,7 @@ type SkillView struct {
 	TeamUID     string   `json:"teamUid,omitempty"`
 	TeamName    string   `json:"teamName,omitempty"`
 	SourceType  string   `json:"sourceType,omitempty"`
+	Inline      string   `json:"inline,omitempty"`
 	RepoRef     string   `json:"repoRef,omitempty"`
 	Ref         string   `json:"ref,omitempty"`
 	Path        string   `json:"path,omitempty"`
@@ -147,6 +157,68 @@ type SkillView struct {
 	Permissions []string `json:"permissions"`
 	Toolchains  []string `json:"toolchains"`
 	Sidecars    []string `json:"sidecars"`
+}
+
+// ── Authoring-spec detail projections (ADR-0016 / ISI-4007) ───────────────────
+//
+// The compose edit-form hydration reads: opening an Agent/Role/Project/Skill to
+// EDIT loads its real authoring spec so the form is pre-filled and a PUT does not
+// silently blow the spec away (the empty-form-on-edit bug, ISI-3985). Each *Detail
+// is the compose WRITE wire shape byte-for-byte (composecrd.go agentRequest /
+// roleRequest / projectRequest) MINUS the write-only `project` membership-scope
+// field — so console/lib/compose.ts fromWire is the exact inverse of toWire, one
+// mapper pair, no drift. The ref/secret/fallback sub-objects REUSE the same helper
+// types the write contract decodes (objectRefWire / secretRefWire /
+// fallbackModelWire / repoAuthWire in composecrd.go), so the JSON tags match the
+// write shape exactly.
+//
+// NON-form CRD fields are deliberately NOT surfaced — capabilityOverrides,
+// contextBudgetOverride, ownedBy, toolCredentials (Agent); workspacePVC,
+// contextBudget, ownedBy (Project). The read mirrors the write wire, not the full
+// CRD spec, so an edit-save never appears to drop a field the form never showed.
+// (Those fields are dropped on a compose PUT regardless of this read: upsert()
+// Updates a freshly-built spec — a full replace, not a merge — so they do not
+// survive an edit-save whether or not the read emits them. That is a pre-existing
+// write-path property, flagged in the PR, not introduced here.)
+
+// AgentDetail is the GET /api/squad/agents/{name} authoring-spec projection —
+// agentRequest minus the write-only `project` scope field (composecrd.go).
+type AgentDetail struct {
+	Name                string             `json:"name"`
+	RuntimeRef          objectRefWire      `json:"runtimeRef"`
+	RoleRef             objectRefWire      `json:"roleRef"`
+	SkillRefs           []objectRefWire    `json:"skillRefs,omitempty"`
+	Model               string             `json:"model"`
+	ModelEndpointRef    *secretRefWire     `json:"modelEndpointRef,omitempty"`
+	CredentialSecretRef secretRefWire      `json:"credentialSecretRef"`
+	CredentialClass     string             `json:"credentialClass,omitempty"`
+	FallbackModel       *fallbackModelWire `json:"fallbackModel,omitempty"`
+}
+
+// RoleDetail is the GET /api/squad/roles/{name} authoring-spec projection —
+// roleRequest minus the write-only `project` scope field (composecrd.go).
+type RoleDetail struct {
+	Name             string          `json:"name"`
+	PromptRef        objectRefWire   `json:"promptRef"`
+	DefaultSkills    []objectRefWire `json:"defaultSkills,omitempty"`
+	RuntimeClassHint string          `json:"runtimeClassHint,omitempty"`
+}
+
+// projectRepoWire mirrors projectRequest.Repo byte-for-byte (composecrd.go): the
+// upstream repo URL/ref plus the optional BYO provider credential.
+type projectRepoWire struct {
+	URL  string        `json:"url"`
+	Ref  string        `json:"ref,omitempty"`
+	Auth *repoAuthWire `json:"auth,omitempty"`
+}
+
+// ProjectDetail is the GET /api/squad/projects/{name} authoring-spec projection —
+// projectRequest minus the write-only `project` scope field (composecrd.go).
+type ProjectDetail struct {
+	Name            string          `json:"name"`
+	Repo            projectRepoWire `json:"repo"`
+	Goals           []string        `json:"goals,omitempty"`
+	EgressPolicyRef *objectRefWire  `json:"egressPolicyRef,omitempty"`
 }
 
 // RoleListEntry is one Role row in the fleet role list. Prompt is the referenced
@@ -178,12 +250,33 @@ type FleetListReader interface {
 	Agents(ctx context.Context, teamUID string, admin bool) (FleetAgentList, error)
 	Skills(ctx context.Context, teamUID string, admin bool) (FleetSkillList, error)
 	// Skill projects a single Skill by name within the caller's scope (ISI-3961
-	// AC4). admin ⇒ resolves the name fleet-wide; non-admin ⇒ only within their
-	// own Team namespace. A name the caller may not see (or that does not exist)
-	// is existence-hiding ErrSkillNotFound — identical for "absent" and "forbidden".
-	Skill(ctx context.Context, teamUID, name string, admin bool) (SkillView, error)
+	// AC4, ADR-0016). non-admin ⇒ only within their own Team namespace (targetTeamUID
+	// ignored — a tenant can never escape their tenancy). admin ⇒ when targetTeamUID
+	// is set (the ?team= selector, ADR-0016 D2), resolves the name in THAT squad's
+	// namespace; when empty, resolves fleet-wide (deterministic first match by
+	// namespace, the ISI-3961 shipped behavior kept for back-compat). A name the
+	// caller may not see (or that does not exist) is existence-hiding ErrSkillNotFound.
+	Skill(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (SkillView, error)
 	Roles(ctx context.Context, teamUID string, admin bool) (FleetRoleList, error)
+
+	// AgentDetail / RoleDetail / ProjectDetail are the ADR-0016 authoring-spec
+	// reads that hydrate the compose EDIT form. Each resolves {name} within a
+	// single squad namespace: a tenant is fenced to their OWN Team namespace
+	// (targetTeamUID ignored); an admin (no home namespace) MUST name the target
+	// squad via targetTeamUID (the ?team= selector) — an empty/foreign/unknown
+	// target is existence-hiding ErrDetailNotFound (→404), never a 403. A miss on
+	// {name} within the resolved namespace is likewise ErrDetailNotFound.
+	AgentDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (AgentDetail, error)
+	RoleDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (RoleDetail, error)
+	ProjectDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (ProjectDetail, error)
 }
+
+// ErrDetailNotFound is returned by AgentDetail/RoleDetail/ProjectDetail when no
+// object the caller may see resolves to the requested name in the resolved squad
+// namespace (absent, in another squad, or an admin who named no/foreign squad).
+// The handler answers 404 — existence-hiding, exactly like ErrSkillNotFound, so
+// "does not exist" and "exists in a squad you may not read" are indistinguishable.
+var ErrDetailNotFound = errors.New("apiserver: no object matches the caller's scope")
 
 // ErrSkillNotFound is returned by a FleetListReader.Skill when no Skill the caller
 // may see resolves to the requested name. The handler answers 404 — existence-hiding,
@@ -385,14 +478,17 @@ func (r *ClientFleetListReader) Skills(ctx context.Context, teamUID string, admi
 	return out, nil
 }
 
-// Skill projects a single Skill by name (ISI-3961 AC4). admin ⇒ the name is
-// resolved fleet-wide; non-admin ⇒ only within the caller's Team namespace (a
-// name outside it is invisible). A name resolving to no visible Skill is
-// existence-hiding ErrSkillNotFound. When an admin's name collides across squads
-// (skill names are namespace-scoped, not cluster-unique) the first match by
-// (namespace, name) order is returned deterministically — the fleet skill list is
-// the disambiguating surface for that rare case.
-func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name string, admin bool) (SkillView, error) {
+// Skill projects a single Skill by name (ISI-3961 AC4, ADR-0016). non-admin ⇒
+// only within the caller's Team namespace (a name outside it is invisible;
+// targetTeamUID is ignored so a tenant can never escape their tenancy). admin ⇒
+// when targetTeamUID is set (the ?team= selector), resolves the name in THAT
+// squad's namespace so the compose EDIT form hydrates the exact object the admin
+// opened; when empty, resolves fleet-wide and picks the first match by
+// (namespace, name) order deterministically (the ISI-3961 shipped behavior, kept
+// so an admin caller that does not pass ?team= is not regressed). A name resolving
+// to no visible Skill — including an admin ?team= naming a foreign/unknown squad —
+// is existence-hiding ErrSkillNotFound.
+func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (SkillView, error) {
 	if name == "" {
 		return SkillView{}, ErrSkillNotFound
 	}
@@ -404,6 +500,19 @@ func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name string,
 			return SkillView{}, ErrSkillNotFound
 		}
 		return SkillView{}, err
+	}
+	// Admin ?team= selector (ADR-0016 D2): narrow the fleet-wide scan to the named
+	// squad's namespace so a name collision across squads resolves to the squad the
+	// admin actually opened. A foreign/unknown target is existence-hiding.
+	if admin && targetTeamUID != "" {
+		ns, nerr := r.teamNamespace(ctx, targetTeamUID)
+		if nerr != nil {
+			if errors.Is(nerr, ErrTeamNotFound) {
+				return SkillView{}, ErrSkillNotFound
+			}
+			return SkillView{}, nerr
+		}
+		opts = []client.ListOption{client.InNamespace(ns)}
 	}
 	nsTeam, err := r.nsTeamMap(ctx)
 	if err != nil {
@@ -441,7 +550,151 @@ func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name string,
 	if g := s.Spec.Source.Git; g != nil {
 		view.RepoRef, view.Ref, view.Path = g.RepoRef, g.Ref, g.Path
 	}
+	// Inline body (ADR-0016): projected so the compose EDIT form round-trips an
+	// inline skill. Empty for a git skill (the body lives in the repo, RepoRef above).
+	view.Inline = s.Spec.Source.Inline
 	return view, nil
+}
+
+// detailScope resolves the single squad namespace a by-name authoring-spec read
+// (AgentDetail/RoleDetail/ProjectDetail, ADR-0016) is scoped to. A tenant is
+// always fenced to their OWN Team namespace — a targetTeamUID they pass is ignored
+// so they can never escape their tenancy. An admin has no home namespace, so they
+// MUST name the target squad via targetTeamUID (?team=); an empty/foreign/unknown
+// UID resolves to ErrTeamNotFound, which callers translate to existence-hiding
+// ErrDetailNotFound (→404, never a 403 that would confirm the squad exists).
+func (r *ClientFleetListReader) detailScope(ctx context.Context, callerTeamUID, targetTeamUID string, admin bool) (string, error) {
+	if admin {
+		return r.teamNamespace(ctx, targetTeamUID)
+	}
+	return r.teamNamespace(ctx, callerTeamUID)
+}
+
+// AgentDetail projects a single Agent's authoring spec by name (ADR-0016). The
+// body is the compose write wire (agentRequest) minus the write-only `project`
+// scope field, so console fromWire('agents', detail) is the exact inverse of toWire.
+func (r *ClientFleetListReader) AgentDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (AgentDetail, error) {
+	if name == "" {
+		return AgentDetail{}, ErrDetailNotFound
+	}
+	ns, err := r.detailScope(ctx, teamUID, targetTeamUID, admin)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return AgentDetail{}, ErrDetailNotFound
+		}
+		return AgentDetail{}, err
+	}
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents, client.InNamespace(ns)); err != nil {
+		return AgentDetail{}, err
+	}
+	for i := range agents.Items {
+		a := &agents.Items[i]
+		if a.Name != name {
+			continue
+		}
+		detail := AgentDetail{
+			Name:                a.Name,
+			RuntimeRef:          objectRefWire{Name: a.Spec.RuntimeRef.Name, Namespace: a.Spec.RuntimeRef.Namespace},
+			RoleRef:             objectRefWire{Name: a.Spec.RoleRef.Name, Namespace: a.Spec.RoleRef.Namespace},
+			Model:               a.Spec.Model,
+			CredentialSecretRef: secretRefWire{Name: a.Spec.CredentialSecretRef.Name, Key: a.Spec.CredentialSecretRef.Key},
+			CredentialClass:     a.Spec.CredentialClass,
+		}
+		for _, sr := range a.Spec.SkillRefs {
+			detail.SkillRefs = append(detail.SkillRefs, objectRefWire{Name: sr.Name, Namespace: sr.Namespace})
+		}
+		if ep := a.Spec.ModelEndpointRef; ep != nil {
+			detail.ModelEndpointRef = &secretRefWire{Name: ep.Name, Key: ep.Key}
+		}
+		if fb := a.Spec.FallbackModel; fb != nil {
+			w := &fallbackModelWire{Model: fb.Model}
+			if fb.ModelEndpointRef != nil {
+				w.ModelEndpointRef = &secretRefWire{Name: fb.ModelEndpointRef.Name, Key: fb.ModelEndpointRef.Key}
+			}
+			detail.FallbackModel = w
+		}
+		return detail, nil
+	}
+	return AgentDetail{}, ErrDetailNotFound
+}
+
+// RoleDetail projects a single Role's authoring spec by name (ADR-0016) — the
+// compose write wire (roleRequest) minus the write-only `project` scope field.
+func (r *ClientFleetListReader) RoleDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (RoleDetail, error) {
+	if name == "" {
+		return RoleDetail{}, ErrDetailNotFound
+	}
+	ns, err := r.detailScope(ctx, teamUID, targetTeamUID, admin)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return RoleDetail{}, ErrDetailNotFound
+		}
+		return RoleDetail{}, err
+	}
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles, client.InNamespace(ns)); err != nil {
+		return RoleDetail{}, err
+	}
+	for i := range roles.Items {
+		ro := &roles.Items[i]
+		if ro.Name != name {
+			continue
+		}
+		detail := RoleDetail{
+			Name:             ro.Name,
+			PromptRef:        objectRefWire{Name: ro.Spec.PromptRef.Name, Namespace: ro.Spec.PromptRef.Namespace},
+			RuntimeClassHint: ro.Spec.RuntimeClassHint,
+		}
+		for _, ds := range ro.Spec.DefaultSkills {
+			detail.DefaultSkills = append(detail.DefaultSkills, objectRefWire{Name: ds.Name, Namespace: ds.Namespace})
+		}
+		return detail, nil
+	}
+	return RoleDetail{}, ErrDetailNotFound
+}
+
+// ProjectDetail projects a single Project's authoring spec by name (ADR-0016) —
+// the compose write wire (projectRequest) minus the write-only `project` scope
+// field. Repo.Auth is projected as the credentialSecretRef the connect-repo wizard
+// captured, so the form re-shows a connected repo without re-entering the PAT.
+func (r *ClientFleetListReader) ProjectDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (ProjectDetail, error) {
+	if name == "" {
+		return ProjectDetail{}, ErrDetailNotFound
+	}
+	ns, err := r.detailScope(ctx, teamUID, targetTeamUID, admin)
+	if err != nil {
+		if errors.Is(err, ErrTeamNotFound) {
+			return ProjectDetail{}, ErrDetailNotFound
+		}
+		return ProjectDetail{}, err
+	}
+	var projects ksquadv1.ProjectList
+	if err := r.reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
+		return ProjectDetail{}, err
+	}
+	for i := range projects.Items {
+		p := &projects.Items[i]
+		if p.Name != name {
+			continue
+		}
+		detail := ProjectDetail{
+			Name:  p.Name,
+			Repo:  projectRepoWire{URL: p.Spec.Repo.URL, Ref: p.Spec.Repo.Ref},
+			Goals: p.Spec.Goals,
+		}
+		if p.Spec.Repo.Auth != nil {
+			detail.Repo.Auth = &repoAuthWire{CredentialSecretRef: secretRefWire{
+				Name: p.Spec.Repo.Auth.CredentialSecretRef.Name,
+				Key:  p.Spec.Repo.Auth.CredentialSecretRef.Key,
+			}}
+		}
+		if ep := p.Spec.EgressPolicyRef; ep != nil {
+			detail.EgressPolicyRef = &objectRefWire{Name: ep.Name, Namespace: ep.Namespace}
+		}
+		return detail, nil
+	}
+	return ProjectDetail{}, ErrDetailNotFound
 }
 
 // Roles lists Roles: admin ⇒ every squad; non-admin ⇒ the caller's namespace.
@@ -595,11 +848,12 @@ func (s *Server) squadSkills(reader FleetListReader) http.HandlerFunc {
 }
 
 // squadSkillDetail is the handler behind GET /api/squad/skills/{name} (ISI-3961
-// AC4). Like the list handlers it rides the §13 choke point; the projection is
-// scoped to the AuthorContext (admin ⇒ any squad by name, tenant ⇒ own ns) and the
-// only request-derived value is the {name} path var. A name the caller may not see
-// (or that does not exist) is existence-hiding 404 — never a 403 that would confirm
-// the skill exists.
+// AC4, ADR-0016). Like the list handlers it rides the §13 choke point; the
+// projection is scoped to the AuthorContext (tenant ⇒ own ns) plus the optional
+// ?team= admin selector (ADR-0016 D2: an admin names the squad whose skill to
+// hydrate). The only request-derived values are the {name} path var and ?team=.
+// A name the caller may not see (or that does not exist) is existence-hiding 404 —
+// never a 403 that would confirm the skill exists.
 func (s *Server) squadSkillDetail(reader FleetListReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth, admin, ok := authScopeAdmin(w, r)
@@ -607,7 +861,7 @@ func (s *Server) squadSkillDetail(reader FleetListReader) http.HandlerFunc {
 			return
 		}
 		name := muxVar(r, "name")
-		view, err := reader.Skill(r.Context(), auth, name, admin)
+		view, err := reader.Skill(r.Context(), auth, name, r.URL.Query().Get("team"), admin)
 		if errors.Is(err, ErrSkillNotFound) {
 			writeJSONError(w, http.StatusNotFound, "no such skill")
 			return
@@ -617,6 +871,72 @@ func (s *Server) squadSkillDetail(reader FleetListReader) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, view)
+	}
+}
+
+// squadAgentDetail is the handler behind GET /api/squad/agents/{name} (ADR-0016):
+// the authoring-spec read that hydrates the compose EDIT form. Rides the §13 choke
+// point; scoped to the AuthorContext (tenant ⇒ own ns) plus the optional ?team=
+// admin selector. Deny is existence-hiding 404, never a 403.
+func (s *Server) squadAgentDetail(reader FleetListReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, admin, ok := authScopeAdmin(w, r)
+		if !ok {
+			return
+		}
+		detail, err := reader.AgentDetail(r.Context(), auth, muxVar(r, "name"), r.URL.Query().Get("team"), admin)
+		if errors.Is(err, ErrDetailNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no such agent")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "agent read model unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
+	}
+}
+
+// squadRoleDetail is the handler behind GET /api/squad/roles/{name} (ADR-0016).
+func (s *Server) squadRoleDetail(reader FleetListReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, admin, ok := authScopeAdmin(w, r)
+		if !ok {
+			return
+		}
+		detail, err := reader.RoleDetail(r.Context(), auth, muxVar(r, "name"), r.URL.Query().Get("team"), admin)
+		if errors.Is(err, ErrDetailNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no such role")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "role read model unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
+	}
+}
+
+// squadProjectDetail is the handler behind GET /api/squad/projects/{name}
+// (ADR-0016). NOTE the sibling GET /api/squad/projects (list) is served by the
+// squad-overview reader (ISI-3943); this by-name detail rides the FleetList reader
+// like the other authoring-spec reads — different readers, distinct routes.
+func (s *Server) squadProjectDetail(reader FleetListReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, admin, ok := authScopeAdmin(w, r)
+		if !ok {
+			return
+		}
+		detail, err := reader.ProjectDetail(r.Context(), auth, muxVar(r, "name"), r.URL.Query().Get("team"), admin)
+		if errors.Is(err, ErrDetailNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no such project")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "project read model unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, detail)
 	}
 }
 

@@ -1458,6 +1458,20 @@ a:hover {
   margin-top: 12px;
 }
 
+/* Edit-form hydration (ADR-0016): the fieldset only exists to natively disable the
+   whole form while the authoring spec loads — reset the default border/padding so
+   it is visually invisible. `min-inline-size: 0` avoids the fieldset's intrinsic
+   min-width breaking the flex/grid layout inside it. */
+.compose__fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.compose__fieldset[disabled] {
+  opacity: 0.6;
+}
+
 /* Story B (ISI-3555): guided model selector + BYO endpoint. */
 .compose__model-back {
   align-self: flex-start;

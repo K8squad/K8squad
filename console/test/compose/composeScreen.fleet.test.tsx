@@ -190,3 +190,68 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     expect(screen.queryByTestId("compose-no-team-gate")).toBeNull();
   });
 });
+
+describe("Compose edit-form hydration (ADR-0016 / ISI-4007)", () => {
+  it("a tenant edit deep-link hydrates the Role form from GET /api/squad/roles/{name}", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=dev");
+    stubRoutes({
+      // More-specific detail route listed FIRST — stubRoutes matches by startsWith.
+      "/api/squad/roles/dev": {
+        status: 200,
+        body: {
+          name: "dev",
+          promptRef: { name: "dev-prompt", namespace: "shared" },
+          defaultSkills: [{ name: "sk-a" }],
+          runtimeClassHint: "gvisor",
+        },
+      },
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+    });
+    render(<ComposeScreen />);
+    // The prompt ref input pre-fills from the read: ref → "namespace/name".
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("shared/dev-prompt")).toBeInTheDocument(),
+    );
+    // The default-skills textarea + runtime-class hint hydrate too.
+    expect(screen.getByDisplayValue("sk-a")).toBeInTheDocument();
+  });
+
+  it("a 404 on hydration surfaces 'not found in your squad'", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=ghost");
+    stubRoutes({
+      "/api/squad/roles/ghost": { status: 404 },
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() =>
+      expect(screen.getByTestId("compose-hydration-error")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("compose-hydration-error")).toHaveTextContent(/not found in your squad/i);
+  });
+
+  it("an admin edit ?team= deep-link forwards the selector and shows the form (not the gate)", async () => {
+    current = new URLSearchParams("kind=roles&mode=edit&name=dev&team=u-bmad");
+    const spy = stubRoutes({
+      "/api/squad/roles/dev": {
+        status: 200,
+        body: { name: "dev", promptRef: { name: "dev-prompt" }, runtimeClassHint: "" },
+      },
+      "/api/squad/roles": { status: 200, body: { roles: [] } },
+      // Admin: fleet:true, no home team — would normally gate a team-scoped kind.
+      "/api/squad/teams": { status: 200, body: adminTeams },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("dev-prompt")).toBeInTheDocument(),
+    );
+    // The carve-out: an admin browsing another squad by ?team= is not gated.
+    expect(screen.queryByTestId("compose-no-team-gate")).toBeNull();
+    // The ?team= selector is forwarded on the detail read.
+    const calledDetailWithTeam = spy.mock.calls.some((c) =>
+      String(c[0]).includes("/api/squad/roles/dev?team=u-bmad"),
+    );
+    expect(calledDetailWithTeam).toBe(true);
+  });
+});

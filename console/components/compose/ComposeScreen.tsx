@@ -7,7 +7,7 @@
 // guidance strip derives next-missing from the onboarding progress read-model (AC3/FR-7.2/AD-2);
 // 403/409/422/501 surfaced VERBATIM with recovery CTA (AC4/FR-7.4/NFR-5).
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
@@ -16,6 +16,7 @@ import {
   KIND_LABEL,
   RUNTIME_CLASS_HINTS,
   emptyForm,
+  fromWire,
   isValid,
   parseComposeParams,
   toWire,
@@ -24,6 +25,7 @@ import {
   type ComposeKind,
   type ComposeMode,
   type ComposeResult,
+  type ComposeWire,
   type FieldErrors,
 } from "@/lib/compose";
 import { TeamForm } from "./TeamForm";
@@ -419,6 +421,15 @@ export function ComposeScreen() {
   const [submit, setSubmit] = useState<SubmitState>({ kind: "idle" });
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
 
+  // Admin ?team= squad selector carried on an edit deep-link / fleet list-row (ADR-0016 D2): an
+  // admin browsing another squad names it here so the detail read resolves in THAT namespace. Empty
+  // for a tenant (server fences to their own namespace regardless). Frozen from the initial URL.
+  const seedTeam = useMemo(
+    () => params.get("team") ?? "",
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   // Fetch onboarding progress for guidance strip (soft dep — graceful on 501).
   useEffect(() => {
     fetch("/api/onboarding/progress", { cache: "no-store" })
@@ -426,6 +437,47 @@ export function ComposeScreen() {
       .then((p) => { if (p) setProgress(p); })
       .catch(() => {});
   }, []);
+
+  // Edit-form hydration (ADR-0016 / ISI-4007). On an edit deep-link with a name, load the object's
+  // real authoring spec (GET /api/squad/{kind}/{name}, admin appends ?team=) and map wire→form via
+  // fromWire, so the form is pre-filled instead of showing a blank spec a PUT would blow away
+  // (ISI-3985). The name-seed set in useState is the optimistic initial value; the form is disabled
+  // while loading; a 404 shows "not found in your squad"; any other failure offers a retry. Teams
+  // are uid-addressed (GET /api/squad/teams/{uid}) and NOT hydrated from a name seed here — their
+  // only editable extra field is namespaceStrategy, and the deep-link carries a name, not a uid.
+  const hydratable = seed.mode === "edit" && !!seed.name && seed.kind !== "teams";
+  const [hydration, setHydration] = useState<
+    { kind: "idle" } | { kind: "loading" } | { kind: "error"; status: number }
+  >(hydratable ? { kind: "loading" } : { kind: "idle" });
+
+  const hydrate = useCallback(() => {
+    if (!hydratable) return;
+    let cancelled = false;
+    setHydration({ kind: "loading" });
+    const qs = seedTeam ? `?team=${encodeURIComponent(seedTeam)}` : "";
+    fetch(`/api/squad/${seed.kind}/${encodeURIComponent(seed.name)}${qs}`, { cache: "no-store" })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          const wire = (await res.json()) as ComposeWire;
+          setCf(fromWire(seed.kind, wire));
+          setHydration({ kind: "idle" });
+        } else {
+          setHydration({ kind: "error", status: res.status });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setHydration({ kind: "error", status: 0 });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hydratable, seed.kind, seed.name, seedTeam]);
+
+  useEffect(() => {
+    const cleanup = hydrate();
+    return cleanup;
+  }, [hydrate]);
 
   const clientErrors = useMemo(() => validate(cf), [cf]);
   const serverErrors = submit.kind === "error" ? submit.fields : {};
@@ -448,10 +500,16 @@ export function ComposeScreen() {
   // global admin (no home tenancy, ISI-3921) or a dangling-team tenant would otherwise submit a form
   // the apiserver 404s. Teams themselves are the escape hatch — never gated. Fails open (loading /
   // unknown ⇒ form) so a transient error never blocks composing (ISI-3964).
+  //
+  // Carve-out (ADR-0016): an admin browsing another squad via an edit ?team= deep-link is
+  // intentionally reading that squad's spec — show the (read-only-until-ISI-3955) hydrated form, not
+  // the "create your team first" gate. The PUT still 404s cross-tenant until ISI-3955 lands.
+  const adminBrowsingSquad = mode === "edit" && !!seedTeam;
   const composeGated =
     kind !== "teams" &&
     callerScope.kind === "resolved" &&
-    !callerScope.hasOwnTeam;
+    !callerScope.hasOwnTeam &&
+    !adminBrowsingSquad;
 
   function selectKind(next: ComposeKind) {
     setKind(next);
@@ -605,32 +663,59 @@ export function ComposeScreen() {
             className="card compose__form"
             onSubmit={(e) => {
               e.preventDefault();
-              if (valid && submit.kind !== "saving") void apply();
+              if (valid && submit.kind !== "saving" && hydration.kind !== "loading") void apply();
             }}
           >
-            <KindFields cf={cf} errors={errors} patch={patch} />
-
-            <div className="compose__actions">
-              <button
-                type="submit"
-                className="btn btn--primary"
-                disabled={!valid || submit.kind === "saving"}
-              >
-                {submit.kind === "saving"
-                  ? "Applying…"
-                  : mode === "edit"
-                    ? `Save ${KIND_LABEL[kind]} (new revision)`
-                    : `Create ${KIND_LABEL[kind]}`}
-              </button>
-
-              {submit.kind === "ok" && (
-                <span className="state state--ok" role="status">
-                  {submit.result.operation === "created" ? "Created" : "Updated"}{" "}
-                  {submit.result.kind} <strong>{submit.result.name}</strong> — revision{" "}
-                  {submit.result.revision} in {submit.result.namespace}.
+            {/* Edit-form hydration status (ADR-0016) */}
+            {hydration.kind === "loading" && (
+              <p className="muted" role="status" data-testid="compose-hydrating">
+                Loading {KIND_LABEL[kind]} <strong>{seed.name}</strong>…
+              </p>
+            )}
+            {hydration.kind === "error" && (
+              <div className="compose__error-banner" role="alert" data-testid="compose-hydration-error">
+                <span className="compose__error-status">HTTP {hydration.status || "—"}</span>
+                <span className="compose__error-msg">
+                  {hydration.status === 404
+                    ? `“${seed.name}” was not found in your squad.`
+                    : `Couldn't load ${KIND_LABEL[kind]} “${seed.name}”.`}
                 </span>
-              )}
-            </div>
+                <div className="compose__error-actions">
+                  <button type="button" className="btn btn--ghost" onClick={() => hydrate()}>
+                    Try again
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <fieldset
+              className="compose__fieldset"
+              disabled={hydration.kind === "loading"}
+            >
+              <KindFields cf={cf} errors={errors} patch={patch} />
+
+              <div className="compose__actions">
+                <button
+                  type="submit"
+                  className="btn btn--primary"
+                  disabled={!valid || submit.kind === "saving" || hydration.kind === "loading"}
+                >
+                  {submit.kind === "saving"
+                    ? "Applying…"
+                    : mode === "edit"
+                      ? `Save ${KIND_LABEL[kind]} (new revision)`
+                      : `Create ${KIND_LABEL[kind]}`}
+                </button>
+
+                {submit.kind === "ok" && (
+                  <span className="state state--ok" role="status">
+                    {submit.result.operation === "created" ? "Created" : "Updated"}{" "}
+                    {submit.result.kind} <strong>{submit.result.name}</strong> — revision{" "}
+                    {submit.result.revision} in {submit.result.namespace}.
+                  </span>
+                )}
+              </div>
+            </fieldset>
           </form>
           )}
 

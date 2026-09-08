@@ -215,7 +215,7 @@ func TestFleetSkillViewGitProjection(t *testing.T) {
 	objs := append(twoSquadObjs(fleetUIDA, fleetUIDB), gitSkillObj("squad-a", "pg-migrate", "s-git"))
 	r := newFleetReader(t, objs...)
 
-	v, err := r.Skill(context.Background(), "", "pg-migrate", true)
+	v, err := r.Skill(context.Background(), "", "pg-migrate", "", true)
 	if err != nil {
 		t.Fatalf("Skill(admin, pg-migrate): %v", err)
 	}
@@ -237,19 +237,19 @@ func TestFleetSkillViewTenantScopingAndHiding(t *testing.T) {
 	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
 
 	// Tenant A reads their own skill by name.
-	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-a", false); err != nil {
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-a", "", false); err != nil {
 		t.Fatalf("tenant A own skill: %v", err)
 	}
 	// Tenant A asking for squad-b's skill name is existence-hiding, not a 403 leak.
-	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-b", false); !errors.Is(err, ErrSkillNotFound) {
+	if _, err := r.Skill(context.Background(), fleetUIDA, "sk-b", "", false); !errors.Is(err, ErrSkillNotFound) {
 		t.Fatalf("tenant A foreign skill must be ErrSkillNotFound, got %v", err)
 	}
 	// Absent name ⇒ ErrSkillNotFound (identical to forbidden).
-	if _, err := r.Skill(context.Background(), fleetUIDA, "nope", false); !errors.Is(err, ErrSkillNotFound) {
+	if _, err := r.Skill(context.Background(), fleetUIDA, "nope", "", false); !errors.Is(err, ErrSkillNotFound) {
 		t.Fatalf("absent skill must be ErrSkillNotFound, got %v", err)
 	}
 	// A tenant whose UID resolves to no Team is hidden as missing (not ErrTeamNotFound).
-	if _, err := r.Skill(context.Background(), "no-such-uid", "sk-a", false); !errors.Is(err, ErrSkillNotFound) {
+	if _, err := r.Skill(context.Background(), "no-such-uid", "sk-a", "", false); !errors.Is(err, ErrSkillNotFound) {
 		t.Fatalf("unresolved tenant must be ErrSkillNotFound, got %v", err)
 	}
 }
@@ -257,7 +257,7 @@ func TestFleetSkillViewTenantScopingAndHiding(t *testing.T) {
 func TestFleetSkillViewSliceFieldsNonNil(t *testing.T) {
 	// A minimal inline skill (no mcp/perms/requires) must still marshal [] not null.
 	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
-	v, err := r.Skill(context.Background(), fleetUIDB, "sk-b", false)
+	v, err := r.Skill(context.Background(), fleetUIDB, "sk-b", "", false)
 	if err != nil {
 		t.Fatalf("Skill(sk-b): %v", err)
 	}

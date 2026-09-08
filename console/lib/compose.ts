@@ -320,6 +320,163 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
   }
 }
 
+// ── fromWire: hydrate a form from an authoring-spec read (ADR-0016 / ISI-4007) ─
+//
+// The exact inverse of toWire: it maps a per-kind authoring-spec detail read
+// (GET /api/squad/{kind}/{name}, the compose WRITE wire minus the write-only
+// `project` scope field) back onto the ComposeForm the edit surface renders, so
+// opening an object to EDIT pre-fills the real spec instead of a blank form (the
+// empty-form-on-edit bug, ISI-3985). One mapper pair, no drift: object refs →
+// "name" / "namespace/name"; secret refs → "name" / "name/key"; ref lists →
+// newline-joined textareas; the UI-only `byoEnabled` derives from a non-empty
+// modelEndpointRef.
+//
+// `project` is NOT in any detail body (it is the write-only RBAC membership scope,
+// stripped server-side) so fromWire leaves it blank — the caller sets it before an
+// edit-save, exactly as the deep-link name-seed does today.
+
+/** Inverse of parseObjectRef: an object ref → "name" or "namespace/name". */
+export function objectRefToString(ref?: { name?: string; namespace?: string } | null): string {
+  if (!ref?.name) return "";
+  return ref.namespace ? `${ref.namespace}/${ref.name}` : ref.name;
+}
+
+/** Inverse of parseSecretRef: a secret ref → "name" or "name/key". */
+export function secretRefToString(ref?: { name?: string; key?: string } | null): string {
+  if (!ref?.name) return "";
+  return ref.key ? `${ref.name}/${ref.key}` : ref.name;
+}
+
+/** Join a ref list into the one-per-line textarea shape `lines()` parses back. */
+function joinRefs(refs?: Array<{ name?: string; namespace?: string }> | null): string {
+  return (refs ?? []).map((r) => objectRefToString(r)).filter((s) => s.length > 0).join("\n");
+}
+
+// Wire shapes the detail reads return — the compose write wire minus `project`.
+// Skills are the one exception: they reuse the pre-existing SkillView route
+// (ISI-3961), whose git fields are FLATTENED (repoRef/ref/path) rather than the
+// nested source.git the write wire uses, plus an `inline` body (added in ISI-4007).
+type ObjectRefWire = { name?: string; namespace?: string };
+type SecretRefWire = { name?: string; key?: string };
+export type TeamWire = { name?: string; namespaceStrategy?: string };
+export type ProjectWire = {
+  name?: string;
+  repo?: { url?: string; ref?: string };
+  goals?: string[];
+  egressPolicyRef?: ObjectRefWire | null;
+};
+export type AgentWire = {
+  name?: string;
+  runtimeRef?: ObjectRefWire;
+  roleRef?: ObjectRefWire;
+  skillRefs?: ObjectRefWire[];
+  model?: string;
+  modelEndpointRef?: SecretRefWire | null;
+  credentialSecretRef?: SecretRefWire;
+  credentialClass?: string;
+  fallbackModel?: { model?: string; modelEndpointRef?: SecretRefWire | null } | null;
+};
+export type RoleWire = {
+  name?: string;
+  promptRef?: ObjectRefWire;
+  defaultSkills?: ObjectRefWire[];
+  runtimeClassHint?: string;
+};
+export type SkillWire = {
+  name?: string;
+  sourceType?: string;
+  inline?: string;
+  repoRef?: string;
+  ref?: string;
+  path?: string;
+  permissions?: string[];
+};
+
+export type ComposeWire = TeamWire | ProjectWire | AgentWire | RoleWire | SkillWire;
+
+/**
+ * fromWire maps an authoring-spec detail read onto the ComposeForm for `kind`. It
+ * is defensive about missing/partial fields (a sparse spec never throws) so a form
+ * always hydrates to a valid shape. The result is spread over emptyForm(kind), so
+ * any field the wire omits keeps its empty default.
+ */
+export function fromWire(kind: ComposeKind, wire: ComposeWire): ComposeForm {
+  switch (kind) {
+    case "teams": {
+      const w = wire as TeamWire;
+      return { kind, form: { name: w.name ?? "", namespaceStrategy: w.namespaceStrategy ?? "" } };
+    }
+    case "projects": {
+      const w = wire as ProjectWire;
+      return {
+        kind,
+        form: {
+          name: w.name ?? "",
+          repoUrl: w.repo?.url ?? "",
+          repoRef: w.repo?.ref ?? "",
+          goals: (w.goals ?? []).join("\n"),
+          egressPolicyRef: objectRefToString(w.egressPolicyRef),
+        },
+      };
+    }
+    case "agents": {
+      const w = wire as AgentWire;
+      const modelEndpointRef = secretRefToString(w.modelEndpointRef);
+      return {
+        kind,
+        form: {
+          project: "",
+          name: w.name ?? "",
+          runtimeRef: objectRefToString(w.runtimeRef),
+          roleRef: objectRefToString(w.roleRef),
+          skillRefs: joinRefs(w.skillRefs),
+          model: w.model ?? "",
+          modelEndpointRef,
+          credentialSecretRef: secretRefToString(w.credentialSecretRef),
+          credentialClass: w.credentialClass ?? "",
+          fallbackModel: w.fallbackModel?.model ?? "",
+          fallbackModelEndpointRef: secretRefToString(w.fallbackModel?.modelEndpointRef),
+          // UI-only: BYO endpoint is "on" iff the spec carries a model endpoint ref.
+          byoEnabled: modelEndpointRef.length > 0,
+        },
+      };
+    }
+    case "roles": {
+      const w = wire as RoleWire;
+      return {
+        kind,
+        form: {
+          project: "",
+          name: w.name ?? "",
+          promptRef: objectRefToString(w.promptRef),
+          defaultSkills: joinRefs(w.defaultSkills),
+          runtimeClassHint: w.runtimeClassHint ?? "",
+        },
+      };
+    }
+    case "skills": {
+      const w = wire as SkillWire;
+      // The skills detail reuses SkillView (ISI-3961): git fields are flat
+      // (repoRef/ref/path), and `inline` carries the body (ISI-4007). sourceType
+      // defaults to inline so an unknown/absent discriminator still yields a valid form.
+      const sourceType: SkillSourceType = w.sourceType === "git" ? "git" : "inline";
+      return {
+        kind,
+        form: {
+          project: "",
+          name: w.name ?? "",
+          sourceType,
+          inline: w.inline ?? "",
+          gitRepoRef: w.repoRef ?? "",
+          gitRef: w.ref ?? "",
+          gitPath: w.path ?? "",
+          permissions: (w.permissions ?? []).join("\n"),
+        },
+      };
+    }
+  }
+}
+
 // ── validate: mirror composecrd.go's plan*() field checks ─────────────────────
 
 export function validate(cf: ComposeForm): FieldErrors {
