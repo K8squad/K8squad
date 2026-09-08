@@ -401,21 +401,17 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	return out, nil
 }
 
-// resolveProjectInTeam / resolveProjectFleetWide / teamNamespace delegate to the
-// shared free functions in projectresolve.go — the ONE implementation the S1
-// settings read model (projectsettings.go, ISI-3999) also uses, so the two read
-// models resolve the same Project identically. The thin method wrappers keep the
-// call sites above unchanged.
+// resolveProjectInTeam / resolveProjectFleetWide delegate to the shared free
+// functions in projectresolve.go — the ONE implementation the S1 settings read
+// model (projectsettings.go, ISI-3999) also uses, so the two read models resolve
+// the same Project identically. The thin method wrappers keep the call sites
+// above unchanged.
 func (s *DashboardService) resolveProjectInTeam(ctx context.Context, teamUID, projectID string) (string, string, error) {
 	return resolveProjectInTeam(ctx, s.reader, teamUID, projectID)
 }
 
 func (s *DashboardService) resolveProjectFleetWide(ctx context.Context, projectID string) (string, string, error) {
 	return resolveProjectFleetWide(ctx, s.reader, projectID)
-}
-
-func (s *DashboardService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
-	return resolveTeamNamespace(ctx, s.reader, teamUID)
 }
 
 // liveRuns projects the Project's Runs from the informer cache into the 8.8f
