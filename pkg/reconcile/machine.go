@@ -378,6 +378,22 @@ func runPhase(step Step, w Effects, s Store, o Options) error {
 		w.Collect(RunID+"/patch", "diff-bytes", o.Durable)
 	}
 
+	// Effect-applied gate (ISI-3617): a durable effect that FAILED to apply must
+	// not read as applied — do NOT commit the step-advance past it. The pure
+	// in-memory falsification model never errors (World exposes no Err()), so this
+	// probe is inert there and the crash-boundary/crux proofs are unaffected; it is
+	// active only for the durable binding (coord.ProdEffects), whose sticky Err() the
+	// driver already requeues on. Without this, a submit/bind error left the machine
+	// free to advance dispatching→…→terminal while the effect never happened, so a
+	// re-drive hit a terminal step (or a committed dedup marker) and skipped the
+	// effect forever. Fires before the CrashAfterEffect window: an effect that never
+	// applied never reaches the crux.
+	if ef, ok := w.(interface{ Err() error }); ok {
+		if err := ef.Err(); err != nil {
+			return err
+		}
+	}
+
 	// §6.4 crux window: effect applied, step-advance NOT yet committed.
 	if o.CrashAfterEffect != "" && step == o.CrashAfterEffect {
 		return ErrCrash{At: step}
