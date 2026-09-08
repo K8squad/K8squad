@@ -8,6 +8,7 @@
 // 403/409/422/501 surfaced VERBATIM with recovery CTA (AC4/FR-7.4/NFR-5).
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
 import {
@@ -519,6 +520,19 @@ export function ComposeScreen() {
           <h2 className="compose__pane-heading">
             {KIND_LABEL[kind]}s
           </h2>
+          {/* ISI-3962 S2 AC4: the Compose left pane lists skills inline (ISI-3964), but the full
+              read-only capability envelope lives on the dedicated /skills surface. Link there so an
+              operator can inspect a skill's detail without leaving via the rail. */}
+          {kind === "skills" && (
+            <Link
+              href="/skills"
+              className="compose__pane-link muted"
+              data-testid="compose-skills-browse-link"
+              style={{ fontSize: 13 }}
+            >
+              Browse all skills →
+            </Link>
+          )}
           {listLoading ? (
             <p className="muted">Loading…</p>
           ) : listEntries.length === 0 ? (

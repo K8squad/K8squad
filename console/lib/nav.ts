@@ -181,6 +181,7 @@ const SECTION_LABEL: Record<string, string> = {
   compose: "Compose",
   teams: "Teams",
   projects: "Projects",
+  skills: "Skills",
   runs: "Runs",
   plugins: "Plugins",
   settings: "Settings",
