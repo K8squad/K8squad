@@ -131,7 +131,17 @@ func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader) *Gith
 // Project is ErrProjectNotFound → 404 (existence-hiding), a global admin is
 // supra-tenant, and a bare name spanning squads is ErrProjectAmbiguous → 409.
 func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.AuthorContext, projectID string) (GithubStatus, error) {
-	ns, name, err := resolveProjectForAuth(ctx, s.reader, auth, projectID)
+	// Resolve with the SHARED project-resolution spine (projectresolve.go) the
+	// dashboard + project-settings read models use — a global admin resolves
+	// fleet-wide (UID-first, 409 on a bare-name collision), a non-admin is
+	// team-fenced with the existence-hiding 404 (ISI-3956 S5b "no bespoke tenancy").
+	var ns, name string
+	var err error
+	if auth.IsAdmin {
+		ns, name, err = resolveProjectFleetWide(ctx, s.reader, projectID)
+	} else {
+		ns, name, err = resolveProjectInTeam(ctx, s.reader, auth.TeamID.String(), projectID)
+	}
 	if err != nil {
 		return GithubStatus{}, err
 	}

@@ -95,6 +95,14 @@ type Options struct {
 	// the /github route keeps answering the documented 501 (dev run without the mirror reader
 	// wired) so the S5c tab renders "not available yet".
 	GithubStatus *GithubStatusService
+	// ProjectSettings is the S1 per-Project settings read model (ISI-3999): GET
+	// /api/projects/{projectId}/settings projects a single Project's SCM/config
+	// state (repo url/ref/provider/sync + auth.connected + last-test tri-state +
+	// canEdit) for the console Settings tab (S2). When nil the route keeps the
+	// documented 501 (a cluster-less dev run without an informer cache), exactly
+	// like Dashboard. It rides the SAME §12.3 choke point + requireProjectRole
+	// gate as the dashboard — no settings-specific authz path.
+	ProjectSettings *ProjectSettingsService
 	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
@@ -557,6 +565,22 @@ func (s *Server) routes(opts Options) {
 			ghStatus.HandleFunc("", s.projectGithubStatus(opts.GithubStatus)).Methods(http.MethodGet)
 		} else {
 			ghStatus.HandleFunc("", notImplemented("github-status read model", "ISI-3956 S5b: wire a GithubStatusService (scm mirror reader) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// S1 per-Project settings (ISI-3999): the read-only SCM/config projection the
+		// console Settings tab (S2) renders, behind the SAME §12.3 choke point and the
+		// SAME requireProjectRole(viewer) gate as the dashboard — no settings-specific
+		// authz path. Nil service (cluster-less dev run) keeps the documented 501.
+		settings := s.router.Path("/api/projects/{projectId}/settings").Subrouter()
+		settings.Use(authz)
+		if opts.ProjectRoles != nil {
+			settings.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.ProjectSettings != nil {
+			settings.HandleFunc("", s.projectSettings(opts.ProjectSettings)).Methods(http.MethodGet)
+		} else {
+			settings.HandleFunc("", notImplemented("project-settings read model", "ISI-3999: wire a ProjectSettingsService (informer cache) to enable")).
 				Methods(http.MethodGet)
 		}
 

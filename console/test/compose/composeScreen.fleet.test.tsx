@@ -74,6 +74,58 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
     render(<ComposeScreen />);
     await waitFor(() => expect(screen.getByText("planner")).toBeInTheDocument());
   });
+
+  // ISI-3985: the agents kind was left on the dead /api/teams/current/org path (the literal
+  // "current" never resolves to a team), so the pane never populated. It now uses the fleet-aware
+  // /api/squad/agents like the other kinds, and surfaces each agent's skill count.
+  it("kind=agents lists fleet agents from /api/squad/agents with a skill count", async () => {
+    current = new URLSearchParams("kind=agents");
+    const spy = stubRoutes({
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/agents": {
+        status: 200,
+        body: { agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }] },
+      },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() => expect(screen.getByText("cade")).toBeInTheDocument());
+    expect(screen.getByText("3 skills")).toBeInTheDocument();
+    // The dead legacy endpoint must never be called again.
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("/api/teams/current/org"))).toBe(false);
+  });
+
+  it("singularizes the skill-count subtitle for a one-skill agent", async () => {
+    current = new URLSearchParams("kind=agents");
+    stubRoutes({
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/agents": {
+        status: 200,
+        body: { agents: [{ name: "solo", runtime: "claude-code", skillCount: 1 }] },
+      },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() => expect(screen.getByText("solo")).toBeInTheDocument());
+    expect(screen.getByText("1 skill")).toBeInTheDocument();
+  });
+
+  it("clicking an agent in the list opens it in Edit mode with the name pre-filled (ISI-3985)", async () => {
+    current = new URLSearchParams("kind=agents");
+    stubRoutes({
+      "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/agents": {
+        status: 200,
+        body: { agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }] },
+      },
+    });
+    render(<ComposeScreen />);
+    await waitFor(() => expect(screen.getByText("cade")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("cade"));
+    expect(screen.getByRole("button", { name: "Edit by name" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect((screen.getByPlaceholderText("my-resource") as HTMLInputElement).value).toBe("cade");
+  });
 });
 
 describe("Compose no-own-team gate (ISI-3964)", () => {
@@ -81,7 +133,7 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     current = new URLSearchParams("kind=agents");
     stubRoutes({
       "/api/squad/teams": { status: 200, body: adminTeams },
-      "/api/teams/current/org": { status: 404 },
+      "/api/squad/agents": { status: 200, body: { agents: [] } },
     });
     render(<ComposeScreen />);
     await waitFor(() =>
@@ -97,7 +149,7 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     current = new URLSearchParams("kind=agents");
     stubRoutes({
       "/api/squad/teams": { status: 200, body: adminTeams },
-      "/api/teams/current/org": { status: 404 },
+      "/api/squad/agents": { status: 200, body: { agents: [] } },
     });
     render(<ComposeScreen />);
     await waitFor(() =>
@@ -116,7 +168,7 @@ describe("Compose no-own-team gate (ISI-3964)", () => {
     current = new URLSearchParams("kind=agents");
     stubRoutes({
       "/api/squad/teams": { status: 200, body: tenantTeams },
-      "/api/teams/current/org": { status: 200, body: { agents: [] } },
+      "/api/squad/agents": { status: 200, body: { agents: [] } },
     });
     render(<ComposeScreen />);
     await waitFor(() =>

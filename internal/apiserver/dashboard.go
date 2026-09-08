@@ -401,116 +401,21 @@ func (s *DashboardService) Dashboard(ctx context.Context, auth discussion.Author
 	return out, nil
 }
 
-// resolveProjectInTeam is the NON-ADMIN scope resolver (unchanged semantics from
-// the original inline block): resolve the caller's Team by UID to its namespace,
-// then require the named Project to live in that namespace. A Project outside it
-// — or a wholly unknown one — is ErrProjectNotFound (404), indistinguishable
-// (existence-hiding, NFR-SEC5). Returns the resolved (namespace, Project name).
+// resolveProjectInTeam / resolveProjectFleetWide / teamNamespace delegate to the
+// shared free functions in projectresolve.go — the ONE implementation the S1
+// settings read model (projectsettings.go, ISI-3999) also uses, so the two read
+// models resolve the same Project identically. The thin method wrappers keep the
+// call sites above unchanged.
 func (s *DashboardService) resolveProjectInTeam(ctx context.Context, teamUID, projectID string) (string, string, error) {
-	return resolveProjectInTeamScope(ctx, s.reader, teamUID, projectID)
+	return resolveProjectInTeam(ctx, s.reader, teamUID, projectID)
 }
 
-// resolveProjectForAuth resolves the (namespace, Project name) a caller may
-// read, applying the exact tenancy posture the dashboard uses (ISI-3956 S5b
-// "no bespoke tenancy"): a global admin (global_role=admin short-circuit)
-// resolves fleet-wide by UID-or-name; a non-admin is team-fenced with the
-// existence-hiding 404. Shared by the dashboard and the GitHub-status read
-// models so neither reinvents tenancy.
-func resolveProjectForAuth(ctx context.Context, reader client.Reader, auth discussion.AuthorContext, projectID string) (string, string, error) {
-	if auth.IsAdmin {
-		return resolveProjectFleetWideScope(ctx, reader, projectID)
-	}
-	return resolveProjectInTeamScope(ctx, reader, auth.TeamID.String(), projectID)
-}
-
-// resolveProjectInTeamScope is the team-fenced resolver (free function form so
-// readers other than DashboardService can share it).
-func resolveProjectInTeamScope(ctx context.Context, reader client.Reader, teamUID, projectID string) (string, string, error) {
-	ns, err := teamNamespaceScope(ctx, reader, teamUID)
-	if err != nil {
-		return "", "", err
-	}
-	var projects ksquadv1.ProjectList
-	if err := reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
-		return "", "", err
-	}
-	for i := range projects.Items {
-		if projects.Items[i].Name == projectID {
-			return ns, projects.Items[i].Name, nil
-		}
-	}
-	return "", "", ErrProjectNotFound
-}
-
-// resolveProjectFleetWide is the ADMIN scope resolver (ISI-3951, extends
-// ADR-0010). It lists Projects cluster-wide through the same informer cache (no
-// InNamespace ⇒ no new watch, no new RBAC — the apiserver ClusterRole already
-// has cluster-wide list on projects) and matches by UID OR name:
-//
-//   - a UID match is unique ⇒ return its (namespace, name) immediately, even if a
-//     name also collides (UID-first, so AC3 is unambiguous);
-//   - exactly one name match ⇒ return its (namespace, name);
-//   - more than one name match ⇒ ErrProjectAmbiguous (409, address by UID) — never
-//     a silent first-match-wins that would serve the wrong squad's data;
-//   - no match ⇒ ErrProjectNotFound (404).
-//
-// Returns the concrete Project's own namespace (fed to liveRuns + every seam) and
-// its .Name (the seams key on the name, never the raw path variable which may be
-// a UID on this path).
 func (s *DashboardService) resolveProjectFleetWide(ctx context.Context, projectID string) (string, string, error) {
-	return resolveProjectFleetWideScope(ctx, s.reader, projectID)
+	return resolveProjectFleetWide(ctx, s.reader, projectID)
 }
 
-// resolveProjectFleetWideScope is the admin resolver in free-function form.
-func resolveProjectFleetWideScope(ctx context.Context, reader client.Reader, projectID string) (string, string, error) {
-	var projects ksquadv1.ProjectList
-	if err := reader.List(ctx, &projects); err != nil {
-		return "", "", err
-	}
-	var nameNS, nameName string
-	nameMatches := 0
-	for i := range projects.Items {
-		p := &projects.Items[i]
-		if string(p.UID) == projectID && projectID != "" {
-			return p.Namespace, p.Name, nil // UID match is unique — wins over any name collision.
-		}
-		if p.Name == projectID {
-			nameNS, nameName = p.Namespace, p.Name
-			nameMatches++
-		}
-	}
-	switch nameMatches {
-	case 0:
-		return "", "", ErrProjectNotFound
-	case 1:
-		return nameNS, nameName, nil
-	default:
-		return "", "", ErrProjectAmbiguous
-	}
-}
-
-// teamNamespace resolves the caller's Team UID to its namespace (the §12.1
-// "a squad IS a namespace" boundary). A UID that resolves to no Team is
-// ErrTeamNotFound (404).
 func (s *DashboardService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
-	return teamNamespaceScope(ctx, s.reader, teamUID)
-}
-
-// teamNamespaceScope is the Team-UID→namespace resolver in free-function form.
-func teamNamespaceScope(ctx context.Context, reader client.Reader, teamUID string) (string, error) {
-	if teamUID == "" {
-		return "", ErrTeamNotFound
-	}
-	var teams ksquadv1.TeamList
-	if err := reader.List(ctx, &teams); err != nil {
-		return "", err
-	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			return teams.Items[i].Namespace, nil
-		}
-	}
-	return "", ErrTeamNotFound
+	return resolveTeamNamespace(ctx, s.reader, teamUID)
 }
 
 // liveRuns projects the Project's Runs from the informer cache into the 8.8f

@@ -32,10 +32,10 @@ limitations under the License.
 // read model — see the S1 child issue): coord.work_item carries only
 // title/body/state, so acceptance criteria and work-item-level goals are not
 // yet readable and come back empty here rather than hand-faked from body text.
-// Project-level goals ARE read (Project CRD). Fresh memory recall needs a
-// query-text seam the Sources interface does not yet expose, so only the
-// pinned (resume) recall arm is wired; the fresh arm returns empty until that
-// seam lands.
+// Project-level goals ARE read (Project CRD). Fresh memory recall is now wired
+// (ISI-3607): the Sources hook carries a query text the assembler derives from
+// the work item, so BOTH the fresh (relevance ANN) and pinned (resume) arms run
+// through the §6.6 memory ReadService.
 package contextsource
 
 import (
@@ -52,11 +52,15 @@ import (
 )
 
 // MemoryRecaller is the slice of the §6.6 memory ReadService the context
-// assembler needs: the pinned (snapshot-reuse) recall arm. *memory.ReadService
-// satisfies it. Kept as an interface so tests fake it and the operator can
-// leave it nil (memory tier simply empty) without a build dependency on a
-// live pgvector store.
+// assembler needs: BOTH recall arms — the fresh (relevance ANN) arm and the
+// pinned (snapshot-reuse) arm. *memory.ReadService satisfies it. Kept as an
+// interface so tests fake it and the operator can leave it nil (memory tier
+// simply empty) without a build dependency on a live pgvector store.
 type MemoryRecaller interface {
+	// ScopedRecall runs the fresh relevance ANN over queryText — the first-drive
+	// arm that populates the untrusted-recall tier before any snapshot exists.
+	ScopedRecall(ctx context.Context, teamID string, projectID *string, queryText string, topK int) ([]memory.RecallHit, error)
+	// ScopedRecallByIDs re-reads the exact pinned doc set for deterministic resume.
 	ScopedRecallByIDs(ctx context.Context, teamID string, projectID *string, ids []string) ([]memory.RecallHit, error)
 }
 
@@ -253,23 +257,37 @@ func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (
 	}, nil
 }
 
-// MemoryRecall serves the §6.6 scoped recall. Only the pinned (resume) arm is
-// wired: ids re-reads exactly that doc set (deterministic resume), tenancy
-// still enforced by the service. The fresh arm (ids empty) returns nothing —
-// the Sources interface does not yet carry the recall query text a fresh ANN
-// needs (seam gap, raised on the S1 child). A nil memory service leaves the
-// tier empty.
-func (s *Source) MemoryRecall(ctx context.Context, teamID string, projectID string, ids []string, topK int) ([]contextasm.RecallDoc, error) {
-	if s.memory == nil || len(ids) == 0 {
+// MemoryRecall serves the §6.6 scoped recall on BOTH arms (ISI-3607):
+//
+//   - ids non-empty (resume): re-reads exactly that pinned doc set — deterministic
+//     resume, tenancy enforced by the service.
+//   - ids empty (fresh): runs the relevance ANN over queryText (the work item the
+//     envelope is about, synthesized by the assembler), so the untrusted-recall
+//     tier is populated on FIRST drive, not just on resume. An empty queryText
+//     leaves the tier empty rather than embedding a blank query (tolerant: a
+//     title/body-less work item must not fail the whole assembly).
+//
+// A nil memory service leaves the tier empty either way.
+func (s *Source) MemoryRecall(ctx context.Context, teamID string, projectID string, queryText string, ids []string, topK int) ([]contextasm.RecallDoc, error) {
+	if s.memory == nil {
 		return nil, nil
 	}
 	var proj *string
 	if projectID != "" {
 		proj = &projectID
 	}
-	hits, err := s.memory.ScopedRecallByIDs(ctx, teamID, proj, ids)
+	var hits []memory.RecallHit
+	var err error
+	if len(ids) > 0 {
+		hits, err = s.memory.ScopedRecallByIDs(ctx, teamID, proj, ids)
+	} else {
+		if queryText == "" {
+			return nil, nil
+		}
+		hits, err = s.memory.ScopedRecall(ctx, teamID, proj, queryText, topK)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("scoped recall by ids: %w", err)
+		return nil, fmt.Errorf("scoped recall: %w", err)
 	}
 	out := make([]contextasm.RecallDoc, 0, len(hits))
 	for i := range hits {

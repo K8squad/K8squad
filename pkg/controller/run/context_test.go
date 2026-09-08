@@ -69,7 +69,7 @@ func (s stubSources) ProjectMeta(_ context.Context, _ /*projectRef*/, revision s
 	}, nil
 }
 
-func (s stubSources) MemoryRecall(_ context.Context, _, _ string, _ []string, _ int) ([]contextasm.RecallDoc, error) {
+func (s stubSources) MemoryRecall(_ context.Context, _, _, _ string, _ []string, _ int) ([]contextasm.RecallDoc, error) {
 	return nil, nil
 }
 

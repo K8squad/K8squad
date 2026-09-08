@@ -64,7 +64,7 @@ func (s stubSources) ProjectMeta(_ context.Context, _, revision string) (context
 	return contextasm.ProjectMeta{ProjectRevision: s.goalRev, RepoURL: "https://github.com/acme/widget", RepoRef: "main", Goals: []string{"reliable CI"}}, nil
 }
 
-func (s stubSources) MemoryRecall(_ context.Context, _, _ string, _ []string, _ int) ([]contextasm.RecallDoc, error) {
+func (s stubSources) MemoryRecall(_ context.Context, _, _, _ string, _ []string, _ int) ([]contextasm.RecallDoc, error) {
 	return nil, nil
 }
 

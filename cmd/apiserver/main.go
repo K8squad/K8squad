@@ -345,6 +345,18 @@ func main() {
 	// made in the console is immediately effective at the enforcement wall (ISI-2911).
 	memberships := auth.NewPostgresMembershipStore(db)
 
+	// S1 per-Project settings read model (ISI-3999): the read-only SCM/config
+	// projection the console Settings tab (S2) renders. It shares the same
+	// informer cache the dashboard uses and the SAME 15.4 membership resolver the
+	// compose PUT's write-tier gate consults, so canEdit and the write path agree
+	// by construction. A cluster-less dev run (nil cache) leaves it nil ⇒ the
+	// route keeps the documented 501.
+	var projectSettings *apiserver.ProjectSettingsService
+	if dashboardReader != nil {
+		projectSettings = apiserver.NewProjectSettingsService(dashboardReader, memberships)
+		log.Printf("ksquad-apiserver: project-settings read model ready (GET /api/projects/{id}/settings)")
+	}
+
 	// 8.5 CRD-apply write surface (ISI-3198): the DIRECT controller-runtime client the
 	// compose endpoints apply through. Built where the host has cluster access (in-cluster
 	// SA or KUBECONFIG); when it cannot be built (cluster-less dev run) we log and leave it
@@ -501,12 +513,13 @@ func main() {
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
-		ProjectRoles: memberships,
-		ComposeCRD:   composeCRD,
-		IssueLinks:   issueLinks,
-		GithubStatus: githubStatus,
-		Killer:       apiserver.NewProdRunKiller(db),
-		AuditLog:     auditLog,
+		ProjectRoles:    memberships,
+		ProjectSettings: projectSettings,
+		ComposeCRD:      composeCRD,
+		IssueLinks:      issueLinks,
+		GithubStatus:    githubStatus,
+		Killer:          apiserver.NewProdRunKiller(db),
+		AuditLog:        auditLog,
 		// Epic D tool-usage panel read model (ISI-3288, D3): aggregates the
 		// operator's ksquad_* tool metrics. Unset takes the in-cluster
 		// operator metrics default; a scrape that cannot reach it answers

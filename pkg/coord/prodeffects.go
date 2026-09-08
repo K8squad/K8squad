@@ -282,6 +282,20 @@ func (e *ProdEffects) BindSandbox(runID string, keyed bool) {
 // makes a re-drive a reattach — the physical dispatcher is called at most once.
 // dedup=false is the NAIVE model (submit afresh every pass); production always passes
 // dedup=true.
+//
+// SUBMIT-THEN-MARK (ISI-3617). The marker records a SUCCESSFUL submit: it is written
+// only AFTER the physical dispatcher accepts the task — exactly the ordering the
+// already-correct BindSandbox uses (bind, then mark). The prior order (mark, then
+// submit) committed the dedup marker BEFORE the submit ran, so a submit/builder error
+// left a committed marker with no in-flight task: a re-drive hit ON CONFLICT
+// DO NOTHING → reattach → skipped the dispatch permanently, yet (with the machine's
+// effect-applied gate absent) the run could still advance. Now a submit error leaves
+// NO marker, so the next re-drive re-submits. Re-submission is at-most-once because
+// TaskDispatcher.Submit MUST be idempotent on a2a_task_id (reattach, never a second
+// execution) — the same contract BindSandbox's binder already leans on for the
+// crash-between-bind-and-marker window. The step-advance is gated on Err() in
+// reconcile.runPhase, so a failed submit blocks advancement instead of sailing to a
+// terminal step.
 func (e *ProdEffects) Dispatch(taskID string, dedup bool) {
 	if e.err != nil {
 		return
@@ -297,9 +311,31 @@ func (e *ProdEffects) Dispatch(taskID string, dedup bool) {
 		return
 	}
 
-	// DURABLE get-or-create: the a2a_task_id PK is the §6.4 dedup guard. RowsAffected==1
-	// means we won the insert (first dispatch); 0 means the task is already in flight —
-	// reattach with no second submit and no second audit row.
+	// DURABLE: is this task already dispatched? A committed marker means a prior pass
+	// submitted successfully — reattach with NO physical call and NO second audit row.
+	var existing string
+	switch err := e.db.QueryRowContext(e.ctx,
+		`SELECT a2a_task_id FROM coord.a2a_dispatch WHERE a2a_task_id = $1`,
+		a2aTaskID).Scan(&existing); {
+	case err == nil:
+		return // reattach: the task is already in flight for this run/lap
+	case !errors.Is(err, sql.ErrNoRows):
+		e.fail(fmt.Errorf("coord.ProdEffects.Dispatch: lookup: %w", err))
+		return
+	}
+
+	// First dispatch: submit to the shim (if wired), THEN record the marker. A submit
+	// error returns with no marker written, so the re-drive re-submits (idempotent).
+	if e.dispatcher != nil {
+		if err := e.dispatcher.Submit(e.ctx, a2aTaskID, e.runID); err != nil {
+			e.fail(fmt.Errorf("coord.ProdEffects.Dispatch: submit: %w", err))
+			return
+		}
+	}
+	// The ON CONFLICT DO NOTHING closes the race with a concurrent same-fence leader —
+	// the loser's marker no-ops and, because Submit is idempotent on a2a_task_id, its
+	// submit reattached rather than starting a second execution. RowsAffected==1 → we
+	// recorded the first dispatch (audit it); 0 → a concurrent leader recorded it.
 	res, err := e.db.ExecContext(e.ctx, `
 		INSERT INTO coord.a2a_dispatch (a2a_task_id, work_item_id, run_id)
 		     VALUES ($1, $2::uuid, $3::uuid)
@@ -314,16 +350,9 @@ func (e *ProdEffects) Dispatch(taskID string, dedup bool) {
 		e.fail(fmt.Errorf("coord.ProdEffects.Dispatch: rows: %w", err))
 		return
 	}
-	if n == 0 {
-		return // reattach: the task is already in flight for this run/lap
+	if n == 1 {
+		e.audit("a2a_dispatched", reconcile.StepDispatching, nil)
 	}
-	if e.dispatcher != nil {
-		if err := e.dispatcher.Submit(e.ctx, a2aTaskID, e.runID); err != nil {
-			e.fail(fmt.Errorf("coord.ProdEffects.Dispatch: submit: %w", err))
-			return
-		}
-	}
-	e.audit("a2a_dispatched", reconcile.StepDispatching, nil)
 }
 
 // Collect registers an artifact (collecting, §6.1). upsert=true is the DURABLE path:

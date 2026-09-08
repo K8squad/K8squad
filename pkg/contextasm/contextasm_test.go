@@ -103,8 +103,8 @@ func (f *fakeSources) ProjectMeta(_ context.Context, projectRef, revision string
 	return ProjectMeta{}, fmt.Errorf("project %q is at generation %q, not the pinned %q", projectRef, f.meta.ProjectRevision, revision)
 }
 
-func (f *fakeSources) MemoryRecall(_ context.Context, teamID, projectID string, ids []string, topK int) ([]RecallDoc, error) {
-	f.recallCalls = append(f.recallCalls, fmt.Sprintf("team=%s proj=%s ids=%v topK=%d", teamID, projectID, ids, topK))
+func (f *fakeSources) MemoryRecall(_ context.Context, teamID, projectID, queryText string, ids []string, topK int) ([]RecallDoc, error) {
+	f.recallCalls = append(f.recallCalls, fmt.Sprintf("team=%s proj=%s query=%q ids=%v topK=%d", teamID, projectID, queryText, ids, topK))
 	if len(ids) > 0 {
 		byID := map[string]RecallDoc{}
 		for _, r := range f.recall {
