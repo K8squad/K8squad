@@ -63,8 +63,14 @@ jobs:
           POSTGRES_USER: ksquad
           POSTGRES_PASSWORD: ksquad
           POSTGRES_DB: ksquad_test
+        # ISI-3978: publish 5432 to an EPHEMERAL host port, not a fixed 5432:5432.
+        # Two service-Postgres jobs sharing a self-hosted runner (concurrency, or a
+        # leaked container from a hard-killed prior job) both tried to bind
+        # 127.0.0.1:5432 → "port is already allocated" → "Docker start fail" before
+        # the test binary ever ran. A random host port makes that collision
+        # structurally impossible; steps read the mapping from the job context.
         ports:
-          - 5432:5432
+          - 5432/tcp
         options: >-
           --health-cmd "pg_isready -U ksquad -d ksquad_test" --health-interval 5s
           --health-timeout 5s --health-retries 10
@@ -130,7 +136,7 @@ jobs:
           # Keep the memory pgvector schema in its own DB so the event suite's
           # schema drop/apply can never collide with an in-flight memory run.
           for i in $(seq 1 20); do
-            if pg_isready -h localhost -U ksquad -d ksquad_test >/dev/null 2>&1; then break; fi
+            if pg_isready -h localhost -p ${{ job.services.postgres.ports['5432'] }} -U ksquad -d ksquad_test >/dev/null 2>&1; then break; fi
             sleep 1
           done
           if ! command -v psql >/dev/null 2>&1; then
@@ -142,7 +148,7 @@ jobs:
           # NOT process backslash meta-commands, so a `SELECT ... \gexec` in `-c`
           # reaches the backend literally and dies with `syntax error at or near "\"`.
           # Guard existence in the shell instead, then issue a plain CREATE DATABASE.
-          DSN="postgres://ksquad:ksquad@localhost:5432/ksquad_test"
+          DSN="postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_test"
           if ! psql "$DSN" -tAc "SELECT 1 FROM pg_database WHERE datname='ksquad_memory'" | grep -q 1; then
             psql "$DSN" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ksquad_memory"
           fi
@@ -154,8 +160,8 @@ jobs:
         # OOM caps mirror the ci.yml go leg (ISI-2614/ISI-2612): the gitrunner VM
         # is small and the race detector + real drivers are memory-hungry.
         env:
-          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
-          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_memory
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_test
+          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_memory
           NATS_URL: ${{ steps.nats.outputs.url }}
           GOMAXPROCS: "2"
           GOGC: "40"
@@ -183,8 +189,8 @@ jobs:
         #   * wrapped so any flake in the report pass can NEVER fail the job — the
         #     number is a best-effort signal for the ISI-3213 ratchet, not a gate.
         env:
-          DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_test
-          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:5432/ksquad_memory
+          DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_test
+          MEMORY_TEST_DATABASE_URL: postgres://ksquad:ksquad@localhost:${{ job.services.postgres.ports['5432'] }}/ksquad_memory
           NATS_URL: ${{ steps.nats.outputs.url }}
           GOMAXPROCS: "2"
           GOGC: "40"
