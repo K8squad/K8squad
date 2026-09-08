@@ -137,6 +137,12 @@ type Options struct {
 	// under-privileged member gets 403). Nil ⇒ the routes keep the pre-15.4 shape (team-scope
 	// checks only), so a DB-less dev run and existing deployments are unchanged.
 	ProjectRoles ProjectRoleResolver
+	// WorkspaceReader is the S4b project file-explorer read seam (ISI-3991, ADR-0012 §D2):
+	// GET /api/projects/{projectId}/files (list) + /files/content (read), backed by the
+	// S4a reader-pod protocol. Nil ⇒ both routes answer the documented 501 (a cluster-less
+	// dev run or pre-S4a host without the reader-pod client wired), so S4c can render
+	// "File Explorer not available yet" honestly.
+	WorkspaceReader WorkspaceReader
 	// ComposeCRD is the 8.5 CRD-apply write surface (ISI-3198): create/edit endpoints
 	// for Team/Project/Agent/Role/Skill behind the membership write-tier gate. Nil ⇒
 	// the routes answer the documented 501 (a cluster-less dev run without a writer
@@ -562,6 +568,31 @@ func (s *Server) routes(opts Options) {
 			settings.HandleFunc("", notImplemented("project-settings read model", "ISI-3999: wire a ProjectSettingsService (informer cache) to enable")).
 				Methods(http.MethodGet)
 		}
+
+		// S4b — Project File Explorer (ISI-3991, ADR-0012 §D2): read-only workspace browse
+		// backed by the S4a reader-pod protocol. Both routes sit behind the §13 choke point
+		// and requireProjectRole(Viewer). A nil WorkspaceReader answers 501 so S4c degrades
+		// honestly ("File Explorer not available yet") until S4a is wired.
+		//
+		// Path: /api/projects/{projectId}/files         — directory listing (paginated)
+		//       /api/projects/{projectId}/files/content — file read (byte-range supported)
+		//
+		// Tenancy: per-Project membership (rbac.go) + global_role=admin short-circuit.
+		// Route-side path jail: workspaceJailPath() rejects .. / absolute / symlink-escapes
+		// before delegating to the reader (defence-in-depth; S4a jails again inside the pod).
+		filesDir := s.router.Path("/api/projects/{projectId}/files").Subrouter()
+		filesDir.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesDir.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader)).Methods(http.MethodGet)
+
+		filesContent := s.router.Path("/api/projects/{projectId}/files/content").Subrouter()
+		filesContent.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesContent.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesContent.HandleFunc("", s.projectFilesContent(opts.WorkspaceReader)).Methods(http.MethodGet)
 
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
