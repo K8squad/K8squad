@@ -18,17 +18,9 @@ export const fetchCache = "force-no-store";
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { projectId: string } },
+  { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const { projectId } = params;
-  const qs = new URLSearchParams();
-  const path = req.nextUrl.searchParams.get("path");
-  if (path) qs.set("path", path);
-  const offset = req.nextUrl.searchParams.get("offset");
-  if (offset) qs.set("offset", offset);
-  const length = req.nextUrl.searchParams.get("length");
-  if (length) qs.set("length", length);
-
-  const upstream = `/api/projects/${projectId}/files/content${qs.size ? `?${qs}` : ""}`;
-  return proxyJson(req, upstream);
+  const { projectId } = await params;
+  const search = req.nextUrl.search;
+  return proxyJson(req, `/api/projects/${encodeURIComponent(projectId)}/files/content${search}`);
 }
