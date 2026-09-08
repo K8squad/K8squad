@@ -9,7 +9,10 @@ metadata:
   labels:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" $c) | nindent 4 }}
 spec:
-  replicas: {{ .Values.controlPlane.operator.replicas | default 1 }}
+  {{- /* Honor an explicit 0 (operator-less secondary/preview install, ISI-3984/ISI-4019).
+         `| default 1` treats sprig-empty 0 as unset and would silently render 1, defeating
+         the documented `controlPlane.operator.replicas: 0` opt-out. Only default when nil. */}}
+  replicas: {{ if kindIs "invalid" .Values.controlPlane.operator.replicas }}1{{ else }}{{ .Values.controlPlane.operator.replicas }}{{ end }}
   selector:
     matchLabels:
       {{- include "k8squad.componentSelectorLabels" (dict "root" $ "component" $c) | nindent 6 }}
