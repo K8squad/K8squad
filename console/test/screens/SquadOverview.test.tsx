@@ -132,6 +132,84 @@ describe("<SquadOverview> — story 8.1 wiring (ISI-2900)", () => {
   });
 });
 
+// ISI-3965 / ISI-3950 S1: fleet-wide admin Overview render. The backend (ISI-3932) already answers
+// fleet-wide for a global admin — fleet:true, synthetic Team "*", Projects spanning every squad,
+// each keeping its own namespace. The console must render that honestly (fleet header, grouped by
+// squad, namespace-qualified keys) while leaving the tenant path byte-for-byte unchanged.
+const fleetPayload = {
+  fleet: true,
+  team: { name: "*", namespace: "", uid: "" },
+  projects: [
+    {
+      name: "webapp",
+      namespace: "squad-alpha",
+      runs: [{ name: "run-a", phase: "Running" }],
+      phaseCounts: { Running: 1 },
+    },
+    // Same project NAME as the one above, but a different squad (namespace). Pre-fix this collided
+    // on the React key `p.name` and one row was dropped — AC3 pins that both now render.
+    {
+      name: "webapp",
+      namespace: "squad-beta",
+      runs: null,
+      phaseCounts: {},
+    },
+    { name: "infra", namespace: "squad-beta", runs: null, phaseCounts: {} },
+  ],
+};
+
+describe("<SquadOverview> — fleet-wide admin render (ISI-3965 / ISI-3950 S1)", () => {
+  it("AC1: renders a fleet header, never leaking '*' or an empty namespace as a Team name", async () => {
+    stubFetch(200, fleetPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    // Fleet header present; single-Team header absent.
+    expect(screen.getByTestId("overview-fleet").textContent).toContain("Fleet overview");
+    expect(screen.queryByTestId("overview-team")).toBeNull();
+    // The synthetic "*" marker never surfaces as a heading.
+    expect(screen.getByTestId("overview-fleet").textContent).not.toContain("*");
+  });
+
+  it("AC2: attributes each project to its squad (namespace) group", async () => {
+    stubFetch(200, fleetPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    const labels = screen.getAllByTestId("overview-squad-label").map((el) => el.textContent);
+    // Two squads, sorted by namespace.
+    expect(labels.length).toBe(2);
+    expect(labels[0]).toContain("squad-alpha");
+    expect(labels[1]).toContain("squad-beta");
+  });
+
+  it("AC3: two same-named projects in different squads both render (no key collision)", async () => {
+    stubFetch(200, fleetPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    // Three projects total: webapp@alpha, webapp@beta, infra@beta — none dropped/merged.
+    expect(screen.getAllByTestId("overview-project").length).toBe(3);
+  });
+
+  it("AC5: an empty fleet renders the fleet empty state, not the tenant CTA, without crashing on null projects", async () => {
+    stubFetch(200, { fleet: true, team: { name: "*", namespace: "", uid: "" }, projects: null });
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    expect(screen.getByTestId("overview-fleet-empty")).toBeTruthy();
+    // Never the tenant "Create a project" CTA (it assumes a single home namespace).
+    expect(screen.queryByTestId("overview-empty")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create a project" })).toBeNull();
+  });
+
+  it("AC4: a tenant response (fleet absent) renders the exact single-Team path unchanged", async () => {
+    stubFetch(200, overviewPayload);
+    render(<SquadOverview />);
+    await waitFor(() => expect(screen.getByTestId("overview-ready")).toBeTruthy());
+    // Single-Team header present, fleet header absent — byte-for-byte tenant path.
+    expect(screen.getByTestId("overview-team").textContent).toBe("alpha");
+    expect(screen.queryByTestId("overview-fleet")).toBeNull();
+    expect(screen.queryByTestId("overview-squad-label")).toBeNull();
+  });
+});
+
 describe("classifyOverviewStatus / phaseTone — unit contract", () => {
   it("maps every relayed status to its distinct honest state", () => {
     expect(classifyOverviewStatus(401).kind).toBe("unauthenticated");
