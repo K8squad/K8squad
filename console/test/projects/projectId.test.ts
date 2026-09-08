@@ -72,9 +72,10 @@ vi.mock("@/lib/bff", () => ({
 }));
 
 import { GET as workItemsGET, POST as workItemsPOST } from "@/app/api/projects/[projectId]/work-items/route";
-import { GET as roomsGET } from "@/app/api/projects/[projectId]/rooms/route";
+import { GET as threadsGET } from "@/app/api/projects/[projectId]/discussion/threads/route";
 import { GET as streamGET } from "@/app/api/projects/[projectId]/stream/route";
-import { GET as messagesGET } from "@/app/api/projects/[projectId]/rooms/[roomId]/messages/route";
+import { GET as threadGET } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/route";
+import { POST as threadMessagesPOST } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/messages/route";
 
 // Minimal NextRequest stand-in — the routes read only `nextUrl.search`.
 function fakeReq(search = ""): import("next/server").NextRequest {
@@ -120,10 +121,10 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     expect(pathOf(proxyJsonWrite)).toBe(`/api/projects/${ENCODED}/work-items`);
   });
 
-  it("rooms GET forwards ns%2Fname once", async () => {
-    await roomsGET(fakeReq(), { params: Promise.resolve({ projectId: ENCODED }) });
+  it("discussion threads GET forwards ns%2Fname once", async () => {
+    await threadsGET(fakeReq(), { params: Promise.resolve({ projectId: ENCODED }) });
     const p = pathOf(proxyJson);
-    expect(p).toBe(`/api/projects/${ENCODED}/rooms`);
+    expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads`);
     expect(p).not.toContain("%252F");
   });
 
@@ -132,12 +133,21 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     expect(pathOf(proxyEventStream)).toBe(`/api/projects/${ENCODED}/stream`);
   });
 
-  it("room messages GET forwards ns%2Fname once and preserves the query", async () => {
-    await messagesGET(fakeReq("?threadDepth=100"), {
-      params: Promise.resolve({ projectId: ENCODED, roomId: "room-1" }),
+  it("discussion thread GET forwards ns%2Fname once and preserves the threadId", async () => {
+    await threadGET(fakeReq(), {
+      params: Promise.resolve({ projectId: ENCODED, threadId: "t-1" }),
     });
     const p = pathOf(proxyJson);
-    expect(p).toBe(`/api/projects/${ENCODED}/rooms/room-1/messages?threadDepth=100`);
+    expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads/t-1`);
+    expect(p).not.toContain("%252F");
+  });
+
+  it("discussion thread messages POST forwards ns%2Fname once", async () => {
+    await threadMessagesPOST(fakeReq(), {
+      params: Promise.resolve({ projectId: ENCODED, threadId: "t-1" }),
+    });
+    const p = pathOf(proxyJsonWrite);
+    expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads/t-1/messages`);
     expect(p).not.toContain("%252F");
   });
 });
