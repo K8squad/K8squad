@@ -6,6 +6,13 @@ import { join } from "node:path";
 // coordination affordance. Static assertion — the discussion component surface
 // exposes no claim / checkout / assign / transition / complete control. The
 // §7.3/§7.5 no-P2P argument applied to the console (arch §13, L1812).
+//
+// LOCKSTEP (ISI-4009 / Story 10.4 AC6): this test is the CLIENT half of the
+// discussion-room fence. Its server half is the Go authority
+// internal/discussion/fence_test.go (grep TestDiscussionFence). This file guards
+// that the UI cannot *offer* custody; the Go suite guards that the schema and
+// write path cannot *record* it. The two are one guarantee — if you change one,
+// revisit the other so they never drift (ADR-0019 §"the fence must be tested").
 
 // Vitest runs with the console/ package as root, so resolve from cwd. The
 // discussion components live at console/components/discussion (rehomed onto the

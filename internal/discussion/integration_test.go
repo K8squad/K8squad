@@ -120,103 +120,11 @@ type postResp struct {
 	} `json:"messages"`
 }
 
-// TestServerStampsAuthorIgnoringForgedBody is AC3 against real Postgres: an authenticated caller posts
-// a body that ALSO carries forged author_* fields; the STORED row must show the AUTHENTICATED principal,
-// never the forged value. Impersonation is un-representable.
-func TestServerStampsAuthorIgnoringForgedBody(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	srv := newServer(db)
-	defer srv.Close()
-
-	teamA := uuid.New()
-	projectA := uuid.New()
-
-	// Open a thread as principal:real, but smuggle a forged author into the body.
-	forged := `{"title":"design sync","body":"kickoff",` +
-		`"author_principal":"principal:VICTIM","authorId":"` + uuid.NewString() + `",` +
-		`"authorType":"human","authorName":"attacker","created_by":"principal:VICTIM"}`
-	req := mustReq(t, http.MethodPost, srv.URL+"/api/projects/"+projectA.String()+"/discussion/threads",
-		forged, "principal:real", teamA.String(), "", "")
-	res := do(t, req)
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("openThread: got %d, want 201", res.StatusCode)
-	}
-	var opened postResp
-	decode(t, res, &opened)
-	if opened.CreatedBy != "principal:real" {
-		t.Errorf("thread created_by: got %q, want principal:real (forged body author must be ignored)", opened.CreatedBy)
-	}
-	if len(opened.Messages) != 1 || opened.Messages[0].AuthorPrincipal != "principal:real" {
-		t.Errorf("first message author: got %+v, want principal:real", opened.Messages)
-	}
-
-	// Confirm directly in the row that NO forged value landed.
-	var storedAuthor, storedCreatedBy string
-	if err := db.QueryRow(`
-		SELECT m.author_principal, t.created_by
-		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
-		WHERE t.id = $1`, opened.ID).Scan(&storedAuthor, &storedCreatedBy); err != nil {
-		t.Fatalf("read stored row: %v", err)
-	}
-	if storedAuthor != "principal:real" || storedCreatedBy != "principal:real" {
-		t.Errorf("stored row shows forged author: author=%q created_by=%q", storedAuthor, storedCreatedBy)
-	}
-	if strings.Contains(storedAuthor, "VICTIM") {
-		t.Error("AC3 VIOLATION: forged principal reached the stored row")
-	}
-}
-
-// TestCrossTeamReadsAreEmpty is AC5 against real Postgres: Team A opens a thread in its Project; Team B
-// (a different Team scope) reading the SAME Project sees zero threads and gets 404 (not 403) on the
-// specific thread. Tenancy is enforced in the query, deny-by-default.
-func TestCrossTeamReadsAreEmpty(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	srv := newServer(db)
-	defer srv.Close()
-
-	teamA := uuid.New()
-	teamB := uuid.New()
-	project := uuid.New() // same Project id probed by both teams
-
-	// Team A opens a thread.
-	req := mustReq(t, http.MethodPost, srv.URL+"/api/projects/"+project.String()+"/discussion/threads",
-		`{"title":"team A only","body":"secret"}`, "principal:a", teamA.String(), "", "")
-	res := do(t, req)
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("teamA openThread: got %d, want 201", res.StatusCode)
-	}
-	var opened postResp
-	decode(t, res, &opened)
-
-	// Team A lists — sees its thread.
-	var aThreads []json.RawMessage
-	listReq := mustReq(t, http.MethodGet, srv.URL+"/api/projects/"+project.String()+"/discussion/threads",
-		"", "principal:a", teamA.String(), "", "")
-	decode(t, do(t, listReq), &aThreads)
-	if len(aThreads) != 1 {
-		t.Fatalf("teamA list: got %d threads, want 1", len(aThreads))
-	}
-
-	// Team B lists the SAME Project — must see ZERO threads (AC5).
-	var bThreads []json.RawMessage
-	bListReq := mustReq(t, http.MethodGet, srv.URL+"/api/projects/"+project.String()+"/discussion/threads",
-		"", "principal:b", teamB.String(), "", "")
-	decode(t, do(t, bListReq), &bThreads)
-	if len(bThreads) != 0 {
-		t.Errorf("AC5 VIOLATION: teamB saw %d threads from teamA's Project, want 0", len(bThreads))
-	}
-
-	// Team B fetches Team A's specific thread — must be 404-not-403 (absence, not forbidden).
-	getReq := mustReq(t, http.MethodGet,
-		srv.URL+"/api/projects/"+project.String()+"/discussion/threads/"+opened.ID.String(),
-		"", "principal:b", teamB.String(), "", "")
-	getRes := do(t, getReq)
-	if getRes.StatusCode != http.StatusNotFound {
-		t.Errorf("AC5: teamB GET teamA thread: got %d, want 404 (not 403)", getRes.StatusCode)
-	}
-}
+// NOTE: the AC3 forged-author assertion (formerly TestServerStampsAuthorIgnoringForgedBody) and the
+// AC5 cross-tenant assertion (formerly TestCrossTeamReadsAreEmpty) were CONSOLIDATED into the single
+// discussion-room fence authority — see fence_test.go / fence_integration_test.go
+// (TestDiscussionFenceProvenanceServerStamped, TestDiscussionFenceCrossTenantReadsEmpty). This file
+// keeps the shared integration helpers above and the end-to-end provenance/retract exercise below.
 
 // TestAgentVsHumanDerivedAndSoftRetract exercises the provenance triple + soft-retract end to end.
 func TestAgentVsHumanDerivedAndSoftRetract(t *testing.T) {
@@ -232,7 +140,7 @@ func TestAgentVsHumanDerivedAndSoftRetract(t *testing.T) {
 	req := mustReq(t, http.MethodPost, srv.URL+"/api/projects/"+project.String()+"/discussion/threads",
 		`{"title":"t","body":"agent says hi"}`, "principal:agent", team.String(), "agent:coordinator", "run:123")
 	var opened postResp
-	decode(t, do(t, req), &opened)
+	decode(t, do(t, req), &opened) //nolint:bodyclose // decode() closes res.Body
 
 	var agentID, runID sql.NullString
 	if err := db.QueryRow(`SELECT author_agent_id, author_run_id FROM discussion.message
@@ -251,7 +159,9 @@ func TestAgentVsHumanDerivedAndSoftRetract(t *testing.T) {
 	patch := mustReq(t, http.MethodPatch,
 		srv.URL+"/api/projects/"+project.String()+"/discussion/threads/"+opened.ID.String()+"/messages/"+msgID.String(),
 		"", "principal:agent", team.String(), "agent:coordinator", "run:123")
-	if pr := do(t, patch); pr.StatusCode != http.StatusOK {
+	pr := do(t, patch)
+	defer pr.Body.Close()
+	if pr.StatusCode != http.StatusOK {
 		t.Fatalf("retract: got %d, want 200", pr.StatusCode)
 	}
 	var live int
