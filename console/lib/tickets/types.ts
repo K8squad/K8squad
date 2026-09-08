@@ -90,3 +90,27 @@ export interface StateTransitionBody {
   to: WorkItemState;
   expectedFrom: WorkItemState;
 }
+
+/**
+ * Body for the human CREATE (S3 / ISI-3959): title is required; `parentId` makes
+ * it a sub-issue. State is intentionally absent — a new item lands in the default
+ * entry lane; picking a lane is a board move, not a create.
+ */
+export interface CreateWorkItemBody {
+  title: string;
+  body?: string;
+  parentId?: string;
+}
+
+/**
+ * Body for the human FIELD-EDIT (S3 / ISI-3959): every editable field is optional
+ * so an absent field is "leave unchanged". State is NOT editable here (lane moves
+ * stay on the state path). `expectedUpdatedAt` is the optimistic-concurrency guard
+ * — send the `updatedAt` last read so a racing edit 409s instead of clobbering.
+ */
+export interface UpdateWorkItemBody {
+  title?: string;
+  body?: string;
+  parentId?: string;
+  expectedUpdatedAt?: string;
+}
