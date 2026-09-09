@@ -104,6 +104,16 @@ export function classifyGithubStatus(status: number): GithubStatusState {
   }
 }
 
+/** POST to the "Sync now" BFF endpoint (ISI-4011). Returns the HTTP status so
+ * the caller can handle 202 (triggered), 429 (debounced), or errors. */
+export async function triggerGithubSync(projectId: string): Promise<number> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/github/sync`,
+    { method: "POST", cache: "no-store" },
+  );
+  return res.status;
+}
+
 /** Fetch the GitHub-status payload through the BFF choke point. Returns the
  * classified state directly (200 ⇒ ready; else the honest state) so the caller
  * never fabricates rows. The BFF relays the apiserver status verbatim. */

@@ -95,6 +95,12 @@ type Options struct {
 	// the /github route keeps answering the documented 501 (dev run without the mirror reader
 	// wired) so the S5c tab renders "not available yet".
 	GithubStatus *GithubStatusService
+	// GithubSync is the ISI-4011 "Sync now" write surface: POST
+	// /api/projects/{projectId}/github/sync bumps the scm-sync-trigger annotation on the
+	// Project CR so the reposync reconciler fires immediately. Requires contributor+
+	// RBAC; includes a 30-s per-project debounce (ADR-0013 §Open Q3). Nil ⇒ the
+	// route answers the documented 501 (a cluster-less dev run without a writer client).
+	GithubSync *GithubSyncService
 	// ProjectSettings is the S1 per-Project settings read model (ISI-3999): GET
 	// /api/projects/{projectId}/settings projects a single Project's SCM/config
 	// state (repo url/ref/provider/sync + auth.connected + last-test tri-state +
@@ -589,6 +595,21 @@ func (s *Server) routes(opts Options) {
 		} else {
 			ghStatus.HandleFunc("", notImplemented("github-status read model", "ISI-3956 S5b: wire a GithubStatusService (scm mirror reader) to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// ISI-4011 "Sync now": POST /api/projects/{projectId}/github/sync bumps the
+		// scm-sync-trigger annotation → reposync reconciler fires. Contributor+ required
+		// (same gate as work-item creates). Nil service ⇒ documented 501.
+		ghSync := s.router.Path("/api/projects/{projectId}/github/sync").Subrouter()
+		ghSync.Use(authz)
+		if opts.ProjectRoles != nil {
+			ghSync.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+		}
+		if opts.GithubSync != nil {
+			ghSync.HandleFunc("", s.projectGithubSync(opts.GithubSync)).Methods(http.MethodPost)
+		} else {
+			ghSync.HandleFunc("", notImplemented("github-sync trigger", "ISI-4011: wire a GithubSyncService (writer client) to enable")).
+				Methods(http.MethodPost)
 		}
 
 		// S1 per-Project settings (ISI-3999): the read-only SCM/config projection the

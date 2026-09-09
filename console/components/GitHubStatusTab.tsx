@@ -11,26 +11,33 @@
 // rendering: 401 unauthenticated · 404 existence-hiding · 501 not-wired · empty
 // mirror · retryable error — never fabricated rows.
 //
-// "Sync now" (bumping the scm-sync-trigger annotation) is intentionally NOT here:
-// it needs an apiserver write endpoint that does not exist yet — tracked as a
-// follow-up. The mirror + auto-refresh + honest freshness is the whole read tab.
+// "Sync now" (ISI-4011): POST /api/projects/{id}/github/sync bumps the
+// scm-sync-trigger annotation through the BFF; the reconciler fires
+// asynchronously. The button is debounced client-side (30 s) to match the
+// server-side window — a 429 from the server also latches the client debounce.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import {
   fetchGithubStatus,
   isStale,
   syncedAgo,
+  triggerGithubSync,
   type GithubStatus,
   type GithubStatusState,
 } from "@/lib/github-status";
 
 const AUTO_REFRESH_MS = 30_000;
+// Client-side debounce matches the server-side 30 s window.
+const SYNC_DEBOUNCE_MS = 30_000;
 
 export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const [state, setState] = useState<GithubStatusState>({ kind: "loading" });
   // `now` drives the "synced Ns ago" label; bumped on each refresh tick.
   const [now, setNow] = useState<number>(() => Date.now());
+  const [syncing, setSyncing] = useState(false);
+  // Unix ms of the last successful sync trigger; controls button disable.
+  const lastSyncRef = useRef<number>(0);
 
   const load = useCallback(async () => {
     try {
@@ -50,6 +57,24 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
     }, AUTO_REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
+
+  const handleSync = useCallback(async () => {
+    if (syncing || Date.now() - lastSyncRef.current < SYNC_DEBOUNCE_MS) return;
+    setSyncing(true);
+    try {
+      const status = await triggerGithubSync(projectId);
+      if (status === 202 || status === 429) {
+        // 202 = triggered; 429 = server debounce (treat as triggered too).
+        lastSyncRef.current = Date.now();
+        // Short re-fetch after a moment to pick up the reconcile result.
+        setTimeout(() => void load(), 3_000);
+      }
+    } catch {
+      // ignore — button re-enables after debounce window
+    } finally {
+      setSyncing(false);
+    }
+  }, [projectId, syncing, load]);
 
   if (state.kind === "loading") {
     return (
@@ -102,6 +127,15 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
             </span>
           )}
         </p>
+        <button
+          type="button"
+          onClick={() => void handleSync()}
+          disabled={syncing}
+          data-testid="github-sync-now"
+          aria-label="Trigger an immediate mirror sync"
+        >
+          {syncing ? "Syncing…" : "Sync now"}
+        </button>
       </header>
 
       {empty ? (
