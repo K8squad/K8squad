@@ -10,6 +10,10 @@ export type NavIconId =
   | "project"
   | "build"
   | "tickets"
+  | "landing"
+  | "issues"
+  | "files"
+  | "github"
   | "runs"
   | "discussion"
   | "settings"
@@ -51,6 +55,14 @@ const P: Record<NavIconId, string> = {
   plugins: "M9 3v4M15 3v4M7 7h10v4a5 5 0 01-10 0V7zM12 16v5",
   users:
     "M9 11a3 3 0 100-6 3 3 0 000 6zm7 0a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm14 0v-1c0-1.3-.6-2.4-1.5-3.2 2.1.3 4.5 1.4 4.5 3.2v1h-3z",
+  // Project-Detail Workspace menu icons (ISI-3957 S1).
+  landing: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
+  issues:
+    "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
+  files:
+    "M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z",
+  github:
+    "M9 19c-4 1.5-4-2-6-2.5m12 4.5v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 00-1.3-3.2 4.3 4.3 0 00-.1-3.2s-1.05-.3-3.5 1.3a12 12 0 00-6.3 0C6.55 2.8 5.5 3.1 5.5 3.1a4.3 4.3 0 00-.1 3.2A4.6 4.6 0 004 9.5c0 4.6 2.7 5.7 5.5 6-.4.4-.5.9-.5 1.5V21",
   menu: "M4 6h16M4 12h16M4 18h16",
   // Padlock (E1-S3 nav lock): rounded shackle + body, stroke style matching the set.
   lock: "M8 11V7a4 4 0 118 0v4M5 11h14v10H5V11z",

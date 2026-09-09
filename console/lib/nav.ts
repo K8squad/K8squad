@@ -62,12 +62,31 @@ export type NavNode = {
   dynamicChildren?: "teams";
 };
 
-/** The project sub-nav sections, in UX order (Build · Tickets · Runs · Discussion). */
+/**
+ * The Project-Detail Workspace left-menu sections (ISI-3957 S1), in UX order:
+ * Landing · Issues · Runs · Discussion · File Explorer · GitHub.
+ *
+ * This is the menu the workspace shell (`projects/[projectId]/layout.tsx`) renders down the
+ * left edge — the operator's "control room" nav. Each `id` is BOTH the NavIcon key and the
+ * active-match token: `landing` lives at the bare project root (`/projects/{id}`), every other
+ * id maps to `/projects/{id}/{id}`.
+ *
+ * Deltas from the old flat tab strip (Build · Tickets · Runs · Discussion · GitHub):
+ *   - `landing` added as the default surface (S2 fills the frame; the old forced redirect to
+ *     /tickets is gone);
+ *   - `tickets` → `issues` (the board's and S2's vocabulary — the live list screen is reused at
+ *     the `/issues` route; the legacy `/tickets` route is preserved as an alias, AC6);
+ *   - `files` (File Explorer, ISI-3991) and `github` (GitHub sync, ISI-3992) are now LIVE tabs —
+ *     their routes/BFF merged ahead of this shell, so they are real menu entries, not the
+ *     "coming soon" soft-locks the original draft anticipated;
+ *   - `build` is dropped from the menu but its route is kept reachable (legacy alias, AC6).
+ */
 const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
-  { id: "build", label: "Build" },
-  { id: "tickets", label: "Tickets" },
+  { id: "landing", label: "Landing" },
+  { id: "issues", label: "Issues" },
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
+  { id: "files", label: "File Explorer" },
   { id: "github", label: "GitHub" },
 ];
 
@@ -180,17 +199,60 @@ export function mobileNav(
   return { bottom, drawer };
 }
 
-/** The project-scoped sub-nav tab strip (story 8.13), bound to a concrete project id. */
+/**
+ * The project-scoped sub-nav, bound to a concrete project id (story 8.13; reshaped into the
+ * left-menu contract by ISI-3957 S1). Returns `{id,label,href}` in UX order. `landing` resolves
+ * to the bare project root (`/projects/{id}`) — the default Landing surface, not a `/landing`
+ * sub-path — so the URL an operator shares for "the project" is the workspace itself. Every other
+ * section maps to `/projects/{id}/{id}`.
+ *
+ * Retained as the lower-level projection; {@link projectMenu} wraps it as `NavNode[]` for the
+ * shell's menu renderer.
+ */
 export function projectSubnav(
   projectId: string,
 ): Array<{ id: string; label: string; href: string }> {
+  const base = `/projects/${encodeProjectId(projectId)}`;
   return PROJECT_SECTIONS.map((s) => ({
     id: s.id,
     label: s.label,
     // Normalize to one encoding layer so a "ns/name" id becomes "ns%2Fname" exactly
     // once, whether the caller passed it decoded or already-encoded (ISI-3982).
-    href: `/projects/${encodeProjectId(projectId)}/${s.id}`,
+    href: s.id === "landing" ? base : `${base}/${s.id}`,
   }));
+}
+
+/**
+ * The Project-Detail Workspace left menu as `NavNode[]` (ISI-3957 S1). Same ordered sections as
+ * {@link projectSubnav}, typed as project-scoped nav nodes so the shell's renderer and tests share
+ * ONE contract. Pure derivation of the section list + the project id — the URL is the state
+ * (active-tab is derived from the pathname by {@link projectMenuActiveId}, no client store).
+ */
+export function projectMenu(projectId: string): NavNode[] {
+  return projectSubnav(projectId).map((s) => ({
+    id: s.id,
+    label: s.label,
+    href: s.href,
+    scope: "project",
+  }));
+}
+
+/**
+ * Which workspace menu entry is active for a given pathname (ISI-3957 S1, AC3). Derived purely
+ * from the URL: the segment AFTER the `/projects/{projectId}` pair is the active section id; the
+ * bare project root (no section segment) is the Landing surface. Independent of how `projectId` is
+ * encoded in the URL, so a "ns%2Fname" id resolves the same as a plain name. Returns `null` when
+ * the pathname is not a project route, or when the section is one not present in the menu (e.g. the
+ * legacy `build` alias) — the caller then highlights nothing.
+ */
+export function projectMenuActiveId(pathname: string): string | null {
+  const clean = pathname.split("?")[0].split("#")[0];
+  const m = clean.match(/^\/projects\/[^/]+(?:\/([^/]+))?\/?$/);
+  // Deeper paths (e.g. /projects/{id}/issues/123) still match the section via a looser probe.
+  const section =
+    m?.[1] ?? clean.match(/^\/projects\/[^/]+\/([^/]+)/)?.[1] ?? "";
+  const id = section === "" ? "landing" : section;
+  return PROJECT_SECTIONS.some((s) => s.id === id) ? id : null;
 }
 
 export type Crumb = { label: string; href: string | null };
@@ -209,6 +271,11 @@ const SECTION_LABEL: Record<string, string> = {
   tickets: "Tickets",
   discussion: "Discussion",
   users: "Users & Roles",
+  // Project-Detail Workspace sections (ISI-3957 S1).
+  landing: "Landing",
+  issues: "Issues",
+  files: "File Explorer",
+  github: "GitHub",
 };
 
 function labelFor(segment: string): string {
