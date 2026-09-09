@@ -7,11 +7,10 @@ function msg(id: string, parentId: string | null, createdAt: string): Message {
     id,
     threadId: "thread",
     parentId,
-    authorId: "a",
-    authorType: "human",
-    authorName: "u",
+    authorPrincipal: "u",
+    authorAgentId: null,
+    authorRunId: null,
     body: id,
-    kind: "message",
     createdAt,
   };
 }
