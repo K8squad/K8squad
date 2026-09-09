@@ -32,6 +32,13 @@ func (f *fakeSearcher) SearchByIDs(_ context.Context, q memory.SearchQuery, ids 
 	return f.byIDHits, nil
 }
 
+// ReadChronological satisfies the searcher seam widened by ISI-4077 (diary_read). The recall adapter
+// exercises only the ANN Search/SearchByIDs arms, so this is an unused no-op stub kept solely to keep
+// *fakeSearcher assignable to memory.NewReadService.
+func (f *fakeSearcher) ReadChronological(_ context.Context, _, _, _ string, _ int) ([]memory.SearchHit, error) {
+	return nil, nil
+}
+
 var errBoom = &testErr{}
 
 type testErr struct{}
