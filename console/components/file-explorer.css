@@ -1,0 +1,86 @@
+/* file-explorer.css — ISI-3956 S4c File Explorer tab.
+   Two-pane layout (tree + read-only preview) + the workspace-busy info banner.
+   Kept minimal + token-driven; the tab is legible unstyled, this just frames it. */
+
+.file-explorer {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.file-explorer__tree {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  padding: 8px 0;
+  overflow: auto;
+  max-height: 70vh;
+}
+
+.file-explorer__tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.file-explorer__row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 3px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.file-explorer__row:hover {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+}
+
+.file-explorer__file[aria-current="true"] {
+  background: var(--surface-active, rgba(120, 160, 255, 0.18));
+}
+
+.file-explorer__preview {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-height: 120px;
+  overflow: auto;
+  max-height: 70vh;
+}
+
+.file-explorer__preview-head {
+  margin-bottom: 8px;
+}
+
+.file-explorer__code {
+  margin: 0;
+  white-space: pre;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Informational banner — the workspace-busy / degraded state (AC4). Info tone,
+   never an error hue: busy is expected, not a failure. */
+.banner {
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
+.banner--info {
+  border: 1px solid var(--info-border, #3a5a8a);
+  background: var(--info-bg, rgba(90, 130, 200, 0.12));
+}
+
+@media (max-width: 720px) {
+  .file-explorer {
+    grid-template-columns: 1fr;
+  }
+}

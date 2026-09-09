@@ -32,6 +32,15 @@ func (f *fakeSearcher) SearchByIDs(_ context.Context, q memory.SearchQuery, ids 
 	return f.byIDHits, nil
 }
 
+// ReadChronological satisfies the memory.searcher seam (diary_read companion, ISI-4077). The
+// recallsource arms exercise only the ANN Search path, so this returns the same fixture hits.
+func (f *fakeSearcher) ReadChronological(_ context.Context, _, _, _ string, _ int) ([]memory.SearchHit, error) {
+	if f.failSearch {
+		return nil, errBoom
+	}
+	return f.hits, nil
+}
+
 var errBoom = &testErr{}
 
 type testErr struct{}

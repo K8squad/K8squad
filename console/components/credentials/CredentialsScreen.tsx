@@ -9,10 +9,12 @@
 // paused-on-expiry banner (S10 / 7.4): which Run is held, by which credential, and how to recover
 // it — which, in v1, is re-pasting a fresh key in the Add-credential form below.
 //
-// Connect Claude (zero-touch OAuth, story 7.7 / ISI-2899) is a BOARD ToS decision and is
-// explicitly NOT v1 (PM directive, ISI-3983). Per that directive NO live click may reach its
-// documented 501: the button ships as a disabled "coming soon" affordance only. The BYO paste
-// form is the sole live credential path.
+// Connect Claude (zero-touch OAuth) is blocked on a BOARD Terms-of-Service decision (open:
+// ISI-3661 / ISI-3980) and is explicitly NOT v1 (PM directive, ISI-3983). Note ISI-2899 is DONE
+// but delivered only the backend credential controller (Stories 7.7+7.8) — it is NOT the
+// user-facing OAuth flow, so the copy must cite the ToS gate, not that ticket. Per the PM
+// directive NO live click may reach its documented 501: the button ships as a disabled
+// pending-board-approval affordance only. The BYO paste form is the sole live credential path.
 //
 // Honesty rules: unknown expiry renders "—", the 501 (read model not wired) renders an explicit
 // unconfigured state, the deny collapse (401/403/404) renders not-found, and a fleet admin who
@@ -175,13 +177,14 @@ export function CredentialsScreen({
             disabled
             aria-disabled="true"
             data-testid="connect-claude"
-            title="Zero-touch OAuth is a board ToS decision (ISI-2899) — not available yet. Add a service-account key below to bring your own credential now."
+            title="Zero-touch OAuth is pending a board Terms-of-Service decision (ISI-3661) — no ETA. Add a service-account key below to bring your own credential now."
           >
-            Connect Claude — coming soon
+            Connect Claude — pending board approval
           </button>
           <span className="creds__connect-hint muted">
-            Zero-touch OAuth (requires OAuth) is coming soon (ISI-2899) — not available yet. Use
-            “Add a credential” below to bring your own key. No CLI is shipped yet.
+            Zero-touch OAuth (requires OAuth) is pending a board Terms-of-Service decision
+            (ISI-3661) — no ETA. Use “Add a credential” below to bring your own key and connect
+            now. No CLI is shipped yet.
           </span>
         </div>
       </header>
@@ -214,8 +217,9 @@ export function CredentialsScreen({
                 In v1, recovery is bring-your-own: paste a fresh service-account
                 key under the same name in <strong>Add a credential</strong>{" "}
                 below — KSquad rewrites the per-team Secret and the Run resumes.
-                One-click zero-touch OAuth is coming soon (ISI-2899); no{" "}
-                <code>ksquad auth</code> CLI ships today.
+                One-click zero-touch OAuth is pending a board Terms-of-Service
+                decision (ISI-3661) — no ETA; no <code>ksquad auth</code> CLI
+                ships today.
               </p>
             </details>
           </div>
@@ -470,7 +474,8 @@ function CreateCredentialForm({
       <h2 className="creds__form-title">Add a credential</h2>
       <p className="muted creds__form-lede">
         Bring your own provider key — the v1 path. KSquad stores it as a per-team Kubernetes Secret
-        and never shows it back. Zero-touch OAuth (Connect Claude) is coming soon (ISI-2899).
+        and never shows it back. Zero-touch OAuth (Connect Claude) is pending a board
+        Terms-of-Service decision (ISI-3661) — no ETA.
       </p>
       <div className="creds__form-grid">
         <label className="creds__field">
@@ -572,7 +577,7 @@ async function createErrorText(
     case "conflict":
       return "A credential with this name already exists in this team.";
     case "unsupported":
-      return "Human-seat OAuth isn't pasted — use Connect Claude for that (coming soon).";
+      return "Human-seat OAuth isn't pasted — Connect Claude will provision it (pending a board Terms-of-Service decision, ISI-3661).";
     case "denied":
       return "You don't have access to write credentials for this team.";
     case "invalid": {
