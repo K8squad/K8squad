@@ -25,3 +25,25 @@ export async function PUT(
   }
   return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}`, "PUT");
 }
+
+// DELETE /api/compose/{kind}/{name} → apiserver DELETE /api/{kind}/{name} (ISI-4107).
+// Only agents and projects are deletable server-side; other kinds relay the apiserver's
+// 405. `?project=` (Agent RBAC scope) and `?team=` (admin fleet-wide scope) are forwarded
+// unchanged. As with edit, a deny is existence-hiding: 401/403/404 relay verbatim.
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ kind: string; name: string }> },
+): Promise<Response> {
+  const { kind, name } = await params;
+  if (!isComposeKind(kind)) {
+    return Response.json({ error: "unknown compose kind" }, { status: 404 });
+  }
+  const forwarded = new URLSearchParams();
+  const project = req.nextUrl.searchParams.get("project");
+  if (project) forwarded.set("project", project);
+  const team = req.nextUrl.searchParams.get("team");
+  if (team) forwarded.set("team", team);
+  const query = forwarded.toString();
+  const suffix = query ? `?${query}` : "";
+  return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}${suffix}`, "DELETE");
+}
