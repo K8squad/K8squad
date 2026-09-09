@@ -11,11 +11,10 @@ function msg(id: string, createdAt: string, body = id): Message {
     id,
     threadId: "thread",
     parentId: null,
-    authorId: "a",
-    authorType: "agent",
-    authorName: "agent-1",
+    authorPrincipal: "agent-1",
+    authorAgentId: "agent-1",
+    authorRunId: null,
     body,
-    kind: "message",
     createdAt,
   };
 }
