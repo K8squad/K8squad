@@ -168,6 +168,78 @@ func TestBuildPod_LeastPrivilegeInvariants(t *testing.T) {
 	}
 }
 
+// TestKubeLauncher_LaunchCreatesPairedService: an enabled Launch creates BOTH the reader pod and a
+// ClusterIP Service selecting it, and the Handle carries a reachable in-cluster BaseURL.
+func TestKubeLauncher_LaunchCreatesPairedService(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
+	l := NewLauncher(Config{Enabled: true, ReaderImage: "img"}, c)
+
+	h, err := l.Launch(context.Background(), validSpec())
+	if err != nil {
+		t.Fatalf("Launch: %v", err)
+	}
+	if h.ServiceName != ServiceName("run-42") {
+		t.Errorf("Handle.ServiceName = %q, want %q", h.ServiceName, ServiceName("run-42"))
+	}
+	wantURL := "http://" + ServiceName("run-42") + "." + DefaultNamespace + ".svc:8080"
+	if h.BaseURL() != wantURL {
+		t.Errorf("Handle.BaseURL() = %q, want %q", h.BaseURL(), wantURL)
+	}
+
+	var svc corev1.Service
+	if err := c.Get(context.Background(), types.NamespacedName{Name: h.ServiceName, Namespace: h.Namespace}, &svc); err != nil {
+		t.Fatalf("paired Service not created: %v", err)
+	}
+	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Errorf("Service type = %v, want ClusterIP", svc.Spec.Type)
+	}
+	if got := svc.Spec.Selector["k8squad.io/run"]; got != "run-42" {
+		t.Errorf("Service selector run = %q, want run-42 (must select its own pod)", got)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != int32(ReaderPort) {
+		t.Errorf("Service ports = %+v, want single port %d", svc.Spec.Ports, ReaderPort)
+	}
+
+	// TearDown removes BOTH objects, idempotently.
+	if err := l.TearDown(context.Background(), h); err != nil {
+		t.Fatalf("TearDown: %v", err)
+	}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: h.ServiceName, Namespace: h.Namespace}, &svc); err == nil {
+		t.Errorf("Service still present after TearDown")
+	}
+	var pod corev1.Pod
+	if err := c.Get(context.Background(), types.NamespacedName{Name: h.PodName, Namespace: h.Namespace}, &pod); err == nil {
+		t.Errorf("pod still present after TearDown")
+	}
+	if err := l.TearDown(context.Background(), h); err != nil {
+		t.Fatalf("idempotent TearDown: %v", err)
+	}
+}
+
+// TestBuildService_SelectsPodLabels: the Service selector matches exactly the labels BuildPod stamps,
+// so a Service can never fan out to a sibling reader for a different Run.
+func TestBuildService_SelectsPodLabels(t *testing.T) {
+	spec := validSpec()
+	pod := BuildPod(spec, Config{Enabled: true, ReaderImage: "img"})
+	svc := BuildService(spec, Config{Enabled: true, ReaderImage: "img"})
+	for k, v := range svc.Spec.Selector {
+		if pod.Labels[k] != v {
+			t.Errorf("selector %q=%q has no matching pod label (pod=%q)", k, v, pod.Labels[k])
+		}
+	}
+	if svc.Spec.Selector["app"] != readerAppLabel {
+		t.Errorf("selector app = %q, want %q", svc.Spec.Selector["app"], readerAppLabel)
+	}
+}
+
+// TestHandle_BaseURL_ZeroHandle: a zero Handle (e.g. a DisabledLauncher launch) yields no BaseURL, so
+// the caller treats it as "no reader available" rather than dialing a bogus URL.
+func TestHandle_BaseURL_ZeroHandle(t *testing.T) {
+	if got := (Handle{}).BaseURL(); got != "" {
+		t.Errorf("zero Handle.BaseURL() = %q, want empty", got)
+	}
+}
+
 // Compile-time proof both launchers satisfy the seam.
 var _ Launcher = DisabledLauncher{}
 var _ Launcher = (*KubeLauncher)(nil)

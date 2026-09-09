@@ -44,6 +44,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -64,6 +65,17 @@ const (
 	defaultMemoryLimit       = "256Mi"
 	defaultActiveDeadlineSec = int64(900) // 15 min: an idle reader self-terminates (cost cap, §7).
 )
+
+// ReaderPort is the in-pod port the readserver RO list/read protocol listens on. It MUST match the
+// buildreader entrypoint default (cmd/buildreader: KSQUAD_READER_ADDR ":8080"). The apiserver S4b
+// client reaches the pod ONLY over the paired ClusterIP Service on this port — never pods/exec, never
+// kubectl cp (ADR-0012 §Decision).
+const ReaderPort = 8080
+
+// readerAppLabel is the stable selector both the pod and its paired Service carry, so the Service
+// routes to exactly its own reader pod and the idle-teardown reaper can enumerate reader pods without
+// a per-run label match.
+const readerAppLabel = "k8squad-build-reader"
 
 // Config is the host-supplied 8.7f tunable surface. Enabled is the feature flag: false (the default)
 // makes NewLauncher hand back a DisabledLauncher, so the browser degrades to snapshot-only.
@@ -103,10 +115,22 @@ func (s Spec) Validate() error {
 	return nil
 }
 
-// Handle identifies a launched reader pod so the caller can tear it down.
+// Handle identifies a launched reader pod (and its paired ClusterIP Service) so the caller can reach
+// it over the in-cluster network and tear both down together.
 type Handle struct {
-	PodName   string
-	Namespace string
+	PodName     string
+	ServiceName string
+	Namespace   string
+}
+
+// BaseURL is the in-cluster HTTP base the apiserver S4b client dials to reach this reader's RO
+// list/read protocol: http://<service>.<namespace>.svc:<ReaderPort>. It is empty for a zero Handle
+// (e.g. a DisabledLauncher launch), which the caller treats as "no reader available".
+func (h Handle) BaseURL() string {
+	if h.ServiceName == "" || h.Namespace == "" {
+		return ""
+	}
+	return fmt.Sprintf("http://%s.%s.svc:%d", h.ServiceName, h.Namespace, ReaderPort)
 }
 
 // Launcher is the seam the build browser calls for a full-tree read. NewLauncher returns either a
@@ -158,8 +182,13 @@ type KubeLauncher struct {
 	client client.Client
 }
 
-// Launch builds and creates the reader pod for spec. It records the launch metric on success so a
-// launch storm (the §7 cost signal) is observable, then returns the Handle for teardown.
+// Launch builds and creates the reader pod for spec PLUS its paired ClusterIP Service, so the
+// apiserver S4b client can reach the pod by a stable DNS name (Handle.BaseURL) — never pods/exec,
+// never kubectl cp. It records the launch metric on success so a launch storm (the §7 cost signal)
+// is observable, then returns the Handle for teardown.
+//
+// The pod is created first; if the Service create then fails, the just-created pod is best-effort
+// torn down so a Launch is all-or-nothing (no orphan pod without a reachable Service).
 func (k *KubeLauncher) Launch(ctx context.Context, spec Spec) (Handle, error) {
 	if err := spec.Validate(); err != nil {
 		return Handle{}, err
@@ -171,30 +200,80 @@ func (k *KubeLauncher) Launch(ctx context.Context, spec Spec) (Handle, error) {
 	if err := k.client.Create(ctx, pod); err != nil {
 		return Handle{}, fmt.Errorf("readerpod: create reader pod %s: %w", pod.Name, err)
 	}
+	svc := BuildService(spec, k.cfg)
+	if err := k.client.Create(ctx, svc); err != nil {
+		// Roll back the pod so Launch leaves nothing half-wired.
+		_ = k.client.Delete(ctx, pod, client.PropagationPolicy(metav1.DeletePropagationForeground))
+		return Handle{}, fmt.Errorf("readerpod: create reader service %s: %w", svc.Name, err)
+	}
 	recordLaunch() // alert-worthy cost signal (§7): one bounded counter, no per-run label.
-	return Handle{PodName: pod.Name, Namespace: pod.Namespace}, nil
+	return Handle{PodName: pod.Name, ServiceName: svc.Name, Namespace: pod.Namespace}, nil
 }
 
-// TearDown deletes the reader pod. A not-found delete is treated as success (idempotent teardown):
-// an already-gone reader — self-terminated on its ActiveDeadline — is the desired end state.
+// TearDown deletes the reader pod AND its paired Service (idempotent: a not-found delete is success,
+// so an already-gone reader — self-terminated on its ActiveDeadline, or already reaped — is the
+// desired end state). Both deletes are attempted even if one is already gone; the SA token dies with
+// the pod.
 func (k *KubeLauncher) TearDown(ctx context.Context, h Handle) error {
-	if h.PodName == "" {
-		return nil
-	}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: h.PodName, Namespace: h.Namespace}}
-	deletePolicy := metav1.DeletePropagationForeground
-	if err := k.client.Delete(ctx, pod, client.PropagationPolicy(deletePolicy)); err != nil {
-		if apierrIsNotFound(err) {
-			return nil
+	var errs []error
+	if h.ServiceName != "" {
+		svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: h.ServiceName, Namespace: h.Namespace}}
+		if err := k.client.Delete(ctx, svc); err != nil && !apierrIsNotFound(err) {
+			errs = append(errs, fmt.Errorf("readerpod: delete reader service %s: %w", h.ServiceName, err))
 		}
-		return fmt.Errorf("readerpod: delete reader pod %s: %w", h.PodName, err)
 	}
-	return nil
+	if h.PodName != "" {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: h.PodName, Namespace: h.Namespace}}
+		deletePolicy := metav1.DeletePropagationForeground
+		if err := k.client.Delete(ctx, pod, client.PropagationPolicy(deletePolicy)); err != nil && !apierrIsNotFound(err) {
+			errs = append(errs, fmt.Errorf("readerpod: delete reader pod %s: %w", h.PodName, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // PodName derives the reader pod's name from the Run id. It is deterministic so a duplicate launch
 // for the same Run collides (Create returns AlreadyExists) rather than spawning a second pod.
 func PodName(runID string) string { return "buildreader-" + runID }
+
+// ServiceName derives the paired ClusterIP Service name from the Run id. It shares the pod's name
+// (a Service and a Pod may share a name) so the apiserver can derive the reachable DNS name from the
+// Run id alone, and so a duplicate launch collides on both objects.
+func ServiceName(runID string) string { return PodName(runID) }
+
+// BuildService constructs the ClusterIP Service that fronts the reader pod for spec. It selects the
+// pod by the same run label BuildPod stamps, exposes only ReaderPort, and is a pure function (no
+// cluster calls) so the wiring is unit-testable without a Kubernetes API. The Service carries the
+// reader app label so the idle-teardown reaper can enumerate reader Services alongside their pods.
+func BuildService(spec Spec, cfg Config) *corev1.Service {
+	cfg = withDefaults(cfg)
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ServiceName(spec.RunID),
+			Namespace: cfg.Namespace,
+			Labels: map[string]string{
+				"app":            readerAppLabel,
+				"k8squad.io/run": spec.RunID,
+			},
+			Annotations: map[string]string{
+				"k8squad.io/run-id": spec.RunID,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type: corev1.ServiceTypeClusterIP,
+			Selector: map[string]string{
+				"app":            readerAppLabel,
+				"k8squad.io/run": spec.RunID,
+			},
+			Ports: []corev1.ServicePort{{
+				Name:       "http",
+				Port:       int32(ReaderPort),
+				TargetPort: intstr.FromInt(ReaderPort),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
 
 // BuildPod constructs the short-lived RO reader pod for spec. It encodes the 8.7f least-privilege
 // invariants structurally: the PVC is mounted ReadOnly, the pod runs as a non-root reader under the
@@ -216,7 +295,7 @@ func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 			Name:      PodName(spec.RunID),
 			Namespace: cfg.Namespace,
 			Labels: map[string]string{
-				"app":            "k8squad-build-reader",
+				"app":            readerAppLabel,
 				"k8squad.io/run": spec.RunID,
 			},
 			Annotations: map[string]string{
