@@ -11,7 +11,8 @@ name: Component Matrix
 # It is invoked with `uses: ./.github/workflows/component-matrix.yml` and exposes five
 # typed JSON outputs, one per toolchain family:
 #
-#   go         — deployable Go binaries        (operator, apiserver, memory)
+#   go         — deployable Go binaries        (operator, apiserver, memory, event-relay,
+#                                                scm-webhook, buildreader)
 #   shims      — per-runtime A2A shim images   (claude, openclaw, hermes, opencode, codex)
 #   helm       — Helm charts                    (k8squad)
 #   node       — Node/TypeScript surfaces       (console)
@@ -30,7 +31,7 @@ name: Component Matrix
 # 2-runner homelab fleet (ISI-2602) for no added signal.
 #
 # STABLE CHECK-RUN NAMES (branch protection wires these per component — ISI-2674):
-#   go / operator      go / apiserver     go / memory
+#   go / operator      go / apiserver     go / memory      go / buildreader
 #   shim / claude      shim / openclaw    shim / hermes    shim / opencode    shim / codex
 #   helm / k8squad     node / console     db / migrations self-check
 # Consumers MUST keep their `name:` templates in sync with these so a required check never
@@ -79,7 +80,7 @@ jobs:
           set -euo pipefail
           # Compact single-line JSON so `fromJSON()` in the calling lane stays trivial.
           {
-            echo 'go=[{"component":"operator","path":"cmd/operator"},{"component":"apiserver","path":"cmd/apiserver"},{"component":"memory","path":"cmd/memory"},{"component":"event-relay","path":"cmd/event-relay"},{"component":"scm-webhook","path":"cmd/scm-webhook"}]'
+            echo 'go=[{"component":"operator","path":"cmd/operator"},{"component":"apiserver","path":"cmd/apiserver"},{"component":"memory","path":"cmd/memory"},{"component":"event-relay","path":"cmd/event-relay"},{"component":"scm-webhook","path":"cmd/scm-webhook"},{"component":"buildreader","path":"cmd/buildreader"}]'
             # Drift fix (ISI-3653): there is ONE generic shim main (cmd/shim); the runtime is
             # selected at IMAGE build via the RUNTIME build-arg (Dockerfile.shim cli-<runtime>
             # stage), NOT a per-runtime cmd/shim-<runtime> dir. Those dirs never existed, so the
