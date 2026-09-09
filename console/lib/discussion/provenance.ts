@@ -4,17 +4,20 @@
 // fabricated: a message with no derivable author yields a `defect` badge that
 // the UI renders as an explicit "unattributed" marker — not a made-up name.
 //
-// Mapping from the story's provenance triple onto the LANDED 10.1 schema:
-//   - agent  — `authorType === "agent"`  (story: `author_agent_id` set)
-//   - human  — `authorType === "human"`  (story: `author_agent_id` NULL)
-//   - Run    — `metadata.runId` present  (story: `author_run_id` set) → a Run
-//              chip that deep-links to the Run detail page (Story 8.11).
+// Mapping from the story's provenance triple onto the REAL 10.1 schema
+// (ISI-4016 — the columns the apiserver actually emits, per store.go):
+//   - agent  — `authorAgentId` present   (backend `AuthorKind()` ⇒ "agent")
+//   - human  — `authorAgentId` absent    (backend `AuthorKind()` ⇒ "human")
+//   - Run    — `authorRunId` present      → a Run chip that deep-links to the
+//              Run detail page (Story 8.11).
 // The Run chip is ADDITIVE: an agent posting from within a Run carries both an
-// agent badge and a Run chip.
+// agent badge and a Run chip. The label comes from `authorPrincipal`.
 
-import type { AuthorType, Message } from "./types";
+import type { Message } from "./types";
 
-export type BadgeKind = AuthorType | "unknown";
+// `system` is retained as a theme token (see theme.ts) but is NOT derivable
+// from the real schema — the backend only distinguishes agent vs human.
+export type BadgeKind = "agent" | "human" | "system" | "unknown";
 
 /** A deep-link reference to the originating Run (Story 8.11 Run detail). */
 export interface RunRef {
@@ -36,29 +39,21 @@ export interface AuthorBadge {
   defect: boolean;
 }
 
-const VALID_TYPES: ReadonlySet<string> = new Set<AuthorType>([
-  "agent",
-  "human",
-  "system",
-]);
-
 /** The Run-detail route for a given Run id (Story 8.11 deep-link). */
 export function runHref(runId: string): string {
   return `/runs/${encodeURIComponent(runId)}`;
 }
 
 /**
- * Extract a Run reference from a message's metadata, if any. Accepts either the
- * landed `metadata.runId` convention or the story's `author_run_id` naming so
- * the console is robust to either producer.
+ * Extract a Run reference from a message's `authorRunId`, if any. The value is
+ * the server-stamped Run origin column (`internal/discussion/store.go`); a
+ * blank or missing id yields no chip.
  */
 export function extractRun(
-  metadata: Record<string, unknown> | null | undefined,
+  authorRunId: string | null | undefined,
 ): RunRef | undefined {
-  if (!metadata) return undefined;
-  const raw = metadata["runId"] ?? metadata["author_run_id"];
-  if (typeof raw !== "string") return undefined;
-  const runId = raw.trim();
+  if (typeof authorRunId !== "string") return undefined;
+  const runId = authorRunId.trim();
   if (runId === "") return undefined;
   return { runId, href: runHref(runId) };
 }
@@ -81,19 +76,23 @@ function defaultLabel(kind: BadgeKind, run: RunRef | undefined): string {
  * provenance triple; never throws; never fabricates an author.
  */
 export function deriveAuthorBadge(
-  m: Pick<Message, "authorType" | "authorName" | "metadata">,
+  m: Pick<Message, "authorPrincipal" | "authorAgentId" | "authorRunId">,
 ): AuthorBadge {
-  const run = extractRun(m.metadata);
-  const name = (m.authorName ?? "").trim();
-  const kind: BadgeKind = VALID_TYPES.has(m.authorType as string)
-    ? (m.authorType as AuthorType)
-    : "unknown";
+  const run = extractRun(m.authorRunId);
+  const name = (m.authorPrincipal ?? "").trim();
+  const agentId = (m.authorAgentId ?? "").trim();
+
+  // Backend `AuthorKind()`: an author is an agent iff author_agent_id is set,
+  // otherwise a human. Only when NOTHING identifies the author (no agent id and
+  // no principal) do we fall back to "unknown" rather than fabricate a kind.
+  const kind: BadgeKind =
+    agentId !== "" ? "agent" : name !== "" ? "human" : "unknown";
 
   const label = name || defaultLabel(kind, run);
 
   // A message is a provenance DEFECT only when nothing at all is derivable:
-  // no valid author type, no author name, and no originating Run.
-  const defect = kind === "unknown" && name === "" && !run;
+  // no agent id, no principal, and no originating Run.
+  const defect = agentId === "" && name === "" && !run;
 
   const badge: AuthorBadge = { kind, label, defect };
   if (run) badge.run = run;
