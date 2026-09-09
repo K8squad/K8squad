@@ -1882,6 +1882,38 @@ a:hover {
   margin-top: 4px;
 }
 
+/* ISI-4108: destructive-delete confirm dialog. */
+.compose__confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.5);
+}
+.compose__confirm {
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.compose__confirm-title {
+  margin: 0;
+  font-size: 18px;
+}
+.compose__confirm-body {
+  margin: 0;
+  color: var(--text-2);
+}
+.compose__confirm-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* Epic D (ISI-3288, D3): per-agent tool-usage panel. */
 .tool-usage__note {
   font-size: 12px;
