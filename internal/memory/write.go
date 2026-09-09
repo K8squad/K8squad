@@ -125,3 +125,21 @@ func (s *WriteService) MemoryWrite(ctx context.Context, author AuthorScope, kind
 		Provenance:  prov,
 	})
 }
+
+// DiaryAppend is the `diary_append(entry)` tool (Story 6.2 diary ergonomics, ISI-4077): dedicated sugar
+// over MemoryWrite with the kind FIXED to diary and no kind/project_id args to fumble (§8.3 MVP tool
+// surface). The entry is committed as a chronological, first-person work-log record in the caller's OWN
+// team, authored by the server-stamped AuthorScope exactly like any memory_write — so §6.5's "one
+// principal cannot write another's diary" holds by construction: the author columns are the
+// server-authenticated caller identity, never a body argument. diary_read(agent, last_n) later reads
+// these rows chronologically. Returns the server-assigned record id (what a §6.4 envelope snapshot pins).
+func (s *WriteService) DiaryAppend(ctx context.Context, author AuthorScope, entry string) (Record, error) {
+	if entry == "" {
+		return Record{}, fmt.Errorf("diary_append: entry is required")
+	}
+	// Diary is a memory_records kind (KindDiary), NOT the §7.2 diary_entry table — one vector space, one
+	// trust envelope, already shipped (ISI-4077 substrate decision; see docs ADR note). project_id is
+	// deliberately unset: a diary entry is team+agent scoped, not project-narrowed. provenance is left to
+	// the write path's default ({}) — diary_append takes no opaque metadata arg.
+	return s.MemoryWrite(ctx, author, KindDiary, entry, nil, nil)
+}

@@ -53,6 +53,49 @@ func TestWrite_StampsAuthorAndTenancy(t *testing.T) {
 	}
 }
 
+// TestDiaryAppend_FixedKindAndAuthor is the diary_append edge (ISI-4077): the committed record's kind is
+// FIXED to diary, project_id stays unset, and tenancy/authorship are the server-stamped AuthorScope.
+func TestDiaryAppend_FixedKindAndAuthor(t *testing.T) {
+	fw := &fakeWriter{}
+	svc := NewWriteService(fw, NewHashingEmbedder())
+	rec, err := svc.DiaryAppend(context.Background(), AuthorScope{
+		TeamID:    "team-1",
+		Principal: "agent:coder",
+		AgentID:   agentID("agent-uuid"),
+		RunID:     agentID("run-uuid"),
+	}, "rendered metallb pool, opened PR #275")
+	if err != nil {
+		t.Fatalf("diary_append: %v", err)
+	}
+	if rec.Kind != KindDiary {
+		t.Fatalf("Kind = %q, want diary", rec.Kind)
+	}
+	if fw.got.Kind != KindDiary {
+		t.Fatalf("stamped kind = %q, want diary", fw.got.Kind)
+	}
+	if fw.got.ProjectID != nil {
+		t.Fatalf("ProjectID = %v, want nil (diary_append is not project-scoped)", fw.got.ProjectID)
+	}
+	if fw.got.SquadID != "team-1" || fw.got.PrincipalID != "agent:coder" {
+		t.Fatalf("author/tenancy not server-stamped: squad=%q principal=%q", fw.got.SquadID, fw.got.PrincipalID)
+	}
+	if len(fw.got.Embedding) != EmbeddingDim {
+		t.Fatalf("embedding dim = %d, want %d (a diary entry is embedded like any record)", len(fw.got.Embedding), EmbeddingDim)
+	}
+}
+
+// TestDiaryAppend_RejectsEmptyEntry asserts an empty entry never reaches the backend.
+func TestDiaryAppend_RejectsEmptyEntry(t *testing.T) {
+	fw := &fakeWriter{}
+	svc := NewWriteService(fw, NewHashingEmbedder())
+	if _, err := svc.DiaryAppend(context.Background(), AuthorScope{TeamID: "t", Principal: "p"}, ""); err == nil {
+		t.Fatalf("empty entry: expected rejection, got nil error")
+	}
+	if fw.got.Kind != "" {
+		t.Fatalf("backend was called for an empty diary entry: %q", fw.got.Kind)
+	}
+}
+
 // TestWrite_RejectsReservedKinds is WINV3: an agent cannot write a server-projected kind, so it cannot
 // forge a discussion or handoff-mirror row that the read tools would surface as a real attributed post.
 func TestWrite_RejectsReservedKinds(t *testing.T) {
