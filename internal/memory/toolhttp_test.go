@@ -122,3 +122,74 @@ func TestToolHTTP_RequiresTeamHeader(t *testing.T) {
 		t.Fatalf("status = %d, want 401 without X-Team-Id", rec.Code)
 	}
 }
+
+// TestToolHTTP_DiaryRead_TeamAndAgentDefaultFromHeaders asserts the diary_read shim scopes to X-Team-Id
+// and defaults the agent to the caller's own X-Agent-Id when the body omits it (read my own diary).
+func TestToolHTTP_DiaryRead_TeamAndAgentDefaultFromHeaders(t *testing.T) {
+	fake := &diaryReadingFake{}
+	h := NewToolHTTP(NewReadService(fake, NewHashingEmbedder()), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	rec := httptest.NewRecorder()
+	// Body smuggles a team_id (ignored) and omits agent (defaults to header X-Agent-Id).
+	req := httptest.NewRequest(http.MethodPost, "/mcp/tools/diary_read",
+		strings.NewReader(`{"last_n":3,"team_id":"attacker"}`))
+	req.Header.Set("X-Team-Id", "team-1")
+	req.Header.Set("X-Agent-Id", "agent-self")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if fake.gotDiary.SquadID != "team-1" {
+		t.Fatalf("SquadID = %q, want team-1 (from header)", fake.gotDiary.SquadID)
+	}
+	if fake.gotDiary.AgentID != "agent-self" {
+		t.Fatalf("AgentID = %q, want agent-self (defaulted from X-Agent-Id)", fake.gotDiary.AgentID)
+	}
+	if fake.gotDiary.Limit != 3 {
+		t.Fatalf("Limit = %d, want 3", fake.gotDiary.Limit)
+	}
+}
+
+// TestToolHTTP_DiaryAppend_ScopeFromHeaders asserts the diary_append shim stamps author/tenancy from
+// the headers, fixes kind=diary, and ignores any smuggled scope in the body.
+func TestToolHTTP_DiaryAppend_ScopeFromHeaders(t *testing.T) {
+	fw := &fakeWriter{}
+	h := NewToolHTTP(NewReadService(&diaryReadingFake{}, NewHashingEmbedder()), NewWriteService(fw, NewHashingEmbedder()))
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp/tools/diary_append",
+		strings.NewReader(`{"entry":"opened PR #999","kind":"note","project_id":"proj-x","team_id":"attacker"}`))
+	req.Header.Set("X-Team-Id", "team-1")
+	req.Header.Set("X-Principal-Id", "agent:coder")
+	req.Header.Set("X-Agent-Id", "agent-uuid")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if fw.got.Kind != KindDiary {
+		t.Fatalf("Kind = %q, want diary (fixed)", fw.got.Kind)
+	}
+	if fw.got.ProjectID != nil {
+		t.Fatalf("ProjectID = %v, want nil (smuggled project_id ignored)", fw.got.ProjectID)
+	}
+	if fw.got.SquadID != "team-1" || fw.got.PrincipalID != "agent:coder" {
+		t.Fatalf("author/tenancy not from headers: %+v", fw.got)
+	}
+}
+
+// TestToolHTTP_DiaryAppend_UnmountedReadOnly asserts a read-only deployment does not mount diary_append.
+func TestToolHTTP_DiaryAppend_UnmountedReadOnly(t *testing.T) {
+	h := NewToolHTTP(NewReadService(&diaryReadingFake{}, NewHashingEmbedder()), nil)
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/mcp/tools/diary_append", strings.NewReader(`{"entry":"x"}`))
+	req.Header.Set("X-Team-Id", "team-1")
+	req.Header.Set("X-Principal-Id", "p")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (diary_append unmounted)", rec.Code)
+	}
+}

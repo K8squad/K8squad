@@ -108,8 +108,10 @@ func TestMCP_ToolsList_ReadOnlyOmitsWrite(t *testing.T) {
 	}
 }
 
-// TestMCP_ToolsList_WithWriteAdvertisesAllThree asserts a full deployment advertises all three tools.
-func TestMCP_ToolsList_WithWriteAdvertisesAllThree(t *testing.T) {
+// TestMCP_ToolsList_WithWriteAdvertisesFullSurface asserts a full deployment advertises the whole MVP
+// tool surface: the two search tools, memory_write, and the §8.3 diary ergonomics (diary_read +
+// diary_append). diary_read is a read tool; diary_append is a write tool present only with a write svc.
+func TestMCP_ToolsList_WithWriteAdvertisesFullSurface(t *testing.T) {
 	mux := mountMCP(
 		NewReadService(&fakeSearcher{}, NewHashingEmbedder()),
 		NewWriteService(&fakeWriter{}, NewHashingEmbedder()),
@@ -120,8 +122,42 @@ func TestMCP_ToolsList_WithWriteAdvertisesAllThree(t *testing.T) {
 		Tools []mcpTool `json:"tools"`
 	}
 	_ = json.Unmarshal(b, &r)
-	if len(r.Tools) != 3 {
-		t.Fatalf("want 3 tools, got %d", len(r.Tools))
+	names := map[string]bool{}
+	for _, tl := range r.Tools {
+		names[tl.Name] = true
+		if len(tl.InputSchema) == 0 {
+			t.Fatalf("tool %q has empty inputSchema", tl.Name)
+		}
+	}
+	for _, want := range []string{"memory_search", "discussion_search", "memory_write", "diary_read", "diary_append"} {
+		if !names[want] {
+			t.Fatalf("tool %q missing from full catalog: %v", want, names)
+		}
+	}
+	if len(r.Tools) != 5 {
+		t.Fatalf("want 5 tools, got %d (%v)", len(r.Tools), names)
+	}
+}
+
+// TestMCP_ToolsList_ReadOnlyHasDiaryReadNotAppend asserts a read-only deployment (nil write service)
+// advertises diary_read (a read) but NOT diary_append (a write) — the catalog matches tools/call.
+func TestMCP_ToolsList_ReadOnlyHasDiaryReadNotAppend(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	resp := rpcCall(t, mux, nil, `{"jsonrpc":"2.0","id":31,"method":"tools/list"}`)
+	b, _ := json.Marshal(resp.Result)
+	var r struct {
+		Tools []mcpTool `json:"tools"`
+	}
+	_ = json.Unmarshal(b, &r)
+	names := map[string]bool{}
+	for _, tl := range r.Tools {
+		names[tl.Name] = true
+	}
+	if !names["diary_read"] {
+		t.Fatalf("diary_read must be advertised read-only: %v", names)
+	}
+	if names["diary_append"] {
+		t.Fatalf("diary_append must be absent when no write service is wired: %v", names)
 	}
 }
 

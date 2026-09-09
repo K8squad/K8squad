@@ -241,3 +241,95 @@ func deriveUUIDForTest(prefix, text string) string {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPgVector_DiaryReadChronological is the ISI-4077 store edge against real PG: diary_read is the ONE
+// non-semantic ordered path — newest-first, scoped to (squad, agent, kind=diary), retracted rows
+// excluded, LIMIT n. A different agent's diary, a different squad's diary, and a non-diary row must
+// never surface; a soft-retracted entry drops out.
+func TestPgVector_DiaryReadChronological(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	squad := uuid.NewString()
+	principal := uuid.NewString()
+	agentA := uuid.NewString()
+	agentB := uuid.NewString()
+	otherSquad := uuid.NewString()
+
+	writeDiary := func(sq, ag, content string, spike int) Record {
+		t.Helper()
+		agID := ag
+		rec, err := store.Write(ctx, WriteRequest{
+			SquadID: sq, PrincipalID: principal, AgentID: &agID,
+			Kind: KindDiary, Content: content, Embedding: oneHot(spike),
+		})
+		if err != nil {
+			t.Fatalf("write diary %q: %v", content, err)
+		}
+		return rec
+	}
+
+	// Three entries for agent A in this squad (insertion order = chronological order).
+	writeDiary(squad, agentA, "A: started the render", 30)
+	mid := writeDiary(squad, agentA, "A: rendered metallb pool", 31)
+	writeDiary(squad, agentA, "A: opened the PR", 32)
+	// Noise that must never surface for agent A's read.
+	writeDiary(squad, agentB, "B: different agent's diary", 33)
+	writeDiary(otherSquad, agentA, "cross-tenant diary", 34)
+	if _, err := store.Write(ctx, WriteRequest{
+		SquadID: squad, PrincipalID: principal, AgentID: &agentA,
+		Kind: KindNote, Content: "A: a note, not a diary entry", Embedding: oneHot(35),
+	}); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	hits, err := store.DiaryRead(ctx, DiaryQuery{SquadID: squad, AgentID: agentA, Limit: 10})
+	if err != nil {
+		t.Fatalf("DiaryRead: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("want exactly agent A's 3 diary entries, got %d: %+v", len(hits), hits)
+	}
+	if hits[0].Content != "A: opened the PR" {
+		t.Fatalf("newest-first order wrong; hits[0] = %q", hits[0].Content)
+	}
+	for i := 1; i < len(hits); i++ {
+		if hits[i].CreatedAt.After(hits[i-1].CreatedAt) {
+			t.Fatalf("diary not ordered created_at DESC: %v", hits)
+		}
+		if hits[i].Kind != KindDiary {
+			t.Fatalf("non-diary row surfaced: %+v", hits[i])
+		}
+		if hits[i].SquadID != squad {
+			t.Fatalf("cross-squad diary leak: %+v", hits[i])
+		}
+		if hits[i].AgentID == nil || *hits[i].AgentID != agentA {
+			t.Fatalf("other agent's diary surfaced: %+v", hits[i])
+		}
+	}
+
+	// LIMIT bounds the count, keeping the newest.
+	limited, err := store.DiaryRead(ctx, DiaryQuery{SquadID: squad, AgentID: agentA, Limit: 2})
+	if err != nil {
+		t.Fatalf("DiaryRead limited: %v", err)
+	}
+	if len(limited) != 2 || limited[0].Content != "A: opened the PR" {
+		t.Fatalf("limit=2 should keep the 2 newest, got %+v", limited)
+	}
+
+	// Soft-retract drops the entry from the chronological read (AC4 applies to the diary path too).
+	if ok, err := store.Invalidate(ctx, mid.ID); err != nil || !ok {
+		t.Fatalf("invalidate mid: ok=%v err=%v", ok, err)
+	}
+	after, err := store.DiaryRead(ctx, DiaryQuery{SquadID: squad, AgentID: agentA, Limit: 10})
+	if err != nil {
+		t.Fatalf("DiaryRead after retract: %v", err)
+	}
+	for _, h := range after {
+		if h.ID == mid.ID {
+			t.Fatalf("soft-retracted diary entry %s resurfaced", mid.ID)
+		}
+	}
+	if len(after) != 2 {
+		t.Fatalf("want 2 live diary entries after retract, got %d", len(after))
+	}
+}

@@ -198,9 +198,12 @@ type mcpTool struct {
 // toolsList advertises the three memory tools. memory_write is omitted when no WriteService is wired
 // (a read-only deployment), so a client's catalog matches exactly what tools/call will actually serve.
 func (m *ToolMCP) toolsList() any {
-	tools := []mcpTool{memorySearchTool, discussionSearchTool}
+	// diary_read is a read tool (always advertised); diary_append is a write tool advertised only when a
+	// WriteService is wired, exactly like memory_write — so a read-only deployment's catalog matches what
+	// tools/call will serve.
+	tools := []mcpTool{memorySearchTool, discussionSearchTool, diaryReadTool}
 	if m.write != nil {
-		tools = append(tools, memoryWriteTool)
+		tools = append(tools, memoryWriteTool, diaryAppendTool)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -223,6 +226,21 @@ var (
 		Name:        "memory_write",
 		Description: "Commit one knowledge record into the caller team's memory. Author and tenancy are server-authenticated (never arguments). kind is one of note|fact|diary (default note); a diary entry is a chronological first-person work-log record recalled like any other untrusted knowledge.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string","enum":["note","fact","diary"],"description":"record kind (default note); diary is an agent work-log entry"},"content":{"type":"string","description":"the record body; embedded and stored"},"project_id":{"type":"string","description":"optional narrower scope within the caller team"},"provenance":{"type":"object","description":"opaque caller metadata (never consulted for trust or authorship)"}},"required":["content"]}`),
+	}
+	// diary_append / diary_read are the §8.3 diary ergonomics (ISI-4077). append is fixed-kind sugar
+	// over memory_write (no kind/project_id arg); read is a NON-semantic chronological "last N" read. As
+	// with every other tool, tenancy and authorship are server-authenticated headers, absent from the
+	// schema: `agent` on diary_read selects WHICH agent's diary within the caller team (a narrowing
+	// filter, never a tenancy-widener), defaulting to the caller's own X-Agent-Id when omitted.
+	diaryAppendTool = mcpTool{
+		Name:        "diary_append",
+		Description: "Append one entry to the caller's per-team diary (a kind=diary work-log record). Author and tenancy are server-authenticated (never arguments); the kind is fixed. The entry is recalled like any other untrusted knowledge and read back chronologically by diary_read.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"entry":{"type":"string","description":"the diary entry body; embedded and stored as a kind=diary record"}},"required":["entry"]}`),
+	}
+	diaryReadTool = mcpTool{
+		Name:        "diary_read",
+		Description: "Read an agent's last N diary entries within the caller team, newest first, as untrusted-provenance envelopes. team is server-authenticated; agent selects whose diary within the team (defaults to the caller's own agent id when omitted); last_n bounds the count (default 20, max 100).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"agent":{"type":"string","description":"whose diary to read within the caller team (defaults to the caller's own agent id)"},"last_n":{"type":"integer","description":"max entries, newest first (default 20, max 100)","minimum":1}}}`),
 	}
 )
 
@@ -277,11 +295,18 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 		return m.callMemorySearch(ctx, sess, p.Arguments)
 	case discussionSearchTool.Name:
 		return m.callDiscussionSearch(ctx, sess, p.Arguments)
+	case diaryReadTool.Name:
+		return m.callDiaryRead(ctx, sess, p.Arguments)
 	case memoryWriteTool.Name:
 		if m.write == nil {
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // unmounted in a read-only deployment
 		}
 		return m.callMemoryWrite(ctx, sess, p.Arguments)
+	case diaryAppendTool.Name:
+		if m.write == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // unmounted in a read-only deployment
+		}
+		return m.callDiaryAppend(ctx, sess, p.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 	}
@@ -362,6 +387,63 @@ func (m *ToolMCP) callMemoryWrite(ctx context.Context, sess mcpSession, raw json
 		resp.ProjectID = *rec.ProjectID
 	}
 	return toolResult(resp)
+}
+
+// diaryReadArgs is the diary_read argument shape. team is DELIBERATELY absent (session header). `agent`
+// selects whose diary within the caller team; when empty it defaults to the session's own agent id.
+type diaryReadArgs struct {
+	Agent string `json:"agent,omitempty"`
+	LastN int    `json:"last_n,omitempty"`
+}
+
+func (m *ToolMCP) callDiaryRead(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	var a diaryReadArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	agent := a.Agent
+	if agent == "" && sess.agentID != nil {
+		agent = *sess.agentID // default to the caller's own diary (X-Agent-Id), never a widened scope
+	}
+	if agent == "" {
+		return toolError("agent is required (no X-Agent-Id to default to; pass agent=<agent id>)")
+	}
+	out, err := m.read.DiaryRead(ctx, sess.team, agent, a.LastN)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return toolResult(searchResponse{Results: out})
+}
+
+// diaryAppendArgs is the diary_append argument shape: just the entry body. Kind is fixed to diary and
+// authorship/tenancy ride the session headers — there is no kind/project_id/scope argument by design.
+type diaryAppendArgs struct {
+	Entry string `json:"entry"`
+}
+
+func (m *ToolMCP) callDiaryAppend(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	if sess.principal == "" {
+		return toolError("X-Principal-Id required (server-authenticated author)")
+	}
+	var a diaryAppendArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	author := AuthorScope{
+		TeamID:    sess.team,
+		Principal: sess.principal,
+		AgentID:   sess.agentID,
+		RunID:     sess.runID,
+	}
+	rec, err := m.write.DiaryAppend(ctx, author, a.Entry)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return toolResult(writeToolResponse{ID: rec.ID, Kind: rec.Kind, TeamID: rec.SquadID})
 }
 
 // writeRPC serializes a JSON-RPC response envelope. A serialization failure degrades to a 500 — there is
