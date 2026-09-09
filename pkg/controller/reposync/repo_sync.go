@@ -50,6 +50,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
@@ -180,7 +181,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			if delay < time.Second {
 				delay = time.Second
 			}
-			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
+			// The condition message must be byte-stable across passes
+			// within one rate-limit window: every status write re-fires
+			// the Project watch, so a per-pass-fresh countdown (raw
+			// fractional seconds) rewrote the condition on every
+			// reconcile and controller-runtime hot-looped (ISI-4120,
+			// several reconciles/sec per Project). The message carries a
+			// minute-bucketed countdown; the requeue below keeps the
+			// FULL Retry-After precision.
+			r.patchStatus(ctx, project, statusPatch{
+				condition: syncReadyFalse(reasonProviderFail, rateLimitMessage(sync.Provider, delay)),
+			})
 			return ctrl.Result{RequeueAfter: delay}, nil
 		}
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
@@ -249,6 +260,15 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("project").
 		For(&ksquadapi.Project{}).
+		// Our own status writes re-fire the Project watch: without a
+		// filter, every status patch (the per-pass SyncReady message)
+		// became another immediate reconcile — the ISI-4120 hot loop.
+		// Reconciles are driven by spec changes (generation), the webhook
+		// trigger annotation, and the scheduled RequeueAfter.
+		WithEventFilter(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+		)).
 		Complete(r)
 }
 
@@ -412,6 +432,21 @@ func syncReadyFalse(reason, message string) metav1.Condition {
 		Reason:  reason,
 		Message: message,
 	}
+}
+
+// rateLimitMessage renders the SyncReady=False message for a rate-limited
+// snapshot pass. The countdown is deliberately QUANTIZED to whole minutes:
+// our own status writes re-fire the Project watch, so a message that
+// changes every pass (raw fractional Retry-After) means a new status patch
+// and another immediate reconcile — the ISI-4120 hot loop. A minute bucket
+// keeps the message byte-stable within one rate-limit window while still
+// telling the operator roughly how long the deferral runs. Only the
+// MESSAGE is coarse; the requeue keeps full Retry-After precision.
+func rateLimitMessage(provider string, delay time.Duration) string {
+	if delay < time.Minute {
+		return fmt.Sprintf("%s rate limited, snapshot retry deferred <1m", provider)
+	}
+	return fmt.Sprintf("%s rate limited, snapshot retry deferred ~%s", provider, delay.Round(time.Minute))
 }
 
 func ptrTime(t metav1.Time) *metav1.Time { return &t }
