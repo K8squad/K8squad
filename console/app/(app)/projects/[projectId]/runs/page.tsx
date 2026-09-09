@@ -5,6 +5,8 @@
 // project-scoped listing route is new. The Run list read model arrives with the Run-history
 // work under ISI-2907/ISI-2904.
 
+import { decodeProjectId } from "@/lib/projectId";
+
 export default async function RunsPage({
   params,
 }: {
@@ -16,7 +18,7 @@ export default async function RunsPage({
       <h1>Runs</h1>
       <p className="muted">
         Run history for{" "}
-        <strong>{decodeURIComponent(projectId)}</strong>. Open a run at{" "}
+        <strong>{decodeProjectId(projectId)}</strong>. Open a run at{" "}
         <code>/runs/&lt;runId&gt;</code> to watch its coordination events stream
         live through the BFF.
       </p>

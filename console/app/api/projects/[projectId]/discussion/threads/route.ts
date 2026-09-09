@@ -14,6 +14,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJson, proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,7 +24,7 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  const projectId = encodeProjectId((await params).projectId);
   // Forward the caller's ?limit/?offset paging verbatim.
   const search = req.nextUrl.search; // includes leading '?' or ''
   return proxyJson(
@@ -36,7 +37,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  const projectId = encodeProjectId((await params).projectId);
   return proxyJsonWrite(
     req,
     `/api/projects/${projectId}/discussion/threads`,

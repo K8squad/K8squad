@@ -9,6 +9,7 @@
 // single "not found" outcome so the UI has exactly one deny path and can never
 // leak the existence of a foreign room.
 
+import { encodeProjectId } from "@/lib/projectId";
 import type { Message, Thread } from "./types";
 import {
   buildOpenThreadBody,
@@ -84,7 +85,7 @@ export interface DiscussionClient {
 
 /** The BFF base path for a Project's discussion threads (server enforces the authz choke). */
 function threadsBase(projectId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/discussion/threads`;
+  return `/api/projects/${encodeProjectId(projectId)}/discussion/threads`;
 }
 
 async function readJson<T>(res: {

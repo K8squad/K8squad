@@ -3,6 +3,8 @@
 // The three-pane build browser (8.7e) lands with ISI-2904; this project-scoped mount keeps
 // the Project sub-nav complete (Build · Tickets · Runs · Discussion, story 8.13).
 
+import { decodeProjectId } from "@/lib/projectId";
+
 export default async function BuildPage({
   params,
 }: {
@@ -13,7 +15,7 @@ export default async function BuildPage({
     <div>
       <h1>Build</h1>
       <p className="muted">
-        Build snapshots for <strong>{decodeURIComponent(projectId)}</strong>.
+        Build snapshots for <strong>{decodeProjectId(projectId)}</strong>.
         Open a Run to inspect its build workspace — the per-Run file tree, diffs,
         and code views.
       </p>

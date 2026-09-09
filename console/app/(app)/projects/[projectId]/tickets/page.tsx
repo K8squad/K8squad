@@ -5,6 +5,7 @@
 // the BFF choke point (ADR-013).
 
 import { TicketsScreen } from "@/components/tickets/TicketsScreen";
+import { decodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +15,11 @@ export default async function TicketsPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
+  // Decode the raw "ns%2Fname" segment once at the edge; the screen re-encodes
+  // exactly once when it builds BFF URLs (ISI-3982).
   return (
     <main className="ksq-tickets-page">
-      <TicketsScreen projectId={projectId} />
+      <TicketsScreen projectId={decodeProjectId(projectId)} />
     </main>
   );
 }

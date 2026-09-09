@@ -22,6 +22,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { EmptyState } from "@/components/forms/EmptyState";
 import { classifyOverviewStatus, phaseTone } from "@/components/SquadOverview";
+import { encodeProjectId } from "@/lib/projectId";
 
 /** GET /api/squad/projects response (apiserver SquadProjectList, overview.go).
  *
@@ -170,7 +171,7 @@ export function ProjectsList() {
                     build this link from the ProjectListEntry owning Team UID instead — same seam
                     ISI-3960 marks in SquadOverview. */}
                 <Link
-                  href={`/projects/${encodeURIComponent(id)}`}
+                  href={`/projects/${encodeProjectId(id)}`}
                   data-testid="projects-row-link"
                 >
                   {p.name}

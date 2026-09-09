@@ -4,6 +4,7 @@
 // this room's message events. If the feed slips, callers degrade to
 // poll-on-focus (live is the target, not a hard gate).
 
+import { encodeProjectId } from "@/lib/projectId";
 import { parseRoomEvent, type RoomEvent } from "./liveFeed";
 
 /** Minimal EventSource surface (so this is testable without a real browser). */
@@ -16,7 +17,7 @@ export type EventSourceFactory = (url: string) => EventSourceLike;
 
 /** The shared 8.2 live stream URL for a Project (BFF proxied). */
 export function streamUrl(projectId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/stream`;
+  return `/api/projects/${encodeProjectId(projectId)}/stream`;
 }
 
 /**

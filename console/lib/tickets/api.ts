@@ -6,6 +6,7 @@
 // PATCH /api/work-items/{id}/state {to, expectedFrom} (8.14a, ADR-037) — no
 // claim/lease call is ever issued from the console (distinct authority path, §6.2).
 
+import { encodeProjectId } from "@/lib/projectId";
 import type {
   CreateWorkItemBody,
   StateTransitionBody,
@@ -42,7 +43,7 @@ export async function listWorkItems(
   if (opts?.parentId) params.set("parentId", opts.parentId);
   if (opts?.query) params.append("raw", opts.query); // pre-built server-side query string
   const qs = opts?.query ?? params.toString();
-  const url = `/api/projects/${encodeURIComponent(projectId)}/work-items${qs ? `?${qs}` : ""}`;
+  const url = `/api/projects/${encodeProjectId(projectId)}/work-items${qs ? `?${qs}` : ""}`;
   const res = await fetch(url, { cache: "no-store" });
   const payload = await jsonOrThrow(res);
   const items = (payload as { items?: unknown }).items;
@@ -78,7 +79,7 @@ export async function createWorkItem(
   body: CreateWorkItemBody,
 ): Promise<WorkItem> {
   const res = await fetch(
-    `/api/projects/${encodeURIComponent(projectId)}/work-items`,
+    `/api/projects/${encodeProjectId(projectId)}/work-items`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },

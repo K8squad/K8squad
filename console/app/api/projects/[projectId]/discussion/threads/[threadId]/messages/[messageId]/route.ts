@@ -10,6 +10,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,7 +29,7 @@ export async function PATCH(
   },
 ): Promise<Response> {
   const { projectId: p, threadId: t, messageId: m } = await params;
-  const projectId = encodeURIComponent(p);
+  const projectId = encodeProjectId(p);
   const threadId = encodeURIComponent(t);
   const messageId = encodeURIComponent(m);
   return proxyJsonWrite(

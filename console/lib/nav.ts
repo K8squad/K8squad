@@ -8,6 +8,8 @@
 // absent from the DOM, never display:none-as-authz. Role arrives with Epic 15.4; until then callers
 // pass the default "user".
 
+import { encodeProjectId } from "@/lib/projectId";
+
 /** Coarse access level for the RBAC seam (8.16). Ordered least→most privileged. */
 export type AccessLevel = "user" | "admin";
 
@@ -185,7 +187,9 @@ export function projectSubnav(
   return PROJECT_SECTIONS.map((s) => ({
     id: s.id,
     label: s.label,
-    href: `/projects/${encodeURIComponent(projectId)}/${s.id}`,
+    // Normalize to one encoding layer so a "ns/name" id becomes "ns%2Fname" exactly
+    // once, whether the caller passed it decoded or already-encoded (ISI-3982).
+    href: `/projects/${encodeProjectId(projectId)}/${s.id}`,
   }));
 }
 
@@ -197,7 +201,6 @@ const SECTION_LABEL: Record<string, string> = {
   compose: "Compose",
   teams: "Teams",
   projects: "Projects",
-  skills: "Skills",
   runs: "Runs",
   plugins: "Plugins",
   settings: "Settings",

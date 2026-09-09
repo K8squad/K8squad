@@ -19,6 +19,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJson, proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,7 +29,10 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  // Normalize to exactly one encoding layer — the router hands us the still-encoded
+  // "ns%2Fname" segment, and re-encoding it triple-mangled the id into a mux 404
+  // (ISI-3982).
+  const projectId = encodeProjectId((await params).projectId);
   // Forward the server-side filter/sort/parentId predicates unchanged (8.14d AC1).
   const search = req.nextUrl.search;
   return proxyJson(req, `/api/projects/${projectId}/work-items${search}`);
@@ -38,6 +42,9 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  // Normalize to exactly one encoding layer — the router hands us the still-encoded
+  // "ns%2Fname" segment, and re-encoding it triple-mangled the id into a mux 404
+  // (ISI-3982).
+  const projectId = encodeProjectId((await params).projectId);
   return proxyJsonWrite(req, `/api/projects/${projectId}/work-items`, "POST");
 }

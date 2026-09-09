@@ -12,6 +12,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,7 +23,7 @@ export async function POST(
   { params }: { params: Promise<{ projectId: string; threadId: string }> },
 ): Promise<Response> {
   const { projectId: p, threadId: t } = await params;
-  const projectId = encodeURIComponent(p);
+  const projectId = encodeProjectId(p);
   const threadId = encodeURIComponent(t);
   return proxyJsonWrite(
     req,

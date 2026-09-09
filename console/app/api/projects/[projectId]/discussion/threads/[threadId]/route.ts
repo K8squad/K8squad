@@ -9,6 +9,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJson } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,7 +20,7 @@ export async function GET(
   { params }: { params: Promise<{ projectId: string; threadId: string }> },
 ): Promise<Response> {
   const { projectId: p, threadId: t } = await params;
-  const projectId = encodeURIComponent(p);
+  const projectId = encodeProjectId(p);
   const threadId = encodeURIComponent(t);
   return proxyJson(
     req,
