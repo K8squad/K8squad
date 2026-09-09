@@ -37,6 +37,15 @@ var (
 		Name: "ksquad_buildbrowser_reader_pod_launches_total",
 		Help: "On-demand full-tree RO reader pods launched (8.7f cost signal, §7). Alert on rate() spikes.",
 	})
+
+	// readerPodReaps is the AC6 idle-teardown signal: every reader pod reaped by the idle-teardown
+	// controller (before its 900s ActiveDeadline backstop fires). Like the launch counter it is a
+	// SINGLE global counter with NO per-run/project label (NFR-OBS3 cardinality firewall). A healthy
+	// steady state has reaps tracking launches; a growing launches−reaps gap surfaces leaked readers.
+	readerPodReaps = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "ksquad_buildbrowser_reader_pod_reaps_total",
+		Help: "Idle reader pods torn down by the idle-teardown controller (ISI-4072 AC6). Watch launches−reaps gap.",
+	})
 )
 
 // RegisterMetrics registers the reader-pod launch counter with reg exactly once. It is safe to call
@@ -44,7 +53,7 @@ var (
 func RegisterMetrics(reg prometheus.Registerer) {
 	metricsRegisterOnce.Do(func() {
 		if reg != nil {
-			reg.MustRegister(readerPodLaunches)
+			reg.MustRegister(readerPodLaunches, readerPodReaps)
 		}
 	})
 }
@@ -54,8 +63,12 @@ func RegisterMetrics(reg prometheus.Registerer) {
 // scraped). Called on every successful pod create.
 func recordLaunch() { readerPodLaunches.Inc() }
 
-// launchCount reads the current counter value — test-only introspection.
+// recordReap increments the idle-teardown counter — called once per reader pod the reaper removes.
+func recordReap() { readerPodReaps.Inc() }
+
+// launchCount / reapCount read the current counter values — test-only introspection.
 func launchCount() float64 { return testutil.ToFloat64(readerPodLaunches) }
+func reapCount() float64   { return testutil.ToFloat64(readerPodReaps) }
 
 // apierrIsNotFound reports whether err is a Kubernetes "not found" status error, so an idempotent
 // teardown of an already-gone reader is treated as success.

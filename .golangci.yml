@@ -157,6 +157,17 @@ linters:
           - gosec
         text: "G703"
         path: ^internal/buildbrowser/readerpod/readserver/
+      # G704 (SSRF via taint) in the apiserver reader-pod HTTP client: the request
+      # URL is NOT client-controlled. baseURL is server-derived by the launcher as
+      # http://<svc>.<ns>.svc:8080 (ReaderSpecResolver keys the Spec off projectID
+      # alone; the client path never influences host/port — AC2 containment). gosec's
+      # static taint analyser cannot prove the URL is internally minted, so it flags
+      # the in-cluster GET/Do as SSRF. The reader is reachable only by its paired
+      # ClusterIP Service name; no external or client-supplied host reaches this sink.
+      - linters:
+          - gosec
+        text: "G704"
+        path: ^internal/apiserver/readerpodreader\.go
     paths:
       - third_party$
       - builtin$
