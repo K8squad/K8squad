@@ -419,6 +419,7 @@ func main() {
 			os.Exit(1)
 		}
 		if err := (&reposync.Reconciler{
+			Client:    mgr.GetClient(),
 			Store:     scm.NewSQLMirrorStore(db),
 			Providers: scm.NewProviderRegistry(),
 			IssueSync: issuesync.NewSyncer(issueLinkStore),
