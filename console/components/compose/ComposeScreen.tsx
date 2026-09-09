@@ -434,6 +434,14 @@ export function ComposeScreen() {
   const [hydration, setHydration] = useState<HydrationState>({ kind: "idle" });
   // Bumped by the retry CTA to re-run the hydration effect.
   const [hydrateNonce, setHydrateNonce] = useState(0);
+  // The object whose real spec the edit form should auto-hydrate (ISI-4106). Set
+  // by the deep-link seed AND by clicking a left-pane entry — the two ways a user
+  // opens an existing object to edit. A name TYPED by hand is deliberately NOT a
+  // target (null), so we never fetch on every keystroke. `team` scopes an admin's
+  // cross-squad read (seed only); a clicked entry is always the caller's own squad.
+  const [editTarget, setEditTarget] = useState<{ name: string; team: string } | null>(() =>
+    seed.mode === "edit" && seed.name ? { name: seed.name, team: seedTeam } : null,
+  );
 
   // Fetch onboarding progress for guidance strip (soft dep — graceful on 501).
   useEffect(() => {
@@ -453,17 +461,17 @@ export function ComposeScreen() {
   // ?team=). 404 → "not found in your squad"; any other error → retry — the form is
   // never wedged.
   useEffect(() => {
-    const name = seed.name.trim();
-    // Only auto-hydrate the deep-linked edit target: edit mode, and the active kind
-    // still the one the link pre-selected. (selectKind/selectMode reset to a create
-    // form, which correctly ends hydration.)
-    if (mode !== "edit" || kind !== seed.kind || !name) {
+    // Only auto-hydrate a real edit TARGET (deep-link seed or a clicked left-pane
+    // entry) — never a name typed by hand. selectKind clears the target and resets
+    // to a create form, which correctly ends hydration.
+    const name = editTarget?.name.trim() ?? "";
+    if (mode !== "edit" || !editTarget || !name) {
       setHydration({ kind: "idle" });
       return;
     }
     let cancelled = false;
     setHydration({ kind: "loading" });
-    const teamQS = seedTeam ? `?team=${encodeURIComponent(seedTeam)}` : "";
+    const teamQS = editTarget.team ? `?team=${encodeURIComponent(editTarget.team)}` : "";
     const path =
       kind === "teams"
         ? `/api/squad/teams/${encodeURIComponent(name)}${teamQS}`
@@ -491,9 +499,8 @@ export function ComposeScreen() {
     return () => {
       cancelled = true;
     };
-    // seed is stable (parsed once); hydrateNonce re-runs on retry.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, mode, seed.kind, seed.name, seedTeam, hydrateNonce]);
+    // editTarget identity changes on each seed/click; hydrateNonce re-runs on retry.
+  }, [kind, mode, editTarget, hydrateNonce]);
 
   const clientErrors = useMemo(() => validate(cf), [cf]);
   const serverErrors = submit.kind === "error" ? submit.fields : {};
@@ -529,6 +536,7 @@ export function ComposeScreen() {
   function selectKind(next: ComposeKind) {
     setKind(next);
     setCf(emptyForm(next));
+    setEditTarget(null);
     setSubmit({ kind: "idle" });
   }
 
@@ -537,12 +545,15 @@ export function ComposeScreen() {
     setSubmit({ kind: "idle" });
   }
 
-  // Clicking a left-pane object opens it in Edit mode with its name pre-filled (ISI-3985 — "if I
-  // click on an agent I should see his skills"). Full-spec field hydration (populating the skill
-  // refs / role / model from the object's CRD) is tracked separately; here we at least switch into
-  // the correct edit context instead of a dead, unclickable list.
+  // Clicking a left-pane object opens it in Edit mode and hydrates its REAL authoring spec
+  // (ISI-3985 "if I click on an agent I should see his skills"; ISI-4106 — the interactive
+  // click path, not just the deep-link, must hydrate). Setting editTarget drives the hydration
+  // effect, which replaces this optimistic name-only form with the loaded spec; without it a
+  // Save would PUT an empty spec and blow the object away (the same bug ADR-0016 fixed for
+  // deep-links). A clicked entry is always in the caller's own squad, so team scope is "".
   function selectEntry(name: string) {
     setMode("edit");
+    setEditTarget({ name, team: "" });
     setCf(() => {
       const base = emptyForm(kind);
       return { kind: base.kind, form: { ...base.form, name } } as ComposeForm;
