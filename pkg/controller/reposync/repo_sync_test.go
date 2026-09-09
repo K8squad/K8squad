@@ -234,6 +234,22 @@ func TestReconcileLevelTriggeredIdempotent(t *testing.T) {
 		t.Fatalf("status.sync.mirrorRecordCount = %d, want 3 (this pass, post echo-suppression)",
 			proj.Status.Sync.MirrorRecordCount)
 	}
+
+	// The pass also anchored the (Project, repo) pair in the store's repo
+	// seam (0008 schema: "the reconciler upserts it as the anchor for
+	// mirror liveness") — exactly one anchor per mirrored repo, refreshed
+	// by every later pass, never duplicated.
+	anchors := store.RepoAnchors()
+	if len(anchors) != 1 {
+		t.Fatalf("expected exactly 1 repo anchor after 3 reconciles, got %d: %+v", len(anchors), anchors)
+	}
+	a := anchors[0]
+	if a.Namespace != testNamespace || a.Name != testProject || a.Provider != "github" || a.URL != "github.com/acme/app" {
+		t.Fatalf("repo anchor fields wrong: %+v", a)
+	}
+	if a.LastMirrorAt.IsZero() {
+		t.Fatal("repo anchor LastMirrorAt not stamped")
+	}
 }
 
 // AC3: the requeue cadence tracks the spec values — two Projects with
