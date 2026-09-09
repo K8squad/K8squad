@@ -173,6 +173,25 @@ the seed on without supplying a username and existingSecret.
 {{- end -}}
 
 {{/*
+Build-browser reader-pod env (Story 8.7f / S4a, ISI-4005 / ISI-4073). DEGRADE-BY-DEFAULT:
+emits KSQUAD_BUILD_READER_POD_ENABLED / KSQUAD_BUILD_READER_POD_IMAGE ONLY when
+controlPlane.apiserver.buildReaderPod.enabled=true. When off, nothing is rendered and the
+apiserver keeps config.go's BuildReaderPodEnabled=false default (snapshot-only, no pod launch).
+The image defaults to the chart-versioned ghcr.io/k8squad/ksquad-buildreader:<tag> (same
+registry/tag resolution as k8squad.image) unless an explicit .image override is set.
+*/}}
+{{- define "k8squad.buildReaderPodEnv" -}}
+{{- $brp := .Values.controlPlane.apiserver.buildReaderPod | default dict -}}
+{{- if $brp.enabled -}}
+{{- $img := $brp.image | default (include "k8squad.image" (dict "root" . "component" "buildreader")) -}}
+- name: KSQUAD_BUILD_READER_POD_ENABLED
+  value: "true"
+- name: KSQUAD_BUILD_READER_POD_IMAGE
+  value: {{ $img | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Session-cookie Secure attribute (ISI-3530). The apiserver defaults
 SecureCookies=true; over a plain-HTTP gateway the browser drops the Secure
 cookie and the Console middleware guard bounces every post-login navigation
