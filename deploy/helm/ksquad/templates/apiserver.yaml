@@ -130,6 +130,18 @@ spec:
             - name: KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID
               value: {{ . | quote }}
             {{- end }}
+            {{- /* Build-browser reader pod (Story 8.7f / S4a, ISI-4005 / ISI-4073).
+                   DEGRADE-BY-DEFAULT: emit KSQUAD_BUILD_READER_POD_* ONLY when
+                   buildReaderPod.enabled=true; otherwise the apiserver keeps
+                   config.go's BuildReaderPodEnabled=false default (snapshot-only,
+                   no pod launch). Image defaults to the chart-versioned reader tag. */}}
+            {{- $brp := .Values.apiserver.buildReaderPod | default dict }}
+            {{- if $brp.enabled }}
+            - name: KSQUAD_BUILD_READER_POD_ENABLED
+              value: "true"
+            - name: KSQUAD_BUILD_READER_POD_IMAGE
+              value: {{ $brp.image | default (printf "ghcr.io/k8squad/ksquad-buildreader:%s" .Chart.AppVersion) | quote }}
+            {{- end }}
           # Liveness = process up (never gated on the DB/NATS: a dependency blip must not
           # trigger a restart loop). Readiness = the store of record is reachable (§17.3).
           livenessProbe:
