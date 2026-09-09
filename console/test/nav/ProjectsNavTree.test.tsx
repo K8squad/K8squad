@@ -55,7 +55,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     expect(names).toEqual(["alpha", "beta"]);
   });
 
-  it("expanding a project reveals the six icon'd sections with correct hrefs", async () => {
+  it("expanding a project reveals the icon'd sections with correct hrefs", async () => {
     render(
       <ProjectsNavTree
         defaultExpanded
@@ -73,6 +73,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
       "Discussion",
       "File Explorer",
       "GitHub",
+      "Settings",
     ]);
     // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha". Landing is the bare project
     // root (the workspace default), not a /landing sub-path (ISI-3957 AC2).
@@ -80,6 +81,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     expect(links[1]).toHaveAttribute("href", "/projects/squad-a%2Falpha/issues");
     expect(links[4]).toHaveAttribute("href", "/projects/squad-a%2Falpha/files");
     expect(links[5]).toHaveAttribute("href", "/projects/squad-a%2Falpha/github");
+    expect(links[6]).toHaveAttribute("href", "/projects/squad-a%2Falpha/settings");
   });
 
   it("a deep link auto-expands the active project and highlights the active section", async () => {
