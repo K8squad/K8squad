@@ -13,7 +13,7 @@ import (
 // spoof the tenant (INV3 at the edge). The recorded SearchQuery must carry the HEADER team.
 func TestToolHTTP_TeamFromHeaderNotBody(t *testing.T) {
 	fake := &fakeSearcher{}
-	h := NewToolHTTP(NewReadService(fake, NewHashingEmbedder()), nil)
+	h := NewToolHTTP(NewReadService(fake, NewHashingEmbedder()), nil, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -48,7 +48,7 @@ func TestToolHTTP_TeamFromHeaderNotBody(t *testing.T) {
 // is ignored; the recorded WriteRequest carries the HEADER identity.
 func TestToolHTTP_WriteScopeFromHeadersNotBody(t *testing.T) {
 	fw := &fakeWriter{}
-	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(fw, NewHashingEmbedder()))
+	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(fw, NewHashingEmbedder()), nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
@@ -81,7 +81,7 @@ func TestToolHTTP_WriteScopeFromHeadersNotBody(t *testing.T) {
 // TestToolHTTP_WriteRequiresPrincipalHeader asserts a write missing X-Principal-Id (an unauthenticated
 // author) is rejected even when the team header is present.
 func TestToolHTTP_WriteRequiresPrincipalHeader(t *testing.T) {
-	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(&fakeWriter{}, NewHashingEmbedder()))
+	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(&fakeWriter{}, NewHashingEmbedder()), nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	rec := httptest.NewRecorder()
@@ -96,7 +96,7 @@ func TestToolHTTP_WriteRequiresPrincipalHeader(t *testing.T) {
 // TestToolHTTP_WriteUnmountedWhenNil asserts a read-only deployment (nil write service) does not expose
 // memory_write at all.
 func TestToolHTTP_WriteUnmountedWhenNil(t *testing.T) {
-	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	rec := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestToolHTTP_WriteUnmountedWhenNil(t *testing.T) {
 
 // TestToolHTTP_RequiresTeamHeader asserts an unauthenticated call (no X-Team-Id) is rejected.
 func TestToolHTTP_RequiresTeamHeader(t *testing.T) {
-	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	h := NewToolHTTP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, nil)
 	mux := http.NewServeMux()
 	h.Mount(mux)
 	rec := httptest.NewRecorder()

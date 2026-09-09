@@ -46,6 +46,20 @@
 // other. (The console test guards the UI cannot *offer* custody; this Go suite guards the schema and
 // write path cannot *record* it.)
 //
+// AC4 — discussion_post TOOL LOCKSTEP (ISI-4075). The agent-facing write tool `discussion_post`
+// (internal/memory/toolhttp.go) is NOT a new write path: it builds a server-stamped AuthorContext from
+// the BFF headers and calls the SAME Store.OpenThread / Store.PostMessage this suite already fences —
+// it opens no new column, mutates no coord custody row, and exposes no claim/lease/fence/state/holder/
+// assignee/status/custody/owner affordance (the request struct carries only project_id/thread_id/title/
+// body/parent_message_id; see discussionPostRequest). Because the tool reaches the schema ONLY through
+// those two Store methods, invariants 1–3 below (schema allow-list + write-moves-no-coord-state +
+// provenance-server-stamped) cover the tool transitively; the tool's own header→AuthorContext mapping
+// and forged-author-drop are proven at the transport edge in TestDiscussionPostForgedAuthorIgnored
+// (internal/memory). A dedicated tool-through-Store fence case cannot live in THIS package file: it is
+// `package discussion`, and importing internal/memory (which imports discussion) would form an import
+// cycle. Testing Architect (ISI-4074) to confirm this transitive coverage is sufficient or to add an
+// external-package (discussion_test) driver if a direct tool-path assertion is wanted.
+//
 // GUARDRAIL DISCIPLINE: this is boring to keep green and loud to break. NO production code change is
 // permitted to make an assertion pass — if one cannot pass, the fence is already broken and that is a
 // bug to FILE (R13), not to paper over here.
