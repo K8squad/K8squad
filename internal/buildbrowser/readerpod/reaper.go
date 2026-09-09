@@ -92,7 +92,7 @@ func (r *Reaper) ReapIdle(ctx context.Context) (int, error) {
 	reaped := 0
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		if p.CreationTimestamp.Time.After(cutoff) {
+		if p.CreationTimestamp.After(cutoff) {
 			continue // still within its lifetime window — leave it to the idle manager
 		}
 		runID := p.Labels["k8squad.io/run"]
