@@ -234,6 +234,106 @@ func TestPgVector_SupersedeHandoffMirrors(t *testing.T) {
 	}
 }
 
+// TestPgVector_ReadChronological is the ISI-4077 diary read path against real PG: an agent's diary rows
+// come back newest-first (created_at DESC), scoped to the caller squad + that agent + kind=diary, bounded
+// by the limit, and soft-retracted rows never surface. Cross-squad, cross-agent, and non-diary rows are
+// invisible to the read — the same scope/retraction discipline as Search, on the chronological ordering.
+func TestPgVector_ReadChronological(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	squad, principal := uuid.NewString(), uuid.NewString()
+	agent := uuid.NewString()
+	otherAgent := uuid.NewString()
+
+	// Write three diary rows for `agent` with strictly increasing created_at (explicit sleeps so the
+	// server-stamped now() ordering is unambiguous), plus decoys the read must exclude.
+	writeDiary := func(who, content string, emb []float32) Record {
+		t.Helper()
+		a := who
+		rec, err := store.Write(ctx, WriteRequest{
+			SquadID: squad, PrincipalID: principal, AgentID: &a,
+			Kind: KindDiary, Content: content, Embedding: emb,
+		})
+		if err != nil {
+			t.Fatalf("write diary: %v", err)
+		}
+		return rec
+	}
+
+	writeDiary(agent, "entry one", oneHot(30))
+	time.Sleep(5 * time.Millisecond)
+	writeDiary(agent, "entry two", oneHot(31))
+	time.Sleep(5 * time.Millisecond)
+	newest := writeDiary(agent, "entry three", oneHot(32))
+
+	// Decoys: another agent's diary, and a non-diary row for the same agent.
+	writeDiary(otherAgent, "other agent diary", oneHot(33))
+	if _, err := store.Write(ctx, WriteRequest{
+		SquadID: squad, PrincipalID: principal, AgentID: &agent,
+		Kind: KindNote, Content: "a note, not a diary entry", Embedding: oneHot(34),
+	}); err != nil {
+		t.Fatalf("write note decoy: %v", err)
+	}
+
+	hits, err := store.ReadChronological(ctx, squad, agent, KindDiary, 10)
+	if err != nil {
+		t.Fatalf("ReadChronological: %v", err)
+	}
+	if len(hits) != 3 {
+		t.Fatalf("want 3 diary rows for the agent, got %d", len(hits))
+	}
+	// Newest first.
+	if hits[0].Content != "entry three" || hits[2].Content != "entry one" {
+		t.Fatalf("chronological order wrong: got %q..%q, want newest 'entry three' first", hits[0].Content, hits[2].Content)
+	}
+	for _, h := range hits {
+		if h.Kind != KindDiary {
+			t.Fatalf("non-diary row leaked: kind=%q", h.Kind)
+		}
+		if h.AgentID == nil || *h.AgentID != agent {
+			t.Fatalf("cross-agent row leaked: agent=%v", h.AgentID)
+		}
+	}
+
+	// The limit bounds the read (newest N).
+	limited, err := store.ReadChronological(ctx, squad, agent, KindDiary, 2)
+	if err != nil {
+		t.Fatalf("ReadChronological limited: %v", err)
+	}
+	if len(limited) != 2 || limited[0].Content != "entry three" {
+		t.Fatalf("limit=2 should return the 2 newest, got %d starting %q", len(limited), func() string {
+			if len(limited) > 0 {
+				return limited[0].Content
+			}
+			return ""
+		}())
+	}
+
+	// Soft-retract removes a diary row from the chronological read (AC4 discipline on this path too).
+	if ok, err := store.Invalidate(ctx, newest.ID); err != nil || !ok {
+		t.Fatalf("invalidate newest: ok=%v err=%v", ok, err)
+	}
+	afterRetract, err := store.ReadChronological(ctx, squad, agent, KindDiary, 10)
+	if err != nil {
+		t.Fatalf("ReadChronological after retract: %v", err)
+	}
+	for _, h := range afterRetract {
+		if h.ID == newest.ID {
+			t.Fatalf("soft-retracted diary row %s resurfaced", newest.ID)
+		}
+	}
+	if len(afterRetract) != 2 {
+		t.Fatalf("want 2 live diary rows after retract, got %d", len(afterRetract))
+	}
+
+	// Cross-squad isolation: another squad sees none of this agent's diary.
+	if cross, err := store.ReadChronological(ctx, uuid.NewString(), agent, KindDiary, 10); err != nil {
+		t.Fatalf("cross-squad read: %v", err)
+	} else if len(cross) != 0 {
+		t.Fatalf("cross-squad diary leak: got %d rows", len(cross))
+	}
+}
+
 // deriveUUIDForTest mirrors the bridges' deterministic text→uuid derivation so integration rows look
 // exactly like the handoffmirror package's writes.
 func deriveUUIDForTest(prefix, text string) string {
