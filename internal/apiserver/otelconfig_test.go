@@ -707,6 +707,9 @@ func (s stubApplier) Update(context.Context, client.Object, ...client.UpdateOpti
 	return s.updateErr
 }
 func (stubApplier) List(context.Context, client.ObjectList, ...client.ListOption) error { return nil }
+func (s stubApplier) Delete(context.Context, client.Object, ...client.DeleteOption) error {
+	return nil
+}
 
 func TestOtelConfigWriteErrorMapping(t *testing.T) {
 	notFound := apierrors.NewNotFound(schema.GroupResource{Group: "ksquad.io", Resource: "otelconfigs"}, "default")
