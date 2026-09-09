@@ -73,6 +73,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
       "Discussion",
       "File Explorer",
       "GitHub",
+      "Settings",
     ]);
     // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha". Landing is the bare project
     // root (the workspace default), not a /landing sub-path (ISI-3957 AC2).

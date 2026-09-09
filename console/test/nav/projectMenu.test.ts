@@ -5,8 +5,8 @@
 import { describe, it, expect } from "vitest";
 import { projectMenu, projectSubnav, projectMenuActiveId } from "@/lib/nav";
 
-describe("projectMenu — AC1 six entries in UX order", () => {
-  it("returns Landing · Issues · Runs · Discussion · File Explorer · GitHub as project-scoped nodes", () => {
+describe("projectMenu — AC1 entries in UX order", () => {
+  it("returns Landing · Issues · Runs · Discussion · File Explorer · GitHub · Settings as project-scoped nodes", () => {
     const menu = projectMenu("webapp");
     expect(menu.map((n) => n.id)).toEqual([
       "landing",
@@ -15,6 +15,7 @@ describe("projectMenu — AC1 six entries in UX order", () => {
       "discussion",
       "files",
       "github",
+      "settings",
     ]);
     expect(menu.map((n) => n.label)).toEqual([
       "Landing",
@@ -23,6 +24,7 @@ describe("projectMenu — AC1 six entries in UX order", () => {
       "Discussion",
       "File Explorer",
       "GitHub",
+      "Settings",
     ]);
     expect(menu.every((n) => n.scope === "project")).toBe(true);
   });
@@ -62,6 +64,7 @@ describe("projectMenuActiveId — AC3 active-tab derives from the pathname (URL 
     expect(projectMenuActiveId("/projects/webapp/discussion")).toBe("discussion");
     expect(projectMenuActiveId("/projects/webapp/files")).toBe("files");
     expect(projectMenuActiveId("/projects/webapp/github")).toBe("github");
+    expect(projectMenuActiveId("/projects/webapp/settings")).toBe("settings");
   });
 
   it("a deeper path still lights the section, ignoring query/hash", () => {
