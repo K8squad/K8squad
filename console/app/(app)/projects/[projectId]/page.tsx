@@ -1,19 +1,27 @@
-// app/projects/[projectId]/page.tsx — Project root redirect (story 8.13).
+// app/projects/[projectId]/page.tsx — the Landing surface, the workspace DEFAULT (ISI-3957 S1,
+// AC2). The old forced redirect to /tickets is gone: opening a project drops the operator into a
+// control room, not a bare ticket list. Landing lives at the bare project root (/projects/{id}) —
+// the shareable "the project" URL — not a /landing sub-path.
 //
-// The Project node expands to its sub-nav; Tickets is the default project surface, so the
-// project root lands there (UX screen 14 — Project → Tickets).
+// S1 ships the frame; S2 (ISI-3958, ProjectLanding) supplies the three read-only panels
+// (Runs · Stats · Latest Tickets) with their own honest loading/empty/error/not-available states.
 
-import { redirect } from "next/navigation";
-import { encodeProjectId } from "@/lib/projectId";
+import { ProjectLanding } from "@/components/projects/ProjectLanding";
+import { decodeProjectId } from "@/lib/projectId";
 
-export default async function ProjectRootPage({
+export const dynamic = "force-dynamic";
+
+export default async function ProjectLandingPage({
   params,
 }: {
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  // Next.js hands us the still-encoded "ns%2Fname" segment; re-encoding it here
-  // double-encoded the redirect target ("ns%252Fname") and 404'd downstream
-  // (ISI-3982). Normalize to exactly one layer of encoding.
-  redirect(`/projects/${encodeProjectId(projectId)}/tickets`);
+  // Decode the raw "ns%2Fname" segment once at the edge; ProjectLanding re-encodes exactly once
+  // when it builds BFF URLs (ISI-3982).
+  return (
+    <main className="ksq-project-landing-page">
+      <ProjectLanding projectId={decodeProjectId(projectId)} />
+    </main>
+  );
 }

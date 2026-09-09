@@ -1,8 +1,9 @@
 // test/nav/ProjectsNavTree.test.tsx — the Projects rail sub-tree island (ISI-4090).
 //
 // Component-boundary coverage: expandable + collapsed by default (label → /projects, chevron a
-// separate toggle); sorted project enumeration; static Build/Tickets/Runs/Discussion/GitHub
-// sections with correct hrefs on project expand; deep-link → active project auto-expanded + active
+// separate toggle); sorted project enumeration; static Landing/Issues/Runs/Discussion/File
+// Explorer/GitHub sections (ISI-3957 vocabulary, shared via lib/nav PROJECT_SECTIONS) with correct
+// hrefs on project expand; deep-link → active project auto-expanded + active
 // section highlighted; honest states (loading / empty / error + retry); a11y disclosure semantics.
 
 import { describe, it, expect, vi, afterEach } from "vitest";
@@ -54,7 +55,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     expect(names).toEqual(["alpha", "beta"]);
   });
 
-  it("expanding a project reveals the five icon'd sections with correct hrefs", async () => {
+  it("expanding a project reveals the six icon'd sections with correct hrefs", async () => {
     render(
       <ProjectsNavTree
         defaultExpanded
@@ -66,17 +67,19 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     const sections = screen.getByRole("group", { name: "alpha sections" });
     const links = within(sections).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
-      "Build",
-      "Tickets",
+      "Landing",
+      "Issues",
       "Runs",
       "Discussion",
+      "File Explorer",
       "GitHub",
-      "Files",
     ]);
-    // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha".
-    expect(links[0]).toHaveAttribute("href", "/projects/squad-a%2Falpha/build");
-    expect(links[4]).toHaveAttribute("href", "/projects/squad-a%2Falpha/github");
-    expect(links[5]).toHaveAttribute("href", "/projects/squad-a%2Falpha/files");
+    // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha". Landing is the bare project
+    // root (the workspace default), not a /landing sub-path (ISI-3957 AC2).
+    expect(links[0]).toHaveAttribute("href", "/projects/squad-a%2Falpha");
+    expect(links[1]).toHaveAttribute("href", "/projects/squad-a%2Falpha/issues");
+    expect(links[4]).toHaveAttribute("href", "/projects/squad-a%2Falpha/files");
+    expect(links[5]).toHaveAttribute("href", "/projects/squad-a%2Falpha/github");
   });
 
   it("a deep link auto-expands the active project and highlights the active section", async () => {
@@ -90,8 +93,8 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     const sections = await screen.findByRole("group", { name: "alpha sections" });
     const runs = within(sections).getByRole("link", { name: /Runs/ });
     expect(runs).toHaveAttribute("aria-current", "page");
-    const build = within(sections).getByRole("link", { name: /Build/ });
-    expect(build).not.toHaveAttribute("aria-current");
+    const issues = within(sections).getByRole("link", { name: /Issues/ });
+    expect(issues).not.toHaveAttribute("aria-current");
   });
 
   it("empty list shows a neutral leaf", async () => {

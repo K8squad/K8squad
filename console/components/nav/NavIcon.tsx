@@ -10,10 +10,12 @@ export type NavIconId =
   | "project"
   | "build"
   | "tickets"
+  | "landing"
+  | "issues"
+  | "files"
+  | "github"
   | "runs"
   | "discussion"
-  | "github"
-  | "files"
   | "settings"
   | "configuration"
   | "otel"
@@ -60,6 +62,11 @@ const P: Record<NavIconId, string> = {
   plugins: "M9 3v4M15 3v4M7 7h10v4a5 5 0 01-10 0V7zM12 16v5",
   users:
     "M9 11a3 3 0 100-6 3 3 0 000 6zm7 0a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm14 0v-1c0-1.3-.6-2.4-1.5-3.2 2.1.3 4.5 1.4 4.5 3.2v1h-3z",
+  // Project-Detail Workspace section icons (ISI-3957 S1): landing + issues (files/github reuse the
+  // ISI-4006/ISI-4092 glyphs defined above; issues reuses the tickets glyph).
+  landing: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
+  issues:
+    "M4 5h16v4a2 2 0 000 4v4H4v-4a2 2 0 000-4V5zM10 7v2m0 3v2m0 3v1",
   menu: "M4 6h16M4 12h16M4 18h16",
   // Padlock (E1-S3 nav lock): rounded shackle + body, stroke style matching the set.
   lock: "M8 11V7a4 4 0 118 0v4M5 11h14v10H5V11z",
