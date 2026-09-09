@@ -1,22 +1,17 @@
-// MessageItem — one message row: provenance badge, body, timestamp, edited
-// marker, and (recursively) its replies. Retracted messages render as a
-// tombstone rather than being silently dropped (audit-honest, Story 10.3 §2).
+// MessageItem — one message row: provenance badge, body, timestamp, and
+// (recursively) its replies. Retracted messages render as a tombstone rather
+// than being silently dropped (audit-honest, Story 10.3 §2).
 //
-// The landed 10.1 schema has no `invalidated_at` column; retraction is carried
-// forward-compatibly via `metadata.retracted` (or a future `invalidatedAt`),
-// so this renderer already honours the tombstone contract the story specifies.
+// Retraction is the server-stamped soft-delete column `invalidatedAt`
+// (`internal/discussion/store.go#Message.Retracted()` — ISI-4016); a present
+// timestamp is the tombstone signal.
 
 import type { Message } from "@/lib/discussion/types";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
 import { AuthorBadge } from "./AuthorBadge";
 
 export function isRetracted(m: Message): boolean {
-  const meta = m.metadata ?? {};
-  return (
-    meta["retracted"] === true ||
-    typeof meta["invalidatedAt"] === "string" ||
-    typeof meta["invalidated_at"] === "string"
-  );
+  return typeof m.invalidatedAt === "string" && m.invalidatedAt !== "";
 }
 
 export function MessageItem({ message }: { message: Message }) {
@@ -34,11 +29,6 @@ export function MessageItem({ message }: { message: Message }) {
         <time className="ksq-message__ts" dateTime={message.createdAt}>
           {message.createdAt}
         </time>
-        {message.editedAt ? (
-          <span className="ksq-message__edited" data-testid="edited-marker">
-            edited
-          </span>
-        ) : null}
       </div>
 
       {retracted ? (
