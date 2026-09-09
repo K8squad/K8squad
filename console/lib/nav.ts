@@ -247,6 +247,8 @@ export function projectMenu(projectId: string): NavNode[] {
  */
 export function projectMenuActiveId(pathname: string): string | null {
   const clean = pathname.split("?")[0].split("#")[0];
+  // Not a project-detail route at all → nothing in this menu is active.
+  if (!/^\/projects\/[^/]+/.test(clean)) return null;
   const m = clean.match(/^\/projects\/[^/]+(?:\/([^/]+))?\/?$/);
   // Deeper paths (e.g. /projects/{id}/issues/123) still match the section via a looser probe.
   const section =
