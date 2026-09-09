@@ -78,6 +78,7 @@ type CRDApplier interface {
 	Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error
 	Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error
 	List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error
+	Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error
 }
 
 // ComposeProvenance is the append-only provenance sink (§6.5 / 2.6): who applied
@@ -908,6 +909,107 @@ func (s *ComposeService) applyEdit(w http.ResponseWriter, r *http.Request, creat
 		}
 	}
 	s.run(w, r, create, plan)
+}
+
+// ============================================================================
+// Delete — DELETE /api/{kind}/{name} (ISI-4107, gap 2 of ISI-4106)
+// ============================================================================
+//
+// Delete removes a compose CR the user created by mistake. It reuses EVERY seam
+// the edit path uses — write-tier RBAC (authorizeWrite), team-namespace scoping
+// (a cross-tenant name is structurally a 404, existence-hiding), and a durable
+// provenance row — so allow/deny can never disagree with edit by construction.
+// Only Agent and Project are wired here: Team delete cascades the whole squad
+// namespace (agents/projects/roles/skills/running work) and is deferred pending
+// the board teardown decision (ISI-4107 open decision #1). Roles/skills are out
+// of scope for this story.
+
+// deletePlan is the delete analog of applyPlan: the RBAC scope plus a fresh zero
+// object of the target's concrete type (used for the existence Get and the
+// Delete). The {name} identity is bound from the path in deleteObj.
+type deletePlan struct {
+	kind  string
+	scope writeScope
+	obj   client.Object
+}
+
+// deleteObj is the shared delete tail: authenticate → resolve scope/RBAC →
+// resolve the caller's team namespace → existence-check inside that namespace
+// (missing or cross-tenant ⇒ 404, mirroring the edit read's existence-hiding) →
+// Delete → best-effort provenance. Returns 204 No Content on success.
+func (s *ComposeService) deleteObj(w http.ResponseWriter, r *http.Request, plan deletePlan) {
+	author, ok := discussion.AuthFromContext(r.Context())
+	if !ok || author.Principal == "" {
+		writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	name, _ := pathVar(r, "name")
+	if name == "" {
+		writeJSONError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	// A Project's membership scope IS its own name (mirror edit's scopeIsName).
+	if plan.scope.scopeIsName {
+		plan.scope.project = name
+	}
+	if status, msg := s.authorizeWrite(r.Context(), author, plan.scope); status != 0 {
+		writeJSONError(w, status, msg)
+		return
+	}
+	// Every deletable kind here is team-scoped into the caller's own namespace
+	// (Team, the only systemNS kind, is not wired). Cross-tenant names 404 below.
+	ns, err := s.teamNamespace(r.Context(), author.TeamID.String())
+	if errors.Is(err, ErrTeamNamespaceUnresolved) {
+		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
+		return
+	}
+	if err != nil {
+		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
+		return
+	}
+	// Existence check inside the caller's namespace before Delete: a missing name,
+	// or one that lives in another tenant's namespace, is a 404 either way.
+	if getErr := s.applier.Get(r.Context(), client.ObjectKey{Namespace: ns, Name: name}, plan.obj); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			writeJSONError(w, http.StatusNotFound, "no such "+plan.kind)
+			return
+		}
+		writeJSONError(w, http.StatusBadGateway, "lookup failed")
+		return
+	}
+	// ponytail: straight CR delete — the operator garbage-collects the Agent/Project's
+	// child resources on removal. Blocking the delete while Runs are still in flight
+	// (ISI-4107 open decision #3) is a deliberate follow-up, not wired here.
+	plan.obj.SetNamespace(ns)
+	plan.obj.SetName(name)
+	if delErr := s.applier.Delete(r.Context(), plan.obj); delErr != nil {
+		if apierrors.IsNotFound(delErr) {
+			writeJSONError(w, http.StatusNotFound, "no such "+plan.kind)
+			return
+		}
+		writeJSONError(w, http.StatusBadGateway, "delete failed")
+		return
+	}
+	// Durable provenance (who/what/when). Revision 0 ⇒ the object no longer exists.
+	s.recordProvenance(r.Context(), author.Principal, plan.kind, name, ns, 0, "deleted", plan.scope.project)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleProjectDelete deletes a Project CR by path name; the project's own name
+// is its write-tier membership scope (scopeIsName), mirroring the edit gate.
+func (s *ComposeService) handleProjectDelete() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.deleteObj(w, r, deletePlan{kind: "Project", scope: writeScope{scopeIsName: true}, obj: &ksquadv1.Project{}})
+	}
+}
+
+// handleAgentDelete deletes an Agent CR by path name. Agent RBAC is project-scoped
+// (same as edit); the delete carries the project scope via ?project= (edit carries
+// it in the body). Admins compose fleet-wide and need no project scope.
+func (s *ComposeService) handleAgentDelete() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.deleteObj(w, r, deletePlan{kind: "Agent", scope: writeScope{project: r.URL.Query().Get("project")}, obj: &ksquadv1.Agent{}})
+	}
 }
 
 // ============================================================================

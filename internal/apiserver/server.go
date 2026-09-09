@@ -852,16 +852,22 @@ func (s *Server) routes(opts Options) {
 }
 
 // composeKinds is the fixed set of compose CRDs and their route segment (8.5).
+//
+// del is the optional DELETE handler (ISI-4107). Only Agent and Project are
+// deletable: Team delete cascades the whole squad namespace and is deferred to
+// the board teardown decision; roles/skills are out of scope. A nil del ⇒ no
+// DELETE method is mounted for that kind (the route 405s, not 404s).
 var composeKinds = []struct {
 	segment string
 	create  func(*ComposeService) http.HandlerFunc
 	edit    func(*ComposeService) http.HandlerFunc
+	del     func(*ComposeService) http.HandlerFunc
 }{
-	{"teams", func(s *ComposeService) http.HandlerFunc { return s.handleTeam(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleTeam(false) }},
-	{"projects", func(s *ComposeService) http.HandlerFunc { return s.handleProject(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleProject(false) }},
-	{"agents", func(s *ComposeService) http.HandlerFunc { return s.handleAgent(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgent(false) }},
-	{"roles", func(s *ComposeService) http.HandlerFunc { return s.handleRole(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleRole(false) }},
-	{"skills", func(s *ComposeService) http.HandlerFunc { return s.handleSkill(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleSkill(false) }},
+	{"teams", func(s *ComposeService) http.HandlerFunc { return s.handleTeam(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleTeam(false) }, nil},
+	{"projects", func(s *ComposeService) http.HandlerFunc { return s.handleProject(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleProject(false) }, func(s *ComposeService) http.HandlerFunc { return s.handleProjectDelete() }},
+	{"agents", func(s *ComposeService) http.HandlerFunc { return s.handleAgent(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgent(false) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgentDelete() }},
+	{"roles", func(s *ComposeService) http.HandlerFunc { return s.handleRole(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleRole(false) }, nil},
+	{"skills", func(s *ComposeService) http.HandlerFunc { return s.handleSkill(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleSkill(false) }, nil},
 }
 
 // mountComposeRoutes installs POST /api/{kind} + PUT /api/{kind}/{name} for each
@@ -883,10 +889,16 @@ func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
 		if opts.ComposeCRD != nil {
 			coll.HandleFunc("", k.create(opts.ComposeCRD)).Methods(http.MethodPost)
 			item.HandleFunc("", k.edit(opts.ComposeCRD)).Methods(http.MethodPut)
+			if k.del != nil {
+				item.HandleFunc("", k.del(opts.ComposeCRD)).Methods(http.MethodDelete)
+			}
 		} else {
 			h := notImplemented("CRD-apply write surface", "ISI-3198: wire a ComposeService (controller-runtime client) to enable")
 			coll.HandleFunc("", h).Methods(http.MethodPost)
 			item.HandleFunc("", h).Methods(http.MethodPut)
+			if k.del != nil {
+				item.HandleFunc("", h).Methods(http.MethodDelete)
+			}
 		}
 	}
 

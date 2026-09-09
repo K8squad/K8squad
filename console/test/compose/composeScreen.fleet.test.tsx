@@ -108,10 +108,19 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
     expect(screen.getByText("1 skill")).toBeInTheDocument();
   });
 
-  it("clicking an agent in the list opens it in Edit mode with the name pre-filled (ISI-3985)", async () => {
+  // ISI-3985 opened the clicked object in Edit mode with only the name pre-filled;
+  // ISI-4106 makes the click ALSO hydrate the real authoring spec (a Save would
+  // otherwise PUT an empty spec and blow the object away — the ADR-0016 bug, which
+  // was only fixed for the deep-link path). Detail route is listed BEFORE the list
+  // route so the stub's startsWith match resolves /api/squad/agents/cade correctly.
+  it("clicking an agent in the list opens Edit mode AND hydrates its spec (ISI-3985/ISI-4106)", async () => {
     current = new URLSearchParams("kind=agents");
     stubRoutes({
       "/api/squad/teams": { status: 200, body: tenantTeams },
+      "/api/squad/agents/cade": {
+        status: 200,
+        body: { name: "cade", roleRef: { name: "boss" }, runtimeRef: { name: "claude-code" } },
+      },
       "/api/squad/agents": {
         status: 200,
         body: { agents: [{ name: "cade", runtime: "claude-code", skillCount: 3 }] },
@@ -125,6 +134,9 @@ describe("Compose left-pane fleet wiring (ISI-3964)", () => {
       "true",
     );
     expect((screen.getByPlaceholderText("my-resource") as HTMLInputElement).value).toBe("cade");
+    // The REAL spec landed in the form (not an empty edit form) — proves hydration.
+    await waitFor(() => expect(screen.getByDisplayValue("boss")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("claude-code")).toBeInTheDocument();
   });
 });
 
