@@ -35,8 +35,12 @@ func NewToolHTTP(read *ReadService, write *WriteService) *ToolHTTP {
 func (h *ToolHTTP) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/mcp/tools/discussion_search", h.discussionSearch)
 	mux.HandleFunc("/mcp/tools/memory_search", h.memorySearch)
+	// diary_read is a read tool (always mounted); diary_append is a write tool (mounted with the write
+	// surface). These mirror the MCP transport's diary ergonomics on the compat JSON/HTTP shim (ISI-4077).
+	mux.HandleFunc("/mcp/tools/diary_read", h.diaryRead)
 	if h.write != nil {
 		mux.HandleFunc("/mcp/tools/memory_write", h.memoryWrite)
+		mux.HandleFunc("/mcp/tools/diary_append", h.diaryAppend)
 	}
 }
 
@@ -95,6 +99,80 @@ func (h *ToolHTTP) memorySearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, searchResponse{Results: out})
+}
+
+// diaryReadRequest is the diary_read body. team is absent (X-Team-Id header, INV3); `agent` is the diary
+// owner and `last_n` bounds the chronological read.
+type diaryReadRequest struct {
+	Agent string `json:"agent"`
+	LastN int    `json:"last_n,omitempty"`
+}
+
+func (h *ToolHTTP) diaryRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	team := r.Header.Get("X-Team-Id")
+	if team == "" {
+		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+		return
+	}
+	var req diaryReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	out, err := h.read.DiaryRead(r.Context(), team, req.Agent, req.LastN)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, searchResponse{Results: out})
+}
+
+// diaryAppendRequest is the diary_append body: just the entry. Scope/authorship/kind are absent —
+// team + principal + agent + run ride the server-stamped headers, kind is fixed to diary (ISI-4077).
+type diaryAppendRequest struct {
+	Entry string `json:"entry"`
+}
+
+func (h *ToolHTTP) diaryAppend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	team := r.Header.Get("X-Team-Id")
+	if team == "" {
+		http.Error(w, "X-Team-Id required (server-authenticated caller tenant)", http.StatusUnauthorized)
+		return
+	}
+	principal := r.Header.Get("X-Principal-Id")
+	if principal == "" {
+		http.Error(w, "X-Principal-Id required (server-authenticated author)", http.StatusUnauthorized)
+		return
+	}
+	var req diaryAppendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	author := AuthorScope{
+		TeamID:    team,
+		Principal: principal,
+		AgentID:   optional(r.Header.Get("X-Agent-Id")),
+		RunID:     optional(r.Header.Get("X-Run-Id")),
+	}
+	rec, err := h.write.DiaryAppend(r.Context(), author, req.Entry)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	resp := writeToolResponse{ID: rec.ID, Kind: rec.Kind, TeamID: rec.SquadID}
+	if rec.ProjectID != nil {
+		resp.ProjectID = *rec.ProjectID
+	}
+	writeJSON(w, resp)
 }
 
 // writeToolRequest is the memory_write body. Scope/authorship are DELIBERATELY absent — team, principal,

@@ -249,6 +249,64 @@ func (s *PgVectorStore) SearchByIDs(ctx context.Context, q SearchQuery, ids []st
 	return hits, nil
 }
 
+// ReadChronological is the chronological-by-agent read path (Story 6.2 diary ergonomics, ISI-4077).
+// Unlike Search (ANN by embedding) and SearchByIDs (exact pinned ids), it returns a team+agent+kind
+// scoped slice ordered by created_at DESC — the newest `limit` first — with NO embedding involved. It
+// backs diary_read(agent, last_n): squad_id is the server-authenticated caller team, agent_id + kind
+// narrow within it (§7.3.3), and soft-retracted rows never surface (§7.4). This is the one read the
+// store did not have — Search only orders by `embedding <=>` and SearchByIDs only fetches exact ids, so
+// there was no "an agent's last N diary rows in time order" path before this. Not part of the Backend
+// seam: a recall-side store companion like SearchByIDs. The predicate is index-backed by the partial
+// (squad_id, agent_id, created_at DESC) WHERE kind='diary' index (migration 0003).
+func (s *PgVectorStore) ReadChronological(ctx context.Context, squadID, agentID, kind string, limit int) ([]SearchHit, error) {
+	if squadID == "" {
+		return nil, fmt.Errorf("read chronological: squad_id is required (tenancy root, §7.3.3)")
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("read chronological: agent_id is required (the diary owner)")
+	}
+	if kind == "" {
+		return nil, fmt.Errorf("read chronological: kind is required")
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+	// No distance column — this is a time-ordered read, not a ranked one. Scope + retraction discipline
+	// is identical to Search/SearchByIDs: squad_id is the tenancy root, invalidated_at IS NULL excludes
+	// soft-retracted rows. agent_id/kind are cast so a text arg binds cleanly against the uuid/text
+	// columns (an ill-formed agent id surfaces as a legible query error, never a silent empty read).
+	const q = `
+		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
+		       created_at, invalidated_at, provenance
+		FROM memory.memory_records
+		WHERE squad_id = $1::uuid AND agent_id = $2::uuid AND kind = $3::text
+		  AND invalidated_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT $4`
+	rows, err := s.pool.Query(ctx, q, squadID, agentID, kind, limit)
+	if err != nil {
+		return nil, fmt.Errorf("read chronological: %w", err)
+	}
+	defer rows.Close()
+	var hits []SearchHit
+	for rows.Next() {
+		var h SearchHit
+		var prov []byte
+		if err := rows.Scan(
+			&h.ID, &h.SquadID, &h.ProjectID, &h.PrincipalID, &h.RunID, &h.AgentID,
+			&h.Kind, &h.Content, &h.CreatedAt, &h.InvalidatedAt, &prov,
+		); err != nil {
+			return nil, fmt.Errorf("scan chronological hit: %w", err)
+		}
+		h.Provenance = json.RawMessage(prov)
+		hits = append(hits, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate chronological hits: %w", err)
+	}
+	return hits, nil
+}
+
 // Invalidate is the §7.4 soft-retract: it stamps invalidated_at on a live record, never DELETEs it.
 func (s *PgVectorStore) Invalidate(ctx context.Context, id string) (bool, error) {
 	tag, err := s.pool.Exec(ctx,

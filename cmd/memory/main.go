@@ -86,6 +86,11 @@ func main() {
 	readSvc := memory.NewReadService(store, embedder)
 	writeSvc := memory.NewWriteService(store, embedder)
 	tools := memory.NewToolHTTP(readSvc, writeSvc)
+	// Story 6.2 (ISI-3179): the MCP JSON-RPC transport over the SAME ReadService/WriteService. It serves
+	// the streamable-HTTP /mcp endpoint (initialize + tools/list + tools/call) that MCP-speaking agents
+	// and the operator's MCPServer probe talk, alongside the thin per-tool JSON/HTTP routes above during
+	// the compatibility window. Tenancy/authorship are the same server-authenticated headers (INV3).
+	mcpTools := memory.NewToolMCP(readSvc, writeSvc)
 
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
 	// messages into the memory index out of band; it NEVER blocks a room write or Run (AC5). If the
@@ -101,6 +106,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	tools.Mount(mux)
+	mcpTools.Mount(mux)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
