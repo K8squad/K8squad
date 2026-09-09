@@ -29,10 +29,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
@@ -613,5 +615,29 @@ func TestIssueSyncFailureSurfacesOwnReason(t *testing.T) {
 	cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionSyncReady)
 	if cond == nil || cond.Reason != reasonIssueSync {
 		t.Fatalf("SyncReady reason = %+v, want %q", cond, reasonIssueSync)
+	}
+}
+
+// Regression (ISI-4113 live diagnosis): cmd/operator used to construct the
+// reconciler WITHOUT a client, and SetupWithManager defaulted Providers and
+// APIReader but not the embedded client.Client — so the very first r.Get in
+// Reconcile paniced on EVERY Project event (observed as a panic loop on
+// k8squad-test for both Projects). SetupWithManager must default the client
+// so that constructor shape can never crash again.
+func TestSetupWithManagerDefaultsNilClient(t *testing.T) {
+	log.SetLogger(funcr.New(func(_, _ string) {}, funcr.Options{}))
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "localhost"}, ctrl.Options{
+		Scheme:  newScheme(t),
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	r := &Reconciler{Store: scm.NewInMemoryMirrorStore()} // the crash shape: no Client
+	if err := r.SetupWithManager(mgr); err != nil {
+		t.Fatalf("SetupWithManager: %v", err)
+	}
+	if r.Client == nil {
+		t.Fatal("SetupWithManager left the embedded client nil — every reconcile panics at the first r.Get")
 	}
 }

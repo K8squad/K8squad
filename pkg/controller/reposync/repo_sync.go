@@ -241,6 +241,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Store == nil {
 		return fmt.Errorf("reposync.Reconciler requires a MirrorStore (scm.NewSQLMirrorStore over the coord pool)")
 	}
+	if r.Client == nil {
+		// The composition root (cmd/operator) must hand over the manager's
+		// client, but Reconcile's very first act is r.Get — a nil embedded
+		// client panics there on EVERY reconcile (observed as a live panic
+		// loop on k8squad-test, ISI-4113 diagnosis). Default it here so the
+		// zero-Client constructor can never ship that crash again.
+		r.Client = mgr.GetClient()
+	}
 	if r.APIReader == nil {
 		// Uncached reads for Secrets: keeps the manager from starting a
 		// cluster-wide Secret informer (memory + compromise blast radius).
