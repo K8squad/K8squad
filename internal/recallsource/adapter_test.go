@@ -32,13 +32,6 @@ func (f *fakeSearcher) SearchByIDs(_ context.Context, q memory.SearchQuery, ids 
 	return f.byIDHits, nil
 }
 
-// ReadChronological satisfies the memory.searcher seam after ISI-4077 added the diary_read
-// (chronological-by-agent) path to the interface. The recallsource arms exercise only the
-// semantic Search / SearchByIDs paths, so this fake returns nothing for the chronological read.
-func (f *fakeSearcher) ReadChronological(_ context.Context, _, _, _ string, _ int) ([]memory.SearchHit, error) {
-	return nil, nil
-}
-
 var errBoom = &testErr{}
 
 type testErr struct{}
