@@ -167,9 +167,10 @@ export function classifyCredentialsStatus(status: number): Exclude<CredentialsOu
 // The v1 credential WRITE path is a bring-your-own service-account key paste (POST
 // /api/credentials, ISI-3679/ISI-3937). The (runtime, class) options mirror the credinject
 // injection table (pkg/credinject): claude-code / openclaw / hermes carry a service-account
-// key. The human-seat OAuth class is NOT paste-able — it is minted by the Connect Claude flow
-// (ISI-2899) and the apiserver answers a documented 501 for it, so it is deliberately absent
-// from the paste form (the button above stays the honest, coming-soon seam for it).
+// key. The human-seat OAuth class is NOT paste-able — it is minted by the Connect Claude flow,
+// which is blocked on a board Terms-of-Service decision (ISI-3661), and the apiserver answers a
+// documented 501 for it, so it is deliberately absent from the paste form (the button above stays
+// the honest, pending-board-approval seam for it).
 
 /** A runtime offered by the paste form (mirror of api.RuntimeType* + the credinject table). */
 export interface CreateRuntimeOption {

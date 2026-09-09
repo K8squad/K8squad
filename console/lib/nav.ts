@@ -69,6 +69,8 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
   { id: "github", label: "GitHub" },
+  // Files (ISI-3956 S4c): read-only File Explorer over the project workspace PVC.
+  { id: "files", label: "Files" },
 ];
 
 /**
@@ -208,6 +210,7 @@ const SECTION_LABEL: Record<string, string> = {
   build: "Build",
   tickets: "Tickets",
   discussion: "Discussion",
+  files: "Files",
   users: "Users & Roles",
 };
 

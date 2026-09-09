@@ -13,9 +13,9 @@ describe("<AuthorBadge> — AC2 rendering", () => {
     render(
       <AuthorBadge
         badge={deriveAuthorBadge({
-          authorType: "agent",
-          authorName: "planner-1",
-          metadata: null,
+          authorPrincipal: "planner-1",
+          authorAgentId: "agent-1",
+          authorRunId: null,
         })}
       />,
     );
@@ -29,9 +29,9 @@ describe("<AuthorBadge> — AC2 rendering", () => {
     render(
       <AuthorBadge
         badge={deriveAuthorBadge({
-          authorType: "agent",
-          authorName: "coder-2",
-          metadata: { runId: "run-123" },
+          authorPrincipal: "coder-2",
+          authorAgentId: "agent-2",
+          authorRunId: "run-123",
         })}
       />,
     );
@@ -44,9 +44,9 @@ describe("<AuthorBadge> — AC2 rendering", () => {
     render(
       <AuthorBadge
         badge={deriveAuthorBadge({
-          authorType: "" as unknown as "agent",
-          authorName: "",
-          metadata: null,
+          authorPrincipal: "",
+          authorAgentId: null,
+          authorRunId: null,
         })}
       />,
     );
@@ -59,9 +59,9 @@ describe("<AuthorBadge> — AC2 rendering", () => {
     render(
       <AuthorBadge
         badge={deriveAuthorBadge({
-          authorType: "human",
-          authorName: "u",
-          metadata: null,
+          authorPrincipal: "u",
+          authorAgentId: null,
+          authorRunId: null,
         })}
       />,
     );
