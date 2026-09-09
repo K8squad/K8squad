@@ -13,6 +13,7 @@ export type NavIconId =
   | "runs"
   | "discussion"
   | "github"
+  | "files"
   | "settings"
   | "configuration"
   | "otel"
@@ -46,6 +47,9 @@ const P: Record<NavIconId, string> = {
   // nodes converging into a lower node. Brand-neutral, symmetric, reads clearly at 16px.
   github:
     "M9 18a3 3 0 106 0 3 3 0 10-6 0M3 6a3 3 0 106 0 3 3 0 10-6 0M15 6a3 3 0 106 0 3 3 0 10-6 0M18 9v2a2 2 0 01-2 2H8a2 2 0 01-2-2V9M12 12v3",
+  // Files (ISI-4006 S4c): document/page with folded corner + text lines — the read-only
+  // File Explorer section. Distinct from the folder `project`/`projects` glyphs.
+  files: "M6 2h8l4 4v14a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zM14 2v4h4M8 13h8M8 17h5",
   settings:
     "M12 8a4 4 0 100 8 4 4 0 000-8zm8.4 4l1.6-1.2-1.6-2.7-1.9.6a7 7 0 00-1.7-1L16.4 4h-3.2l-.6 1.9a7 7 0 00-1.7 1l-1.9-.6L7.4 8.8 9 10a7 7 0 000 2l-1.6 1.2 1.6 2.7 1.9-.6a7 7 0 001.7 1l.6 1.9h3.2l.6-1.9a7 7 0 001.7-1l1.9.6 1.6-2.7L20.4 12a7 7 0 000-.1z",
   configuration:

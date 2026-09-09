@@ -71,10 +71,12 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
       "Runs",
       "Discussion",
       "GitHub",
+      "Files",
     ]);
     // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha".
     expect(links[0]).toHaveAttribute("href", "/projects/squad-a%2Falpha/build");
     expect(links[4]).toHaveAttribute("href", "/projects/squad-a%2Falpha/github");
+    expect(links[5]).toHaveAttribute("href", "/projects/squad-a%2Falpha/files");
   });
 
   it("a deep link auto-expands the active project and highlights the active section", async () => {
