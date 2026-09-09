@@ -28,9 +28,12 @@ describe("navTree() — Teams dynamic-children marker (ISI-4001, AC6)", () => {
       "runs",
       "settings",
     ]);
-    // No non-Teams node carries the dynamic marker.
+    // Teams and Projects (ISI-4090) are the two dynamic sub-trees; no other node carries a marker.
+    expect(tree.find((n) => n.id === "projects")?.dynamicChildren).toBe("projects");
     for (const n of tree) {
-      if (n.id !== "teams") expect(n.dynamicChildren).toBeUndefined();
+      if (n.id !== "teams" && n.id !== "projects") {
+        expect(n.dynamicChildren).toBeUndefined();
+      }
     }
     // Settings stays a section header with its four children intact.
     const settings = tree.find((n) => n.id === "settings") as NavNode;
