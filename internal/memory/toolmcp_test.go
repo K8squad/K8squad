@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 // rpcCall posts one JSON-RPC request to the MCP endpoint with the given headers and returns the decoded
@@ -51,8 +54,12 @@ func resultContentText(t *testing.T, result any) (string, bool) {
 }
 
 func mountMCP(read *ReadService, write *WriteService) *http.ServeMux {
+	return mountMCPWithDiscuss(read, write, nil)
+}
+
+func mountMCPWithDiscuss(read *ReadService, write *WriteService, discuss DiscussionWriter) *http.ServeMux {
 	mux := http.NewServeMux()
-	NewToolMCP(read, write).Mount(mux)
+	NewToolMCP(read, write, discuss).Mount(mux)
 	return mux
 }
 
@@ -506,5 +513,231 @@ func TestMCP_ToolsCall_UntrustedEnvelopeSurvivesTransport(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// mcpDiscussHeaders is the server-authenticated identity a §13 BFF stamps for an agent discussion_post
+// call: a uuid team, a principal, and the optional agent/run linkage.
+func mcpDiscussHeaders() map[string]string {
+	return map[string]string{
+		"X-Team-Id":      testTeamID,
+		"X-Principal-Id": "agent:amelia",
+		"X-Agent-Id":     "agent-uuid-1",
+		"X-Run-Id":       "run-uuid-1",
+	}
+}
+
+// TestMCP_ToolsList_DiscussionPostGatedOnWriter is the catalog-parity assertion for ISI-4085: a
+// deployment with a DiscussionWriter advertises discussion_post; a read-only deployment (nil discuss)
+// omits it, so a client's catalog matches exactly what tools/call will serve (AC5 parity with the HTTP
+// shim's unmount).
+func TestMCP_ToolsList_DiscussionPostGatedOnWriter(t *testing.T) {
+	toolNames := func(mux *http.ServeMux) map[string]bool {
+		resp := rpcCall(t, mux, nil, `{"jsonrpc":"2.0","id":50,"method":"tools/list"}`)
+		if resp.Error != nil {
+			t.Fatalf("tools/list error: %+v", resp.Error)
+		}
+		b, _ := json.Marshal(resp.Result)
+		var r struct {
+			Tools []mcpTool `json:"tools"`
+		}
+		_ = json.Unmarshal(b, &r)
+		names := map[string]bool{}
+		for _, tl := range r.Tools {
+			names[tl.Name] = true
+			if len(tl.InputSchema) == 0 {
+				t.Fatalf("tool %q has empty inputSchema", tl.Name)
+			}
+		}
+		return names
+	}
+
+	// With a discussion writer wired (and no memory write service), discussion_post is advertised.
+	withDiscuss := mountMCPWithDiscuss(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, &fakeDiscussionWriter{})
+	if names := toolNames(withDiscuss); !names["discussion_post"] {
+		t.Fatalf("discussion_post must be advertised when a DiscussionWriter is wired: %v", names)
+	}
+
+	// Read-only (nil discuss) omits discussion_post.
+	readOnly := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	if names := toolNames(readOnly); names["discussion_post"] {
+		t.Fatalf("discussion_post must be absent when no DiscussionWriter is wired: %v", names)
+	}
+}
+
+// TestMCP_ToolsCall_DiscussionPostOpenThenReply is the ISI-4085 open/reply edge over the REAL MCP
+// transport: opening a thread (no thread_id) calls OpenThread and returns the stamped Thread in the
+// tool-result text block; a reply with a thread_id calls PostMessage and returns the stamped Message.
+// Both carry the agent identity taken from the session headers, never the arguments.
+func TestMCP_ToolsCall_DiscussionPostOpenThenReply(t *testing.T) {
+	dw := &fakeDiscussionWriter{}
+	mux := mountMCPWithDiscuss(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, dw)
+
+	// Open a thread.
+	openBody := `{"jsonrpc":"2.0","id":51,"method":"tools/call","params":{"name":"discussion_post","arguments":{"project_id":"` + testProjectID + `","title":"Deploy plan","body":"first message"}}}`
+	resp := rpcCall(t, mux, mcpDiscussHeaders(), openBody)
+	if resp.Error != nil {
+		t.Fatalf("open tools/call protocol error: %+v", resp.Error)
+	}
+	text, isErr := resultContentText(t, resp.Result)
+	if isErr {
+		t.Fatalf("open reported a tool error unexpectedly: %q", text)
+	}
+	if !dw.openCalled || dw.postCalled {
+		t.Fatalf("open path should call OpenThread only (open=%v post=%v)", dw.openCalled, dw.postCalled)
+	}
+	if dw.openTitle != "Deploy plan" || dw.openBody != "first message" {
+		t.Fatalf("open title/body = %q/%q", dw.openTitle, dw.openBody)
+	}
+	if dw.openProject.String() != testProjectID {
+		t.Fatalf("open projectID = %s, want %s", dw.openProject, testProjectID)
+	}
+	if dw.openAuth.TeamID.String() != testTeamID || dw.openAuth.Principal != "agent:amelia" {
+		t.Fatalf("open auth tenancy/principal not from headers: %+v", dw.openAuth)
+	}
+	if dw.openAuth.AgentID == nil || *dw.openAuth.AgentID != "agent-uuid-1" {
+		t.Fatalf("open auth agent id not stamped from X-Agent-Id: %v", dw.openAuth.AgentID)
+	}
+	if dw.openAuth.RunID == nil || *dw.openAuth.RunID != "run-uuid-1" {
+		t.Fatalf("open auth run id not stamped from X-Run-Id: %v", dw.openAuth.RunID)
+	}
+	var thread discussion.Thread
+	if err := json.Unmarshal([]byte(text), &thread); err != nil {
+		t.Fatalf("open result text is not a Thread: %v (text=%q)", err, text)
+	}
+	if thread.ID.String() != testThreadID {
+		t.Fatalf("returned thread id = %s, want server-stamped %s", thread.ID, testThreadID)
+	}
+
+	// Reply into the returned thread.
+	replyBody := `{"jsonrpc":"2.0","id":52,"method":"tools/call","params":{"name":"discussion_post","arguments":{"project_id":"` + testProjectID + `","thread_id":"` + thread.ID.String() + `","body":"a reply"}}}`
+	resp2 := rpcCall(t, mux, mcpDiscussHeaders(), replyBody)
+	if resp2.Error != nil {
+		t.Fatalf("reply tools/call protocol error: %+v", resp2.Error)
+	}
+	text2, isErr2 := resultContentText(t, resp2.Result)
+	if isErr2 {
+		t.Fatalf("reply reported a tool error unexpectedly: %q", text2)
+	}
+	if !dw.postCalled {
+		t.Fatalf("reply path should call PostMessage")
+	}
+	if dw.postThread.String() != testThreadID || dw.postBody != "a reply" {
+		t.Fatalf("reply thread/body = %s/%q", dw.postThread, dw.postBody)
+	}
+	if dw.postTeam.String() != testTeamID {
+		t.Fatalf("reply teamID = %s, want %s (from header)", dw.postTeam, testTeamID)
+	}
+	var msg discussion.Message
+	if err := json.Unmarshal([]byte(text2), &msg); err != nil {
+		t.Fatalf("reply result text is not a Message: %v (text=%q)", err, text2)
+	}
+	if msg.AuthorKind() != "agent" {
+		t.Fatalf("message AuthorKind = %q, want agent (X-Agent-Id present)", msg.AuthorKind())
+	}
+}
+
+// TestMCP_ToolsCall_DiscussionPostParentThreadsThrough asserts parent_message_id is parsed and threaded
+// through to the store as the reply target, and a call with no X-Agent-Id is human-authored (agent-vs-
+// human is derived, never a flag).
+func TestMCP_ToolsCall_DiscussionPostParentThreadsThrough(t *testing.T) {
+	dw := &fakeDiscussionWriter{}
+	mux := mountMCPWithDiscuss(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, dw)
+	parent := "44444444-4444-4444-4444-444444444444"
+	body := `{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"discussion_post","arguments":{"project_id":"` + testProjectID + `","thread_id":"` + testThreadID + `","body":"nested","parent_message_id":"` + parent + `"}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "human:henrik"}, body)
+	if resp.Error != nil {
+		t.Fatalf("tools/call protocol error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); isErr {
+		t.Fatalf("reply reported a tool error unexpectedly")
+	}
+	if dw.postParentID == nil || dw.postParentID.String() != parent {
+		t.Fatalf("parentID = %v, want %s", dw.postParentID, parent)
+	}
+	if dw.postAuth.AgentID != nil {
+		t.Fatalf("AgentID should be nil for a human post, got %v", dw.postAuth.AgentID)
+	}
+}
+
+// TestMCP_ToolsCall_DiscussionPostForgedAuthorIgnored is the WINV1/WINV2 edge over MCP (ISI-4013 AC3): a
+// smuggled author_*/created_by/team_id in the arguments object has NO effect — the captured AuthorContext
+// comes only from the session headers, and the extras are silently dropped by the decoder.
+func TestMCP_ToolsCall_DiscussionPostForgedAuthorIgnored(t *testing.T) {
+	dw := &fakeDiscussionWriter{}
+	mux := mountMCPWithDiscuss(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, dw)
+	args := `{"project_id":"` + testProjectID + `","title":"t","body":"b","author_principal":"attacker","author_agent_id":"attacker-agent","author_run_id":"attacker-run","created_by":"attacker","team_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"}`
+	body := `{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{"name":"discussion_post","arguments":` + args + `}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "agent:amelia", "X-Agent-Id": "agent-uuid-1"}, body)
+	if resp.Error != nil {
+		t.Fatalf("tools/call protocol error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); isErr {
+		t.Fatalf("open reported a tool error unexpectedly")
+	}
+	if dw.openAuth.Principal != "agent:amelia" {
+		t.Fatalf("Principal = %q, want the header identity (attacker value must be dropped)", dw.openAuth.Principal)
+	}
+	if dw.openAuth.TeamID.String() != testTeamID {
+		t.Fatalf("TeamID = %s, want the header team (body team_id must be dropped)", dw.openAuth.TeamID)
+	}
+	if dw.openAuth.AgentID == nil || *dw.openAuth.AgentID != "agent-uuid-1" {
+		t.Fatalf("AgentID = %v, want header X-Agent-Id (body author_agent_id must be dropped)", dw.openAuth.AgentID)
+	}
+	if dw.openAuth.RunID != nil {
+		t.Fatalf("RunID = %v, want nil (no X-Run-Id header; body author_run_id must be dropped)", dw.openAuth.RunID)
+	}
+}
+
+// TestMCP_ToolsCall_DiscussionPostValidationAndAuth covers the argument/auth failures as MCP tool errors
+// (isError=true, never a protocol error): missing principal, malformed team/project/thread/parent uuids,
+// and a store-level scope miss (ErrThreadNotFound) all surface as tool errors the model can react to.
+func TestMCP_ToolsCall_DiscussionPostValidationAndAuth(t *testing.T) {
+	valid := `{"project_id":"` + testProjectID + `","title":"t","body":"b"}`
+	cases := []struct {
+		name    string
+		args    string
+		headers map[string]string
+		dwErr   func(*fakeDiscussionWriter)
+	}{
+		{"missing principal", valid, map[string]string{"X-Team-Id": testTeamID}, nil},
+		{"malformed team header", valid, map[string]string{"X-Team-Id": "not-a-uuid", "X-Principal-Id": "p"}, nil},
+		{"malformed project_id", `{"project_id":"nope","title":"t","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
+		{"malformed thread_id", `{"project_id":"` + testProjectID + `","thread_id":"nope","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
+		{"malformed parent_message_id", `{"project_id":"` + testProjectID + `","thread_id":"` + testThreadID + `","body":"b","parent_message_id":"nope"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
+		{"empty title on open (store err)", `{"project_id":"` + testProjectID + `","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, func(f *fakeDiscussionWriter) { f.openErr = discussion.ErrEmptyTitle }},
+		{"cross-team reply (store err)", `{"project_id":"` + testProjectID + `","thread_id":"` + testThreadID + `","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, func(f *fakeDiscussionWriter) { f.postErr = discussion.ErrThreadNotFound }},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dw := &fakeDiscussionWriter{}
+			if tc.dwErr != nil {
+				tc.dwErr(dw)
+			}
+			mux := mountMCPWithDiscuss(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil, dw)
+			body := `{"jsonrpc":"2.0","id":` + strconv.Itoa(60+i) + `,"method":"tools/call","params":{"name":"discussion_post","arguments":` + tc.args + `}}`
+			resp := rpcCall(t, mux, tc.headers, body)
+			if resp.Error != nil {
+				t.Fatalf("want a tool-error result, got protocol error: %+v", resp.Error)
+			}
+			if _, isErr := resultContentText(t, resp.Result); !isErr {
+				t.Fatalf("want isError=true for %q", tc.name)
+			}
+		})
+	}
+}
+
+// TestMCP_ToolsCall_DiscussionPostUnmountedWhenNil asserts a read-only deployment (nil discuss) reports
+// discussion_post as an unknown tool — it never silently accepts a write it cannot serve (AC5).
+func TestMCP_ToolsCall_DiscussionPostUnmountedWhenNil(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	body := `{"jsonrpc":"2.0","id":70,"method":"tools/call","params":{"name":"discussion_post","arguments":{"project_id":"` + testProjectID + `","title":"t","body":"b"}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, body)
+	if resp.Error != nil {
+		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)
+	}
+	text, isErr := resultContentText(t, resp.Result)
+	if !isErr || !strings.Contains(text, "unknown tool") {
+		t.Fatalf("want unknown-tool isError, got isErr=%v text=%q", isErr, text)
 	}
 }

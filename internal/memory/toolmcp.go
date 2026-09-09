@@ -5,6 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/google/uuid"
+
+	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 // ToolMCP is the MCP JSON-RPC 2.0 transport for the memory tool surface (Story 6.2 / ISI-3179). It is
@@ -21,15 +25,19 @@ import (
 // read from a tool's JSON-RPC params: a caller cannot widen past its tenant or forge authorship through
 // the arguments object. project_id / query / top_k / kind / content / provenance are the only tool args.
 type ToolMCP struct {
-	read  *ReadService
-	write *WriteService
+	read    *ReadService
+	write   *WriteService
+	discuss DiscussionWriter
 }
 
-// NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService. A nil write
-// service leaves memory_write out of the registry — a read-only deployment advertises and serves only
-// the two search tools, exactly as NewToolHTTP leaves memory_write unmounted.
-func NewToolMCP(read *ReadService, write *WriteService) *ToolMCP {
-	return &ToolMCP{read: read, write: write}
+// NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
+// DiscussionWriter. A nil write service leaves memory_write / diary_append out of the registry; a nil
+// discuss writer leaves discussion_post out — a read-only deployment advertises and serves only the read
+// tools, exactly as NewToolHTTP leaves the write tools unmounted. The discuss seam is the SAME
+// *discussion.Store the thin HTTP shim (toolhttp.go) and the REST handler use, so provenance-stamping
+// and Team-scope enforcement (the fence) live in the store, not this transport (ISI-4085, ISI-4013 AC3).
+func NewToolMCP(read *ReadService, write *WriteService, discuss DiscussionWriter) *ToolMCP {
+	return &ToolMCP{read: read, write: write, discuss: discuss}
 }
 
 // MCPEndpoint is the single streamable-HTTP path the JSON-RPC transport is served on. It sits alongside
@@ -196,12 +204,16 @@ type mcpTool struct {
 }
 
 // toolsList advertises the memory tools. The read tools (memory_search, discussion_search, diary_read)
-// are always present; the write tools (memory_write, diary_append) are omitted when no WriteService is
-// wired (a read-only deployment), so a client's catalog matches exactly what tools/call will serve.
+// are always present; the memory write tools (memory_write, diary_append) are omitted when no
+// WriteService is wired, and discussion_post is omitted when no DiscussionWriter is wired (a read-only
+// deployment), so a client's catalog matches exactly what tools/call will serve.
 func (m *ToolMCP) toolsList() any {
 	tools := []mcpTool{memorySearchTool, discussionSearchTool, diaryReadTool}
 	if m.write != nil {
 		tools = append(tools, memoryWriteTool, diaryAppendTool)
+	}
+	if m.discuss != nil {
+		tools = append(tools, discussionPostTool)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -238,6 +250,15 @@ var (
 		Name:        "diary_append",
 		Description: "Append one entry to the calling agent's own diary — a chronological first-person work-log record in the caller team. Author and tenancy are server-authenticated (never arguments); kind is fixed to diary. Returns the server-assigned record id.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"entry":{"type":"string","description":"the diary entry body; embedded and stored"}},"required":["entry"]}`),
+	}
+	// discussionPostTool is the authored write peer of discussion_search: it opens a thread or replies
+	// into one in a project's discussion room. Authorship + tenancy are server-authenticated (team from
+	// X-Team-Id, principal/agent/run from their headers) and NEVER arguments (WINV1/WINV2); thread_id
+	// presence switches open-vs-reply. Advertised only when a DiscussionWriter is wired.
+	discussionPostTool = mcpTool{
+		Name:        "discussion_post",
+		Description: "Post to a project's discussion room, scoped to the caller team. Omit thread_id to open a new thread (title required); pass thread_id to reply into it (optionally parent_message_id to nest). Author and tenancy are server-authenticated (never arguments). Returns the server-stamped thread (on open) or message (on reply) so you can cite what you wrote.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"project_id":{"type":"string","description":"the discussion room's project id (uuid); narrows within the caller team"},"thread_id":{"type":"string","description":"omit to open a new thread; present (uuid) to reply into that thread"},"title":{"type":"string","description":"thread title, required when opening a new thread (thread_id omitted)"},"body":{"type":"string","description":"the thread's first message (on open) or the reply body"},"parent_message_id":{"type":"string","description":"optional reply target (uuid) within the thread; ignored when opening"}},"required":["project_id","body"]}`),
 	}
 )
 
@@ -304,6 +325,11 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // a write — unmounted read-only
 		}
 		return m.callDiaryAppend(ctx, sess, p.Arguments)
+	case discussionPostTool.Name:
+		if m.discuss == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // a write — unmounted read-only
+		}
+		return m.callDiscussionPost(ctx, sess, p.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 	}
@@ -438,6 +464,82 @@ func (m *ToolMCP) callMemoryWrite(ctx context.Context, sess mcpSession, raw json
 		resp.ProjectID = *rec.ProjectID
 	}
 	return toolResult(resp)
+}
+
+// discussionPostArgs is the discussion_post argument shape. Like writeArgs, authorship/tenancy are
+// DELIBERATELY absent — team (X-Team-Id), principal, agent, and run ride the session headers, never the
+// arguments (WINV1/WINV2, ISI-4013 AC3). Only the scope (project_id/thread_id/parent_message_id) and the
+// content (title/body) are args, so a forged author_*/created_by/team_id has no path to the stored row.
+type discussionPostArgs struct {
+	ProjectID       string `json:"project_id"`                  // required: the room to post into (uuid)
+	ThreadID        string `json:"thread_id,omitempty"`         // omitted ⇒ open a new thread; present ⇒ reply
+	Title           string `json:"title,omitempty"`             // required iff thread_id omitted
+	Body            string `json:"body"`                        // thread first-message body, or the reply body
+	ParentMessageID string `json:"parent_message_id,omitempty"` // reply target within the thread (ignored when opening)
+}
+
+// callDiscussionPost is the MCP edge of the discussion_post tool: the authored write peer of
+// discussion_search. It builds a discussion.AuthorContext from the SAME server-stamped headers
+// callMemoryWrite reads and calls the SAME fenced Store methods the REST handler and HTTP shim call
+// (OpenThread / PostMessage) — the store, not this transport, is where provenance-stamping and
+// Team-scope enforcement live, so the arguments can neither widen tenancy nor forge authorship (WINV1/
+// WINV2, ISI-4013 AC3). thread_id-presence switches open-vs-reply. Returns the server-stamped
+// Thread/Message so the agent can cite what it just wrote (AC6). Malformed uuids and store errors are
+// MCP tool errors (isError=true), the MCP analogue of the HTTP shim's 400/404 mapping.
+func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	if sess.principal == "" {
+		return toolError("X-Principal-Id required (server-authenticated author)")
+	}
+	teamID, err := uuid.Parse(sess.team)
+	if err != nil {
+		return toolError("malformed X-Team-Id (want uuid)")
+	}
+	var a discussionPostArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	projectID, err := uuid.Parse(a.ProjectID)
+	if err != nil {
+		return toolError("malformed project_id (want uuid)")
+	}
+	// Provenance is stamped from `auth` alone — the header identity — mirroring handler AC3. IsAdmin
+	// stays false: posting needs no admin and retract is out of scope for the tool.
+	auth := discussion.AuthorContext{
+		Principal: sess.principal,
+		TeamID:    teamID,
+		AgentID:   sess.agentID,
+		RunID:     sess.runID,
+	}
+	// thread_id omitted ⇒ open a new thread (title required); present ⇒ reply to it. Every store error
+	// (tenancy/scope miss → ErrThreadNotFound, empty body/title) surfaces as an MCP tool error
+	// (isError=true) — the MCP convention for a domain failure the model should see, the analogue of the
+	// HTTP shim's writeDiscussionErr status mapping — never a JSON-RPC protocol error.
+	if a.ThreadID == "" {
+		thread, err := m.discuss.OpenThread(ctx, projectID, auth, a.Title, a.Body)
+		if err != nil {
+			return toolError(err.Error())
+		}
+		return toolResult(thread)
+	}
+	threadID, err := uuid.Parse(a.ThreadID)
+	if err != nil {
+		return toolError("malformed thread_id (want uuid)")
+	}
+	var parentID *uuid.UUID
+	if a.ParentMessageID != "" {
+		pid, err := uuid.Parse(a.ParentMessageID)
+		if err != nil {
+			return toolError("malformed parent_message_id (want uuid)")
+		}
+		parentID = &pid
+	}
+	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID)
+	if err != nil {
+		return toolError(err.Error())
+	}
+	return toolResult(msg)
 }
 
 // writeRPC serializes a JSON-RPC response envelope. A serialization failure degrades to a 500 — there is

@@ -96,11 +96,13 @@ func main() {
 		discuss = discussion.NewStore(db)
 	}
 	tools := memory.NewToolHTTP(readSvc, writeSvc, discuss)
-	// Story 6.2 (ISI-3179): the MCP JSON-RPC transport over the SAME ReadService/WriteService. It serves
-	// the streamable-HTTP /mcp endpoint (initialize + tools/list + tools/call) that MCP-speaking agents
-	// and the operator's MCPServer probe talk, alongside the thin per-tool JSON/HTTP routes above during
-	// the compatibility window. Tenancy/authorship are the same server-authenticated headers (INV3).
-	mcpTools := memory.NewToolMCP(readSvc, writeSvc)
+	// Story 6.2 (ISI-3179): the MCP JSON-RPC transport over the SAME ReadService/WriteService/discuss
+	// seam. It serves the streamable-HTTP /mcp endpoint (initialize + tools/list + tools/call) that
+	// MCP-speaking agents and the operator's MCPServer probe talk, alongside the thin per-tool JSON/HTTP
+	// routes above during the compatibility window. Tenancy/authorship are the same server-authenticated
+	// headers (INV3). discussion_post rides the same fenced discuss writer as the HTTP shim, so it is
+	// advertised and served only when the discussion DB opened (nil ⇒ unmounted, AC5) (ISI-4085).
+	mcpTools := memory.NewToolMCP(readSvc, writeSvc, discuss)
 
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
 	// messages into the memory index out of band; it NEVER blocks a room write or Run (AC5). If the
