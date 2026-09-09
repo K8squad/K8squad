@@ -274,7 +274,6 @@ const SECTION_LABEL: Record<string, string> = {
   build: "Build",
   tickets: "Tickets",
   discussion: "Discussion",
-  files: "Files",
   users: "Users & Roles",
   // Project-Detail Workspace sections (ISI-3957 S1).
   landing: "Landing",
