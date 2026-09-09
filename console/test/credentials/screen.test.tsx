@@ -120,8 +120,9 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
   });
 
   it("Connect Claude ships disabled — no live click can reach the documented 501 (PM directive, ISI-3983)", async () => {
-    // The connect BFF answers 501 (ISI-2899, board ToS decision). Per John's directive the button
-    // MUST NOT be a live affordance that hits it: it renders disabled with a coming-soon label.
+    // The connect BFF answers 501 because zero-touch OAuth is blocked on a board Terms-of-Service
+    // decision (ISI-3661), NOT the done backend ticket ISI-2899. Per John's directive the button
+    // MUST NOT be a live affordance that hits it: it renders disabled, citing the board gate.
     render(
       <CredentialsScreen load={async () => jsonResponse(200, overview([]))} now={clock} />,
     );
@@ -129,7 +130,7 @@ describe("<CredentialsScreen> — 8.6 ACs", () => {
     const btn = screen.getByTestId("connect-claude") as HTMLButtonElement;
     expect(btn.disabled).toBe(true);
     expect(btn.getAttribute("aria-disabled")).toBe("true");
-    expect(btn.textContent).toMatch(/coming soon/i);
+    expect(btn.textContent).toMatch(/pending board approval/i);
     // No 501-fallback message element exists anymore — there is no live click to produce one.
     expect(screen.queryByTestId("connect-msg")).toBeNull();
     // The live v1 path is the paste form, always on the page.
@@ -241,10 +242,12 @@ describe("<CredentialsScreen> — BYO create form (ISI-3983)", () => {
     await waitFor(() => screen.getByTestId("creds-create-form"));
     // The paste form anchors #creds-add so the paused-banner "Re-paste key" recovery link targets it.
     expect(screen.getByTestId("creds-create-form").getAttribute("id")).toBe("creds-add");
-    // The header hint names the v1 path and the coming-soon tracking, no false present-tense claim.
+    // The header hint names the v1 path and cites the board ToS gate, no false present-tense claim
+    // and no misleading citation of the done backend ticket ISI-2899.
     const hint = screen.getByText(/requires OAuth/);
-    expect(hint.textContent).toMatch(/coming soon/i);
-    expect(hint.textContent).toContain("ISI-2899");
+    expect(hint.textContent).toMatch(/pending a board Terms-of-Service decision/i);
+    expect(hint.textContent).toContain("ISI-3661");
+    expect(hint.textContent).not.toContain("ISI-2899");
     expect(hint.textContent).toContain("Add a credential");
     // No nonexistent CLI (ISI-3945 guard preserved).
     expect(hint.textContent).not.toContain("auth login");

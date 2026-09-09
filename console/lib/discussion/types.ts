@@ -6,10 +6,6 @@
 // (Story 10.3 §"Out of scope"): it never invents provenance and never writes
 // author fields — provenance is server-stamped (§7.3.1 / AC3).
 
-export type AuthorType = "agent" | "human" | "system";
-
-export type MessageKind = "message" | "announcement" | "decision" | "question";
-
 /**
  * A discussion thread within a Project's room (`discussion.thread`). Field names
  * match the Go JSON tags (`internal/discussion/store.go`). `messages` is
@@ -28,25 +24,31 @@ export interface Thread {
 }
 
 /**
- * A single threaded message entry (`discussion.message`). `replies` is a derived
- * (client- or server-nested) field, not a stored column.
+ * A single threaded message entry (`discussion.message`). Field names match the
+ * REAL Go JSON tags on `internal/discussion/store.go#Message` (ISI-4016 — the
+ * J-A follow-up that aligns the response body, not just the URL vocabulary).
  *
- * Provenance is carried by `authorType` + `authorName` (+ `authorId`), and Run
- * origin — when a message was authored from within a Run — is carried in
- * `metadata.runId`. See `provenance.ts`.
+ * Provenance is SERVER-STAMPED and carried by three columns, mirroring the
+ * backend's `Message.AuthorKind()` derivation ("agent ⇔ author_agent_id
+ * present"):
+ *   - `authorPrincipal` — the display identity (badge label);
+ *   - `authorAgentId`   — present ⇒ the author is an agent (else a human);
+ *   - `authorRunId`     — present ⇒ authored from within a Run (Run deep-link).
+ * Retraction is a soft tombstone carried by `invalidatedAt`. There is no
+ * `authorType`, `authorName`, `kind`, `editedAt`, or `metadata` on the wire —
+ * those were the stale ISI-2147 shape. See `provenance.ts`.
  */
 export interface Message {
   id: string;
   threadId: string;
   parentId?: string | null;
-  authorId: string;
-  authorType: AuthorType;
-  authorName: string;
+  authorPrincipal: string;
+  authorAgentId?: string | null;
+  authorRunId?: string | null;
   body: string;
-  kind: MessageKind;
-  metadata?: Record<string, unknown> | null;
   createdAt: string;
-  editedAt?: string | null;
+  /** Soft-retraction tombstone timestamp; present ⇒ the message was retracted. */
+  invalidatedAt?: string | null;
   /** Derived: children nested by `parentId` (adjacency). */
   replies?: Message[];
 }
