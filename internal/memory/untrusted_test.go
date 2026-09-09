@@ -11,11 +11,24 @@ import (
 type fakeSearcher struct {
 	got  SearchQuery
 	hits []SearchHit
+
+	// chrono records the diary_read call the ReadService made and returns canned chronological hits,
+	// letting the diary_read tests assert the read PLAN (team/agent/kind scope) without a live pgvector.
+	chronoSquad string
+	chronoAgent string
+	chronoKind  string
+	chronoLimit int
+	chronoHits  []SearchHit
 }
 
 func (f *fakeSearcher) Search(_ context.Context, q SearchQuery) ([]SearchHit, error) {
 	f.got = q
 	return f.hits, nil
+}
+
+func (f *fakeSearcher) ReadChronological(_ context.Context, squadID, agentID, kind string, limit int) ([]SearchHit, error) {
+	f.chronoSquad, f.chronoAgent, f.chronoKind, f.chronoLimit = squadID, agentID, kind, limit
+	return f.chronoHits, nil
 }
 
 func str(s string) *string { return &s }
@@ -181,5 +194,73 @@ func TestReadService_RequiresCallerTenant(t *testing.T) {
 	}
 	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "", "q", 10); err == nil {
 		t.Fatal("expected an error when the project id is empty")
+	}
+}
+
+// diaryHit builds a native diary SearchHit (kind=diary) authored by an agent — the shape diary_append
+// writes and ReadChronological returns. `written` is the record's created_at (chronological key).
+func diaryHit(team, principal, agent, run, body string, written time.Time) SearchHit {
+	var h SearchHit
+	h.ID = "diary-" + agent
+	h.SquadID = team
+	h.PrincipalID = principal
+	h.AgentID = &agent
+	h.RunID = &run
+	h.Kind = KindDiary
+	h.Content = body
+	h.CreatedAt = written
+	return h
+}
+
+// TestDiaryRead_ScopePlanAndEnvelope is the diary_read contract (ISI-4077): the chronological read is
+// scoped to the caller team + requested agent + fixed kind=diary, and each row projects through the SAME
+// untrusted envelope (trust=untrusted, attributed, chronological written_at from created_at).
+func TestDiaryRead_ScopePlanAndEnvelope(t *testing.T) {
+	t2 := time.Date(2026, 9, 9, 10, 0, 0, 0, time.UTC)
+	t1 := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	fake := &fakeSearcher{chronoHits: []SearchHit{
+		// The store returns newest-first; the envelope must preserve that order and the authored time.
+		diaryHit("team-1", "agent:coder", "agent-42", "run-9", "opened PR #275", t2),
+		diaryHit("team-1", "agent:coder", "agent-42", "run-8", "rendered metallb pool", t1),
+	}}
+	svc := NewReadService(fake, NewHashingEmbedder())
+
+	out, err := svc.DiaryRead(context.Background(), "team-1", "agent-42", 5)
+	if err != nil {
+		t.Fatalf("DiaryRead: %v", err)
+	}
+	// The read PLAN: team from the caller, agent + fixed diary kind narrow, last_n threads as the limit.
+	if fake.chronoSquad != "team-1" || fake.chronoAgent != "agent-42" || fake.chronoKind != KindDiary || fake.chronoLimit != 5 {
+		t.Fatalf("chrono plan = (%q,%q,%q,%d), want (team-1,agent-42,diary,5)",
+			fake.chronoSquad, fake.chronoAgent, fake.chronoKind, fake.chronoLimit)
+	}
+	if len(out) != 2 {
+		t.Fatalf("want 2 envelopes, got %d", len(out))
+	}
+	if !out[0].WrittenAt.Equal(t2) || !out[1].WrittenAt.Equal(t1) {
+		t.Fatalf("chronological order not preserved: %v then %v (want newest %v first)", out[0].WrittenAt, out[1].WrittenAt, t2)
+	}
+	for i, env := range out {
+		if env.Trust != TrustUntrusted {
+			t.Fatalf("hit %d: trust = %q, want untrusted (a diary read is knowledge to weigh, not authority)", i, env.Trust)
+		}
+		if env.Author.Principal != "agent:coder" || !env.Author.IsAgent {
+			t.Fatalf("hit %d: author = %+v, want the stamped agent author", i, env.Author)
+		}
+		if env.Scope.TeamID != "team-1" {
+			t.Fatalf("hit %d: scope.team = %q, want team-1", i, env.Scope.TeamID)
+		}
+	}
+}
+
+// TestDiaryRead_RequiresTeamAndAgent asserts the two required scopes: an unscoped team or a missing agent
+// is refused (no accidental global or all-agents diary read).
+func TestDiaryRead_RequiresTeamAndAgent(t *testing.T) {
+	svc := NewReadService(&fakeSearcher{}, NewHashingEmbedder())
+	if _, err := svc.DiaryRead(context.Background(), "", "agent-42", 5); err == nil {
+		t.Fatal("expected an error when the caller team scope is empty")
+	}
+	if _, err := svc.DiaryRead(context.Background(), "team-1", "", 5); err == nil {
+		t.Fatal("expected an error when the agent is empty")
 	}
 }

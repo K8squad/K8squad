@@ -109,8 +109,9 @@ func TestMCP_ToolsList_ReadOnlyOmitsWrite(t *testing.T) {
 	}
 }
 
-// TestMCP_ToolsList_WithWriteAdvertisesAllThree asserts a full deployment advertises all three tools.
-func TestMCP_ToolsList_WithWriteAdvertisesAllThree(t *testing.T) {
+// TestMCP_ToolsList_WithWriteAdvertisesFullSurface asserts a full deployment advertises the whole MVP
+// tool surface: the three read/write tools plus the diary ergonomics (diary_read + diary_append).
+func TestMCP_ToolsList_WithWriteAdvertisesFullSurface(t *testing.T) {
 	mux := mountMCP(
 		NewReadService(&fakeSearcher{}, NewHashingEmbedder()),
 		NewWriteService(&fakeWriter{}, NewHashingEmbedder()),
@@ -121,8 +122,42 @@ func TestMCP_ToolsList_WithWriteAdvertisesAllThree(t *testing.T) {
 		Tools []mcpTool `json:"tools"`
 	}
 	_ = json.Unmarshal(b, &r)
-	if len(r.Tools) != 3 {
-		t.Fatalf("want 3 tools, got %d", len(r.Tools))
+	names := map[string]bool{}
+	for _, tl := range r.Tools {
+		names[tl.Name] = true
+		if len(tl.InputSchema) == 0 {
+			t.Fatalf("tool %q has empty inputSchema", tl.Name)
+		}
+	}
+	for _, want := range []string{"memory_search", "discussion_search", "diary_read", "memory_write", "diary_append"} {
+		if !names[want] {
+			t.Fatalf("tool %q missing from full catalog: %v", want, names)
+		}
+	}
+	if len(r.Tools) != 5 {
+		t.Fatalf("want 5 tools, got %d (%v)", len(r.Tools), names)
+	}
+}
+
+// TestMCP_ToolsList_ReadOnlyAdvertisesDiaryRead asserts a read-only deployment (nil write service) still
+// advertises diary_read (a read) but NOT diary_append (a write) — the catalog matches what it will serve.
+func TestMCP_ToolsList_ReadOnlyAdvertisesDiaryRead(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	resp := rpcCall(t, mux, nil, `{"jsonrpc":"2.0","id":31,"method":"tools/list"}`)
+	b, _ := json.Marshal(resp.Result)
+	var r struct {
+		Tools []mcpTool `json:"tools"`
+	}
+	_ = json.Unmarshal(b, &r)
+	names := map[string]bool{}
+	for _, tl := range r.Tools {
+		names[tl.Name] = true
+	}
+	if !names["diary_read"] {
+		t.Fatalf("diary_read (a read tool) must be advertised read-only: %v", names)
+	}
+	if names["diary_append"] {
+		t.Fatalf("diary_append (a write tool) must be absent when no write service is wired: %v", names)
 	}
 }
 
@@ -225,6 +260,127 @@ func TestMCP_ToolsCall_WriteRequiresPrincipal(t *testing.T) {
 func TestMCP_ToolsCall_WriteUnmountedWhenNil(t *testing.T) {
 	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
 	body := `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"memory_write","arguments":{"content":"x"}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": "team-1", "X-Principal-Id": "p"}, body)
+	if resp.Error != nil {
+		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)
+	}
+	text, isErr := resultContentText(t, resp.Result)
+	if !isErr || !strings.Contains(text, "unknown tool") {
+		t.Fatalf("want unknown-tool isError, got isErr=%v text=%q", isErr, text)
+	}
+}
+
+// TestMCP_ToolsCall_DiaryReadScopesTeamAgentKind is the diary_read read-plan assertion: the caller team
+// comes from X-Team-Id (never args, INV3), the requested agent + fixed kind=diary narrow the
+// chronological read, and last_n threads through as the limit.
+func TestMCP_ToolsCall_DiaryReadScopesTeamAgentKind(t *testing.T) {
+	fake := &fakeSearcher{}
+	mux := mountMCP(NewReadService(fake, NewHashingEmbedder()), nil)
+	// A body that tries to smuggle a different team must be ignored; the header team wins.
+	body := `{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"diary_read","arguments":{"agent":"agent-42","last_n":3,"team_id":"attacker"}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": "team-1"}, body)
+	if resp.Error != nil {
+		t.Fatalf("tools/call error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); isErr {
+		t.Fatalf("diary_read reported tool error unexpectedly")
+	}
+	if fake.chronoSquad != "team-1" {
+		t.Fatalf("chrono squad = %q, want team-1 (from header, never args)", fake.chronoSquad)
+	}
+	if fake.chronoAgent != "agent-42" {
+		t.Fatalf("chrono agent = %q, want agent-42", fake.chronoAgent)
+	}
+	if fake.chronoKind != KindDiary {
+		t.Fatalf("chrono kind = %q, want diary", fake.chronoKind)
+	}
+	if fake.chronoLimit != 3 {
+		t.Fatalf("chrono limit = %d, want 3 (from last_n)", fake.chronoLimit)
+	}
+}
+
+// TestMCP_ToolsCall_DiaryReadMissingTeamIsToolError asserts diary_read without X-Team-Id is a tool error.
+func TestMCP_ToolsCall_DiaryReadMissingTeamIsToolError(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	body := `{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"diary_read","arguments":{"agent":"a"}}}`
+	resp := rpcCall(t, mux, nil, body)
+	if resp.Error != nil {
+		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); !isErr {
+		t.Fatalf("want isError=true for missing team header")
+	}
+}
+
+// TestMCP_ToolsCall_DiaryReadRequiresAgent asserts diary_read without an `agent` arg is a tool error
+// (the diary owner is required — there is no "read everyone's diary" widening).
+func TestMCP_ToolsCall_DiaryReadRequiresAgent(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	body := `{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"diary_read","arguments":{"last_n":5}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": "team-1"}, body)
+	if resp.Error != nil {
+		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); !isErr {
+		t.Fatalf("want isError=true when agent is missing")
+	}
+}
+
+// TestMCP_ToolsCall_DiaryAppendStampsAuthorFixedKind is the diary_append edge: it stamps tenancy +
+// authorship from the session headers (never args) and FIXES kind=diary. A body smuggling kind/project_id
+// is inert — diary_append takes only `entry`.
+func TestMCP_ToolsCall_DiaryAppendStampsAuthorFixedKind(t *testing.T) {
+	fw := &fakeWriter{}
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(fw, NewHashingEmbedder()))
+	// entry is the only honored arg; kind/project_id here must NOT reach the write path.
+	args := `{"entry":"rendered metallb pool, opened PR","kind":"fact","project_id":"proj-A"}`
+	body := `{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"diary_append","arguments":` + args + `}}`
+	headers := map[string]string{
+		"X-Team-Id":      "team-1",
+		"X-Principal-Id": "agent:coder",
+		"X-Agent-Id":     "agent-uuid",
+		"X-Run-Id":       "run-uuid",
+	}
+	resp := rpcCall(t, mux, headers, body)
+	if resp.Error != nil {
+		t.Fatalf("tools/call error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); isErr {
+		t.Fatalf("diary_append reported tool error unexpectedly")
+	}
+	if fw.got.SquadID != "team-1" {
+		t.Fatalf("SquadID = %q, want team-1 (from header)", fw.got.SquadID)
+	}
+	if fw.got.PrincipalID != "agent:coder" {
+		t.Fatalf("PrincipalID = %q, want agent:coder (from header)", fw.got.PrincipalID)
+	}
+	if fw.got.Kind != KindDiary {
+		t.Fatalf("Kind = %q, want diary (fixed, ignoring the smuggled kind=fact)", fw.got.Kind)
+	}
+	if fw.got.ProjectID != nil {
+		t.Fatalf("ProjectID = %v, want nil (diary_append takes no project_id)", fw.got.ProjectID)
+	}
+}
+
+// TestMCP_ToolsCall_DiaryAppendRequiresPrincipal asserts diary_append missing X-Principal-Id is a tool
+// error even with a team header (an unauthenticated author cannot append).
+func TestMCP_ToolsCall_DiaryAppendRequiresPrincipal(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), NewWriteService(&fakeWriter{}, NewHashingEmbedder()))
+	body := `{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"diary_append","arguments":{"entry":"x"}}}`
+	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": "team-1"}, body)
+	if resp.Error != nil {
+		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)
+	}
+	if _, isErr := resultContentText(t, resp.Result); !isErr {
+		t.Fatalf("want isError=true without X-Principal-Id")
+	}
+}
+
+// TestMCP_ToolsCall_DiaryAppendUnmountedWhenNil asserts a read-only deployment reports diary_append as an
+// unknown tool (never silently accepts a write it cannot serve).
+func TestMCP_ToolsCall_DiaryAppendUnmountedWhenNil(t *testing.T) {
+	mux := mountMCP(NewReadService(&fakeSearcher{}, NewHashingEmbedder()), nil)
+	body := `{"jsonrpc":"2.0","id":45,"method":"tools/call","params":{"name":"diary_append","arguments":{"entry":"x"}}}`
 	resp := rpcCall(t, mux, map[string]string{"X-Team-Id": "team-1", "X-Principal-Id": "p"}, body)
 	if resp.Error != nil {
 		t.Fatalf("expected tool error result, got protocol error: %+v", resp.Error)

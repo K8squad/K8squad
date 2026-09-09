@@ -200,9 +200,14 @@ func buildEnvelope(h SearchHit) Envelope {
 // ReadService — the two untrusted read surfaces (both ride ONE index-backed path)
 // ============================================================================
 
-// searcher is the slice of Backend the read tools need (kept narrow so tests can fake it).
+// searcher is the slice of Backend the read tools need (kept narrow so tests can fake it). It carries
+// both read shapes the ReadService serves: the ANN Search (memory_search/discussion_search) and the
+// chronological ReadChronological (diary_read) — the same tenancy/retraction discipline, two orderings.
 type searcher interface {
 	Search(ctx context.Context, q SearchQuery) ([]SearchHit, error)
+	// ReadChronological backs diary_read(agent, last_n): a team+agent+kind scoped, created_at DESC read
+	// with no embedding. It is the time-ordered companion to Search (ISI-4077).
+	ReadChronological(ctx context.Context, squadID, agentID, kind string, limit int) ([]SearchHit, error)
 }
 
 // ReadService serves the untrusted read tools. It embeds the caller's text query and runs a scoped ANN
@@ -243,6 +248,32 @@ func (s *ReadService) DiscussionSearch(ctx context.Context, callerTeamID, projec
 		Kind:      &kind,
 		Limit:     topK,
 	}, queryText)
+}
+
+// DiaryRead is the `diary_read(agent, last_n)` tool (Story 6.2 diary ergonomics, ISI-4077): the caller
+// team's chronological view of ONE agent's diary — the newest `lastN` entries, created_at DESC, each
+// projected through the SAME untrusted-provenance envelope (§7.3.2 / INV1) as every other read. team is
+// server-authenticated (never an arg, INV3); `agentID` is the requested diary owner (the author_agent_id
+// diary_append stamped). §6.5 forbids WRITING another principal's diary; a READ stays within the caller
+// team and surfaces nothing memory_search does not already expose for kind=diary rows (they share the one
+// vector space + trust envelope), so any team member may read a teammate's diary at the untrusted-
+// knowledge tier — knowledge to weigh, never authority to act on.
+func (s *ReadService) DiaryRead(ctx context.Context, callerTeamID, agentID string, lastN int) ([]Envelope, error) {
+	if callerTeamID == "" {
+		return nil, fmt.Errorf("diary_read: caller team scope is required (server-authenticated, §7.3.3)")
+	}
+	if agentID == "" {
+		return nil, fmt.Errorf("diary_read: agent is required (the diary owner)")
+	}
+	hits, err := s.backend.ReadChronological(ctx, callerTeamID, agentID, KindDiary, lastN)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Envelope, 0, len(hits))
+	for _, h := range hits {
+		out = append(out, buildEnvelope(h))
+	}
+	return out, nil
 }
 
 // readHits is the SOLE search path: embed the query, run the scoped ANN search on pgvector, return the
