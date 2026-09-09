@@ -86,10 +86,9 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "issues", label: "Issues" },
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
+  // Files (ISI-3956 S4c / ISI-3991): read-only File Explorer over the project workspace PVC.
   { id: "files", label: "File Explorer" },
   { id: "github", label: "GitHub" },
-  // Files (ISI-3956 S4c): read-only File Explorer over the project workspace PVC.
-  { id: "files", label: "Files" },
 ];
 
 /**
