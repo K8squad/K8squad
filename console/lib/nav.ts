@@ -59,7 +59,7 @@ export type NavNode = {
    * `children` accordion. Additive: it does not disturb the `children`/`section` contracts, and the
    * node keeps its own `href` so the label still navigates (the island owns only expand + children).
    */
-  dynamicChildren?: "teams";
+  dynamicChildren?: "teams" | "projects";
 };
 
 /**
@@ -125,7 +125,12 @@ export function navTree(): NavNode[] {
     // the lazy-loading <TeamsNavTree/> island (team(s) → agents) as its expandable children.
     // navTree() stays pure — the teams/agents are fetched by the island, never by this function.
     { id: "teams", label: "Teams", href: "/teams", scope: "global", dynamicChildren: "teams" },
-    { id: "projects", label: "Projects", href: "/projects", scope: "global" },
+    // Projects is the rail's second DYNAMIC sub-tree (ISI-4090): the label still links to the
+    // Projects list (/projects), and `dynamicChildren: "projects"` tells the shell to mount the
+    // lazy-loading <ProjectsNavTree/> island (project(s) → that project's Build/Tickets/Runs/
+    // Discussion/GitHub sections) as its expandable children. navTree() stays pure — the projects
+    // are fetched by the island, never by this function. Mirrors the Teams marker above.
+    { id: "projects", label: "Projects", href: "/projects", scope: "global", dynamicChildren: "projects" },
     { id: "agents", label: "Agents", href: "/agents", scope: "global" },
     { id: "runs", label: "Runs", href: "/runs", scope: "global" },
     {

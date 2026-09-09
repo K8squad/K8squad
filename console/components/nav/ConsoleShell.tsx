@@ -29,6 +29,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
 import { TeamsNavTree } from "@/components/nav/TeamsNavTree";
+import { ProjectsNavTree } from "@/components/nav/ProjectsNavTree";
 import { NavErrorBoundary } from "@/components/nav/NavErrorBoundary";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
 import { Breadcrumb } from "@/components/nav/Breadcrumb";
@@ -255,6 +256,24 @@ export function ConsoleShell({
                   }
                 >
                   <TeamsNavTree active={ids.has(n.id)} pathname={pathname} />
+                </NavErrorBoundary>
+              </div>
+            ) : n.dynamicChildren === "projects" ? (
+              // Projects (ISI-4090): the rail's second DYNAMIC, lazy-loaded sub-tree. Same shape as
+              // Teams — the label links to /projects, the ProjectsNavTree island owns expand +
+              // project(s) → Build/Tickets/Runs/Discussion/GitHub sections, and a fetch/render
+              // failure degrades to the plain Projects link rather than blanking the rail.
+              <div key={n.id} className="rail__group">
+                <NavErrorBoundary
+                  fallback={
+                    <NodeLink
+                      node={n}
+                      active={ids.has(n.id)}
+                      projectId={activeProject}
+                    />
+                  }
+                >
+                  <ProjectsNavTree active={ids.has(n.id)} pathname={pathname} />
                 </NavErrorBoundary>
               </div>
             ) : n.section ? (

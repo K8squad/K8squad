@@ -85,7 +85,17 @@ func main() {
 	// Reachable over a thin JSON/HTTP surface until the shared MCP transport (6.2) lands.
 	readSvc := memory.NewReadService(store, embedder)
 	writeSvc := memory.NewWriteService(store, embedder)
-	tools := memory.NewToolHTTP(readSvc, writeSvc)
+
+	// The authored discussion write tool (discussion_post, Story 6.4 / ISI-4075): the write peer of
+	// discussion_search. It calls the already-fenced discussion.Store directly (provenance server-
+	// stamped from the BFF headers, Team scope enforced by the store). Fail OPEN, consistent with the
+	// discussion indexer below: if the discussion DB handle can't open, log and leave the writer nil so
+	// discussion_post is simply unmounted (AC5) — a memory-DB-only deployment still serves the reads.
+	var discuss memory.DiscussionWriter
+	if db := openDiscussionDB(cfg.DatabaseURL); db != nil {
+		discuss = discussion.NewStore(db)
+	}
+	tools := memory.NewToolHTTP(readSvc, writeSvc, discuss)
 	// Story 6.2 (ISI-3179): the MCP JSON-RPC transport over the SAME ReadService/WriteService. It serves
 	// the streamable-HTTP /mcp endpoint (initialize + tools/list + tools/call) that MCP-speaking agents
 	// and the operator's MCPServer probe talk, alongside the thin per-tool JSON/HTTP routes above during
@@ -138,6 +148,19 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// openDiscussionDB opens the long-lived Postgres handle backing the discussion_post tool. Fail-open,
+// matching the indexer/mirror posture: a handle that can't be opened returns nil so the caller leaves
+// discussion_post unmounted (AC5) rather than taking down the memory service. The handle lives for the
+// process lifetime (it backs the HTTP tool surface), so it is intentionally not closed here.
+func openDiscussionDB(dsn string) *sql.DB {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: discussion_post tool disabled (open db: %v)", err)
+		return nil
+	}
+	return db
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is

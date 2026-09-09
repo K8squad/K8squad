@@ -145,6 +145,18 @@ linters:
           - gosec
         text: "G202"
         path: ^internal/apiserver/audit\.go
+      # G703 (path traversal via taint) in the S4a reader-pod read server: this
+      # package IS the jail. Every client path is sanitised BEFORE any filesystem
+      # access — cleanRel strips leading slashes + path.Clean + rejects ".."/absolute
+      # escapes, then filepath.EvalSymlinks + within() confirm the resolved real path
+      # stays under the /workspace jail root, so a symlink pointing outside is rejected,
+      # never followed (see TestSymlinkEscapeRejected/TestListRejectsTraversal). gosec's
+      # static taint analyser cannot prove the runtime jail; the traversal is handled,
+      # not open. Read/list only — no write/exec verb exists.
+      - linters:
+          - gosec
+        text: "G703"
+        path: ^internal/buildbrowser/readerpod/readserver/
     paths:
       - third_party$
       - builtin$

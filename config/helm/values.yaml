@@ -109,6 +109,19 @@ controlPlane:
       # Optional: pin the admin's tenancy-root team UUID. Empty → auto-minted on
       # first seed (set KSQUAD_BOOTSTRAP_ADMIN_TEAM_ID via this to make it stable).
       teamId: ""
+    # Build-browser reader pod (Story 8.7f / S4a, ISI-4005). On-demand, short-lived,
+    # READ-ONLY pod that mounts a completed Run's Project PVC and serves a jailed
+    # list/read HTTP protocol so an operator can browse the full workspace tree.
+    # DEGRADE-BY-DEFAULT: OFF until the ISI-4005-wire child (WorkspaceReader client +
+    # in-cluster Service) lands. When enabled=false the apiserver serves snapshot-only
+    # and never launches a reader pod. Renders KSQUAD_BUILD_READER_POD_* env only when
+    # enabled=true (config.go defaults BuildReaderPodEnabled=false when unset).
+    buildReaderPod:
+      enabled: false
+      # Reader image ref. Empty → defaults to the chart-versioned
+      # ghcr.io/k8squad/ksquad-buildreader:<appVersion> (published by the Build Images
+      # lane). Override to pin a digest or a mirror.
+      image: ""
 
   console:
     replicas: 1

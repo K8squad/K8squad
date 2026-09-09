@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.9
+# ksquad-buildreader — Story 8.7f / S4a reader-pod entrypoint (ISI-4005 / ISI-4073, parent ISI-3956).
+# The in-pod, READ-ONLY list/read HTTP server jailed at the ReadOnly-mounted Project PVC
+# (/workspace) and NOTHING else — no exec, no write, no delete, no rename. It is the File
+# Explorer epic's largest trust boundary, so the image carries ZERO Kubernetes-client deps and
+# is built on distroless/static, non-root. The apiserver (S4b) reaches it over an in-cluster
+# ClusterIP; it is only ever launched when BuildReaderPodEnabled is flipped on (degrade-by-default).
+# Multi-arch cross-compile → static non-root distroless (same shape as event-relay/scm-webhook).
+
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/buildreader ./cmd/buildreader
+
+FROM gcr.io/distroless/static-debian12:nonroot
+LABEL org.opencontainers.image.source="https://github.com/K8squad/K8squad" \
+      org.opencontainers.image.title="ksquad-buildreader" \
+      org.opencontainers.image.description="KSquad build-browser reader pod: in-pod read-only list/read HTTP server jailed at /workspace (S4a / ISI-4005)" \
+      org.opencontainers.image.licenses="Apache-2.0"
+WORKDIR /
+COPY --from=build /out/buildreader /usr/local/bin/buildreader
+# Non-root reader (distroless nonroot uid). The PVC is mounted ReadOnly; the server never writes.
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/buildreader"]
