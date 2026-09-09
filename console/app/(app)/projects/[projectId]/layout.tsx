@@ -1,34 +1,14 @@
-// app/projects/[projectId]/layout.tsx — the Project-scoped sub-nav (story 8.13).
+// app/projects/[projectId]/layout.tsx — the Project-scoped route group.
 //
-// Every screen under /projects/{id} renders with the project sub-nav tab strip
-// (Build · Tickets · Runs · Discussion), all scoped to the selected Project. This is routing
-// ONLY (scope guard R6): the existing discussion screen (10.3) re-parents here unchanged.
+// ISI-4090: the top-of-page Build·Tickets·Runs·Discussion·GitHub tab strip is GONE. Project
+// navigation now lives in the left rail — the Projects node expands (ProjectsNavTree island) to
+// that project's sections, each with an icon. This layout is a pure pass-through: the rail owns
+// the sub-nav and the content header owns the breadcrumb, so nothing is rendered here but the
+// screen itself. (The old strip was unstyled inline links — the "unclear links" the redesign
+// removes; `projectSubnav` still drives the rail sections from lib/nav.ts.)
 
 import type { ReactNode } from "react";
-import Link from "next/link";
-import { projectSubnav } from "@/lib/nav";
-import { decodeProjectId } from "@/lib/projectId";
 
-export default async function ProjectLayout({
-  children,
-  params,
-}: {
-  children: ReactNode;
-  params: Promise<{ projectId: string }>;
-}) {
-  const { projectId } = await params;
-  const decoded = decodeProjectId(projectId);
-  const subnav = projectSubnav(decoded);
-  return (
-    <div className="project">
-      <nav className="subnav" aria-label="Project sections">
-        {subnav.map((n) => (
-          <Link key={n.id} href={n.href} className="subnav__tab">
-            {n.label}
-          </Link>
-        ))}
-      </nav>
-      {children}
-    </div>
-  );
+export default function ProjectLayout({ children }: { children: ReactNode }) {
+  return <div className="project">{children}</div>;
 }
