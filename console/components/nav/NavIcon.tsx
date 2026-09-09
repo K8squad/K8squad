@@ -42,10 +42,10 @@ const P: Record<NavIconId, string> = {
   runs: "M6 3h12v14l-6 4-6-4V3zm2 6h8M8 13h8",
   discussion:
     "M4 4h16v12H8l-4 4V4zm4 4h8M8 12h5",
-  // GitHub / source-control (ISI-4090): a trademark-safe git-branch line-mark — two commit nodes
-  // joined by a fork, matching the set's stroke style. Graphic Designer to refine (subtask).
+  // GitHub / source-control (ISI-4092): trademark-safe git-fork line-mark — two upper commit
+  // nodes converging into a lower node. Brand-neutral, symmetric, reads clearly at 16px.
   github:
-    "M6 3v12M3 18a3 3 0 106 0 3 3 0 10-6 0M15 6a3 3 0 106 0 3 3 0 10-6 0M18 9a9 9 0 01-9 9",
+    "M9 18a3 3 0 106 0 3 3 0 10-6 0M3 6a3 3 0 106 0 3 3 0 10-6 0M15 6a3 3 0 106 0 3 3 0 10-6 0M18 9v2a2 2 0 01-2 2H8a2 2 0 01-2-2V9M12 12v3",
   settings:
     "M12 8a4 4 0 100 8 4 4 0 000-8zm8.4 4l1.6-1.2-1.6-2.7-1.9.6a7 7 0 00-1.7-1L16.4 4h-3.2l-.6 1.9a7 7 0 00-1.7 1l-1.9-.6L7.4 8.8 9 10a7 7 0 000 2l-1.6 1.2 1.6 2.7 1.9-.6a7 7 0 001.7 1l.6 1.9h3.2l.6-1.9a7 7 0 001.7-1l1.9.6 1.6-2.7L20.4 12a7 7 0 000-.1z",
   configuration:
