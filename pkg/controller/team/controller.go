@@ -770,7 +770,7 @@ func allowControlPlaneNetworkPolicy(ns string, teamObj *api.Team, controlPlaneNa
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress, networkingv1.PolicyTypeIngress},
 			Egress: []networkingv1.NetworkPolicyEgressRule{{
 				To: []networkingv1.NetworkPolicyPeer{{
 					NamespaceSelector: &metav1.LabelSelector{
@@ -779,6 +779,22 @@ func allowControlPlaneNetworkPolicy(ns string, teamObj *api.Team, controlPlaneNa
 				}},
 				Ports: []networkingv1.NetworkPolicyPort{
 					{Protocol: &tcpProtocol, Port: &httpsPort},
+					{Protocol: &tcpProtocol, Port: &httpPort},
+				},
+			}},
+			// ISI-4188 gap 6: the pod-side dispatch path POSTs the A2A task to
+			// the sandbox supervisor's :8080 from the operator (control-plane
+			// namespace). Without this ingress rule the team default-deny
+			// drops the hop (dial timeout) and no task ever reaches the
+			// sandbox. Port-scoped to the supervisor port only, namespace-
+			// scoped to the control plane — the same discipline as egress.
+			Ingress: []networkingv1.NetworkPolicyIngressRule{{
+				From: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": controlPlaneNamespace},
+					},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{
 					{Protocol: &tcpProtocol, Port: &httpPort},
 				},
 			}},

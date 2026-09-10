@@ -754,6 +754,38 @@ func TestControlPlaneEgressPortScoped(t *testing.T) {
 	}
 }
 
+// TestControlPlaneIngressSupervisorPort (ISI-4188 gap 6): the pod-side
+// dispatch path POSTs the A2A task from the operator to the sandbox
+// supervisor's :8080 — the allow-control-plane policy must open exactly that
+// ingress hop (TCP 8080, control-plane namespace only) or the team
+// default-deny drops every dispatch.
+func TestControlPlaneIngressSupervisorPort(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var allowCP networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-control-plane", Namespace: team.Status.Namespace}, &allowCP); err != nil {
+		t.Fatalf("get allow-control-plane NetworkPolicy: %v", err)
+	}
+	if len(allowCP.Spec.Ingress) != 1 {
+		t.Fatalf("ingress rules = %d, want 1 (supervisor dispatch hop)", len(allowCP.Spec.Ingress))
+	}
+	rule := allowCP.Spec.Ingress[0]
+	if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil {
+		t.Fatalf("ingress from = %+v, want a single control-plane namespaceSelector", rule.From)
+	}
+	if got := rule.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got == "" {
+		t.Errorf("ingress namespaceSelector does not pin the control-plane namespace: %+v", rule.From[0].NamespaceSelector)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 8080 {
+		t.Errorf("ingress ports = %+v, want TCP 8080 only (the supervisor task port)", rule.Ports)
+	}
+}
+
 // TestConditionTransitionTimePinnedByClock (PR #89 follow-up F9): the
 // Reconciler.Now clock is actually wired into condition transitions — a
 // frozen clock produces a frozen LastTransitionTime instead of the wall
