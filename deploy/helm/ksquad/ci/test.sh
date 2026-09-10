@@ -138,57 +138,35 @@ render_ok "accessMode RWOncePod passes schema" 'workspace.accessMode: "ReadWrite
 render_fail "invalid accessMode fails schema enum (no silent bad PVC)" "must be one of the following" \
   "${CORE[@]}" --set storage.workspace.accessMode=ReadWriteMnay
 
-echo "== OTel collector config split base+egress (ISI-3747, ADR-0008 M1(b)) =="
-COL=templates/otel-collector.yaml
-# Deployment loads TWO --config sources (base + egress overlay).
-render_ok "collector: base --config source mounted" '\-\-config=/conf/base/collector.yaml' "${CORE[@]}"
-render_ok "collector: egress --config overlay source mounted" '\-\-config=/conf/egress/egress.yaml' "${CORE[@]}"
-# Egress volume is optional so first boot (before operator writes it) never wedges.
-render_ok "collector: egress ConfigMap volume is optional" 'optional: true' "${CORE[@]}"
-# Base config keeps the redaction/tail_sampling backstop IN GitOps (ADR-0008 §Why-b).
-render_ok "collector: base retains redaction processor" 'transform/redaction' "${CORE[@]}"
-render_ok "collector: base retains tail_sampling" 'tail_sampling' "${CORE[@]}"
-# Base defaults to safe debug/prometheus sinks and carries NO vendor exporter.
-render_ok "collector: base traces default to debug sink" 'exporters: \[debug\]' "${CORE[@]}"
-render_lacks "collector: base has NO vendor exporter (no endpoint)" "$COL" '/vendor' "${CORE[@]}"
-render_lacks "collector: no bootstrap egress ConfigMap when endpoint empty" "$COL" 'egress-source: helm-bootstrap' "${CORE[@]}"
+echo "== OTel collector retired from chart (ISI-4163/ISI-4164) =="
+# The chart-of-record for the collector topology is deploy/otel/ (live
+# otel-operator CRs; gateway Service otel-gateway-collector.observability).
+# This chart must NEVER render a competing collector: wrong Service name,
+# wrong namespace, two managers on one pipeline.
+out="$(helm template t "$CHART" "${CORE[@]}" 2>&1)" || { echo "$out"; fail "render (collector retired)"; }
+grep -q -- '-otel-collector' <<<"$out" && { echo "$out"; fail "collector(retired): no '-otel-collector' resources may render"; }
+grep -q 'component: otel-collector' <<<"$out" && { echo "$out"; fail "collector(retired): no otel-collector components may render"; }
+grep -q 'ksquad.io/egress-source' <<<"$out" && { echo "$out"; fail "collector(retired): no Helm bootstrap egress overlay may render"; }
+pass "collector(retired): chart renders zero collector resources by default"
+# Legacy sets must not resurrect anything (unknown values are simply unused).
+out="$(helm template t "$CHART" "${CORE[@]}" --set observability.collector.enabled=true 2>&1)" \
+  || { echo "$out"; fail "render (legacy collector set ignored)"; }
+grep -q -- '-otel-collector' <<<"$out" && { echo "$out"; fail "collector(retired): observability.collector.enabled=true must be inert"; }
+pass "collector(retired): observability.collector.enabled=true is inert"
 
-# Bootstrap/no-operator fallback: setting the DEPRECATED endpoint renders the
-# egress overlay ConfigMap that the operator will later own.
-DT=(--set observability.export.otlp.endpoint=https://abc.live.dynatrace.com/api/v2/otlp
-    --set observability.export.otlp.auth.secretName=dt-token)
-render_ok "collector(bootstrap): renders egress overlay ConfigMap" 'ksquad.io/egress-source: helm-bootstrap' "${CORE[@]}" "${DT[@]}"
-render_ok "collector(bootstrap): https endpoint → otlphttp/vendor exporter" 'otlphttp/vendor:' "${CORE[@]}" "${DT[@]}"
-render_ok "collector(bootstrap): overlay routes traces to vendor" 'exporters: \[otlphttp/vendor\]' "${CORE[@]}" "${DT[@]}"
-render_ok "collector(bootstrap): auth stays env-indirected (never in ConfigMap)" 'Authorization: "${env:KSQUAD_OTLP_AUTH}"' "${CORE[@]}" "${DT[@]}"
-render_ok "collector(bootstrap): bare host:port endpoint → otlp/vendor (gRPC)" 'otlp/vendor:' \
-  "${CORE[@]}" --set observability.export.otlp.endpoint=otel.example.com:4317
+# SLO rules survive, collector-independent (app-level ksquad_* SLOs, §9).
+out="$(helm template t "$CHART" "${CORE[@]}" 2>&1)" \
+  || { echo "$out"; fail "render (slo default off)"; }
+grep -q 'kind: PrometheusRule' <<<"$out" \
+  && { echo "$out"; fail "slo(default): PrometheusRule must be OFF by default"; }
+pass "slo: PrometheusRule OFF by default"
+render_ok "slo: PrometheusRule renders when enabled" 'kind: PrometheusRule' \
+  "${CORE[@]}" --set observability.sloRules.enabled=true
+render_ok "slo: rules alert on ksquad_* app metrics (collector-independent)" 'KSquadWarmClaimLatencyHigh' \
+  "${CORE[@]}" --set observability.sloRules.enabled=true
 
 echo "== operator RBAC for egress reconcile (ISI-3747) =="
 render_ok "operator: can patch deployments (rollout annotation)" '"deployments"' "${CORE[@]}"
-
-# Optional: if a collector binary is present, prove the two --config sources
-# actually deep-merge and route to the vendor with redaction still upstream.
-# Skips cleanly in CI images without the binary (the render asserts above are the
-# floor; the full running-collector/operator e2e is ISI-3724 + cluster).
-echo "== collector confmap merge validate (optional) =="
-if command -v otelcol-contrib >/dev/null 2>&1; then
-  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-  # Extract each ConfigMap's block-scalar body (4-space indented, terminated by
-  # the YAML doc separator) and de-indent it into a standalone config file.
-  helm template t "$CHART" "${CORE[@]}" "${DT[@]}" --show-only "$COL" \
-    | awk '/collector.yaml: \|/{f=1;next} f&&/^---/{f=0} f{sub(/^    /,"");print}' >"$TMP/base.yaml"
-  helm template t "$CHART" "${CORE[@]}" "${DT[@]}" --show-only "$COL" \
-    | awk '/egress.yaml: \|/{f=1;next} f&&/^---/{f=0} f{sub(/^    /,"");print}' >"$TMP/egress.yaml"
-  if otelcol-contrib validate --config "$TMP/base.yaml" --config "$TMP/egress.yaml" >/dev/null 2>&1; then
-    pass "merged base+egress config validates + loads"
-  else
-    otelcol-contrib validate --config "$TMP/base.yaml" --config "$TMP/egress.yaml" || true
-    fail "merged base+egress config failed validate"
-  fi
-else
-  echo "  skip — otelcol-contrib not on PATH (render assertions cover the split)"
-fi
 
 echo "== release-namespace default-deny posture (ISI-3907) =="
 # DEFAULT: the control plane is high-trust (arch §12.2) and the release namespace

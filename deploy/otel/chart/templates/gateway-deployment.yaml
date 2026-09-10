@@ -1,0 +1,135 @@
+{{- /*
+Mode: deployment — plain Deployment + ConfigMap + Service, no otel-operator
+required. The Service is named "<name>-collector" literally so the platform
+contract (otel-gateway-collector.<ns>) holds exactly as in operator mode.
+*/ -}}
+{{- include "k8squad-otel.validate" . -}}
+{{- if eq .Values.collector.mode "deployment" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "k8squad-otel.gatewayServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.collector.name }}
+    ksquad.io/component: telemetry-gateway
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.collector.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.collector.name }}
+    ksquad.io/component: telemetry-gateway
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+data:
+  collector.yaml: |
+    {{- include "k8squad-otel.gatewayConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.collector.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.collector.name }}
+    ksquad.io/component: telemetry-gateway
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.collector.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.collector.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.collector.name }}
+        ksquad.io/component: telemetry-gateway
+    spec:
+      serviceAccountName: {{ include "k8squad-otel.gatewayServiceName" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: {{ .Values.collector.image }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/conf/collector.yaml
+          env:
+            - name: KSQUAD_OTLP_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.collector.authSecretRef.name }}
+                  key: {{ .Values.collector.authSecretRef.key }}
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: health
+              containerPort: 13133
+            - name: metrics
+              containerPort: 8888
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: otelcol-state
+              mountPath: /var/lib/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.collector.name }}
+        - name: otelcol-state
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "k8squad-otel.gatewayServiceName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.collector.name }}
+    ksquad.io/component: telemetry-gateway
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: {{ .Values.collector.name }}
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: metrics
+      port: 8888
+      targetPort: metrics
+{{- end }}
