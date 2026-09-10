@@ -97,7 +97,7 @@ func ctxFixtures(snapshot *api.ContextSnapshot) (*api.Run, *api.Agent, *api.Proj
 
 func newDispatch(t *testing.T, run *api.Run, agent *api.Agent, project *api.Project, asm ContextAssemblers) *operatorDispatch {
 	t.Helper()
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, project).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, project, dispatchTeamObj()).Build()
 	return &operatorDispatch{
 		cfg:    OperatorDispatchConfig{Client: cl, ContextAssemblers: asm},
 		source: fakeDispatchSource{title: "Fix the flake", body: "make test/flake green", fence: "7"},
