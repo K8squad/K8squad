@@ -16,8 +16,10 @@
   is now implemented (ISI-3910): enabling releaseNamespaceDefaultDeny also
   renders templates/networkpolicy-carveouts.yaml (intra-CP chatter, the
   kube-apiserver hop, north/south Gateway/Ingress ingress and Prometheus scrape)
-  plus the apiserver (below) and otel-collector governed external hops, keeping
-  every component functional under the deny. Verified end-to-end on an enforcing
+  plus the apiserver's governed external hop (below); the collector's vendor
+  hop is owned by the operator-managed collector stack (deploy/otel/, namespace
+  observability — ISI-4163), outside this chart's scope. Every component stays
+  functional under the deny. Verified end-to-end on an enforcing
   CNI (kind + Calico) by test/cp-lockdown/run.sh and the cp-lockdown CI job.
   Before enabling, tune controlPlaneCarveOuts.dataplaneNamespaceSelector and
   apiserverEgress.exceptCIDRs to your CNI/gateway.
@@ -47,9 +49,10 @@ spec:
   Apiserver egress carve-out over the release-namespace default-deny
   (ISI-3906). Only meaningful when releaseNamespaceDefaultDeny is ON — a
   carve-out with no deny to carve would ITSELF restrict the high-trust
-  apiserver (any egress policy selecting a pod restricts it to the listed
-  destinations), so it is gated on the default-deny toggle. Mirrors the
-  otel-collector pattern: the governed hop to model providers (credential
+  apiserver (any   egress policy selecting a pod restricts it to the listed
+  destinations), so it is gated on the default-deny toggle. Follows the same
+  governed-egress pattern the operator-managed collector stack uses
+  (deploy/otel/): the governed hop to model providers (credential
   test-connection, ISI-3680/ISI-3891) is 443/TCP to destinations OUTSIDE the
   excepted in-cluster/private ranges only — RFC1918, CGNAT and link-local
   (the cloud metadata service) are denied by rule, and pkg/probeegress adds
