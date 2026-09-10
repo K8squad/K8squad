@@ -33,6 +33,7 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/warmpool"
+	"github.com/K8squad/K8squad/pkg/workspace"
 )
 
 // OperatorPrincipal is the control-plane principal the operator drives as
@@ -358,8 +359,34 @@ func SpecClassifier(reader client.Reader) warmpool.RunClassifier {
 			if m := runs.Items[i].Status.CapabilityManifest; m != nil {
 				key.CapabilityHash = m.CapabilityHash
 			}
+			key.ProjectPVC = projectWorkspacePVC(ctx, reader, &runs.Items[i])
 			return key, class, nil
 		}
 		return key, class, nil
 	}
+}
+
+// projectWorkspacePVC resolves the Run's per-Project workspace claim name
+// (ISI-4127): when the Run's Project carries spec.workspacePVC, the pool
+// key gains the PVC dimension so Boot mounts the claim. A Project that is
+// unreadable (mid-delete, cache lag) classifies WITHOUT the mount rather
+// than blocking the bind — the classify-never-blocks contract — because a
+// missing mount is recoverable by re-drive while a wedged bind is not.
+func projectWorkspacePVC(ctx context.Context, reader client.Reader, run *api.Run) string {
+	ref := run.Spec.ProjectRef
+	if ref.Name == "" {
+		return ""
+	}
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var project api.Project
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &project); err != nil {
+		return ""
+	}
+	if project.Spec.WorkspacePVC == nil {
+		return ""
+	}
+	return workspace.ProjectPVCName(project.Name)
 }

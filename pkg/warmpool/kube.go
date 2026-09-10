@@ -40,6 +40,19 @@ import (
 // package default until Team-scoped namespacing lands (Epic 4).
 const sandboxNamespace = "default"
 
+const (
+	// WorkspaceVolumeName / WorkspaceMountPath are the per-Project
+	// workspace mount contract (ISI-4127, §9.4): when the pool key carries
+	// a ProjectPVC, the sandbox pod mounts that claim shared at this path,
+	// so every agent of the team reads and writes the same files and the
+	// data survives pod teardown. The mount is whole-volume: subPath
+	// per-principal partitioning (pkg/sandbox.WorkspaceVolumeMounts) needs
+	// the bound Run's principal, which only exists at Bind — after the
+	// pod's volumes are already immutable.
+	WorkspaceVolumeName = "workspace"
+	WorkspaceMountPath  = "/workspace"
+)
+
 // KubeProvisioner implements the Provisioner interface using a
 // controller-runtime client to create and delete sandbox pods. It is the
 // production adapter that makes the warm-pool system boot real pods.
@@ -194,6 +207,24 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 				},
 			}},
 		},
+	}
+
+	// Per-Project workspace (ISI-4127): the claim name rides the pool key
+	// because the mount must exist at Boot. Team-shared by design — writes
+	// from one agent are readable by every other agent of the project.
+	if key.ProjectPVC != "" {
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+			Name: WorkspaceVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: key.ProjectPVC,
+				},
+			},
+		})
+		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{
+			Name:      WorkspaceVolumeName,
+			MountPath: WorkspaceMountPath,
+		})
 	}
 
 	if err := k.client.Create(ctx, pod); err != nil {

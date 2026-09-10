@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -65,5 +67,62 @@ func TestSpecClassifierResolvesRunSpec(t *testing.T) {
 	}
 	if key.RuntimeClass != "gvisor" || class != warmpool.ClassInteractive {
 		t.Fatalf("unknown run classified (%q,%q), want defaults", key.RuntimeClass, class)
+	}
+}
+
+// TestSpecClassifierAddsProjectPVCDimension (ISI-4127): a Run whose Project
+// carries spec.workspacePVC classifies into a pool key naming the per-Project
+// claim (so Boot mounts it); a Project without one — or one that no longer
+// resolves — leaves the dimension empty and never blocks the bind.
+func TestSpecClassifierAddsProjectPVCDimension(t *testing.T) {
+	pvcRun := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
+	pvcRun.Name = "pvc-run"
+	plainRun := newTestRun("55555555-5555-5555-5555-555555555555", "wi-5")
+	plainRun.Name = "plain-run"
+	plainRun.Spec.ProjectRef = api.ObjectRef{Name: "plain"}
+	ghostRun := newTestRun("66666666-6666-6666-6666-666666666666", "wi-6")
+	ghostRun.Name = "ghost-run"
+	ghostRun.Spec.ProjectRef = api.ObjectRef{Name: "ghost"}
+
+	pvcProject := &api.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
+		Spec: api.ProjectSpec{
+			Repo:         api.RepoSpec{URL: "https://github.com/acme/widget"},
+			WorkspacePVC: &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"},
+		},
+	}
+	plainProject := &api.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain", Namespace: "default"},
+		Spec:       api.ProjectSpec{Repo: api.RepoSpec{URL: "https://github.com/acme/plain"}},
+	}
+
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(pvcRun, plainRun, ghostRun, pvcProject, plainProject).Build()
+	cls := SpecClassifier(cl)
+	ctx := context.Background()
+
+	key, _, err := cls(ctx, "44444444-4444-4444-4444-444444444444")
+	if err != nil {
+		t.Fatalf("classify pvc run: %v", err)
+	}
+	if key.ProjectPVC != "workspace-project-p" {
+		t.Fatalf("ProjectPVC = %q, want workspace-project-p", key.ProjectPVC)
+	}
+
+	key, _, err = cls(ctx, "55555555-5555-5555-5555-555555555555")
+	if err != nil {
+		t.Fatalf("classify plain run: %v", err)
+	}
+	if key.ProjectPVC != "" {
+		t.Fatalf("ProjectPVC = %q, want empty for a workspace-less Project", key.ProjectPVC)
+	}
+
+	// Unresolvable Project: no mount, no error (classify never blocks).
+	key, _, err = cls(ctx, "66666666-6666-6666-6666-666666666666")
+	if err != nil {
+		t.Fatalf("classify ghost run: %v", err)
+	}
+	if key.ProjectPVC != "" {
+		t.Fatalf("ProjectPVC = %q, want empty for an unresolvable Project", key.ProjectPVC)
 	}
 }
