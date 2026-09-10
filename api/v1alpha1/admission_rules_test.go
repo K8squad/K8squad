@@ -74,15 +74,21 @@ func TestCRDHasSkillSourceOneOfRules(t *testing.T) {
 
 // Story 1.3 structural defaulting: the documented platform defaults for a
 // Run's sandbox posture apply at admission, server-side, no mutating
-// webhook needed.
+// webhook needed. M1.2 (ISI-4128): runtimeClass deliberately carries NO
+// admission default — unset follows the operator's cluster default
+// (KSQUAD_SANDBOX_RUNTIME_CLASS; gvisor when unpinned), so clusters without
+// a gvisor RuntimeClass can pin runc without every admitted Run overriding
+// the knob. class still defaults interactive (§9.2).
 func TestCRDHasSandboxDefaults(t *testing.T) {
 	yaml := loadCRD(t, "../../config/crd/bases/ksquad.io_runs.yaml")
 	assert.Contains(t, yaml, "runtimeClass:", "sandboxPolicy must be in the Run CRD")
-	// The defaults must sit directly under runtimeClass / class schemas.
 	runtimeClassIdx := strings.Index(yaml, "runtimeClass:")
 	require.NotEqual(t, -1, runtimeClassIdx)
 	section := yaml[runtimeClassIdx : runtimeClassIdx+400]
-	assert.Contains(t, section, "default: gvisor", "runtimeClass must default to gvisor (§9.1)")
+	assert.NotContains(t, section, "default: gvisor",
+		"runtimeClass must NOT default at admission (M1.2: the cluster default is operator-env driven)")
+	assert.Contains(t, section, "KSQUAD_SANDBOX_RUNTIME_CLASS",
+		"the runtimeClass description must name the operator env default")
 	classIdx := strings.Index(yaml, "class:")
 	require.NotEqual(t, -1, classIdx)
 	section = yaml[classIdx : classIdx+400]
