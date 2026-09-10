@@ -13,3 +13,10 @@ spec:
   goals:
     - "Ship the BMAD-method demo following the phased workflow."
     - "Keep every change small, tested, and reviewable."
+  # The per-Project workspace PVC (ISI-4127, §9.4): the operator provisions
+  # one claim for this Project and the squad's agent pods mount it shared at
+  # /workspace — files persist across pod restarts and pass between agents.
+  # class is optional; empty resolves from the operator's Helm storage
+  # contract and fails closed (no cluster-default bind) when that is unset.
+  workspacePVC:
+    size: 10Gi
