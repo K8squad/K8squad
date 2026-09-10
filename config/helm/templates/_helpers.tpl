@@ -117,9 +117,11 @@ yields a complete event plane).
 {{/*
 OTLP exporter env block, shared by every control-plane workload. Emits the
 standard OTEL_EXPORTER_OTLP_* vars pointing at the observability gateway
-collector (live since ISI-3484). Binaries currently log via pkg/telemetry
-(stdout); this is the forward-wiring for the ISI-3103 OTLP spine and is inert
-until a binary opts an OTLP exporter in.
+collector (live since ISI-3484). The operator honors these as a per-signal
+stdout fallback (ISI-4102): any signal the OTelConfig CR does not route exports
+to this endpoint instead of stdout, so operator telemetry reaches the gateway
+even without a CR. The other control-plane binaries still log via pkg/telemetry
+(stdout) and treat this env as inert forward-wiring for the ISI-3103 OTLP spine.
 */}}
 {{- define "k8squad.otelEnv" -}}
 {{- if .Values.controlPlane.otel.enabled }}
