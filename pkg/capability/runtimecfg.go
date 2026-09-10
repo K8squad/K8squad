@@ -147,7 +147,14 @@ const OpenCodeBYOProviderID = "ksquad-byo"
 type opencodeConfigDoc struct {
 	// Provider carries the BYO endpoint block; omitted when none is set.
 	Provider map[string]opencodeBYOProvider `json:"provider,omitempty"`
-	MCP      map[string]opencodeMCPEntry    `json:"mcp,omitempty"`
+	// Permission disables opencode's interactive tool-approval gate
+	// (ISI-4188 gap 8): a sandbox Run is unattended, so the default "ask"
+	// posture auto-rejects every tool call ("The user rejected permission…")
+	// and no tool event ever fires. The pod is the security boundary
+	// (restricted securityContext, team netpol, one Run per pod) — inside it
+	// the agent's tools are the point of the Run.
+	Permission map[string]string           `json:"permission,omitempty"`
+	MCP        map[string]opencodeMCPEntry `json:"mcp,omitempty"`
 }
 
 // RenderOpenCode renders the opencode `mcp` config section: local servers
@@ -168,7 +175,10 @@ func RenderOpenCode(endpoints []Endpoint) ([]byte, error) {
 // safe superset of the env — whichever the pinned CLI honors, the Run reaches
 // the operator's endpoint. The endpoint token never renders here (ADR-045 D5).
 func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) ([]byte, error) {
-	doc := opencodeConfigDoc{MCP: map[string]opencodeMCPEntry{}}
+	doc := opencodeConfigDoc{
+		MCP:        map[string]opencodeMCPEntry{},
+		Permission: map[string]string{"*": "allow"},
+	}
 	if modelEndpoint != "" {
 		if modelID == "" {
 			return nil, fmt.Errorf("opencode renderer: BYO endpoint %q needs a non-empty model id", modelEndpoint)

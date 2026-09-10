@@ -17,6 +17,8 @@ limitations under the License.
 package runtimes
 
 import (
+	"encoding/json"
+
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
@@ -72,9 +74,19 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		modelFlag = capability.OpenCodeBYOProviderID + "/" + model
 	}
 	spec := ExecSpec{
-		Path:    "opencode",
-		Args:    []string{"run", "--print-logs", "--format=json", "--model", modelFlag},
-		Env:     env,
+		Path: "opencode",
+		Args: []string{"run", "--print-logs", "--format=json", "--model", modelFlag},
+		Env:  env,
+		// ISI-4188 gap 5: opencode `run` reads its message from argv or stdin
+		// and errors "You must provide a message or a command" with neither.
+		// The prompt rides stdin (NFR-SEC1: never argv), the same channel the
+		// codex wrapper uses.
+		Stdin: EnvelopePrompt(lc),
+		// ISI-4188 gap 7: --format=json emits one JSON event per line
+		// (step_start/tool_use/text/step_finish/error); decode them into
+		// typed Progress so tool calls reach the wire + telemetry as
+		// EventTool, not opaque text.
+		Parse:   parseOpenCodeLine,
 		WorkDir: lc.WorkDir,
 	}
 	// Epic C (ADR-044 step 6): opencode.json's mcp section, rendered from
@@ -92,3 +104,91 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 }
 
 func init() { Register(openCode{}) }
+
+// parseOpenCodeLine decodes one `--format=json` stdout line into typed
+// Progress events (ISI-4188 gap 7). The shapes below are the opencode
+// v1.18.27 wire, verified live on k8squad-test against the pinned image:
+//
+//	{"type":"tool_use","part":{"tool":"read","state":{"status":"completed",
+//	  "input":{...},"output":"...","time":{"start":…,"end":…}}}}
+//	{"type":"text","part":{"text":"…"}}
+//	{"type":"error","error":{"name":"…","data":{"message":"…"}}}
+//	{"type":"step_start"|"step_finish",…}   (progress bookkeeping; dropped)
+//
+// A tool_use event arrives once per call with a terminal state.status
+// (completed|error) — it maps to a single phase="result" ToolPayload; the
+// telemetry spine settles one span per call from it. A non-JSON line (the
+// CLI's own diagnostics interleave on stdout) degrades to a message event,
+// never an error: parse failure must not kill a running task.
+func parseOpenCodeLine(line string) []Progress {
+	var ev struct {
+		Type string `json:"type"`
+		Part *struct {
+			Type  string `json:"type"`
+			Text  string `json:"text"`
+			Tool  string `json:"tool"`
+			State *struct {
+				Status string          `json:"status"`
+				Input  json.RawMessage `json:"input"`
+			} `json:"state"`
+		} `json:"part"`
+		Error *struct {
+			Name string `json:"name"`
+			Data struct {
+				Message string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return []Progress{{
+			Kind:    a2a.EventMessage,
+			Message: &a2a.MessagePayload{Role: "agent", Text: line, Trust: "untrusted"},
+		}}
+	}
+	switch ev.Type {
+	case "tool_use":
+		if ev.Part == nil || ev.Part.State == nil {
+			return nil
+		}
+		tool := &a2a.ToolPayload{Name: ev.Part.Tool}
+		var args string
+		if len(ev.Part.State.Input) > 0 {
+			args = string(ev.Part.State.Input)
+		}
+		switch ev.Part.State.Status {
+		case "completed":
+			ok := true
+			tool.Phase = "result"
+			tool.OK = &ok
+		case "error":
+			ok := false
+			tool.Phase = "result"
+			tool.OK = &ok
+		default: // pending/running — the call is in flight
+			tool.Phase = "start"
+		}
+		return []Progress{{Kind: a2a.EventTool, Tool: tool, ToolArgs: args}}
+	case "text":
+		if ev.Part == nil || ev.Part.Text == "" {
+			return nil
+		}
+		return []Progress{{
+			Kind:    a2a.EventMessage,
+			Message: &a2a.MessagePayload{Role: "agent", Text: ev.Part.Text, Trust: "untrusted"},
+		}}
+	case "error":
+		msg := "opencode error"
+		if ev.Error != nil {
+			msg = ev.Error.Name
+			if ev.Error.Data.Message != "" {
+				msg = msg + ": " + ev.Error.Data.Message
+			}
+		}
+		return []Progress{{
+			Kind:    a2a.EventMessage,
+			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
+		}}
+	default: // step_start/step_finish and future shapes: bookkeeping, not wire events
+		return nil
+	}
+}
