@@ -42,8 +42,12 @@ spec:
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
           args:
             - --leader-elect=true
-            - --storage-config={{ include "ksquad.fullname" . }}-storage
-            - --namespace={{ .Release.Namespace }}
+            {{- /* M1.2 (ISI-4128): the operator binary accepts only
+                   --metrics-bind-address / --health-probe-bind-address /
+                   --leader-elect / --coord-dsn (+ controller-runtime opts).
+                   --storage-config/--namespace were flag-parse FATALS — the
+                   storage contract rides the KSQUAD_WORKSPACE_* env and the
+                   <fullname>-storage ConfigMap consumers, never argv. */}}
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -83,6 +87,23 @@ spec:
                    loudly, ledger stays honest). */}}
             - name: KSQUAD_SHIM_BIN
               value: /usr/local/bin/shim
+            {{- /* M1.2 task-io seam (ISI-3601/ISI-4128): the credential
+                   writer + shim task-io injection need the in-cluster coord
+                   URL and the JWT key SHARED with the apiserver (the minted
+                   run tokens are validated by the apiserver's JWT mint).
+                   Both unset = credential-off (fail-safe: no per-sandbox
+                   credential Secret, supervisor stays waiting). */}}
+            {{- with .Values.operator.coord.url }}
+            - name: KSQUAD_COORD_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.operator.coord.existingJwtKeySecret }}
+            - name: KSQUAD_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .name }}
+                  key: {{ .key }}
+            {{- end }}
             {{- /* ISI-3745: the workspace PVC family reads its StorageClass /
                    size / access mode from the storage contract, never the
                    cluster default. The `<fullname>-storage` ConfigMap resolves
