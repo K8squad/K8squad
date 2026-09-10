@@ -288,6 +288,7 @@ type ProdRunner struct {
 	binder      coord.SandboxBinder
 	dispatcher  coord.TaskDispatcher
 	credWriter  coord.RunCredentialWriter
+	refObserver coord.SandboxRefObserver
 }
 
 // NewProdRunner binds the Runner seam. binder/dispatcher may be nil.
@@ -307,6 +308,15 @@ func (r *ProdRunner) WithCredentialWriter(w coord.RunCredentialWriter) *ProdRunn
 	return r
 }
 
+// WithSandboxRefObserver opts this runner into the M1.2 sandbox-ref surface:
+// every per-Run ProdEffects it builds notifies the observer at Bind, so
+// Run.status.sandboxRef lands the moment the sandbox binds. Nil (the zero
+// value) leaves ref-silent mode. Returns r for chaining.
+func (r *ProdRunner) WithSandboxRefObserver(o coord.SandboxRefObserver) *ProdRunner {
+	r.refObserver = o
+	return r
+}
+
 // Store implements Runner.Store.
 func (r *ProdRunner) Store(ctx context.Context, run *api.Run) (machineStore, error) {
 	return coord.NewProdReconcileStore(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
@@ -320,23 +330,29 @@ func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects,
 	if err != nil {
 		return nil, err
 	}
-	// Topology-2 opt-in: nil credWriter leaves credential-off mode.
-	return e.WithRunCredentialWriter(r.credWriter), nil
+	// Topology-2 opt-in: nil credWriter leaves credential-off mode;
+	// nil refObserver leaves ref-silent mode (M1.2).
+	return e.WithRunCredentialWriter(r.credWriter).WithSandboxRefObserver(r.refObserver), nil
 }
 
 // SpecClassifier resolves a Run's warm-pool (key, class) from its CRD spec —
 // a warmpool.RunClassifier the operator wiring hands to warmpool.NewBinder.
 // RuntimeClass/Class come from spec.sandboxPolicy with the story 1.3 admission
 // defaults (gvisor/interactive) applied read-side, so the classifier is
-// correct even for Runs admitted before defaulting landed. The image dimension
-// stays "" until the Agent-runtime image resolution lands (ISI-2889) — the
-// single-key pool regime warmpool.DefaultClassifier also pins. The namespace
+// correct even for Runs admitted before defaulting landed. defaultRuntimeClass
+// is that read-side default verbatim (the operator resolves
+// KSQUAD_SANDBOX_RUNTIME_CLASS itself and passes "gvisor" when unconfigured —
+// clusters without a gvisor RuntimeClass pin "runc" for the cluster default);
+// Boot treats "" and "runc" as the cluster-default runtime. The image dimension resolves Run → Agent →
+// AgentRuntime type → RuntimeImages (M1.2, the ISI-2889 image gap): a Run
+// whose graph cannot yield an image fails the classify — and therefore the
+// bind — loudly, instead of booting a pod with an empty image. The namespace
 // and capability-hash dimensions are the Epic C tenancy/pooling fix
 // (ADR-044 steps 7 and 9): warm pods boot in the Run's team namespace and
 // identical capability envelopes share pool stock.
-func SpecClassifier(reader client.Reader) warmpool.RunClassifier {
+func SpecClassifier(reader client.Reader, imgs RuntimeImages, defaultRuntimeClass string) warmpool.RunClassifier {
 	return func(ctx context.Context, runID string) (warmpool.PoolKey, warmpool.RunClass, error) {
-		key := warmpool.PoolKey{RuntimeClass: "gvisor"}
+		key := warmpool.PoolKey{RuntimeClass: defaultRuntimeClass}
 		class := warmpool.ClassInteractive
 		// The binder hands the driver's runID (the Run CRD uid); resolve the
 		// spec read-side. A Run deleted mid-bind classifies on defaults.
@@ -357,6 +373,10 @@ func SpecClassifier(reader client.Reader) warmpool.RunClassifier {
 			}
 			if m := runs.Items[i].Status.CapabilityManifest; m != nil {
 				key.CapabilityHash = m.CapabilityHash
+			}
+			var err error
+			if key, err = classifySandbox(ctx, reader, &runs.Items[i], imgs, key); err != nil {
+				return key, class, fmt.Errorf("rundrive.SpecClassifier: %w", err)
 			}
 			return key, class, nil
 		}

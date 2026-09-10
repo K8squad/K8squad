@@ -399,7 +399,24 @@ func main() {
 		}
 		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution)
 		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi")
+		// M1.2: pass the operator's OTLP endpoint/protocol through to the
+		// sandbox pods so in-pod supervisor/runtime spans reach the SAME
+		// telemetry pipeline the operator reports to (values only — the
+		// minimal-env invariant holds; headers/keys never ride pod env).
+		if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
+			kubeProvisioner = kubeProvisioner.WithPodEnv(
+				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: ep},
+				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")},
+			)
+		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
+		// M1.2: the pod watch that reports sandbox pod readiness into the pool
+		// (the Provisioner contract's NotifyReady caller — without it warm
+		// boots never leave StateWarming in production).
+		if err := kubepool.NewPodWatcher(mgr.GetClient(), pool).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up sandbox pod watcher")
+			os.Exit(1)
+		}
 
 		// Epic D follow-up (ISI-3352): the physical A2A dispatch feed — the
 		// production caller the ISI-3348 review demanded. The mapper (Epic D,
@@ -454,11 +471,23 @@ func main() {
 		// run-scoped task-io credential via a per-sandbox Secret (the shim env
 		// carrier is topology 1). Same minter + coord URL as the shim, so both
 		// topologies mint identically; nil (no minter/URL) leaves credential-off.
+		// M1.2: the classifier resolves the sandbox image Run→Agent→
+		// AgentRuntime-type (RuntimeImages env) and the runtime-class default
+		// (KSQUAD_SANDBOX_RUNTIME_CLASS; unset pins the story-1.3 gvisor
+		// default, "runc" selects the cluster default for clusters without a
+		// gvisor RuntimeClass). The RunStatusSandboxWriter surfaces
+		// Run.status.sandboxRef at Bind (console/E2E visibility).
+		defaultRuntimeClass := "gvisor"
+		if v, ok := os.LookupEnv("KSQUAD_SANDBOX_RUNTIME_CLASS"); ok {
+			defaultRuntimeClass = v
+		}
 		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher)
+			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient(),
+				rundrive.RuntimeImagesFromEnv(os.Getenv), defaultRuntimeClass)), a2aDispatcher)
 		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
 			runner = runner.WithCredentialWriter(credWriter)
 		}
+		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))
 
 		driver := rundrive.NewDriver(mgr.GetClient(),
 			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),

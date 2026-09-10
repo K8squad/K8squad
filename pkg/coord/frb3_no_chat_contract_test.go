@@ -245,6 +245,13 @@ var allowedSurface = map[string]string{
 	"ProdEffects.WithSnapshotter":         "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
 	"ProdEffects.WithRunCredentialWriter": "ADR-0007 opt-in the Bind-path task-io Secret delivery (custody-only)",
 
+	// M1.2 sandbox-ref surface (ISI-4128): the observer is notified of the
+	// bound sandbox_ref under the same at-most-once gating as the credential
+	// writer — run-id + ref only, no content; the impl patches the operator-side
+	// Run status. Custody-only, no agent-to-agent channel.
+	"SandboxRefObserver":                 "M1.2/ISI-4128 Bind-path sandbox_ref notification port (custody/execution, run-id + ref only)",
+	"ProdEffects.WithSandboxRefObserver": "M1.2/ISI-4128 opt-in the sandbox_ref surface at Bind (custody-only)",
+
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause
 	// episode row, no agent-to-agent channel.

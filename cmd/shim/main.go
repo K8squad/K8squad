@@ -29,6 +29,10 @@ limitations under the License.
 //	shim read         Answer a read-only build-browser query (tree | diff | file |
 //	                  meta) against the Run's live worktree and print it as JSON with
 //	                  live:true (story 8.7b). Runtime-agnostic; no engine needed.
+//	shim supervisor   Run as the sandbox pod's in-pod supervisor (ADR-0007):
+//	                  serve /health + /ready on :8080, complete the Bind→pod
+//	                  task-io credential handshake at /handshake, and accept
+//	                  task envelopes at POST /task (D1 bridge endpoint).
 //
 // The runtime flavor and Agent config are read from the environment the
 // reconciler injects (arch §7.2/§7.3); the raw credential is held only in
@@ -76,6 +80,13 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		return driveRead(args[1:], stdout)
 	}
 
+	// The in-pod supervisor (ADR-0007 D1/D2, M1.2) is also runtime-deferred:
+	// a warm unbound pod serves /health + /ready before any flavor is needed,
+	// and constructs the engine lazily at the first /task.
+	if cmd == "supervisor" {
+		return runSupervisor(args[1:])
+	}
+
 	runtimeType := env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))
 	if runtimeType == "" {
 		return fmt.Errorf("no runtime selected: set KSQUAD_RUNTIME_TYPE to one of %v", runtimes.Registered())
@@ -101,7 +112,17 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	// Telemetry writes to STDERR, never stdout: `shim run`'s stdout IS the
 	// SSE JSONL wire (spec §4) — span/log records on stdout would corrupt
 	// the event stream (ISI-3348 review).
-	_, otelShutdown, terr := telemetry.Setup(ctx, telemetry.Options{ServiceName: "ksquad-shim", Writer: os.Stderr})
+	//
+	// M1.2 telemetry leg: honor the chart/operator-stamped
+	// OTEL_EXPORTER_OTLP_* env (the observability gateway) for every signal
+	// still on the stdout default — without it the shim's spans stay on
+	// stderr and never reach the gateway/Dynatrace.
+	shimTelemetryOpts := telemetry.Options{ServiceName: "ksquad-shim", Writer: os.Stderr}
+	if filled := telemetry.ApplyEnvOTLPFallback(&shimTelemetryOpts, telemetry.EnvSignalExport(os.Getenv)); len(filled) > 0 {
+		fmt.Fprintf(os.Stderr, "shim telemetry: OTLP export via OTEL_EXPORTER_OTLP_* env for %v (endpoint=%s)\n",
+			filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	}
+	_, otelShutdown, terr := telemetry.Setup(ctx, shimTelemetryOpts)
 	if terr == nil {
 		defer func() { _ = otelShutdown(context.Background()) }()
 	}
@@ -129,7 +150,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		writeMetricsTextfile(metricsReg)
 		return err
 	default:
-		return fmt.Errorf("unknown subcommand %q (want: card | run | read)", cmd)
+		return fmt.Errorf("unknown subcommand %q (want: card | run | read | supervisor)", cmd)
 	}
 }
 

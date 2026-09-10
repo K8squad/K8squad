@@ -55,7 +55,7 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "abc"}
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
 	if err := p.Boot(ctx, key, "sbx-1"); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
@@ -63,12 +63,12 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 	if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-1"), pod); err != nil {
 		t.Fatalf("get pod in team namespace: %v", err)
 	}
-	if got := pod.Annotations["k8squad.io/pool-key"]; got != "gvisor/" {
+	if got := pod.Annotations["k8squad.io/pool-key"]; got != "gvisor/reg.example/ksquad-shim-codex:m1" {
 		t.Fatalf("pool-key annotation = %q", got)
 	}
 
 	// Legacy key without a namespace: the provisioner default remains.
-	legacy := PoolKey{RuntimeClass: "gvisor"}
+	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
 	if err := p.Boot(ctx, legacy, "sbx-2"); err != nil {
 		t.Fatalf("boot legacy: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	ctx, span := tp.Tracer("test").Start(context.Background(), "run.reconcile")
 	defer span.End()
 
-	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad"}
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
 	if err := p.Boot(ctx, key, "sbx-traced"); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestKubeProvisionerBootMountsCoordSecretVolume(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor"}, "sbx-coord"); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}, "sbx-coord"); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}

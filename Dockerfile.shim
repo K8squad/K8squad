@@ -166,5 +166,10 @@ COPY --from=cli /cli-out/ /usr/local/bin/
 # Runtime libs for dynamic-musl CLIs (opencode, claude): the musl loader pair and, for
 # opencode, libstdc++/libgcc. Empty for codex (fully static) and unpackaged runtimes.
 COPY --from=cli /cli-lib/ /
+# The image self-describes its flavor (M1.2): the in-pod supervisor defers
+# engine construction until the first /task, and reads the runtime type from
+# this env (Boot may override it, but the baked default means a sandbox pod
+# always knows what it is).
+ENV KSQUAD_RUNTIME_TYPE=${RUNTIME}
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shim"]
