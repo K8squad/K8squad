@@ -89,6 +89,11 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
   // Files (ISI-3956 S4c / ISI-3991): read-only File Explorer over the project workspace PVC.
   { id: "files", label: "File Explorer" },
   { id: "github", label: "GitHub" },
+  // Settings (ISI-4000 S2): view/set the repo URL + ref, manage the SCM PAT, and test the
+  // connection — composing the S1 read projection + the existing compose/credential/repo-auth
+  // endpoints. Placed last (a project's configuration footer). Deep-linkable + active-from-pathname
+  // like every other section; NavIcon already carries a "settings" glyph.
+  { id: "settings", label: "Settings" },
 ];
 
 /**

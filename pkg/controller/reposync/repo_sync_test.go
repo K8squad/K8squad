@@ -30,10 +30,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
@@ -232,6 +234,22 @@ func TestReconcileLevelTriggeredIdempotent(t *testing.T) {
 	if proj.Status.Sync.MirrorRecordCount != 3 {
 		t.Fatalf("status.sync.mirrorRecordCount = %d, want 3 (this pass, post echo-suppression)",
 			proj.Status.Sync.MirrorRecordCount)
+	}
+
+	// The pass also anchored the (Project, repo) pair in the store's repo
+	// seam (0008 schema: "the reconciler upserts it as the anchor for
+	// mirror liveness") — exactly one anchor per mirrored repo, refreshed
+	// by every later pass, never duplicated.
+	anchors := store.RepoAnchors()
+	if len(anchors) != 1 {
+		t.Fatalf("expected exactly 1 repo anchor after 3 reconciles, got %d: %+v", len(anchors), anchors)
+	}
+	a := anchors[0]
+	if a.Namespace != testNamespace || a.Name != testProject || a.Provider != "github" || a.URL != "github.com/acme/app" {
+		t.Fatalf("repo anchor fields wrong: %+v", a)
+	}
+	if a.LastMirrorAt.IsZero() {
+		t.Fatal("repo anchor LastMirrorAt not stamped")
 	}
 }
 
@@ -764,5 +782,29 @@ func TestRateLimitShortWindowClamped(t *testing.T) {
 	cond := projectCondition(t, r)
 	if cond == nil || cond.Message != "github rate limited, snapshot retry deferred <1m" {
 		t.Fatalf("unexpected message: %+v", cond)
+	}
+}
+
+// Regression (ISI-4113 live diagnosis): cmd/operator used to construct the
+// reconciler WITHOUT a client, and SetupWithManager defaulted Providers and
+// APIReader but not the embedded client.Client — so the very first r.Get in
+// Reconcile paniced on EVERY Project event (observed as a panic loop on
+// k8squad-test for both Projects). SetupWithManager must default the client
+// so that constructor shape can never crash again.
+func TestSetupWithManagerDefaultsNilClient(t *testing.T) {
+	log.SetLogger(funcr.New(func(_, _ string) {}, funcr.Options{}))
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "localhost"}, ctrl.Options{
+		Scheme:  newScheme(t),
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	r := &Reconciler{Store: scm.NewInMemoryMirrorStore()} // the crash shape: no Client
+	if err := r.SetupWithManager(mgr); err != nil {
+		t.Fatalf("SetupWithManager: %v", err)
+	}
+	if r.Client == nil {
+		t.Fatal("SetupWithManager left the embedded client nil — every reconcile panics at the first r.Get")
 	}
 }

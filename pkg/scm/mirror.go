@@ -109,6 +109,11 @@ type MirrorRow struct {
 // suppression.
 type MirrorStore interface {
 	ApplySnapshot(ctx context.Context, projectNamespace, projectName string, rows []MirrorRow) (applied int, err error)
+	// UpsertRepo anchors the (Project, upstream repository) pair in
+	// scm.repo after a completed mirror pass (db/migrations/0008: "the
+	// reconciler upserts it as the anchor for mirror liveness") — one row
+	// per mirrored repo with the pass's freshness observation.
+	UpsertRepo(ctx context.Context, projectNamespace, projectName, provider, repoURL string, mirroredAt time.Time) error
 }
 
 // MirrorReader is the read side of the mirror (ISI-3956 S5b): a filtered
@@ -183,13 +188,28 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 // records absent from a later snapshot removed (per project), and a return
 // value counting THIS pass's rows.
 type InMemoryMirrorStore struct {
-	mu   sync.Mutex
-	rows map[string]MirrorRow
+	mu    sync.Mutex
+	rows  map[string]MirrorRow
+	repos map[string]RepoAnchor
+}
+
+// RepoAnchor is the in-memory double of one scm.repo row (see MirrorStore.
+// UpsertRepo): the (Project, upstream repository) pair a completed mirror
+// pass anchored, with the pass's freshness observation.
+type RepoAnchor struct {
+	Namespace    string
+	Name         string
+	Provider     string
+	URL          string
+	LastMirrorAt time.Time
 }
 
 // NewInMemoryMirrorStore returns an empty in-memory mirror.
 func NewInMemoryMirrorStore() *InMemoryMirrorStore {
-	return &InMemoryMirrorStore{rows: map[string]MirrorRow{}}
+	return &InMemoryMirrorStore{
+		rows:  map[string]MirrorRow{},
+		repos: map[string]RepoAnchor{},
+	}
 }
 
 func mirrorKey(ns, name string, kind RecordType, externalID string) string {
@@ -217,6 +237,39 @@ func (s *InMemoryMirrorStore) ApplySnapshot(_ context.Context, ns, name string, 
 		s.rows[mirrorKey(ns, name, row.Kind, row.ExternalID)] = row
 	}
 	return len(rows), nil
+}
+
+// UpsertRepo records the repo anchor in memory — idempotent keyed by
+// (namespace, name, url), same convergence shape as the SQL store.
+func (s *InMemoryMirrorStore) UpsertRepo(_ context.Context, ns, name, provider, repoURL string, mirroredAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := fmt.Sprintf("%s/%s|%s", ns, name, repoURL)
+	s.repos[key] = RepoAnchor{
+		Namespace: ns, Name: name, Provider: provider, URL: repoURL, LastMirrorAt: mirroredAt,
+	}
+	return nil
+}
+
+// RepoAnchors returns a deterministic (sorted) copy of the anchored repos —
+// the test observation point for the UpsertRepo seam.
+func (s *InMemoryMirrorStore) RepoAnchors() []RepoAnchor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]RepoAnchor, 0, len(s.repos))
+	for _, a := range s.repos {
+		out = append(out, a)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Namespace != out[j].Namespace {
+			return out[i].Namespace < out[j].Namespace
+		}
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].URL < out[j].URL
+	})
+	return out
 }
 
 // ListRecords implements MirrorReader over the in-memory rows, scoped to one
@@ -376,6 +429,32 @@ func (s *SQLMirrorStore) ApplySnapshot(ctx context.Context, ns, name string, row
 		return 0, fmt.Errorf("mirror apply commit: %w", err)
 	}
 	return len(rows), nil
+}
+
+// upsertRepoSQL anchors the (Project, upstream repository) pair in scm.repo
+// (db/migrations/0008_scm_mirror.sql: "the reconciler upserts it as the
+// anchor for mirror liveness"). Keyed by the table's own uniqueness
+// (project_name, project_namespace, url); a re-anchored repo refreshes the
+// provider and the pass's freshness observation instead of duplicating.
+const upsertRepoSQL = `
+INSERT INTO scm.repo (project_namespace, project_name, url, provider, mirror_enabled, last_mirror_update)
+VALUES ($1, $2, $3, $4, true, $5)
+ON CONFLICT (project_name, project_namespace, url) DO UPDATE SET
+    provider          = EXCLUDED.provider,
+    mirror_enabled    = true,
+    last_mirror_update = EXCLUDED.last_mirror_update,
+    updated_at        = now()`
+
+// UpsertRepo implements the MirrorStore repo-anchor seam over the shared
+// coordination Postgres. It is a single-row statement outside the snapshot
+// transaction on purpose: the anchor marks THAT a pass completed, so it must
+// not roll back with a later chunk failure, and a crash between snapshot and
+// anchor simply re-anchors on the next level-triggered pass.
+func (s *SQLMirrorStore) UpsertRepo(ctx context.Context, ns, name, provider, repoURL string, mirroredAt time.Time) error {
+	if _, err := s.db.ExecContext(ctx, upsertRepoSQL, ns, name, repoURL, provider, mirroredAt); err != nil {
+		return fmt.Errorf("upsert scm.repo anchor %s/%s %s: %w", ns, name, repoURL, err)
+	}
+	return nil
 }
 
 // listRecordsSQL is the read side of the mirror (ISI-3956 S5b): a filtered

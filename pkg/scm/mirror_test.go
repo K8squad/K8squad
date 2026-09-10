@@ -195,6 +195,38 @@ func TestInMemoryMirrorStoreIdempotent(t *testing.T) {
 	}
 }
 
+// The repo-anchor seam (0008 schema contract): one anchor per (Project,
+// repo) pair — repeated passes refresh the freshness observation instead of
+// duplicating rows, and different repos/projects anchor independently.
+func TestInMemoryMirrorStoreUpsertRepo(t *testing.T) {
+	store := NewInMemoryMirrorStore()
+	ctx := context.Background()
+
+	first := time.Now()
+	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", first); err != nil {
+		t.Fatal(err)
+	}
+	later := first.Add(5 * time.Minute)
+	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", later); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertRepo(ctx, "ns2", "proj2", "gitlab", "gitlab.com/acme/other", later); err != nil {
+		t.Fatal(err)
+	}
+
+	anchors := store.RepoAnchors()
+	if len(anchors) != 2 {
+		t.Fatalf("expected 2 anchors (re-anchor must not duplicate), got %d: %+v", len(anchors), anchors)
+	}
+	app := anchors[0]
+	if app.Namespace != "ns" || app.Name != "proj" || app.Provider != "github" || app.URL != "github.com/acme/app" {
+		t.Fatalf("anchor fields wrong: %+v", app)
+	}
+	if !app.LastMirrorAt.Equal(later) {
+		t.Fatalf("re-anchor did not refresh freshness: %+v", app)
+	}
+}
+
 func TestProviderRegistry(t *testing.T) {
 	r := NewProviderRegistry()
 	p, err := r.Provider(context.Background(), "github", ProviderCredentials{Token: "t"})

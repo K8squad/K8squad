@@ -7,7 +7,7 @@
 // guidance strip derives next-missing from the onboarding progress read-model (AC3/FR-7.2/AD-2);
 // 403/409/422/501 surfaced VERBATIM with recovery CTA (AC4/FR-7.4/NFR-5).
 
-import { useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
@@ -38,6 +38,12 @@ type SubmitState =
   | { kind: "saving" }
   | { kind: "ok"; result: ComposeResult }
   | { kind: "error"; status: number; message: string; fields: FieldErrors };
+
+/** Destructive-delete flow status (ISI-4108). Errors surface through the shared submit-error banner. */
+type DeleteState =
+  | { kind: "idle" }
+  | { kind: "confirming"; name: string }
+  | { kind: "deleting"; name: string };
 
 /** Edit-form hydration status (ADR-0016 / ISI-4002). */
 type HydrationState =
@@ -154,7 +160,8 @@ interface ListEntry {
   subtitle?: string;
 }
 
-function useOrgList(kind: ComposeKind): { entries: ListEntry[]; loading: boolean } {
+// `reloadNonce` lets the caller force a refetch (e.g. after a delete) without changing `kind`.
+function useOrgList(kind: ComposeKind, reloadNonce: number): { entries: ListEntry[]; loading: boolean } {
   const [entries, setEntries] = useState<ListEntry[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -255,7 +262,7 @@ function useOrgList(kind: ComposeKind): { entries: ListEntry[]; loading: boolean
     return () => {
       cancelled = true;
     };
-  }, [kind]);
+  }, [kind, reloadNonce]);
 
   return { entries, loading };
 }
@@ -401,6 +408,106 @@ function ErrorBanner({
   );
 }
 
+// ── Destructive-delete confirm dialog (ISI-4108) ─────────────────────────────
+//
+// Agent + Project delete is irreversible, so a DELETE never fires until the operator confirms in
+// this modal. No destructive-confirm primitive exists in the console yet and native window.confirm
+// blocks the harness, so this is a minimal accessible dialog (Winston's design call: a simple
+// confirm is sufficient for Agent/Project; type-to-confirm is reserved for the future Team delete).
+// role=dialog + aria-modal + aria-labelledby/-describedby, focus lands on the destructive button,
+// Esc cancels, and Tab is trapped inside the dialog.
+function ConfirmDeleteDialog({
+  kind,
+  name,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  kind: ComposeKind;
+  name: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  // Move focus into the dialog on open (destructive button, so the operator reads before acting).
+  useEffect(() => {
+    confirmRef.current?.focus();
+  }, []);
+
+  function onKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (!busy) onCancel();
+      return;
+    }
+    if (e.key === "Tab") {
+      const focusables = dialogRef.current?.querySelectorAll<HTMLElement>("button:not([disabled])");
+      if (!focusables || focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  return (
+    <div
+      className="compose__confirm-overlay"
+      role="presentation"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onCancel();
+      }}
+    >
+      <div
+        ref={dialogRef}
+        className="compose__confirm card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compose-confirm-title"
+        aria-describedby="compose-confirm-body"
+        onKeyDown={onKeyDown}
+        data-testid="compose-delete-confirm"
+      >
+        <h2 id="compose-confirm-title" className="compose__confirm-title">
+          Delete {KIND_LABEL[kind]}?
+        </h2>
+        <p id="compose-confirm-body" className="compose__confirm-body">
+          This permanently deletes <strong>{name}</strong>. This can’t be undone.
+        </p>
+        <div className="compose__confirm-actions">
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={onCancel}
+            disabled={busy}
+            data-testid="compose-delete-cancel"
+          >
+            Cancel
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn--danger"
+            onClick={onConfirm}
+            disabled={busy}
+            data-testid="compose-delete-confirm-btn"
+          >
+            {busy ? "Deleting…" : `Delete ${KIND_LABEL[kind]}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ComposeScreen() {
@@ -442,6 +549,10 @@ export function ComposeScreen() {
   const [editTarget, setEditTarget] = useState<{ name: string; team: string } | null>(() =>
     seed.mode === "edit" && seed.name ? { name: seed.name, team: seedTeam } : null,
   );
+  // Bumped after a successful delete to force the left-pane list to refetch (ISI-4108).
+  const [reloadNonce, setReloadNonce] = useState(0);
+  // Destructive-delete flow (ISI-4108): a DELETE never fires until the operator confirms.
+  const [del, setDel] = useState<DeleteState>({ kind: "idle" });
 
   // Fetch onboarding progress for guidance strip (soft dep — graceful on 501).
   useEffect(() => {
@@ -516,7 +627,7 @@ export function ComposeScreen() {
     }
   }, [cf]);
 
-  const { entries: listEntries, loading: listLoading } = useOrgList(kind);
+  const { entries: listEntries, loading: listLoading } = useOrgList(kind, reloadNonce);
   const callerScope = useCallerScope();
 
   // Gate every team-scoped kind (agents/projects/roles/skills) behind a resolvable OWN team: a
@@ -583,6 +694,48 @@ export function ComposeScreen() {
     } else {
       const { message, fields } = parseError(res.status, await res.text());
       setSubmit({ kind: "error", status: res.status, message, fields });
+    }
+  }
+
+  // Only Agent + Project are deletable server-side (ISI-4107); Team delete is board-gated and
+  // tracked on the parent, so no Delete affordance renders for teams/roles/skills.
+  const deletableKind = kind === "agents" || kind === "projects";
+
+  // Confirm-gate → DELETE. On 204 the object is gone: clear any error, drop back to a fresh create
+  // form, and refetch the left-pane list. Denials/conflicts are relayed VERBATIM via ErrorBanner,
+  // mirroring the edit path (401/403/404 existence-hiding, 409/422/502 as-is).
+  async function confirmDelete() {
+    const name = cf.form.name.trim();
+    if (!name) {
+      setDel({ kind: "idle" });
+      return;
+    }
+    setDel({ kind: "deleting", name });
+    const qs = new URLSearchParams();
+    // Agent RBAC is project-scoped; forward the agent's project context. Project delete needs no
+    // query (scope IS its own name). Admins compose fleet-wide via ?team= (the edit-hydration seed).
+    if (cf.kind === "agents" && cf.form.project.trim()) qs.set("project", cf.form.project.trim());
+    if (seedTeam) qs.set("team", seedTeam);
+    const query = qs.toString();
+    const url = `/api/compose/${kind}/${encodeURIComponent(name)}${query ? `?${query}` : ""}`;
+    try {
+      const res = await fetch(url, { method: "DELETE" });
+      if (res.ok) {
+        // 204 No Content (or any 2xx): reset to a create form and refresh the list.
+        setDel({ kind: "idle" });
+        setSubmit({ kind: "idle" });
+        setMode("create");
+        setEditTarget(null);
+        setCf(emptyForm(kind));
+        setReloadNonce((n) => n + 1);
+      } else {
+        const { message, fields } = parseError(res.status, await res.text());
+        setDel({ kind: "idle" });
+        setSubmit({ kind: "error", status: res.status, message, fields });
+      }
+    } catch {
+      setDel({ kind: "idle" });
+      setSubmit({ kind: "error", status: 0, message: "Delete request failed — check your connection.", fields: {} });
     }
   }
 
@@ -733,6 +886,23 @@ export function ComposeScreen() {
                     : `Create ${KIND_LABEL[kind]}`}
               </button>
 
+              {/* ISI-4108: destructive Delete, edit mode only, Agent + Project only. */}
+              {mode === "edit" && deletableKind && (
+                <button
+                  type="button"
+                  className="btn btn--danger"
+                  disabled={
+                    !cf.form.name.trim() ||
+                    hydration.kind === "loading" ||
+                    del.kind === "deleting"
+                  }
+                  onClick={() => setDel({ kind: "confirming", name: cf.form.name.trim() })}
+                  data-testid="compose-delete-open"
+                >
+                  Delete {KIND_LABEL[kind]}
+                </button>
+              )}
+
               {submit.kind === "ok" && (
                 <span className="state state--ok" role="status">
                   {submit.result.operation === "created" ? "Created" : "Updated"}{" "}
@@ -751,6 +921,17 @@ export function ComposeScreen() {
               message={submit.message}
               onDismiss={() => setSubmit({ kind: "idle" })}
               onRetry={() => { void apply(); }}
+            />
+          )}
+
+          {/* ISI-4108: confirm-gate before the DELETE fires. */}
+          {!composeGated && del.kind !== "idle" && (
+            <ConfirmDeleteDialog
+              kind={kind}
+              name={del.name}
+              busy={del.kind === "deleting"}
+              onCancel={() => setDel({ kind: "idle" })}
+              onConfirm={() => { void confirmDelete(); }}
             />
           )}
         </main>

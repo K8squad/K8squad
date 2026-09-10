@@ -206,6 +206,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	// Anchor the (Project, repo) pair in scm.repo (0008 schema contract):
+	// one row per mirrored repo carrying the pass's freshness. Outside the
+	// snapshot tx — see SQLMirrorStore.UpsertRepo — and a failure here
+	// surfaces as a failed reconcile so the next pass re-anchors.
+	if err := r.Store.UpsertRepo(ctx, project.Namespace, project.Name, sync.Provider, project.Spec.Repo.URL, time.Now()); err != nil {
+		logger.Error(err, "repo-sync: scm.repo anchor upsert failed", "project", req.NamespacedName)
+		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})
+		return ctrl.Result{}, err
+	}
+
 	// ── the story-11.2 link pass: mirror rows → linked work items ──
 	// Same pass, same triggers (webhook + poll), same level-triggered
 	// discipline: the engine diffs the JUST-APPLIED snapshot against the
@@ -251,6 +261,14 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	if r.Store == nil {
 		return fmt.Errorf("reposync.Reconciler requires a MirrorStore (scm.NewSQLMirrorStore over the coord pool)")
+	}
+	if r.Client == nil {
+		// The composition root (cmd/operator) must hand over the manager's
+		// client, but Reconcile's very first act is r.Get — a nil embedded
+		// client panics there on EVERY reconcile (observed as a live panic
+		// loop on k8squad-test, ISI-4113 diagnosis). Default it here so the
+		// zero-Client constructor can never ship that crash again.
+		r.Client = mgr.GetClient()
 	}
 	if r.APIReader == nil {
 		// Uncached reads for Secrets: keeps the manager from starting a
