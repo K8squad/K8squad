@@ -1,53 +1,71 @@
 # deploy/otel — Collector chart-of-record (ISI-4163)
 
-This directory is the **chart-of-record for the collector topology** running in
-the `observability` namespace. Decision and rationale: ISI-4163.
+This directory owns the **collector topology** for k8squad. Decision and
+rationale: ISI-4163 (revised after board feedback — operator ownership must be
+optional, and BYO-collector must be supported).
 
-## What lives here
+## Layout
 
-| File | Contents | Applied as |
+| Path | What |
+|---|---|
+| `chart/` | `k8squad-otel` Helm chart — the chart-of-record. Renders the topology in one of three modes (below). |
+| `reference/` | Verbatim snapshot of the live in-cluster manifests (ISI-4153 capture) — drift baseline the chart was built from. |
+
+## Three modes (`collector.mode`)
+
+| Mode | Renders | Use when |
 |---|---|---|
-| `gateway-collector.yaml` | `OpenTelemetryCollector/otel-gateway` (opentelemetry.io/v1beta1) — workload OTLP gateway: memory_limiter → k8sattributes → resource → cumulativetodelta/redaction → tail_sampling → batch → Dynatrace | Managed by the OpenTelemetry Operator; the operator derives Service `otel-gateway-collector.observability` from the CR name |
-| `node-logs-daemonset.yaml` | `otel-node-logs` DaemonSet + ConfigMap + SA + the shared `otel-k8sattributes` ClusterRole/Binding — node-level pod log collection, exports OTLP/HTTP to the gateway | Plain manifests (not operator-managed) |
+| `operator` (default) | `OpenTelemetryCollector` CR; the otel-operator reconciles it into Deployment + Service `otel-gateway-collector.<ns>` | The OpenTelemetry Operator is (or may be) installed cluster-side. Matches what runs in our cluster today. |
+| `deployment` | Plain Deployment + ConfigMap + Service **literally named** `otel-gateway-collector.<ns>` — no operator required | Clusters without the otel-operator. |
+| `external` | No gateway at all (node-logs optional, pointed at `collector.external.endpoint`) | The user already runs their own collector (BYO). Workload wiring is then done by setting `controlPlane.otel.endpoint` in `config/helm` to the user's collector. |
 
 ## Platform contract this preserves
 
 `config/helm` (the deployed `k8squad` control-plane chart) injects
 `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-gateway-collector.observability:4317`
-into every control-plane workload (`config/helm/values.yaml` →
-`controlPlane.otel.endpoint`, live since ISI-3484; honored as the operator's
-stdout fallback since ISI-4102). The gateway CR name `otel-gateway` is what
-makes the operator generate exactly that Service name — **do not rename the
-CR** without updating the chart value in lockstep.
+into every control-plane workload (`controlPlane.otel.endpoint`, live since
+ISI-3484; honored as the operator's stdout fallback since ISI-4102).
 
-## Precondition (out-of-band secret)
+- `operator` mode: the operator derives the Service name from the CR name
+  (`otel-gateway` → `otel-gateway-collector`).
+- `deployment` mode: the chart renders the Service with that literal name.
+- `external` mode: the contract is explicitly the user's responsibility —
+  they point `controlPlane.otel.endpoint` at their own collector.
 
-The gateway exporter authenticates to Dynatrace via
-`Secret/dynatrace-otlp` (key `token`) in the `observability` namespace,
-referenced through `env: KSQUAD_OTLP_AUTH`. The Secret is created out-of-band
-and is intentionally **not** in this repo.
+**Do not rename `collector.name`** in operator/deployment mode without
+updating the `config/helm` value in lockstep.
 
-## Applying
+## Precondition (out-of-band secret, non-external modes)
+
+The gateway exporter authenticates to the vendor backend via
+`Secret/dynatrace-otlp` (key `token`) in the release namespace, referenced
+through `env: KSQUAD_OTLP_AUTH`. Created out-of-band; **never** in this repo.
+
+## Installing
 
 ```sh
-kubectl apply -k deploy/otel/
+# operator mode (default) — requires the otel-operator cluster-side
+helm install k8squad-otel deploy/otel/chart -n observability --create-namespace
+
+# no operator available
+helm install k8squad-otel deploy/otel/chart -n observability --create-namespace \
+  --set collector.mode=deployment
+
+# user brings their own collector
+helm install k8squad-otel deploy/otel/chart -n observability --create-namespace \
+  --set collector.mode=external \
+  --set collector.external.endpoint=http://my-collector.monitoring:4318
+# and in config/helm: controlPlane.otel.endpoint=http://my-collector.monitoring:4317
 ```
 
-Requires the OpenTelemetry Operator (serving `opentelemetry.io/v1beta1`) to
-already be installed; the operator install itself is cluster tooling and out
-of scope here.
+## Relationship to the other charts
 
-## Relationship to the Helm charts
-
-- `config/helm` (deployed): ships **no** collector templates by design — it
-  only renders the opt-in `OTelConfig` routing CR and the OTLP env wiring.
-  Collector topology is owned here.
+- `config/helm` (deployed): ships **no** collector templates by design — only
+  the opt-in `OTelConfig` routing CR and the OTLP env wiring (which is also
+  the BYO-collector seam). Collector topology is owned here.
 - `deploy/helm/ksquad` (undeployed): its `otel-collector*.yaml` templates are
-  **superseded** by this directory (they render a raw Deployment named
-  `<release>-otel-collector` in the release namespace, which neither matches
-  the contract Service name nor the operator-managed live topology). Their
-  retirement/guarding is tracked in the ISI-4163 migration follow-up.
+  **superseded** by this chart. Their retirement is tracked in ISI-4164.
 
-Drift rule: changes to the in-cluster collectors must land here first (or be
-captured back here immediately after `kubectl apply`), so repo and cluster do
-not diverge again.
+Drift rule: changes to the in-cluster collectors land in this chart first (or
+are captured back immediately after a manual apply), so repo and cluster do
+not diverge again. `reference/` is the baseline for drift diffs.

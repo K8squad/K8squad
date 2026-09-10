@@ -1,0 +1,29 @@
+{{- include "k8squad-otel.validate" . -}}
+k8squad-otel installed (mode: {{ .Values.collector.mode }})
+{{- if eq .Values.collector.mode "operator" }}
+
+The OpenTelemetry Operator will reconcile OpenTelemetryCollector/{{ .Values.collector.name }}
+into a Deployment with Service {{ include "k8squad-otel.gatewayServiceName" . }}.{{ .Release.Namespace }}.
+
+Precondition: the OpenTelemetry Operator (serving opentelemetry.io/v1beta1) must
+be installed cluster-side. If it is not, reinstall with --set collector.mode=deployment.
+{{- else if eq .Values.collector.mode "deployment" }}
+
+Gateway Service: {{ include "k8squad-otel.gatewayServiceName" . }}.{{ .Release.Namespace }} (plain Deployment, no operator required).
+{{- else }}
+
+External/BYO mode: no gateway was rendered. Wire k8squad workloads to your own
+collector by setting in config/helm values:
+  controlPlane.otel.endpoint: "<grpc endpoint of your collector>"   # e.g. http://my-collector.monitoring:4317
+{{- if .Values.nodeLogs.enabled }}
+Node-logs DaemonSet exports to: {{ include "k8squad-otel.gatewayHttpEndpoint" . }}
+{{- end }}
+{{- end }}
+{{- if ne .Values.collector.mode "external" }}
+
+Workload wiring (config/helm default already matches):
+  controlPlane.otel.endpoint: "http://{{ include "k8squad-otel.gatewayServiceName" . }}.{{ .Release.Namespace }}:4317"
+
+Precondition: Secret/{{ .Values.collector.authSecretRef.name }} (key {{ .Values.collector.authSecretRef.key }})
+must exist in namespace {{ .Release.Namespace }} — created out-of-band, never in this chart.
+{{- end }}
