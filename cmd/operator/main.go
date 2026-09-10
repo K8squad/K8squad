@@ -64,7 +64,6 @@ import (
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
-	otelegress "github.com/K8squad/K8squad/pkg/controller/otelegress"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
 	projectpvc "github.com/K8squad/K8squad/pkg/controller/projectpvc"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
@@ -611,16 +610,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Story 13.8 (ISI-3724, ADR-0008 M1(b)): the otelegress reconciler renders
-	// the applied OTelConfig's per-signal routing into the collector's
-	// operator-owned `<collector>-egress` overlay ConfigMap (second `--config`
-	// source) and rolls the collector — so the CRD, not Helm values, is the
-	// source of truth for vendor egress, with redaction (13.7) always upstream.
-	// The collector lives in the operator's own namespace (POD_NAMESPACE).
-	if err := (&otelegress.Reconciler{Namespace: os.Getenv("POD_NAMESPACE")}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up otelegress reconciler")
-		os.Exit(1)
-	}
+	// ISI-4165: the otelegress reconciler (story 13.8, ISI-3724, ADR-0008
+	// M1(b)) is removed. Post collector-consolidation (ISI-4137) the
+	// helm-managed collector it used to overlay egress onto is gone; the
+	// surviving gateway is otel-operator-managed and egress is static
+	// collector-CR config, so the reconciler hot-looped on
+	// collector-Deployment-not-found. If OTelConfig→gateway egress sync is
+	// ever needed again it must reconcile the OpenTelemetryCollector CR, not
+	// raw ConfigMaps (which would fight the otel-operator).
 
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
