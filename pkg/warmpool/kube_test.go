@@ -196,3 +196,79 @@ func TestKubeProvisionerBootMountsCoordSecretVolume(t *testing.T) {
 		t.Errorf("coord Secret mount should be read-only")
 	}
 }
+
+// TestKubeProvisionerMountsProjectWorkspace (ISI-4127): a pool key carrying
+// ProjectPVC boots the sandbox pod with that claim mounted team-shared at
+// /workspace; a key without one boots exactly as before (no workspace
+// volume, no mount).
+func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	ctx := context.Background()
+	// M1.2 merged onto main: Boot refuses a key without an image, so both
+	// keys carry one (the classifier guarantees it in production).
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test", ProjectPVC: "workspace-project-widget"}
+	if err := p.Boot(ctx, key, "sbx-ws"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "squad-a", "sbx-ws"), pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+
+	var vol *corev1.Volume
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == WorkspaceVolumeName {
+			vol = &pod.Spec.Volumes[i]
+		}
+	}
+	if vol == nil {
+		t.Fatalf("no %q volume on pod; volumes=%+v", WorkspaceVolumeName, pod.Spec.Volumes)
+	}
+	if vol.PersistentVolumeClaim == nil || vol.PersistentVolumeClaim.ClaimName != "workspace-project-widget" {
+		t.Fatalf("workspace volume = %+v, want PVC workspace-project-widget", vol.VolumeSource)
+	}
+	if vol.PersistentVolumeClaim.ReadOnly {
+		t.Errorf("workspace mount must be read-write (team-shared)")
+	}
+
+	var mount *corev1.VolumeMount
+	for i := range pod.Spec.Containers[0].VolumeMounts {
+		if pod.Spec.Containers[0].VolumeMounts[i].Name == WorkspaceVolumeName {
+			mount = &pod.Spec.Containers[0].VolumeMounts[i]
+		}
+	}
+	if mount == nil {
+		t.Fatalf("sandbox container has no %q mount", WorkspaceVolumeName)
+	}
+	if mount.MountPath != WorkspaceMountPath {
+		t.Errorf("mount path = %q, want %q", mount.MountPath, WorkspaceMountPath)
+	}
+	if mount.SubPath != "" {
+		t.Errorf("subPath = %q; the Boot-time mount is whole-volume (principal unknown until Bind)", mount.SubPath)
+	}
+
+	// No PVC in the key: no workspace volume, no workspace mount.
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test"}, "sbx-plain"); err != nil {
+		t.Fatalf("boot plain: %v", err)
+	}
+	plain := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "squad-a", "sbx-plain"), plain); err != nil {
+		t.Fatalf("get plain pod: %v", err)
+	}
+	for _, v := range plain.Spec.Volumes {
+		if v.Name == WorkspaceVolumeName {
+			t.Fatalf("PVC-less key must not emit a workspace volume")
+		}
+	}
+	for _, m := range plain.Spec.Containers[0].VolumeMounts {
+		if m.Name == WorkspaceVolumeName {
+			t.Fatalf("PVC-less key must not emit a workspace mount")
+		}
+	}
+}

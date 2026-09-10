@@ -15,17 +15,21 @@ import (
 )
 
 // Store is the coord-backed read/write model the endpoints operate over. It is
-// deliberately narrow — the four own-run actions and nothing else. The prod
-// implementation binds these onto the coord schema (work_item / comment / claim
-// fence); tests bind a fake. The SAME richer read (title/description/AC/goals/
-// comments) is shared with S1's assembler `Sources.WorkItem` (ISI-3600) — the
-// read model is designed once and lives in pkg/coord, never duplicated.
+// deliberately narrow — the five own-run actions and nothing else. The prod
+// implementation binds these onto the coord schema (work_item / comment /
+// change_ref / claim fence); tests bind a fake. The SAME richer read
+// (title/description/AC/goals/comments/change refs) is shared with S1's
+// assembler `Sources.WorkItem` (ISI-3600) — the read model is designed once and
+// lives in pkg/coord, never duplicated.
 type Store interface {
 	// GetTask returns the work item's full detail scoped to workItemID.
 	// ErrNotFound if the item does not exist.
 	GetTask(ctx context.Context, workItemID string) (TaskDetail, error)
 	// PostComment appends a comment attributed to principal and returns it.
 	PostComment(ctx context.Context, workItemID, principal, body string) (Comment, error)
+	// PostChange appends one agent-reported change ref (M1.5/ISI-4131) attributed
+	// to principal/runID and returns it. ErrInvalidChangeRef for a bad kind/ref.
+	PostChange(ctx context.Context, workItemID, principal, runID, kind, ref, summary string) (ChangeRef, error)
 	// UpdateStatus transitions the work item's state and returns the lane it was
 	// in BEFORE the move (for the AC8 `status.from` span attribute). from may be
 	// empty when the prior lane is unknown (e.g. an early validation refusal).
@@ -42,6 +46,7 @@ var (
 	ErrNotFound          = errors.New("taskio: work item not found")
 	ErrInvalidTransition = errors.New("taskio: invalid status transition")
 	ErrStaleFence        = errors.New("taskio: stale claim fence")
+	ErrInvalidChangeRef  = errors.New("taskio: invalid change ref")
 )
 
 // ---- wire shapes (the contract S3's task-io Skill body documents) ----------
@@ -53,26 +58,45 @@ type Comment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+// ChangeRef is one provenanced agent-reported change reference (M1.5/ISI-4131).
+type ChangeRef struct {
+	Kind      string    `json:"kind"`              // 'commit' | 'pull_request'
+	Ref       string    `json:"ref"`               // commit SHA or PR URL
+	Summary   string    `json:"summary,omitempty"` // one-line what-changed note
+	Author    string    `json:"author"`            // server-supplied token principal
+	RunID     string    `json:"runId,omitempty"`   // reporting Run (provenance)
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 // TaskDetail is the get-task response: the agent's own task, in full. AC and
 // Goals are the richer-read fields shared with S1 (empty until a first-class
 // coord surface backs them — see pkg/coord/taskdetail.go).
 type TaskDetail struct {
-	WorkItemID         string    `json:"workItemId"`
-	Title              string    `json:"title"`
-	Description        string    `json:"description"`
-	State              string    `json:"state"`
-	BlockedReason      string    `json:"blockedReason,omitempty"`
-	AcceptanceCriteria []string  `json:"acceptanceCriteria,omitempty"`
-	Goals              []string  `json:"goals,omitempty"`
-	Comments           []Comment `json:"comments"`
-	FenceToken         int64     `json:"fenceToken"`
-	Holder             string    `json:"holder,omitempty"`
-	RunID              string    `json:"runId,omitempty"`
+	WorkItemID         string      `json:"workItemId"`
+	Title              string      `json:"title"`
+	Description        string      `json:"description"`
+	State              string      `json:"state"`
+	BlockedReason      string      `json:"blockedReason,omitempty"`
+	AcceptanceCriteria []string    `json:"acceptanceCriteria,omitempty"`
+	Goals              []string    `json:"goals,omitempty"`
+	Comments           []Comment   `json:"comments"`
+	ChangeRefs         []ChangeRef `json:"changeRefs"`
+	FenceToken         int64       `json:"fenceToken"`
+	Holder             string      `json:"holder,omitempty"`
+	RunID              string      `json:"runId,omitempty"`
 }
 
 // postCommentRequest is the post-comment body: {"body": "..."}.
 type postCommentRequest struct {
 	Body string `json:"body"`
+}
+
+// postChangeRequest is the post-change body (M1.5): {"kind":"commit",
+// "ref":"<sha or PR url>", "summary":"what changed"}.
+type postChangeRequest struct {
+	Kind    string `json:"kind"`
+	Ref     string `json:"ref"`
+	Summary string `json:"summary,omitempty"`
 }
 
 // updateStatusRequest is the update-status body: {"status": "in_review"}.
@@ -108,6 +132,7 @@ func (h *Handler) Mux() http.Handler {
 	// opens the taskio.<op> server span with the token's run/work-item identity.
 	mux.HandleFunc("/get-task", h.auth(h.instrument("get_task", h.getTask)))
 	mux.HandleFunc("/post-comment", h.auth(h.instrument("post_comment", h.postComment)))
+	mux.HandleFunc("/post-change", h.auth(h.instrument("post_change", h.postChange)))
 	mux.HandleFunc("/update-status", h.auth(h.instrument("update_status", h.updateStatus)))
 	mux.HandleFunc("/checkout", h.auth(h.instrument("checkout", h.checkout)))
 	return mux
@@ -264,6 +289,36 @@ func (h *Handler) postComment(w http.ResponseWriter, r *http.Request, tok RunTok
 	writeJSON(w, http.StatusCreated, c)
 }
 
+// postChange is the M1.5 change-summary verb (ISI-4131): the run reports one
+// change ref — a commit SHA or a PR link — against its OWN work item. The
+// attribution (author, run) comes from the token, never the body; a foreign
+// workItemId field in the body is ignored (the token's binding governs, §AC5).
+func (h *Handler) postChange(w http.ResponseWriter, r *http.Request, tok RunToken) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req postChangeRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.Kind != "commit" && req.Kind != "pull_request" {
+		writeError(w, http.StatusBadRequest, "kind must be commit or pull_request")
+		return
+	}
+	if req.Ref == "" {
+		writeError(w, http.StatusBadRequest, "ref required")
+		return
+	}
+	// Attribution + provenance are the token's principal/run — never client text.
+	c, err := h.store.PostChange(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Kind, req.Ref, req.Summary)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, c)
+}
+
 func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request, tok RunToken) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "POST required")
@@ -339,6 +394,8 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "invalid status transition")
 	case errors.Is(err, ErrStaleFence):
 		writeError(w, http.StatusConflict, "stale claim fence — checkout lost a custody race")
+	case errors.Is(err, ErrInvalidChangeRef):
+		writeError(w, http.StatusBadRequest, "invalid change ref")
 	case errors.Is(err, ErrScopeMismatch):
 		writeError(w, http.StatusForbidden, "token not scoped to this work item")
 	default:

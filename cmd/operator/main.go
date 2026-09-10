@@ -66,6 +66,7 @@ import (
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelegress "github.com/K8squad/K8squad/pkg/controller/otelegress"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
+	projectpvc "github.com/K8squad/K8squad/pkg/controller/projectpvc"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
@@ -653,6 +654,17 @@ func main() {
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
 
+	// Per-Project workspace PVC reconciler (ISI-4127): provisions the claim
+	// every PVC-backed Project's agent pods mount shared. Registered through
+	// its own SetupWithManager, which names the controller "project-pvc" to
+	// stay clear of the repo-sync reconciler's "project" (the same
+	// controller-runtime name-uniqueness rule the run-workspace comment
+	// below documents).
+	if err := projectpvc.NewReconciler(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up project workspace PVC reconciler")
+		os.Exit(1)
+	}
+
 	// Initialize network policy manager for team isolation (ISI-2884)
 	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
 
@@ -692,7 +704,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "mcpserver-discovery", "workspace", "networkpolicy"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "mcpserver-discovery", "workspace", "project-pvc", "networkpolicy"})
 	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)

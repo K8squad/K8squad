@@ -126,17 +126,18 @@ spec:
 ---
 # task-io — the union-baseline task-I/O skill (ISI-3602, from the ISI-3588
 # study §4b/§5-S3). Every Role grants this so any working agent can, ON DEMAND,
-# re-read its own work item, append a comment, update its status, and check out
-# work — the coord-side analogue of Paperclip's issue read/write. It grants
-# *agency over its own task*, never a general issue-browser and never context
-# assembly (that is the platform's boot-time PUSH, S1/ISI-3590).
+# re-read its own work item, append a comment, report a change (M1.5/ISI-4131),
+# update its status, and check out work — the coord-side analogue of Paperclip's
+# issue read/write. It grants *agency over its own task*, never a general
+# issue-browser and never context assembly (that is the platform's boot-time
+# PUSH, S1/ISI-3590).
 #
 # The coord API this skill drives is delivered by S2 (ISI-3601, merged to main
-# in PR #237): four verbs — `get-task` (GET), `post-comment`, `update-status`,
-# `checkout` (POST) — reached over env-injected `KSQUAD_COORD_URL` with a
-# run-scoped `KSQUAD_COORD_TOKEN` bound to `RUN_ID` + `WORK_ITEM_ID` (a token for
-# one run cannot touch another). The endpoints operate ONLY on the agent's own
-# run/work-item.
+# in PR #237) + M1.5 (ISI-4131): five verbs — `get-task` (GET), `post-comment`,
+# `post-change`, `update-status`, `checkout` (POST) — reached over env-injected
+# `KSQUAD_COORD_URL` with a run-scoped `KSQUAD_COORD_TOKEN` bound to `RUN_ID` +
+# `WORK_ITEM_ID` (a token for one run cannot touch another). The endpoints
+# operate ONLY on the agent's own run/work-item.
 #
 # SOURCING: git-sourced, SHA-pinned to the canonical catalog entry in
 # `K8squad/k8squad-skills` path `skills/task-io` (mirroring `github`), now that

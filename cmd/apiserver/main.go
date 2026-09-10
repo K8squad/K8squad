@@ -330,6 +330,14 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item write store: %v", err)
 	}
 
+	// M1.5 board read models (ISI-4131): the per-Project card list + the ticket
+	// thread (comments, status history, change refs) the console Issues tab
+	// (M1.6) draws from. Same DB hard-dependency posture as the write stores.
+	workItemReads, err := coord.NewWorkItemReadStore(db)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: work-item read store: %v", err)
+	}
+
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
 	// (migration 0012). The DB is a hard start dependency here, so the searcher is
 	// always bound (the documented-501 fallback exists only for a searcher-less host
@@ -469,7 +477,7 @@ func main() {
 		default:
 			runTokenMinter = minter
 			taskIOHandler = taskio.NewHandler(minter, store).Mux()
-			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/update-status/checkout)")
+			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/post-change/update-status/checkout)")
 		}
 	} else {
 		log.Printf("ksquad-apiserver: task-io seam disabled — no >=32B JWT signing key (set auth.signingKeySecretRef / KSQUAD_JWT_SIGNING_KEY)")
@@ -509,6 +517,7 @@ func main() {
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,
+		WorkItemReads:    workItemReads,
 		Search:           searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the

@@ -150,6 +150,13 @@ type PoolKey struct {
 	// CapabilityHash is the Run's resolved capability-manifest hash
 	// (ADR-044 step 5/7); empty = the bare, capability-free posture.
 	CapabilityHash string
+	// ProjectPVC is the Run's per-Project workspace claim name
+	// (ISI-4127, §9.4) when the Project carries spec.workspacePVC; empty =
+	// no workspace mount. It is a pool-key dimension because the mount is
+	// fixed at pod Boot (volumes are immutable afterwards): warm stock for
+	// a PVC-backed Project is per-Project by construction. Only Projects
+	// that opted into a workspace PVC fragment the pool this way.
+	ProjectPVC string
 }
 
 // RunClass routes the §9.2 hybrid regime: interactive Runs draw from the

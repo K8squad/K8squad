@@ -1,7 +1,8 @@
 // Package taskio implements the run-scoped agent task-io API seam (ISI-3601,
 // Story S2 of the ISI-3588 agent-bootstrap study): the small, own-run-only
 // surface a K8squad agent uses mid-run to re-read its task, post a comment,
-// update its status, and check out (claim) its work item.
+// report a change (M1.5/ISI-4131), update its status, and check out (claim)
+// its work item.
 //
 // Two halves live here:
 //
@@ -11,9 +12,9 @@
 //     (pkg/auth) — NO bespoke crypto — but mints through a DISTINCT issuer
 //     ("ksquad-taskio") so a console session JWT can never be replayed as a
 //     run token even though both may share one signing key (§AC5).
-//   - handler.go — the get-task / post-comment / update-status / checkout HTTP
-//     endpoints, each authorized from the token's own binding, never from
-//     client-supplied path/params alone.
+//   - handler.go — the get-task / post-comment / post-change / update-status /
+//     checkout HTTP endpoints, each authorized from the token's own binding,
+//     never from client-supplied path/params alone.
 //
 // Scope discipline (spike §4/§6): this is the agent's OWN-run seam only. It is
 // deliberately NOT a general read-project / read-issue browser — that would
