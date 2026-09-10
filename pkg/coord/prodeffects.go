@@ -116,6 +116,20 @@ type RunCredentialWriter interface {
 	WriteRunCredential(ctx context.Context, runID, sandboxRef string) error
 }
 
+// SandboxRefObserver is notified of a Run's sandbox_ref the moment the sandbox
+// physically binds (M1.2: surfacing Run.status.sandboxRef, which the status
+// projector deliberately preserves-but-never-writes). ProdEffects invokes it
+// under the same at-most-once gating as RunCredentialWriter — before the
+// durable coord.sandbox_bind marker, so a committed marker implies both the
+// credential AND the observed ref. It carries only (runID, sandboxRef): the
+// impl owns patching whatever operator-side surface cares (today: the Run CRD
+// status). A nil observer selects ref-silent mode (bind unaffected).
+type SandboxRefObserver interface {
+	// ObserveSandboxRef records the bound sandbox_ref for runID. It MUST be
+	// idempotent on (runID, sandboxRef) — a re-drive re-observes harmlessly.
+	ObserveSandboxRef(ctx context.Context, runID, sandboxRef string) error
+}
+
 // ProdEffects implements reconcile.Effects against the production coord schema for
 // ONE Run. Like ProdReconcileStore it is constructed per Run and bound to that Run's
 // work_item_id / run_id / principal; those (not the machine's fixture strings) key
@@ -135,6 +149,7 @@ type ProdEffects struct {
 	dispatcher  TaskDispatcher      // physical A2A shim submit; nil = ledger-only
 	snapshotter BuildSnapshotter    // 8.7c build-snapshot capture; nil = snapshot-off
 	credWriter  RunCredentialWriter // topology-2 Bind-path task-io Secret; nil = credential-off
+	refObserver SandboxRefObserver  // M1.2: surface Run.status.sandboxRef at Bind; nil = ref-silent
 
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
@@ -181,6 +196,15 @@ func (e *ProdEffects) WithSnapshotter(s BuildSnapshotter) *ProdEffects {
 // in. Returns e for chaining. A nil writer leaves credential-off mode.
 func (e *ProdEffects) WithRunCredentialWriter(w RunCredentialWriter) *ProdEffects {
 	e.credWriter = w
+	return e
+}
+
+// WithSandboxRefObserver enables the M1.2 sandbox-ref surface: the observer is
+// invoked right after the credential write (same at-most-once gating, before
+// the durable marker). Option-style for the same reason as the other With*
+// seams. A nil observer leaves ref-silent mode.
+func (e *ProdEffects) WithSandboxRefObserver(o SandboxRefObserver) *ProdEffects {
+	e.refObserver = o
 	return e
 }
 
@@ -262,6 +286,16 @@ func (e *ProdEffects) BindSandbox(runID string, keyed bool) {
 	if e.credWriter != nil && sandboxRef != "" {
 		if err := e.credWriter.WriteRunCredential(e.ctx, e.runID, sandboxRef); err != nil {
 			e.fail(fmt.Errorf("coord.ProdEffects.BindSandbox: write run credential: %w", err))
+			return
+		}
+	}
+	// M1.2: surface the bound sandbox_ref (Run.status.sandboxRef) under the
+	// same pre-marker ordering — a committed marker implies the ref was
+	// observed, and a crash in between re-drives through the run_id-keyed
+	// reattach (the observer is idempotent).
+	if e.refObserver != nil && sandboxRef != "" {
+		if err := e.refObserver.ObserveSandboxRef(e.ctx, e.runID, sandboxRef); err != nil {
+			e.fail(fmt.Errorf("coord.ProdEffects.BindSandbox: observe sandbox ref: %w", err))
 			return
 		}
 	}

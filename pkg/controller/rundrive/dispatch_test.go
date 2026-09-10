@@ -40,6 +40,12 @@ import (
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
+// dispatchTeamObj returns the Team CR the dispatcher resolves for the standard
+// run fixtures (M1.2: TeamID is the Team uid).
+func dispatchTeamObj() *api.Team {
+	return &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Namespace: "team-a", UID: types.UID("uid-team-a")}}
+}
+
 func dispatchScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -184,7 +190,7 @@ func TestOperatorDispatcherCodexReachesTerminalWithArtifact(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "codex-coder", Namespace: "team-a"},
 		Spec:       api.AgentSpec{Model: "gpt-5.4-codex"},
 	}
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, dispatchTeamObj()).Build()
 
 	reg := prometheus.NewRegistry()
 	mapper := toolusage.NewMapper(nil, reg)
@@ -274,7 +280,7 @@ func TestShimEnvSelectsCodexRuntime(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "codex-coder", Namespace: "team-a"},
 		Spec:       api.AgentSpec{Model: "gpt-5.4-codex"},
 	}
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, dispatchTeamObj()).Build()
 	d := &operatorDispatch{
 		cfg:     OperatorDispatchConfig{Client: cl, RuntimeType: "codex"},
 		shimBin: "shim",
@@ -319,7 +325,7 @@ func TestOperatorDispatcherProducesScrapeableSeries(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: "team-a"},
 		Spec:       api.AgentSpec{Model: "claude-sonnet-4"},
 	}
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, dispatchTeamObj()).Build()
 
 	reg := prometheus.NewRegistry()
 	mapper := toolusage.NewMapper(nil, reg) // nil tracer: metrics-only (spans noop)
@@ -419,7 +425,7 @@ func TestBuildTaskProjectsBYOModelEndpoint(t *testing.T) {
 			"apiToken":    []byte("s3cr3t-bearer"),
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, secret).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, secret, dispatchTeamObj()).Build()
 	d := &operatorDispatch{
 		cfg:    OperatorDispatchConfig{Client: cl},
 		source: fakeDispatchSource{title: "wire ollama", body: "route this run", fence: "3"},
@@ -462,7 +468,7 @@ func TestBuildTaskFailsClosedOnBadEndpoint(t *testing.T) {
 			ModelEndpointRef: &api.SecretRef{Name: "does-not-exist"},
 		},
 	}
-	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent).Build()
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).WithObjects(run, agent, dispatchTeamObj()).Build()
 	d := &operatorDispatch{
 		cfg:    OperatorDispatchConfig{Client: cl},
 		source: fakeDispatchSource{title: "x", body: "y", fence: "1"},

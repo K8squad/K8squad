@@ -32,10 +32,13 @@ import (
 func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	capRun := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
 	capRun.Name = "cap-run"
+	capRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	capRun.Status.CapabilityManifest = &api.CapabilityManifest{CapabilityHash: "abc123"}
-	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(capRun).Build()
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(capRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
 
-	key, _, err := SpecClassifier(cl)(context.Background(), "44444444-4444-4444-4444-444444444444")
+	imgs := RuntimeImages{Default: "reg.example/ksquad-shim-codex:m1"}
+	key, _, err := SpecClassifier(cl, imgs, "gvisor")(context.Background(), "44444444-4444-4444-4444-444444444444")
 	if err != nil {
 		t.Fatalf("classify capability run: %v", err)
 	}
@@ -49,8 +52,10 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	// A Run without a manifest classifies to the bare posture (empty
 	// hash), not an error.
 	bareRun := newTestRun("55555555-5555-5555-5555-555555555555", "wi-5")
-	cl2 := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(bareRun).Build()
-	key, _, err = SpecClassifier(cl2)(context.Background(), "55555555-5555-5555-5555-555555555555")
+	bareRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
+	cl2 := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(bareRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
+	key, _, err = SpecClassifier(cl2, imgs, "gvisor")(context.Background(), "55555555-5555-5555-5555-555555555555")
 	if err != nil {
 		t.Fatalf("classify bare run: %v", err)
 	}

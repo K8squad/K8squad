@@ -82,13 +82,25 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 	}
 
 	window := contextsource.WindowForModel(agent.Spec.Model)
+	// M1.2 (ISI-4128): scoped memory recall keys on the team's Postgres uuid
+	// (coord.work_item.team_id is the Team CR uid) — the Team CR name is not a
+	// uuid and fails the scoped-recall query. Resolve the Team CR and pass
+	// its uid; a declared-but-unreadable team fails closed like agent/project.
+	teamNS := run.Spec.TeamRef.Namespace
+	if teamNS == "" {
+		teamNS = run.Namespace
+	}
+	var team api.Team
+	if err := r.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
+		return fmt.Errorf("read Team %s/%s for run %s/%s context assembly: %w", teamNS, run.Spec.TeamRef.Name, run.Namespace, run.Name, err)
+	}
 	// Resolve the Project CRD in the projectRef's namespace (honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := r.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
 		Run:           run,
 		Agent:         &agent,
 		Project:       &project,
-		TeamID:        run.Spec.TeamRef.Name,
+		TeamID:        string(team.UID),
 		ContextWindow: window,
 	})
 	if err != nil {

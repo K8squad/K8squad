@@ -61,6 +61,10 @@ type KubeProvisioner struct {
 	// Default resource limits for sandbox pods.
 	cpuLimit    string
 	memoryLimit string
+	// podEnv is extra non-secret env stamped into every sandbox container
+	// (e.g. the OTLP endpoint/protocol passthrough so pod-side spans reach
+	// the telemetry pipeline — values only, never secrets).
+	podEnv []corev1.EnvVar
 }
 
 // NewKubeProvisioner creates a new kube Provisioner with the given
@@ -81,6 +85,14 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 	}
 }
 
+// WithPodEnv stamps additional non-secret env into every sandbox container the
+// provisioner boots. Callers must pass values only (the OTLP endpoint
+// passthrough) — never secrets; the minimal-env invariant (ADR-0007) holds.
+func (k *KubeProvisioner) WithPodEnv(vars ...corev1.EnvVar) *KubeProvisioner {
+	k.podEnv = append(k.podEnv, vars...)
+	return k
+}
+
 // Boot creates a fresh sandbox pod for key under the pool-assigned sandboxID.
 // The pod carries the key's RuntimeClass and AgentRuntime image. It returns
 // WITHOUT waiting for readiness — readiness is reported to the pool via the
@@ -91,7 +103,21 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 // §12.1); the sandboxNamespace default remains only for callers that have
 // not migrated to classified keys.
 func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string) error {
+	if key.Image == "" {
+		// Fail loudly over the API server's opaque "spec.containers[0].image:
+		// Required value" — an empty image means the AgentRuntime→image
+		// resolution did not run (no KSQUAD_SANDBOX_IMAGE configured), and the
+		// bind that triggered this boot must surface a diagnosable error.
+		return fmt.Errorf("kubeProvisioner.Boot: pool key has empty image (configure the sandbox runtime image, e.g. KSQUAD_SANDBOX_IMAGE): %s", sandboxID)
+	}
 	runtimeClass := key.RuntimeClass
+	// A "runc"/empty RuntimeClass means the cluster-default runtime: an unset
+	// RuntimeClassName. Clusters without a gvisor/kata RuntimeClass (the
+	// k8squad-test shape) would reject the pod spec outright.
+	sandboxRuntimeClass := ""
+	if runtimeClass != "" && runtimeClass != "runc" {
+		sandboxRuntimeClass = runtimeClass
+	}
 	namespace := key.Namespace
 	if namespace == "" {
 		namespace = sandboxNamespace
@@ -106,9 +132,9 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 			Name:      sandboxID,
 			Namespace: namespace,
 			Labels: map[string]string{
-				"app":     "k8squad-sandbox",
-				"sandbox": sandboxID,
-				"pool":    key.RuntimeClass,
+				SandboxAppLabel: SandboxAppValue,
+				"sandbox":       sandboxID,
+				"pool":          key.RuntimeClass,
 			},
 			Annotations: map[string]string{
 				"k8squad.io/sandbox-id": sandboxID,
@@ -116,7 +142,6 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 			},
 		},
 		Spec: corev1.PodSpec{
-			RuntimeClassName:              &runtimeClass,
 			TerminationGracePeriodSeconds: ptrTo[int64](30),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsUser:  ptrTo[int64](1000),
@@ -124,8 +149,29 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 			},
 			Containers: []corev1.Container{
 				{
-					Name:  "sandbox",
+					Name: "sandbox",
 					Image: key.Image,
+					// M1.2 (ISI-4128): squad namespaces enforce the restricted
+					// PodSecurity standard (the team reconciler stamps it); the
+					// sandbox container must carry its own hardened
+					// securityContext or the API server rejects the pod.
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: ptrTo(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: ptrTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					// ADR-0007 D1: the in-pod supervisor is the container's
+					// PID 1 — the entrypoint image runs `shim supervisor`,
+					// which serves /health + /ready on :8080 (the probes
+					// below), completes the Bind→pod task-io credential
+					// handshake (/handshake), and accepts task envelopes
+					// (POST /task) once the D1 bridge dispatches into pods.
+					Args: []string{"supervisor"},
 					// Epic D (ISI-3288, plan §2.4): the tool-usage gate as of
 					// pod boot. The operator's otelgate reconciler keeps
 					// toolusage.Enabled() synced with OTelConfig.spec.toolUsage;
@@ -142,7 +188,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 					// startup). A carrier-less context (pool warm-boot, no
 					// live Run) stamps nothing — the next span roots a fresh
 					// trace, honestly.
-					Env: sandboxEnv(ctx, toolusage.Enabled()),
+					Env: append(sandboxEnv(ctx, toolusage.Enabled()), k.podEnv...),
 					// Topology 2 (ADR-0007 channel A): mount the per-sandbox
 					// task-io Secret at the coord path. The mount is OPTIONAL
 					// (see the Volume below) because the Secret does not exist
@@ -207,6 +253,10 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 				},
 			}},
 		},
+	}
+
+	if sandboxRuntimeClass != "" {
+		pod.Spec.RuntimeClassName = &sandboxRuntimeClass
 	}
 
 	// Per-Project workspace (ISI-4127): the claim name rides the pool key
