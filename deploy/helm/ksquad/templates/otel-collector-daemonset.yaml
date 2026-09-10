@@ -1,0 +1,267 @@
+{{- /*
+  OpenTelemetry Collector DaemonSet — node log collector (ISI-4102 board
+  directive, 2026-09-10; obs-plan §6, §10).
+
+  One collector per node reads container log files (filelog), enriches them with
+  k8sattributes, and PUSHES them to the in-cluster gateway collector's OTLP
+  receiver. The gateway — never this DaemonSet — is the only hop that talks to
+  the vendor backend (obs-plan §10): the Dynatrace credential lives on exactly
+  one Deployment, not on every node, and the gateway's redaction + vendor egress
+  overlay (operator-owned per ADR-0008/ISI-3724, or the Helm bootstrap fallback)
+  carry the logs the last mile.
+
+  Design notes:
+  - filelog offsets persist in an emptyDir (/var/lib/otelcol): the container
+    filesystem is read-only, and without persisted offsets every pod restart
+    would re-read and DUPLICATE the whole node's logs.
+  - redaction still runs here (logs leave the node, guard #1 applies) even
+    though the gateway redacts again — double-guarded.
+  - No prometheus surface, no vendor credential, no Service: this collector
+    only reads files and pushes.
+*/ -}}
+{{- if and .Values.observability.collector.enabled .Values.observability.collector.daemonset.enabled -}}
+{{- $name := include "ksquad.otel-collector.fullname" . -}}
+{{- $daemonsetName := printf "%s-daemonset" $name -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $daemonsetName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector-daemonset
+---
+{{- /* k8sattributes needs cluster-wide read on pods/namespaces to enrich
+        log records with k8s.* resource attributes. Read-only. */}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $daemonsetName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector-daemonset
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $daemonsetName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector-daemonset
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $daemonsetName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $daemonsetName }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $daemonsetName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector-daemonset
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    receivers:
+      # Container logs via the kubelet's /var/log/pods tree (the canonical
+      # symlinked layout; works for containerd AND docker runtimes). The
+      # k8s.* attributes are parsed off the directory structure so
+      # k8sattributes can associate the record with its pod.
+      filelog/pods:
+        include: [ /var/log/pods/*/*/*.log ]
+        exclude: [ *.gz ]
+        start_at: end
+        include_file_path: true
+        operators:
+          - type: regex_parser
+            id: parse_pod_path
+            regex: '/var/log/pods/(?P<namespace>[^/]+)/(?P<pod>[^/]+)/(?P<uid>[^/]+)/(?P<container>[^\._]+).*\.log$'
+            parse_from: attributes["log.file.path"]
+          - type: move
+            from: attributes.namespace
+            to: resource["k8s.namespace.name"]
+          - type: move
+            from: attributes.pod
+            to: resource["k8s.pod.name"]
+          - type: move
+            from: attributes.container
+            to: resource["k8s.container.name"]
+          - type: move
+            from: attributes.uid
+            to: resource["k8s.pod.uid"]
+          # Container runtime JSON line → body/timestamp (the `stream` field is
+          # stdout/stderr, not a severity — no severity mapping attempted).
+          - type: json_parser
+            id: parse_runtime_line
+            parse_from: body
+            timestamp:
+              layout_type: gotime
+              layout: '2006-01-02T15:04:05.000000000Z07:00'
+
+    processors:
+      # MUST be first — backpressure before OOM.
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      # K8s enrichment: fills k8s.deployment.name / k8s.node.name off the
+      # pod association (namespace/pod/uid already on the record above).
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+      resource:
+        attributes:
+          - key: service.name
+            value: k8s-node-logs
+            action: upsert
+          - key: service.namespace
+            value: {{ .Release.Namespace | quote }}
+            action: upsert
+          - key: deployment.environment
+            value: {{ .Values.observability.environment | quote }}
+            action: upsert
+      # PII + secret backstop (obs-plan §6) — logs leave the node.
+      redaction:
+        allow_all_keys: true
+        blocked_values:
+          - "(?i)bearer\\s+[a-z0-9._~+/-]+=*"
+          - "sk-[A-Za-z0-9]{16,}"
+          - "xox[baprs]-[A-Za-z0-9-]+"
+          - "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+          - "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+        summary: debug
+      transform/redaction:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+              - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
+              - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
+              - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
+              - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
+              - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+      # MUST be last — batch after all mutation.
+      batch:
+        send_batch_size: 8192
+        send_batch_max_size: 16384
+        timeout: 5s
+
+    exporters:
+      # Push to the in-cluster gateway collector's OTLP HTTP receiver; the
+      # gateway owns the vendor hop (credential + egress overlay). Same
+      # namespace, so the short Service name resolves.
+      otlphttp/gateway:
+        endpoint: "http://{{ $name }}:4318"
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:
+          receivers: [filelog/pods]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          exporters: [otlphttp/gateway]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $daemonsetName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: otel-collector-daemonset
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: otel-collector-daemonset
+  template:
+    metadata:
+      labels:
+        {{- include "ksquad.labels" . | nindent 8 }}
+        app.kubernetes.io/component: otel-collector-daemonset
+      annotations:
+        # Roll the pod when the config values change.
+        checksum/config: {{ .Values.observability.collector | toYaml | sha256sum }}
+    spec:
+      serviceAccountName: {{ $daemonsetName }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.observability.collector.image.repository }}:{{ .Values.observability.collector.image.tag }}"
+          imagePullPolicy: {{ .Values.observability.collector.image.pullPolicy }}
+          args:
+            - --config=/conf/config.yaml
+          ports:
+            - name: health
+              containerPort: 13133
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            {{- toYaml .Values.observability.collector.daemonset.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            # Persisted filelog offsets: without a writable state dir the
+            # read-only fs loses them on restart and every node re-reads its
+            # entire log history (duplicate logs in the vendor backend).
+            - name: otelcol-state
+              mountPath: /var/lib/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $daemonsetName }}
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: otelcol-state
+          emptyDir: {}
+{{- end }}
