@@ -54,6 +54,24 @@ func (c *CoordStore) PostComment(ctx context.Context, workItemID, principal, bod
 	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
 }
 
+// PostChange appends one agent-reported change ref via the sanctioned
+// append-only path (M1.5/ISI-4131). Attribution/provenance are the token's
+// principal/run — never client-supplied.
+func (c *CoordStore) PostChange(ctx context.Context, workItemID, principal, runID, kind, ref, summary string) (ChangeRef, error) {
+	cr, err := coord.AppendChangeRef(ctx, c.db, workItemID, principal, runID, kind, ref, summary)
+	if err != nil {
+		return ChangeRef{}, mapCoordErr(err)
+	}
+	return ChangeRef{
+		Kind:      cr.Kind,
+		Ref:       cr.Ref,
+		Summary:   cr.Summary,
+		Author:    cr.Author,
+		RunID:     cr.RunID,
+		CreatedAt: cr.CreatedAt,
+	}, nil
+}
+
 // UpdateStatus transitions the item to target as the agent and returns the lane
 // it left (for the AC8 status.from span attribute). An empty fromState guard is
 // passed — the token already fences the caller to its own run; the board's
@@ -82,7 +100,7 @@ func (c *CoordStore) Checkout(ctx context.Context, workItemID, principal, runID 
 }
 
 // projectDetail maps the shared coord read onto the task-io wire shape. Comments
-// is always non-nil so the JSON renders `[]`, never `null`.
+// and ChangeRefs are always non-nil so the JSON renders `[]`, never `null`.
 func projectDetail(td coord.TaskDetail) TaskDetail {
 	out := TaskDetail{
 		WorkItemID:         td.WorkItemID,
@@ -96,9 +114,16 @@ func projectDetail(td coord.TaskDetail) TaskDetail {
 		Holder:             td.Holder,
 		RunID:              td.RunID,
 		Comments:           make([]Comment, 0, len(td.Comments)),
+		ChangeRefs:         make([]ChangeRef, 0, len(td.ChangeRefs)),
 	}
 	for _, cm := range td.Comments {
 		out.Comments = append(out.Comments, Comment{Author: cm.Author, Body: cm.Body, CreatedAt: cm.CreatedAt})
+	}
+	for _, cr := range td.ChangeRefs {
+		out.ChangeRefs = append(out.ChangeRefs, ChangeRef{
+			Kind: cr.Kind, Ref: cr.Ref, Summary: cr.Summary,
+			Author: cr.Author, RunID: cr.RunID, CreatedAt: cr.CreatedAt,
+		})
 	}
 	return out
 }
@@ -113,6 +138,8 @@ func mapCoordErr(err error) error {
 		// Both "not a board lane" and "no-op / fromState conflict" are, to the
 		// agent, "that status transition is not permitted" → 422.
 		return ErrInvalidTransition
+	case errors.Is(err, coord.ErrInvalidChangeRef):
+		return ErrInvalidChangeRef
 	default:
 		return err
 	}

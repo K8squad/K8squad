@@ -50,8 +50,9 @@ func openTaskIOTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// applyCoordSchema resets coord and applies the SHIPPED 0001 file — not inline
-// DDL — so drift between the migration and the adapter goes RED here.
+// applyCoordSchema resets coord and applies the SHIPPED files — not inline DDL —
+// so drift between the migrations and the adapter goes RED here (0001 base +
+// 0015 change_ref, which the M1.5 read/write path rides on).
 func applyCoordSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -59,22 +60,24 @@ func applyCoordSchema(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
 		t.Fatalf("reset coord schema: %v", err)
 	}
-	var mig []byte
-	var err error
-	for _, c := range []string{
-		filepath.Join("..", "..", "db", "migrations", "0001_coord_schema.sql"),
-		filepath.Join("db", "migrations", "0001_coord_schema.sql"),
-	} {
-		if mig, err = os.ReadFile(c); err == nil {
-			break
+	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql"} {
+		var mig []byte
+		var err error
+		for _, c := range []string{
+			filepath.Join("..", "..", "db", "migrations", name),
+			filepath.Join("db", "migrations", name),
+		} {
+			if mig, err = os.ReadFile(c); err == nil {
+				break
+			}
 		}
-	}
-	if mig == nil {
-		wd, _ := os.Getwd()
-		t.Fatalf("could not read shipped migration 0001_coord_schema.sql (cwd %s)", wd)
-	}
-	if _, err := db.ExecContext(ctx, string(mig)); err != nil {
-		t.Fatalf("apply 0001: %v", err)
+		if mig == nil {
+			wd, _ := os.Getwd()
+			t.Fatalf("could not read shipped migration %s (cwd %s)", name, wd)
+		}
+		if _, err := db.ExecContext(ctx, string(mig)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
 	}
 }
 
@@ -187,13 +190,41 @@ func TestCoordStoreIntegrationFullFlow(t *testing.T) {
 		t.Fatalf("comment = %+v", cm)
 	}
 
+	// post-change (M1.5/ISI-4131) — the run reports a commit + a PR link.
+	w = call(http.MethodPost, "/post-change", `{"kind":"commit","ref":"deadbeefcafe","summary":"fix the widget"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("post-change: %d %s", w.Code, w.Body.String())
+	}
+	var cr ChangeRef
+	if err := json.Unmarshal(w.Body.Bytes(), &cr); err != nil {
+		t.Fatalf("decode change ref: %v", err)
+	}
+	if cr.Kind != "commit" || cr.Ref != "deadbeefcafe" || cr.Author != principal || cr.RunID != runID {
+		t.Fatalf("change ref = %+v", cr)
+	}
+	w = call(http.MethodPost, "/post-change", `{"kind":"pull_request","ref":"https://scm.example/pr/7"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("post-change PR: %d %s", w.Code, w.Body.String())
+	}
+
+	// A bad kind / empty ref is a 400 — the tight enum is enforced at the seam.
+	w = call(http.MethodPost, "/post-change", `{"kind":"sneaky","ref":"x"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("post-change bad kind: %d, want 400", w.Code)
+	}
+	w = call(http.MethodPost, "/post-change", `{"kind":"commit"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("post-change empty ref: %d, want 400", w.Code)
+	}
+
 	// update-status — agent-initiated lane move in_progress → in_review.
 	w = call(http.MethodPost, "/update-status", `{"status":"in_review"}`)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("update-status: %d %s", w.Code, w.Body.String())
 	}
 
-	// get-task again — the new status AND the new comment are both visible.
+	// get-task again — the new status, the new comment AND the change refs are
+	// all visible on the ticket without any human relay (the M1.5 AC).
 	w = call(http.MethodGet, "/get-task", "")
 	if err := json.Unmarshal(w.Body.Bytes(), &td); err != nil {
 		t.Fatalf("decode get-task#2: %v", err)
@@ -203,6 +234,13 @@ func TestCoordStoreIntegrationFullFlow(t *testing.T) {
 	}
 	if len(td.Comments) != 1 || td.Comments[0].Body != "progress: seam wired" || td.Comments[0].Author != principal {
 		t.Fatalf("comments after post = %+v", td.Comments)
+	}
+	if len(td.ChangeRefs) != 2 {
+		t.Fatalf("change refs after posts = %+v, want 2", td.ChangeRefs)
+	}
+	if td.ChangeRefs[0].Ref != "deadbeefcafe" || td.ChangeRefs[0].RunID != runID ||
+		td.ChangeRefs[1].Ref != "https://scm.example/pr/7" || td.ChangeRefs[1].Summary != "" {
+		t.Fatalf("change refs after posts = %+v", td.ChangeRefs)
 	}
 
 	// An invalid target lane is a 422 (invalid transition), not a silent no-op.
