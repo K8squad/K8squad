@@ -61,18 +61,32 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		env = append(env, "OPENCODE_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
+	model := resolveModel(r, lc)
+	// ISI-4188 gap 2: with a BYO endpoint the model must address the rendered
+	// provider block (opencode.json provider.<ksquad-byo>) — opencode v1.18.27
+	// resolves --model as <provider>/<model> and does NOT resolve providers
+	// from OPENAI_BASE_URL env (verified live: env-only yields
+	// ProviderModelNotFoundError).
+	modelFlag := model
+	if lc.ModelRoute.Endpoint != "" {
+		modelFlag = capability.OpenCodeBYOProviderID + "/" + model
+	}
 	spec := ExecSpec{
 		Path:    "opencode",
-		Args:    []string{"run", "--print-logs", "--format=json", "--model", resolveModel(r, lc)},
+		Args:    []string{"run", "--print-logs", "--format=json", "--model", modelFlag},
 		Env:     env,
 		WorkDir: lc.WorkDir,
 	}
 	// Epic C (ADR-044 step 6): opencode.json's mcp section, rendered from
-	// the projected IR at start (native tools.enable scoping).
-	if f, err := mcpWorkDirFile("opencode.json", capability.RenderOpenCode, lc.MCPEndpoints); err != nil {
-		return ExecSpec{}, err
-	} else if f != nil {
-		spec.WorkDirFiles = append(spec.WorkDirFiles, *f)
+	// the projected IR at start (native tools.enable scoping). ISI-4188
+	// gap 2: a BYO model route ALSO rides this file (provider block) —
+	// rendered whenever either half is set.
+	if len(lc.MCPEndpoints) > 0 || lc.ModelRoute.Endpoint != "" {
+		content, err := capability.RenderOpenCodeConfig(lc.MCPEndpoints, lc.ModelRoute.Endpoint, model)
+		if err != nil {
+			return ExecSpec{}, err
+		}
+		spec.WorkDirFiles = append(spec.WorkDirFiles, WorkDirFile{Name: "opencode.json", Content: content})
 	}
 	return spec, nil
 }
