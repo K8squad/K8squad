@@ -57,13 +57,16 @@ import (
 )
 
 const (
-	componentLabelKey     = "app.kubernetes.io/component"
-	collectorComponent    = "otel-collector"
-	egressConfigMapSuffix = "-egress"
-	egressConfigKey       = "egress.yaml"
-	egressSourceLabelKey  = "ksquad.io/egress-source"
-	egressSourceOperator  = "operator"
-	rolloutAnnotationKey  = "ksquad.io/otelconfig-generation"
+	componentLabelKey      = "app.kubernetes.io/component"
+	collectorComponent     = "otel-collector"
+	managedByLabelKey      = "app.kubernetes.io/managed-by"
+	otelCollectorComponent = "opentelemetry-collector"
+	otelOperatorName       = "opentelemetry-operator"
+	egressConfigMapSuffix  = "-egress"
+	egressConfigKey        = "egress.yaml"
+	egressSourceLabelKey   = "ksquad.io/egress-source"
+	egressSourceOperator   = "operator"
+	rolloutAnnotationKey   = "ksquad.io/otelconfig-generation"
 )
 
 // Reconciler applies an OTelConfig's per-signal routing onto the collector's
@@ -118,7 +121,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ ctrl.Request) (ctrl.Result
 		// Collector still coming up during bootstrap — transient, not an export
 		// failure: pending, so the Console card doesn't false-alarm as erroring.
 		return ctrl.Result{}, r.reportNotReady(ctx, sel, "CollectorNotFound",
-			fmt.Errorf("collector Deployment (label %s=%s) not found in %q", componentLabelKey, collectorComponent, r.Namespace),
+			fmt.Errorf("collector Deployment (label %s=%s in %q, or %s=%s managed by %s) not found", componentLabelKey, collectorComponent, r.Namespace, componentLabelKey, otelCollectorComponent, otelOperatorName),
 			ksquadv1alpha1.SignalStatePending)
 	}
 
@@ -155,14 +158,29 @@ func SelectConfig(items []ksquadv1alpha1.OTelConfig) *ksquadv1alpha1.OTelConfig 
 	return &sorted[0]
 }
 
-// findCollector locates the collector Deployment by its component label. Returns
-// (nil, nil) when none exists yet (first boot before the chart's collector is
-// ready), and an error only on a genuine API failure.
+// findCollector locates the collector Deployment. It first tries the legacy
+// Helm-chart collector (component=otel-collector) in the operator's release
+// namespace; when absent it falls back to an OpenTelemetry-operator-managed
+// collector Deployment (component=opentelemetry-collector,
+// managed-by=opentelemetry-operator) cluster-wide, since those collectors
+// (e.g. the otel-gateway) live in the observability namespace, not the
+// operator's own. Returns (nil, nil) when none exists yet (first boot before
+// the collector is ready), and an error only on a genuine API failure.
 func (r *Reconciler) findCollector(ctx context.Context) (*appsv1.Deployment, error) {
+	if dep, err := r.findByLabels(ctx, client.MatchingLabels{componentLabelKey: collectorComponent}, r.Namespace); err != nil || dep != nil {
+		return dep, err
+	}
+	return r.findByLabels(ctx, client.MatchingLabels{
+		componentLabelKey: otelCollectorComponent,
+		managedByLabelKey: otelOperatorName,
+	}, "")
+}
+
+func (r *Reconciler) findByLabels(ctx context.Context, labels client.MatchingLabels, namespace string) (*appsv1.Deployment, error) {
 	var deps appsv1.DeploymentList
-	opts := []client.ListOption{client.MatchingLabels{componentLabelKey: collectorComponent}}
-	if r.Namespace != "" {
-		opts = append(opts, client.InNamespace(r.Namespace))
+	opts := []client.ListOption{labels}
+	if namespace != "" {
+		opts = append(opts, client.InNamespace(namespace))
 	}
 	if err := r.List(ctx, &deps, opts...); err != nil {
 		return nil, fmt.Errorf("otelegress: list collector deployments: %w", err)
