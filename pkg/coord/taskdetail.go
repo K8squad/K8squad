@@ -47,6 +47,10 @@ type TaskDetail struct {
 	AcceptanceCriteria []string
 	Goals              []string
 	Comments           []TaskComment
+	// ChangeRefs is the agent-reported change summary (commit SHAs / PR links,
+	// M1.5/ISI-4131) in chronological order — the third reporting surface next
+	// to comments and the state column.
+	ChangeRefs []ChangeRef
 	// Claim/fence state (coord.claim). FenceToken is the §6.2 monotonic token
 	// every artifact write is checked against; Holder is the current lease
 	// holder principal (empty ⇒ unclaimed); RunID is the holding run.
@@ -101,6 +105,12 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 		return TaskDetail{}, err
 	}
 	td.Comments = comments
+
+	changeRefs, err := readChangeRefs(ctx, db, workItemID)
+	if err != nil {
+		return TaskDetail{}, err
+	}
+	td.ChangeRefs = changeRefs
 	return td, nil
 }
 

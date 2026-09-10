@@ -17,6 +17,8 @@ type fakeStore struct {
 	detail         TaskDetail
 	lastCommentWI  string
 	lastAuthor     string
+	lastChangeWI   string
+	lastChange     ChangeRef
 	lastStatusWI   string
 	lastStatus     string
 	fromState      string
@@ -40,6 +42,12 @@ func (f *fakeStore) PostComment(_ context.Context, wi, principal, body string) (
 	f.lastCommentWI = wi
 	f.lastAuthor = principal
 	return Comment{Author: principal, Body: body, CreatedAt: time.Unix(0, 0)}, nil
+}
+
+func (f *fakeStore) PostChange(_ context.Context, wi, principal, runID, kind, ref, summary string) (ChangeRef, error) {
+	f.lastChangeWI = wi
+	f.lastChange = ChangeRef{Kind: kind, Ref: ref, Summary: summary, Author: principal, RunID: runID, CreatedAt: time.Unix(0, 0)}
+	return f.lastChange, nil
 }
 
 func (f *fakeStore) UpdateStatus(_ context.Context, wi, _, target string) (string, error) {
@@ -104,6 +112,7 @@ func TestUnauthenticatedRejected(t *testing.T) {
 	for _, ep := range []struct{ method, path string }{
 		{http.MethodGet, "/get-task"},
 		{http.MethodPost, "/post-comment"},
+		{http.MethodPost, "/post-change"},
 		{http.MethodPost, "/update-status"},
 		{http.MethodPost, "/checkout"},
 	} {
@@ -196,5 +205,42 @@ func TestGetTaskNotFound(t *testing.T) {
 	w := do(t, h, http.MethodGet, "/get-task", tok, "")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestPostChangeHappyPath(t *testing.T) {
+	store := &fakeStore{}
+	h, m := newTestHandler(t, store)
+	tok, _ := m.Mint("run-A", "wi-1", "agent-A")
+	w := do(t, h, http.MethodPost, "/post-change", tok, `{"kind":"commit","ref":"deadbeef","summary":"fix"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", w.Code)
+	}
+	var got ChangeRef
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Kind != "commit" || got.Ref != "deadbeef" || got.Author != "agent-A" || got.RunID != "run-A" {
+		t.Fatalf("change ref = %+v", got)
+	}
+	// Attribution + provenance come from the token; the store saw the token's
+	// work item, principal AND run — never a client-supplied author.
+	if store.lastChangeWI != "wi-1" || store.lastChange.Author != "agent-A" || store.lastChange.RunID != "run-A" {
+		t.Fatalf("store saw %+v on %q", store.lastChange, store.lastChangeWI)
+	}
+}
+
+func TestPostChangeValidation(t *testing.T) {
+	h, m := newTestHandler(t, &fakeStore{})
+	tok, _ := m.Mint("run-A", "wi-1", "agent")
+	for name, body := range map[string]string{
+		"bad kind":   `{"kind":"wiki_edit","ref":"x"}`,
+		"empty ref":  `{"kind":"commit"}`,
+		"empty body": `{}`,
+	} {
+		w := do(t, h, http.MethodPost, "/post-change", tok, body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400", name, w.Code)
+		}
 	}
 }
