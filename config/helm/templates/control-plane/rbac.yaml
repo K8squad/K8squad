@@ -14,7 +14,12 @@ rules:
   # configmaps patch + namespaces merged into this rule: ISI-3724 (story 13.8,
   # ADR-0008 M1b) — otelegress upserts the operator-owned collector-egress
   # ConfigMap; controller-gen merged the namespace grant here.
-  resources: [configmaps, namespaces]
+  # persistentvolumeclaims merged (ISI-4127): the project-pvc reconciler
+  # carries the same verb set (create/delete from the workspace manager,
+  # update/patch for in-place size expansion — the only mutable PVC field),
+  # and controller-gen groups resources with identical verbs into one rule;
+  # the lockstep test compares grouping, so the chart mirrors it.
+  resources: [configmaps, namespaces, persistentvolumeclaims]
   verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # secrets create: ISI-3614 / ADR-0007 — the warm-pool Bind path writes a
@@ -22,11 +27,6 @@ rules:
   # credential.
   resources: [limitranges, resourcequotas, secrets, serviceaccounts]
   verbs: [create, get, list, patch, update, watch]
-- apiGroups: [""]
-  # update/patch: ISI-4127 — the project-pvc reconciler expands a claim in
-  # place when spec.workspacePVC.size grows (the only mutable PVC field).
-  resources: [persistentvolumeclaims]
-  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # ISI-3614 / ADR-0007: the warm-pool Bind path reads the booted sandbox pod
   # (by its unique label) to place the pod-owned task-io Secret in the pod's
