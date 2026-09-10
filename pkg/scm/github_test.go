@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -679,5 +680,23 @@ func TestSnapshotBranchesOptIn(t *testing.T) {
 	}
 	if !seen {
 		t.Fatalf("explicit branch snapshot missing the default branch record: %+v", recs2)
+	}
+}
+
+// ISI-4120: the Error() string quantizes RetryAfter to whole seconds —
+// the raw nanosecond precision ("31m24.925505064s") churned on every call
+// and, wherever the string was embedded (logs, reconciler conditions),
+// defeated message-stability guards.
+func TestRateLimitedErrorQuantizesDuration(t *testing.T) {
+	e := &RateLimitedError{
+		RetryAfter: 31*time.Minute + 24*time.Second + 925505064*time.Nanosecond,
+		cause:      fmt.Errorf("403 API rate limit exceeded"),
+	}
+	msg := e.Error()
+	if !strings.Contains(msg, "retry after 31m24s") {
+		t.Fatalf("quantized duration missing: %q", msg)
+	}
+	if strings.Contains(msg, "925505064") {
+		t.Fatalf("nanosecond fraction leaked into message: %q", msg)
 	}
 }

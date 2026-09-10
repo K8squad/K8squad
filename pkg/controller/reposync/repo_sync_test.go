@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -631,6 +632,156 @@ func TestIssueSyncFailureSurfacesOwnReason(t *testing.T) {
 	cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionSyncReady)
 	if cond == nil || cond.Reason != reasonIssueSync {
 		t.Fatalf("SyncReady reason = %+v, want %q", cond, reasonIssueSync)
+	}
+}
+
+// ── ISI-4120: rate-limit windows must not hot-loop the reconciler ──
+
+// countingStatusClient counts status-subresource Patch calls — the probe
+// for the ISI-4120 hot loop. Every status write re-fires the Project
+// watch, so "one rate-limited reconcile per window = one status write" is
+// the invariant that keeps reconcile → patch → watch → reconcile bounded.
+type countingStatusClient struct {
+	client.Client
+	statusPatches *int
+}
+
+type countingStatusWriter struct {
+	client.SubResourceWriter
+	statusPatches *int
+}
+
+func (w *countingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	*w.statusPatches++
+	return w.SubResourceWriter.Patch(ctx, obj, patch, opts...)
+}
+
+func (c *countingStatusClient) Status() client.SubResourceWriter {
+	return &countingStatusWriter{SubResourceWriter: c.Client.Status(), statusPatches: c.statusPatches}
+}
+
+func newCountingHarness(t *testing.T, provider scm.SourceControlProvider) (*Reconciler, *int) {
+	t.Helper()
+	log.SetLogger(funcr.New(func(_, _ string) {}, funcr.Options{}))
+	registry := scm.NewProviderRegistry()
+	registry.Register(provider.Name(), func(_ context.Context, creds scm.ProviderCredentials) (scm.SourceControlProvider, error) {
+		return provider, nil
+	})
+	patches := 0
+	c := &countingStatusClient{
+		Client: fake.NewClientBuilder().WithScheme(newScheme(t)).
+			WithObjects(syncProject(300), tokenSecret()).
+			WithStatusSubresource(&ksquadapi.Project{}).
+			Build(),
+		statusPatches: &patches,
+	}
+	r := &Reconciler{Client: c, Scheme: c.Scheme(), Providers: registry, Store: scm.NewInMemoryMirrorStore()}
+	return r, &patches
+}
+
+func projectCondition(t *testing.T, r *Reconciler) *metav1.Condition {
+	t.Helper()
+	proj := &ksquadapi.Project{}
+	if err := r.Get(context.Background(), request().NamespacedName, proj); err != nil {
+		t.Fatal(err)
+	}
+	return meta.FindStatusCondition(proj.Status.Conditions, ConditionSyncReady)
+}
+
+// REGRESSION (ISI-4120): the SyncReady message used to embed the raw
+// FRACTIONAL Retry-After (e.g. "retry after 31m24.925505064s"). The
+// message churned every pass, each churn meant a new status patch, and
+// each patch re-fired the Project watch — several reconciles per second
+// per Project. Within one rate-limit window the message must be
+// byte-stable (exactly one status write) while the requeue honors the
+// FULL fractional Retry-After.
+func TestRateLimitWindowIsQuiet(t *testing.T) {
+	window := 31*time.Minute + 24*time.Second + 925505064*time.Nanosecond
+	rl := &sequenceProvider{name: "github", errors: []error{
+		&scm.RateLimitedError{RetryAfter: window},
+		&scm.RateLimitedError{RetryAfter: window - 173726181*time.Nanosecond},
+		&scm.RateLimitedError{RetryAfter: 31*time.Minute + 101*time.Millisecond},
+	}}
+	r, patches := newCountingHarness(t, rl)
+
+	res, err := r.Reconcile(context.Background(), request())
+	if err != nil {
+		t.Fatalf("rate-limited pass must not return an error (it schedules a retry): %v", err)
+	}
+	if res.RequeueAfter != window {
+		t.Fatalf("requeue must honor the FULL Retry-After %v, got %v", window, res.RequeueAfter)
+	}
+
+	// The immediate re-reconciles our own status write triggers via the
+	// Project watch must not produce further status writes: the message
+	// is byte-stable within the minute bucket.
+	for i := 0; i < 2; i++ {
+		if _, err := r.Reconcile(context.Background(), request()); err != nil {
+			t.Fatalf("watch-triggered re-reconcile %d errored: %v", i, err)
+		}
+	}
+	if *patches != 1 {
+		t.Fatalf("status writes within one rate-limit window = %d, want 1 (message churn is the ISI-4120 hot loop)", *patches)
+	}
+
+	cond := projectCondition(t, r)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonProviderFail {
+		t.Fatalf("expected SyncReady=False/%s, got %+v", reasonProviderFail, cond)
+	}
+	if cond.Message != "github rate limited, snapshot retry deferred ~31m0s" {
+		t.Fatalf("unexpected message: %q", cond.Message)
+	}
+	if strings.ContainsAny(cond.Message, ".") {
+		t.Fatalf("fractional duration leaked into the condition message: %q", cond.Message)
+	}
+}
+
+// The message is coarse, not frozen: when the rate-limit window shrinks
+// across a bucket boundary the condition still updates — bounded churn,
+// never silence.
+func TestRateLimitMessageTracksWindowShrink(t *testing.T) {
+	rl := &sequenceProvider{name: "github", errors: []error{
+		&scm.RateLimitedError{RetryAfter: 31 * time.Minute},
+		&scm.RateLimitedError{RetryAfter: 29*time.Minute + 50*time.Second},
+	}}
+	r, patches := newCountingHarness(t, rl)
+
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if *patches != 2 {
+		t.Fatalf("status writes across a bucket change = %d, want 2 (message must track the window)", *patches)
+	}
+	cond := projectCondition(t, r)
+	if cond == nil || cond.Message != "github rate limited, snapshot retry deferred ~30m0s" {
+		t.Fatalf("message did not track the shrunk window: %+v", cond)
+	}
+}
+
+// A sub-minute Retry-After floors the requeue at 1s and renders an
+// honest "<1m" message instead of rounding up to a fake minute.
+func TestRateLimitShortWindowClamped(t *testing.T) {
+	rl := &sequenceProvider{name: "github", errors: []error{
+		&scm.RateLimitedError{RetryAfter: 500 * time.Millisecond},
+	}}
+	r, patches := newCountingHarness(t, rl)
+
+	res, err := r.Reconcile(context.Background(), request())
+	if err != nil {
+		t.Fatalf("rate-limited pass must not return an error: %v", err)
+	}
+	if res.RequeueAfter != time.Second {
+		t.Fatalf("requeue = %v, want 1s floor", res.RequeueAfter)
+	}
+	if *patches != 1 {
+		t.Fatalf("status writes = %d, want 1", *patches)
+	}
+	cond := projectCondition(t, r)
+	if cond == nil || cond.Message != "github rate limited, snapshot retry deferred <1m" {
+		t.Fatalf("unexpected message: %+v", cond)
 	}
 }
 

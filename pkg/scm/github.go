@@ -56,8 +56,11 @@ type RateLimitedError struct {
 	cause      error
 }
 
+// Error quantizes RetryAfter to whole seconds: this string flows into
+// logs and (historically) reconciler condition messages, and the raw
+// nanosecond precision churned on every call (ISI-4120).
 func (e *RateLimitedError) Error() string {
-	return fmt.Sprintf("github rate limited, retry after %s: %v", e.RetryAfter, e.cause)
+	return fmt.Sprintf("github rate limited, retry after %s: %v", e.RetryAfter.Truncate(time.Second), e.cause)
 }
 
 func (e *RateLimitedError) Unwrap() error { return e.cause }
