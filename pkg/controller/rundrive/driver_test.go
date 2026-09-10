@@ -67,12 +67,20 @@ type fakeClaims struct {
 	requeueOK   bool
 	requeueErr  error
 	requeueCall bool
+
+	acquireBlocked bool
+	acquireErr     error
+	acquireCalls   []string
 }
 
 func (f *fakeClaims) State(context.Context, string) (ClaimState, bool, error) {
 	return f.state, f.found, f.stateErr
 }
 func (f *fakeClaims) LapsUsed(context.Context, string) (int, error) { return f.laps, f.lapsErr }
+func (f *fakeClaims) Acquire(_ context.Context, workItemID, runID string) (bool, error) {
+	f.acquireCalls = append(f.acquireCalls, fmt.Sprintf("%s/%s", workItemID, runID))
+	return !f.acquireBlocked, f.acquireErr
+}
 func (f *fakeClaims) RetryEnter(_ context.Context, workItemID, runID string, fence int64) (int64, bool, error) {
 	f.retryCalls = append(f.retryCalls, fmt.Sprintf("%s/%s/%d", workItemID, runID, fence))
 	return f.retryNewFence, f.retryOK, f.retryErr

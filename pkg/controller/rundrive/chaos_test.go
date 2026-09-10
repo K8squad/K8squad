@@ -123,8 +123,8 @@ func driveFixture(t *testing.T) (*sql.DB, string) {
 
 	var item string
 	if err := db.QueryRowContext(ctx, `
-		INSERT INTO coord.work_item (project_id, title, created_by)
-		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos')
+		INSERT INTO coord.work_item (project_id, title, created_by, state)
+		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos', 'todo')
 		RETURNING id::text`).Scan(&item); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
@@ -161,8 +161,16 @@ func newTestDriver(cl client.Client, db *sql.DB, resumeCfg coord.ResumeConfig) (
 	if err != nil {
 		panic(err)
 	}
+	// §6.2 claimer (ISI-4183): mirror the operator's production wiring
+	// (cmd/operator/main.go) — the drive loop's Acquire fails closed without
+	// a bound claimer, so the chaos gate must drive the SAME shape the
+	// shipped operator drives, outbox capture included.
+	claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig(), coord.WithOutboxCapture())
+	if err != nil {
+		panic(err)
+	}
 	driver := rundrive.NewDriver(cl,
-		rundrive.NewProdClaims(db, ""),
+		rundrive.NewProdClaims(db, "").WithClaimer(claimer),
 		rundrive.NewProdPauses(store),
 		rundrive.NewProdRunner(db, "", nil, nil))
 	driver.Rand = func() float64 { return 0 }

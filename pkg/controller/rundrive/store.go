@@ -48,9 +48,13 @@ const terminalSet = `('succeeded','failed','cancelled')`
 type ProdClaims struct {
 	db        *sql.DB
 	principal string
+	claimer   *coord.ProdClaimer
 }
 
 // NewProdClaims binds the Claims seam. principal defaults to OperatorPrincipal.
+// The §6.2 claimer (Acquire) is opt-in via WithClaimer — the ISI-4183 fix wires
+// it in production; callers that only need the read/re-entry surface (tests,
+// ledger-only modes) construct without one and Acquire fails closed.
 func NewProdClaims(db *sql.DB, principal string) *ProdClaims {
 	if principal == "" {
 		principal = OperatorPrincipal
@@ -58,15 +62,43 @@ func NewProdClaims(db *sql.DB, principal string) *ProdClaims {
 	return &ProdClaims{db: db, principal: principal}
 }
 
+// WithClaimer binds the production §6.2 claimer the drive loop acquires through
+// (ISI-4183: ProdClaimer had no production caller, so a Run drove the machine
+// without ever taking custody — the board lane never advanced). Returns c for
+// chaining.
+func (c *ProdClaims) WithClaimer(claimer *coord.ProdClaimer) *ProdClaims {
+	c.claimer = claimer
+	return c
+}
+
+// Acquire implements Claims.Acquire: the §6.2 guarded acquire of THIS Run's
+// work item — holder/lease/fence stamped, lane todo → in_progress, one
+// co-committed claim_acquired audit row. ok=false, err=nil means the guard
+// rejected us (a live foreign lease, or the item left the todo lane) — the
+// caller requeues and retries; nothing changed.
+func (c *ProdClaims) Acquire(ctx context.Context, workItemID, runID string) (bool, error) {
+	if c.claimer == nil {
+		// Fail closed and loud: a drive loop without a claimer must never
+		// silently run claim-less (that is the exact bug ISI-4183 fixes).
+		return false, fmt.Errorf("rundrive.ProdClaims.Acquire: no claimer bound (construct via WithClaimer)")
+	}
+	_, _, ok, err := c.claimer.AcquireSpecific(ctx, c.principal, runID, workItemID, "")
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.Acquire: %w", err)
+	}
+	return ok, nil
+}
+
 // State reads the claim-row snapshot one drive pass decides on.
 func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, bool, error) {
 	var cs ClaimState
 	var holder sql.NullString
 	var lease sql.NullTime
+	var holderRun sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT reconcile_step, fence_token, holder_principal, lease_expires_at
+		SELECT reconcile_step, fence_token, holder_principal, lease_expires_at, run_id::text
 		  FROM coord.claim WHERE work_item_id = $1::uuid`, workItemID).
-		Scan(&cs.Step, &cs.Fence, &holder, &lease)
+		Scan(&cs.Step, &cs.Fence, &holder, &lease, &holderRun)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ClaimState{}, false, nil
@@ -74,6 +106,7 @@ func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, 
 		return ClaimState{}, false, fmt.Errorf("rundrive.ProdClaims.State: %w", err)
 	}
 	cs.Holder = holder.String
+	cs.HolderRunID = holderRun.String
 	if lease.Valid {
 		t := lease.Time
 		cs.LeaseExpiresAt = &t
@@ -146,6 +179,19 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
 		workItemID, runID, event, toState, fenceAfter); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: outbox: %w", event, err)
+	}
+
+	// Lane return (ISI-4183): a released checkout is a RECLAIMABLE item — the
+	// lane goes back to todo in the same transaction (the same discipline
+	// prodreroute.go pins for its release). Guarded on in_progress so it is
+	// idempotent and never disturbs an item a human moved elsewhere (done,
+	// in_review, backlog). Without this, a retry lap's re-acquire (guard:
+	// todo→in_progress) would match 0 rows and wedge the Run.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE coord.work_item
+		   SET state = 'todo', updated_at = now()
+		 WHERE id = $1::uuid AND state = 'in_progress'`, workItemID); err != nil {
+		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: lane return: %w", event, err)
 	}
 
 	if err := tx.Commit(); err != nil {
