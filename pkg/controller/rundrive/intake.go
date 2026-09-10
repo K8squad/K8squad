@@ -295,7 +295,15 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 	return &api.Run{
 		ObjectMeta: runObjectMeta(item.ID, ns),
 		Spec: api.RunSpec{
-			TeamRef:     api.ObjectRef{Name: team.Name},
+			// M1.2 (ISI-4128): like projectRef — a Team CR living outside the
+			// squad namespace must be referenced by namespace or later
+			// Team-resolution steps (context assembly, dispatch) miss it.
+			TeamRef: func() api.ObjectRef {
+				if team.Namespace != ns {
+					return api.ObjectRef{Name: team.Name, Namespace: team.Namespace}
+				}
+				return api.ObjectRef{Name: team.Name}
+			}(),
 			ProjectRef:  *projectRef,
 			WorkItemRef: item.ID,
 			Agents:      []api.ObjectRef{{Name: agentRef.Name}},
