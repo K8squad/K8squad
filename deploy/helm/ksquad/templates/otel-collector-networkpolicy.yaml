@@ -2,14 +2,17 @@
   Collector gateway NetworkPolicy — Story 13.7, obs-plan §10 "egress interaction".
 
   This is the collector-SIDE half of the telemetry path inside the tenancy model:
-  - INGRESS: squad-namespace shim/agent OTLP (4317/4318) may reach the gateway,
-    plus in-cluster Prometheus scrape of the exporter (8889). The squad-SIDE
+  - INGRESS: OTLP push (4317/4318) from squad-tenant namespaces (label-selected,
+    the shim/agent path) AND from this release namespace — the control plane's
+    own telemetry plus the node-log DaemonSet's log push. The squad-SIDE
     allowlist (each Project's default-deny egress carving a hole TO this Service)
     is stamped by the operator from egress.yaml — obs-plan §10 flags this as an
     explicit input to internal/tenancy NetworkPolicy templates (§11.1 arch).
-  - EGRESS: DNS, control-plane scrape targets in the release namespace, and the
-    governed hop to the vendor backend (443/TCP). Sandboxes never get this hop —
-    only the gateway does, keeping telemetry INSIDE the isolation model (§9.2 arch).
+  - EGRESS: DNS and the governed hop to the vendor backend (443/TCP). The
+    in-cluster prometheus scrape surface was removed (ISI-4102 board directive),
+    so the gateway initiates nothing else inside the cluster. Sandboxes never
+    get the vendor hop — only the gateway does, keeping telemetry INSIDE the
+    isolation model (§9.2 arch).
 */ -}}
 {{- if and .Values.observability.collector.enabled .Values.observability.collector.networkPolicy.enabled -}}
 {{- $name := include "ksquad.otel-collector.fullname" . -}}
@@ -30,12 +33,13 @@ spec:
     - Ingress
     - Egress
   ingress:
-    # OTLP push from squad-tenant namespaces (label-selected) — the shim/agent path.
+    # OTLP push from squad-tenant namespaces (label-selected) — the shim/agent
+    # path — plus control-plane self-telemetry and the node-log DaemonSet's
+    # push from this namespace.
     - from:
         - namespaceSelector:
             matchLabels:
               {{ .Values.observability.collector.networkPolicy.squadNamespaceLabel.key }}: {{ .Values.observability.collector.networkPolicy.squadNamespaceLabel.value | quote }}
-        # Control-plane self-telemetry (operator/apiserver/etc.) from this namespace.
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ .Release.Namespace }}
@@ -44,10 +48,6 @@ spec:
           port: 4317
         - protocol: TCP
           port: 4318
-    # Prometheus scrape of the collector's own exporter (8889) — any namespace.
-    - ports:
-        - protocol: TCP
-          port: 8889
   egress:
     # DNS resolution (always).
     - to:
@@ -57,11 +57,6 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Scrape control-plane /metrics in the release namespace.
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Release.Namespace }}
     {{- if .Values.observability.collector.networkPolicy.vendorEgress.enabled }}
     # Governed hop to the vendor OTLP backend. Cluster-internal CIDRs are the
     # sandbox/pod ranges — the vendor is external, so this allows the configured

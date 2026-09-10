@@ -137,6 +137,61 @@ func resolveTelemetryOptions(ctx context.Context, cfg *rest.Config, opts *teleme
 		"traces", res.Traces != nil, "metrics", res.Metrics != nil, "logs", res.Logs != nil)
 }
 
+// envOTLPSignalExport builds a *telemetry.SignalExport from the standard
+// OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_EXPORTER_OTLP_PROTOCOL env the Helm chart
+// injects on every control-plane workload (see the "k8squad.otelEnv" helper).
+// It returns nil when no endpoint is set, so a deployment that leaves the env
+// unset keeps the stdout default. Protocol defaults to "grpc" (the observability
+// gateway's OTLP port) when unset. The endpoint is passed through verbatim: the
+// spine's parseGRPCEndpoint strips an http:// scheme and dials the in-cluster
+// gateway insecurely.
+func envOTLPSignalExport(getenv func(string) string) *telemetry.SignalExport {
+	endpoint := strings.TrimSpace(getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if endpoint == "" {
+		return nil
+	}
+	protocol := strings.TrimSpace(getenv("OTEL_EXPORTER_OTLP_PROTOCOL"))
+	if protocol == "" {
+		protocol = "grpc"
+	}
+	return &telemetry.SignalExport{Protocol: protocol, Endpoint: endpoint}
+}
+
+// applyEnvOTLPFallback fills each signal the OTelConfig CR left on the stdout
+// default (nil) with the env-derived OTLP target, if one is configured. The CR
+// keeps precedence: a signal the CR already routed is untouched, so declarative
+// routing (e.g. a direct-to-Dynatrace signal) still wins. Each filled signal
+// gets its own copy so the three never alias. It returns the names of the
+// signals it filled, for logging.
+//
+// This is what makes the chart-injected OTEL_EXPORTER_OTLP_* env actually
+// export. Before ISI-4102 the spine read ONLY the OTelConfig CR, so any signal
+// the CR did not route — including when the CR was absent or its auth Secret
+// failed to resolve (fail-open, C-AC3) — fell back to stdout *silently* and the
+// operator's telemetry never left the pod. This closes that silent gap.
+func applyEnvOTLPFallback(opts *telemetry.Options, env *telemetry.SignalExport) []string {
+	if env == nil {
+		return nil
+	}
+	var filled []string
+	if opts.Traces == nil {
+		se := *env
+		opts.Traces = &se
+		filled = append(filled, "traces")
+	}
+	if opts.Metrics == nil {
+		se := *env
+		opts.Metrics = &se
+		filled = append(filled, "metrics")
+	}
+	if opts.Logs == nil {
+		se := *env
+		opts.Logs = &se
+		filled = append(filled, "logs")
+	}
+	return filled
+}
+
 // secretGetter adapts the kube client to otelcr.SecretGetter: it reads a
 // corev1.Secret and returns one key's bytes, erroring when the Secret or the key
 // is absent. The returned error never contains the value.
@@ -213,6 +268,25 @@ func main() {
 	// owns OTelConfig.status; live re-read is a deferred follow-up.
 	telemetryOpts := telemetry.Options{ServiceName: "ksquad-operator"}
 	resolveTelemetryOptions(ctx, cfg, &telemetryOpts)
+
+	// Env-based OTLP fallback (ISI-4102): the Helm chart injects
+	// OTEL_EXPORTER_OTLP_* on every workload pointing at the observability
+	// gateway, but the spine above reads ONLY the OTelConfig CR — so a signal the
+	// CR did not route (absent CR, unset signal, or an auth Secret that failed to
+	// resolve) fell back to stdout *silently* and the operator's telemetry never
+	// left the pod. Fold the env endpoint in for any signal still on stdout; the
+	// CR keeps precedence for signals it already routed.
+	envExport := envOTLPSignalExport(os.Getenv)
+	filled := applyEnvOTLPFallback(&telemetryOpts, envExport)
+	if len(filled) > 0 {
+		ctrl.Log.Info("telemetry spine: env OTEL_EXPORTER_OTLP_* fallback applied for stdout signals",
+			"signals", strings.Join(filled, ","),
+			"endpoint", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	} else if envExport != nil {
+		ctrl.Log.Info("telemetry spine: env OTEL_EXPORTER_OTLP_* configured but no signals needed fallback (OTelConfig configured all signals)")
+	} else {
+		ctrl.Log.Info("telemetry spine: no env OTEL_EXPORTER_OTLP_* fallback configured (OTelConfig may provide routing)")
+	}
 
 	_, otelShutdown, err := telemetry.Setup(ctx, telemetryOpts)
 	if err != nil {
@@ -399,6 +473,26 @@ func main() {
 		}
 		if err := mgr.Add(timerRunnable{t: timer}); err != nil {
 			ctrl.Log.Error(err, "unable to register resume timer")
+			os.Exit(1)
+		}
+
+		// M1.3 ticket intake (ISI-4129): the bridge from the board to the Run
+		// plane. Every tick, team-assigned todo work items get their Run CR
+		// (deterministic name, idempotent) so the drive loop above can claim
+		// (todo → in_progress) and dispatch them. Level-triggered off the
+		// durable board state — bounded intake latency is the acceptance
+		// criterion; a missed tick costs delay, never correctness.
+		intakeSource, err := rundrive.NewSQLIntakeSource(db)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind ticket intake source")
+			os.Exit(1)
+		}
+		if err := mgr.Add(&rundrive.Intake{
+			Source: intakeSource,
+			Client: mgr.GetClient(),
+			Log:    func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register ticket intake sweep")
 			os.Exit(1)
 		}
 
