@@ -41,6 +41,13 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # M1.2 sandbox bring-up (ISI-4128): the warmpool kube provisioner creates
+  # sandbox pods in squad namespaces and the PodWatcher reports their
+  # readiness back into the pool (ADR-0007 D1). pods/status patch is the
+  # bind-error surface; delete is the drain/unclaim path.
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

@@ -138,6 +138,20 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 				{
 					Name: "sandbox",
 					Image: key.Image,
+					// M1.2 (ISI-4128): squad namespaces enforce the restricted
+					// PodSecurity standard (the team reconciler stamps it); the
+					// sandbox container must carry its own hardened
+					// securityContext or the API server rejects the pod.
+					SecurityContext: &corev1.SecurityContext{
+						AllowPrivilegeEscalation: ptrTo(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						RunAsNonRoot: ptrTo(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					// ADR-0007 D1: the in-pod supervisor is the container's
 					// PID 1 — the entrypoint image runs `shim supervisor`,
 					// which serves /health + /ready on :8080 (the probes

@@ -319,6 +319,13 @@ func (i *Intake) resolveProject(ctx context.Context, ns, projectID string) (*api
 	for idx := range projects.Items {
 		p := projects.Items[idx]
 		if string(p.UID) == projectID {
+			// M1.2 (ISI-4128): the run controller resolves projectRef in the
+			// Run's namespace when the ref carries none — a Project CR living
+			// outside the squad namespace must be referenced by namespace or
+			// context assembly fails to find it.
+			if p.Namespace != ns {
+				return &api.ObjectRef{Name: p.Name, Namespace: p.Namespace}, nil
+			}
 			return &api.ObjectRef{Name: p.Name}, nil // UID match wins outright
 		}
 		if p.Namespace == ns && p.Name == projectID && byUID == "" {

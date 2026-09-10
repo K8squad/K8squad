@@ -148,10 +148,11 @@ func (r *Run) SetOwnedBy(principal PrincipalRef) { r.Spec.OwnedBy = principal }
 type SandboxPolicy struct {
 	// RuntimeClass selects the isolation runtime (§9.1): gVisor is the
 	// default, Kata the high-assurance opt-in, runc only for
-	// explicitly-trusted dev. Unset defaults to gvisor at admission
-	// (story 1.3 structural defaulting).
+	// explicitly-trusted dev. Unset follows the operator's cluster default
+	// (KSQUAD_SANDBOX_RUNTIME_CLASS; gvisor when the operator does not pin
+	// one) — M1.2 (ISI-4128): an admission-level gvisor default made the
+	// cluster knob unreachable on clusters without a gvisor RuntimeClass.
 	// +kubebuilder:validation:Enum=gvisor;kata;runc
-	// +kubebuilder:default=gvisor
 	// +optional
 	RuntimeClass string `json:"runtimeClass,omitempty"`
 
