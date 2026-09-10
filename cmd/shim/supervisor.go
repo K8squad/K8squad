@@ -108,6 +108,18 @@ func runSupervisor(args []string) error {
 	defer stop()
 	go sup.awaitCredential(ctx)
 
+	// Telemetry lifetime = supervisor lifetime: the OTel global providers
+	// the handshake initializes must stay up for the pod's whole life, so
+	// their shutdown runs here at process exit — never inside
+	// awaitCredential, whose defer would fire at handshake completion and
+	// kill the trace/metric/log pipelines for the rest of the pod's run
+	// (ISI-4161 review).
+	defer func() {
+		if sd := sup.teardownTelemetry(); sd != nil {
+			_ = sd(context.Background())
+		}
+	}()
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 	fmt.Fprintf(os.Stderr, "shim supervisor: serving on %s (waiting for credential under %s)\n", addr, taskio.CoordMountPath)
@@ -131,6 +143,10 @@ type supervisor struct {
 
 	mu   sync.RWMutex
 	cred *taskio.RunCredential
+	// telemetryShutdown is the OTel provider shutdown the handshake's
+	// telemetry.Setup returned (nil until then); owned by runSupervisor's
+	// exit path, stored here because Setup runs inside awaitCredential.
+	telemetryShutdown telemetry.ShutdownFunc
 	// credAt is when the handshake completed (observability).
 	credAt time.Time
 	// engine is the lazily-built runtime engine (nil until a /task arrives;
@@ -183,7 +199,9 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 				filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 		}
 		if _, shutdown, terr := telemetry.Setup(tctx, supTelemetryOpts); terr == nil {
-			defer func() { _ = shutdown(context.Background()) }()
+			s.mu.Lock()
+			s.telemetryShutdown = shutdown
+			s.mu.Unlock()
 		}
 		toolusage.SetEnabled(s.toolUsage)
 
@@ -205,6 +223,14 @@ func (s *supervisor) credential() (taskio.RunCredential, time.Time, bool) {
 		return taskio.RunCredential{}, time.Time{}, false
 	}
 	return *s.cred, s.credAt, true
+}
+
+// teardownTelemetry snapshots the OTel shutdown for runSupervisor's exit
+// path (nil before the handshake initialized the spine).
+func (s *supervisor) teardownTelemetry() telemetry.ShutdownFunc {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.telemetryShutdown
 }
 
 // handleHealth is the liveness probe: the process is serving.

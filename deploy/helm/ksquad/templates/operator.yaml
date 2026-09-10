@@ -97,12 +97,18 @@ spec:
             - name: KSQUAD_COORD_URL
               value: {{ . | quote }}
             {{- end }}
+            {{- /* Guard on both fields: the default render is {name:"",key:""}
+                   which is a truthy map for `with` and would emit an empty
+                   secretKeyRef the API server rejects (fresh-install
+                   regression, ISI-4161 review). */}}
             {{- with .Values.operator.coord.existingJwtKeySecret }}
+            {{- if and .name .key }}
             - name: KSQUAD_JWT_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ .name }}
                   key: {{ .key }}
+            {{- end }}
             {{- end }}
             {{- /* ISI-3745: the workspace PVC family reads its StorageClass /
                    size / access mode from the storage contract, never the
