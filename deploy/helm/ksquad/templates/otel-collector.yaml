@@ -8,10 +8,20 @@
   punch a hole in it (obs-plan §10 "egress interaction"; the allowlist half lives
   in otel-collector-networkpolicy.yaml).
 
+  Consolidated topology (ISI-4102 board directive, 2026-09-10): exactly TWO
+  collectors — THIS gateway Deployment (receives metrics/traces/logs pushed by
+  k8squad workloads; k8sattributes enrichment; cumulative→delta metric
+  conversion; exports to the vendor via the operator/bootstrap egress overlay)
+  plus the node log DaemonSet (otel-collector-daemonset.yaml: filelog →
+  k8sattributes → pushes logs to this gateway). The in-cluster prometheus
+  scrape/export surface was removed here: the gateway ships to the vendor, it
+  does not duplicate a metrics-scrape path.
+
   Pipeline order is a HARD RULE of the plan and of the persona critical rules:
-    memory_limiter (FIRST) → k8sattributes → resource → redaction → tail_sampling → batch (LAST)
+    memory_limiter (FIRST) → k8sattributes → resource → cumulative_to_delta (metrics) → redaction → tail_sampling → batch (LAST)
   - memory_limiter first: backpressure before OOM.
   - k8sattributes (NOT resourcedetection): KSquad is Kubernetes-native.
+  - cumulative_to_delta: vendor wants delta temporality (metrics pipeline only).
   - redaction BEFORE any exporter: no secret/PII ever leaves the cluster boundary
     (obs-plan §6, NFR-SEC3 + R9) — the collector is the backstop to service-side
     discipline, double-guarded.
@@ -78,40 +88,16 @@ data:
         endpoint: 0.0.0.0:13133
 
     receivers:
+      # Pure push receiver (ISI-4102 board directive): this gateway receives
+      # metrics/traces/logs PUSHED by k8squad workloads and the node log
+      # DaemonSet. No in-cluster prometheus scraping — that surface duplicated
+      # the vendor path and was removed.
       otlp:
         protocols:
           grpc:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
-      # Scrape control-plane /metrics off pods carrying prometheus.io/scrape,
-      # scoped to the release namespace (control plane only, not squad tenants).
-      prometheus:
-        config:
-          scrape_configs:
-            - job_name: ksquad-control-plane
-              scrape_interval: 30s
-              kubernetes_sd_configs:
-                - role: pod
-                  namespaces:
-                    names: [{{ .Release.Namespace }}]
-              relabel_configs:
-                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-                  action: keep
-                  regex: "true"
-                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-                  action: replace
-                  target_label: __metrics_path__
-                  regex: (.+)
-                - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-                  action: replace
-                  regex: ([^:]+)(?::\d+)?;(\d+)
-                  replacement: $$1:$$2
-                  target_label: __address__
-                - source_labels: [__meta_kubernetes_namespace]
-                  target_label: k8s_namespace
-                - source_labels: [__meta_kubernetes_pod_name]
-                  target_label: k8s_pod
 
     processors:
       # MUST be first — backpressure before OOM (persona critical rule).
@@ -144,6 +130,11 @@ data:
           - key: deployment.environment
             value: {{ .Values.observability.environment | quote }}
             action: upsert
+      # Cumulative → delta temporality (ISI-4102 board directive): the OTel SDKs
+      # export cumulative counters/histograms; the vendor backend (Dynatrace)
+      # wants delta. Real processor, not a name-rewrite — every cumulative metric
+      # is converted, not just a hand-listed ksquad_* set.
+      cumulative_to_delta: {}
       # PII + secret backstop, guard #1 (obs-plan §6): mask attribute VALUES that
       # MATCH a secret shape, wherever they appear on spans & logs. Runs before any
       # exporter so nothing sensitive crosses the cluster boundary.
@@ -208,12 +199,6 @@ data:
         timeout: 5s
 
     exporters:
-      # In-cluster scrape surface (SLO rules in otel-collector-slo-rules.yaml
-      # read these). Always on so metrics stay observable even with no vendor.
-      prometheus:
-        endpoint: 0.0.0.0:8889
-        resource_to_telemetry_conversion:
-          enabled: true
       # Safe default sink. The BASE config NEVER contains a vendor exporter
       # (ADR-0008 M1(b)): vendor egress is supplied by a SECOND --config overlay
       # (ConfigMap {{ $name }}-egress, mounted at /conf/egress) — owned by the
@@ -222,11 +207,13 @@ data:
       # observability.export.otlp.* values. confmap deep-merges maps and
       # REPLACES the per-signal exporters sequences below, so the overlay swaps
       # `debug`→vendor while redaction/tail_sampling stay enforced upstream here.
+      # No prometheus exporter (ISI-4102 board directive): the gateway ships to
+      # the vendor, it does not double as an in-cluster metrics scrape surface.
       debug:
         verbosity: {{ if .Values.observability.collector.debugExporter }}detailed{{ else }}basic{{ end }}
 
-    {{- /* Base defaults: debug (traces/logs) + prometheus (metrics). The egress
-           overlay replaces these exporters lists when a vendor is configured. */}}
+    {{- /* Base defaults: debug on every signal. The egress overlay replaces
+            these exporters lists when a vendor is configured. */}}
     service:
       extensions: [health_check]
       pipelines:
@@ -235,9 +222,9 @@ data:
           processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
           exporters: [debug]
         metrics:
-          receivers: [otlp, prometheus]
-          processors: [memory_limiter, k8sattributes, resource, batch]
-          exporters: [prometheus]
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, cumulative_to_delta, batch]
+          exporters: [debug]
         logs:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
@@ -286,11 +273,11 @@ data:
           insecure: {{ $otlp.insecure }}
     service:
       pipelines:
-        # Sequences replace on merge: base [debug]/[prometheus] → vendor-routed.
+        # Sequences replace on merge: base [debug] → vendor-routed.
         traces:
           exporters: [{{ $vendorExporter }}]
         metrics:
-          exporters: [prometheus, {{ $vendorExporter }}]
+          exporters: [{{ $vendorExporter }}]
         logs:
           exporters: [{{ $vendorExporter }}]
 ---
@@ -344,8 +331,6 @@ spec:
               containerPort: 4317
             - name: otlp-http
               containerPort: 4318
-            - name: prom-export
-              containerPort: 8889
           {{- if $otlp.auth.secretName }}
           env:
             - name: KSQUAD_OTLP_AUTH
@@ -397,9 +382,6 @@ metadata:
   labels:
     {{- include "ksquad.labels" . | nindent 4 }}
     app.kubernetes.io/component: otel-collector
-  annotations:
-    prometheus.io/scrape: "true"
-    prometheus.io/port: "8889"
 spec:
   selector:
     app.kubernetes.io/instance: {{ .Release.Name }}
@@ -412,9 +394,5 @@ spec:
     - name: otlp-http
       port: 4318
       targetPort: 4318
-      protocol: TCP
-    - name: prom-export
-      port: 8889
-      targetPort: 8889
       protocol: TCP
 {{- end }}

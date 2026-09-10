@@ -432,7 +432,6 @@ egress:
         - 8080  # apiserver
         - 8081  # operator health/metrics
         - 8222  # NATS monitor
-        - 8889  # otel-collector prometheus exporter
         - 9090  # event-relay metrics
         - 9187  # CNPG postgres exporter
 
@@ -502,6 +501,18 @@ observability:
     # endpoint the collector falls back to the debug exporter at basic verbosity
     # regardless, so every pipeline always has a sink.
     debugExporter: false
+    # ── Node log collector (ISI-4102 board directive) ─────────────────────────
+    # DaemonSet: filelog off every node → k8sattributes → push to the gateway
+    # collector above (which owns the vendor hop). The consolidated topology's
+    # log arm — no vendor credential, no prometheus surface on these pods.
+    daemonset:
+      enabled: true
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          memory: 512Mi
     resources:
       requests:
         cpu: 100m
