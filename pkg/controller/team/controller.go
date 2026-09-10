@@ -27,6 +27,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -168,6 +171,54 @@ type Reconciler struct {
 	// DefaultApiserverServiceAccount; the charts render the exact fullname
 	// into KSQUAD_APISERVER_SERVICE_ACCOUNT.
 	ApiserverServiceAccount string
+	// TelemetryTarget, when set, re-opens squad egress to the OTLP gateway
+	// (ISI-4188 gap 9): the sandbox supervisor's span/metric/log export dies
+	// silently against the team default-deny otherwise. Nil keeps the
+	// telemetry-egress companion out of the scaffold (the stdout-export
+	// posture needs no hole). Exactly one of Namespace/IP is set.
+	TelemetryTarget *TelemetryTarget
+}
+
+// TelemetryTarget is the parsed egress destination for the OTLP gateway: an
+// in-cluster Service DNS name (otel-gateway-collector.observability:4317)
+// maps to a namespaceSelector+port peer; a bare IP maps to an ipBlock /32
+// peer. Namespace and IP are mutually exclusive.
+type TelemetryTarget struct {
+	Namespace string
+	IP        string
+	Port      int32
+}
+
+// TelemetryTargetFromEndpoint parses an OTEL_EXPORTER_OTLP_ENDPOINT value
+// (with or without scheme) into a TelemetryTarget. Returns nil for an empty
+// endpoint or a bare hostname with no namespace label — an unparseable target
+// must not silently widen egress.
+func TelemetryTargetFromEndpoint(endpoint string) *TelemetryTarget {
+	ep := strings.TrimSpace(endpoint)
+	if ep == "" {
+		return nil
+	}
+	if i := strings.Index(ep, "://"); i >= 0 {
+		ep = ep[i+3:]
+	}
+	host, portStr := ep, ""
+	if i := strings.LastIndex(ep, ":"); i >= 0 {
+		host, portStr = ep[:i], ep[i+1:]
+	}
+	port := int32(4317)
+	if portStr != "" {
+		if p, err := strconv.ParseInt(portStr, 10, 32); err == nil && p > 0 {
+			port = int32(p)
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return &TelemetryTarget{IP: host, Port: port}
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 || labels[1] == "" {
+		return nil
+	}
+	return &TelemetryTarget{Namespace: labels[1], Port: port}
 }
 
 //+kubebuilder:rbac:groups=ksquad.io,resources=teams,verbs=get;list;watch;update;patch
@@ -288,6 +339,14 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 		defaultDenyNetworkPolicy(nsName, teamObj),
 		allowDNSNetworkPolicy(nsName, teamObj, r.dnsNamespace()),
 		allowControlPlaneNetworkPolicy(nsName, teamObj, r.controlPlaneNamespace()),
+	}
+	// ISI-4188 gap 9: telemetry-egress companion — only when the deployment
+	// configured an OTLP gateway target (the stdout-export posture gets no
+	// hole). Corner: an operator that later LOSES its telemetry target leaves
+	// the last-rendered policy in place until the namespace turns over; the
+	// policy then allows egress to a target nothing dials.
+	if tt := r.TelemetryTarget; tt != nil {
+		objects = append(objects, allowTelemetryNetworkPolicy(nsName, teamObj, tt))
 	}
 	for _, obj := range objects {
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
@@ -749,6 +808,39 @@ func allowDNSNetworkPolicy(ns string, teamObj *api.Team, dnsNamespace string) *n
 					{Protocol: &udpProtocol, Port: &dnsPort},
 					{Protocol: &tcpProtocol, Port: &dnsPort},
 				},
+			}},
+		},
+	}
+}
+
+// allowTelemetryNetworkPolicy re-opens egress to the OTLP gateway (ISI-4188
+// gap 9): the in-pod supervisor exports spans/metrics/logs to it, and the
+// team default-deny silently dropped that export (verified live on
+// k8squad-test: spans counted at the operator-side mapper but no
+// ksquad-supervisor rows in Grail). Port-scoped TCP only; the peer is the
+// gateway's namespace (in-cluster DNS form) or its /32 (bare-IP form).
+func allowTelemetryNetworkPolicy(ns string, teamObj *api.Team, tt *TelemetryTarget) *networkingv1.NetworkPolicy {
+	peer := networkingv1.NetworkPolicyPeer{}
+	if tt.Namespace != "" {
+		peer.NamespaceSelector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{"kubernetes.io/metadata.name": tt.Namespace},
+		}
+	} else {
+		peer.IPBlock = &networkingv1.IPBlock{CIDR: tt.IP + "/32"}
+	}
+	port := intstr.FromInt32(tt.Port)
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      "ksquad-allow-telemetry",
+			Labels:    managedLabels(teamObj),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To:    []networkingv1.NetworkPolicyPeer{peer},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcpProtocol, Port: &port}},
 			}},
 		},
 	}
