@@ -196,6 +196,65 @@ func TestReconcileCollectorNotFound(t *testing.T) {
 	}
 }
 
+// ISI-4152: when the collectors are OpenTelemetry-operator-managed (e.g. the
+// otel-gateway Deployment in the observability namespace, labelled
+// component=opentelemetry-collector / managed-by=opentelemetry-operator), the
+// reconciler must discover them cluster-wide even though they live outside the
+// operator's release namespace. The egress ConfigMap lands next to that
+// collector and the roll annotation stamps its pod template.
+func TestReconcileFindsOTelOperatorManagedCollector(t *testing.T) {
+	gateway := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "observability",
+			Name:      "otel-gateway-collector",
+			Labels: map[string]string{
+				componentLabelKey: otelCollectorComponent,
+				managedByLabelKey: otelOperatorName,
+			},
+		},
+	}
+	r := newReconciler(t, gateway, otelConfig("default", 5))
+	reconcile(t, r)
+
+	var cm corev1.ConfigMap
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: "observability", Name: "otel-gateway-collector-egress"}, &cm); err != nil {
+		t.Fatalf("get egress configmap: %v", err)
+	}
+	if !strings.Contains(cm.Data[egressConfigKey], "otlphttp/vendor_traces") {
+		t.Errorf("overlay missing vendor exporter:\n%s", cm.Data[egressConfigKey])
+	}
+	var dep appsv1.Deployment
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: "observability", Name: "otel-gateway-collector"}, &dep); err != nil {
+		t.Fatalf("get collector: %v", err)
+	}
+	if got := dep.Spec.Template.Annotations[rolloutAnnotationKey]; got != "5" {
+		t.Errorf("rollout annotation = %q, want 5", got)
+	}
+
+	st := getStatus(t, r, "default")
+	if got := signalState(t, st, "traces"); got != ksquadv1alpha1.SignalStateHealthy {
+		t.Errorf("traces state = %q, want healthy", got)
+	}
+}
+
+// ISI-4152: the legacy Helm collector in the operator namespace still wins
+// over the operator-managed fallback when both exist (unchanged behavior).
+func TestReconcilePrefersLegacyCollector(t *testing.T) {
+	gateway := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "observability",
+			Name:      "otel-gateway-collector",
+			Labels: map[string]string{
+				componentLabelKey: otelCollectorComponent,
+				managedByLabelKey: otelOperatorName,
+			},
+		},
+	}
+	r := newReconciler(t, collectorDeployment(), gateway, otelConfig("default", 1))
+	reconcile(t, r)
+	getEgress(t, r) // legacy rel-otel-collector-egress in the operator ns
+}
+
 func getStatus(t *testing.T, r *Reconciler, name string) ksquadv1alpha1.OTelConfigStatus {
 	t.Helper()
 	var cfg ksquadv1alpha1.OTelConfig
