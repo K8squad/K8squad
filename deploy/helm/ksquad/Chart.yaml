@@ -9,7 +9,11 @@ description: >-
   architecture, and ISI-2149.
 type: application
 # Chart version tracks the chart; appVersion tracks the KSquad control plane.
-version: 0.1.0
+# 0.2.0 (ISI-4164): BREAKING — otel-collector templates + observability.collector/
+# traces/export values removed; deploy/otel/ (otel-operator CRs) is the
+# chart-of-record for the collector topology (ISI-4163). SLO PrometheusRule kept
+# behind observability.sloRules.enabled alone.
+version: 0.2.0
 appVersion: "0.1.0"
 kubeVersion: ">=1.29.0-0"
 keywords:

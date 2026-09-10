@@ -29,8 +29,9 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
     # configmaps create/update/patch is the OTelConfig→collector egress overlay
-    # write path (ADR-0008 M1(b), ISI-3724): the operator owns the
-    # {release}-otel-collector-egress ConfigMap.
+    # write path (ADR-0008 M1(b), ISI-3724): the operator owns the egress
+    # overlay ConfigMap of the operator-managed collector (deploy/otel/,
+    # namespace observability — ISI-4163).
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Patch the collector Deployment's pod-template annotation
   # (ksquad.io/otelconfig-generation) to trigger a rolling restart when egress

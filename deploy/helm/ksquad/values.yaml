@@ -371,8 +371,10 @@ egress:
     # chatter (operator↔postgres↔NATS↔otel↔apiserver↔console↔event-relay↔
     # scm-webhook + CNPG replication), the kube-apiserver hop, north/south
     # ingress from the Gateway/Ingress dataplane, and Prometheus scrape — plus
-    # the apiserver (below) and otel-collector governed external hops. Verified
-    # on an enforcing CNI (kind + Calico) by the cp-lockdown CI job. Tune
+    # the apiserver's governed external hop (below); the collector's vendor hop
+    # is owned by the operator-managed collector stack (deploy/otel/ —
+    # ISI-4163). Verified on an enforcing CNI (kind + Calico) by the
+    # cp-lockdown CI job. Tune
     # controlPlaneCarveOuts.dataplaneNamespaceSelector and
     # apiserverEgress.exceptCIDRs to your CNI/gateway before enabling.
     releaseNamespaceDefaultDeny: false
@@ -384,7 +386,7 @@ egress:
     # high-trust egress (arch §12.2; pkg/probeegress assumes it). Without this
     # allow, under a rendered default-deny the credential test-connection probe
     # to model providers (api.anthropic.com, api.openai.com, BYO endpoints) is
-    # starved. Mirrors the otel-collector vendorEgress pattern.
+    # starved. Mirrors the collector vendorEgress pattern (deploy/otel/).
     apiserverEgress:
       # Render the <apiserver>-egress allow policy (requires releaseNamespaceDefaultDeny)
       enabled: true
@@ -403,8 +405,9 @@ egress:
     # releaseNamespaceDefaultDeny=true — they are the matching allow policies
     # that keep the WHOLE control plane functional under the rendered
     # default-deny on an enforcing CNI (see templates/networkpolicy-carveouts.yaml
-    # for the design). Additive to the apiserver + otel-collector governed
-    # external hops. Verified on kind + Calico by the cp-lockdown CI job.
+    # for the design). Additive to the apiserver's governed external hop; the
+    # collector's vendor hop is owned by the operator-managed stack
+    # (deploy/otel/, ISI-4163). Verified on kind + Calico by the cp-lockdown CI job.
     controlPlaneCarveOuts:
       # Render the cp-* allow policies (requires releaseNamespaceDefaultDeny).
       enabled: true
@@ -482,93 +485,15 @@ events:
 #   the ONLY hop that talks to the vendor backend (sandboxes never do — §10).
 # ═════════════════════════════════════════════════════════════════════════════
 observability:
-  # deployment.environment resource attribute stamped on every signal (§10).
-  environment: production
-
-  collector:
-    # The gateway collector is ON by default (one helm install → full pipeline).
-    # Disabling it removes the redaction/SLO backstop — do so only when an
-    # external collector already fronts the vendor.
-    enabled: true
-    image:
-      # OTel Contrib distro (has k8sattributes, redaction, transform, tail_sampling).
-      # If the vendor exporter/processor isn't in Contrib, an OCB custom build is
-      # the path (obs-plan §10 "custom collector — deferred, flagged").
-      repository: otel/opentelemetry-collector-contrib
-      tag: "0.116.0"
-      pullPolicy: IfNotPresent
-    # Emit the debug exporter at detailed verbosity (dev only). With no vendor
-    # endpoint the collector falls back to the debug exporter at basic verbosity
-    # regardless, so every pipeline always has a sink.
-    debugExporter: false
-    # ── Node log collector (ISI-4102 board directive) ─────────────────────────
-    # DaemonSet: filelog off every node → k8sattributes → push to the gateway
-    # collector above (which owns the vendor hop). The consolidated topology's
-    # log arm — no vendor credential, no prometheus surface on these pods.
-    daemonset:
-      enabled: true
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-        limits:
-          memory: 512Mi
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        memory: 1Gi
-    networkPolicy:
-      # Collector-side allowlist: OTLP ingress from squad namespaces + governed
-      # vendor egress. The squad-SIDE carve-out (each Project's default-deny
-      # egress opening a hole TO this Service) is stamped by the operator.
-      enabled: true
-      # Namespaces bearing this label may push OTLP to the gateway. Set on squad
-      # tenant namespaces by the Team/tenancy reconciler (§11.1 arch).
-      squadNamespaceLabel:
-        key: ksquad.io/tenancy
-        value: squad
-      vendorEgress:
-        # Allow the governed hop to the external vendor backend.
-        enabled: true
-        # Vendor OTLP port (443 for hosted Dynatrace/most SaaS OTLP endpoints).
-        port: 443
-        # In-cluster ranges the vendor egress rule must NOT cover (pods/services).
-        # Tune to your CNI's pod/service CIDRs so this rule only reaches OUTSIDE.
-        exceptCIDRs:
-          - 10.0.0.0/8
-          - 172.16.0.0/12
-          - 192.168.0.0/16
-
-  traces:
-    # Base-rate head/tail sampling for healthy traces (%). Failed/paused/error
-    # traces are always kept at 100% by tail_sampling regardless of this (§4.2).
-    samplingPercentage: 10
-
-  export:
-    # ┌─ DEPRECATED (ADR-0008 §Migration, ISI-3747) ────────────────────────────┐
-    # │ The OTelConfig CRD is the single source of truth for vendor egress; the │
-    # │ operator reconciles it into the collector egress overlay (ISI-3724).    │
-    # │ These values remain for ONE release as a no-operator BOOTSTRAP fallback:│
-    # │ setting endpoint renders the {release}-otel-collector-egress ConfigMap  │
-    # │ directly from Helm. They are removed once the operator path is live on  │
-    # │ k8squad-test.                                                           │
-    # │                                                                         │
-    # │ Do NOT set endpoint here AND run the operator egress reconcile — both   │
-    # │ write the same ConfigMap and will contend. Leave endpoint EMPTY and use │
-    # │ the OTelConfig CR when the operator is present.                         │
-    # └─────────────────────────────────────────────────────────────────────────┘
-    # Empty endpoint = no vendor: the collector still enforces redaction/sampling
-    # and prints to the debug sink.
-    otlp:
-      endpoint: "" # e.g. https://abc123.live.dynatrace.com/api/v2/otlp
-      insecure: false
-      auth:
-        # Secret holding the Authorization header value (e.g. "Api-Token dt0c01...").
-        # Injected as env KSQUAD_OTLP_AUTH; never rendered into the ConfigMap.
-        secretName: ""
-        secretKey: token
+  # ── Collector topology RETIRED from this chart (ISI-4163/ISI-4164) ─────────
+  # This chart no longer ships any otel-collector resources (gateway
+  # Deployment/DaemonSet/Service/ConfigMaps/NetworkPolicies). The
+  # chart-of-record for the collector topology is deploy/otel/ — the live
+  # otel-operator CRs in namespace observability — whose gateway serves the
+  # contract Service otel-gateway-collector.observability that workloads'
+  # OTEL_EXPORTER_OTLP_ENDPOINT points at. A Helm-rendered second collector
+  # would use the wrong name/namespace and fight the operator-managed stack.
+  # Superseded values (collector.*, traces.*, export.*, environment) removed.
 
   sloRules:
     # Render the §9 SLO PrometheusRule. OFF by default: needs the Prometheus

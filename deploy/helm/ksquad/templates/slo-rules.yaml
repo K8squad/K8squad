@@ -9,15 +9,21 @@
   because that CRD is not a chart dependency; enable on clusters running it.
   Metric names follow the ksquad_* Prometheus form of the semconv registry (§7);
   they track story 13.9/Epic-D instrumentation and the §5.6 cardinality allowlist.
+
+  Collector-independent (ISI-4163/ISI-4164): these rules alert on ksquad_*
+  application metrics, not on any collector's health, so they render on
+  observability.sloRules.enabled alone. The collector topology itself is no
+  longer shipped by this chart — deploy/otel/ (otel-operator CRs) is the
+  chart-of-record for that.
 */ -}}
-{{- if and .Values.observability.collector.enabled .Values.observability.sloRules.enabled -}}
+{{- if .Values.observability.sloRules.enabled -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: {{ include "ksquad.otel-collector.fullname" . }}-slo
+  name: {{ include "ksquad.fullname" . }}-slo
   labels:
     {{- include "ksquad.labels" . | nindent 4 }}
-    app.kubernetes.io/component: otel-collector
+    app.kubernetes.io/part-of: ksquad
     {{- with .Values.observability.sloRules.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
