@@ -1,0 +1,46 @@
+{{- /*
+Shared k8sattributes RBAC. Rendered whenever anything in this chart needs
+cluster-wide pod/metadata read: the gateway in operator/deployment mode
+(operator mode: operator-created SA "<name>-collector" is the subject), or the
+node-logs DaemonSet in any mode (including external).
+*/ -}}
+{{- include "k8squad-otel.validate" . -}}
+{{- if or (ne .Values.collector.mode "external") .Values.nodeLogs.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-k8sattributes
+  labels:
+    ksquad.io/component: telemetry
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-k8sattributes
+  labels:
+    ksquad.io/component: telemetry
+    {{- include "k8squad-otel.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-k8sattributes
+subjects:
+  {{- if ne .Values.collector.mode "external" }}
+  - kind: ServiceAccount
+    name: {{ include "k8squad-otel.gatewayServiceName" . }}
+    namespace: {{ .Release.Namespace }}
+  {{- end }}
+  {{- if .Values.nodeLogs.enabled }}
+  - kind: ServiceAccount
+    name: otel-node-logs
+    namespace: {{ .Release.Namespace }}
+  {{- end }}
+{{- end }}

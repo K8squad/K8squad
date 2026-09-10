@@ -1,0 +1,137 @@
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-gateway
+  namespace: observability
+  labels:
+    app.kubernetes.io/name: otel-gateway
+    ksquad.io/component: telemetry-gateway
+spec:
+  mode: deployment
+  observability:
+    metrics:
+      enableMetrics: true
+  replicas: 1
+  image: otel/opentelemetry-collector-k8s:0.156.0
+  env:
+    - name: KSQUAD_OTLP_AUTH
+      valueFrom:
+        secretKeyRef:
+          name: dynatrace-otlp
+          key: token
+  config: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+      resource:
+        attributes:
+          - key: service.namespace
+            value: k8squad-test
+            action: upsert
+          - key: deployment.environment
+            value: test
+            action: upsert
+      cumulativetodelta: {}
+      redaction:
+        allow_all_keys: true
+        blocked_values:
+          - "(?i)bearer\\s+[a-z0-9._~+/-]+=*"
+          - "sk-[A-Za-z0-9]{16,}"
+          - "xox[baprs]-[A-Za-z0-9-]+"
+          - "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+          - "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+        summary: debug
+      transform/redaction:
+        error_mode: ignore
+        trace_statements:
+          - context: span
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+        log_statements:
+          - context: log
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+              - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
+              - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
+              - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
+              - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
+              - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+      tail_sampling:
+        decision_wait: 10s
+        num_traces: 50000
+        expected_new_traces_per_sec: 200
+        policies:
+          - name: keep-errors
+            type: status_code
+            status_code:
+              status_codes: [ERROR]
+          - name: keep-failed-runs
+            type: string_attribute
+            string_attribute:
+              key: ksquad.run.terminal_reason
+              values: [failed, error, killed]
+          - name: keep-paused-runs
+            type: string_attribute
+            string_attribute:
+              key: ksquad.run.phase
+              values: [Paused]
+          - name: base-rate
+            type: probabilistic
+            probabilistic:
+              sampling_percentage: 10
+      batch:
+        send_batch_size: 8192
+        send_batch_max_size: 16384
+        timeout: 5s
+    exporters:
+      otlphttp/vendor:
+        endpoint: https://oat05854.dev.dynatracelabs.com/api/v2/otlp
+        headers:
+          Authorization: "${env:KSQUAD_OTLP_AUTH}"
+        tls:
+          insecure: false
+      debug:
+        verbosity: basic
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
+          exporters: [otlphttp/vendor]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, cumulativetodelta, batch]
+          exporters: [otlphttp/vendor]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          exporters: [otlphttp/vendor]

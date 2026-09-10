@@ -1,0 +1,231 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-node-logs
+  namespace: observability
+  labels:
+    ksquad.io/component: telemetry-node-logs
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-k8sattributes
+  labels:
+    ksquad.io/component: telemetry
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-k8sattributes
+  labels:
+    ksquad.io/component: telemetry
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-k8sattributes
+subjects:
+  - kind: ServiceAccount
+    name: otel-gateway-collector
+    namespace: observability
+  - kind: ServiceAccount
+    name: otel-node-logs
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-node-logs
+  namespace: observability
+  labels:
+    ksquad.io/component: telemetry-node-logs
+data:
+  config.yaml: |
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      filelog/pods:
+        include: [ /var/log/pods/*/*/*.log ]
+        exclude: [ "*.gz" ]
+        start_at: end
+        include_file_path: true
+        operators:
+          - type: regex_parser
+            id: parse_pod_path
+            regex: '/var/log/pods/(?P<namespace>[^/]+)/(?P<pod>[^/]+)/(?P<uid>[^/]+)/(?P<container>[^\._]+).*\.log$'
+            parse_from: attributes["log.file.path"]
+          - type: move
+            from: attributes.namespace
+            to: resource["k8s.namespace.name"]
+          - type: move
+            from: attributes.pod
+            to: resource["k8s.pod.name"]
+          - type: move
+            from: attributes.container
+            to: resource["k8s.container.name"]
+          - type: move
+            from: attributes.uid
+            to: resource["k8s.pod.uid"]
+          - type: json_parser
+            id: parse_runtime_line
+            parse_from: body
+            timestamp:
+              parse_from: attributes.time
+              layout_type: gotime
+              layout: '2006-01-02T15:04:05.000000000Z07:00'
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.deployment.name
+            - k8s.node.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+      resource:
+        attributes:
+          - key: service.name
+            value: k8s-node-logs
+            action: upsert
+          - key: service.namespace
+            value: k8squad-test
+            action: upsert
+          - key: deployment.environment
+            value: test
+            action: upsert
+      redaction:
+        allow_all_keys: true
+        blocked_values:
+          - "(?i)bearer\\s+[a-z0-9._~+/-]+=*"
+          - "sk-[A-Za-z0-9]{16,}"
+          - "xox[baprs]-[A-Za-z0-9-]+"
+          - "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+          - "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"
+        summary: debug
+      transform/redaction:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - delete_matching_keys(attributes, "(?i).*(token|secret|password|authorization|api[-_]?key|credential).*")
+              - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
+              - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
+              - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
+              - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
+              - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+      batch:
+        send_batch_size: 8192
+        send_batch_max_size: 16384
+        timeout: 5s
+    exporters:
+      otlphttp/gateway:
+        endpoint: "http://otel-gateway-collector.observability:4318"
+    service:
+      extensions: [health_check]
+      pipelines:
+        logs:
+          receivers: [filelog/pods]
+          processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
+          exporters: [otlphttp/gateway]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-node-logs
+  namespace: observability
+  labels:
+    ksquad.io/component: telemetry-node-logs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otel-node-logs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otel-node-logs
+        ksquad.io/component: telemetry-node-logs
+    spec:
+      serviceAccountName: otel-node-logs
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node.kubernetes.io/not-ready
+          operator: Exists
+          effect: NoExecute
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-k8s:0.156.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/conf/config.yaml
+          ports:
+            - name: health
+              containerPort: 13133
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 13133
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: otelcol-state
+              mountPath: /var/lib/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: otel-node-logs
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: otelcol-state
+          emptyDir: {}

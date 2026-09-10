@@ -1,0 +1,19 @@
+apiVersion: v2
+name: k8squad-otel
+description: |
+  K8squad collector topology — chart-of-record (ISI-4163). Renders the
+  telemetry gateway collector and node-log DaemonSet in one of three modes:
+    operator   — OpenTelemetryCollector CR managed by the OpenTelemetry
+                 Operator (requires the operator installed cluster-side).
+    deployment — plain Deployment + ConfigMap + Service, no operator required.
+    external   — renders no gateway; for clusters that already run their own
+                 collector (BYO). Point config/helm controlPlane.otel.endpoint
+                 at it.
+  All non-external modes preserve the platform contract Service name
+  otel-gateway-collector.<namespace> that config/helm injects into every
+  workload's OTEL_EXPORTER_OTLP_* env.
+type: application
+version: 0.1.0
+appVersion: "0.156.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/K8squad/K8squad
