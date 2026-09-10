@@ -26,8 +26,10 @@ on:
     branches: [main]
     paths:
       - 'cmd/apiserver/**'
+      - 'cmd/operator/**'
       - 'pkg/coord/**'
       - 'internal/coord/**'
+      - 'pkg/controller/rundrive/**'
       - '.github/workflows/spine-chaos.yml'
   push:
     branches: [main]
