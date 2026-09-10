@@ -123,8 +123,8 @@ func driveFixture(t *testing.T) (*sql.DB, string) {
 
 	var item string
 	if err := db.QueryRowContext(ctx, `
-		INSERT INTO coord.work_item (project_id, title, created_by)
-		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos')
+		INSERT INTO coord.work_item (project_id, title, created_by, state)
+		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos', 'todo')
 		RETURNING id::text`).Scan(&item); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
