@@ -59,6 +59,16 @@ operator:
   # "no runtime selected" — set it once the runtime CLI is reachable in the
   # operator image/topology (the pod-side supervisor ADR tracks the endgame).
   shimRuntimeType: ""
+  # M1.2 task-io seam (ISI-4128): when coord.url + coord.existingJwtKeySecret
+  # are both set, the operator mints run-scoped tokens (validated by the
+  # apiserver's JWT mint — share the key with apiserver.auth) and writes the
+  # per-sandbox credential Secret the pod-side supervisor handshakes on
+  # (ADR-0007 D2). Either unset = credential-off (fail-safe).
+  coord:
+    url: "" # e.g. http://<fullname>-apiserver.<ns>.svc:8080
+    existingJwtKeySecret:
+      name: ""
+      key: ""
   resources:
     requests:
       cpu: 50m

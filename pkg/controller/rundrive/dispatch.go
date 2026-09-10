@@ -503,13 +503,24 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		window = *snap.ContextWindow
 	}
 
+	// M1.2 (ISI-4128): TeamID is the team's Postgres uuid (scoped memory
+	// recall keys on coord.work_item.team_id = Team CR uid), never the CR
+	// name — resolve the Team like the run controller's snapshot path.
+	teamNS := run.Spec.TeamRef.Namespace
+	if teamNS == "" {
+		teamNS = run.Namespace
+	}
+	var team api.Team
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
+		return "", fmt.Errorf("rundrive: read Team %s/%s for run %s/%s: %w", teamNS, run.Spec.TeamRef.Name, run.Namespace, run.Name, err)
+	}
 	// The Source resolves the Project CRD in projNS (which honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
 		Run:           run,
 		Agent:         &agent,
 		Project:       &project,
-		TeamID:        run.Spec.TeamRef.Name,
+		TeamID:        string(team.UID),
 		ContextWindow: window,
 		Existing:      run.Status.ContextSnapshot,
 	})

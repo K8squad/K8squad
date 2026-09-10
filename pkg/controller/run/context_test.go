@@ -103,11 +103,17 @@ func runWithAgent() (*api.Run, *api.Agent, *api.Project) {
 	return run, agent, project
 }
 
+// teamFor returns the Team CR the context snapshot resolves for the run
+// (M1.2: TeamID is the Team uid, not the name).
+func teamFor() *api.Team {
+	return &api.Team{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Namespace: "default", UID: types.UID("uid-team-a")}}
+}
+
 // AC2: the reconciler assembles and pins the snapshot at Claiming → Running.
 func TestReconcilePinsContextSnapshot(t *testing.T) {
 	run, agent, project := runWithAgent()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(run, agent, project).WithStatusSubresource(&api.Run{}).Build()
+		WithObjects(run, agent, project, teamFor()).WithStatusSubresource(&api.Run{}).Build()
 
 	r := &Reconciler{
 		Client:            c,
@@ -149,7 +155,7 @@ func TestReconcilePinsContextSnapshot(t *testing.T) {
 func TestReconcileSnapshotIsImmutable(t *testing.T) {
 	run, agent, project := runWithAgent()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(run, agent, project).WithStatusSubresource(&api.Run{}).Build()
+		WithObjects(run, agent, project, teamFor()).WithStatusSubresource(&api.Run{}).Build()
 
 	r := &Reconciler{
 		Client:            c,
@@ -179,7 +185,7 @@ func TestReconcileSnapshotIsImmutable(t *testing.T) {
 func TestReconcileContextAssemblyFailsClosed(t *testing.T) {
 	run, agent, project := runWithAgent()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(run, agent, project).WithStatusSubresource(&api.Run{}).Build()
+		WithObjects(run, agent, project, teamFor()).WithStatusSubresource(&api.Run{}).Build()
 
 	r := &Reconciler{
 		Client:            c,
@@ -202,7 +208,7 @@ func TestReconcileContextAssemblyFailsClosed(t *testing.T) {
 func TestReconcileNoContextSideChannelIsNoop(t *testing.T) {
 	run, agent, project := runWithAgent()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(run, agent, project).WithStatusSubresource(&api.Run{}).Build()
+		WithObjects(run, agent, project, teamFor()).WithStatusSubresource(&api.Run{}).Build()
 
 	if _, err := reconcileOnce(t, c, fakeSource{step: reconcile.StepRunning, found: true}); err != nil {
 		t.Fatalf("reconcile: %v", err)
