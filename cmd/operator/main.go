@@ -591,6 +591,13 @@ func main() {
 	if err := (&teamctrl.Reconciler{
 		ApiserverNamespace:      apiserverNS,
 		ApiserverServiceAccount: apiserverSA,
+		// ISI-4188 gap 6: the allow-control-plane NetworkPolicy (egress AND the
+		// sandbox-dispatch ingress) must target the namespace the control plane
+		// ACTUALLY runs in. The code default ("ksquad-system") drifted from the
+		// chart of record's namespace (k8squad-system), leaving the selector
+		// pointing at a namespace that does not exist — Cilium resolves it to
+		// zero identities and the hop dies (verified live on k8squad-test).
+		ControlPlaneNamespace: apiserverNS,
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Team reconciler")
 		os.Exit(1)
