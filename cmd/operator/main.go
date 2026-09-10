@@ -476,6 +476,26 @@ func main() {
 			os.Exit(1)
 		}
 
+		// M1.3 ticket intake (ISI-4129): the bridge from the board to the Run
+		// plane. Every tick, team-assigned todo work items get their Run CR
+		// (deterministic name, idempotent) so the drive loop above can claim
+		// (todo → in_progress) and dispatch them. Level-triggered off the
+		// durable board state — bounded intake latency is the acceptance
+		// criterion; a missed tick costs delay, never correctness.
+		intakeSource, err := rundrive.NewSQLIntakeSource(db)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind ticket intake source")
+			os.Exit(1)
+		}
+		if err := mgr.Add(&rundrive.Intake{
+			Source: intakeSource,
+			Client: mgr.GetClient(),
+			Log:    func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register ticket intake sweep")
+			os.Exit(1)
+		}
+
 		// The repo-sync reconciler (story 11.1, §5.4) mirrors a Project's
 		// upstream into the untrusted-external scm schema on the SAME
 		// Postgres (ADR-001 — one more schema, not a new datastore). Its
