@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -328,5 +329,55 @@ func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
 	}
 	if wsEnv["KSQUAD_WORKDIR"] != WorkspaceMountPath || wsEnv["HOME"] != WorkspaceMountPath {
 		t.Errorf("workspace env = %q, want KSQUAD_WORKDIR/HOME = %q", wsEnv, WorkspaceMountPath)
+	}
+}
+
+// TestKubeProvisionerBootRightSizesRequests (ISI-4208): WithRequests decouples
+// the scheduling reservation from the burst ceiling — a warm sandbox reserves
+// 500m CPU while keeping the 1-CPU limit. Without WithRequests the historical
+// requests==limits (Guaranteed QoS) posture is preserved.
+func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	ctx := context.Background()
+	img := PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}
+
+	p := NewKubeProvisioner(c, "1", "512Mi").WithRequests("500m", "512Mi")
+	if err := p.Boot(ctx, img, "sbx-rightsized"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	sized := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-rightsized"), sized); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	res := sized.Spec.Containers[0].Resources
+	if res.Requests.Cpu().Cmp(resource.MustParse("500m")) != 0 {
+		t.Errorf("cpu request = %v, want 500m", res.Requests.Cpu())
+	}
+	if res.Limits.Cpu().Cmp(resource.MustParse("1")) != 0 {
+		t.Errorf("cpu limit = %v, want 1 (burst ceiling unchanged)", res.Limits.Cpu())
+	}
+	if res.Requests.Memory().Cmp(resource.MustParse("512Mi")) != 0 {
+		t.Errorf("memory request = %v, want 512Mi", res.Requests.Memory())
+	}
+	if res.Limits.Memory().Cmp(resource.MustParse("512Mi")) != 0 {
+		t.Errorf("memory limit = %v, want 512Mi", res.Limits.Memory())
+	}
+
+	// Default (no WithRequests): requests==limits, Guaranteed QoS preserved.
+	dflt := NewKubeProvisioner(c, "1", "512Mi")
+	if err := dflt.Boot(ctx, img, "sbx-guaranteed"); err != nil {
+		t.Fatalf("boot default: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-guaranteed"), pod); err != nil {
+		t.Fatalf("get default pod: %v", err)
+	}
+	dres := pod.Spec.Containers[0].Resources
+	if dres.Requests.Cpu().Cmp(*dres.Limits.Cpu()) != 0 {
+		t.Errorf("default cpu request %v should equal limit %v", dres.Requests.Cpu(), dres.Limits.Cpu())
 	}
 }

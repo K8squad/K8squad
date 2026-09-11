@@ -59,6 +59,14 @@ operator:
   # "no runtime selected" — set it once the runtime CLI is reachable in the
   # operator image/topology (the pod-side supervisor ADR tracks the endgame).
   shimRuntimeType: ""
+  # Sandbox scheduling requests (ISI-4208): rendered as
+  # KSQUAD_SANDBOX_CPU_REQUEST / KSQUAD_SANDBOX_MEMORY_REQUEST on the operator
+  # pod. Empty = operator code default (cpu 500m, memory 512Mi) — the warm
+  # sandbox reservation right-sized below the 1-CPU/512Mi burst limits after
+  # 1-CPU reservations saturated 2-worker nodes at 86-87% CPU requests.
+  sandbox:
+    cpuRequest: ""
+    memoryRequest: ""
   # M1.2 task-io seam (ISI-4128): when coord.url + coord.existingJwtKeySecret
   # are both set, the operator mints run-scoped tokens (validated by the
   # apiserver's JWT mint — share the key with apiserver.auth) and writes the
