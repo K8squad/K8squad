@@ -79,6 +79,12 @@ func TestRelayPublishesToJetStream(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	defer func() { _ = sub.Unsubscribe() }()
+	// Flush so the SUB reaches the server before the relay publishes: core
+	// NATS drops messages for subscriptions not yet registered, so without
+	// this a fast Flush below races the subscribe and the test flakes.
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("nats flush: %v", err)
+	}
 
 	store := &memStore{
 		rows: []*events.OutboxRow{{ID: 1, Entity: "work_item", ProjectID: "p1", Squad: "s1", EventType: "claimed", Payload: []byte(`{"v":1}`)}},

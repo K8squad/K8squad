@@ -272,3 +272,61 @@ func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
 		}
 	}
 }
+
+// TestKubeProvisionerBootStampsWritableWorkDir (ISI-4188 gap 1): every
+// sandbox container boots with a writable WorkingDir plus the
+// KSQUAD_WORKDIR/HOME env pair — without it the runtime CLIs run at cwd "/"
+// and die on their first cache write (`EACCES: mkdir '/.local'`), before any
+// model call or span. A per-Project workspace mount wins over the /tmp
+// fallback.
+func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	ctx := context.Background()
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}, "sbx-workdir"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-workdir"), pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+
+	ctr := pod.Spec.Containers[0]
+	if ctr.WorkingDir != sandboxWorkDir {
+		t.Errorf("container WorkingDir = %q, want %q", ctr.WorkingDir, sandboxWorkDir)
+	}
+	env := map[string]string{}
+	for _, e := range ctr.Env {
+		env[e.Name] = e.Value
+	}
+	if env["KSQUAD_WORKDIR"] != sandboxWorkDir {
+		t.Errorf("KSQUAD_WORKDIR = %q, want %q", env["KSQUAD_WORKDIR"], sandboxWorkDir)
+	}
+	if env["HOME"] != sandboxWorkDir {
+		t.Errorf("HOME = %q, want %q (cache roots must be writable)", env["HOME"], sandboxWorkDir)
+	}
+
+	// With a per-Project workspace the shared mount is the workdir.
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1", ProjectPVC: "workspace-project-x"}, "sbx-ws"); err != nil {
+		t.Fatalf("boot ws: %v", err)
+	}
+	ws := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-ws"), ws); err != nil {
+		t.Fatalf("get ws pod: %v", err)
+	}
+	if got := ws.Spec.Containers[0].WorkingDir; got != WorkspaceMountPath {
+		t.Errorf("workspace WorkingDir = %q, want %q", got, WorkspaceMountPath)
+	}
+	wsEnv := map[string]string{}
+	for _, e := range ws.Spec.Containers[0].Env {
+		wsEnv[e.Name] = e.Value
+	}
+	if wsEnv["KSQUAD_WORKDIR"] != WorkspaceMountPath || wsEnv["HOME"] != WorkspaceMountPath {
+		t.Errorf("workspace env = %q, want KSQUAD_WORKDIR/HOME = %q", wsEnv, WorkspaceMountPath)
+	}
+}

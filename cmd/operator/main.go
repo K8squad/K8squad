@@ -620,6 +620,17 @@ func main() {
 	if err := (&teamctrl.Reconciler{
 		ApiserverNamespace:      apiserverNS,
 		ApiserverServiceAccount: apiserverSA,
+		// ISI-4188 gap 6: the allow-control-plane NetworkPolicy (egress AND the
+		// sandbox-dispatch ingress) must target the namespace the control plane
+		// ACTUALLY runs in. The code default ("ksquad-system") drifted from the
+		// chart of record's namespace (k8squad-system), leaving the selector
+		// pointing at a namespace that does not exist — Cilium resolves it to
+		// zero identities and the hop dies (verified live on k8squad-test).
+		ControlPlaneNamespace: apiserverNS,
+		// ISI-4188 gap 9: the sandbox supervisor's OTLP export needs a squad
+		// egress hole to the gateway; parsed from the same env the chart
+		// stamps on every workload (nil when telemetry is not configured).
+		TelemetryTarget: teamctrl.TelemetryTargetFromEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Team reconciler")
 		os.Exit(1)
