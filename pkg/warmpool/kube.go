@@ -71,6 +71,13 @@ type KubeProvisioner struct {
 	// Default resource limits for sandbox pods.
 	cpuLimit    string
 	memoryLimit string
+	// cpuRequest/memoryRequest right-size the SCHEDULING reservation
+	// independently of the limits (ISI-4208: a warm sandbox idles near zero
+	// CPU, so reserving a full core per pod saturated 2-worker nodes at
+	// 86-87% requests and starved the 5th pool member). Empty falls back to
+	// the limit (requests==limits, Guaranteed QoS) — the historical default.
+	cpuRequest    string
+	memoryRequest string
 	// podEnv is extra non-secret env stamped into every sandbox container
 	// (e.g. the OTLP endpoint/protocol passthrough so pod-side spans reach
 	// the telemetry pipeline — values only, never secrets).
@@ -100,6 +107,18 @@ func NewKubeProvisioner(kubeClient client.Client, cpuLimit, memoryLimit string) 
 // passthrough) — never secrets; the minimal-env invariant (ADR-0007) holds.
 func (k *KubeProvisioner) WithPodEnv(vars ...corev1.EnvVar) *KubeProvisioner {
 	k.podEnv = append(k.podEnv, vars...)
+	return k
+}
+
+// WithRequests sets the sandbox scheduling REQUESTS independently of the
+// limits (ISI-4208). Empty strings fall back to the limits, preserving the
+// requests==limits Guaranteed-QoS posture this provisioner historically used.
+// A request below the limit (e.g. cpu 500m request / 1 CPU limit) makes warm
+// sandboxes Burstable: idle pods reserve less schedulable CPU while a
+// Run-driving sandbox can still burst to the full limit.
+func (k *KubeProvisioner) WithRequests(cpuRequest, memoryRequest string) *KubeProvisioner {
+	k.cpuRequest = cpuRequest
+	k.memoryRequest = memoryRequest
 	return k
 }
 
@@ -135,6 +154,20 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 	limits := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse(k.cpuLimit),
 		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
+	}
+	// ISI-4208: requests default to the limits (Guaranteed QoS) unless the
+	// operator wired right-sized requests — a warm sandbox reserves only
+	// what it needs for scheduling, not the burst ceiling.
+	cpuReq, memReq := k.cpuLimit, k.memoryLimit
+	if k.cpuRequest != "" {
+		cpuReq = k.cpuRequest
+	}
+	if k.memoryRequest != "" {
+		memReq = k.memoryRequest
+	}
+	requests := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(cpuReq),
+		corev1.ResourceMemory: resource.MustParse(memReq),
 	}
 
 	// ISI-4188 gap 1: the writable workdir contract. With a per-Project
@@ -175,7 +208,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 			},
 			Containers: []corev1.Container{
 				{
-					Name: "sandbox",
+					Name:  "sandbox",
 					Image: key.Image,
 					// ISI-4188 gap 1: a writable cwd — see the workDir
 					// computation above (workspace mount when present, /tmp
@@ -233,9 +266,11 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 						ReadOnly:  true,
 					}},
 					Resources: corev1.ResourceRequirements{
-						// Requests match limits for guaranteed QoS.
+						// Requests default to limits (Guaranteed QoS);
+						// WithRequests right-sizes the scheduling
+						// reservation below the burst ceiling (ISI-4208).
 						Limits:   limits,
-						Requests: limits,
+						Requests: requests,
 					},
 					LivenessProbe: &corev1.Probe{
 						ProbeHandler: corev1.ProbeHandler{

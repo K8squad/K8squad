@@ -87,6 +87,18 @@ spec:
                    loudly, ledger stays honest). */}}
             - name: KSQUAD_SHIM_BIN
               value: /usr/local/bin/shim
+            {{- /* ISI-4208: warm-sandbox scheduling requests, decoupled from the
+                   burst limits. Empty values are omitted entirely so the
+                   operator's code defaults (cpu 500m / memory 512Mi — see
+                   cmd/operator/main.go) apply. */}}
+            {{- with .Values.operator.sandbox.cpuRequest }}
+            - name: KSQUAD_SANDBOX_CPU_REQUEST
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.operator.sandbox.memoryRequest }}
+            - name: KSQUAD_SANDBOX_MEMORY_REQUEST
+              value: {{ . | quote }}
+            {{- end }}
             {{- /* M1.2 task-io seam (ISI-3601/ISI-4128): the credential
                    writer + shim task-io injection need the in-cluster coord
                    URL and the JWT key SHARED with the apiserver (the minted
