@@ -48,57 +48,46 @@ const terminalSet = `('succeeded','failed','cancelled')`
 type ProdClaims struct {
 	db        *sql.DB
 	principal string
-	claimer   *coord.ProdClaimer
+	// claimer is the §6.2 production claim writer (prodclaim.go) the M1.3
+	// drive loop acquires through (ISI-4183): the guarded in-place checkout
+	// rewrite + todo → in_progress lane advance + claim_acquired audit +
+	// claimed outbox event, ONE transaction. WithOutboxCapture is ON here —
+	// the operator's database carries the full migration set (0003 outbox
+	// included), unlike the 0001-only base spine chaos gate.
+	claimer  *coord.ProdClaimer
+	claimErr error // construction failure, surfaced by Acquire (rare: default config cannot fail)
 }
 
 // NewProdClaims binds the Claims seam. principal defaults to OperatorPrincipal.
-// The §6.2 claimer (Acquire) is opt-in via WithClaimer — the ISI-4183 fix wires
-// it in production; callers that only need the read/re-entry surface (tests,
-// ledger-only modes) construct without one and Acquire fails closed.
 func NewProdClaims(db *sql.DB, principal string) *ProdClaims {
 	if principal == "" {
 		principal = OperatorPrincipal
 	}
-	return &ProdClaims{db: db, principal: principal}
-}
-
-// WithClaimer binds the production §6.2 claimer the drive loop acquires through
-// (ISI-4183: ProdClaimer had no production caller, so a Run drove the machine
-// without ever taking custody — the board lane never advanced). Returns c for
-// chaining.
-func (c *ProdClaims) WithClaimer(claimer *coord.ProdClaimer) *ProdClaims {
+	c := &ProdClaims{db: db, principal: principal}
+	claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig(), coord.WithOutboxCapture())
+	if err != nil {
+		c.claimErr = fmt.Errorf("rundrive.NewProdClaims: %w", err)
+		return c
+	}
 	c.claimer = claimer
 	return c
 }
 
-// Acquire implements Claims.Acquire: the §6.2 guarded acquire of THIS Run's
-// work item — holder/lease/fence stamped, lane todo → in_progress, one
-// co-committed claim_acquired audit row. ok=false, err=nil means the guard
-// rejected us (a live foreign lease, or the item left the todo lane) — the
-// caller requeues and retries; nothing changed.
-func (c *ProdClaims) Acquire(ctx context.Context, workItemID, runID string) (bool, error) {
-	if c.claimer == nil {
-		// Fail closed and loud: a drive loop without a claimer must never
-		// silently run claim-less (that is the exact bug ISI-4183 fixes).
-		return false, fmt.Errorf("rundrive.ProdClaims.Acquire: no claimer bound (construct via WithClaimer)")
-	}
-	_, _, ok, err := c.claimer.AcquireSpecific(ctx, c.principal, runID, workItemID, "")
-	if err != nil {
-		return false, fmt.Errorf("rundrive.ProdClaims.Acquire: %w", err)
-	}
-	return ok, nil
-}
-
-// State reads the claim-row snapshot one drive pass decides on.
+// State reads the claim-row snapshot one drive pass decides on — step, fence,
+// holder, lease, the holder RUN (coord.claim.run_id, the acquire stamp M1.3
+// owns) and the work item's board lane (coord.work_item.state).
 func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, bool, error) {
 	var cs ClaimState
 	var holder sql.NullString
 	var lease sql.NullTime
-	var holderRun sql.NullString
+	var runID sql.NullString
 	err := c.db.QueryRowContext(ctx, `
-		SELECT reconcile_step, fence_token, holder_principal, lease_expires_at, run_id::text
-		  FROM coord.claim WHERE work_item_id = $1::uuid`, workItemID).
-		Scan(&cs.Step, &cs.Fence, &holder, &lease, &holderRun)
+		SELECT cl.reconcile_step, cl.fence_token, cl.holder_principal,
+		       cl.lease_expires_at, cl.run_id::text, wi.state
+		  FROM coord.claim cl
+		  JOIN coord.work_item wi ON wi.id = cl.work_item_id
+		 WHERE cl.work_item_id = $1::uuid`, workItemID).
+		Scan(&cs.Step, &cs.Fence, &holder, &lease, &runID, &cs.ItemState)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ClaimState{}, false, nil
@@ -106,12 +95,59 @@ func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, 
 		return ClaimState{}, false, fmt.Errorf("rundrive.ProdClaims.State: %w", err)
 	}
 	cs.Holder = holder.String
-	cs.HolderRunID = holderRun.String
+	cs.RunID = runID.String
 	if lease.Valid {
 		t := lease.Time
 		cs.LeaseExpiresAt = &t
 	}
 	return cs, true, nil
+}
+
+// Acquire implements Claims.Acquire: the §6.2 guarded acquire of THIS Run's
+// work item (ProdClaimer.AcquireSpecific under the operator principal) —
+// checkout rewrite (holder, run, fence bump, lease) + todo → in_progress lane
+// advance + claim_acquired audit + claimed outbox event, one transaction.
+// ok=false: the free-or-expired guard rejected us or the lane does not advance
+// — nothing changed.
+func (c *ProdClaims) Acquire(ctx context.Context, workItemID, runID string) (int64, bool, error) {
+	if c.claimErr != nil {
+		return 0, false, c.claimErr
+	}
+	_, fence, ok, err := c.claimer.AcquireSpecific(ctx, c.principal, runID, workItemID, "")
+	if err != nil {
+		return 0, false, fmt.Errorf("rundrive.ProdClaims.Acquire: %w", err)
+	}
+	return fence, ok, nil
+}
+
+// Renew implements Claims.Renew: the §6.2 lease heartbeat as ONE guarded
+// UPDATE — holder + run + fence + live-lease must all match, renewed_at is
+// stamped, and a terminal-lane work item (done) is never resurrected into a
+// live lease. Mirrors ProdClaimer.Renew's guard family but returns the
+// infrastructure error instead of panicking: the drive loop requeues on it.
+func (c *ProdClaims) Renew(ctx context.Context, workItemID, runID string, fence int64) (bool, error) {
+	res, err := c.db.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET lease_expires_at = clock_timestamp() + $5::interval,
+		       renewed_at       = clock_timestamp()
+		 WHERE work_item_id     = $1::uuid
+		   AND holder_principal = $2
+		   AND run_id           = $3::uuid
+		   AND fence_token      = $4
+		   AND lease_expires_at > clock_timestamp()
+		   AND NOT EXISTS (
+		         SELECT 1 FROM coord.work_item
+		          WHERE id = $1::uuid AND state = 'done'
+		       )`,
+		workItemID, c.principal, runID, fence, coord.DefaultProdConfig().LeaseInterval)
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.Renew: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rundrive.ProdClaims.Renew: rows: %w", err)
+	}
+	return n == 1, nil
 }
 
 // LapsUsed counts completed retry-lap dispatch markers (run_id#lapN rows in
@@ -144,6 +180,22 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 	}
 	defer func() { _ = tx.Rollback() }() // no-op after Commit
 
+	// Pre-read under the row lock: was this checkout held before the release
+	// below clears it? Only a HELD release owes a claim_released §6.5 row
+	// (ISI-4183) — a re-entry over an already-unheld claim row (e.g. a crash
+	// before the first acquire) releases nothing and must not fake custody
+	// provenance. Same txn, FOR UPDATE: the read and the release are one fact.
+	var wasHeld sql.NullString
+	switch err := tx.QueryRowContext(ctx, `
+		SELECT holder_principal FROM coord.claim
+		 WHERE work_item_id = $1::uuid AND fence_token = $2
+		 FOR UPDATE`, workItemID, fromFence).Scan(&wasHeld); {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: pre-read: %w", event, err)
+	}
+
 	var fenceAfter int64
 	q := fmt.Sprintf(`
 		UPDATE coord.claim
@@ -170,6 +222,19 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 		workItemID, runID, event, c.principal, fenceAfter, toState); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: audit: %w", event, err)
 	}
+	// §6.5 claim_released provenance for the release this re-entry performed
+	// (ISI-4183): co-committed, so a released checkout can never exist without
+	// its audit row. Only written when a held checkout was actually cleared.
+	if wasHeld.Valid {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO coord.audit_log
+			       (work_item_id, run_id, event_type, principal,
+			        initiated_by_user_id, fence_token, to_state)
+			VALUES ($1::uuid, NULLIF($2,'')::uuid, 'claim_released', $3, NULL, $4, $5)`,
+			workItemID, runID, c.principal, fenceAfter, toState); err != nil {
+			return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: claim_released audit: %w", event, err)
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO coord.outbox
 		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
@@ -179,19 +244,6 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
 		workItemID, runID, event, toState, fenceAfter); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: outbox: %w", event, err)
-	}
-
-	// Lane return (ISI-4183): a released checkout is a RECLAIMABLE item — the
-	// lane goes back to todo in the same transaction (the same discipline
-	// prodreroute.go pins for its release). Guarded on in_progress so it is
-	// idempotent and never disturbs an item a human moved elsewhere (done,
-	// in_review, backlog). Without this, a retry lap's re-acquire (guard:
-	// todo→in_progress) would match 0 rows and wedge the Run.
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE coord.work_item
-		   SET state = 'todo', updated_at = now()
-		 WHERE id = $1::uuid AND state = 'in_progress'`, workItemID); err != nil {
-		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: lane return: %w", event, err)
 	}
 
 	if err := tx.Commit(); err != nil {

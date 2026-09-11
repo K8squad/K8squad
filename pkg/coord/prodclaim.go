@@ -159,13 +159,20 @@ func NewProdClaimer(db *sql.DB, cfg ProdConfig, opts ...ProdClaimerOption) (*Pro
 			 WHERE work_item_id = $4::uuid
 			   AND (holder_principal IS NULL OR lease_expires_at < clock_timestamp())
 			 RETURNING fence_token`, cfg.LeaseInterval),
-		// (3) BOARD ADVANCE — only from the claimable lane. A concurrent lane
-		// change makes this match 0 rows, which rolls back the WHOLE claim
-		// (acquire included): the checkout and the lane move are one fact.
+		// (3) BOARD ADVANCE — from the claimable lane, or a re-acquire of an
+		// item already in the claimed lane (ISI-4183): a §8 retry lap
+		// re-enters claiming_sandbox AFTER RetryEnter released the checkout,
+		// and a takeover re-claims an in_progress item whose holder's lease
+		// lapsed — in both shapes the lane is already in_progress and the
+		// acquire must not roll back on it. Accepting $1 (the claimed lane
+		// itself) keeps the lane from regressing or bypassing todo: backlog
+		// (§13: parked, NOT claimable), in_review and done still match 0 rows,
+		// which rolls back the WHOLE claim (acquire included) — the checkout
+		// and the lane move are one fact.
 		mark: `
 			UPDATE coord.work_item
 			   SET state = $1
-			 WHERE id = $2::uuid AND state = $3`,
+			 WHERE id = $2::uuid AND state IN ($3, $1)`,
 		// (4) AUDIT — the §6.5 coordination-audit record of the checkout,
 		// appended in the SAME transaction so an audited claim that did not
 		// commit cannot exist.

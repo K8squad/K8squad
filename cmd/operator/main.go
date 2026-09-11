@@ -507,9 +507,10 @@ func main() {
 
 		// §6.2 claimer (ISI-4183, M1.3 claim-back): the production caller
 		// ProdClaimer lacked — the drive loop acquired no checkout, so board
-		// lanes stuck in todo while Runs succeeded. Bound to the driver's
-		// Claims seam (the acquire gate; fail-closed: no claimer, no drive)
-		// and to the hygiene sweep below (lease renewal + terminal release).
+		// lanes stuck in todo while Runs succeeded. NewProdClaims now binds
+		// the claimer itself (co-committed acquire + renewal); this instance
+		// stays for the hygiene sweep below (lease renewal backstop; the
+		// terminal release is co-committed by ProdEffects.Terminal).
 		// Outbox capture ON: the operator runs against the fully-migrated
 		// schema (0003+), so claimed/claim_released events ride the canonical
 		// transactional outbox.
@@ -520,7 +521,7 @@ func main() {
 		}
 
 		driver := rundrive.NewDriver(mgr.GetClient(),
-			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal).WithClaimer(claimer),
+			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
 			rundrive.NewProdPauses(resumeStore),
 			runner)
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
