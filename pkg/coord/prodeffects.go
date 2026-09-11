@@ -503,16 +503,85 @@ func (e *ProdEffects) collectBuildSnapshot() {
 	}
 }
 
-// Terminal records a terminal transition (succeeded/failed/cancelled) as a §6.5 audit
-// row. The machine calls Terminal only when the step-advance INTO the terminal step
-// committed (runPhase: `if s.Advance(...) && IsTerminal(next)`), and Advance is the
-// exactly-once serialization point — so a plain append is at-most-once per committed
-// terminal advance (no separate dedup marker needed).
+// Terminal records a terminal transition (succeeded/failed/cancelled) as a §6.5
+// audit row — and RELEASES the §6.2 checkout (ISI-4183: claim_released on
+// terminal). The machine calls Terminal only when the step-advance INTO the
+// terminal step committed (runPhase: `if s.Advance(...) && IsTerminal(next)`),
+// and Advance is the exactly-once serialization point — so a plain append is
+// at-most-once per committed terminal advance (no separate dedup marker
+// needed). The release is the same §6.3 shape the rundrive re-entries use
+// (ProdClaims.enter): fence bumped (fencing any zombie of the ended run),
+// holder and lease cleared, guarded to THIS run's checkout
+// (holder_principal/run_id match) so a terminal advance raced by a reclaim
+// releases nothing and writes no claim_released row. The run_terminal audit,
+// the release and the claim_released audit are ONE transaction: a terminal
+// step with a live lease can never be observed.
 func (e *ProdEffects) Terminal(s reconcile.Step) {
 	if e.err != nil {
 		return
 	}
-	e.audit("run_terminal", s, nil)
+	tx, err := e.db.BeginTx(e.ctx, nil)
+	if err != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: begin: %w", err))
+		return
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	// §6.3 release-on-terminal: fence-first clear of OUR checkout row. The
+	// holder_principal = $3 guard means any matched row WAS held (the
+	// principal is non-empty), so a returned row implies a release happened.
+	var fenceAfter int64
+	released := false
+	switch err := tx.QueryRowContext(e.ctx, `
+		UPDATE coord.claim
+		   SET fence_token       = fence_token + 1,
+		       holder_principal  = NULL,
+		       lease_expires_at  = NULL,
+		       renewed_at        = NULL
+		 WHERE work_item_id     = $1::uuid
+		   AND run_id           = $2::uuid
+		   AND holder_principal = $3
+		 RETURNING fence_token`,
+		e.workItemID, e.runID, e.principal).Scan(&fenceAfter); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Not ours (already released / reclaimed): no release, no claim_released row.
+	case err != nil:
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: release: %w", err))
+		return
+	default:
+		released = true
+	}
+
+	// The terminal transition record (unchanged shape: one row per committed
+	// terminal advance).
+	if _, err := tx.ExecContext(e.ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal,
+		        initiated_by_user_id, from_state, to_state)
+		VALUES ($1::uuid, $2::uuid, 'run_terminal', $3, $4::uuid, NULL, $5)`,
+		e.workItemID, e.runID, e.principal, e.initiator(), string(s)); err != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: audit: %w", err))
+		return
+	}
+
+	// §6.5 claim_released provenance — only when the release above matched
+	// this run's held checkout.
+	if released {
+		if _, err := tx.ExecContext(e.ctx, `
+			INSERT INTO coord.audit_log
+			       (work_item_id, run_id, event_type, principal,
+			        initiated_by_user_id, fence_token, to_state)
+			VALUES ($1::uuid, $2::uuid, 'claim_released', $3,
+			        $4::uuid, $5, $6)`,
+			e.workItemID, e.runID, e.principal, e.initiator(), fenceAfter, string(s)); err != nil {
+			e.fail(fmt.Errorf("coord.ProdEffects.Terminal: claim_released audit: %w", err))
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: commit: %w", err))
+	}
 }
 
 // audit appends one §6.5 provenance row for an effect. to carries the effect's target

@@ -17,7 +17,6 @@ limitations under the License.
 package rundrive
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -52,7 +51,8 @@ func gateHarness(t *testing.T, claims *fakeClaims, store *fakeMachineStore) (*Dr
 // first — the todo→in_progress lane advance is the claimer's co-committed
 // write — and only then driven.
 func TestClaimGateAcquiresThenDrives(t *testing.T) {
-	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 0}}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 0, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -70,7 +70,8 @@ func TestClaimGateAcquiresThenDrives(t *testing.T) {
 // A guard refusal (a live foreign lease appeared, or the item left the todo
 // lane) parks the Run on a bounded requeue — never a claim-less drive.
 func TestClaimGateRefusalRequeuesWithoutDriving(t *testing.T) {
-	claims := &fakeClaims{found: true, acquireBlocked: true, state: ClaimState{Step: reconcile.StepPending, Fence: 0}}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 0, ItemState: "todo"},
+		acquireOK: false}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 0, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -90,7 +91,7 @@ func TestClaimGateRefusalRequeuesWithoutDriving(t *testing.T) {
 // silent claim-less drive.
 func TestClaimGateAcquireErrorSurfaces(t *testing.T) {
 	claims := &fakeClaims{found: true, acquireErr: errors.New("conn refused"),
-		state: ClaimState{Step: reconcile.StepPending, Fence: 0}}
+		state: ClaimState{Step: reconcile.StepPending, Fence: 0, ItemState: "todo"}}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 0, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -102,14 +103,16 @@ func TestClaimGateAcquireErrorSurfaces(t *testing.T) {
 	}
 }
 
-// A checkout already recorded under THIS run (the crash window between the
-// acquire commit and the machine advance, and every steady mid-run pass)
-// drives on WITHOUT re-acquiring — the gate is idempotent.
-func TestClaimGateHeldBySelfDrivesWithoutReacquire(t *testing.T) {
+// A checkout already recorded under THIS run with a live lease (the crash
+// window between the acquire commit and the machine advance, and every
+// steady mid-run pass) RENEWS — the §6.2 heartbeat — and drives on WITHOUT
+// re-acquiring: the gate is idempotent.
+func TestClaimGateHeldBySelfRenewsWithoutReacquire(t *testing.T) {
 	lease := time.Now().Add(time.Minute)
-	claims := &fakeClaims{found: true, state: ClaimState{
+	claims := &fakeClaims{found: true, renewOK: true, state: ClaimState{
 		Step: reconcile.StepClaimingSandbox, Fence: 4,
-		Holder: OperatorPrincipal, HolderRunID: gateRunUID, LeaseExpiresAt: &lease}}
+		Holder: OperatorPrincipal, RunID: gateRunUID, LeaseExpiresAt: &lease,
+		ItemState: "in_progress"}}
 	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 4, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -119,19 +122,23 @@ func TestClaimGateHeldBySelfDrivesWithoutReacquire(t *testing.T) {
 	if len(claims.acquireCalls) != 0 {
 		t.Fatalf("a self-held checkout must not re-acquire; calls = %v", claims.acquireCalls)
 	}
+	if claims.renewCalls != 1 {
+		t.Fatalf("renew calls = %d, want 1 (the lease heartbeat)", claims.renewCalls)
+	}
 	if store.step != reconcile.StepSucceeded {
 		t.Fatalf("durable step = %q, want succeeded", store.step)
 	}
 }
 
-// A LIVE foreign lease owns the machine: our Run requeues a bounded step and
-// never even attempts the acquire (never steal).
+// A LIVE foreign lease owns the machine: the acquire attempt is made (the
+// free-or-expired guard lives in the claimer, not the driver) and REFUSED —
+// our Run requeues a bounded step, never a claim-less drive, never a steal.
 func TestClaimGateForeignLiveLeaseWaits(t *testing.T) {
 	lease := time.Now().Add(time.Minute)
 	claims := &fakeClaims{found: true, state: ClaimState{
 		Step: reconcile.StepClaimingSandbox, Fence: 4,
-		Holder: OperatorPrincipal, HolderRunID: "99999999-9999-9999-9999-999999999999",
-		LeaseExpiresAt: &lease}}
+		Holder: OperatorPrincipal, RunID: "99999999-9999-9999-9999-999999999999",
+		LeaseExpiresAt: &lease, ItemState: "in_progress"}, acquireOK: false}
 	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 4, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -142,8 +149,8 @@ func TestClaimGateForeignLiveLeaseWaits(t *testing.T) {
 	if rq == 0 {
 		t.Fatal("contention must requeue a bounded step")
 	}
-	if len(claims.acquireCalls) != 0 {
-		t.Fatalf("a live foreign lease must never be stolen; acquire calls = %v", claims.acquireCalls)
+	if len(claims.acquireCalls) != 1 {
+		t.Fatalf("the acquire must be attempted (guard inside); calls = %v", claims.acquireCalls)
 	}
 	if store.step != reconcile.StepClaimingSandbox {
 		t.Fatalf("a foreign-held item was driven to %q — the gate must hold", store.step)
@@ -155,8 +162,9 @@ func TestClaimGateForeignLiveLeaseWaits(t *testing.T) {
 func TestClaimGateLapsedForeignLeaseIsAcquirable(t *testing.T) {
 	claims := &fakeClaims{found: true, state: ClaimState{
 		Step: reconcile.StepClaimingSandbox, Fence: 4,
-		Holder: "gone-run", HolderRunID: "99999999-9999-9999-9999-999999999999",
-		LeaseExpiresAt: ptrTimeAgo(time.Minute)}}
+		Holder: "gone-run", RunID: "99999999-9999-9999-9999-999999999999",
+		LeaseExpiresAt: ptrTimeAgo(time.Minute), ItemState: "in_progress"},
+		acquireOK: true, acquireFence: 5}
 	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 4, advanceOK: true}
 	d, key := gateHarness(t, claims, store)
 
@@ -168,42 +176,6 @@ func TestClaimGateLapsedForeignLeaseIsAcquirable(t *testing.T) {
 	}
 	if store.step != reconcile.StepSucceeded {
 		t.Fatalf("durable step = %q, want succeeded", store.step)
-	}
-}
-
-// ensureClaim's holder/lease matrix in one table.
-func TestEnsureClaimMatrix(t *testing.T) {
-	const item = "wi-m"
-	live := time.Now().Add(time.Minute)
-	lapsed := time.Now().Add(-time.Minute)
-	cases := []struct {
-		name      string
-		cs        ClaimState
-		blocked   bool
-		wantHeld  bool
-		wantCalls int
-	}{
-		{"unheld", ClaimState{Step: reconcile.StepPending}, false, true, 1},
-		{"unheld refused", ClaimState{Step: reconcile.StepPending}, true, false, 1},
-		{"ours", ClaimState{Holder: "p", HolderRunID: gateRunUID}, false, true, 0},
-		{"foreign live", ClaimState{Holder: "p", HolderRunID: "x", LeaseExpiresAt: &live}, false, false, 0},
-		{"foreign lapsed", ClaimState{Holder: "p", HolderRunID: "x", LeaseExpiresAt: &lapsed}, false, true, 1},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fc := &fakeClaims{state: tc.cs, acquireBlocked: tc.blocked}
-			d := NewDriver(nil, fc, &fakePauses{}, &fakeRunner{})
-			held, err := d.ensureClaim(context.Background(), gateRunUID, tc.cs, item)
-			if err != nil {
-				t.Fatalf("ensureClaim: %v", err)
-			}
-			if held != tc.wantHeld {
-				t.Fatalf("held = %v, want %v", held, tc.wantHeld)
-			}
-			if len(fc.acquireCalls) != tc.wantCalls {
-				t.Fatalf("acquire calls = %v, want %d", fc.acquireCalls, tc.wantCalls)
-			}
-		})
 	}
 }
 
