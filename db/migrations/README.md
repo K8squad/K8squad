@@ -30,6 +30,7 @@ SQL migrations** applied in filename order.
 | 0006 | `0006_auth_schema.sql` | `auth` — `user`, `session` (local-cred identity + fail-closed session store; the `ksquad_session` → AuthorContext backing) | ISI-2758 (split from ISI-2750), Arch §12.3/ADR-033 |
 | 0012 | `0012_work_item_search.sql` | `coord` — `work_item.search_tsv` generated tsvector + GIN index (Postgres FTS corpus for global search) | Story 8.18 (ISI-2912), ADR-039 |
 | 0014 | `0014_work_item_acceptance_goals.sql` | `coord` — `work_item.acceptance_criteria` + `work_item.goals` (text[]); per-item AC + goals for the §8.5 context read models. Rides the existing `updated_at` touch trigger, so `WorkItemRevision` pins them with no new cursor. | ISI-3606 (shared S1/S2), Arch §6.1/§8.5, ADR-041 |
+| 0016 | `0016_work_item_touch_on_change.sql` | `coord` — `touch_updated_at()` bumps `updated_at` only when the row actually changes (no-op custody writes mint no revision) | ISI-4217, Arch §8.5 deterministic-resume (AC3) |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 
