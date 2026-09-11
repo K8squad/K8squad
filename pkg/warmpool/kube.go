@@ -53,6 +53,16 @@ const (
 	WorkspaceMountPath  = "/workspace"
 )
 
+// sandboxWorkDir is the writable working directory every sandbox container
+// gets when NO per-Project workspace mounts (ISI-4188 gap 1). The distroless
+// shim image has no writable cwd at "/" (opencode/bun die with `EACCES:
+// permission denied, mkdir '/.local'` before any model call) — /tmp (1777,
+// verified live on k8squad-test with the same image + securityContext) is the
+// honest boot-time fallback. Stamped as the container WorkingDir AND as
+// KSQUAD_WORKDIR (the supervisor's LaunchContext contract) + HOME
+// (bun/opencode cache roots); with a ProjectPVC the workspace mount wins.
+const sandboxWorkDir = "/tmp"
+
 // KubeProvisioner implements the Provisioner interface using a
 // controller-runtime client to create and delete sandbox pods. It is the
 // production adapter that makes the warm-pool system boot real pods.
@@ -127,6 +137,22 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 		corev1.ResourceMemory: resource.MustParse(k.memoryLimit),
 	}
 
+	// ISI-4188 gap 1: the writable workdir contract. With a per-Project
+	// workspace (ISI-4127) the shared mount is the workdir; without one the
+	// /tmp fallback keeps the runtime CLIs from dying at cwd "/" on their
+	// first cache write. KSQUAD_WORKDIR is what the in-pod supervisor's
+	// configFromEnv reads into the engine's LaunchContext.WorkDir (the
+	// CLI's cwd); HOME redirects bun/opencode cache roots into the same
+	// writable dir.
+	workDir := sandboxWorkDir
+	if key.ProjectPVC != "" {
+		workDir = WorkspaceMountPath
+	}
+	workDirEnv := []corev1.EnvVar{
+		{Name: "KSQUAD_WORKDIR", Value: workDir},
+		{Name: "HOME", Value: workDir},
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxID,
@@ -151,6 +177,10 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 				{
 					Name: "sandbox",
 					Image: key.Image,
+					// ISI-4188 gap 1: a writable cwd — see the workDir
+					// computation above (workspace mount when present, /tmp
+					// fallback otherwise).
+					WorkingDir: workDir,
 					// M1.2 (ISI-4128): squad namespaces enforce the restricted
 					// PodSecurity standard (the team reconciler stamps it); the
 					// sandbox container must carry its own hardened
@@ -188,7 +218,7 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 					// startup). A carrier-less context (pool warm-boot, no
 					// live Run) stamps nothing — the next span roots a fresh
 					// trace, honestly.
-					Env: append(sandboxEnv(ctx, toolusage.Enabled()), k.podEnv...),
+					Env: append(append(sandboxEnv(ctx, toolusage.Enabled()), workDirEnv...), k.podEnv...),
 					// Topology 2 (ADR-0007 channel A): mount the per-sandbox
 					// task-io Secret at the coord path. The mount is OPTIONAL
 					// (see the Volume below) because the Secret does not exist
