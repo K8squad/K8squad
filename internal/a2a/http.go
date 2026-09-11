@@ -82,6 +82,7 @@ func (t *HTTPTransport) Submit(ctx context.Context, task wire.Task) (Session, er
 	reqCtx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("a2a: build POST %s: %w", url, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -91,11 +92,13 @@ func (t *HTTPTransport) Submit(ctx context.Context, task wire.Task) (Session, er
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("a2a: POST %s: %w", url, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
+		cancel()
 		return nil, fmt.Errorf("a2a: POST %s: supervisor answered %s: %s", url, resp.Status, string(body))
 	}
 
