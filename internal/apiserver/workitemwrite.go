@@ -166,12 +166,10 @@ func workItemEditHandler(store WorkItemWriter) http.HandlerFunc {
 		}
 
 		// Team scope mirrors the state endpoint: the caller's Team fences the item
-		// (cross-tenant → 404). An admin still passes its Team here; fleet-wide
-		// cross-team edit is the ISI-3937 selector's job (not per-user rebind).
-		teamID := auth.TeamID.String()
-		if teamID == "00000000-0000-0000-0000-000000000000" {
-			teamID = ""
-		}
+		// (cross-tenant → 404). authTeamScope makes a global admin fleet-unscoped
+		// (dangling bootstrap Team, ISI-3921/ISI-4132); per-user rebind stays the
+		// ISI-3937 selector's job.
+		teamID := authTeamScope(r)
 
 		rec, err := store.UpdateWorkItem(r.Context(), id, coord.UpdateWorkItemInput{
 			Title:             req.Title,

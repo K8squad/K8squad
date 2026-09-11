@@ -50,6 +50,11 @@ limitations under the License.
 // reference that does not resolve, or a Team with an empty composition all
 // leave the item in todo for the next tick — self-healing once the world
 // catches up, and visible in the operator log meanwhile.
+// The intake sweep's Run create needs the ksquad.io/runs create grant
+// (ISI-4132: the chart ClusterRole carried only read verbs, so intake dispatch
+// 403'd on a fresh install — the marker keeps controller-gen + the chart
+// lockstep honest).
+// +kubebuilder:rbac:groups=ksquad.io,resources=runs,verbs=create
 package rundrive
 
 import (

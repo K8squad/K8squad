@@ -123,6 +123,9 @@ func (k *KubeProvisioner) WithRequests(cpuRequest, memoryRequest string) *KubePr
 }
 
 // Boot creates a fresh sandbox pod for key under the pool-assigned sandboxID.
+//
+//+kubebuilder:rbac:groups="",resources=pods,verbs=create;delete
+
 // The pod carries the key's RuntimeClass and AgentRuntime image. It returns
 // WITHOUT waiting for readiness — readiness is reported to the pool via the
 // pod watch (Provisioner contract, pool.go).
