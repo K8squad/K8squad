@@ -13,11 +13,24 @@
 // truth rather than clobbering.
 
 import type { NextRequest } from "next/server";
-import { proxyJsonWrite } from "@/lib/bff";
+import { proxyJson, proxyJsonWrite } from "@/lib/bff";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
+
+// GET is the M1.5 ticket-thread read (ISI-4131): agent-authored comments,
+// status-change history, and change refs — the progress surface the M1.6
+// console smoke (ISI-4132) walks. The BFF forwards the session identity
+// unchanged; the apiserver owns the tenancy fence (cross-tenant → 404) and
+// relays its status verbatim.
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ workItemId: string }> },
+): Promise<Response> {
+  const workItemId = encodeURIComponent((await params).workItemId);
+  return proxyJson(req, `/api/work-items/${workItemId}`);
+}
 
 export async function PATCH(
   req: NextRequest,
