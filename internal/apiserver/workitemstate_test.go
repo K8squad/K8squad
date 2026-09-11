@@ -153,3 +153,26 @@ func TestWorkItemStateHandlerNilStoreStill501(t *testing.T) {
 		t.Fatalf("nil store: got %d, want 501", rec.Code)
 	}
 }
+
+// TestWorkItemStateAdminFleetUnscoped — a global admin drags any squad's card:
+// the store gets the trusted unscoped "" team, not the dangling bootstrap Team
+// (ISI-3921/ISI-4132). Without this, every admin lane move 404s.
+func TestWorkItemStateAdminFleetUnscoped(t *testing.T) {
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:admin", TeamID: uuid.New(), IsAdmin: true},
+	}}
+	store := &fakeTransitioner{}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		WorkItemState: store,
+	})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, patchState("wi-1", `{"toState":"todo","fromState":"backlog"}`, devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.gotTeam != "" {
+		t.Fatalf("admin team fence = %q, want unscoped \"\"", store.gotTeam)
+	}
+}
