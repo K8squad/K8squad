@@ -397,8 +397,24 @@ func main() {
 			ctrl.Log.Error(err, "unable to bind resume store")
 			os.Exit(1)
 		}
-		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution)
-		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi")
+		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution).
+		// ISI-4208: sandbox scheduling requests are right-sized below the burst
+		// limits by default (500m CPU request vs 1 CPU limit) — warm sandboxes
+		// idle near zero CPU, and reserving a full core per pod saturated
+		// 2-worker nodes at 86-87% CPU requests, leaving the 5th warm-pool
+		// member permanently Pending (Insufficient cpu). Memory stays
+		// requests==limits (incompressible; OOM semantics unchanged). Both
+		// knobs are overridable per cluster via env.
+		sandboxCPURequest := os.Getenv("KSQUAD_SANDBOX_CPU_REQUEST")
+		if sandboxCPURequest == "" {
+			sandboxCPURequest = "500m"
+		}
+		sandboxMemoryRequest := os.Getenv("KSQUAD_SANDBOX_MEMORY_REQUEST")
+		if sandboxMemoryRequest == "" {
+			sandboxMemoryRequest = "512Mi"
+		}
+		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi").
+			WithRequests(sandboxCPURequest, sandboxMemoryRequest)
 		// M1.2: pass the operator's OTLP endpoint/protocol through to the
 		// sandbox pods so in-pod supervisor/runtime spans reach the SAME
 		// telemetry pipeline the operator reports to (values only — the
