@@ -34,15 +34,24 @@ rules:
 - apiGroups: [""]
   # ISI-3614 / ADR-0007: the warm-pool Bind path reads the booted sandbox pod
   # (by its unique label) to place the pod-owned task-io Secret in the pod's
-  # namespace with an OwnerReference for auto-GC.
+  # namespace with an OwnerReference for auto-GC. ISI-4132: create/delete join
+  # the set — the warm pool Boots/TearDowns sandbox pods imperatively
+  # (pkg/warmpool/kube.go), and a fresh install without them wedges every
+  # dispatch at sandbox bring-up.
   resources: [pods]
-  verbs: [get, list, watch]
+  verbs: [create, delete, get, list, watch]
 - apiGroups: [batch]
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [ksquad.io]
-  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, runs, skills]
+  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, skills]
   verbs: [get, list, watch]
+- apiGroups: [ksquad.io]
+  # runs split out of the read-only pack (ISI-4132): the M1.3 intake sweep
+  # CREATES Run CRs for due board tickets (pkg/controller/rundrive/intake.go).
+  # Without create, dispatch 403s forever on a fresh install.
+  resources: [runs]
+  verbs: [create, get, list, watch]
 - apiGroups: [ksquad.io]
   resources: [mcpservers/status, otelconfigs/status, projects/status, runs/status, teams/status]
   verbs: [get, patch, update]
