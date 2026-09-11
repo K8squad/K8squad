@@ -5,14 +5,14 @@ entries:
       k8squad.io/min-crds-version: 0.1.0
     apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-10T18:41:21.496502875Z"
+    created: "2026-09-11T13:31:00.73421304Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
       NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
       k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
       (ADR-0002, Option B). '
-    digest: e1b00d31775df425a21e3b7e68d25a0de3bcff544a74f45cdb43157100690b7a
+    digest: 91cc465d5c819a04ed9e6599590a4a0ff0e7db7469196effebe5319c64d9469a
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -34,7 +34,7 @@ entries:
   k8squad-crds:
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-10T18:41:21.497435808Z"
+    created: "2026-09-11T13:31:00.73533506Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -42,7 +42,7 @@ entries:
       chart, and upgrade it independently to roll CRD schema changes forward on their
       own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
       deletes the CRDs or the user''s custom resources. '
-    digest: dcc44e705214dd4ebc0f8e722c0704f9a7fb7fadc17bd141cf32eea4af4235ee
+    digest: 34bb4281f86f4f7da347e220f89ed57e4ee813bdba01f4a45a4e978a4486fae8
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -61,4 +61,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-10T18:41:21.494754836Z"
+generated: "2026-09-11T13:31:00.73071484Z"
