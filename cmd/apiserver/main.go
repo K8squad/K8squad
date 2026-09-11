@@ -209,6 +209,11 @@ func main() {
 	// also feeds the dashboard's live-Runs tile, so the cache block below is
 	// the ONE place all three read models get their reader.
 	var dashboardReader client.Reader
+	// M1.6 (ISI-4132): the project-ref resolver the console board surface uses to
+	// translate "namespace/name" ids to the Project CR UID the coord store keys on.
+	// Rides the SAME informer cache; a cache-less dev host leaves it nil and the
+	// handlers pass path variables through unchanged.
+	var projectRefs apiserver.ProjectRefResolver
 	if cacheReader, stopCache, cerr := apiserver.NewCacheReader(ctx, 30*time.Second); cerr != nil {
 		log.Printf("ksquad-apiserver: informer cache unavailable — squad-overview + credential read models disabled (GET /api/squad/overview, GET /api/credentials → 501): %v", cerr)
 	} else {
@@ -221,6 +226,7 @@ func main() {
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
+		projectRefs = apiserver.NewClientProjectRefResolver(cacheReader)
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
 	}
 
@@ -518,6 +524,7 @@ func main() {
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,
 		WorkItemReads:    workItemReads,
+		ProjectRefs:      projectRefs,
 		Search:           searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the

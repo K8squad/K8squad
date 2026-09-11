@@ -284,3 +284,61 @@ func TestWorkItemEditUnauthenticated(t *testing.T) {
 		t.Fatalf("no session: got %d, want 401", rec.Code)
 	}
 }
+
+// testWriteServerWithRefs wires the create route with the project-ref resolver —
+// the production console shape (ISI-4132).
+func testWriteServerWithRefs(t *testing.T, teamID uuid.UUID, store WorkItemWriter, refs ProjectRefResolver) http.Handler {
+	t.Helper()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: teamID},
+	}}
+	srv := NewServer(Options{
+		Authenticator:  NewCookieAuthenticator(resolver),
+		Discussion:     discussion.NewHandler(nil),
+		WorkItemWrites: store,
+		ProjectRefs:    refs,
+	})
+	return srv.Handler()
+}
+
+// TestWorkItemCreateResolvesConsoleID — a console create with the "ns/name"
+// project id stores the Project CR UID and pins the root item to the Project's
+// OWNING Team (not the caller's), so the ticket is immediately visible to the
+// squad's intake dispatcher (ISI-4132).
+func TestWorkItemCreateResolvesConsoleID(t *testing.T) {
+	store := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-new", Title: "demo", State: "todo"}}
+	refs := &fakeProjectRefs{res: ProjectRefResolution{UID: "912e88e2-7f56-4d46-8a81-f2eab0019421", TeamUID: "7191cc8c-f4b7-4b60-b63e-d25408ac0d1c"}}
+	// The caller's own Team is deliberately unrelated — the Project's team must win.
+	h := testWriteServerWithRefs(t, uuid.MustParse("53992f80-77e4-4b5f-ad0e-cb23e5cc3062"), store, refs)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postCreate("bmad-squad%2Fbmad-demo-project", `{"title":"demo"}`, devToken))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if refs.gotRef != "bmad-squad/bmad-demo-project" {
+		t.Fatalf("resolver got %q, want the decoded ns/name id", refs.gotRef)
+	}
+	if store.gotCreate.ProjectID != "912e88e2-7f56-4d46-8a81-f2eab0019421" {
+		t.Fatalf("create project = %q, want resolved UID", store.gotCreate.ProjectID)
+	}
+	if store.gotCreate.TeamID != "7191cc8c-f4b7-4b60-b63e-d25408ac0d1c" {
+		t.Fatalf("create team = %q, want the Project's owning Team", store.gotCreate.TeamID)
+	}
+}
+
+// TestWorkItemCreateUnknownProject404 — an unresolvable ref is existence-hiding
+// 404 before the store is touched.
+func TestWorkItemCreateUnknownProject404(t *testing.T) {
+	store := &fakeWorkItemWriter{}
+	refs := &fakeProjectRefs{err: ErrProjectNotFound}
+	h := testWriteServerWithRefs(t, uuid.New(), store, refs)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postCreate("nope%2Fgone", `{"title":"x"}`, devToken))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404", rec.Code)
+	}
+	if store.createCalled {
+		t.Fatal("store must not be called for an unresolved project")
+	}
+}
