@@ -117,15 +117,70 @@ type opencodeToolScope struct {
 	Disable []string `json:"disable,omitempty"`
 }
 
-type opencodeMCPDoc struct {
-	MCP map[string]opencodeMCPEntry `json:"mcp"`
+// opencodeModelEntry declares one servable model under a custom provider
+// entry (opencode resolves `--model <provider>/<id>` against this map).
+type opencodeModelEntry struct {
+	Name string `json:"name"`
+}
+
+// opencodeBYOProvider is one custom provider entry in opencode.json's
+// "provider" section — the BYO OpenAI-compatible endpoint (story 5.7, ISI-4188
+// gap 2). npm names the AI SDK package opencode loads; options.baseURL points
+// it at the endpoint. The token is NOT rendered here — it rides
+// OPENAI_API_KEY in the process env (modelRouteEnv), preserving the
+// "no literal credential in a persisted config" discipline (ADR-045 D5).
+type opencodeBYOProvider struct {
+	NPM     string                        `json:"npm"`
+	Options opencodeBYOProviderOptions    `json:"options"`
+	Models  map[string]opencodeModelEntry `json:"models"`
+}
+
+type opencodeBYOProviderOptions struct {
+	BaseURL string `json:"baseURL"`
+}
+
+// OpenCodeBYOProviderID is the fixed provider id the shim renders for a BYO
+// model endpoint — referenced as the `--model <id>/<model>` prefix (mirrors
+// codexBYOProviderID).
+const OpenCodeBYOProviderID = "ksquad-byo"
+
+type opencodeConfigDoc struct {
+	// Provider carries the BYO endpoint block; omitted when none is set.
+	Provider map[string]opencodeBYOProvider `json:"provider,omitempty"`
+	MCP      map[string]opencodeMCPEntry    `json:"mcp,omitempty"`
 }
 
 // RenderOpenCode renders the opencode `mcp` config section: local servers
 // as command entries with {env:VAR} credential references, remote as
 // remote entries — tools.enable carries the effective allow set natively.
 func RenderOpenCode(endpoints []Endpoint) ([]byte, error) {
-	doc := opencodeMCPDoc{MCP: map[string]opencodeMCPEntry{}}
+	return RenderOpenCodeConfig(endpoints, "", "")
+}
+
+// RenderOpenCodeConfig renders opencode.json for the endpoint set and, when
+// modelEndpoint is non-empty, a BYO OpenAI-compatible provider block (ISI-4188
+// gap 2): provider.<ksquad-byo> with npm @ai-sdk/openai-compatible +
+// options.baseURL + a models entry for modelID, selected via
+// `--model ksquad-byo/<modelID>`. opencode v1.18.27 ignores the
+// OPENAI_BASE_URL/OPENAI_API_KEY env for provider resolution (the live
+// experiment on k8squad-test produced ProviderModelNotFoundError with env
+// only); the config-file provider is the verified-working shape. This is a
+// safe superset of the env — whichever the pinned CLI honors, the Run reaches
+// the operator's endpoint. The endpoint token never renders here (ADR-045 D5).
+func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) ([]byte, error) {
+	doc := opencodeConfigDoc{MCP: map[string]opencodeMCPEntry{}}
+	if modelEndpoint != "" {
+		if modelID == "" {
+			return nil, fmt.Errorf("opencode renderer: BYO endpoint %q needs a non-empty model id", modelEndpoint)
+		}
+		doc.Provider = map[string]opencodeBYOProvider{
+			OpenCodeBYOProviderID: {
+				NPM:     "@ai-sdk/openai-compatible",
+				Options: opencodeBYOProviderOptions{BaseURL: modelEndpoint},
+				Models:  map[string]opencodeModelEntry{modelID: {Name: modelID}},
+			},
+		}
+	}
 	for _, ep := range endpoints {
 		entry := opencodeMCPEntry{
 			Tools: &opencodeToolScope{Enable: ep.AllowTools, Disable: ep.DenyTools},

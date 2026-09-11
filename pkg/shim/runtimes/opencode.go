@@ -17,6 +17,8 @@ limitations under the License.
 package runtimes
 
 import (
+	"encoding/json"
+
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/capability"
@@ -61,20 +63,72 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		env = append(env, "OPENCODE_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
+	model := resolveModel(r, lc)
+	// ISI-4224: opencode v1.18.27's non-interactive run can leave handles
+	// holding the Bun event loop open after the session went idle — the
+	// auto-update check, the project file watcher, and (on BYO runs) the
+	// models.dev fetch. Suppress them at the source so the process exits
+	// on its own and the runner's EOF fast path stays the norm; the
+	// runner's SettleLine quiet window is the backstop for any linger
+	// source these flags do not cover. models.dev fetch is disabled ONLY
+	// on BYO runs, where the rendered provider block (opencode.json) is
+	// self-contained — vendor runs still need models.dev provider metadata.
+	env = append(env, "OPENCODE_DISABLE_AUTOUPDATE=1")
+	env = append(env, "OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER=1")
+	if lc.ModelRoute.Endpoint != "" {
+		env = append(env, "OPENCODE_DISABLE_MODELS_FETCH=1")
+	}
+	// ISI-4188 gap 2: with a BYO endpoint the model must address the rendered
+	// provider block (opencode.json provider.<ksquad-byo>) — opencode v1.18.27
+	// resolves --model as <provider>/<model> and does NOT resolve providers
+	// from OPENAI_BASE_URL env (verified live: env-only yields
+	// ProviderModelNotFoundError).
+	modelFlag := model
+	if lc.ModelRoute.Endpoint != "" {
+		modelFlag = capability.OpenCodeBYOProviderID + "/" + model
+	}
 	spec := ExecSpec{
-		Path:    "opencode",
-		Args:    []string{"run", "--print-logs", "--format=json", "--model", resolveModel(r, lc)},
-		Env:     env,
-		WorkDir: lc.WorkDir,
+		Path:       "opencode",
+		Args:       []string{"run", "--print-logs", "--format=json", "--model", modelFlag},
+		Env:        env,
+		WorkDir:    lc.WorkDir,
+		SettleLine: openCodeSettleLine,
 	}
 	// Epic C (ADR-044 step 6): opencode.json's mcp section, rendered from
-	// the projected IR at start (native tools.enable scoping).
-	if f, err := mcpWorkDirFile("opencode.json", capability.RenderOpenCode, lc.MCPEndpoints); err != nil {
-		return ExecSpec{}, err
-	} else if f != nil {
-		spec.WorkDirFiles = append(spec.WorkDirFiles, *f)
+	// the projected IR at start (native tools.enable scoping). ISI-4188
+	// gap 2: a BYO model route ALSO rides this file (provider block) —
+	// rendered whenever either half is set.
+	if len(lc.MCPEndpoints) > 0 || lc.ModelRoute.Endpoint != "" {
+		content, err := capability.RenderOpenCodeConfig(lc.MCPEndpoints, lc.ModelRoute.Endpoint, model)
+		if err != nil {
+			return ExecSpec{}, err
+		}
+		spec.WorkDirFiles = append(spec.WorkDirFiles, WorkDirFile{Name: "opencode.json", Content: content})
 	}
 	return spec, nil
 }
 
 func init() { Register(openCode{}) }
+
+// openCodeSettleEvent is the opencode stdout line type the ISI-4224 settle
+// detector matches: upstream cmd/run.ts (v1.18.27) emits one
+// {"type":"step_finish",…} JSON line per finished agent step and breaks its
+// own event loop on the session-idle that follows the LAST one — the idle
+// transition itself is never printed, so the final step_finish is the last
+// observable "the session's work is done" marker on stdout.
+const openCodeSettleEvent = "step_finish"
+
+// openCodeSettleLine reports whether one opencode --format=json stdout line
+// is a step_finish event (ISI-4224). Non-JSON lines and other event types
+// (step_start, text, tool_use, …) report false: only the per-step terminal
+// marker arms the runner's quiet window, and a subsequent step's first line
+// re-arms it — so a multi-step session is never truncated mid-flight.
+func openCodeSettleLine(line string) bool {
+	var ev struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+		return false
+	}
+	return ev.Type == openCodeSettleEvent
+}
