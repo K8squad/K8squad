@@ -136,6 +136,17 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// the write end — no EOF, no settle. The group lets forceSettle cut
 	// the whole tree (ISI-4224).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Context cancellation must cut the same tree (ISI-4240): the default
+	// CommandContext Cancel kills only the process leader, and before a
+	// terminal event the settle timer is not armed — a pipe-holding child
+	// would keep stdout from ever EOFing and Run would wedge until the
+	// sweeper, the same settle failure ISI-4224 fixed for the completed
+	// path. Cancelled work has nothing left worth flushing (unlike
+	// forceSettle, which SIGTERMs first because the work completed), so go
+	// straight to a group SIGKILL; WaitDelay is belt-and-braces should a
+	// fork race the kill.
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = r.graceWindow()
 	// Start from the ambient environment (the reconciler-injected secret env,
 	// PATH, etc.) and layer the runtime's mapped env on top.
 	cmd.Env = append(os.Environ(), spec.Env...)

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -145,6 +146,52 @@ exec sleep 300
 	_, err := runner.Run(ctx, runtimes.ExecSpec{Path: script}, func(Progress) {})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+// TestOSRunnerCancelKillsRuntimeProcessGroup is the ISI-4240 regression:
+// cancelling the context before any terminal event must kill the runtime's
+// whole process group. A child holding the stdout write end would otherwise
+// keep the scanner from ever seeing EOF, and with no terminal line the
+// settle timer is never armed — Run would wedge until the sweeper instead
+// of returning ctx.Err() promptly.
+func TestOSRunnerCancelKillsRuntimeProcessGroup(t *testing.T) {
+	script := writeScript(t, `
+echo '{"type":"text","part":{"type":"text","text":"working"}}'
+sleep 300 &
+sleep 300
+`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel once the first line has been scanned, so the runtime is
+	// mid-flight with a background pipe-holder alive at kill time.
+	firstLine := make(chan struct{})
+	var once sync.Once
+	var lines []string
+	emit := func(p Progress) {
+		collect(&lines)(p)
+		if p.Kind == a2a.EventMessage {
+			once.Do(func() { close(firstLine) })
+		}
+	}
+	go func() {
+		<-firstLine
+		cancel()
+	}()
+	runner := osRunner{killGrace: 5 * time.Second}
+	start := time.Now()
+	_, err := runner.Run(ctx, runtimes.ExecSpec{
+		Path:       script,
+		SettleLine: jsonSettleDetector("step_finish"),
+	}, emit)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("cancel took %s; the process group was not killed", elapsed)
+	}
+	if len(lines) != 1 || lines[0] != `{"type":"text","part":{"type":"text","text":"working"}}` {
+		t.Fatalf("emitted lines = %v, want the pre-terminal line", lines)
 	}
 }
 
