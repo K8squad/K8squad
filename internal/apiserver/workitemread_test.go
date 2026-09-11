@@ -171,3 +171,103 @@ func TestWorkItemReadsNotWired(t *testing.T) {
 		}
 	}
 }
+
+// fakeProjectRefs records the ref it was asked to resolve and returns a canned
+// ProjectRefResolution (or error), standing in for the informer-cache resolver.
+type fakeProjectRefs struct {
+	gotRef string
+	res    ProjectRefResolution
+	err    error
+}
+
+func (f *fakeProjectRefs) ResolveProjectRef(_ context.Context, ref string) (ProjectRefResolution, error) {
+	f.gotRef = ref
+	return f.res, f.err
+}
+
+// testReadServerWithRefs wires the read routes with the project-ref resolver
+// (the production console shape: "ns/name" ids resolved to Project CR UIDs).
+func testReadServerWithRefs(t *testing.T, teamID uuid.UUID, admin bool, store WorkItemReader, refs ProjectRefResolver) http.Handler {
+	t.Helper()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: teamID, IsAdmin: admin},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		WorkItemReads: store,
+		ProjectRefs:   refs,
+	})
+	return srv.Handler()
+}
+
+// TestWorkItemListResolvesConsoleID — the console's "ns/name" project id is
+// resolved to the Project CR UID before the store is called (ISI-4132): without
+// this the Postgres store's uuid cast fails and the Issues tab dies with a 502.
+func TestWorkItemListResolvesConsoleID(t *testing.T) {
+	store := &fakeWorkItemReader{list: []coord.BoardItem{{ID: "wi-1", Title: "ship", State: "todo"}}}
+	refs := &fakeProjectRefs{res: ProjectRefResolution{UID: "912e88e2-7f56-4d46-8a81-f2eab0019421", TeamUID: "7191cc8c-f4b7-4b60-b63e-d25408ac0d1c"}}
+	h := testReadServerWithRefs(t, uuid.New(), false, store, refs)
+
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/bmad-squad%2Fbmad-demo-project/work-items", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if refs.gotRef != "bmad-squad/bmad-demo-project" {
+		t.Fatalf("resolver got %q, want the decoded ns/name id", refs.gotRef)
+	}
+	if store.gotProject != "912e88e2-7f56-4d46-8a81-f2eab0019421" {
+		t.Fatalf("store got project %q, want the resolved Project CR UID", store.gotProject)
+	}
+}
+
+// TestWorkItemListAdminSeesFleet — a global admin's dangling bootstrap Team
+// (ISI-3921) must NOT fence the board to emptiness: the store gets the trusted
+// unscoped "" team so every squad's cards are visible (ISI-4132).
+func TestWorkItemListAdminSeesFleet(t *testing.T) {
+	store := &fakeWorkItemReader{list: []coord.BoardItem{{ID: "wi-1"}}}
+	h := testReadServerWithRefs(t, uuid.New(), true, store, nil)
+
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/proj-ok/work-items", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.gotTeam != "" {
+		t.Fatalf("admin store team = %q, want unscoped \"\"", store.gotTeam)
+	}
+}
+
+// TestWorkItemListUnknownProject404 — an unresolvable ref is existence-hiding
+// 404, indistinguishable from a foreign Project (NFR-SEC5).
+func TestWorkItemListUnknownProject404(t *testing.T) {
+	store := &fakeWorkItemReader{}
+	refs := &fakeProjectRefs{err: ErrProjectNotFound}
+	h := testReadServerWithRefs(t, uuid.New(), false, store, refs)
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/nope%2Fgone/work-items", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d, want 404", rec.Code)
+	}
+	if store.listCalled {
+		t.Fatal("store must not be called for an unresolved project")
+	}
+}
+
+// TestWorkItemListAmbiguousProject409 — a bare name colliding across squads is
+// 409 (address by UID), never a silent first-match (same contract as the
+// dashboard fleet resolver).
+func TestWorkItemListAmbiguousProject409(t *testing.T) {
+	refs := &fakeProjectRefs{err: ErrProjectAmbiguous}
+	h := testReadServerWithRefs(t, uuid.New(), false, &fakeWorkItemReader{}, refs)
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/shared-name/work-items", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409", rec.Code)
+	}
+}
