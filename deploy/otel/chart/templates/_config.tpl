@@ -134,34 +134,84 @@ extensions:
     endpoint: 0.0.0.0:13133
 receivers:
   filelog/pods:
-    include: [ /var/log/pods/*/*/*.log ]
+    # Both kubelet layouts: containerd/CRI writes 3-segment paths
+    # (<ns>_<pod>_<uid>/<restart>/<container>.log); some runtimes/enhancers
+    # write 4-segment (<ns>/<pod>/<uid>/<container>.log). Reading both costs
+    # nothing — non-matching globs are skipped.
+    include:
+      - /var/log/pods/*/*/*.log
+      - /var/log/pods/*/*/*/*.log
     exclude: [ "*.gz" ]
     start_at: end
     include_file_path: true
     operators:
+      # Primary layout — standard kubelet/CRI path used by containerd AND
+      # docker-shim-via-CRI (verified empirically, ISI-4137 hardening):
+      #   /var/log/pods/<namespace>_<pod>_<uid>/<restart>/<container>.log
+      # Pod/namespace names cannot contain "_" (RFC 1123), so [^_]+ splits are
+      # unambiguous; the uid is the 36-char k8s UUID.
       - type: regex_parser
-        id: parse_pod_path
-        regex: '/var/log/pods/(?P<namespace>[^/]+)/(?P<pod>[^/]+)/(?P<uid>[^/]+)/(?P<container>[^\._]+).*\.log$'
+        id: parse_cri_path
         parse_from: attributes["log.file.path"]
+        # Only attempt when the path carries the CRI "_<uuid>/<restart>/"
+        # signature — avoids a per-entry mismatch error on 4-segment layouts.
+        if: 'attributes["log.file.path"] matches "_[a-f0-9-]{36}/[0-9]+/"'
+        regex: '/var/log/pods/(?P<namespace>[^_/]+)_(?P<pod>[^_/]+)_(?P<uid>[a-f0-9\-]{36})/\d+/(?P<container>[^/]+)\.log$'
+      # Fallback layout — as captured live in ISI-4153 (enhanced-runtime dirs):
+      #   /var/log/pods/<namespace>/<pod>/<uid>/<container>.log
+      # Guarded so it only runs when the CRI parser above did not match.
+      - type: regex_parser
+        id: parse_alt_path
+        parse_from: attributes["log.file.path"]
+        if: 'attributes.pod == nil'
+        regex: '/var/log/pods/(?P<namespace>[^/]+)/(?P<pod>[^/]+)/(?P<uid>[^/]+)/(?P<container>[^\._]+)[^/]*\.log$'
+      # Guarded moves: neither layout is guaranteed, and a move on a missing
+      # field errors per-entry — only move what a parser actually produced.
       - type: move
         from: attributes.namespace
         to: resource["k8s.namespace.name"]
+        if: 'attributes.namespace != nil'
       - type: move
         from: attributes.pod
         to: resource["k8s.pod.name"]
+        if: 'attributes.pod != nil'
       - type: move
         from: attributes.container
         to: resource["k8s.container.name"]
+        if: 'attributes.container != nil'
       - type: move
         from: attributes.uid
         to: resource["k8s.pod.uid"]
-      - type: json_parser
-        id: parse_runtime_line
+        if: 'attributes.uid != nil'
+      # CRI line format (containerd): "<ts> stdout|stderr F|P <message>".
+      # Not JSON — parsing it with json_parser fails per line (verified).
+      - type: regex_parser
+        id: parse_cri_line
         parse_from: body
+        if: 'body != nil and not (body matches "^[{]")'
+        regex: '^(?P<time>\d{4}-\d{2}-\d{2}T[^ ]+) (?P<stream>stdout|stderr) (?P<flag>[FP]) ?(?P<log>.*)$'
         timestamp:
           parse_from: attributes.time
           layout_type: gotime
-          layout: '2006-01-02T15:04:05.000000000Z07:00'
+          layout: '2006-01-02T15:04:05.999999999Z07:00'
+      # docker-json line format (docker nodes: kubelet symlinks into
+      # /var/lib/docker/containers): {"log": ..., "time": ...}
+      - type: json_parser
+        id: parse_runtime_line
+        parse_from: body
+        if: 'body != nil and body matches "^[{]"'
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: '2006-01-02T15:04:05.999999999Z07:00'
+      - type: move
+        from: attributes.log
+        to: body
+        if: 'attributes.log != nil'
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+        if: 'attributes.stream != nil'
 processors:
   memory_limiter:
     check_interval: 1s

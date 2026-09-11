@@ -489,8 +489,22 @@ func main() {
 		}
 		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))
 
+		// §6.2 claimer (ISI-4183, M1.3 claim-back): the production caller
+		// ProdClaimer lacked — the drive loop acquired no checkout, so board
+		// lanes stuck in todo while Runs succeeded. Bound to the driver's
+		// Claims seam (the acquire gate; fail-closed: no claimer, no drive)
+		// and to the hygiene sweep below (lease renewal + terminal release).
+		// Outbox capture ON: the operator runs against the fully-migrated
+		// schema (0003+), so claimed/claim_released events ride the canonical
+		// transactional outbox.
+		claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig(), coord.WithOutboxCapture())
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind §6.2 claimer")
+			os.Exit(1)
+		}
+
 		driver := rundrive.NewDriver(mgr.GetClient(),
-			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
+			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal).WithClaimer(claimer),
 			rundrive.NewProdPauses(resumeStore),
 			runner)
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
@@ -502,6 +516,21 @@ func main() {
 		}
 		if err := mgr.Add(timerRunnable{t: timer}); err != nil {
 			ctrl.Log.Error(err, "unable to register resume timer")
+			os.Exit(1)
+		}
+
+		// Claim hygiene sweep (ISI-4183): renews the 30s lease of every
+		// in-flight held checkout (without it the 3.2 death detector would
+		// churn healthy minute-long agent runs into retry laps) and releases
+		// the custody of terminal held rows (claim_released; lane returns to
+		// todo on failure/cancel, stays in_progress on success for M1.5's
+		// reporting to move).
+		if err := mgr.Add(&rundrive.HeartbeatSweeper{
+			DB:      db,
+			Claimer: claimer,
+			Log:     func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)
 		}
 

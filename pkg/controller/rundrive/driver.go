@@ -91,6 +91,7 @@ type ClaimState struct {
 	Step           reconcile.Step
 	Fence          int64
 	Holder         string
+	HolderRunID    string // claim.run_id — THE discriminator between "my" lease and a foreign one
 	LeaseExpiresAt *time.Time
 }
 
@@ -122,6 +123,11 @@ type Claims interface {
 	// RequeuePaused is the 3.7 resume re-entry: guarded paused(rate_limited) →
 	// dispatching (custody retained — short pauses keep the checkout), audited.
 	RequeuePaused(ctx context.Context, workItemID string) (ok bool, err error)
+	// Acquire is the §6.2 guarded acquire of this Run's work item (ISI-4183):
+	// holder/lease/fence set in one transaction with the todo→in_progress lane
+	// advance and the claim_acquired audit. ok=false, err=nil = the guard
+	// rejected us (live foreign lease, or the item left the todo lane).
+	Acquire(ctx context.Context, workItemID, runID string) (ok bool, err error)
 }
 
 // Pauses is the 3.7 episode surface (bound to coord.ProdResumeStore).
@@ -258,6 +264,21 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return r.retryOrFail(ctx, &run, cs)
 	}
 
+	// §6.2 claim gate (ISI-4183): a Run may only drive a work item it HOLDS.
+	// The reconcile machine rows are keyed by work item, so driving without
+	// custody is exactly the bug that left board lanes stuck in todo while
+	// Runs succeeded — the machine advanced shared rows nobody owned.
+	held, err := r.ensureClaim(ctx, runID, cs, run.Spec.WorkItemRef)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !held {
+		// The guard rejected us this pass (foreign live lease, or the item
+		// left the todo lane): a short bounded step, not a poll — the foreign
+		// holder's terminal release or lease expiry resolves it.
+		return ctrl.Result{RequeueAfter: continueDelay}, nil
+	}
+
 	// 3.1 drive: bind the per-Run machine and run it toward a terminal step.
 	store, err := r.Runner.Store(ctx, &run)
 	if err != nil {
@@ -321,6 +342,37 @@ func (r *Driver) dead(cs ClaimState) bool {
 		cs.Step == reconcile.StepRunning ||
 		cs.Step == reconcile.StepCollecting
 	return inFlight && r.now().After(*cs.LeaseExpiresAt)
+}
+
+// ensureClaim is the §6.2 claim gate (ISI-4183): it returns held=true only
+// when THIS Run legitimately holds the work item's checkout, acquiring it
+// first when the row is unheld. The reconcile machine rows are keyed by work
+// item (one machine per item, any Run driving it) — so "I hold the claim" is
+// the ONLY thing that makes a drive pass legitimate.
+//
+// Outcomes:
+//   - held by THIS run (HolderRunID == runID): true, no write — the
+//     crash-window between acquire-commit and machine-advance re-enters here
+//     idempotently; mid-run passes pass through the same way.
+//   - unheld row, or a former holder whose lease EXPIRED (a fenced zombie):
+//     Acquire — the guard's free-or-expired clause admits it and bumps the
+//     fence past the zombie (§6.3). ok → held=true; guard-rejected (a live
+//     foreign lease appeared, or the item left the todo lane) → false, nil.
+//   - held by ANOTHER run with a LIVE lease: false, nil — the foreign Run
+//     owns the machine; ours requeues a bounded step until its terminal
+//     release or its lease expiry resolves the contention.
+func (r *Driver) ensureClaim(ctx context.Context, runID string, cs ClaimState, workItemID string) (bool, error) {
+	if runID != "" && cs.HolderRunID == runID {
+		return true, nil
+	}
+	if cs.LeaseExpiresAt != nil && r.now().Before(*cs.LeaseExpiresAt) {
+		return false, nil // live foreign lease: never steal
+	}
+	ok, err := r.Claims.Acquire(ctx, workItemID, runID)
+	if err != nil {
+		return false, fmt.Errorf("rundrive: acquire claim for %s: %w", workItemID, err)
+	}
+	return ok, nil
 }
 
 // retryOrFail executes the §5.3 decision after a death (or a failed attempt):
