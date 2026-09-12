@@ -636,11 +636,17 @@ func main() {
 			os.Exit(1)
 		}
 
+		prodClaims := rundrive.NewProdClaims(db, rundrive.OperatorPrincipal)
 		driver := rundrive.NewDriver(mgr.GetClient(),
-			rundrive.NewProdClaims(db, rundrive.OperatorPrincipal),
+			prodClaims,
 			rundrive.NewProdPauses(resumeStore),
 			runner)
 		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
+		// ISI-4310 gone-sandbox recovery: when a bound sandbox pod is provably
+		// gone (deploy-restart AdoptOrReap, eviction, node loss), the driver
+		// clears the durable bind marker so the retry lap binds fresh warmth
+		// instead of NotFound-looping on the dead pod forever.
+		driver.BindClear = prodClaims
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
 		if err := driver.SetupWithManager(mgr); err != nil {

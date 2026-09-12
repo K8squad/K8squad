@@ -268,6 +268,55 @@ func (c *ProdClaims) FailEnter(ctx context.Context, workItemID, runID string, fr
 	return ok, err
 }
 
+// ClearSandboxBind implements SandboxBindClearer (ISI-4310): it removes the
+// Run's durable coord.sandbox_bind marker — ONE transaction with a
+// `sandbox_bind_cleared` §6.5 audit row carrying the gone pod's ref as
+// provenance. Without this, a retry lap's BindSandbox would see the marker
+// and reattach to the dead sandbox_ref forever (the marker's reattach is the
+// at-most-once guard for a LIVE bind, and the precise reason a gone pod needs
+// an explicit clear). Idempotent: a Run with no marker deletes nothing and
+// writes no audit row, so the driver's crash-mid-recovery re-drive is a
+// no-op. The delete is NOT fence-guarded — the marker is keyed by run_id
+// alone (a new bind for the same run re-inserts under the same key), and the
+// caller only reaches here after proving the referenced pod is gone.
+func (c *ProdClaims) ClearSandboxBind(ctx context.Context, runID string) error {
+	if runID == "" {
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	var workItemID, sandboxRef sql.NullString
+	switch err := tx.QueryRowContext(ctx, `
+		DELETE FROM coord.sandbox_bind
+		 WHERE run_id = $1::uuid
+		 RETURNING work_item_id::text, sandbox_ref`, runID).Scan(&workItemID, &sandboxRef); {
+	case errors.Is(err, sql.ErrNoRows):
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: commit (no-op): %w", err)
+		}
+		return nil // already cleared (or never bound) — idempotent no-op
+	case err != nil:
+		return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: delete: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, to_state, payload)
+		VALUES ($1::uuid, $2::uuid, 'sandbox_bind_cleared', $3, 'claiming_sandbox',
+		        jsonb_build_object('sandbox_ref', $4, 'reason', 'sandbox pod not found'))`,
+		workItemID, runID, c.principal, sandboxRef); err != nil {
+		return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: commit: %w", err)
+	}
+	return nil
+}
+
 // CancelEnter implements Claims.CancelEnter (ISI-2884): same custody fix as the
 // fail path, step → cancelled. Terminal, so the checkout is released.
 func (c *ProdClaims) CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (bool, error) {

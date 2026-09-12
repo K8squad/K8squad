@@ -53,6 +53,10 @@ import (
 	"math/rand"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -182,14 +186,24 @@ type SandboxReleaser interface {
 	Release(ctx context.Context, runID string) error
 }
 
+// SandboxBindClearer removes the Run's durable coord.sandbox_bind marker
+// (ISI-4310). The marker is what makes a retry lap REATTACH to the bound pod;
+// when the bound pod is provably gone, clearing it is what makes the retry lap
+// provision fresh warmth instead of re-driving a corpse. Optional — nil skips
+// (ledger-only mode has no binder, so no marker to clear).
+type SandboxBindClearer interface {
+	ClearSandboxBind(ctx context.Context, runID string) error
+}
+
 // Driver drives the durable reconcile machine for Run CRs.
 type Driver struct {
 	client.Client
 	Claims    Claims
 	Pauses    Pauses
 	Runner    Runner
-	Sandbox   SandboxReleaser // optional
-	Notify    func()          // kicks the resume timer after a fresh episode (optional)
+	Sandbox   SandboxReleaser    // optional
+	BindClear SandboxBindClearer // optional (ISI-4310 gone-sandbox recovery)
+	Notify    func()             // kicks the resume timer after a fresh episode (optional)
 	Now       func() time.Time
 	Rand      func() float64
 	MaxPasses int
@@ -280,6 +294,21 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	// 3.2 death detection: in flight with a lease that expired under a holder
 	// that stopped heart-keeping — sandbox or agent died mid-execution (§5.3).
 	if r.dead(cs) {
+		return r.retryOrFail(ctx, &run, cs)
+	}
+
+	// ISI-4310 gone-sandbox detection: a Run whose BOUND sandbox pod no longer
+	// exists has no terminal path through the machine — dispatch would resolve
+	// the pod forever (deploy-restart AdoptOrReap hit this live: a claim that
+	// was mid-flight across the restart got its pod reaped as unprovable, and
+	// the Run retried `resolve sandbox pod … Pod not found` indefinitely; pod
+	// eviction/node loss produce the same shape). The lease-death detector
+	// above cannot catch it while the HeartbeatSweeper keeps the held checkout
+	// renewed. Route it through the same retry-or-fail death path, with the
+	// stale bind cleared so the retry lap provisions fresh warmth.
+	if gone, err := r.reapGoneSandbox(ctx, &run, cs); err != nil {
+		return ctrl.Result{}, err
+	} else if gone {
 		return r.retryOrFail(ctx, &run, cs)
 	}
 
@@ -384,10 +413,73 @@ func (r *Driver) dead(cs ClaimState) bool {
 	if cs.Holder == "" || cs.LeaseExpiresAt == nil {
 		return false
 	}
-	inFlight := cs.Step == reconcile.StepDispatching ||
-		cs.Step == reconcile.StepRunning ||
-		cs.Step == reconcile.StepCollecting
-	return inFlight && r.now().After(*cs.LeaseExpiresAt)
+	return inFlightStep(cs.Step) && r.now().After(*cs.LeaseExpiresAt)
+}
+
+// reapGoneSandbox is the ISI-4310 gone-sandbox death signal: the Run is in
+// flight, holds the checkout, its status.sandboxRef names a pod — and that pod
+// is NotFound. When that holds, the stale bind is cleared BEFORE the caller
+// routes through retryOrFail (whose §9.3 teardown-and-replace releases the
+// pool's dead by-run binding): the durable coord.sandbox_bind marker is
+// removed (so the retry lap's BindSandbox provisions a FRESH sandbox instead
+// of reattaching to the dead ref), and status.sandboxRef is nulled (the
+// console must not point at a corpse while the lap re-claims). Every step is
+// idempotent — a crash mid-recovery re-detects the NotFound on the next pass
+// and redoes the no-ops. A pod that is merely unreachable/pending is NOT
+// gone: only apierrors.IsNotFound counts, everything else is a transient
+// infrastructure error the caller requeues on. A checkout held by a foreign
+// run is skipped — that holder's own driver owns the death handling (the
+// fence-first RetryEnter must never reclaim a live foreign lease).
+func (r *Driver) reapGoneSandbox(ctx context.Context, run *api.Run, cs ClaimState) (bool, error) {
+	runID := string(run.UID)
+	if cs.RunID != runID || !inFlightStep(cs.Step) {
+		return false, nil
+	}
+	ref := run.Status.SandboxRef
+	if ref == nil || ref.Name == "" {
+		return false, nil
+	}
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var pod corev1.Pod
+	err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &pod)
+	if err == nil {
+		return false, nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("rundrive: probe sandbox pod %s/%s for gone-sandbox check: %w", ns, ref.Name, err)
+	}
+	slog.InfoContext(ctx, "rundrive: bound sandbox pod is gone; entering death path",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+		"sandbox.pod", ref.Name, "durable_step", string(cs.Step))
+
+	// No pool teardown here: the caller routes through retryOrFail, whose §9.3
+	// teardown-and-replace already releases the (dead) by-run binding.
+	// The durable marker clear is what turns the retry lap into a FRESH bind;
+	// an error here is infrastructure (DB down) — surface it, the level-
+	// triggered next pass re-detects the gone pod and redoes the recovery.
+	if r.BindClear != nil {
+		if err := r.BindClear.ClearSandboxBind(ctx, runID); err != nil {
+			return false, fmt.Errorf("rundrive: clear sandbox bind for gone pod %s: %w", ref.Name, err)
+		}
+	}
+	// Null the stale status ref (idempotent merge patch); a transient patch
+	// error requeues and the next pass redoes the whole recovery.
+	patch := client.RawPatch(types.MergePatchType, []byte(`{"status":{"sandboxRef":null}}`))
+	if err := r.Status().Patch(ctx, run, patch); err != nil {
+		return false, fmt.Errorf("rundrive: clear status.sandboxRef for gone pod %s: %w", ref.Name, err)
+	}
+	return true, nil
+}
+
+// inFlightStep reports whether the durable step is one the machine drives
+// while a bound sandbox may be executing the Run's task.
+func inFlightStep(s reconcile.Step) bool {
+	return s == reconcile.StepDispatching ||
+		s == reconcile.StepRunning ||
+		s == reconcile.StepCollecting
 }
 
 // leaseExpired reports whether the claim-row lease has lapsed (absent counts
