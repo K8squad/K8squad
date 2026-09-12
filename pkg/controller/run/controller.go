@@ -19,6 +19,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,19 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 )
+
+// DefaultResync bounds how long a non-terminal Run's status projection can lag
+// the durable coord step (ISI-4195). The projector watches ONLY the Run CR, but
+// the source of truth is the coord reconcile_step in Postgres — a step the
+// Driver advances WITHOUT touching the Run CR. Normally frequent status
+// side-channel patches (sandboxRef, context snapshot) re-trigger this loop and
+// keep the projection current; but when coord races claiming → terminal with no
+// late Run CR event (dispatch retry window, e.g. sandbox pod boot), nothing
+// re-enqueues the Run and the stale projection (e.g. Claiming) sticks. A bounded
+// requeue while non-terminal makes the projector re-read coord and self-heal.
+// Terminal phases are absorbing (immutable), so they never requeue — steady
+// state cost is zero.
+const DefaultResync = 30 * time.Second
 
 // StepSource reads the committed durable reconcile_step for a Run out of the
 // coordination store. The production implementation is
@@ -81,6 +95,17 @@ type Reconciler struct {
 	// side-channel — dispatch then ships title+body only (the pre-S1
 	// behavior), so the field is opt-in and non-regressing.
 	ContextAssemblers ContextAssemblers
+	// Resync is the non-terminal requeue cadence (ISI-4195); zero uses
+	// DefaultResync. Tests pin it to observe the resync behaviour.
+	Resync time.Duration
+}
+
+// resync returns the configured non-terminal requeue cadence, or the default.
+func (r *Reconciler) resync() time.Duration {
+	if r.Resync > 0 {
+		return r.Resync
+	}
+	return DefaultResync
 }
 
 // Reconcile reads the Run, looks up its committed durable step, projects that
@@ -163,8 +188,19 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, err
 	}
 
+	// A non-terminal projection requeues on a bounded cadence so a coord step
+	// that advances without a Run CR event (ISI-4195 dispatch race) still gets
+	// re-read and projected. Terminal phases are absorbing — no requeue. This
+	// MUST ride the no-op path below too: the stuck case is precisely a stale
+	// projection that DeepEquals itself, so returning bare nil there would kill
+	// the only loop that could self-heal it.
+	result := ctrl.Result{}
+	if !isTerminalPhase(desired.Phase) {
+		result.RequeueAfter = r.resync()
+	}
+
 	if apiequality.Semantic.DeepEqual(runObj.Status, desired) {
-		return ctrl.Result{}, nil
+		return result, nil
 	}
 
 	patched := runObj.DeepCopy()
@@ -172,7 +208,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Status().Patch(ctx, patched, client.MergeFrom(&runObj)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch run status %s: %w", req.NamespacedName, err)
 	}
-	return ctrl.Result{}, nil
+	return result, nil
 }
 
 // SetupWithManager registers the reconciler for Run objects. The manager-managed

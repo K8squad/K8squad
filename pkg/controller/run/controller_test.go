@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -194,5 +195,80 @@ func TestReconcileIsIdempotent(t *testing.T) {
 	if cond := meta.FindStatusCondition(afterSecond.Status.Conditions, ConditionReady); cond == nil ||
 		cond.Status != metav1.ConditionTrue {
 		t.Errorf("expected Ready=True for Succeeded, got %+v", cond)
+	}
+}
+
+// TestReconcileNonTerminalRequeues proves a non-terminal projection schedules a
+// bounded resync so a coord step advanced without a Run CR event (ISI-4195) is
+// still re-read and projected — the projector watches only the Run CR, so this
+// requeue is the sole self-heal path for that race.
+func TestReconcileNonTerminalRequeues(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+
+	res, err := reconcileOnce(t, c, fakeSource{step: reconcile.StepClaimingSandbox, found: true})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != DefaultResync {
+		t.Errorf("non-terminal RequeueAfter = %v, want %v", res.RequeueAfter, DefaultResync)
+	}
+}
+
+// TestReconcileTerminalDoesNotRequeue proves a terminal projection is absorbing:
+// no requeue, so steady-state cost is zero.
+func TestReconcileTerminalDoesNotRequeue(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+
+	res, err := reconcileOnce(t, c, fakeSource{step: reconcile.StepSucceeded, found: true})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal RequeueAfter = %v, want 0", res.RequeueAfter)
+	}
+}
+
+// TestReconcileNoOpStillRequeuesWhileNonTerminal is the direct ISI-4195
+// regression: the SECOND pass over an unchanged non-terminal step (the exact
+// shape of a stuck Claiming projection) must STILL requeue. A bare nil on the
+// idempotent path would kill the only loop that re-reads coord and self-heals.
+func TestReconcileNoOpStillRequeuesWhileNonTerminal(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	src := fakeSource{step: reconcile.StepClaimingSandbox, found: true}
+
+	if _, err := reconcileOnce(t, c, src); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	res, err := reconcileOnce(t, c, src) // no status change: DeepEqual short-circuit path
+	if err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if res.RequeueAfter != DefaultResync {
+		t.Errorf("no-op non-terminal RequeueAfter = %v, want %v", res.RequeueAfter, DefaultResync)
+	}
+}
+
+// TestReconcileResyncOverride proves the Resync field overrides the default.
+func TestReconcileResyncOverride(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	r := &Reconciler{Client: c, Source: fakeSource{step: reconcile.StepRunning, found: true},
+		Now: func() metav1.Time { return fixedNow }, Resync: 5 * time.Second}
+
+	res, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
+	})
+	if err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if res.RequeueAfter != 5*time.Second {
+		t.Errorf("RequeueAfter = %v, want 5s", res.RequeueAfter)
 	}
 }
