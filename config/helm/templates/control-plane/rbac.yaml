@@ -40,6 +40,13 @@ rules:
   # dispatch at sandbox bring-up.
   resources: [pods]
   verbs: [create, delete, get, list, watch]
+- apiGroups: [""]
+  # ISI-4315: KubeCapacitySnapshot lists nodes on every controller tick
+  # (allocatable minus live pod requests) to size the warm-pool capacity
+  # ceiling, so idle warmth yields to project Runs instead of saturating
+  # the workers.
+  resources: [nodes]
+  verbs: [get, list, watch]
 - apiGroups: [batch]
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
