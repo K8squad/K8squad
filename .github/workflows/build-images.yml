@@ -546,6 +546,19 @@ jobs:
           echo "name=${{ matrix.image }}" >> "$GITHUB_OUTPUT"
           echo "ref=${{ matrix.image }}@${DIGEST}" >> "$GITHUB_OUTPUT"
 
+      - name: Shell smoke gate (/bin/sh + /bin/bash, ISI-4314)
+        # Regression gate for ISI-4314: the runtimes' bash tools exec /bin/sh by
+        # absolute path, so a shim image without a shell bricks every agent's
+        # command execution (result(err) on every bash call). Fail the publish if
+        # either shell cannot execute a trivial command in the shipped image.
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          REF="${{ steps.imgref.outputs.ref }}"
+          OUT=$(docker run --rm --entrypoint /bin/sh "$REF" -c 'echo sh-ok; /bin/bash -c "echo bash-ok"')
+          echo "$OUT" | grep -Fq sh-ok
+          echo "$OUT" | grep -Fq bash-ok
+
       - name: Generate SBOM (Syft)
         if: github.event_name != 'pull_request'
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2

@@ -1,10 +1,13 @@
 # syntax=docker/dockerfile:1.9
 # ksquad-shim-<runtime> — A2A⇄native sidecar, one image per AgentRuntime.type.
 #
-# The image folds THREE things onto $PATH:
+# The image folds FOUR things onto $PATH:
 #   1. /usr/local/bin/shim   — the generic A2A shim main (cmd/shim), runtime-agnostic.
 #   2. the runtime's native CLI — staged per-RUNTIME by the cli-<runtime> stages below.
 #   3. any runtime-specific entrypoint wrapper (e.g. ksquad-codex-exec for codex).
+#   4. a minimal shell userland under /bin (busybox applets + real bash, ISI-4314) —
+#      the runtime CLIs' bash tools exec /bin/sh by ABSOLUTE path, and the
+#      distroless/static base ships none.
 #
 # RUNTIME selects which CLI layer is baked in (`FROM cli-${RUNTIME}`). It is NO LONGER
 # label-only (ISI-3653 fixes that pre-existing drift). Real CLI packaging today:
@@ -152,6 +155,40 @@ COPY --from=build /out/ksquad-codex-exec /cli-out/ksquad-codex-exec
 # Select the CLI layer for the requested runtime (fails closed on an unknown RUNTIME).
 FROM cli-${RUNTIME} AS cli
 
+# ---- Shell userland (ISI-4314) --------------------------------------------------------------
+# The agent runtimes' bash/shell tools exec /bin/sh by ABSOLUTE path — verified live
+# for the pinned opencode (v1.18.27 packages/core/src/tool/bash.ts defaultShell() ->
+# "/bin/sh"; the configured `shell` document may name another ABSOLUTE path), and
+# operators need `kubectl exec <sandbox> -- sh` for debugging. gcr.io/distroless/
+# static-debian12 ships NO shell, so every bash tool call ENOENTed -> tool result(err)
+# and agents could not run a single shell command (observed on k8squad-test runc-pool
+# Runs, ISI-4305 verification). A shell is the runtime's FOUNDATIONAL tool surface —
+# baked into the image for every pool key (an emptyDir-staged toolchain cannot fix
+# this: PATH-staged binaries never satisfy an absolute /bin/sh exec, and the bare
+# envelope stages nothing at all).
+#
+# Layout (classic busybox posture): /bin/busybox (static) + one RELATIVE applet
+# symlink per applet (survives the COPY into the final image; --install is not used
+# because it emits absolute links to the stage's own path), plus real bash for
+# bash-script fidelity (alpine bash is musl-dynamic; every ldd-listed dependency —
+# the loader pair and any libintl-era extras — is copied beside it under /lib, so an
+# alpine bump cannot silently drop a lib. Identical files may also arrive via the
+# cli-opencode cli-lib layer; overlapping COPYs are harmless).
+FROM alpine:3.21 AS shell
+RUN apk add --no-cache bash busybox-static
+RUN set -eux; \
+    mkdir -p /shell-bin /shell-lib/lib; \
+    cp -a /bin/busybox.static /shell-bin/busybox; \
+    for applet in $(/shell-bin/busybox --list); do \
+      [ "$applet" = busybox ] || ln -s busybox "/shell-bin/$applet"; \
+    done; \
+    cp -a /bin/bash /shell-bin/bash; \
+    /shell-bin/bash --version | grep -Fq 'GNU bash'; \
+    /shell-bin/sh -c 'echo sh-ok' | grep -Fq sh-ok; \
+    ldd /bin/bash | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' \
+      | xargs -r cp -a -t /shell-lib/lib/; \
+    test -f /shell-lib/lib/ld-musl-*.so.1
+
 # ---- Final image -------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG RUNTIME=reference
@@ -163,13 +200,22 @@ WORKDIR /
 # shim first — this creates /usr/local/bin before the (possibly empty) CLI overlay.
 COPY --from=build /out/shim /usr/local/bin/shim
 COPY --from=cli /cli-out/ /usr/local/bin/
+# Shell userland (ISI-4314): busybox applets + bash land on /bin (default PATH and
+# ToolPathValue both include it; /bin/sh + /bin/bash resolve for absolute-path execs).
+COPY --from=shell /shell-bin/ /bin/
 # Runtime libs for dynamic-musl CLIs (opencode, claude): the musl loader pair and, for
 # opencode, libstdc++/libgcc. Empty for codex (fully static) and unpackaged runtimes.
+# The shell layer stages the same loader pair bash needs (identical bytes when both
+# layers write it).
 COPY --from=cli /cli-lib/ /
+COPY --from=shell /shell-lib/ /
 # The image self-describes its flavor (M1.2): the in-pod supervisor defers
 # engine construction until the first /task, and reads the runtime type from
 # this env (Boot may override it, but the baked default means a sandbox pod
 # always knows what it is).
 ENV KSQUAD_RUNTIME_TYPE=${RUNTIME}
+# SHELL names the interactive default for CLIs that consult it (ISI-4314): real
+# bash, matching the /bin/bash the shell layer guarantees.
+ENV SHELL=/bin/bash
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/shim"]
