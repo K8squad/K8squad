@@ -505,10 +505,31 @@ func main() {
 					Class:    kubepool.ClassInteractive,
 					Pressure: kubepool.StaticPressure(0),
 				})
+			// ISI-4291: restart reconciliation BEFORE the first tick —
+			// the pool's inventory is in-memory only, so without this
+			// pass a restart orphans the previous generation's warm pods
+			// (NotifyReady ignores unknown ids) and boots a full
+			// replacement set while the orphans keep consuming CPU.
+			// AdoptOrReap adopts the provably-warm Ready pods (full-key
+			// annotations + no Bind-path Secret), leaves run-owned pods
+			// to run-drive, and reaps everything else. Runs in the same
+			// leader-elected runnable so adoption lands strictly before
+			// the controller's first Tick sees live=0.
+			//
 			// mgr.Add on a plain RunnableFunc defaults to the leader-election
 			// group (arch §5.2 — one owner, no racing resizers): the loop
 			// runs only on the elected leader, after the caches sync.
 			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				report, err := kubepool.AdoptOrReap(ctx, mgr.GetClient(), pool, warmKey)
+				if err != nil {
+					// Best-effort by design: a wedged pod must not block
+					// replenishment. The controller still enforces the
+					// target; unreaped stragglers get their disposition
+					// on the next restart.
+					ctrl.Log.Error(err, "warm-pool adopt-or-reap pass had per-pod failures")
+				}
+				ctrl.Log.Info("warm-pool restart reconciliation done",
+					"adopted", report.Adopted, "reaped", report.Reaped, "leftRunOwned", report.LeftRunOwned)
 				return warmController.Run(ctx, warmTick)
 			})); err != nil {
 				ctrl.Log.Error(err, "unable to register warm-pool controller")
