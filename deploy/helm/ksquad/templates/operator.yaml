@@ -99,6 +99,43 @@ spec:
             - name: KSQUAD_SANDBOX_MEMORY_REQUEST
               value: {{ . | quote }}
             {{- end }}
+            {{- /* ISI-4315: purpose-keyed sandbox priority + warm-pool
+                   capacity governance. Empty priority class names disable
+                   stamping (pre-ISI-4315 behavior); the numeric knobs are
+                   omitted when zero/empty so operator code defaults apply
+                   (budgetShare 0.25, headroom = one warm request, boot
+                   deadline 120s). */}}
+            {{- with .Values.operator.warmPool }}
+            {{- with .warmPriorityClass }}
+            - name: KSQUAD_SANDBOX_WARM_PRIORITY_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .runPriorityClass }}
+            - name: KSQUAD_SANDBOX_RUN_PRIORITY_CLASS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if gt ( .cpuBudgetMilli | int) 0 }}
+            - name: KSQUAD_WARM_POOL_CPU_BUDGET
+              value: {{ .cpuBudgetMilli | quote }}
+            {{- end }}
+            {{- /* budgetShare is coerced to float64 BEFORE comparing: a
+                    --set/--set-string override arrives as a string, and
+                    `ne <string> 0.25` errors the whole render
+                    (ISI-4317 review fix 3). */}}
+            {{- $budgetShare := .budgetShare | float64 }}
+            {{- if ne $budgetShare 0.25 }}
+            - name: KSQUAD_WARM_POOL_BUDGET_SHARE
+              value: {{ $budgetShare | quote }}
+            {{- end }}
+            {{- if gt ( .headroomMilli | int) 0 }}
+            - name: KSQUAD_WARM_POOL_HEADROOM
+              value: {{ .headroomMilli | quote }}
+            {{- end }}
+            {{- with .bootDeadline }}
+            - name: KSQUAD_WARM_BOOT_DEADLINE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- /* M1.2 task-io seam (ISI-3601/ISI-4128): the credential
                    writer + shim task-io injection need the in-cluster coord
                    URL and the JWT key SHARED with the apiserver (the minted

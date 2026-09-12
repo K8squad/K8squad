@@ -58,7 +58,7 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-1"); err != nil {
+	if err := p.Boot(ctx, key, "sbx-1", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -71,7 +71,7 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 
 	// Legacy key without a namespace: the provisioner default remains.
 	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, legacy, "sbx-2"); err != nil {
+	if err := p.Boot(ctx, legacy, "sbx-2", BootWarm); err != nil {
 		t.Fatalf("boot legacy: %v", err)
 	}
 	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-2"), &corev1.Pod{}); err != nil {
@@ -103,7 +103,7 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	defer span.End()
 
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-traced"); err != nil {
+	if err := p.Boot(ctx, key, "sbx-traced", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -127,7 +127,7 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	}
 
 	// Bare context: no span → no carrier, honestly.
-	if err := p.Boot(context.Background(), key, "sbx-bare"); err != nil {
+	if err := p.Boot(context.Background(), key, "sbx-bare", BootWarm); err != nil {
 		t.Fatalf("boot bare: %v", err)
 	}
 	bare := &corev1.Pod{}
@@ -157,7 +157,7 @@ func TestKubeProvisionerTearDownUsesKeyNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-kill"); err != nil {
+	if err := p.Boot(ctx, key, "sbx-kill", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	if err := p.TearDown(ctx, key, "sbx-kill"); err != nil {
@@ -169,7 +169,7 @@ func TestKubeProvisionerTearDownUsesKeyNamespace(t *testing.T) {
 
 	// Legacy key (no namespace): teardown keeps the provisioner default.
 	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, legacy, "sbx-legacy"); err != nil {
+	if err := p.Boot(ctx, legacy, "sbx-legacy", BootWarm); err != nil {
 		t.Fatalf("boot legacy: %v", err)
 	}
 	if err := p.TearDown(ctx, legacy, "sbx-legacy"); err != nil {
@@ -194,7 +194,7 @@ func TestKubeProvisionerBootMountsCoordSecretVolume(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}, "sbx-coord"); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}, "sbx-coord", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -254,7 +254,7 @@ func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
 	// M1.2 merged onto main: Boot refuses a key without an image, so both
 	// keys carry one (the classifier guarantees it in production).
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test", ProjectPVC: "workspace-project-widget"}
-	if err := p.Boot(ctx, key, "sbx-ws"); err != nil {
+	if err := p.Boot(ctx, key, "sbx-ws", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -295,7 +295,7 @@ func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
 	}
 
 	// No PVC in the key: no workspace volume, no workspace mount.
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test"}, "sbx-plain"); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test"}, "sbx-plain", BootWarm); err != nil {
 		t.Fatalf("boot plain: %v", err)
 	}
 	plain := &corev1.Pod{}
@@ -329,7 +329,7 @@ func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}, "sbx-workdir"); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}, "sbx-workdir", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -353,7 +353,7 @@ func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
 	}
 
 	// With a per-Project workspace the shared mount is the workdir.
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1", ProjectPVC: "workspace-project-x"}, "sbx-ws"); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1", ProjectPVC: "workspace-project-x"}, "sbx-ws", BootWarm); err != nil {
 		t.Fatalf("boot ws: %v", err)
 	}
 	ws := &corev1.Pod{}
@@ -386,7 +386,7 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 	img := PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}
 
 	p := NewKubeProvisioner(c, "1", "512Mi").WithRequests("500m", "512Mi")
-	if err := p.Boot(ctx, img, "sbx-rightsized"); err != nil {
+	if err := p.Boot(ctx, img, "sbx-rightsized", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	sized := &corev1.Pod{}
@@ -409,7 +409,7 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 
 	// Default (no WithRequests): requests==limits, Guaranteed QoS preserved.
 	dflt := NewKubeProvisioner(c, "1", "512Mi")
-	if err := dflt.Boot(ctx, img, "sbx-guaranteed"); err != nil {
+	if err := dflt.Boot(ctx, img, "sbx-guaranteed", BootWarm); err != nil {
 		t.Fatalf("boot default: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -419,5 +419,58 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 	dres := pod.Spec.Containers[0].Resources
 	if dres.Requests.Cpu().Cmp(*dres.Limits.Cpu()) != 0 {
 		t.Errorf("default cpu request %v should equal limit %v", dres.Requests.Cpu(), dres.Limits.Cpu())
+	}
+}
+
+// ISI-4315: purpose-keyed scheduling priority. Idle warm boots stamp the
+// WARM class, Run cold boots stamp the RUN class (warm < run so the
+// scheduler never hands a freed CPU slot to an older queued warm pod while
+// a project Run's cold boot waits); WithPriorities unset stamps nothing
+// (pre-ISI-4315 cluster-default priority).
+func TestKubeProvisionerStampsPurposePriority(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	key := PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-codex:m1", Namespace: "squad-a"}
+
+	stamping := NewKubeProvisioner(fake.NewClientBuilder().WithScheme(s).Build(), "", "").
+		WithPriorities("ksquad-sandbox-warm", "ksquad-sandbox-run")
+	if err := stamping.Boot(context.Background(), key, "sbx-warm-prio", BootWarm); err != nil {
+		t.Fatalf("warm boot: %v", err)
+	}
+	if err := stamping.Boot(context.Background(), key, "sbx-run-prio", BootRun); err != nil {
+		t.Fatalf("run boot: %v", err)
+	}
+
+	var warmPod, runPod corev1.Pod
+	c := stamping.client
+	if err := c.Get(context.Background(), clientObjectKey(t, "squad-a", "sbx-warm-prio"), &warmPod); err != nil {
+		t.Fatalf("get warm pod: %v", err)
+	}
+	if err := c.Get(context.Background(), clientObjectKey(t, "squad-a", "sbx-run-prio"), &runPod); err != nil {
+		t.Fatalf("get run pod: %v", err)
+	}
+	if got := warmPod.Spec.PriorityClassName; got != "ksquad-sandbox-warm" {
+		t.Errorf("warm boot PriorityClassName = %q, want ksquad-sandbox-warm", got)
+	}
+	if got := runPod.Spec.PriorityClassName; got != "ksquad-sandbox-run" {
+		t.Errorf("run boot PriorityClassName = %q, want ksquad-sandbox-run", got)
+	}
+
+	// Unset priorities: no stamping — the cluster default stands.
+	plain := NewKubeProvisioner(fake.NewClientBuilder().WithScheme(s).Build(), "", "")
+	if err := plain.Boot(context.Background(), key, "sbx-plain-prio", BootWarm); err != nil {
+		t.Fatalf("plain warm boot: %v", err)
+	}
+	var plainPod corev1.Pod
+	if err := plain.client.Get(context.Background(), clientObjectKey(t, "squad-a", "sbx-plain-prio"), &plainPod); err != nil {
+		t.Fatalf("get plain pod: %v", err)
+	}
+	if got := plainPod.Spec.PriorityClassName; got != "" {
+		t.Errorf("unstamped boot PriorityClassName = %q, want empty (cluster default)", got)
 	}
 }

@@ -67,6 +67,37 @@ operator:
   sandbox:
     cpuRequest: ""
     memoryRequest: ""
+  # Warm-pool capacity governance (ISI-4315). A pinned warm target
+  # (KSQUAD_WARM_POOL_TARGET=5 × 500m requests ≈ 62% of a 2×4-core worker
+  # pair) saturated k8squad-test at ~97% CPU requests and starved project
+  # Runs. The chart ships two PriorityClasses (warm boots BELOW Run cold
+  # boots in the scheduler queue; both preemptionPolicy: Never so a claimed
+  # sandbox is never evicted mid-run) and the capacity knobs below bound
+  # idle warmth to what the cluster can actually spare.
+  warmPool:
+    # Scheduling priority for idle warm boots vs Run-dedicated cold boots.
+    # Set to "" to disable priority stamping entirely (pre-ISI-4315
+    # behavior). The referenced classes must exist; the chart's
+    # priorityclasses.yaml creates the defaults.
+    warmPriorityClass: ksquad-sandbox-warm
+    runPriorityClass: ksquad-sandbox-run
+    # Values for the shipped PriorityClasses (used only when the chart
+    # creates them). runPriority must stay ABOVE warmPriority.
+    warmPriorityValue: 100
+    runPriorityValue: 200
+    # cpuBudgetMilli caps the TOTAL idle-warm CPU commitment (milliCPUs).
+    # 0 = derive from budgetShare × cluster allocatable at operator start.
+    cpuBudgetMilli: 0
+    # budgetShare is the fraction of cluster allocatable CPU idle warmth
+    # may commit when cpuBudgetMilli is unset (0 < share ≤ 1).
+    budgetShare: 0.25
+    # headroomMilli is cluster slack the pool keeps FREE for the next Run
+    # cold boot instead of filling with warmth. 0 = one warm request slot.
+    headroomMilli: 0
+    # bootDeadline reaps unbound warm boots stuck longer than this (e.g.
+    # Pending / Insufficient cpu on a saturated cluster). 0 = code default
+    # (120s). A valid Go duration string.
+    bootDeadline: ""
   # M1.2 task-io seam (ISI-4128): when coord.url + coord.existingJwtKeySecret
   # are both set, the operator mints run-scoped tokens (validated by the
   # apiserver's JWT mint — share the key with apiserver.auth) and writes the

@@ -47,6 +47,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -430,6 +431,16 @@ func main() {
 		}
 		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi").
 			WithRequests(sandboxCPURequest, sandboxMemoryRequest)
+		// ISI-4315: purpose-keyed scheduling priority. Idle warm boots sit
+		// BELOW Run cold boots in the scheduler queue (warm pods carry
+		// preemptionPolicy: Never, so a claimed warm pod is never evicted
+		// mid-run by a higher-priority pending pod). Empty names (default)
+		// keep the cluster-default priority — the Helm chart sets these and
+		// ships the matching PriorityClasses; bare-operator installs stay on
+		// pre-ISI-4315 behavior unless the classes are provided by hand.
+		kubeProvisioner = kubeProvisioner.WithPriorities(
+			os.Getenv("KSQUAD_SANDBOX_WARM_PRIORITY_CLASS"),
+			os.Getenv("KSQUAD_SANDBOX_RUN_PRIORITY_CLASS"))
 		// M1.2: pass the operator's OTLP endpoint/protocol through to the
 		// sandbox pods so in-pod supervisor/runtime spans reach the SAME
 		// telemetry pipeline the operator reports to (values only — the
@@ -505,6 +516,68 @@ func main() {
 					Class:    kubepool.ClassInteractive,
 					Pressure: kubepool.StaticPressure(0),
 				})
+			// ISI-4315: the supply-side ceiling. A pinned target N (e.g.
+			// KSQUAD_WARM_POOL_TARGET=5 × 500m requests ≈ 62% of a 2×4-core
+			// worker pair) saturated k8squad-test at ~97% CPU requests and
+			// starved project Runs — replenishment persisted (enforcement +
+			// adopt-or-reap), so the Pending backlog never drained and freed
+			// slots went to older queued warm pods. The cap reads live
+			// cluster slack each tick: warmth yields to Runs (immediate,
+			// both directions), idle-warm CPU stays under a budget, slack
+			// beyond a headroom reserve is all warmth may touch, and stale
+			// unbound warm boots are reaped instead of queueing forever.
+			// The warm request is already defaulted/validated above (same
+			// string the provisioner MustParses per Boot).
+			warmReqQuantity := resource.MustParse(sandboxCPURequest)
+			warmCapacityCfg := kubepool.WarmCapacityConfig{
+				RequestMilli: warmReqQuantity.MilliValue(),
+			}
+			if v := os.Getenv("KSQUAD_WARM_POOL_CPU_BUDGET"); v != "" {
+				if b, err := strconv.ParseInt(v, 10, 64); err != nil {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_CPU_BUDGET (milliCPUs); no budget ceiling", "value", v)
+				} else if b > 0 {
+					warmCapacityCfg.BudgetMilli = b
+				}
+			}
+			if warmCapacityCfg.BudgetMilli == 0 {
+				// Default: idle warmth may commit at most a quarter of the
+				// cluster's allocatable CPU, regardless of apparent slack.
+				share := 0.25
+				if v := os.Getenv("KSQUAD_WARM_POOL_BUDGET_SHARE"); v != "" {
+					if s, err := strconv.ParseFloat(v, 64); err != nil || s <= 0 || s > 1 {
+						ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_BUDGET_SHARE; keeping default 0.25", "value", v)
+					} else {
+						share = s
+					}
+				}
+				// mgr.GetAPIReader(), NOT mgr.GetClient(): this read runs
+				// BEFORE mgr.Start, when the cache-backed client cannot
+				// serve Lists (ErrCacheNotStarted) — the API reader goes
+				// straight to the apiserver (ISI-4317 review fix 1).
+				if allocMilli, _, _, err := kubepool.KubeCapacitySnapshot(context.Background(), mgr.GetAPIReader()); err == nil && allocMilli > 0 {
+					warmCapacityCfg.BudgetMilli = int64(float64(allocMilli) * share)
+				} else if err != nil {
+					// Cluster read failed at startup: leave budget unset
+					// (no ceiling) — the free-slack cap still guards; a
+					// fixed budget would mis-size a different cluster.
+					ctrl.Log.Error(err, "warm-pool budget: startup capacity read failed; budget ceiling disabled")
+				}
+			}
+			if v := os.Getenv("KSQUAD_WARM_POOL_HEADROOM"); v != "" {
+				if h, err := strconv.ParseInt(v, 10, 64); err != nil {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_HEADROOM (milliCPUs); keeping default = one pod request", "value", v)
+				} else {
+					warmCapacityCfg.HeadroomMilli = h
+				}
+			}
+			if v := os.Getenv("KSQUAD_WARM_BOOT_DEADLINE"); v != "" {
+				if d, err := time.ParseDuration(v); err != nil || d <= 0 {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_BOOT_DEADLINE; keeping default", "value", v)
+				} else {
+					warmCapacityCfg.BootDeadline = d
+				}
+			}
+			warmController.SetCapacity(kubepool.KubeCapacitySource(mgr.GetClient()), warmCapacityCfg)
 			// ISI-4291: restart reconciliation BEFORE the first tick —
 			// the pool's inventory is in-memory only, so without this
 			// pass a restart orphans the previous generation's warm pods
@@ -537,7 +610,13 @@ func main() {
 			}
 			ctrl.Log.Info("warm-pool controller wired",
 				"key", warmKey, "target", warmPolicy.MinReady, "max", warmPolicy.MaxReady,
-				"tick", warmTick.String(), "replenishSeconds", replenishS)
+				"tick", warmTick.String(), "replenishSeconds", replenishS,
+				"warmRequestMilli", warmCapacityCfg.RequestMilli,
+				"warmBudgetMilli", warmCapacityCfg.BudgetMilli,
+				"warmHeadroomMilli", warmCapacityCfg.HeadroomMilli,
+				"warmBootDeadline", warmCapacityCfg.BootDeadline.String(),
+				"warmPriorityClass", os.Getenv("KSQUAD_SANDBOX_WARM_PRIORITY_CLASS"),
+				"runPriorityClass", os.Getenv("KSQUAD_SANDBOX_RUN_PRIORITY_CLASS"))
 		} else {
 			// Degraded, loudly logged (never silently broken): without a
 			// default sandbox image the warm key cannot be resolved and warm

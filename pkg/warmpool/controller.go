@@ -94,7 +94,148 @@ type Controller struct {
 	// target itself, this bounds the per-tick fan-out).
 	maxBootPerTick int
 
+	// capacity is the SUPPLY-side ceiling input (ISI-4315): cluster idle
+	// CPU, read fresh every tick. nil = no capacity awareness (pre-ISI-
+	// 4315 behavior).
+	capacity CapacitySource
+
+	// warmRequestMilli is one warm pod's CPU request (milliCPUs) — the
+	// unit the cap arithmetic counts in. <= 0 disables capping.
+	warmRequestMilli int64
+
+	// warmBudgetMilli bounds the TOTAL idle-warm CPU commitment (0 = no
+	// budget ceiling; WarmCapacityConfig defaults it to a share of
+	// allocatable).
+	warmBudgetMilli int64
+
+	// warmHeadroomMilli is cluster slack the pool keeps FREE for the next
+	// Run cold boot instead of filling with warmth.
+	warmHeadroomMilli int64
+
+	// warmBootDeadline reaps unbound Warming boots older than it (ISI-
+	// 4315: persistent Pending backlogs on saturated clusters). <= 0 =
+	// DefaultWarmBootDeadline.
+	warmBootDeadline time.Duration
+
 	mu sync.Mutex // serializes Ticks against concurrent ReplenishKey
+}
+
+// CapacitySource reports the cluster's scheduler-fit CPU slack —
+// Σ(node allocatable) − Σ(pod requests), milliCPUs — the supply-side input
+// to the warm-target cap (ISI-4315). Production reads nodes+pods through
+// the kube client once per tick; tests return step functions. An error
+// means "unknown", and the controller FAILS OPEN that tick (keeps the
+// policy target) rather than zeroing warmth on a transient read failure.
+type CapacitySource func(ctx context.Context) (freeMilli int64, err error)
+
+// WarmCapacityConfig is the supply-side cap configuration the operator
+// wiring hands the controller (SetCapacity). Zero fields take safe
+// defaults; requestMilli <= 0 disables capping entirely.
+type WarmCapacityConfig struct {
+	// RequestMilli is one warm pod's CPU request in milliCPUs (e.g. 500).
+	RequestMilli int64
+	// BudgetMilli caps the total idle-warm CPU commitment cluster-wide;
+	// 0 = no budget ceiling.
+	BudgetMilli int64
+	// HeadroomMilli is slack kept free for the next Run cold boot; < 0 or
+	// 0 defaults to RequestMilli (exactly one spare Run slot).
+	HeadroomMilli int64
+	// BootDeadline reaps stale unbound Warming boots; 0 = the default.
+	BootDeadline time.Duration
+}
+
+// DefaultWarmBootDeadline is the default reap age for unbound Warming
+// boots (ISI-4315). Generous vs the measured gVisor replenish p95 of
+// ~1.7 s (ISI-2294) and the Kata placeholder of 15 s: a boot this old is
+// Pending on a saturated cluster, not slowly pulling an image — destroy it
+// so it stops holding queue position and pool-live count.
+const DefaultWarmBootDeadline = 120 * time.Second
+
+// SetCapacity installs the supply-side ceiling (ISI-4315). After this call
+// every Tick caps the policy target at what the cluster can actually spare
+// — idle warmth YIELDS to project Runs instead of saturating workers — and
+// reaps stale warm boots.
+func (c *Controller) SetCapacity(src CapacitySource, cfg WarmCapacityConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.capacity = src
+	c.warmRequestMilli = cfg.RequestMilli
+	c.warmBudgetMilli = cfg.BudgetMilli
+	if cfg.HeadroomMilli > 0 {
+		c.warmHeadroomMilli = cfg.HeadroomMilli
+	} else {
+		c.warmHeadroomMilli = cfg.RequestMilli
+	}
+	if cfg.BootDeadline > 0 {
+		c.warmBootDeadline = cfg.BootDeadline
+	} else {
+		c.warmBootDeadline = DefaultWarmBootDeadline
+	}
+}
+
+// WarmCapacityCap returns the supply-side ceiling on one key's UNBOUND
+// warm count (Warming + Ready) given live cluster slack — the pure
+// arithmetic behind Tick's cap (ISI-4315), pinned by controller tests:
+//
+//   - freeCap: keep every current unbound warm pod PLUS as many more as
+//     fit in the slack beyond headroom; when slack drops below headroom
+//     the cap sinks BELOW the current count and the tick sheds surplus
+//     warmth (Run-sized steps), handing CPU back to project Runs.
+//   - budgetCap: idle warmth may never commit more than BudgetMilli of
+//     CPU cluster-wide, regardless of apparent slack.
+//   - requestMilli <= 0 (unknown pod size) fails OPEN (returns the current
+//     count): an unknown unit cannot be counted, and zeroing warmth on a
+//     misconfiguration would cold-start every claim.
+func WarmCapacityCap(unboundWarm int, freeMilli, headroomMilli, budgetMilli, requestMilli int64) int {
+	if requestMilli <= 0 {
+		return unboundWarm
+	}
+	if headroomMilli < 0 {
+		headroomMilli = 0
+	}
+	allowed := int64(unboundWarm) + floorDiv(freeMilli-headroomMilli, requestMilli)
+	if budgetMilli > 0 {
+		if budgetCap := budgetMilli / requestMilli; budgetCap < allowed {
+			allowed = budgetCap
+		}
+	}
+	if allowed < 0 {
+		return 0
+	}
+	return int(allowed)
+}
+
+// floorDiv divides a by b (b > 0) rounding DOWN — truncating division
+// would round −500/500 up to 0 and hide exactly the sub-slot deficit the
+// cap must shed (ISI-4315).
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if (a%b != 0) && ((a < 0) != (b < 0)) {
+		q--
+	}
+	return q
+}
+
+// capTarget folds the capacity ceiling into one key's effective target for
+// this tick (supply-side, IMMEDIATE — the autoscaler's stabilization band
+// governs the demand signal, but a hard capacity constraint must not wait
+// three ticks while Runs sit Pending). The ceiling clamps DOWNWARD ONLY:
+// slack can never raise the target above what the policy demands (the
+// policy owns demand; capacity only vetoes). A capacity read error fails
+// open. Returns the capped target.
+func (c *Controller) capTarget(ctx context.Context, key PoolKey, target int) int {
+	if c.capacity == nil || c.warmRequestMilli <= 0 {
+		return target
+	}
+	freeMilli, err := c.capacity(ctx)
+	if err != nil {
+		return target // fail-open: unknown supply keeps the policy target
+	}
+	inv := c.pool.Inventory()
+	if capped := WarmCapacityCap(liveFor(inv, key), freeMilli, c.warmHeadroomMilli, c.warmBudgetMilli, c.warmRequestMilli); capped < target {
+		return capped
+	}
+	return target
 }
 
 // NewController returns a controller driving pool through autoscaler for the
@@ -157,6 +298,18 @@ func (c *Controller) Tick(ctx context.Context) (map[PoolKey]int, error) {
 		return nil, err
 	}
 
+	// ISI-4315: reap stale unbound Warming boots FIRST. On a saturated
+	// cluster replenish boots sit Pending/Insufficient-cpu indefinitely
+	// (enforcement + adopt-or-reap keep re-arming them) — they count as
+	// live forever, hold scheduler queue position, and steal freed CPU
+	// slots. Destroying them below the deadline lets this tick's capacity
+	// cap see the true warm count and the pool stop pretending to warm.
+	for _, mk := range c.keys {
+		if c.warmBootDeadline > 0 {
+			c.pool.ReapStaleWarming(ctx, mk.Key, c.warmBootDeadline)
+		}
+	}
+
 	inv := c.pool.Inventory()
 	targets := make(map[PoolKey]int, len(c.keys))
 	var firstErr error
@@ -170,6 +323,12 @@ func (c *Controller) Tick(ctx context.Context) (map[PoolKey]int, error) {
 			}
 			continue
 		}
+		// ISI-4315: the supply-side ceiling — even a policy-pinned target
+		// (KSQUAD_WARM_POOL_TARGET=5 × 500m on 2×4-core workers) must not
+		// saturate the cluster and starve the project Runs the pool exists
+		// to serve. IMMEDIATE in both directions: no stabilization band on
+		// a hard constraint.
+		target = c.capTarget(ctx, mk.Key, target)
 		targets[mk.Key] = target
 
 		live := liveFor(inv, mk.Key)
@@ -216,6 +375,14 @@ func (c *Controller) ReplenishKey(ctx context.Context, key PoolKey) {
 		return // shutting down: no boot fan-out on a dead context
 	}
 	target := c.autoscaler.Current(key)
+	if target <= 0 {
+		return
+	}
+	// ISI-4315: the bind-miss replenish obeys the supply-side ceiling too
+	// — a cold boot just consumed capacity (or found none), and fanning
+	// out warmth boots the cluster cannot fit is exactly the persistent
+	// Pending backlog the cap exists to prevent.
+	target = c.capTarget(ctx, key, target)
 	if target <= 0 {
 		return
 	}

@@ -35,12 +35,13 @@ import (
 // the readiness/release races need; tearDownErr makes teardown fail (a
 // failed teardown records nothing — it did not succeed).
 type fakeProvisioner struct {
-	mu          sync.Mutex
-	boots       map[string]warmpool.PoolKey
-	bootOrder   []string // boot call order (maps iterate randomly — FIFO tests need this)
-	teardowns   map[string]int
-	bootErr     error
-	tearDownErr error
+	mu           sync.Mutex
+	boots        map[string]warmpool.PoolKey
+	bootOrder    []string                        // boot call order (maps iterate randomly — FIFO tests need this)
+	bootPurposes map[string]warmpool.BootPurpose // ISI-4315: purpose per boot id
+	teardowns    map[string]int
+	bootErr      error
+	tearDownErr  error
 	// tearDownErrFor fails teardown for SPECIFIC ids only (a wedged pod:
 	// undeletable while every other delete lands) — the fake for the
 	// draining/recovery lifecycle cases.
@@ -62,6 +63,7 @@ type fakeProvisioner struct {
 func newFakeProvisioner() *fakeProvisioner {
 	return &fakeProvisioner{
 		boots:            map[string]warmpool.PoolKey{},
+		bootPurposes:     map[string]warmpool.BootPurpose{},
 		teardowns:        map[string]int{},
 		tearDownErrFor:   map[string]error{},
 		tearDownFailNth:  map[string]int{},
@@ -71,7 +73,7 @@ func newFakeProvisioner() *fakeProvisioner {
 	}
 }
 
-func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id string) error {
+func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id string, purpose warmpool.BootPurpose) error {
 	f.mu.Lock()
 	if f.bootErr != nil {
 		err := f.bootErr
@@ -79,6 +81,7 @@ func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id strin
 		return err
 	}
 	f.boots[id] = key
+	f.bootPurposes[id] = purpose
 	f.bootOrder = append(f.bootOrder, id) // insertion order — map iteration is randomized
 	block := f.blockOnBoot
 	f.mu.Unlock()
@@ -164,6 +167,19 @@ func (f *fakeProvisioner) oldestBoot() string {
 	return f.bootOrder[0]
 }
 
+// bootOrderCopy returns every booted id in BOOT CALL ORDER — the order-
+// preserving read for tests that mirror physical readiness arrival
+// (tickReady). bootsCopy is a map: iterating it feeds NotifyReady in
+// RANDOM order, which randomizes the pool's ready FIFO relative to boot
+// order and flakes every oldest-victim assertion (ISI-4317 review fix 2).
+func (f *fakeProvisioner) bootOrderCopy() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.bootOrder))
+	copy(out, f.bootOrder)
+	return out
+}
+
 // bootedCopy is a test helper snapshot of f.boots.
 func (f *fakeProvisioner) bootsCopy() map[string]warmpool.PoolKey {
 	f.mu.Lock()
@@ -173,6 +189,14 @@ func (f *fakeProvisioner) bootsCopy() map[string]warmpool.PoolKey {
 		out[id] = k
 	}
 	return out
+}
+
+// bootPurpose returns the BootPurpose the pool passed for one boot id
+// (ISI-4315): "" when the id never booted.
+func (f *fakeProvisioner) bootPurpose(id string) warmpool.BootPurpose {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.bootPurposes[id]
 }
 
 // waitBooted blocks until exactly one Boot call is in flight and returns
@@ -881,4 +905,144 @@ func TestPoolSettersRaceWithBind(t *testing.T) {
 		}
 	}()
 	wg.Wait()
+}
+
+// ISI-4315: boot PURPOSE flows to the provisioner — pool replenishment is
+// BootWarm (idle warmth that must yield scheduling priority to Runs), the
+// cold path's dedicated boot is BootRun (the Run is waiting on this very
+// pod). A twin that stamps no purpose cannot express the priority split
+// and a freed CPU slot goes to the OLDEST queued pod — a warm pod —
+// starving the Run (the k8squad-test failure).
+func TestBootPurposeFlowsToProvisioner(t *testing.T) {
+	fp := newFakeProvisioner()
+	pool := warmpool.NewPool(fp)
+
+	// Pool-side replenish boot: warmth.
+	warmID, err := pool.Boot(context.Background(), gvisorKey)
+	if err != nil {
+		t.Fatalf("warm boot: %v", err)
+	}
+	if got := fp.bootPurpose(warmID); got != warmpool.BootWarm {
+		t.Errorf("pool.Boot purpose = %q, want %q", got, warmpool.BootWarm)
+	}
+
+	// Cold path: the claiming Run's DEDICATED boot.
+	runRef, err := pool.Bind(context.Background(), "run-purpose", gvisorKey, warmpool.ClassInteractive)
+	if err != nil {
+		t.Fatalf("cold bind: %v", err)
+	}
+	if got := fp.bootPurpose(runRef); got != warmpool.BootRun {
+		t.Errorf("cold-bind boot purpose = %q, want %q", got, warmpool.BootRun)
+	}
+}
+
+// ISI-4315: stale unbound Warming boots are reaped — on a saturated
+// cluster replenish boots Pending/Insufficient-cpu forever, count as pool
+// live, and hold scheduler queue position. Run-RESERVED warmings are never
+// reaped (they are a live Run's own sandbox); fresh warmings survive.
+func TestReapStaleWarming(t *testing.T) {
+	fp := newFakeProvisioner()
+	pool := warmpool.NewPool(fp)
+	now := time.Unix(1_750_000_000, 0)
+	pool.SetClock(func() time.Time { return now })
+
+	// A stale unbound warming, booted at t0.
+	staleID, err := pool.Boot(context.Background(), gvisorKey)
+	if err != nil {
+		t.Fatalf("boot stale: %v", err)
+	}
+
+	// A run-reserved warming parked mid-boot: the fake records the boot
+	// id, then blocks inside the provisioner call — the pool holds the
+	// entry as StateWarming + BoundRun (the in-flight cold boot a live
+	// Run owns; the reaper must never touch it).
+	gate := make(chan struct{})
+	fp.blockOnBoot = gate
+	bound := make(chan string, 1)
+	go func() {
+		ref, berr := pool.Bind(context.Background(), "run-stale", gvisorKey, warmpool.ClassInteractive)
+		if berr != nil {
+			t.Errorf("cold bind: %v", berr)
+		}
+		bound <- ref
+	}()
+	waitFor(t, func() bool { return len(fp.bootsSnapshot()) == 2 })
+	reservedID := fp.newestBoot()
+	if fp.bootPurpose(reservedID) != warmpool.BootRun {
+		t.Fatalf("gated boot %s is not the run's BootRun cold boot", reservedID)
+	}
+
+	// Fresh warmth boots fine once the gate is future-only (the parked
+	// call captured the channel; new calls read the nil field).
+	fp.blockOnBoot = nil
+	now = now.Add(130 * time.Second) // stale/reserved age 130s, fresh age 0s
+	pool.SetClock(func() time.Time { return now })
+	freshID, err := pool.Boot(context.Background(), gvisorKey)
+	if err != nil {
+		t.Fatalf("boot fresh: %v", err)
+	}
+
+	// Deadline 120s: only the STALE unbound warming is reap-eligible.
+	reaped := pool.ReapStaleWarming(context.Background(), gvisorKey, 120*time.Second)
+	if reaped != 1 {
+		t.Fatalf("reaped = %d, want 1 (only the unbound boot older than the deadline)", reaped)
+	}
+	if !fp.tornDown(staleID) {
+		t.Errorf("stale warming %s was not torn down", staleID)
+	}
+	if fp.tornDown(freshID) {
+		t.Errorf("fresh warming %s must not be reaped (age 0s < 120s)", freshID)
+	}
+	if fp.tornDown(reservedID) {
+		t.Errorf("run-reserved warming %s must NEVER be reaped (live Run's sandbox)", reservedID)
+	}
+
+	// Let the gated bind finish; its sandbox lands Bound.
+	close(gate)
+	select {
+	case ref := <-bound:
+		if ref != reservedID {
+			t.Errorf("bind ref = %s, want the gated boot id %s", ref, reservedID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cold bind never returned after gate opened")
+	}
+	inv := pool.Inventory()[gvisorKey]
+	if inv.Warming != 1 || inv.Bound != 1 {
+		t.Errorf("post-reap inventory = %+v, want Warming=1 (fresh) Bound=1 (run's)", inv)
+	}
+}
+
+// newestBoot returns the LAST-booted sandbox id (the in-flight cold boot
+// the gated-bind test needs — bootOrder is insertion order).
+func (f *fakeProvisioner) newestBoot() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.bootOrder) == 0 {
+		return ""
+	}
+	return f.bootOrder[len(f.bootOrder)-1]
+}
+
+// bootsSnapshot is a copy of the recorded boot-order (length is what the
+// gating tests poll).
+func (f *fakeProvisioner) bootsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.bootOrder))
+	copy(out, f.bootOrder)
+	return out
+}
+
+// waitFor polls cond until true or a 2s deadline.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("condition never became true")
 }

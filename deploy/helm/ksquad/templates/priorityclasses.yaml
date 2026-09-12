@@ -1,0 +1,52 @@
+{{- /* ISI-4315: purpose-keyed sandbox scheduling priority.
+       On k8squad-test a pinned warm target (5 × 500m) saturated the 2×4-core
+       workers; warm pods and Run cold boots shared the default priority, so a
+       freed 500m slot went to the OLDEST queued pod — a warm pod — and
+       starved an actual project Run. Two PriorityClasses fix the queue:
+
+         • ksquad-sandbox-warm — idle pool warmth. LOW priority: it loses
+           scheduling races to everything, and under node pressure it is the
+           first to be evicted (idle warmth is the disposable workload).
+         • ksquad-sandbox-run — a Run's dedicated cold boot. ABOVE warm so the
+           scheduler admits the waiting Run before any queued warmth.
+
+       BOTH carry preemptionPolicy: Never. A claimed warm pod keeps its warm
+       priority for its whole life (pod priority is immutable), so a
+       preempt-capable run class would let a pending cold boot kill a
+       Run-driving sandbox mid-run — trading one Run's death for another's
+       birth. Never-preempt keeps the priority split purely about QUEUE
+       ORDER; the capacity handoff is the controller's (it sheds only IDLE
+       Ready warmth, provably unclaimed).
+
+       Each class is guarded on its own NAME being non-empty (ISI-4317
+       review fix 4): an empty name would render an invalid PriorityClass
+       (metadata.name is required), and the matching env passthrough in
+       operator.yaml already omits empty names — so an explicitly blanked
+       name cleanly disables that class instead of breaking the release. */}}
+{{- if and .Values.operator.warmPool .Values.operator.warmPool.warmPriorityClass }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.operator.warmPool.warmPriorityClass }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+value: {{ .Values.operator.warmPool.warmPriorityValue }}
+globalDefault: false
+description: "K8squad idle warm-pool sandboxes (ISI-4315): lowest sandbox priority, never preempts."
+preemptionPolicy: Never
+{{- end }}
+{{- if and .Values.operator.warmPool .Values.operator.warmPool.runPriorityClass }}
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.operator.warmPool.runPriorityClass }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: operator
+value: {{ .Values.operator.warmPool.runPriorityValue }}
+globalDefault: false
+description: "K8squad Run-dedicated sandbox cold boots (ISI-4315): outranks idle warmth in the queue, never preempts (claimed sandboxes must not be killed mid-run)."
+preemptionPolicy: Never
+{{- end }}
