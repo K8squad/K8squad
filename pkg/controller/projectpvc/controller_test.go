@@ -18,6 +18,7 @@ package projectpvc
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,6 +34,8 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/workspace"
 )
+
+const teamSandboxNS = "ksquad-team-squad-a-ab12cd34"
 
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -57,16 +60,30 @@ func newProject(name string, spec *api.PVCSpec) *api.Project {
 	return p
 }
 
+// newTeam builds a Team in squad-a consuming the named projects; sandboxNS
+// is the team reconciler's resolved status.namespace ("" = not yet
+// resolved).
+func newTeam(name string, sandboxNS string, projects ...string) *api.Team {
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "squad-a", UID: types.UID("uid-" + name)},
+	}
+	for _, p := range projects {
+		team.Spec.Projects = append(team.Spec.Projects, api.ObjectRef{Name: p})
+	}
+	team.Status.Namespace = sandboxNS
+	return team
+}
+
 func newReconciler(t *testing.T, class string, objs ...client.Object) (*Reconciler, client.Client) {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(objs...).WithStatusSubresource(&api.Project{}).Build()
+		WithObjects(objs...).WithStatusSubresource(&api.Project{}, &api.Team{}).Build()
 	r := NewReconciler(cl)
 	r.storageClass = class
 	return r, cl
 }
 
-func reconcile(t *testing.T, r *Reconciler, name string) {
+func reconcileProject(t *testing.T, r *Reconciler, name string) {
 	t.Helper()
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "squad-a", Name: name},
@@ -75,11 +92,11 @@ func reconcile(t *testing.T, r *Reconciler, name string) {
 	}
 }
 
-func getPVC(t *testing.T, cl client.Client, name string) *corev1.PersistentVolumeClaim {
+func getPVC(t *testing.T, cl client.Client, ns, name string) *corev1.PersistentVolumeClaim {
 	t.Helper()
 	pvc := &corev1.PersistentVolumeClaim{}
-	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "squad-a", Name: name}, pvc); err != nil {
-		t.Fatalf("get PVC %s: %v", name, err)
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: name}, pvc); err != nil {
+		t.Fatalf("get PVC %s/%s: %v", ns, name, err)
 	}
 	return pvc
 }
@@ -93,20 +110,23 @@ func workspaceCondition(t *testing.T, cl client.Client, project string) *metav1.
 	return apimeta.FindStatusCondition(p.Status.Conditions, ConditionWorkspaceReady)
 }
 
-// TestProvisionCreatesClaimFromSpec (ISI-4127 AC1): a Project with
-// spec.workspacePVC gets exactly one claim, sized/classed/moded from the
-// spec, owner-referenced to the Project, with WorkspaceReady=True.
-func TestProvisionCreatesClaimFromSpec(t *testing.T) {
+// TestProvisionCreatesClaimInTeamNamespace (ISI-4127 AC1 as fixed by
+// ISI-4302): a Project with spec.workspacePVC consumed by a Team gets
+// exactly one claim in the TEAM'S SANDBOX NAMESPACE — the only namespace
+// a sandbox-pod mount can resolve in — sized/classed/moded from the spec,
+// identified by labels + created-by annotation (no cross-ns owner ref),
+// with WorkspaceReady=True naming the namespace.
+func TestProvisionCreatesClaimInTeamNamespace(t *testing.T) {
 	spec := &api.PVCSpec{
 		Size:        resource.MustParse("25Gi"),
 		Class:       "longhorn",
 		AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
 	}
-	r, cl := newReconciler(t, "", newProject("widget", spec))
+	r, cl := newReconciler(t, "", newProject("widget", spec), newTeam("alpha", teamSandboxNS, "widget"))
 
-	reconcile(t, r, "widget")
+	reconcileProject(t, r, "widget")
 
-	pvc := getPVC(t, cl, workspace.ProjectPVCName("widget"))
+	pvc := getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got != resource.MustParse("25Gi") {
 		t.Fatalf("size = %s, want 25Gi", got.String())
 	}
@@ -119,28 +139,43 @@ func TestProvisionCreatesClaimFromSpec(t *testing.T) {
 	if pvc.Labels[workspace.LabelProject] != "widget" {
 		t.Fatalf("project label = %q", pvc.Labels[workspace.LabelProject])
 	}
-	if len(pvc.OwnerReferences) != 1 || pvc.OwnerReferences[0].Kind != "Project" ||
-		pvc.OwnerReferences[0].Name != "widget" {
-		t.Fatalf("owner refs = %+v", pvc.OwnerReferences)
+	if pvc.Annotations["k8squad.io/created-by"] != createdByProjectPVC {
+		t.Fatalf("created-by annotation = %q", pvc.Annotations["k8squad.io/created-by"])
+	}
+	if len(pvc.OwnerReferences) != 0 {
+		t.Fatalf("team-ns claim must carry no owner ref (cross-ns refs are invalid), got %+v", pvc.OwnerReferences)
+	}
+	// The Project's own namespace stays claim-free (ISI-4302: a claim
+	// there can never bind or be mounted).
+	var ownNS corev1.PersistentVolumeClaimList
+	if err := cl.List(context.Background(), &ownNS, client.InNamespace("squad-a")); err != nil {
+		t.Fatalf("list squad-a PVCs: %v", err)
+	}
+	if len(ownNS.Items) != 0 {
+		t.Fatalf("expected no PVC in the project namespace, got %d", len(ownNS.Items))
 	}
 
 	cond := workspaceCondition(t, cl, "widget")
 	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != reasonProvisioned {
 		t.Fatalf("condition = %+v", cond)
 	}
+	if !strings.Contains(cond.Message, teamSandboxNS) {
+		t.Fatalf("condition message %q must name the team namespace", cond.Message)
+	}
 }
 
 // TestClassResolutionChain: spec.class wins; the operator env fallback
 // applies when the spec leaves class empty; with NEITHER, the reconcile
 // fails closed — no claim, WorkspaceReady=False/StorageClassUnresolved
-// (the PVCSpec anti-cluster-default contract).
+// (the PVCSpec anti-cluster-default contract; evaluated before team
+// resolution, so no Team is needed for the fail-closed leg).
 func TestClassResolutionChain(t *testing.T) {
 	spec := &api.PVCSpec{Size: resource.MustParse("10Gi")}
 
-	// Env fallback resolves.
-	r, cl := newReconciler(t, "local-path", newProject("envproj", spec))
-	reconcile(t, r, "envproj")
-	pvc := getPVC(t, cl, workspace.ProjectPVCName("envproj"))
+	// Env fallback resolves into the team namespace.
+	r, cl := newReconciler(t, "local-path", newProject("envproj", spec), newTeam("alpha", teamSandboxNS, "envproj"))
+	reconcileProject(t, r, "envproj")
+	pvc := getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("envproj"))
 	if *pvc.Spec.StorageClassName != "local-path" {
 		t.Fatalf("class = %q, want env fallback local-path", *pvc.Spec.StorageClassName)
 	}
@@ -151,7 +186,7 @@ func TestClassResolutionChain(t *testing.T) {
 
 	// Neither spec nor env: fail closed.
 	r, cl = newReconciler(t, "", newProject("noclass", spec))
-	reconcile(t, r, "noclass")
+	reconcileProject(t, r, "noclass")
 	var pvcs corev1.PersistentVolumeClaimList
 	if err := cl.List(context.Background(), &pvcs); err != nil {
 		t.Fatalf("list PVCs: %v", err)
@@ -165,14 +200,96 @@ func TestClassResolutionChain(t *testing.T) {
 	}
 }
 
+// TestNoConsumingTeam (ISI-4302): a workspace-backed Project no Team lists
+// gets NO claim anywhere and an actionable WorkspaceReady=False/
+// NoConsumingTeam — not a silently-Pending claim in a namespace nothing
+// mounts from.
+func TestNoConsumingTeam(t *testing.T) {
+	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
+	r, cl := newReconciler(t, "", newProject("orphan", spec))
+
+	reconcileProject(t, r, "orphan")
+
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := cl.List(context.Background(), &pvcs); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 0 {
+		t.Fatalf("expected no PVCs without a consuming Team, got %d", len(pvcs.Items))
+	}
+	cond := workspaceCondition(t, cl, "orphan")
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonNoConsumingTeam {
+		t.Fatalf("condition = %+v", cond)
+	}
+}
+
+// TestTeamNamespacePendingThenProvisioned: a referencing Team without a
+// resolved status.namespace reports TeamNamespacePending and creates
+// nothing; once the team reconciler records the namespace (requeueing this
+// Project through the Team watch), the claim lands there.
+func TestTeamNamespacePendingThenProvisioned(t *testing.T) {
+	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
+	team := newTeam("alpha", "", "widget")
+	r, cl := newReconciler(t, "", newProject("widget", spec), team)
+
+	reconcileProject(t, r, "widget")
+	cond := workspaceCondition(t, cl, "widget")
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonTeamNamespacePending {
+		t.Fatalf("condition = %+v", cond)
+	}
+	var pvcs corev1.PersistentVolumeClaimList
+	if err := cl.List(context.Background(), &pvcs); err != nil {
+		t.Fatalf("list PVCs: %v", err)
+	}
+	if len(pvcs.Items) != 0 {
+		t.Fatalf("expected no PVCs while the team ns is unresolved, got %d", len(pvcs.Items))
+	}
+
+	// The team reconciler resolves status.namespace; the Team watch
+	// requeues the Project and the claim lands in the sandbox namespace.
+	team.Status.Namespace = teamSandboxNS
+	if err := cl.Status().Update(context.Background(), team); err != nil {
+		t.Fatalf("update team status: %v", err)
+	}
+	reconcileProject(t, r, "widget")
+	getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
+	cond = workspaceCondition(t, cl, "widget")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition after ns resolution = %+v", cond)
+	}
+}
+
+// TestMultipleTeamsGetClaimsEach: two Teams (one referencing via an
+// explicit cross-namespace ref) each get a claim in their own sandbox
+// namespace; per-Project data is shared within a team, and cross-team
+// isolation follows namespace isolation.
+func TestMultipleTeamsGetClaimsEach(t *testing.T) {
+	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
+	teamA := newTeam("alpha", teamSandboxNS, "widget")
+	teamB := newTeam("beta", "ksquad-team-squad-b-99aa88bb", "other")
+	teamB.Spec.Projects[0] = api.ObjectRef{Name: "widget", Namespace: "squad-a"}
+
+	r, cl := newReconciler(t, "", newProject("widget", spec), teamA, teamB)
+
+	reconcileProject(t, r, "widget")
+
+	getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
+	getPVC(t, cl, "ksquad-team-squad-b-99aa88bb", workspace.ProjectPVCName("widget"))
+
+	cond := workspaceCondition(t, cl, "widget")
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("condition = %+v", cond)
+	}
+}
+
 // TestReconcileIsIdempotent: a second pass neither duplicates the claim nor
 // rewrites an unchanged status.
 func TestReconcileIsIdempotent(t *testing.T) {
 	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
-	r, cl := newReconciler(t, "", newProject("widget", spec))
+	r, cl := newReconciler(t, "", newProject("widget", spec), newTeam("alpha", teamSandboxNS, "widget"))
 
-	reconcile(t, r, "widget")
-	reconcile(t, r, "widget")
+	reconcileProject(t, r, "widget")
+	reconcileProject(t, r, "widget")
 
 	var pvcs corev1.PersistentVolumeClaimList
 	if err := cl.List(context.Background(), &pvcs); err != nil {
@@ -188,8 +305,8 @@ func TestReconcileIsIdempotent(t *testing.T) {
 // access-mode change is reported as SpecConflict and never mutated.
 func TestConvergeExpandsOnly(t *testing.T) {
 	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
-	r, cl := newReconciler(t, "", newProject("widget", spec))
-	reconcile(t, r, "widget")
+	r, cl := newReconciler(t, "", newProject("widget", spec), newTeam("alpha", teamSandboxNS, "widget"))
+	reconcileProject(t, r, "widget")
 
 	// The reconcile's status patch bumps resourceVersion, so every spec edit
 	// must re-fetch first.
@@ -207,24 +324,24 @@ func TestConvergeExpandsOnly(t *testing.T) {
 
 	// Grow: applied.
 	mutate(func(p *api.Project) { p.Spec.WorkspacePVC.Size = resource.MustParse("20Gi") })
-	reconcile(t, r, "widget")
-	pvc := getPVC(t, cl, workspace.ProjectPVCName("widget"))
+	reconcileProject(t, r, "widget")
+	pvc := getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got != resource.MustParse("20Gi") {
 		t.Fatalf("after grow size = %s, want 20Gi", got.String())
 	}
 
 	// Shrink: clamped.
 	mutate(func(p *api.Project) { p.Spec.WorkspacePVC.Size = resource.MustParse("5Gi") })
-	reconcile(t, r, "widget")
-	pvc = getPVC(t, cl, workspace.ProjectPVCName("widget"))
+	reconcileProject(t, r, "widget")
+	pvc = getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got != resource.MustParse("20Gi") {
 		t.Fatalf("after shrink size = %s, want clamped 20Gi", got.String())
 	}
 
 	// Class change: conflict reported, claim untouched.
 	mutate(func(p *api.Project) { p.Spec.WorkspacePVC.Class = "ceph" })
-	reconcile(t, r, "widget")
-	pvc = getPVC(t, cl, workspace.ProjectPVCName("widget"))
+	reconcileProject(t, r, "widget")
+	pvc = getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
 	if *pvc.Spec.StorageClassName != "longhorn" {
 		t.Fatalf("class mutated to %q; immutable field must stay longhorn", *pvc.Spec.StorageClassName)
 	}
@@ -234,15 +351,16 @@ func TestConvergeExpandsOnly(t *testing.T) {
 	}
 }
 
-// TestForeignClaimIsNeverAdopted: a same-named claim not owned by the
-// Project is reported (NameConflict) and left byte-identical — data safety
-// beats name convergence.
+// TestForeignClaimIsNeverAdopted: a same-named claim in the team namespace
+// that is not ours (no project label/annotation identity) is reported
+// (NameConflict) and left byte-identical — data safety beats name
+// convergence.
 func TestForeignClaimIsNeverAdopted(t *testing.T) {
 	spec := &api.PVCSpec{Size: resource.MustParse("10Gi"), Class: "longhorn"}
 	foreign := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workspace.ProjectPVCName("widget"),
-			Namespace: "squad-a",
+			Namespace: teamSandboxNS,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
@@ -251,11 +369,11 @@ func TestForeignClaimIsNeverAdopted(t *testing.T) {
 			},
 		},
 	}
-	r, cl := newReconciler(t, "", newProject("widget", spec), foreign)
+	r, cl := newReconciler(t, "", newProject("widget", spec), newTeam("alpha", teamSandboxNS, "widget"), foreign)
 
-	reconcile(t, r, "widget")
+	reconcileProject(t, r, "widget")
 
-	pvc := getPVC(t, cl, workspace.ProjectPVCName("widget"))
+	pvc := getPVC(t, cl, teamSandboxNS, workspace.ProjectPVCName("widget"))
 	if got := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; got != resource.MustParse("1Gi") {
 		t.Fatalf("foreign claim mutated to %s", got.String())
 	}
@@ -267,10 +385,10 @@ func TestForeignClaimIsNeverAdopted(t *testing.T) {
 
 // TestNoWorkspaceSpecIsNoOp: a Project without spec.workspacePVC gets no
 // claim and no condition — and spec removal never deletes an existing claim
-// (data safety: teardown follows Project deletion via the owner ref only).
+// (data safety: this loop never destroys claims).
 func TestNoWorkspaceSpecIsNoOp(t *testing.T) {
-	r, cl := newReconciler(t, "local-path", newProject("bare", nil))
-	reconcile(t, r, "bare")
+	r, cl := newReconciler(t, "local-path", newProject("bare", nil), newTeam("alpha", teamSandboxNS, "bare"))
+	reconcileProject(t, r, "bare")
 
 	var pvcs corev1.PersistentVolumeClaimList
 	if err := cl.List(context.Background(), &pvcs); err != nil {
