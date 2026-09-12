@@ -376,11 +376,20 @@ func sandboxEnv(ctx context.Context, toolUsageEnabled bool) []corev1.EnvVar {
 // TearDown deletes the sandbox pod with the given sandboxID (§9.3
 // teardown-and-replace: the pod is the disposable unit; a sandbox is NEVER
 // reused across Runs). Foreground deletion is used for graceful termination.
-func (k *KubeProvisioner) TearDown(ctx context.Context, sandboxID string) error {
+// The pod is deleted in the KEY's namespace — the same namespace Boot
+// created it in (ISI-4289: this hardcoded `default`, so every team-namespace
+// warm pod outlived its teardown and leaked as a permanent CPU-request
+// orphan); keys without a namespace (pre-Epic-C callers) keep the provisioner
+// default.
+func (k *KubeProvisioner) TearDown(ctx context.Context, key PoolKey, sandboxID string) error {
+	namespace := key.Namespace
+	if namespace == "" {
+		namespace = sandboxNamespace
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxID,
-			Namespace: sandboxNamespace,
+			Namespace: namespace,
 		},
 	}
 

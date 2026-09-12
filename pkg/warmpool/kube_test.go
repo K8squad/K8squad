@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -137,6 +138,45 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 		if e.Name == "TRACEPARENT" || e.Name == "TRACESTATE" {
 			t.Fatalf("bare boot stamped %s without a traced context", e.Name)
 		}
+	}
+}
+
+// TestKubeProvisionerTearDownUsesKeyNamespace (ISI-4289): Boot creates the
+// sandbox pod in the key's team namespace, so TearDown must delete it THERE —
+// the adapter hardcoded `default`, and every team-namespace warm pod outlived
+// its own teardown (the delete hit a non-existent pod in `default`, the pool
+// parked the sandbox as draining, and the real pod leaked as a permanent
+// CPU-request orphan). Legacy keys without a namespace keep the default.
+func TestKubeProvisionerTearDownUsesKeyNamespace(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "")
+
+	ctx := context.Background()
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
+	if err := p.Boot(ctx, key, "sbx-kill"); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if err := p.TearDown(ctx, key, "sbx-kill"); err != nil {
+		t.Fatalf("teardown in team namespace: %v", err)
+	}
+	if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-kill"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("team-namespace pod after teardown: want NotFound, got %v", err)
+	}
+
+	// Legacy key (no namespace): teardown keeps the provisioner default.
+	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
+	if err := p.Boot(ctx, legacy, "sbx-legacy"); err != nil {
+		t.Fatalf("boot legacy: %v", err)
+	}
+	if err := p.TearDown(ctx, legacy, "sbx-legacy"); err != nil {
+		t.Fatalf("teardown legacy: %v", err)
+	}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-legacy"), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("default-namespace pod after teardown: want NotFound, got %v", err)
 	}
 }
 

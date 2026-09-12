@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/warmpool"
 	"github.com/K8squad/K8squad/pkg/workspace"
@@ -449,15 +450,28 @@ func (r *ProdRunner) Effects(ctx context.Context, run *api.Run) (machineEffects,
 // and capability-hash dimensions are the Epic C tenancy/pooling fix
 // (ADR-044 steps 7 and 9): warm pods boot in the Run's team namespace and
 // identical capability envelopes share pool stock.
+//
+// ISI-4289: the capability hash is NORMALIZED for the bare posture — a
+// stamped manifest that grants nothing (the assembler stamps pre-dispatch,
+// so every no-capability Run carries the empty envelope's sha256) maps to
+// the empty hash, keeping bare Runs on the bare warm stock the operator
+// wires. Classification also FAILS CLOSED on an unresolvable Run (list
+// error, or the Run is gone): the old never-fail defaults carried
+// Namespace:"" and the provisioner booted orphan pods into the `default`
+// namespace — a tenancy violation per ADR-044. A failed classify fails the
+// bind loudly instead; the coord marker is not yet written, so a re-drive
+// retries cleanly.
 func SpecClassifier(reader client.Reader, imgs RuntimeImages, defaultRuntimeClass string) warmpool.RunClassifier {
 	return func(ctx context.Context, runID string) (warmpool.PoolKey, warmpool.RunClass, error) {
 		key := warmpool.PoolKey{RuntimeClass: defaultRuntimeClass}
 		class := warmpool.ClassInteractive
 		// The binder hands the driver's runID (the Run CRD uid); resolve the
-		// spec read-side. A Run deleted mid-bind classifies on defaults.
+		// spec read-side. A Run that cannot be resolved fails the classify
+		// (fail closed — never boot a sandbox into `default` for a Run whose
+		// namespace is unknown; ISI-4289).
 		var runs api.RunList
 		if err := reader.List(ctx, &runs); err != nil {
-			return key, class, nil // defaults: classify never blocks a bind
+			return key, class, fmt.Errorf("rundrive.SpecClassifier: list runs: %w", err)
 		}
 		for i := range runs.Items {
 			if string(runs.Items[i].UID) != runID {
@@ -470,7 +484,7 @@ func SpecClassifier(reader client.Reader, imgs RuntimeImages, defaultRuntimeClas
 			if runs.Items[i].Spec.SandboxPolicy.Class == "batch" {
 				class = warmpool.ClassBatch
 			}
-			if m := runs.Items[i].Status.CapabilityManifest; m != nil {
+			if m := runs.Items[i].Status.CapabilityManifest; m != nil && !capability.IsBareEnvelope(m) {
 				key.CapabilityHash = m.CapabilityHash
 			}
 			key.ProjectPVC = projectWorkspacePVC(ctx, reader, &runs.Items[i])
@@ -480,7 +494,7 @@ func SpecClassifier(reader client.Reader, imgs RuntimeImages, defaultRuntimeClas
 			}
 			return key, class, nil
 		}
-		return key, class, nil
+		return key, class, fmt.Errorf("rundrive.SpecClassifier: run %s not found (deleted mid-bind?) — refusing to boot a sandbox with unknown tenancy", runID)
 	}
 }
 

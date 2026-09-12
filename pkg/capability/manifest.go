@@ -77,6 +77,26 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills [
 	return m
 }
 
+// IsBareEnvelope reports whether m is the BARE capability posture: no
+// toolchains, no MCP endpoints and no skills — the envelope the assembler
+// stamps pre-dispatch even for a no-capability Run (BuildManifest(nil, nil,
+// nil) yields exactly this shape, hash and all). The warm-pool classifier
+// normalizes such envelopes to the empty pool-key hash so bare Runs share
+// the bare warm stock (ISI-4289): without the normalization every Run
+// carries the empty envelope's sha256 ("44136fa3…") while the wired warm
+// key stays hash-less, and no bind ever warm-hits.
+//
+// The predicate is STRUCTURAL (lists empty), not hash-equality: any envelope
+// that grants nothing is the bare posture regardless of which hash was
+// stamped on it, and handing bare stock to a Run with zero capabilities is
+// always correct (there is nothing capability-specific to attach).
+func IsBareEnvelope(m *api.CapabilityManifest) bool {
+	if m == nil {
+		return true
+	}
+	return len(m.Toolchains) == 0 && len(m.MCPEndpoints) == 0 && len(m.Skills) == 0
+}
+
 // HashManifest computes the manifest's canonical-JSON sha256: the JSON
 // encoding of the struct with the hash itself elided (deterministic —
 // struct field order is fixed, lists are atomic, resolver/endpoint lists

@@ -31,9 +31,10 @@ import (
 // TestSpecClassifierResolvesRunSpec: the warm-pool key/class come from the
 // Run CRD's spec.sandboxPolicy, with the story 1.3 admission defaults applied
 // read-side (gvisor/interactive) — including for Runs whose spec predates the
-// defaulting or that no longer resolve (deleted mid-bind: defaults, never an
-// error, so classification never blocks a bind). M1.2: the image dimension
-// resolves Run → Agent → AgentRuntime type through RuntimeImages.
+// defaulting. M1.2: the image dimension resolves Run → Agent → AgentRuntime
+// type through RuntimeImages. ISI-4289: a Run that cannot be resolved fails
+// the classify (fail closed — the old never-fail defaults booted orphan pods
+// into the `default` namespace, a tenancy violation per ADR-044).
 func TestSpecClassifierResolvesRunSpec(t *testing.T) {
 	specRun := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
 	specRun.Name = "spec-run"
@@ -68,13 +69,10 @@ func TestSpecClassifierResolvesRunSpec(t *testing.T) {
 		t.Fatalf("default run classified (%q,%q), want (gvisor,interactive)", key.RuntimeClass, class)
 	}
 
-	// Unknown runID (deleted mid-bind): defaults, no error.
-	key, class, err = cls(ctx, "33333333-3333-3333-3333-333333333333")
-	if err != nil {
-		t.Fatalf("classify unknown run: %v", err)
-	}
-	if key.RuntimeClass != "gvisor" || class != warmpool.ClassInteractive {
-		t.Fatalf("unknown run classified (%q,%q), want defaults", key.RuntimeClass, class)
+	// Unknown runID (deleted mid-bind): FAIL CLOSED — an error, never a
+	// default key that boots an orphan into `default` (ISI-4289).
+	if _, _, err := cls(ctx, "33333333-3333-3333-3333-333333333333"); err == nil {
+		t.Fatalf("classify unknown run: want fail-closed error, got none")
 	}
 }
 
