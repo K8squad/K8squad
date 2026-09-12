@@ -174,6 +174,17 @@ FROM cli-${RUNTIME} AS cli
 # the loader pair and any libintl-era extras — is copied beside it under /lib, so an
 # alpine bump cannot silently drop a lib. Identical files may also arrive via the
 # cli-opencode cli-lib layer; overlapping COPYs are harmless).
+#
+# Lib staging MUST dedup + dereference (CI follow-up to the first cut, which failed
+# Build Images on all five shim legs): musl ldd lists the loader path TWICE (as the
+# interpreter line and again as the resolved libc.musl soname line), and busybox cp
+# (1.37) exits 123 "can't create link" when the same source path appears twice in
+# one invocation — so the libs must be copied one per cp call after `sort -u`.
+# `cp -aL` additionally dereferences soname symlinks (libreadline.so.8 → .so.8.2,
+# libncursesw.so.6 → .so.6.5): ldd only names the SONAME links, and copying the
+# links verbatim would leave them dangling in the distroless final image (the real
+# targets are not DT_NEEDED, so they never appear in ldd output) and bash would
+# fail to load. Verified against a busybox+chroot replica of the final image.
 FROM alpine:3.21 AS shell
 RUN apk add --no-cache bash busybox-static
 RUN set -eux; \
@@ -185,8 +196,8 @@ RUN set -eux; \
     cp -a /bin/bash /shell-bin/bash; \
     /shell-bin/bash --version | grep -Fq 'GNU bash'; \
     /shell-bin/sh -c 'echo sh-ok' | grep -Fq sh-ok; \
-    ldd /bin/bash | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' \
-      | xargs -r cp -a -t /shell-lib/lib/; \
+    ldd /bin/bash | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' | sort -u \
+      | while read -r lib; do cp -aL "$lib" "/shell-lib/lib/$(basename "$lib")"; done; \
     test -f /shell-lib/lib/ld-musl-*.so.1
 
 # ---- Final image -------------------------------------------------------------------------
