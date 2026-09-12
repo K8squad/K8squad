@@ -558,6 +558,14 @@ func main() {
 			DB:     db,
 			Client: mgr.GetClient(),
 			Mapper: mapper,
+			// ISI-4235 (M1.6 "progress visible"): the inner run-event sink
+			// the TelemetrySink forwards to. Without it every message/tool
+			// progress event the shim streams died in DiscardSink — the
+			// ticket thread accumulated zero coord.comment rows. The mirror
+			// appends F16-trust-tagged comments on the Run's work item
+			// WHILE the run executes; its failures are swallowed by design
+			// (a sink error would cancel the live task).
+			RunEvents: rundrive.NewProgressMirror(db),
 			ShimBin: func() string {
 				if v := os.Getenv("KSQUAD_SHIM_BIN"); v != "" {
 					return v

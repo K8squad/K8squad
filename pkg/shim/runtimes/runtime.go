@@ -110,6 +110,22 @@ type ExecSpec struct {
 	// WorkDirFiles are written into WorkDir before launch (rendered native
 	// MCP configs — credentials referenced as env names, never literal).
 	WorkDirFiles []WorkDirFile
+	// SettleLine is the optional runtime-advertised terminal-output
+	// detector (ISI-4224): it reports whether one stdout line is the
+	// runtime's "the session's work is done" event (e.g. opencode's
+	// step_finish JSON). When set, the OS runner no longer treats process
+	// exit / stdout EOF as the ONLY completion signal: once a terminal line
+	// was seen and the stream then stays quiet for the runner's settle
+	// window (a continuing session would emit further lines first), the
+	// runner force-terminates the process and settles the task completed.
+	// This exists because a pinned CLI can leave non-daemon handles
+	// (inotify watchers, remote fetch retries) holding its event loop open
+	// after the work finished, so stdout never EOFs and the Run never
+	// settles (ISI-4224: sandbox dispatch stuck in Claiming for ~1h until
+	// the sweeper fired). nil = legacy behavior: completion is process
+	// exit only. The func must be pure — it is called from the runner's
+	// scanner goroutine.
+	SettleLine func(line string) bool
 }
 
 // Progress is one runtime-stream progress event handed from the runner to the
