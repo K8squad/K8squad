@@ -237,6 +237,14 @@ func TestRunWorkItemRefIsOpaqueString(t *testing.T) {
 		// declarative data, never embedded coordination rows or Secret
 		// material (ADR-001/AC7, ADR-045 D5).
 		reflect.TypeOf(ToolCredential{}): true,
+		// LLMInteraction/TokenUsage/InteractionError (ISI-4238) are the
+		// status-only LLM observability summary: bounded DIGESTS, counters,
+		// enum codes — projected from the §4 event stream by the projector,
+		// never embedded coordination rows, prompts or Secret material
+		// (ADR-001/AC7).
+		reflect.TypeOf(LLMInteraction{}):   true,
+		reflect.TypeOf(TokenUsage{}):       true,
+		reflect.TypeOf(InteractionError{}): true,
 	}
 	walk := func(structType reflect.Type) {
 		for i := 0; i < structType.NumField(); i++ {

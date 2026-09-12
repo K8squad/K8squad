@@ -89,6 +89,13 @@ type OperatorDispatchConfig struct {
 	// RunEvents is the inner run-event sink the TelemetrySink decorates
 	// (nil = discard: v1 maps telemetry first, forwards verbatim second).
 	RunEvents a2a.EventSink
+	// LLMStatus, when set, is chained AHEAD of RunEvents as the
+	// TelemetrySink's inner sink (ISI-4238): it projects EventUsage /
+	// EventStatus.TraceID onto Run.Status (llmInteractions,
+	// totalTokenUsage, traceID) before any other consumer sees the event.
+	// It swallows its own failures, so telemetry/run-event forwarding is
+	// unaffected. Nil = projection off (tests, ledger-only lanes).
+	LLMStatus *RunLLMStatusWriter
 	// ExtraEnv is appended verbatim to the shim environment — a
 	// diagnostics/test hook (e.g. proxy vars, the Go helper-process marker).
 	// Never secrets: the §7.3 credential has its own mount seam.
@@ -752,10 +759,34 @@ func (d *operatorDispatch) materializeSkills(ctx context.Context, run *api.Run) 
 // sinkFor wraps the run-event sink with the operator's mapper — the exact
 // TelemetrySink wiring the ISI-3348 review demanded as the production caller:
 // map first (ksquad_* series onto the operator registry), forward verbatim
-// second, telemetry failures never abort the dispatch.
+// second, telemetry failures never abort the dispatch. The ISI-4238 LLM
+// status projection (when configured) chains as the innermost sink: the CR
+// projection sees the raw event before any other inner consumer, and its
+// own failures are internal (never abort the dispatch).
 func (d *operatorDispatch) sinkFor(runID string) a2a.EventSink {
-	return a2a.NewTelemetrySink(d.cfg.RunEvents, d.cfg.Mapper, toolusage.Labels{
+	inner := d.cfg.RunEvents
+	if d.cfg.LLMStatus != nil {
+		inner = chainSinks(d.cfg.LLMStatus, inner)
+	}
+	return a2a.NewTelemetrySink(inner, d.cfg.Mapper, toolusage.Labels{
 		RunID: cleanRunID(runID),
 		Agent: d.agentName(context.Background(), cleanRunID(runID)),
+	})
+}
+
+// chainSinks fans one event out to a then b (a first: the projection must
+// observe the raw event even when the downstream sink is the discard nil).
+// Errors: a's failures are already internal (RunLLMStatusWriter never
+// errors); b's error wins so the sink contract stays honest for the real
+// inner sink.
+func chainSinks(a, b a2a.EventSink) a2a.EventSink {
+	return a2a.SinkFunc(func(ctx context.Context, ev wire.Event) error {
+		if err := a.Event(ctx, ev); err != nil {
+			return err
+		}
+		if b == nil {
+			return nil
+		}
+		return b.Event(ctx, ev)
 	})
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Identity is the Agent identity block the shim stamps onto every Agent Card
@@ -165,6 +166,13 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		cancel:   cancel,
 		now:      e.now,
 	}
+	// ISI-4238: a valid trace context on the submit ctx (the W3C carrier
+	// the dispatcher injected — extracted by `shim run`/supervisor before
+	// this call) becomes the telemetry parent, so the run's spans join the
+	// Run's distributed trace rather than forking an orphan root.
+	if trace.SpanContextFromContext(ctx).IsValid() {
+		tk.traceCtx = ctx
+	}
 	e.tasks[t.A2ATaskID] = tk
 	e.mu.Unlock()
 
@@ -181,8 +189,32 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 // sequenced SSE log and settling on a terminal state exactly once. Tool and
 // skill activity is additionally mapped onto the Epic D telemetry spine
 // (when attached) — in the same funnel, so the wire events and the spans
-// agree by construction.
+// agree by construction. ISI-4238: the funnel also owns the run's root
+// trace (run.start … run.end) and maps EventUsage onto llm.call spans +
+// token counters, so a run is debuggable end-to-end instead of being a
+// black box between dispatch and exit.
 func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
+	// ISI-4238: telemetry parents from the submit-side trace context when
+	// one rode the W3C carrier (joining the Run's distributed trace), else
+	// from this ctx; the RUNNER below keeps the cancelable ctx either way —
+	// the trace context is for spans only, never cancellation.
+	telCtx := ctx
+	if tk.traceCtx != nil {
+		telCtx = tk.traceCtx
+	}
+
+	// ISI-4238: open the run's root trace BEFORE the first status event so
+	// every span emitted below joins it AND the working event already
+	// carries the trace id (StatusPayload.TraceID → Run.Status.TraceID
+	// live, not only post-terminal).
+	if e.telemetry != nil {
+		var runSpan trace.Span
+		telCtx, runSpan = e.telemetry.RunStart(telCtx, e.labels(), tk.id)
+		if sc := runSpan.SpanContext(); sc.HasTraceID() {
+			tk.setTraceID(sc.TraceID().String())
+		}
+	}
+
 	tk.setState(a2a.TaskWorking, "")
 
 	// Epic D (plan §2.4): each granted skill entering the session is a
@@ -194,7 +226,7 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	// cannot know (review ISI-3348, non-blocking note).
 	if e.telemetry != nil {
 		for _, s := range e.cfg.Skills {
-			e.telemetry.SkillEvent(ctx, e.labels(), a2a.SkillLoadPayload{
+			e.telemetry.SkillEvent(telCtx, e.labels(), a2a.SkillLoadPayload{
 				Name:   s,
 				SHA256: e.cfg.SkillSHAs[s],
 			})
@@ -203,33 +235,59 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 
 	outcome, err := e.runner.Run(ctx, spec, func(p Progress) {
 		hashToolArgs(p)
+		// ISI-4238: usage payloads without a model (runtimes that report
+		// tokens but not which model served them) are attributed to the
+		// launch model — the engine's resolved truth — BEFORE the event
+		// leaves the process, so the wire event and the llm.call span
+		// carry the same attribution.
+		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Model == "" && e.modelID() != "" {
+			p.Usage.Model = e.modelID()
+		}
 		tk.emitProgress(p)
 		if e.telemetry != nil {
 			switch p.Kind {
 			case a2a.EventTool:
 				if p.Tool != nil {
-					e.telemetry.ToolEvent(ctx, e.labels(), tk.id, *p.Tool)
+					e.telemetry.ToolEvent(telCtx, e.labels(), tk.id, *p.Tool)
 				}
 			case a2a.EventSkillLoad:
 				if p.SkillLoad != nil {
-					e.telemetry.SkillEvent(ctx, e.labels(), *p.SkillLoad)
+					e.telemetry.SkillEvent(telCtx, e.labels(), *p.SkillLoad)
+				}
+			case a2a.EventUsage:
+				if p.Usage != nil {
+					e.telemetry.UsageEvent(telCtx, e.labels(), tk.id, *p.Usage)
 				}
 			}
 		}
 	})
 
+	var terminalState a2a.TaskState
+	var terminalReason string
 	switch {
 	case ctx.Err() != nil:
 		// Canceled via CancelTask; the cancel path owns the terminal state.
-		tk.terminate(a2a.TaskCanceled, "canceled")
+		terminalState, terminalReason = a2a.TaskCanceled, "canceled"
 	case err != nil:
-		tk.terminate(a2a.TaskFailed, err.Error())
+		terminalState, terminalReason = a2a.TaskFailed, err.Error()
 	default:
-		tk.terminate(outcome.State, outcome.Reason)
+		terminalState, terminalReason = outcome.State, outcome.Reason
 	}
+	tk.terminate(terminalState, terminalReason)
 	if e.telemetry != nil {
-		e.telemetry.FinishTask(ctx, tk.id)
+		e.telemetry.RunEnd(telCtx, tk.id, string(terminalState), terminalReason)
+		e.telemetry.FinishTask(telCtx, tk.id)
 	}
+}
+
+// modelID resolves the model this engine serves (launch config override
+// over the runtime default) — the attribution fallback for usage events
+// whose runtime payload omits the model id (ISI-4238).
+func (e *Engine) modelID() string {
+	if e.cfg.Model != "" {
+		return e.cfg.Model
+	}
+	return e.rt.DefaultModel().ID
 }
 
 // hashToolArgs stamps the tool-call arguments hash at the shim's tool-call

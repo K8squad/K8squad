@@ -149,6 +149,11 @@ type supervisor struct {
 	telemetryShutdown telemetry.ShutdownFunc
 	// credAt is when the handshake completed (observability).
 	credAt time.Time
+	// traceCtx is the carrier-extracted context from the handshake
+	// (ISI-4238): the per-task SubmitTask hands it to the engine so the
+	// run's spans parent onto the Run's distributed trace. It is never a
+	// cancellation source. Nil until the handshake lands.
+	traceCtx context.Context
 	// engine is the lazily-built runtime engine (nil until a /task arrives;
 	// a warm unbound pod never pays the runtime construction cost).
 	engine     *shim.Engine
@@ -188,8 +193,7 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 		supTelemetryOpts := telemetry.Options{
 			ServiceName: "ksquad-supervisor",
 			Writer:      os.Stderr, // never stdout: /task's body IS the event wire
-		}
-		// M1.2 telemetry leg: the operator stamps OTEL_EXPORTER_OTLP_* (the
+		} // M1.2 telemetry leg: the operator stamps OTEL_EXPORTER_OTLP_* (the
 		// observability gateway) onto the sandbox pod env (warmpool
 		// WithPodEnv); honor it for every signal still on the stdout default
 		// so supervisor/runtime spans reach the gateway instead of dying on
@@ -208,6 +212,7 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 		s.mu.Lock()
 		s.cred = &cred
 		s.credAt = time.Now().UTC()
+		s.traceCtx = tctx // ISI-4238: span parent for the /task SubmitTask
 		s.mu.Unlock()
 		fmt.Fprintf(os.Stderr, "shim supervisor: handshake complete (run=%s work_item=%s)\n",
 			shortID(cred.RunID), shortID(cred.WorkItemID))
@@ -272,11 +277,11 @@ func (s *supervisor) handleHandshake(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"handshake":   true,
-		"runId":       cred.RunID,
-		"workItemId":  cred.WorkItemID,
-		"coordUrl":    cred.CoordURL,
-		"traced":      cred.TraceParent != "",
+		"handshake":    true,
+		"runId":        cred.RunID,
+		"workItemId":   cred.WorkItemID,
+		"coordUrl":     cred.CoordURL,
+		"traced":       cred.TraceParent != "",
 		"credentialAt": at.UTC().Format(time.RFC3339),
 	})
 }
@@ -313,12 +318,20 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	if _, err := engine.SubmitTask(ctx, task); err != nil {
+	// ISI-4238: submit on the handshake's trace context when it landed so
+	// the run's spans join the Run's distributed trace; the request ctx
+	// (streaming lifetime) stays with the stream below.
+	submitCtx := r.Context()
+	s.mu.RLock()
+	if s.traceCtx != nil {
+		submitCtx = s.traceCtx
+	}
+	s.mu.RUnlock()
+	if _, err := engine.SubmitTask(submitCtx, task); err != nil {
 		http.Error(w, fmt.Sprintf("submit: %v", err), http.StatusInternalServerError)
 		return
 	}
-	events, err := engine.StreamEvents(ctx, task.A2ATaskID, 0)
+	events, err := engine.StreamEvents(r.Context(), task.A2ATaskID, 0)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("stream: %v", err), http.StatusInternalServerError)
 		return

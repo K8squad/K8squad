@@ -151,25 +151,59 @@ func openCodeSettleLine(line string) bool {
 //	  "input":{...},"output":"...","time":{"start":…,"end":…}}}}
 //	{"type":"text","part":{"text":"…"}}
 //	{"type":"error","error":{"name":"…","data":{"message":"…"}}}
-//	{"type":"step_start"|"step_finish",…}   (progress bookkeeping; dropped)
+//	{"type":"step_start",…}          (progress bookkeeping; dropped)
+//	{"type":"step_finish","part":{"type":"step-finish","providerID":"…",
+//	  "modelID":"…","tokens":{"input":…,"output":…,"reasoning":…,
+//	  "cache":{"read":…,"write":…}},"cost":{…},"duration":…}}
 //
 // A tool_use event arrives once per call with a terminal state.status
 // (completed|error) — it maps to a single phase="result" ToolPayload; the
 // telemetry spine settles one span per call from it. A non-JSON line (the
 // CLI's own diagnostics interleave on stdout) degrades to a message event,
 // never an error: parse failure must not kill a running task.
+//
+// step_finish maps to an EventUsage (ISI-4238): the per-step token/cost
+// record is the raw material for the llm.call span, the run's token totals
+// and the interaction views. A step_finish without tokens (older wire,
+// bookkeeping-only) stays dropped. The model id rides providerID/modelID;
+// when the part omits them the engine fills the launch model before the
+// event leaves the process.
+// openCodePart is the union `part` block of the opencode JSON wire: text
+// parts, tool_use parts and step-finish parts all ride the same envelope,
+// each populating its own fields.
+type openCodePart struct {
+	Type       string `json:"type"`
+	Text       string `json:"text"`
+	Tool       string `json:"tool"`
+	ProviderID string `json:"providerID"`
+	ModelID    string `json:"modelID"`
+	State      *struct {
+		Status string          `json:"status"`
+		Input  json.RawMessage `json:"input"`
+	} `json:"state"`
+	// Tokens is the step-finish usage block; nil on shapes that do not
+	// carry it (then step_finish stays bookkeeping, ISI-4238).
+	Tokens *struct {
+		Input     int `json:"input"`
+		Output    int `json:"output"`
+		Reasoning int `json:"reasoning"`
+		Cache     *struct {
+			Read  int `json:"read"`
+			Write int `json:"write"`
+		} `json:"cache"`
+	} `json:"tokens"`
+	Cost *struct {
+		Input  float64 `json:"input"`
+		Output float64 `json:"output"`
+		Total  float64 `json:"total"`
+	} `json:"cost"`
+	DurationMS *int64 `json:"duration"`
+}
+
 func parseOpenCodeLine(line string) []Progress {
 	var ev struct {
-		Type string `json:"type"`
-		Part *struct {
-			Type  string `json:"type"`
-			Text  string `json:"text"`
-			Tool  string `json:"tool"`
-			State *struct {
-				Status string          `json:"status"`
-				Input  json.RawMessage `json:"input"`
-			} `json:"state"`
-		} `json:"part"`
+		Type  string        `json:"type"`
+		Part  *openCodePart `json:"part"`
 		Error *struct {
 			Name string `json:"name"`
 			Data struct {
@@ -214,6 +248,11 @@ func parseOpenCodeLine(line string) []Progress {
 			Kind:    a2a.EventMessage,
 			Message: &a2a.MessagePayload{Role: "agent", Text: ev.Part.Text, Trust: "untrusted"},
 		}}
+	case "step_finish":
+		if usage := usageFromStepFinish(ev.Part); usage != nil {
+			return []Progress{{Kind: a2a.EventUsage, Usage: usage}}
+		}
+		return nil
 	case "error":
 		msg := "opencode error"
 		if ev.Error != nil {
@@ -226,7 +265,40 @@ func parseOpenCodeLine(line string) []Progress {
 			Kind:    a2a.EventMessage,
 			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
 		}}
-	default: // step_start/step_finish and future shapes: bookkeeping, not wire events
+	default: // step_start and future shapes: bookkeeping, not wire events
 		return nil
 	}
+}
+
+// usageFromStepFinish maps a step-finish part onto an EventUsage payload
+// (ISI-4238). It returns nil when the part is absent or carries no token
+// block — a bare step_finish stays dropped exactly as before, so a
+// wire-shape drift degrades to the prior behavior instead of emitting
+// zeroed usage that would poison the run's token totals.
+func usageFromStepFinish(part *openCodePart) *a2a.UsagePayload {
+	if part == nil || part.Tokens == nil {
+		return nil
+	}
+	u := &a2a.UsagePayload{
+		Input:     part.Tokens.Input,
+		Output:    part.Tokens.Output,
+		Reasoning: part.Tokens.Reasoning,
+	}
+	switch {
+	case part.ProviderID != "" && part.ModelID != "":
+		u.Model = part.ProviderID + "/" + part.ModelID
+	default:
+		u.Model = part.ModelID
+	}
+	if part.Tokens.Cache != nil {
+		u.CacheRead = part.Tokens.Cache.Read
+		u.CacheWrite = part.Tokens.Cache.Write
+	}
+	if part.Cost != nil {
+		u.CostUSD = part.Cost.Total
+	}
+	if part.DurationMS != nil {
+		u.DurationMS = *part.DurationMS
+	}
+	return u
 }

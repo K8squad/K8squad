@@ -128,6 +128,11 @@ type Status struct {
 	State   TaskState `json:"state"`
 	Reason  string    `json:"reason,omitempty"`
 	LastSeq uint64    `json:"lastSeq"`
+	// TraceID is the run's root OTel trace id (ISI-4238): stamped from the
+	// shim's run span when telemetry is attached, so the core can project
+	// it onto Run.Status.TraceID and a failing run's spans/logs/metrics
+	// are correlatable end-to-end. Empty when telemetry is off. +optional
+	TraceID string `json:"traceID,omitempty"`
 }
 
 // EventType enumerates the SSE event types (spec §4).
@@ -177,6 +182,13 @@ type Event struct {
 type StatusPayload struct {
 	State  TaskState `json:"state"`
 	Reason string    `json:"reason,omitempty"`
+	// TraceID is the run's root OTel trace id (ISI-4238), stamped onto
+	// every status event once the run span opened: the run-drive consumer
+	// projects it onto Run.Status.TraceID the moment the first status
+	// event carrying it lands, so a failing run is debuggable end-to-end
+	// WHILE it runs, not only post-terminal. Empty when telemetry is off.
+	// +optional
+	TraceID string `json:"traceID,omitempty"`
 }
 
 // MessagePayload is the payload of an EventMessage event (spec §4). Trust is
@@ -190,12 +202,12 @@ type MessagePayload struct {
 // ToolPayload is the payload of an EventTool event (spec §4). Phase is
 // "start" or "result".
 type ToolPayload struct {
-	Name    string `json:"name"`
-	Phase   string `json:"phase"`
+	Name  string `json:"name"`
+	Phase string `json:"phase"`
 	// OK is tri-state on the wire (Epic D): true = success, false = error,
 	// absent = the emitter could not tell (mapped to outcome "unknown" by
 	// the telemetry spine — never guessed, D1 AC).
-	OK      *bool `json:"ok,omitempty"`
+	OK      *bool  `json:"ok,omitempty"`
 	Summary string `json:"summary,omitempty"`
 	// ArgsSHA256 is the hex SHA-256 of the tool-call arguments, computed by
 	// the emitter BEFORE the event leaves the process (Epic D, plan §2.4:
@@ -245,6 +257,17 @@ type UsagePayload struct {
 	Output     int    `json:"output"`
 	CacheRead  int    `json:"cacheRead,omitempty"`
 	CacheWrite int    `json:"cacheWrite,omitempty"`
+	// Reasoning is the thinking-model reasoning token count (billed as
+	// output-class, §11); reported separately so the ISI-4238 views can
+	// show it honestly instead of folding it into Output. +optional
+	Reasoning int `json:"reasoning,omitempty"`
+	// CostUSD is the provider-reported step cost when the runtime reports
+	// one (ISI-4238). Best-effort like the token counts. +optional
+	CostUSD float64 `json:"costUSD,omitempty"`
+	// DurationMS is the step's wall-clock duration in milliseconds when
+	// the runtime reports one (ISI-4238) — the llm.call span truthfully
+	// carries it as its span duration. +optional
+	DurationMS int64 `json:"durationMS,omitempty"`
 }
 
 // AuthRequiredPayload is the payload of an EventAuthRequired event (spec §4/§7).

@@ -62,8 +62,21 @@ func (s *TelemetrySink) Event(ctx context.Context, ev wire.Event) error {
 			if p, ok := skillLoadPayload(ev.Payload); ok {
 				s.mapper.SkillEvent(ctx, s.labels, p)
 			}
+		case wire.EventUsage:
+			// ISI-4238: usage events map onto core-side llm.call spans +
+			// token counters too — the sandbox's own OTLP export is the
+			// primary hop, this is the operator-side belt-and-braces view
+			// (same mapper, same series; trace joining depends on the
+			// follow ctx carrying the dispatch trace).
+			if p, ok := usagePayload(ev.Payload); ok {
+				s.mapper.UsageEvent(ctx, s.labels, ev.A2ATaskID, p)
+			}
 		case wire.EventStatus:
 			if p, ok := statusPayload(ev.Payload); ok && p.State.IsTerminal() {
+				// ISI-4238: run.end marker core-side (a RunEnd without a
+				// core-side RunStart emits the marker alone — outcome +
+				// state still land in the trace).
+				s.mapper.RunEnd(ctx, ev.A2ATaskID, string(p.State), p.Reason)
 				s.mapper.FinishTask(ctx, ev.A2ATaskID)
 			}
 		}
@@ -116,6 +129,30 @@ func skillLoadPayload(payload any) (wire.SkillLoadPayload, bool) {
 		var p wire.SkillLoadPayload
 		if err := json.Unmarshal(b, &p); err != nil || p.Name == "" {
 			return wire.SkillLoadPayload{}, false
+		}
+		return p, true
+	}
+}
+
+// usagePayload normalizes an EventUsage payload into the typed UsagePayload
+// (JSON round-trip for the stdio transport; ISI-4238).
+func usagePayload(payload any) (wire.UsagePayload, bool) {
+	switch v := payload.(type) {
+	case wire.UsagePayload:
+		return v, true
+	case *wire.UsagePayload:
+		if v == nil {
+			return wire.UsagePayload{}, false
+		}
+		return *v, true
+	default:
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return wire.UsagePayload{}, false
+		}
+		var p wire.UsagePayload
+		if err := json.Unmarshal(b, &p); err != nil || p.Model == "" {
+			return wire.UsagePayload{}, false
 		}
 		return p, true
 	}

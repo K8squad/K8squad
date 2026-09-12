@@ -35,6 +35,17 @@ type task struct {
 	state   a2a.TaskState
 	reason  string
 	lastSeq uint64
+	// trace is the run's root OTel trace id (ISI-4238), stamped from the
+	// run span at drive start when telemetry is attached; it rides the V3
+	// status so the core can project it onto Run.Status.TraceID.
+	trace string
+	// traceCtx carries the SUBMIT-side trace context (the W3C carrier the
+	// dispatcher injected and the caller Extracted) when one is valid
+	// (ISI-4238): the run's root span parents onto it, joining the run's
+	// spans onto the core's distributed trace instead of forking a fresh
+	// orphan trace per task. nil = no carrier (tests, card-only shims).
+	// Never selected on for cancellation — telemetry only.
+	traceCtx context.Context
 
 	cancel context.CancelFunc
 	stream *taskStream
@@ -44,7 +55,19 @@ type task struct {
 func (t *task) status() a2a.Status {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return a2a.Status{State: t.state, Reason: t.reason, LastSeq: t.lastSeq}
+	return a2a.Status{State: t.state, Reason: t.reason, LastSeq: t.lastSeq, TraceID: t.trace}
+}
+
+// setTraceID records the run's root trace id (ISI-4238). Best-effort and
+// idempotent: telemetry is observational, never load-bearing — an empty id
+// (telemetry off, pre-Setup tracer) simply leaves the status field unset.
+func (t *task) setTraceID(id string) {
+	if id == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.trace = id
 }
 
 // nextEvent allocates the next monotonic seq under the task lock and builds the
@@ -76,7 +99,10 @@ func (t *task) setState(state a2a.TaskState, reason string) {
 	}
 	t.state = state
 	t.reason = reason
-	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason})
+	// ISI-4238: every status event carries the run's root trace id once
+	// the run span opened, so the core-side consumer can project it onto
+	// Run.Status.TraceID live (not only via the V3 terminal status).
+	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason, TraceID: t.trace})
 	t.stream.append(ev)
 }
 
@@ -96,7 +122,7 @@ func (t *task) terminate(state a2a.TaskState, reason string) {
 	}
 	t.state = state
 	t.reason = reason
-	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason})
+	ev := t.nextEvent(a2a.EventStatus, a2a.StatusPayload{State: state, Reason: reason, TraceID: t.trace})
 	t.stream.append(ev)
 	t.stream.finish()
 }

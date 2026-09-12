@@ -25,6 +25,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
@@ -456,4 +458,120 @@ func TestGrantedSkillLoadOutcomeNeutral(t *testing.T) {
 		}
 	}
 	t.Fatal("skill load series absent")
+}
+
+// TestDriveMapsUsageAndStampsTraceID (ISI-4238): the drive funnel maps
+// EventUsage onto the telemetry mapper with the launch-model attribution
+// filled in when the runtime omitted it, the wire event carries the same
+// attribution, and the terminal status surfaces the run trace id opened by
+// RunStart.
+func TestDriveMapsUsageAndStampsTraceID(t *testing.T) {
+	runner := &fakeRunner{
+		emits: []Progress{
+			{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{Input: 10, Output: 5}}, // modelless → launch model
+			{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{Model: "ollama/qwen3:8b", Input: 1, Output: 2}},
+		},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}
+	e := testEngine(t, runner)
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	reg := prometheus.NewRegistry()
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), reg))
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-t", WorkItemID: "wi"}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-t", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := drain(t, ch)
+
+	// Wire events carry model attribution for the modelless payload too.
+	var usages int
+	for _, ev := range events {
+		if ev.Type != a2a.EventUsage {
+			continue
+		}
+		usages++
+		p, ok := ev.Payload.(a2a.UsagePayload)
+		if !ok {
+			t.Fatalf("usage payload type %T", ev.Payload)
+		}
+		if p.Model == "" {
+			t.Errorf("usage event %d has no model attribution", ev.Seq)
+		}
+	}
+	if usages != 2 {
+		t.Fatalf("usage events = %d, want 2", usages)
+	}
+
+	// Spans: run.start root, 2 llm.call children, run.end marker.
+	var llm, runStart, runEnd int
+	for _, s := range sr.Ended() {
+		switch s.Name() {
+		case "llm.call":
+			llm++
+		case "run.start":
+			runStart++
+		case "run.end":
+			runEnd++
+		}
+	}
+	if llm != 2 || runStart != 1 || runEnd != 1 {
+		t.Errorf("spans llm=%d run.start=%d run.end=%d, want 2/1/1", llm, runStart, runEnd)
+	}
+
+	// Terminal status carries the trace id of the run root.
+	st, err := e.GetStatus(context.Background(), "run-t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TraceID == "" {
+		t.Errorf("terminal status TraceID empty; state=%s", st.State)
+	}
+	if st.State != a2a.TaskCompleted {
+		t.Errorf("terminal state = %s", st.State)
+	}
+}
+
+// TestDriveJoinsSubmitTraceContext (ISI-4238): a valid trace context on the
+// SubmitTask ctx (the extracted W3C carrier) becomes the run root's parent,
+// so the run's spans join the dispatcher's distributed trace instead of
+// forking an orphan root.
+func TestDriveJoinsSubmitTraceContext(t *testing.T) {
+	runner := &fakeRunner{outcome: Outcome{State: a2a.TaskCompleted}}
+	e := testEngine(t, runner)
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	// The dispatcher's span: the ctx handed to SubmitTask.
+	dispatchCtx, dispatchSpan := tp.Tracer("test").Start(context.Background(), "reconcile-run")
+	if _, err := e.SubmitTask(dispatchCtx, a2a.Task{A2ATaskID: "run-join"}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-join", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+	dispatchSpan.End()
+
+	dispatchID := dispatchSpan.SpanContext().SpanID()
+	for _, s := range sr.Ended() {
+		if s.Name() != "run.start" {
+			continue
+		}
+		if s.Parent().SpanID() != dispatchID {
+			t.Errorf("run.start parent = %v, want dispatcher span %v", s.Parent().SpanID(), dispatchID)
+		}
+		return
+	}
+	t.Fatal("no run.start span recorded")
 }

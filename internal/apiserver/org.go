@@ -537,6 +537,10 @@ func normalizeReason(reason string) string {
 // projectRunSummary projects one Run into a history row (8.11). Phase is coalesced to Pending when
 // the reconciler has not yet observed the Run. StartedAt is the claim time; EndedAt is the latest
 // condition transition once the Run is terminal; DurationSeconds is elapsed (or live-so-far).
+// Tokens + TraceID are the ISI-4238 LLM-observability summary projected off
+// Run.status by the run-drive consumer (RunLLMStatusWriter): the one-glance
+// computational cost of the Run and the trace join key for end-to-end
+// debugging of a failed Run.
 func projectRunSummary(run *ksquadv1.Run) RunSummary {
 	phase := string(run.Status.Phase)
 	if phase == "" {
@@ -546,6 +550,11 @@ func projectRunSummary(run *ksquadv1.Run) RunSummary {
 		ID:          run.Name,
 		Phase:       phase,
 		WorkItemRef: run.Spec.WorkItemRef,
+		TraceID:     run.Status.TraceID,
+	}
+	if run.Status.TotalTokenUsage != nil {
+		in, out, total := run.Status.TotalTokenUsage.InputTokens, run.Status.TotalTokenUsage.OutputTokens, run.Status.TotalTokenUsage.TotalTokens
+		rs.Tokens = &TokenUsage{Input: &in, Output: &out, Total: &total}
 	}
 	if run.Status.Phase == ksquadv1.RunPhasePaused {
 		rs.PausedReason = pausedReasonOf(run)

@@ -146,7 +146,7 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 		enc.SetIndent("", "  ")
 		return enc.Encode(engine.AgentCard())
 	case "run":
-		err := driveRun(engine, stdin, stdout)
+		err := driveRun(engine, ctx, stdin, stdout)
 		writeMetricsTextfile(metricsReg)
 		return err
 	default:
@@ -186,19 +186,21 @@ func writeMetricsTextfile(reg *prometheus.Registry) {
 
 // driveRun reads one Task from stdin, submits it, streams its SSE events as
 // JSONL to stdout until terminal, and returns an error on a non-success task
-// so the container exit code reflects the Run outcome.
-func driveRun(engine *shim.Engine, stdin io.Reader, stdout io.Writer) error {
+// so the container exit code reflects the Run outcome. traceCtx is the
+// carrier-extracted context from main (ISI-4238): it parents the run's
+// spans onto the Run's distributed trace; it is never a cancellation source
+// (the engine derives its own cancelable run context).
+func driveRun(engine *shim.Engine, traceCtx context.Context, stdin io.Reader, stdout io.Writer) error {
 	var task a2a.Task
 	if err := json.NewDecoder(stdin).Decode(&task); err != nil {
 		return fmt.Errorf("decode task: %w", err)
 	}
 
-	ctx := context.Background()
-	if _, err := engine.SubmitTask(ctx, task); err != nil {
+	if _, err := engine.SubmitTask(traceCtx, task); err != nil {
 		return err
 	}
 
-	events, err := engine.StreamEvents(ctx, task.A2ATaskID, 0)
+	events, err := engine.StreamEvents(traceCtx, task.A2ATaskID, 0)
 	if err != nil {
 		return err
 	}
@@ -209,7 +211,7 @@ func driveRun(engine *shim.Engine, stdin io.Reader, stdout io.Writer) error {
 		}
 	}
 
-	status, err := engine.GetStatus(ctx, task.A2ATaskID)
+	status, err := engine.GetStatus(traceCtx, task.A2ATaskID)
 	if err != nil {
 		return err
 	}

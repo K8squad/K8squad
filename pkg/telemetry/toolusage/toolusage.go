@@ -14,14 +14,22 @@ See the limitations under the License.
 */
 
 // Package toolusage is the Epic D instrumentation core (plan §2.4, D1/D2):
-// it maps A2A tool/skill activity events (pkg/a2a EventTool / EventSkillLoad)
-// onto OpenTelemetry GenAI-semconv spans and ksquad_* metrics.
+// it maps A2A tool/skill/usage activity events (pkg/a2a EventTool /
+// EventSkillLoad / EventUsage) onto OpenTelemetry GenAI-semconv spans and
+// ksquad_* metrics.
 //
-// Spans (names per OTel GenAI agent conventions + plan §2.4):
+// Spans (names per OTel GenAI agent conventions + plan §2.4 + ISI-4238):
 //
+//	run.start / run.end — the run's dispatch/terminal markers opening and
+//	                     closing the run's root trace: every span emitted
+//	                     for the task between them joins that trace, so a
+//	                     failing Run is one end-to-end debuggable unit
 //	gen_ai.tool.call   — a local/CLI tool call: gen_ai.tool.name, hashed
 //	                     args (gen_ai.tool.call.arguments carries the hex
 //	                     sha256 — raw arguments NEVER travel), outcome, duration
+//	llm.call           — one model round-trip (step): gen_ai.request.model,
+//	                     gen_ai.usage.input/output_tokens, provider cost,
+//	                     truthful step duration (ISI-4238)
 //	skill.load         — a skill entering the runtime session: skill name +
 //	                     pinned source SHA
 //	mcp.call           — a tool call served by an MCPServer: mcp server +
@@ -33,6 +41,8 @@ See the limitations under the License.
 //	ksquad_tool_calls_total{tool,agent,skill}      counter
 //	ksquad_skill_loads_total{skill,agent}          counter
 //	ksquad_mcp_call_duration_seconds{server,tool}  histogram
+//	ksquad_llm_tokens_total{model,agent,direction} counter (ISI-4238)
+//	ksquad_llm_calls_total{model,agent}            counter (ISI-4238)
 //
 // Every emission is gated by a process-wide enable flag wired to the
 // OTelConfig CRD tool-usage pipeline toggle (D2): flag off → no spans, no
@@ -59,11 +69,16 @@ import (
 	"github.com/K8squad/K8squad/pkg/a2a"
 )
 
-// Span names (plan §2.4). gen_ai.tool.call follows the GenAI semconv agent
-// conventions; skill.load and mcp.call are the plan's names for the two
+// Span names (plan §2.4, ISI-4238). gen_ai.tool.call follows the GenAI
+// semconv agent conventions; run.start/run.end and llm.call are the
+// ISI-4238 run-trace vocabulary (Henrik: "run.start, llm.call, tool.call,
+// run.end"); skill.load and mcp.call are the plan's names for the two
 // adjacent activities the conventions do not yet standardize.
 const (
+	SpanRunStart  = "run.start"
+	SpanRunEnd    = "run.end"
 	SpanToolCall  = "gen_ai.tool.call"
+	SpanLLMCall   = "llm.call"
 	SpanSkillLoad = "skill.load"
 	SpanMCPCall   = "mcp.call"
 )
@@ -81,6 +96,18 @@ const (
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
 	attrOutcome = attribute.Key("ksquad.outcome")
+	// attrRunState carries the §3.1 terminal state on run.end
+	// (completed|failed|canceled) so the trace answers "how did it end"
+	// without joining back to the CR (ISI-4238).
+	attrRunState = attribute.Key("ksquad.run.state")
+	// GenAI semconv keys the v1.40 stable set does not export as typed
+	// constants yet (ISI-4238 llm.call spans).
+	attrGenAIRequestModel     = attribute.Key("gen_ai.request.model")
+	attrGenAIInputTokens      = attribute.Key("gen_ai.usage.input_tokens")
+	attrGenAIOutputTokens     = attribute.Key("gen_ai.usage.output_tokens")
+	attrGenAICacheReadTokens  = attribute.Key("gen_ai.usage.cache_read_tokens")
+	attrGenAICacheWriteTokens = attribute.Key("gen_ai.usage.cache_write_tokens")
+	attrLLMCostUSD            = attribute.Key("ksquad.llm.cost.usd")
 
 	outcomeSuccess = "success"
 	outcomeError   = "error"
@@ -129,6 +156,11 @@ type Instruments struct {
 	ToolCalls  *prometheus.CounterVec
 	SkillLoads *prometheus.CounterVec
 	MCPDur     *prometheus.HistogramVec
+	// LLMCalls / LLMTokens are the ISI-4238 LLM-observability set: one
+	// counter per model round-trip and token totals split input/output
+	// via the direction label (bounded: {model, agent, direction}).
+	LLMCalls  *prometheus.CounterVec
+	LLMTokens *prometheus.CounterVec
 	// PipelineUp is the D2 pipeline-liveness marker: a childless CounterVec
 	// never appears in a Prometheus exposition, so an operator that registered
 	// the ksquad_* set but has not yet mapped a single event would be
@@ -179,10 +211,18 @@ func newInstruments(reg prometheus.Registerer) *Instruments {
 			Help:    "Duration of tool calls served by MCPServers (Epic D, plan §2.4).",
 			Buckets: prometheus.ExponentialBuckets(0.005, 2, 14), // 5ms .. ~80s
 		}, []string{"server", "tool"}),
+		LLMCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ksquad_llm_calls_total",
+			Help: "Model round-trips mapped from A2A EventUsage events (ISI-4238). Bounded labels {model,agent}.",
+		}, []string{"model", "agent"}),
+		LLMTokens: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "ksquad_llm_tokens_total",
+			Help: "LLM token totals mapped from A2A EventUsage events (ISI-4238); reasoning tokens count as output-class. Bounded labels {model,agent,direction}.",
+		}, []string{"model", "agent", "direction"}),
 		PipelineUp: pipelineUp{},
 	}
 	if reg != nil {
-		reg.MustRegister(ins.ToolCalls, ins.SkillLoads, ins.MCPDur, ins.PipelineUp)
+		reg.MustRegister(ins.ToolCalls, ins.SkillLoads, ins.MCPDur, ins.LLMCalls, ins.LLMTokens, ins.PipelineUp)
 	}
 	return ins
 }
@@ -194,6 +234,12 @@ func newInstruments(reg prometheus.Registerer) *Instruments {
 // attach) synthesizes a complete zero-history span so no call is lost; an
 // orphan start is swept when the task settles (FinishTask).
 //
+// Run traces (ISI-4238): RunStart opens a root span named "run.start" that
+// stays open for the task's lifetime — every span emitted with the returned
+// context (llm.call, gen_ai.tool.call, …) joins that one trace — and RunEnd
+// stamps the terminal outcome onto it, emits a "run.end" marker child and
+// closes the root. The root's trace id is the run's TraceID.
+//
 // A Mapper is safe for concurrent use.
 type Mapper struct {
 	tracer trace.Tracer
@@ -202,6 +248,7 @@ type Mapper struct {
 
 	mu      sync.Mutex
 	pending map[string]pendingSpan // "task\x00tool" → open span
+	runs    map[string]trace.Span  // taskID → open run root span (ISI-4238)
 }
 
 // pendingSpan is one open tool/MCP call: its span and the wall-clock start
@@ -222,6 +269,7 @@ func NewMapper(tracer trace.Tracer, reg prometheus.Registerer) *Mapper {
 		now:     stopwatch,
 		ins:     newInstruments(reg),
 		pending: map[string]pendingSpan{},
+		runs:    map[string]trace.Span{},
 	}
 }
 
@@ -318,9 +366,133 @@ func (m *Mapper) SkillEvent(ctx context.Context, labels Labels, p a2a.SkillLoadP
 	m.ins.SkillLoads.WithLabelValues(p.Name, labels.Agent).Inc()
 }
 
+// RunStart opens the run's root trace (ISI-4238): a span named "run.start"
+// that stays open for the task's lifetime. The returned context carries it,
+// so every telemetry call the emitter makes with that context (llm.call,
+// gen_ai.tool.call, skill.load, mcp.call) joins the same trace — a run is
+// no longer a black box between dispatch and exit. RunEnd closes the root.
+// The span is returned so the emitter can surface its trace id onto the
+// wire (a2a.Status.TraceID → Run.Status.TraceID).
+func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (context.Context, trace.Span) {
+	if !enabled.Load() || taskID == "" {
+		return ctx, noopSpan()
+	}
+	runCtx, span := m.start(ctx, SpanRunStart, labels.spanAttrs())
+	m.mu.Lock()
+	m.runs[taskID] = span
+	m.mu.Unlock()
+	return runCtx, span
+}
+
+// RunEnd closes the run's root span with its terminal outcome and emits a
+// "run.end" marker child carrying the §3.1 state and reason (ISI-4238).
+// state is the a2a TaskState string ("completed" | "failed" |
+// "canceled" | …); it maps onto the outcome vocabulary for the status code.
+func (m *Mapper) RunEnd(ctx context.Context, taskID, state, reason string) {
+	if !enabled.Load() || taskID == "" {
+		return
+	}
+	outcome := outcomeFromState(state)
+
+	m.mu.Lock()
+	root, ok := m.runs[taskID]
+	delete(m.runs, taskID)
+	m.mu.Unlock()
+
+	// run.end marker: the terminal instant, queryable on its own.
+	endAttrs := []attribute.KeyValue{attrRunState.String(state), attrOutcome.String(outcome)}
+	if root != nil {
+		endAttrs = append(rootAttrs(root), endAttrs...)
+	}
+	_, marker := m.start(ctx, SpanRunEnd, endAttrs)
+	if reason != "" {
+		marker.SetStatus(codes.Error, reason)
+	}
+	marker.End()
+
+	if !ok || root == nil {
+		return // RunEnd without RunStart: the marker is still emitted.
+	}
+	root.SetAttributes(attrRunState.String(state), attrOutcome.String(outcome))
+	if reason != "" {
+		root.SetStatus(codes.Error, reason)
+	} else if outcome == outcomeSuccess {
+		root.SetStatus(codes.Ok, "")
+	}
+	root.End()
+}
+
+// rootAttrs re-derives the labels attributes from an open run root span so
+// the run.end marker carries the same run/agent correlation without the
+// caller re-passing Labels (the span already holds them).
+func rootAttrs(span trace.Span) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{}
+	if span == nil {
+		return attrs
+	}
+	sc := span.SpanContext()
+	if sc.HasTraceID() {
+		attrs = append(attrs, attribute.String("ksquad.run.trace_id", sc.TraceID().String()))
+	}
+	return attrs
+}
+
+// outcomeFromState maps an a2a TaskState onto the outcome vocabulary for
+// run terminal spans. Terminal-completed is success; the failure-family
+// (failed/canceled/anything else) is error-shaped; the mapping never
+// guesses "success" for an unrecognized state.
+func outcomeFromState(state string) string {
+	if state == "completed" {
+		return outcomeSuccess
+	}
+	return outcomeError
+}
+
+// UsageEvent maps one EventUsage payload (ISI-4238): a complete llm.call
+// span carrying the GenAI semconv model + token attributes and the
+// provider-reported cost, with the span's duration set truthfully from the
+// runtime-reported step duration (start = now−duration, end = now); plus
+// the ksquad_llm_calls_total / ksquad_llm_tokens_total counters. With no
+// tracer attached the metrics still count. A usage without a model id is
+// dropped (unattributable — never fabricate "unknown" buckets).
+func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p a2a.UsagePayload) {
+	if !enabled.Load() || p.Model == "" {
+		return
+	}
+	attrs := labels.spanAttrs()
+	attrs = append(attrs,
+		attrGenAIRequestModel.String(p.Model),
+		attrGenAIInputTokens.Int(p.Input),
+		attrGenAIOutputTokens.Int(p.Output+p.Reasoning),
+	)
+	if p.CacheRead != 0 {
+		attrs = append(attrs, attrGenAICacheReadTokens.Int(p.CacheRead))
+	}
+	if p.CacheWrite != 0 {
+		attrs = append(attrs, attrGenAICacheWriteTokens.Int(p.CacheWrite))
+	}
+	if p.CostUSD != 0 {
+		attrs = append(attrs, attrLLMCostUSD.Float64(p.CostUSD))
+	}
+
+	var opts []trace.SpanStartOption
+	if p.DurationMS > 0 {
+		start := time.Now().Add(-time.Duration(p.DurationMS) * time.Millisecond)
+		opts = append(opts, trace.WithTimestamp(start))
+	}
+	opts = append(opts, trace.WithAttributes(attrs...))
+	_, span := m.startWithOptions(ctx, SpanLLMCall, opts)
+	span.End()
+
+	m.ins.LLMCalls.WithLabelValues(p.Model, labels.Agent).Inc()
+	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "input").Add(float64(p.Input))
+	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "output").Add(float64(p.Output + p.Reasoning))
+}
+
 // FinishTask sweeps any still-open spans for taskID (a runtime that crashed
 // between start and result must not leak pending entries). The spans end
-// with unknown outcome — the call started, its result never arrived.
+// with unknown outcome — the call started, its result never arrived. An
+// unclosed run root (RunEnd never reached) is closed here the same way.
 func (m *Mapper) FinishTask(ctx context.Context, taskID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -332,6 +504,12 @@ func (m *Mapper) FinishTask(ctx context.Context, taskID string) {
 		ps.span.SetStatus(codes.Unset, "")
 		ps.span.End()
 		delete(m.pending, k)
+	}
+	if root, ok := m.runs[taskID]; ok {
+		root.SetAttributes(attrRunState.String("unknown"), attrOutcome.String(outcomeUnknown))
+		root.SetStatus(codes.Unset, "")
+		root.End()
+		delete(m.runs, taskID)
 	}
 }
 
@@ -349,6 +527,15 @@ func (m *Mapper) start(ctx context.Context, name string, attrs []attribute.KeyVa
 		return ctx, noopSpan()
 	}
 	return m.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
+}
+
+// startWithOptions is start with explicit SpanStartOptions (UsageEvent's
+// truthful step-duration timestamps); it shares the nil-tracer degrade.
+func (m *Mapper) startWithOptions(ctx context.Context, name string, opts []trace.SpanStartOption) (context.Context, trace.Span) {
+	if m.tracer == nil {
+		return ctx, noopSpan()
+	}
+	return m.tracer.Start(ctx, name, opts...)
 }
 
 // settle closes the open span for (taskID, tool) — or, when none is pending

@@ -858,6 +858,137 @@ spec:
                     type: array
                     x-kubernetes-list-type: atomic
                 type: object
+              llmInteractions:
+                description: |-
+                  LLMInteractions is the bounded per-run LLM interaction summary
+                  (ISI-4238): one entry per model call — prompt/response DIGESTS
+                  (never full payloads; the raw wire log rides the §4 event stream),
+                  model, token usage and duration. Digests are capped by schema so a
+                  pathological run cannot bloat the status subresource past etcd's
+                  object budget; the full-fidelity record stays in the event log.
+                items:
+                  description: |-
+                    LLMInteraction is one per-run LLM call summary (ISI-4238): what was
+                    asked (request digest), what came back (response digest), from which
+                    model, at what token cost and latency. Payloads carry DIGESTS capped by
+                    schema (MaxLength applies to the base64 string form) — full prompts and
+                    responses never ride the CR; they stay in the §4 event stream.
+                  properties:
+                    durationMs:
+                      description: Duration of the interaction in milliseconds
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    error:
+                      description: Error information if the interaction failed
+                      properties:
+                        code:
+                          description: Code is the error classification code
+                          enum:
+                          - rate_limited
+                          - timeout
+                          - invalid_request
+                          - model_error
+                          - unknown
+                          type: string
+                        details:
+                          description: Details provides additional context about the
+                            error
+                          maxLength: 1024
+                          type: string
+                        message:
+                          description: Message is the human-readable error message
+                          maxLength: 1024
+                          minLength: 1
+                          type: string
+                      required:
+                      - code
+                      - message
+                      type: object
+                      x-kubernetes-validations:
+                      - message: Code must be a valid error code
+                        rule: self.code in ['rate_limited', 'timeout', 'invalid_request',
+                          'model_error', 'unknown']
+                    id:
+                      description: ID is unique identifier for this interaction
+                      maxLength: 128
+                      minLength: 1
+                      type: string
+                    model:
+                      description: Model used for this interaction
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                    request:
+                      description: |-
+                        Request digest (prompt or tool-call arguments, truncated+hashed per
+                        ISI-4238 — raw secrets-bearing text never rides the CR)
+                      format: byte
+                      maxLength: 4096
+                      type: string
+                    response:
+                      description: Response digest (model reply or tool output, truncated)
+                      format: byte
+                      maxLength: 4096
+                      type: string
+                    timestamp:
+                      description: Timestamp when the interaction occurred
+                      format: date-time
+                      type: string
+                    tokenUsage:
+                      description: Token usage information
+                      properties:
+                        inputTokens:
+                          description: InputTokens is the number of tokens in the
+                            prompt/request
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        outputTokens:
+                          description: OutputTokens is the number of tokens in the
+                            response
+                          format: int64
+                          minimum: 0
+                          type: integer
+                        totalTokens:
+                          description: TotalTokens is the sum of input and output
+                            tokens
+                          format: int64
+                          minimum: 0
+                          type: integer
+                      required:
+                      - inputTokens
+                      - outputTokens
+                      - totalTokens
+                      type: object
+                      x-kubernetes-validations:
+                      - message: TotalTokens must equal InputTokens + OutputTokens
+                        rule: self.totalTokens == self.inputTokens + self.outputTokens
+                      - message: InputTokens and OutputTokens must be non-negative
+                        rule: self.inputTokens >= 0 && self.outputTokens >= 0
+                    type:
+                      description: 'Type of interaction: "prompt" | "response" | "tool_call"
+                        | "tool_response"'
+                      enum:
+                      - prompt
+                      - response
+                      - tool_call
+                      - tool_response
+                      type: string
+                  required:
+                  - durationMs
+                  - id
+                  - model
+                  - request
+                  - timestamp
+                  - type
+                  type: object
+                  x-kubernetes-validations:
+                  - message: 'Type must be one of: prompt, response, tool_call, tool_response'
+                    rule: self.type in ['prompt', 'response', 'tool_call', 'tool_response']
+                maxItems: 128
+                type: array
+                x-kubernetes-list-type: atomic
               modelSegments:
                 description: |-
                   ModelSegments is the 5.11 mid-Run provenance ledger: which model
@@ -941,6 +1072,47 @@ spec:
                 required:
                 - name
                 type: object
+              totalTokenUsage:
+                description: |-
+                  TotalTokenUsage summarizes the token usage across all LLM
+                  interactions for this run (ISI-4238): the one-glance computational
+                  cost of the run, maintained by the run-drive consumer from EventUsage
+                  wire events.
+                properties:
+                  inputTokens:
+                    description: InputTokens is the number of tokens in the prompt/request
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  outputTokens:
+                    description: OutputTokens is the number of tokens in the response
+                    format: int64
+                    minimum: 0
+                    type: integer
+                  totalTokens:
+                    description: TotalTokens is the sum of input and output tokens
+                    format: int64
+                    minimum: 0
+                    type: integer
+                required:
+                - inputTokens
+                - outputTokens
+                - totalTokens
+                type: object
+                x-kubernetes-validations:
+                - message: TotalTokens must equal InputTokens + OutputTokens
+                  rule: self.totalTokens == self.inputTokens + self.outputTokens
+                - message: InputTokens and OutputTokens must be non-negative
+                  rule: self.inputTokens >= 0 && self.outputTokens >= 0
+              traceID:
+                description: |-
+                  TraceID is the root OpenTelemetry trace id for this run (ISI-4238):
+                  the shim opens a run span at dispatch and stamps its trace id here
+                  via the terminal status, so logs, metrics and llm.call/tool.call
+                  spans are correlatable end-to-end and a failing run is debuggable
+                  from the CR alone.
+                pattern: ^[0-9a-f]{0,32}$
+                type: string
             type: object
         type: object
     served: true

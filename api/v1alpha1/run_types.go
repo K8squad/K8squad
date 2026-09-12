@@ -64,6 +64,39 @@ const (
 	RunPhaseCancelled RunPhase = "Cancelled"
 )
 
+// LLM interaction types for tracking different kinds of LLM interactions
+const (
+	// InteractionPrompt represents an LLM prompt/request
+	InteractionPrompt = "prompt"
+
+	// InteractionResponse represents an LLM response
+	InteractionResponse = "response"
+
+	// InteractionToolCall represents a tool call made by the LLM
+	InteractionToolCall = "tool_call"
+
+	// InteractionToolResponse represents a response from a tool call
+	InteractionToolResponse = "tool_response"
+)
+
+// LLM interaction error codes
+const (
+	// ErrorCodeRateLimited indicates the interaction was rate limited
+	ErrorCodeRateLimited = "rate_limited"
+
+	// ErrorCodeTimeout indicates the interaction timed out
+	ErrorCodeTimeout = "timeout"
+
+	// ErrorCodeInvalidRequest indicates the request was invalid
+	ErrorCodeInvalidRequest = "invalid_request"
+
+	// ErrorCodeModelError indicates the model returned an error
+	ErrorCodeModelError = "model_error"
+
+	// ErrorCodeUnknown indicates an unknown error occurred
+	ErrorCodeUnknown = "unknown"
+)
+
 // RunSpec defines the desired state of Run (arch §5.1, §8, story 1.2 AC6).
 //
 // The Run is the unit of squad work and the ONLY CRD that touches
@@ -229,6 +262,33 @@ type RunStatus struct {
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=32
 	ModelSegments []ModelSegment `json:"modelSegments,omitempty"`
+
+	// LLMInteractions is the bounded per-run LLM interaction summary
+	// (ISI-4238): one entry per model call — prompt/response DIGESTS
+	// (never full payloads; the raw wire log rides the §4 event stream),
+	// model, token usage and duration. Digests are capped by schema so a
+	// pathological run cannot bloat the status subresource past etcd's
+	// object budget; the full-fidelity record stays in the event log.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=128
+	LLMInteractions []LLMInteraction `json:"llmInteractions,omitempty"`
+
+	// TotalTokenUsage summarizes the token usage across all LLM
+	// interactions for this run (ISI-4238): the one-glance computational
+	// cost of the run, maintained by the run-drive consumer from EventUsage
+	// wire events.
+	// +optional
+	TotalTokenUsage *TokenUsage `json:"totalTokenUsage,omitempty"`
+
+	// TraceID is the root OpenTelemetry trace id for this run (ISI-4238):
+	// the shim opens a run span at dispatch and stamps its trace id here
+	// via the terminal status, so logs, metrics and llm.call/tool.call
+	// spans are correlatable end-to-end and a failing run is debuggable
+	// from the CR alone.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[0-9a-f]{0,32}$`
+	TraceID string `json:"traceID,omitempty"`
 
 	// ContextSnapshot pins the resolved §8.5 context envelope inputs
 	// (work-item rev, goal rev, memory doc-ids, resolved budget, model
@@ -463,6 +523,95 @@ type GrantedSkill struct {
 	// +optional
 	// +listType=atomic
 	Permissions []string `json:"permissions,omitempty"`
+}
+
+// LLMInteraction is one per-run LLM call summary (ISI-4238): what was
+// asked (request digest), what came back (response digest), from which
+// model, at what token cost and latency. Payloads carry DIGESTS capped by
+// schema (MaxLength applies to the base64 string form) — full prompts and
+// responses never ride the CR; they stay in the §4 event stream.
+// +kubebuilder:validation:XValidation:message="Type must be one of: prompt, response, tool_call, tool_response",rule="self.type in ['prompt', 'response', 'tool_call', 'tool_response']"
+type LLMInteraction struct {
+	// ID is unique identifier for this interaction
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	ID string `json:"id"`
+
+	// Type of interaction: "prompt" | "response" | "tool_call" | "tool_response"
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=prompt;response;tool_call;tool_response
+	Type string `json:"type"`
+
+	// Model used for this interaction
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	Model string `json:"model"`
+
+	// Timestamp when the interaction occurred
+	// +kubebuilder:validation:Required
+	Timestamp metav1.Time `json:"timestamp"`
+
+	// Request digest (prompt or tool-call arguments, truncated+hashed per
+	// ISI-4238 — raw secrets-bearing text never rides the CR)
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MaxLength=4096
+	Request []byte `json:"request"`
+
+	// Response digest (model reply or tool output, truncated)
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	Response []byte `json:"response,omitempty"`
+
+	// Token usage information
+	// +optional
+	TokenUsage *TokenUsage `json:"tokenUsage,omitempty"`
+
+	// Duration of the interaction in milliseconds
+	// +kubebuilder:validation:Minimum=0
+	DurationMs int64 `json:"durationMs"`
+
+	// Error information if the interaction failed
+	// +optional
+	Error *InteractionError `json:"error,omitempty"`
+}
+
+// TokenUsage tracks input, output, and total tokens for an LLM interaction
+// +kubebuilder:validation:XValidation:message="TotalTokens must equal InputTokens + OutputTokens",rule="self.totalTokens == self.inputTokens + self.outputTokens"
+// +kubebuilder:validation:XValidation:message="InputTokens and OutputTokens must be non-negative",rule="self.inputTokens >= 0 && self.outputTokens >= 0"
+type TokenUsage struct {
+	// InputTokens is the number of tokens in the prompt/request
+	// +kubebuilder:validation:Minimum=0
+	InputTokens int64 `json:"inputTokens"`
+
+	// OutputTokens is the number of tokens in the response
+	// +kubebuilder:validation:Minimum=0
+	OutputTokens int64 `json:"outputTokens"`
+
+	// TotalTokens is the sum of input and output tokens
+	// +kubebuilder:validation:Minimum=0
+	TotalTokens int64 `json:"totalTokens"`
+}
+
+// InteractionError captures error information for failed interactions.
+// +kubebuilder:validation:XValidation:message="Code must be a valid error code",rule="self.code in ['rate_limited', 'timeout', 'invalid_request', 'model_error', 'unknown']"
+type InteractionError struct {
+	// Code is the error classification code
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=rate_limited;timeout;invalid_request;model_error;unknown
+	Code string `json:"code"`
+
+	// Message is the human-readable error message
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=1024
+	Message string `json:"message"`
+
+	// Details provides additional context about the error
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	Details string `json:"details,omitempty"`
 }
 
 // ModelSegment is one portion of a Run served by one model (5.11

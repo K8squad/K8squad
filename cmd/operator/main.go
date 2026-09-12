@@ -677,6 +677,15 @@ func main() {
 			ContextAssemblers: ctxDeps,
 			TaskIOMinter:      taskIOMinter,
 			TaskIOCoordURL:    taskIOCoordURL,
+			// ISI-4238: project the run's LLM observability facts (usage
+			// events → llmInteractions/totalTokenUsage; status events →
+			// traceID) onto Run.Status as the innermost TelemetrySink leg,
+			// so the console/API read surface sees them live. The writer
+			// swallows its own failures — a projection hiccup never kills
+			// a Run.
+			LLMStatus: rundrive.NewRunLLMStatusWriter(mgr.GetClient(), func(f string, a ...any) {
+				ctrl.Log.Error(nil, fmt.Sprintf(f, a...))
+			}),
 		})
 		if a2aErr != nil {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")

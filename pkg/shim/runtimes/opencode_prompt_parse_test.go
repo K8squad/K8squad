@@ -140,3 +140,44 @@ func TestParseOpenCodeLineDegrades(t *testing.T) {
 	assert.Equal(t, a2a.EventMessage, out[0].Kind)
 	assert.Equal(t, "not json at all", out[0].Message.Text)
 }
+
+// TestParseOpenCodeStepFinishUsage (ISI-4238): a step_finish carrying the
+// token block maps onto one EventUsage — the raw material for llm.call
+// spans, the run's token totals and the interaction views. Model
+// attribution is provider/model; cost + duration ride when reported.
+func TestParseOpenCodeStepFinishUsage(t *testing.T) {
+	line := `{"type":"step_finish","part":{"type":"step-finish","providerID":"anthropic","modelID":"claude-sonnet-4","tokens":{"input":1200,"output":340,"reasoning":50,"cache":{"read":8000,"write":400}},"cost":{"input":0.0036,"output":0.0021,"total":0.0057},"duration":4200}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	assert.Equal(t, a2a.EventUsage, out[0].Kind)
+	require.NotNil(t, out[0].Usage)
+	u := out[0].Usage
+	assert.Equal(t, "anthropic/claude-sonnet-4", u.Model)
+	assert.Equal(t, 1200, u.Input)
+	assert.Equal(t, 340, u.Output)
+	assert.Equal(t, 50, u.Reasoning)
+	assert.Equal(t, 8000, u.CacheRead)
+	assert.Equal(t, 400, u.CacheWrite)
+	assert.InDelta(t, 0.0057, u.CostUSD, 1e-9)
+	assert.Equal(t, int64(4200), u.DurationMS)
+}
+
+// TestParseOpenCodeStepFinishModelOnly: a step-finish part with tokens but
+// no provider prefix keeps the bare modelID; a part with neither model nor
+// provider still yields usage (the engine attributes the launch model).
+func TestParseOpenCodeStepFinishModelOnly(t *testing.T) {
+	line := `{"type":"step_finish","part":{"type":"step-finish","modelID":"qwen3:8b","tokens":{"input":10,"output":5}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Usage)
+	assert.Equal(t, "qwen3:8b", out[0].Usage.Model)
+	assert.Equal(t, int64(0), out[0].Usage.DurationMS)
+}
+
+// TestParseOpenCodeStepFinishWithoutTokensStaysDropped (ISI-4238): a bare
+// step_finish (older wire, bookkeeping only) must NOT emit zeroed usage —
+// that would poison the run's token totals.
+func TestParseOpenCodeStepFinishWithoutTokensStaysDropped(t *testing.T) {
+	assert.Empty(t, parseOpenCodeLine(`{"type":"step_finish","part":{"type":"step-finish","cost":{"total":1}}}`))
+	assert.Empty(t, parseOpenCodeLine(`{"type":"step_finish"}`))
+}

@@ -18,6 +18,7 @@ package toolusage
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/otel/attribute"
@@ -291,4 +292,159 @@ func counterValue(t *testing.T, reg *prometheus.Registry, name string) float64 {
 		}
 	}
 	return 0
+}
+
+// TestUsageEventLLMCallSpan (ISI-4238): an EventUsage maps to one llm.call
+// span carrying the GenAI model + token attributes and the provider cost,
+// with the span duration set from the reported step duration; the counters
+// increment per model/agent/direction.
+func TestUsageEventLLMCallSpan(t *testing.T) {
+	m, sr, reg := newTestMapper(t)
+	ctx := context.Background()
+
+	m.UsageEvent(ctx, Labels{RunID: "run-1", Agent: "dev"}, "run-1", a2a.UsagePayload{
+		Model: "anthropic/claude-sonnet-4", Input: 1200, Output: 340, Reasoning: 50,
+		CacheRead: 8000, CacheWrite: 400, CostUSD: 0.0057, DurationMS: 4200,
+	})
+
+	s := findSpan(t, sr, SpanLLMCall)
+	attrs := attrMap(s.Attributes())
+	if attrs["gen_ai.request.model"] != "anthropic/claude-sonnet-4" {
+		t.Errorf("model attr = %q", attrs["gen_ai.request.model"])
+	}
+	if attrs["gen_ai.usage.input_tokens"] != "1200" {
+		t.Errorf("input tokens attr = %q", attrs["gen_ai.usage.input_tokens"])
+	}
+	// reasoning counts as output-class
+	if attrs["gen_ai.usage.output_tokens"] != "390" {
+		t.Errorf("output tokens attr = %q", attrs["gen_ai.usage.output_tokens"])
+	}
+	if attrs["gen_ai.usage.cache_read_tokens"] != "8000" {
+		t.Errorf("cache read attr = %q", attrs["gen_ai.usage.cache_read_tokens"])
+	}
+	if attrs["ksquad.llm.cost.usd"] != "0.0057" {
+		t.Errorf("cost attr = %q", attrs["ksquad.llm.cost.usd"])
+	}
+	if attrs["ksquad.run.id"] != "run-1" {
+		t.Errorf("run id attr = %q", attrs["ksquad.run.id"])
+	}
+	if d := s.EndTime().Sub(s.StartTime()); d < 4150*time.Millisecond || d > 4250*time.Millisecond {
+		t.Errorf("llm.call duration = %v, want ~4.2s (truthful step duration)", d)
+	}
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls, tokensIn, tokensOut float64
+	for _, mf := range mfs {
+		for _, metric := range mf.Metric {
+			var direction string
+			for _, l := range metric.Label {
+				if l.GetName() == "direction" {
+					direction = l.GetValue()
+				}
+			}
+			switch {
+			case mf.GetName() == "ksquad_llm_calls_total":
+				calls = metric.Counter.GetValue()
+			case mf.GetName() == "ksquad_llm_tokens_total" && direction == "input":
+				tokensIn = metric.Counter.GetValue()
+			case mf.GetName() == "ksquad_llm_tokens_total" && direction == "output":
+				tokensOut = metric.Counter.GetValue()
+			}
+		}
+	}
+	if calls != 1 {
+		t.Errorf("ksquad_llm_calls_total = %v, want 1", calls)
+	}
+	if tokensIn != 1200 {
+		t.Errorf("input tokens = %v, want 1200", tokensIn)
+	}
+	if tokensOut != 390 {
+		t.Errorf("output tokens = %v, want 390 (output+reasoning)", tokensOut)
+	}
+}
+
+// TestUsageEventModellessDropped (ISI-4238): usage without a model id is
+// unattributable — never fabricated into an "unknown" bucket.
+func TestUsageEventModellessDropped(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.UsageEvent(context.Background(), Labels{}, "t", a2a.UsagePayload{Input: 5})
+	if got := len(sr.Ended()); got != 0 {
+		t.Errorf("spans = %d, want 0", got)
+	}
+}
+
+// TestRunTraceLifecycle (ISI-4238): RunStart opens a run.start root whose
+// trace id is the run's correlation key; spans started with the returned
+// context join that trace; RunEnd closes the root with the terminal state
+// and emits a run.end marker child of the same trace.
+func TestRunTraceLifecycle(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	base := context.Background()
+
+	ctx, root := m.RunStart(base, Labels{RunID: "r", Agent: "a"}, "r")
+	if !root.SpanContext().HasTraceID() {
+		t.Fatal("RunStart returned no trace id")
+	}
+	rootID := root.SpanContext().TraceID()
+
+	// A child llm.call started with the returned ctx must join the trace.
+	m.UsageEvent(ctx, Labels{RunID: "r", Agent: "a"}, "r", a2a.UsagePayload{Model: "m", Input: 1})
+	m.RunEnd(ctx, "r", "completed", "")
+
+	end := findSpan(t, sr, SpanRunEnd)
+	if end.SpanContext().TraceID() != rootID {
+		t.Errorf("run.end trace %v != run.start trace %v", end.SpanContext().TraceID(), rootID)
+	}
+	attrs := attrMap(end.Attributes())
+	if attrs["ksquad.run.state"] != "completed" || attrs["ksquad.outcome"] != "success" {
+		t.Errorf("run.end attrs = %v", attrs)
+	}
+
+	start := findSpan(t, sr, SpanRunStart)
+	if start.SpanContext().TraceID() != rootID {
+		t.Errorf("run.start root trace mismatch")
+	}
+	if !start.EndTime().IsZero() && start.EndTime().Before(start.StartTime()) {
+		t.Errorf("run.start root closed with inverted timestamps")
+	}
+	// The root must be CLOSED by RunEnd with the terminal state.
+	sattrs := attrMap(start.Attributes())
+	if sattrs["ksquad.run.state"] != "completed" {
+		t.Errorf("run.start root terminal state attr = %v", sattrs)
+	}
+
+	// The llm.call child joined the same trace.
+	llm := findSpan(t, sr, SpanLLMCall)
+	if llm.SpanContext().TraceID() != rootID {
+		t.Errorf("llm.call trace %v != run trace %v", llm.SpanContext().TraceID(), rootID)
+	}
+}
+
+// TestRunEndWithoutStartEmitsMarker (ISI-4238): a RunEnd with no matching
+// RunStart still emits the run.end marker (core-side sink posture).
+func TestRunEndWithoutStartEmitsMarker(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.RunEnd(context.Background(), "solo", "failed", "boom")
+	end := findSpan(t, sr, SpanRunEnd)
+	attrs := attrMap(end.Attributes())
+	if attrs["ksquad.run.state"] != "failed" || attrs["ksquad.outcome"] != "error" {
+		t.Errorf("attrs = %v", attrs)
+	}
+}
+
+// TestFinishTaskSweepsOrphanRunRoot (ISI-4238): a run root left open by a
+// crashed emitter is swept by FinishTask with unknown outcome, not leaked.
+func TestFinishTaskSweepsOrphanRunRoot(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	_, root := m.RunStart(context.Background(), Labels{Agent: "a"}, "orphan-run")
+	m.FinishTask(context.Background(), "orphan-run")
+	start := findSpan(t, sr, SpanRunStart)
+	attrs := attrMap(start.Attributes())
+	if attrs["ksquad.outcome"] != "unknown" {
+		t.Errorf("swept root outcome = %v, want unknown", attrs["ksquad.outcome"])
+	}
+	_ = root
 }
