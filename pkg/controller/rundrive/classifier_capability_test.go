@@ -23,19 +23,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // TestSpecClassifierCarriesNamespaceAndCapabilityHash (Epic C, ADR-044
 // steps 7+9): the warm-pool key carries the Run's team namespace (sandbox
 // tenancy — pods boot where RBAC/NetworkPolicy/quota live) and the
 // capability-manifest hash (identical envelopes share pool stock).
+//
+// ISI-4289: a STAMPED bare envelope (the assembler stamps pre-dispatch, so
+// every no-capability Run carries the empty envelope's sha256 "44136fa3…")
+// normalizes to the empty hash — otherwise no bind ever matches the bare
+// warm stock the operator wires and every interactive Run cold-boots.
 func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	capRun := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
 	capRun.Name = "cap-run"
 	capRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
-	capRun.Status.CapabilityManifest = &api.CapabilityManifest{CapabilityHash: "abc123"}
+	// A REAL capability envelope (non-empty lists) — its hash is carried.
+	capRun.Status.CapabilityManifest = &api.CapabilityManifest{
+		Toolchains:     []api.ResolvedToolchainRef{{Name: "go", Version: "1.24", Image: "reg/toolchain-go:1"}},
+		CapabilityHash: "def456",
+	}
+	// The stamped BARE envelope: exactly what BuildManifest(nil, nil, nil)
+	// produces for a no-capability Run (empty lists, empty-envelope hash).
+	stampedBareRun := newTestRun("66666666-6666-6666-6666-666666666666", "wi-6")
+	stampedBareRun.Name = "stamped-bare-run"
+	stampedBareRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
+	stampedBareRun.Status.CapabilityManifest = capability.BuildManifest(nil, nil, nil)
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(capRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
+		WithObjects(capRun, stampedBareRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
 
 	imgs := RuntimeImages{Default: "reg.example/ksquad-shim-codex:m1"}
 	key, _, err := SpecClassifier(cl, imgs, "gvisor")(context.Background(), "44444444-4444-4444-4444-444444444444")
@@ -45,8 +61,8 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	if key.Namespace != capRun.Namespace {
 		t.Fatalf("key.Namespace = %q, want the run namespace %q", key.Namespace, capRun.Namespace)
 	}
-	if key.CapabilityHash != "abc123" {
-		t.Fatalf("key.CapabilityHash = %q, want abc123", key.CapabilityHash)
+	if key.CapabilityHash != "def456" {
+		t.Fatalf("key.CapabilityHash = %q, want def456", key.CapabilityHash)
 	}
 
 	// A Run without a manifest classifies to the bare posture (empty
@@ -54,12 +70,28 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	bareRun := newTestRun("55555555-5555-5555-5555-555555555555", "wi-5")
 	bareRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	cl2 := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(bareRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
+		WithObjects(bareRun, stampedBareRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
 	key, _, err = SpecClassifier(cl2, imgs, "gvisor")(context.Background(), "55555555-5555-5555-5555-555555555555")
 	if err != nil {
 		t.Fatalf("classify bare run: %v", err)
 	}
 	if key.CapabilityHash != "" || key.Namespace != bareRun.Namespace {
 		t.Fatalf("bare run classified (%q,%q), want (ns,%q)", key.Namespace, key.CapabilityHash, bareRun.Namespace)
+	}
+
+	// THE ISI-4289 REGRESSION: a stamped bare envelope (the pre-dispatch
+	// manifest every no-capability Run carries, hash "44136fa3…") must
+	// classify to the SAME bare key — empty hash — so the bind matches the
+	// wired bare warm stock instead of cold-booting past five Ready pods.
+	if stampedBareRun.Status.CapabilityManifest == nil || stampedBareRun.Status.CapabilityManifest.CapabilityHash == "" {
+		t.Fatalf("test setup: stamped bare manifest must carry the empty-envelope hash")
+	}
+	key, _, err = SpecClassifier(cl2, imgs, "gvisor")(context.Background(), "66666666-6666-6666-6666-666666666666")
+	if err != nil {
+		t.Fatalf("classify stamped-bare run: %v", err)
+	}
+	if key.CapabilityHash != "" {
+		t.Fatalf("stamped bare run key.CapabilityHash = %q (manifest hash %q), want empty — the bare posture must share the bare warm stock",
+			key.CapabilityHash, stampedBareRun.Status.CapabilityManifest.CapabilityHash)
 	}
 }
