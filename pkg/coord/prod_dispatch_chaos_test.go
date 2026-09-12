@@ -118,7 +118,7 @@ func seedCompletedSource(t *testing.T, db *sql.DB, handoffJSON, comment string) 
 	if err != nil {
 		t.Fatalf("NewProdClaimer: %v", err)
 	}
-	gotID, fence, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerB, dispatchRunB, sourceID, "")
+	gotID, fence, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerB, dispatchRunB, sourceID, "", "")
 	if err != nil || !ok || gotID != sourceID {
 		t.Fatalf("worker B claim: id=%s ok=%v err=%v — the §2.9 loop rides the §6.2 claim", gotID, ok, err)
 	}
@@ -373,7 +373,7 @@ func dispatchD3NoCustodyTransfer(t *testing.T, dsn string) {
 	if err != nil {
 		t.Fatalf("NewProdClaimer: %v", err)
 	}
-	cItem, fenceC, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerC, dispatchRunC, res.CreatedWorkItemID, "")
+	cItem, fenceC, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerC, dispatchRunC, res.CreatedWorkItemID, "", "")
 	if err != nil || !ok {
 		t.Fatalf("worker C fresh claim: ok=%v err=%v", ok, err)
 	}
@@ -401,7 +401,7 @@ func dispatchD3NoCustodyTransfer(t *testing.T, dsn string) {
 
 	// And a zombie B write — B re-acquiring the DISPATCHED item while C holds
 	// a live lease — is rejected by the §6.2 free-or-expired guard.
-	if _, _, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerB, dispatchRunB, res.CreatedWorkItemID, ""); err == nil && ok {
+	if _, _, ok, err := pc.AcquireSpecific(ctx, dispatchWorkerB, dispatchRunB, res.CreatedWorkItemID, "", ""); err == nil && ok {
 		t.Fatal("P3 VIOLATED: B re-acquired the dispatched item over C's live lease — " +
 			"the free-or-expired guard did not bite")
 	}
