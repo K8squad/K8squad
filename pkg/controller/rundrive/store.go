@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -77,7 +79,15 @@ func NewProdClaims(db *sql.DB, principal string) *ProdClaims {
 // State reads the claim-row snapshot one drive pass decides on — step, fence,
 // holder, lease, the holder RUN (coord.claim.run_id, the acquire stamp M1.3
 // owns) and the work item's board lane (coord.work_item.state).
+//
+// ISI-4354: a workItemID that does not parse as a uuid (the empty string
+// included, mirroring ReconcileStepReader's guard) is reported as found=false
+// WITHOUT touching the DB — the ::uuid cast would reject it with 22P02, a
+// permanent input defect that must never become an infra error loop.
 func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, bool, error) {
+	if _, err := uuid.Parse(workItemID); err != nil {
+		return ClaimState{}, false, nil
+	}
 	var cs ClaimState
 	var holder sql.NullString
 	var lease sql.NullTime

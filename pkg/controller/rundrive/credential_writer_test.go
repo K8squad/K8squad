@@ -70,7 +70,7 @@ func TestSecretCredentialWriter_WritesScopedSecret(t *testing.T) {
 	const ns = "bmad-squad"
 	run := &api.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: ns, UID: types.UID("run-uid-1")},
-		Spec:       api.RunSpec{WorkItemRef: "wi-1", Agents: []api.ObjectRef{{Name: "pm-agent"}}},
+		Spec:       api.RunSpec{WorkItemRef: "10000000-0000-0000-0000-000000000001", Agents: []api.ObjectRef{{Name: "pm-agent"}}},
 	}
 	seed := []client.Object{
 		roleWithReportsTo("ceo", ns, ""),
@@ -99,8 +99,8 @@ func TestSecretCredentialWriter_WritesScopedSecret(t *testing.T) {
 	if got := string(sec.Data[taskio.EnvCoordURL]); got != "http://coord.ksquad-system.svc:8080" {
 		t.Errorf("KSQUAD_COORD_URL = %q", got)
 	}
-	if got := string(sec.Data[taskio.EnvWorkItemID]); got != "wi-1" {
-		t.Errorf("WORK_ITEM_ID = %q, want wi-1", got)
+	if got := string(sec.Data[taskio.EnvWorkItemID]); got != "10000000-0000-0000-0000-000000000001" {
+		t.Errorf("WORK_ITEM_ID = %q, want 10000000-0000-0000-0000-000000000001", got)
 	}
 	if got := string(sec.Data[taskio.EnvRunID]); got != "run-uid-1" {
 		t.Errorf("RUN_ID = %q, want run-uid-1", got)
@@ -117,8 +117,8 @@ func TestSecretCredentialWriter_WritesScopedSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify token: %v", err)
 	}
-	if tok.RunID != "run-uid-1" || tok.WorkItemID != "wi-1" || tok.Principal != "pm-agent" {
-		t.Errorf("token binding = %+v, want run-uid-1/wi-1/pm-agent", tok)
+	if tok.RunID != "run-uid-1" || tok.WorkItemID != "10000000-0000-0000-0000-000000000001" || tok.Principal != "pm-agent" {
+		t.Errorf("token binding = %+v, want run-uid-1/10000000-0000-0000-0000-000000000001/pm-agent", tok)
 	}
 	if !tok.HasScope(orgops.ScopeOrgWrite) {
 		t.Errorf("token missing %s (scope parity with shim path broken); scopes=%v", orgops.ScopeOrgWrite, tok.Scopes)
@@ -130,7 +130,7 @@ func TestSecretCredentialWriter_Idempotent(t *testing.T) {
 	const ns = "bmad-squad"
 	run := &api.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "r1", Namespace: ns, UID: types.UID("run-uid-2")},
-		Spec:       api.RunSpec{WorkItemRef: "wi-2", Agents: []api.ObjectRef{{Name: "coder-agent"}}},
+		Spec:       api.RunSpec{WorkItemRef: "20000000-0000-0000-0000-000000000002", Agents: []api.ObjectRef{{Name: "coder-agent"}}},
 	}
 	seed := []client.Object{
 		roleWithReportsTo("coder", ns, ""),

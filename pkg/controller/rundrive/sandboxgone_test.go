@@ -60,7 +60,7 @@ func (f *fakeBindClearer) ClearSandboxBind(_ context.Context, runID string) erro
 // renewed), and whose status.sandboxRef names a pod that does not exist.
 func goneSandboxFixture(t *testing.T, mutate func(*api.Run, *fakeClaims)) (*Driver, *fakeClaims, *fakeReleaser, *fakeBindClearer, client.Client) {
 	t.Helper()
-	run := newTestRun(goneRunUID, "wi-1")
+	run := newTestRun(goneRunUID, "10000000-0000-0000-0000-000000000001")
 	run.Status.SandboxRef = &api.ObjectRef{Name: gonePod, Namespace: "default"}
 	claims := &fakeClaims{
 		found: true,
@@ -127,7 +127,7 @@ func TestGoneSandboxEntersRetryLap(t *testing.T) {
 	if rq <= 0 {
 		t.Fatalf("requeue = %v, want backoff > 0 (retry lap)", rq)
 	}
-	if len(claims.retryCalls) != 1 || claims.retryCalls[0] != "wi-1/"+goneRunUID+"/5" {
+	if len(claims.retryCalls) != 1 || claims.retryCalls[0] != "10000000-0000-0000-0000-000000000001/"+goneRunUID+"/5" {
 		t.Fatalf("RetryEnter calls = %v, want one fence-first re-entry at fence 5", claims.retryCalls)
 	}
 	if claims.failCall {
