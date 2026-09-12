@@ -36,11 +36,11 @@ import (
 // the classify (fail closed — the old never-fail defaults booted orphan pods
 // into the `default` namespace, a tenancy violation per ADR-044).
 func TestSpecClassifierResolvesRunSpec(t *testing.T) {
-	specRun := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	specRun := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	specRun.Name = "spec-run"
 	specRun.Spec.SandboxPolicy = api.SandboxPolicy{RuntimeClass: "kata", Class: "batch"}
 	specRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
-	defaultRun := newTestRun("22222222-2222-2222-2222-222222222222", "wi-2") // empty policy → defaults
+	defaultRun := newTestRun("22222222-2222-2222-2222-222222222222", "20000000-0000-0000-0000-000000000002") // empty policy → defaults
 	defaultRun.Name = "default-run"
 	defaultRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
@@ -82,7 +82,7 @@ func TestSpecClassifierResolvesRunSpec(t *testing.T) {
 // graph cannot yield an image fails the classify loudly (never a pod with an
 // empty image).
 func TestSpecClassifierImageResolution(t *testing.T) {
-	run := newTestRun("66666666-6666-6666-6666-666666666666", "wi-6")
+	run := newTestRun("66666666-6666-6666-6666-666666666666", "60000000-0000-0000-0000-000000000006")
 	run.Name = "img-run"
 	run.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
@@ -116,7 +116,7 @@ func TestSpecClassifierImageResolution(t *testing.T) {
 	}
 
 	// A dangling runtimeRef fails loudly too.
-	badRun := newTestRun("77777777-7777-7777-7777-777777777777", "wi-7")
+	badRun := newTestRun("77777777-7777-7777-7777-777777777777", "70000000-0000-0000-0000-000000000007")
 	badRun.Spec.Agents = []api.ObjectRef{{Name: "ghost"}}
 	cl2 := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(badRun, newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()
 	if _, _, err := SpecClassifier(cl2, RuntimeImages{Default: "reg/shim:default"}, "gvisor")(ctx, string(badRun.UID)); err == nil {
@@ -150,14 +150,14 @@ func newTestAgentRuntime(name, runtimeType string) *api.AgentRuntime {
 // (Merged onto the M1.2 signature: every Run also carries an agent graph so
 // classifySandbox resolves an image instead of failing the classify.)
 func TestSpecClassifierAddsProjectPVCDimension(t *testing.T) {
-	pvcRun := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
+	pvcRun := newTestRun("44444444-4444-4444-4444-444444444444", "40000000-0000-0000-0000-000000000004")
 	pvcRun.Name = "pvc-run"
 	pvcRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
-	plainRun := newTestRun("55555555-5555-5555-5555-555555555555", "wi-5")
+	plainRun := newTestRun("55555555-5555-5555-5555-555555555555", "50000000-0000-0000-0000-000000000005")
 	plainRun.Name = "plain-run"
 	plainRun.Spec.ProjectRef = api.ObjectRef{Name: "plain"}
 	plainRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
-	ghostRun := newTestRun("88888888-8888-8888-8888-888888888888", "wi-8")
+	ghostRun := newTestRun("88888888-8888-8888-8888-888888888888", "80000000-0000-0000-0000-000000000008")
 	ghostRun.Name = "ghost-run"
 	ghostRun.Spec.ProjectRef = api.ObjectRef{Name: "ghost"}
 	ghostRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}

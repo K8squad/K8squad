@@ -46,7 +46,7 @@ func skillsDispatchFor(t *testing.T, manifest *api.CapabilityManifest, cms ...*c
 		Spec: api.RunSpec{
 			TeamRef:     api.ObjectRef{Name: "team-a"},
 			ProjectRef:  api.ObjectRef{Name: "proj-1"},
-			WorkItemRef: "wi-1",
+			WorkItemRef: "10000000-0000-0000-0000-000000000001",
 			Agents:      []api.ObjectRef{{Name: "coder"}},
 		},
 		Status: api.RunStatus{CapabilityManifest: manifest},

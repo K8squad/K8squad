@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
+
 	"github.com/K8squad/K8squad/pkg/reconcile"
 )
 
@@ -51,6 +53,10 @@ func NewReconcileStepReader(db *sql.DB) *ReconcileStepReader {
 //     initial Pending step rather than an error (never a terminal read).
 //   - an empty workItemID is treated as not-found without touching the DB (a "" is
 //     never a valid uuid key, and the ::uuid cast would otherwise error).
+//   - ISI-4354: a non-empty workItemID that does not parse as a uuid is ALSO
+//     not-found without touching the DB — the ::uuid cast would reject it with
+//     22P02, and a permanent input defect (a malformed ref on a pre-validation
+//     CR) must never put the projector into an endless error backoff loop.
 //   - any other failure is returned so the reconciler requeues rather than reading
 //     a stalled step as terminal.
 func (r *ReconcileStepReader) StepForWorkItem(ctx context.Context, workItemID string) (reconcile.Step, bool, error) {
@@ -58,6 +64,9 @@ func (r *ReconcileStepReader) StepForWorkItem(ctx context.Context, workItemID st
 		return "", false, errors.New("coord.ReconcileStepReader: nil db")
 	}
 	if workItemID == "" {
+		return "", false, nil
+	}
+	if _, err := uuid.Parse(workItemID); err != nil {
 		return "", false, nil
 	}
 	var step string
