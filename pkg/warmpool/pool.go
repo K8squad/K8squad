@@ -330,8 +330,8 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 		p.mu.Unlock()
 		cleanupErr := error(nil)
 		if p.provisioner != nil {
-		cleanupCtx := context.WithoutCancel(ctx)
-		cleanupErr = p.provisioner.TearDown(cleanupCtx, key, id)
+			cleanupCtx := context.WithoutCancel(ctx)
+			cleanupErr = p.provisioner.TearDown(cleanupCtx, key, id)
 		}
 		if cleanupErr != nil {
 			p.mu.Lock()

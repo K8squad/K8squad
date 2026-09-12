@@ -41,7 +41,7 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	capRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	// A REAL capability envelope (non-empty lists) — its hash is carried.
 	capRun.Status.CapabilityManifest = &api.CapabilityManifest{
-		Toolchains:   []api.ResolvedToolchainRef{{Name: "go", Version: "1.24", Image: "reg/toolchain-go:1"}},
+		Toolchains:     []api.ResolvedToolchainRef{{Name: "go", Version: "1.24", Image: "reg/toolchain-go:1"}},
 		CapabilityHash: "def456",
 	}
 	// The stamped BARE envelope: exactly what BuildManifest(nil, nil, nil)
