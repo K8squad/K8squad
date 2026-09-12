@@ -378,6 +378,36 @@ func (p *Pool) NotifyReady(sandboxID string) {
 	p.ready[sb.Key] = append(p.ready[sb.Key], sb.ID)
 }
 
+// Adopt inserts a PRE-EXISTING pod as Ready pool warmth (ISI-4291 restart
+// reconciliation — the caller, AdoptOrReap, has already proven the pod:
+// Ready, key provably a managed key, and no Bind-path Secret claiming it
+// for a Run). The entry joins its key's Ready FIFO as claimable warmth
+// with NO cluster call — the pod is already running; this is bookkeeping
+// for a generation that forgot it. State is forced to Ready and BoundRun
+// cleared regardless of what the caller passed: adopted warmth is never
+// run-reserved (§9.3 — the proof above is what makes that safe). Returns
+// false (no-op) when the id is already tracked — idempotent against a
+// double adoption pass.
+func (p *Pool) Adopt(sb Sandbox) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, exists := p.entries[sb.ID]; exists {
+		return false
+	}
+	entry := sb // copy — the caller's struct is never retained by reference
+	entry.State = StateReady
+	entry.BoundRun = ""
+	if entry.ReadyAt.IsZero() {
+		entry.ReadyAt = p.now()
+	}
+	if entry.CreatedAt.IsZero() {
+		entry.CreatedAt = entry.ReadyAt
+	}
+	p.entries[entry.ID] = &entry
+	p.ready[entry.Key] = append(p.ready[entry.Key], entry.ID)
+	return true
+}
+
 // Release destroys the sandbox bound to runID — §9.3 teardown-and-replace:
 // the pod is destroyed and a FRESH one is replenished by the controller's
 // next pass toward target; the released sandbox NEVER re-enters Ready
