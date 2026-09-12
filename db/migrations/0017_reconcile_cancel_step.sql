@@ -1,4 +1,4 @@
--- 0016_reconcile_cancel_step.sql — the reconcile_step enum extension for the
+-- 0017_reconcile_cancel_step.sql — the reconcile_step enum extension for the
 -- Story 3.3 operator-kill transitional step (ISI-4299).
 --
 -- Forward-only companion to 0005_reconcile_step.sql and
@@ -19,7 +19,7 @@
 -- superset, so no existing row can violate the new constraint. Databases where
 -- the constraint was extended by hand to unblock the ISI-4220 evidence kill
 -- (k8squad-test) converge back onto this canonical definition when the runner
--- applies 0016 — the DROP/re-ADD is shape-agnostic about how the live
+-- applies 0017 — the DROP/re-ADD is shape-agnostic about how the live
 -- constraint got there.
 --
 -- The partial index idx_claim_reconcile_active (0005) keeps 'cancelling' in

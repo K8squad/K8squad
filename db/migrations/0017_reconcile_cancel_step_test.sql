@@ -1,4 +1,4 @@
--- 0016_reconcile_cancel_step_test.sql — runnable self-check for the 3.3
+-- 0017_reconcile_cancel_step_test.sql — runnable self-check for the 3.3
 -- operator-kill transitional step admission (ISI-4299 defect 1) and the cancel
 -- audit INSERT's uuid binding (ISI-4299 defect 2).
 --
@@ -12,8 +12,8 @@
 --          -f db/migrations/0003_coord_outbox.sql \
 --          -f db/migrations/0005_reconcile_step.sql \
 --          -f db/migrations/0010_credential_pause.sql \
---          -f db/migrations/0016_reconcile_cancel_step.sql \
---          -f db/migrations/0016_reconcile_cancel_step_test.sql
+--          -f db/migrations/0017_reconcile_cancel_step.sql \
+--          -f db/migrations/0017_reconcile_cancel_step_test.sql
 --
 -- The BEHAVIOURAL guarantees (fence-first Enter, terminal never resurrected,
 -- checkout release, audit + outbox co-commit) are exercised by the Go tests
