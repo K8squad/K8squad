@@ -119,6 +119,24 @@ type Sandbox struct {
 	ReadyAt   time.Time
 }
 
+// BootPurpose is WHY a sandbox is being booted (ISI-4315). The pool is the
+// only place that knows: warmth replenishment boots idle pods that must
+// yield capacity to Runs, while the cold path boots a pod a Run is actively
+// waiting on. The kube adapter maps the purpose onto pod scheduling
+// priority (idle warmth below Run-dedicated boots in the scheduler queue),
+// so a freed CPU slot can never be stolen from a pending Run cold boot by
+// an older queued warm pod.
+type BootPurpose string
+
+const (
+	// BootWarm is a pool-replenish boot: idle warmth, no Run waiting.
+	BootWarm BootPurpose = "warm"
+
+	// BootRun is a Run's dedicated cold boot: the claiming Run is blocked
+	// on this very pod (§9.2 cold path).
+	BootRun BootPurpose = "run"
+)
+
 // Provisioner is the physical sandbox seam (Story 3.4): everything the pool
 // does to the cluster goes through here, so the mechanism is provable L1
 // against a fake and the kube adapter is a drop-in (pod create/delete with
@@ -130,7 +148,15 @@ type Sandbox struct {
 // synchronous path.
 type Provisioner interface {
 	// Boot starts a fresh sandbox pod for key under the pool-assigned id.
-	Boot(ctx context.Context, key PoolKey, sandboxID string) error
+	//
+	// purpose tells the adapter WHY the sandbox is booting (ISI-4315):
+	// BootWarm is idle pool replenishment — a pod that exists only to
+	// shorten a future claim and must YIELD to real Runs (adapters map it
+	// to a low scheduling priority); BootRun is a Run's dedicated cold
+	// boot — the Run is waiting for THIS pod right now and it must
+	// out-rank idle warmth in the scheduler queue. Adapters that cannot
+	// express priority may ignore the flag, but must not fail on it.
+	Boot(ctx context.Context, key PoolKey, sandboxID string, purpose BootPurpose) error
 
 	// TearDown destroys the sandbox pod (§9.3 teardown-and-replace: the
 	// pod is the disposable unit; a sandbox is NEVER reused across Runs).
@@ -295,10 +321,11 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 
 	// The claiming run's own boot goes FIRST — the miss trigger below fans
 	// out up to maxBootPerTick replenish boots, and the run's cold start
-	// (S9) must not queue behind them.
+	// (S9) must not queue behind them. BootRun (ISI-4315): this pod is the
+	// Run itself — it must out-rank idle warmth in the scheduler queue.
 	bootErr := error(nil)
 	if p.provisioner != nil {
-		bootErr = p.provisioner.Boot(ctx, key, id)
+		bootErr = p.provisioner.Boot(ctx, key, id, BootRun)
 	}
 	fireMiss := func() {
 		if miss != nil {
@@ -636,7 +663,8 @@ func (p *Pool) ScaleDown(ctx context.Context, key PoolKey, n int) int {
 
 // Boot starts one fresh Warming sandbox for key WITHOUT binding it — the
 // controller's replenish primitive (scale-up toward target). Returns the
-// new sandbox id. Readiness arrives later via NotifyReady.
+// new sandbox id. Readiness arrives later via NotifyReady. The boot is
+// BootWarm (ISI-4315): idle warmth that yields to Run-dedicated boots.
 func (p *Pool) Boot(ctx context.Context, key PoolKey) (string, error) {
 	p.mu.Lock()
 	id := p.newID()
@@ -644,7 +672,7 @@ func (p *Pool) Boot(ctx context.Context, key PoolKey) (string, error) {
 	p.mu.Unlock()
 
 	if p.provisioner != nil {
-		if err := p.provisioner.Boot(ctx, key, id); err != nil {
+		if err := p.provisioner.Boot(ctx, key, id, BootWarm); err != nil {
 			p.mu.Lock()
 			delete(p.entries, id)
 			p.mu.Unlock()
@@ -652,6 +680,60 @@ func (p *Pool) Boot(ctx context.Context, key PoolKey) (string, error) {
 		}
 	}
 	return id, nil
+}
+
+// ReapStaleWarming tears down every UNBOUND Warming sandbox for key older
+// than maxAge (ISI-4315: on capacity-saturated clusters warm boots pile up
+// Pending/Insufficient-cpu forever — adopt-or-reap and the replenish loop
+// keep the backlog persistent — so a boot that never materialized within
+// the deadline is destroyed instead of lingering to steal a freed CPU slot
+// from an older position in the scheduler queue). Run-RESERVED warmings
+// (BoundRun set) are never reaped here: they are a live Run's own sandbox,
+// and their lifecycle belongs to the run-drive retry path. Returns how many
+// stale warmings were torn down (confirmed teardowns; failures stay tracked
+// as Draining and are retried by ScaleDown, like every failed teardown).
+func (p *Pool) ReapStaleWarming(ctx context.Context, key PoolKey, maxAge time.Duration) int {
+	if maxAge <= 0 {
+		return 0
+	}
+	now := p.now()
+	p.mu.Lock()
+	var victims []*Sandbox
+	for _, sb := range p.entries {
+		if sb.Key != key || sb.State != StateWarming || sb.BoundRun != "" {
+			continue
+		}
+		if now.Sub(sb.CreatedAt) >= maxAge {
+			victims = append(victims, sb)
+		}
+	}
+	if p.provisioner == nil {
+		// Ledger-only: nothing physical to confirm — untrack now.
+		for _, sb := range victims {
+			delete(p.entries, sb.ID)
+		}
+		p.mu.Unlock()
+		return len(victims)
+	}
+	for _, sb := range victims {
+		// Park as Draining BEFORE the physical call — a reaped warming is
+		// never claimable warmth, whatever the teardown does.
+		sb.State = StateDraining
+		p.draining[key] = append(p.draining[key], sb)
+	}
+	p.mu.Unlock()
+
+	reaped := 0
+	for _, sb := range victims {
+		if err := p.provisioner.TearDown(ctx, key, sb.ID); err != nil {
+			continue // stays Draining; ScaleDown retries it
+		}
+		p.mu.Lock()
+		delete(p.entries, sb.ID)
+		p.mu.Unlock()
+		reaped++
+	}
+	return reaped
 }
 
 // RunClassifier resolves the pool key and run class for a Run at bind time.

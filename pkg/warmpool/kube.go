@@ -18,6 +18,12 @@ limitations under the License.
 // pods with the pool key's RuntimeClass and AgentRuntime image. This is the
 // production drop-in for the Provisioner seam (pool.go) that makes the
 // warm-pool system actually create real cluster pods for cluster testing.
+//
+// ISI-4315: the capacity snapshot below also reads node allocatable (one
+// list per controller tick) so the warm-target ceiling can yield idle
+// warmth to project Runs on saturated clusters.
+//
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 package warmpool
 
 import (
@@ -82,6 +88,10 @@ type KubeProvisioner struct {
 	// (e.g. the OTLP endpoint/protocol passthrough so pod-side spans reach
 	// the telemetry pipeline — values only, never secrets).
 	podEnv []corev1.EnvVar
+	// warmPriorityClass/runPriorityClass stamp per-purpose pod scheduling
+	// priority (ISI-4315 — WithPriorities). Empty = no stamping.
+	warmPriorityClass string
+	runPriorityClass  string
 }
 
 // NewKubeProvisioner creates a new kube Provisioner with the given
@@ -122,6 +132,22 @@ func (k *KubeProvisioner) WithRequests(cpuRequest, memoryRequest string) *KubePr
 	return k
 }
 
+// WithPriorities sets the PriorityClassNames the provisioner stamps per
+// boot purpose (ISI-4315): idle warmth boots (BootWarm) get
+// warmPriorityClassName, Run-dedicated cold boots (BootRun) get
+// runPriorityClassName. The warm class must sit BELOW the run class so the
+// scheduler never hands a freed CPU slot to an older queued warm pod while
+// a Run's cold boot waits (the k8squad-test starvation), and BOTH classes
+// should carry preemptionPolicy: Never — a claimed warm pod keeps its
+// (warm) priority for its whole life, and preemption must never kill a
+// Run-driving sandbox mid-run. Empty names disable stamping (pre-ISI-4315
+// behavior: cluster-default priority for every sandbox pod).
+func (k *KubeProvisioner) WithPriorities(warmPriorityClassName, runPriorityClassName string) *KubeProvisioner {
+	k.warmPriorityClass = warmPriorityClassName
+	k.runPriorityClass = runPriorityClassName
+	return k
+}
+
 // Boot creates a fresh sandbox pod for key under the pool-assigned sandboxID.
 //
 //+kubebuilder:rbac:groups="",resources=pods,verbs=create;delete
@@ -134,7 +160,7 @@ func (k *KubeProvisioner) WithRequests(cpuRequest, memoryRequest string) *KubePr
 // tenancy — per-Run RBAC, NetworkPolicy and quota are namespace-scoped,
 // §12.1); the sandboxNamespace default remains only for callers that have
 // not migrated to classified keys.
-func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string) error {
+func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string, purpose BootPurpose) error {
 	if key.Image == "" {
 		// Fail loudly over the API server's opaque "spec.containers[0].image:
 		// Required value" — an empty image means the AgentRuntime→image
@@ -336,6 +362,20 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 		pod.Spec.RuntimeClassName = &sandboxRuntimeClass
 	}
 
+	// ISI-4315: purpose-keyed scheduling priority. Idle warmth boots below
+	// Run cold boots so the Pending queue can never starve a Run: when a
+	// 500m slot frees up, the scheduler admits the HIGHER-priority Run
+	// boot first regardless of queue age — the k8squad-test failure had an
+	// older queued warm pod stealing the slot an actual project Run's cold
+	// boot was waiting on.
+	if purpose == BootRun {
+		if k.runPriorityClass != "" {
+			pod.Spec.PriorityClassName = k.runPriorityClass
+		}
+	} else if k.warmPriorityClass != "" {
+		pod.Spec.PriorityClassName = k.warmPriorityClass
+	}
+
 	// Per-Project workspace (ISI-4127): the claim name rides the pool key
 	// because the mount must exist at Boot. Team-shared by design — writes
 	// from one agent are readable by every other agent of the project.
@@ -414,4 +454,68 @@ func (k *KubeProvisioner) TearDown(ctx context.Context, key PoolKey, sandboxID s
 // the pod spec.
 func ptrTo[T any](v T) *T {
 	return &v
+}
+
+// KubeCapacitySnapshot reads the cluster's CPU bookkeeping once (ISI-4315):
+// allocMilli = Σ allocatable over Ready, schedulable nodes; freeMilli =
+// allocMilli − Σ CPU requests over live pods (every namespace, every pod —
+// the scheduler-fit approximation the warm cap counts in). Terminated pods
+// (Succeeded/Failed) hold no resources and are skipped. It is a point-in-
+// time READ, safe to call from the controller tick: no writes, no caches
+// mutated. (The nodes list RBAC rides the package marker above.)
+//
+// The client is a client.Reader, not client.Client: the operator's startup
+// budget-sizing read runs BEFORE mgr.Start, when the cache-backed
+// mgr.GetClient() returns ErrCacheNotStarted — the API reader (direct
+// apiserver reads, no cache) is the only client that works there
+// (client.Client satisfies client.Reader, so post-start callers are
+// unaffected).
+func KubeCapacitySnapshot(ctx context.Context, c client.Reader) (allocMilli, usedMilli, freeMilli int64, err error) {
+	var nodes corev1.NodeList
+	if err := c.List(ctx, &nodes); err != nil {
+		return 0, 0, 0, fmt.Errorf("warmpool.KubeCapacitySnapshot: list nodes: %w", err)
+	}
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		ready := false
+		for _, cond := range n.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready || n.Spec.Unschedulable {
+			continue // dead or cordoned nodes contribute no capacity
+		}
+		if q, ok := n.Status.Allocatable[corev1.ResourceCPU]; ok {
+			allocMilli += q.MilliValue()
+		}
+	}
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods); err != nil {
+		return 0, 0, 0, fmt.Errorf("warmpool.KubeCapacitySnapshot: list pods: %w", err)
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		for j := range p.Spec.Containers {
+			if q, ok := p.Spec.Containers[j].Resources.Requests[corev1.ResourceCPU]; ok {
+				usedMilli += q.MilliValue()
+			}
+		}
+	}
+	return allocMilli, usedMilli, allocMilli - usedMilli, nil
+}
+
+// KubeCapacitySource adapts KubeCapacitySnapshot into the controller's
+// CapacitySource (ISI-4315 wiring): each tick reads live node allocatable
+// minus live pod requests, so the warm-target cap tracks what project Runs
+// are actually holding, not a startup snapshot.
+func KubeCapacitySource(c client.Reader) CapacitySource {
+	return func(ctx context.Context) (int64, error) {
+		_, _, freeMilli, err := KubeCapacitySnapshot(ctx, c)
+		return freeMilli, err
+	}
 }

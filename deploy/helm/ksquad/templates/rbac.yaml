@@ -74,6 +74,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/status"]
     verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # ISI-4315: the warm-pool capacity ceiling reads node allocatable each
+  # tick (KubeCapacitySnapshot) so idle warmth yields to project Runs
+  # instead of saturating workers.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

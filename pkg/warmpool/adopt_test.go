@@ -67,7 +67,7 @@ func newFakeKube(t *testing.T) (client.Client, *warmpool.KubeProvisioner) {
 // creation instant (age minutes: older = warmer — FIFO determinism).
 func bootWarmPod(t *testing.T, ctx context.Context, c client.Client, p *warmpool.KubeProvisioner, key warmpool.PoolKey, name string, ageMinutes int, ready bool) {
 	t.Helper()
-	if err := p.Boot(ctx, key, name); err != nil {
+	if err := p.Boot(ctx, key, name, warmpool.BootWarm); err != nil {
 		t.Fatalf("boot %s: %v", name, err)
 	}
 	pod := &corev1.Pod{}
@@ -303,7 +303,7 @@ func TestKubeProvisionerBootStampsFullPoolKeyAnnotations(t *testing.T) {
 		CapabilityHash: "9f2a",
 		ProjectPVC:     "",
 	}
-	if err := kp.Boot(ctx, key, "sbx-fullkey"); err != nil {
+	if err := kp.Boot(ctx, key, "sbx-fullkey", warmpool.BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}

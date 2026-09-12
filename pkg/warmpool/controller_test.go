@@ -67,7 +67,13 @@ func tickReady(t *testing.T, c *warmpool.Controller, pool *warmpool.Pool, fp *fa
 	if err != nil {
 		t.Fatalf("tick: %v", err)
 	}
-	for id := range fp.bootsCopy() {
+	// NotifyReady in BOOT order, not map order: the pool's ready FIFO (and
+	// with it ScaleDown's oldest-first victim choice) follows readiness
+	// ARRIVAL order, so random map iteration would shuffle the FIFO
+	// relative to boot order and flake the oldest-victim assertions
+	// (ISI-4317 review fix 2). Physical pods report readiness in boot
+	// order in these tests.
+	for _, id := range fp.bootOrderCopy() {
 		pool.NotifyReady(id)
 	}
 	return targets
@@ -487,5 +493,103 @@ func TestControllerMiscSurface(t *testing.T) {
 	}
 	if _, err := warmpool.NewBinder(pool, cls).Bind(context.Background(), "run-x"); err == nil {
 		t.Fatal("binder swallowed the classifier error")
+	}
+}
+
+// C8 (ISI-4315): the supply-side capacity ceiling. A pinned policy target
+// (min=2 here; KSQUAD_WARM_POOL_TARGET=5 in the field) must not saturate
+// the cluster: when live slack shrinks below the headroom, the cap sinks
+// below the current warm count and the tick SHEDS surplus Ready warmth
+// IMMEDIATELY (a hard capacity constraint waits out no stabilization band
+// while project Runs sit Pending). Capacity read errors fail OPEN (the
+// policy target stands — a transient list failure must not zero warmth).
+func TestControllerCapacityCapShedsWarmthImmediately(t *testing.T) {
+	c, pool, fp, _ := newController(t, warmpool.ClassInteractive)
+	free := int64(10_000) // plentiful: the policy target stands
+	c.SetCapacity(func(context.Context) (int64, error) { return free, nil },
+		warmpool.WarmCapacityConfig{RequestMilli: 500, HeadroomMilli: 500})
+
+	targets := tickReady(t, c, pool, fp) // policy min=2 satisfied
+	if targets[gvisorKey] != 2 {
+		t.Fatalf("target with plentiful capacity = %d, want 2 (policy floor)", targets[gvisorKey])
+	}
+	if inv := pool.Inventory()[gvisorKey]; inv.Ready != 2 {
+		t.Fatalf("warm ready = %d, want 2", inv.Ready)
+	}
+
+	// A project Run wave eats the slack: free 0 — the cap drops below the
+	// warm count by the headroom slot and the tick sheds one pod NOW.
+	free = 0
+	targets, err := c.Tick(context.Background())
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if targets[gvisorKey] != 1 {
+		t.Errorf("capped target = %d, want 1 (2 warm + floor((0-500)/500))", targets[gvisorKey])
+	}
+	if inv := pool.Inventory()[gvisorKey]; inv.Ready+inv.Warming != 1 {
+		t.Errorf("warm inventory after shed = %+v, want 1 remaining", inv)
+	}
+	if n := fp.teardownCount(fp.oldestBoot()); n == 0 {
+		t.Errorf("surplus Ready warmth was not torn down")
+	}
+
+	// Capacity returns: the pool re-warms to the policy floor.
+	free = 4_000
+	if _, err := c.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	for id := range fp.bootsCopy() {
+		pool.NotifyReady(id)
+	}
+	if inv := pool.Inventory()[gvisorKey]; inv.Ready != 2 {
+		t.Errorf("re-warmed ready = %d, want 2 (capacity returned)", inv.Ready)
+	}
+}
+
+// C8 twin: a capacity read error must fail OPEN — the no-cap twin zeroes
+// warmth on a transient API failure and cold-starts every subsequent
+// claim.
+func TestControllerCapacityCapFailsOpenOnError(t *testing.T) {
+	c, pool, fp, _ := newController(t, warmpool.ClassInteractive)
+	c.SetCapacity(func(context.Context) (int64, error) { return 0, errors.New("apiserver: timeout") },
+		warmpool.WarmCapacityConfig{RequestMilli: 500})
+
+	targets := tickReady(t, c, pool, fp)
+	if targets[gvisorKey] != 2 {
+		t.Errorf("target under capacity-read error = %d, want 2 (fail-open keeps policy target)", targets[gvisorKey])
+	}
+	if inv := pool.Inventory()[gvisorKey]; inv.Ready != 2 {
+		t.Errorf("warm ready under capacity-read error = %+v, want 2 (nothing shed)", inv)
+	}
+}
+
+// C8 arithmetic: WarmCapacityCap is pinned at the worked values from the
+// k8squad-test incident shape (2×4-core workers ≈ 8000m allocatable, 500m
+// warm requests): free slack beyond the headroom converts to extra warmth
+// one pod at a time; a sub-slot deficit (free 400 < headroom 500) sheds
+// exactly one; the budget ceiling caps regardless of slack; an unknown
+// request size fails open; negatives clamp at zero.
+func TestWarmCapacityCapArithmetic(t *testing.T) {
+	cases := []struct {
+		name                          string
+		unbound                       int
+		free, headroom, budget, reqMi int64
+		want                          int
+	}{
+		{"plentiful slack adds pods", 2, 8000, 500, 0, 500, 2 + 15},
+		{"exact slot fits", 2, 1500, 500, 0, 500, 4},
+		{"sub-slot deficit sheds one (floor, not trunc)", 2, 400, 500, 0, 500, 1},
+		{"zero free sheds headroom slot", 3, 0, 500, 0, 500, 2},
+		{"deep deficit clamps at zero", 3, -1500, 500, 0, 500, 0},
+		{"budget ceiling overrides slack", 2, 8000, 500, 1000, 500, 2},
+		{"budget below current sheds to budget", 3, 8000, 500, 1000, 500, 2},
+		{"unknown request fails open", 3, 0, 500, 0, 0, 3},
+	}
+	for _, tc := range cases {
+		if got := warmpool.WarmCapacityCap(tc.unbound, tc.free, tc.headroom, tc.budget, tc.reqMi); got != tc.want {
+			t.Errorf("%s: WarmCapacityCap(%d, free=%d, headroom=%d, budget=%d, req=%d) = %d, want %d",
+				tc.name, tc.unbound, tc.free, tc.headroom, tc.budget, tc.reqMi, got, tc.want)
+		}
 	}
 }
