@@ -51,8 +51,10 @@ func NewPostgresSessionResolver(db *sql.DB) *PostgresSessionResolver {
 // (revoked_at IS NULL AND expires_at > now()) predicate is the fail-closed guard, evaluated in the
 // database so a caller can never widen it. Since 0008 (ISI-2920) the admin flag derives from
 // global_role and a deactivated user resolves to nothing (soft-delete fails closed at the join).
+// u.id rides along (ISI-4299) so control-plane audit stamps (initiated_by_user_id) can carry the
+// §12.4 on-behalf-of uuid instead of abusing the principal string.
 const resolveSessionSQL = `
-SELECT u.principal, u.team_id, (u.global_role = 'admin') AS is_admin
+SELECT u.principal, u.team_id, (u.global_role = 'admin') AS is_admin, u.id::text AS user_id
   FROM auth.session s
   JOIN auth.user u ON u.id = s.user_id
  WHERE s.token_hash = $1
@@ -75,14 +77,15 @@ func (r *PostgresSessionResolver) Resolve(ctx context.Context, token string) (di
 		principal string
 		teamID    uuid.UUID
 		isAdmin   bool
+		userID    string
 	)
-	err := r.db.QueryRowContext(ctx, resolveSessionSQL, sum[:]).Scan(&principal, &teamID, &isAdmin)
+	err := r.db.QueryRowContext(ctx, resolveSessionSQL, sum[:]).Scan(&principal, &teamID, &isAdmin, &userID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		// No live session for this token (absent / expired / revoked) — deny indistinguishably.
 		return discussion.AuthorContext{}, ErrNoSession
 	case err != nil:
-		// A backing outage denies (non-nil ⇒ 401) rather than failing open.
+		// A backing outage denies (non-nil ⇒ 401) rather than fails open.
 		return discussion.AuthorContext{}, err
 	}
 	if principal == "" {
@@ -93,6 +96,7 @@ func (r *PostgresSessionResolver) Resolve(ctx context.Context, token string) (di
 
 	return discussion.AuthorContext{
 		Principal: principal,
+		UserID:    userID,
 		TeamID:    teamID,
 		IsAdmin:   isAdmin,
 		// AgentID / RunID intentionally nil: a browser session is a human post (§7.5).

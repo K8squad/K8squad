@@ -53,13 +53,19 @@ var ErrKillNotFound = errors.New("apiserver: no claim for work item")
 // without inventing a second transition.
 type RunKiller interface {
 	// Kill issues the fence-first cancel-enter for the work item.
-	// initiatedBy stamps the audit row (§6.5 — a kill is human-initiated).
+	// initiatedBy stamps the audit row's initiated_by_user_id (§6.5 — a kill
+	// is human-initiated): the initiating user's auth.user id (uuid), or ""
+	// when no user is resolved (NULL). Never a principal string — the column
+	// is uuid (ISI-4299 defect 2).
 	Kill(ctx context.Context, workItemID, initiatedBy string) (phase string, err error)
 }
 
 // killRunHandler answers POST /api/work-items/{workItemId}/kill. It rides the
 // §13 BFF authz choke point, so the AuthorContext (principal) is already
-// stamped — that principal is the audit's initiated_by.
+// stamped. The audit's initiated_by_user_id is the RESOLVED auth.user id —
+// the principal is a stable string key, not a uuid, and the uuid column
+// rejects it (ISI-4299); a session-less initiator degrades to NULL, with the
+// acting server principal still on the audit row.
 func killRunHandler(killer RunKiller) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth, ok := discussion.AuthFromContext(r.Context())
@@ -72,7 +78,7 @@ func killRunHandler(killer RunKiller) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "work item id is required")
 			return
 		}
-		phase, err := killer.Kill(r.Context(), id, auth.Principal)
+		phase, err := killer.Kill(r.Context(), id, auth.UserID)
 		switch {
 		case errors.Is(err, ErrKillConflict):
 			writeJSON(w, http.StatusConflict, map[string]string{

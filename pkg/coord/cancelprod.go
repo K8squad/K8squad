@@ -95,9 +95,13 @@ func (s *ProdCancelStore) State(ctx context.Context, workItemID string) (CancelS
 }
 
 // CancelEnter is the kill-side transition: fence-first move to cancelling with
-// the checkout released. initiatedBy stamps the calling user on the audit row
-// (§6.5: a kill is human-initiated; empty falls back to the server principal).
-// runID may be empty — audit_log.run_id is nullable; the outbox resolves it
+// the checkout released. initiatedBy stamps the calling user on the audit row's
+// initiated_by_user_id (§6.5: a kill is human-initiated). It is the initiating
+// user's auth.user id (a uuid string) or EMPTY for "no resolved user" (NULL) —
+// never a principal string like "user:admin": the column is uuid, and a
+// non-uuid text fails the NULLIF(...)::uuid cast (ISI-4299 defect 2). The
+// human's stable principal is recoverable by joining auth.user on the stored
+// id. runID may be empty — audit_log.run_id is nullable; the outbox resolves it
 // from the latest dispatch marker when absent.
 func (s *ProdCancelStore) CancelEnter(ctx context.Context, workItemID, runID, principal, initiatedBy string, fromFence int64) (CancelOutcome, error) {
 	switch o, err := s.cancelTx(ctx, workItemID, runID, principal, initiatedBy,
@@ -187,7 +191,7 @@ func (s *ProdCancelStore) cancelTx(ctx context.Context, workItemID, runID, princ
 		INSERT INTO coord.audit_log
 		       (work_item_id, run_id, event_type, principal,
 		        initiated_by_user_id, fence_token, to_state)
-		VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, NULLIF($5,''), $6, $7)`,
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, NULLIF($5,'')::uuid, $6, $7)`,
 		workItemID, runID, event, principal, initiatedBy, fenceAfter, toStep); err != nil {
 		return CancelMissing, fmt.Errorf("coord.ProdCancelStore.%s: audit: %w", event, err)
 	}

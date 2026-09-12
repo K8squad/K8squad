@@ -111,6 +111,7 @@ func (s *StaticSessionResolver) Resolve(_ context.Context, token string) (discus
 type staticSession struct {
 	Token     string  `json:"token"`
 	Principal string  `json:"principal"`
+	UserID    string  `json:"userId,omitempty"` // optional auth.user id (uuid) — audit stamps (§12.4) when hand-authoring
 	TeamID    string  `json:"teamId"`
 	AgentID   *string `json:"agentId,omitempty"`
 	RunID     *string `json:"runId,omitempty"`
@@ -141,6 +142,7 @@ func LoadStaticSessions(path string) (*StaticSessionResolver, error) {
 		}
 		m[row.Token] = discussion.AuthorContext{
 			Principal: row.Principal,
+			UserID:    row.UserID,
 			TeamID:    team,
 			AgentID:   row.AgentID,
 			RunID:     row.RunID,

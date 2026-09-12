@@ -32,6 +32,7 @@ import (
 // provenance from here, which is what makes impersonation un-representable (AC3).
 type AuthorContext struct {
 	Principal string    // authenticated identity (always present); becomes author_principal / created_by
+	UserID    string    // resolved auth.user id (uuid text) for session-backed identities; "" when unavailable (dev sessions, agent paths)
 	TeamID    uuid.UUID // caller's authorized Team scope (tenancy root, §7.3.3)
 	AgentID   *string   // set ⇒ agent-authored; nil ⇒ human (agent-vs-human is DERIVED, not a flag)
 	RunID     *string   // set only when posted from within a Run (R2); nil for a console/human post

@@ -32,6 +32,7 @@ SQL migrations** applied in filename order.
 | 0014 | `0014_work_item_acceptance_goals.sql` | `coord` — `work_item.acceptance_criteria` + `work_item.goals` (text[]); per-item AC + goals for the §8.5 context read models. Rides the existing `updated_at` touch trigger, so `WorkItemRevision` pins them with no new cursor. | ISI-3606 (shared S1/S2), Arch §6.1/§8.5, ADR-041 |
 | 0015 | `0015_work_item_change_ref.sql` | `coord` — `change_ref` (append-only agent-reported change refs: commit SHAs / PR links with server-supplied author + run provenance; reject_mutation triggers, tight kind enum) | M1.5 (ISI-4131), Arch §6.1/§6.5 |
 | 0016 | `0016_work_item_touch_on_change.sql` | `coord` — `touch_updated_at()` bumps `updated_at` only when the row actually changes (no-op custody writes mint no revision) | ISI-4217, Arch §8.5 deterministic-resume (AC3) |
+| 0017 | `0017_reconcile_cancel_step.sql` | `coord` — `claim_reconcile_step_enum` extension admitting `'cancelling'`, the 3.3 operator-kill transitional step (CancelEnter writes it; no earlier migration ever admitted it — every kill died 23514). Originally authored as 0016 on a side branch; renumbered when 0016 was taken by the touch-trigger migration | ISI-4299, Arch §6.4/§3.3 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 

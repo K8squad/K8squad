@@ -43,7 +43,8 @@ const killConflictBudget = 3
 // Kill implements RunKiller: read the claim, CancelEnter fence-first; on
 // conflict re-read and retry within budget. Idempotent by outcome — a Run
 // already cancelling re-enters harmlessly only if the fence still holds,
-// otherwise reports the observed phase.
+// otherwise reports the observed phase. initiatedBy is the initiating user's
+// auth.user id (uuid) or "" — see the RunKiller contract (ISI-4299).
 func (k *ProdRunKiller) Kill(ctx context.Context, workItemID, initiatedBy string) (string, error) {
 	for attempt := 0; attempt < killConflictBudget; attempt++ {
 		cs, found, err := k.store.State(ctx, workItemID)
