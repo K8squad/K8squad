@@ -201,6 +201,15 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 			Annotations: map[string]string{
 				"k8squad.io/sandbox-id": sandboxID,
 				"k8squad.io/pool-key":   fmt.Sprintf("%s/%s", key.RuntimeClass, key.Image),
+				// ISI-4291: the FULL key, one annotation per dimension
+				// (empty values stamped on purpose — presence is the
+				// provability marker poolKeyFromAnnotations requires; a
+				// pre-change pod lacks these and is reaped, never adopted).
+				AnnPoolRuntimeClass:   key.RuntimeClass,
+				AnnPoolImage:          key.Image,
+				AnnPoolNamespace:      key.Namespace,
+				AnnPoolCapabilityHash: key.CapabilityHash,
+				AnnPoolProjectPVC:     key.ProjectPVC,
 			},
 		},
 		Spec: corev1.PodSpec{
