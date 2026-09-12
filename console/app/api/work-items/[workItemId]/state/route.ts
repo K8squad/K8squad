@@ -2,10 +2,11 @@
 // status-transition (stories 8.14a/8.14b, ADR-037). PATCH-ONLY.
 //
 // This is the ONE mutation the Tickets screen adds: a drag-and-drop (or
-// quick-move) issues PATCH /work-items/{id}/state {to, expectedFrom} — an
-// audited, concurrency-guarded, RBAC-gated operator override. The BFF forwards
-// the caller's session identity and body UNCHANGED; the apiserver is the sole
-// authority for the conditional UPDATE (409 on stale expectedFrom), the
+// quick-move) issues PATCH /work-items/{id}/state {toState, fromState} (apiserver
+// field names — ISI-4225) — an audited, concurrency-guarded, RBAC-gated operator
+// override. The BFF forwards the caller's session identity and body UNCHANGED;
+// the apiserver is the sole
+// authority for the conditional UPDATE (409 on stale fromState), the
 // contributor/maintainer RBAC wall (§6.7.2), the audit record
 // (initiated_by_user_id, §6.5) and the no-fence guarantee (§6.2 — the agent's
 // claim row is never touched by this path). Status is relayed VERBATIM: 200,

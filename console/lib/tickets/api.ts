@@ -3,8 +3,9 @@
 // The browser talks ONLY to the Next.js BFF (ADR-013 single choke point); these
 // helpers hit the local /api routes which forward the session cookie upstream.
 // The ONE mutation on this screen is the human status-transition
-// PATCH /api/work-items/{id}/state {to, expectedFrom} (8.14a, ADR-037) — no
-// claim/lease call is ever issued from the console (distinct authority path, §6.2).
+// PATCH /api/work-items/{id}/state {toState, fromState} (8.14a, ADR-037 — the
+// apiserver's field names, ISI-4225) — no claim/lease call is ever issued from
+// the console (distinct authority path, §6.2).
 
 import { encodeProjectId } from "@/lib/projectId";
 import type {
@@ -71,7 +72,7 @@ export async function patchWorkItemState(
     },
   );
   await jsonOrThrow(res);
-  return { state: body.to };
+  return { state: body.toState };
 }
 
 /**

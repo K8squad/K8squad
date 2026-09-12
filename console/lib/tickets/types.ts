@@ -85,10 +85,19 @@ export interface SortSpec {
   dir: SortDir;
 }
 
-/** Body for the human status-transition (story 8.14a contract, ADR-037). */
+/**
+ * Body for the human status-transition (story 8.14a, ADR-037). Field names are
+ * the APISERVER's (`internal/apiserver/workitemstate.go` stateTransitionRequest)
+ * — the server is the contract authority and the BFF forwards this body
+ * verbatim, so a client-side spelling drift surfaces as a 400 on every lane
+ * move (ISI-4225). The server treats `fromState` as an optional guard; the
+ * console always sends the lane it rendered from so a racing change 409s.
+ * Pinned byte-for-byte by the shared contract fixture
+ * (test/tickets/fixtures/state-transition-request.json) on both sides.
+ */
 export interface StateTransitionBody {
-  to: WorkItemState;
-  expectedFrom: WorkItemState;
+  toState: WorkItemState;
+  fromState: WorkItemState;
 }
 
 /**

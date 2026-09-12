@@ -8,8 +8,9 @@
 // with a badge overlay — blocked is a condition, never a 6th column (§8.6).
 //
 // Drag-and-drop is the ONE mutation this screen adds: dropping a card issues
-// exactly one PATCH /work-items/{id}/state {to, expectedFrom} (8.14a) — an
-// audited, RBAC-gated operator override that does NOT take the agent's fence
+// exactly one PATCH /work-items/{id}/state {toState, fromState} (8.14a; apiserver
+// field names — ISI-4225) — an audited, RBAC-gated operator override that does
+// NOT take the agent's fence
 // claim (§6.2 — no claim/lease call ever fires from here). On 409 the board
 // re-syncs to server truth (the screen refetches; no client-authored state).
 // A viewer (or when the role is unknown) sees DnD disabled and can issue no
