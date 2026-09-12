@@ -134,7 +134,11 @@ type Provisioner interface {
 
 	// TearDown destroys the sandbox pod (§9.3 teardown-and-replace: the
 	// pod is the disposable unit; a sandbox is NEVER reused across Runs).
-	TearDown(ctx context.Context, sandboxID string) error
+	// It carries the sandbox's key so namespaced adapters delete in the
+	// namespace Boot created the pod in (ISI-4289: the kube adapter
+	// hardcoded `default` and could never tear down team-namespace pods,
+	// leaking them as permanent CPU-request orphans).
+	TearDown(ctx context.Context, key PoolKey, sandboxID string) error
 }
 
 // BindMissFunc is the scale-up trigger the controller registers (Story 3.4
@@ -327,7 +331,7 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 		cleanupErr := error(nil)
 		if p.provisioner != nil {
 			cleanupCtx := context.WithoutCancel(ctx)
-			cleanupErr = p.provisioner.TearDown(cleanupCtx, id)
+			cleanupErr = p.provisioner.TearDown(cleanupCtx, key, id)
 		}
 		if cleanupErr != nil {
 			p.mu.Lock()
@@ -409,7 +413,7 @@ func (p *Pool) Release(ctx context.Context, runID string) error {
 	p.mu.Unlock()
 
 	if p.provisioner != nil {
-		if err := p.provisioner.TearDown(ctx, id); err != nil {
+		if err := p.provisioner.TearDown(ctx, key, id); err != nil {
 			// Teardown failed: the pod may still be alive. Keep it
 			// tracked as Draining (never claimable) so a later pass
 			// re-attempts the teardown — never orphan a live pod the
@@ -521,7 +525,7 @@ func (p *Pool) retryDraining(ctx context.Context, key PoolKey) int {
 			reclaimed++ // ledger-only: nothing physical to confirm
 			continue
 		}
-		if err := p.provisioner.TearDown(ctx, sb.ID); err != nil {
+		if err := p.provisioner.TearDown(ctx, key, sb.ID); err != nil {
 			still = append(still, sb)
 			continue
 		}
@@ -589,7 +593,7 @@ func (p *Pool) ScaleDown(ctx context.Context, key PoolKey, n int) int {
 	p.mu.Unlock()
 
 	for _, sb := range victims {
-		if err := p.provisioner.TearDown(ctx, sb.ID); err != nil {
+		if err := p.provisioner.TearDown(ctx, key, sb.ID); err != nil {
 			continue // stays Draining; the next pass retries it
 		}
 		p.mu.Lock()

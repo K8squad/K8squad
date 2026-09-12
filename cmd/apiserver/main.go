@@ -209,6 +209,11 @@ func main() {
 	// also feeds the dashboard's live-Runs tile, so the cache block below is
 	// the ONE place all three read models get their reader.
 	var dashboardReader client.Reader
+	// M1.6 (ISI-4132): the project-ref resolver the console board surface uses to
+	// translate "namespace/name" ids to the Project CR UID the coord store keys on.
+	// Rides the SAME informer cache; a cache-less dev host leaves it nil and the
+	// handlers pass path variables through unchanged.
+	var projectRefs apiserver.ProjectRefResolver
 	if cacheReader, stopCache, cerr := apiserver.NewCacheReader(ctx, 30*time.Second); cerr != nil {
 		log.Printf("ksquad-apiserver: informer cache unavailable — squad-overview + credential read models disabled (GET /api/squad/overview, GET /api/credentials → 501): %v", cerr)
 	} else {
@@ -221,6 +226,7 @@ func main() {
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
+		projectRefs = apiserver.NewClientProjectRefResolver(cacheReader)
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
 	}
 
@@ -328,6 +334,14 @@ func main() {
 	workItemWrites, err := coord.NewWorkItemWriteStore(db)
 	if err != nil {
 		log.Fatalf("ksquad-apiserver: work-item write store: %v", err)
+	}
+
+	// M1.5 board read models (ISI-4131): the per-Project card list + the ticket
+	// thread (comments, status history, change refs) the console Issues tab
+	// (M1.6) draws from. Same DB hard-dependency posture as the write stores.
+	workItemReads, err := coord.NewWorkItemReadStore(db)
+	if err != nil {
+		log.Fatalf("ksquad-apiserver: work-item read store: %v", err)
 	}
 
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
@@ -469,7 +483,7 @@ func main() {
 		default:
 			runTokenMinter = minter
 			taskIOHandler = taskio.NewHandler(minter, store).Mux()
-			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/update-status/checkout)")
+			log.Printf("ksquad-apiserver: task-io seam ready (/api/task-io: get-task/post-comment/post-change/update-status/checkout)")
 		}
 	} else {
 		log.Printf("ksquad-apiserver: task-io seam disabled — no >=32B JWT signing key (set auth.signingKeySecretRef / KSQUAD_JWT_SIGNING_KEY)")
@@ -509,6 +523,8 @@ func main() {
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,
+		WorkItemReads:    workItemReads,
+		ProjectRefs:      projectRefs,
 		Search:           searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the

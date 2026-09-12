@@ -136,6 +136,20 @@ type Options struct {
 	// Nil ⇒ those routes keep the documented 501 (a DB-less dev run), exactly like the
 	// state route above. State edits stay on the separate .../state path.
 	WorkItemWrites WorkItemWriter
+	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
+	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
+	// /api/work-items/{id} (ticket thread — comments, status history, change
+	// refs). Nil ⇒ both GETs keep the documented 501 (a DB-less dev run),
+	// exactly like the other read models.
+	WorkItemReads WorkItemReader
+	// ProjectRefs translates the console's "namespace/name" project id to the
+	// Project CR UID + owning Team the coord board store keys on (ISI-4132).
+	// The work-item list/create routes match the id with a cross-slash pattern
+	// ({projectId:.+}) because the mux matches the DECODED path — a Project id
+	// carries a literal "/" — so a single-encoded "ns%2Fname" URL lands here
+	// decoded and whole. Nil ⇒ handlers pass the raw path variable through
+	// (dev host shape; unit seams).
+	ProjectRefs ProjectRefResolver
 	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
 	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models. RBAC scoping (admin fleet-wide vs Team-fenced) is
@@ -198,7 +212,8 @@ type Options struct {
 	// a writer client), exactly like the read half and the compose surface.
 	OTelConfigWriter *OTelConfigWriteService
 	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
-	// post-comment / update-status / checkout) mounted under /api/task-io/. It
+	// post-comment / post-change (M1.5, ISI-4131) / update-status / checkout)
+	// mounted under /api/task-io/. It
 	// does NOT ride the cookie BFF authz choke point: it carries its OWN
 	// run-scoped bearer auth (pkg/taskio), so it is mounted at the router root
 	// with a StripPrefix. Nil ⇒ the surface is simply absent (a dev run without
@@ -752,7 +767,7 @@ func (s *Server) routes(opts Options) {
 		// non-member is refused at the wall); the handler adds the human-only gate and the
 		// store applies Team scoping + a §6.5 audit row. Same CSRF + bounded-body guards as
 		// the other mutation surfaces. Nil writer ⇒ documented 501 (a store-less host shape).
-		workItemCreate := s.router.Path("/api/projects/{projectId}/work-items").Subrouter()
+		workItemCreate := s.router.Path("/api/projects/{projectId:.+}/work-items").Subrouter()
 		workItemCreate.Use(authz)
 		workItemCreate.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
 		workItemCreate.Use(maxBytesBody(64 << 10))
@@ -760,10 +775,27 @@ func (s *Server) routes(opts Options) {
 			workItemCreate.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
 		}
 		if opts.WorkItemWrites != nil {
-			workItemCreate.HandleFunc("", workItemCreateHandler(opts.WorkItemWrites)).Methods(http.MethodPost)
+			workItemCreate.HandleFunc("", workItemCreateHandler(opts.WorkItemWrites, opts.ProjectRefs)).Methods(http.MethodPost)
 		} else {
 			workItemCreate.HandleFunc("", notImplemented("work-item create", "ISI-3959: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPost)
+		}
+
+		// M1.5 board card list (ISI-4131): GET /api/projects/{projectId}/work-items —
+		// the §13 projection the console Issues tab (M1.6) draws from. Same choke
+		// point; Viewer tier when a membership resolver is wired (reading is one
+		// tier below authoring), so the GET rides its OWN subrouter rather than the
+		// create's Contributor-gated one. Nil reader ⇒ documented 501.
+		workItemList := s.router.Path("/api/projects/{projectId:.+}/work-items").Subrouter()
+		workItemList.Use(authz)
+		if opts.ProjectRoles != nil {
+			workItemList.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.WorkItemReads != nil {
+			workItemList.HandleFunc("", workItemListHandler(opts.WorkItemReads, opts.ProjectRefs)).Methods(http.MethodGet)
+		} else {
+			workItemList.HandleFunc("", notImplemented("work-item board list", "ISI-4131: wire a coord.WorkItemReadStore (Postgres) to enable")).
+				Methods(http.MethodGet)
 		}
 
 		// S3 human work-item FIELD-EDIT (ISI-3959): PATCH /api/work-items/{id} — title /
@@ -779,6 +811,19 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemEdit.HandleFunc("", notImplemented("work-item edit", "ISI-3959: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// M1.5 ticket thread read (ISI-4131): GET /api/work-items/{id} — the full
+		// thread (agent-authored comments, status history, change refs) behind the
+		// same choke point. Tenancy is the store's Team fence (cross-tenant 404),
+		// like the edit above; reads need no body/CSRF guards. Nil reader ⇒ 501.
+		workItemThread := s.router.Path("/api/work-items/{id}").Subrouter()
+		workItemThread.Use(authz)
+		if opts.WorkItemReads != nil {
+			workItemThread.HandleFunc("", workItemThreadHandler(opts.WorkItemReads)).Methods(http.MethodGet)
+		} else {
+			workItemThread.HandleFunc("", notImplemented("work-item thread read", "ISI-4131: wire a coord.WorkItemReadStore (Postgres) to enable")).
+				Methods(http.MethodGet)
 		}
 
 		// 8.18 global search (ISI-2912): the read side of the coord.work_item full-text

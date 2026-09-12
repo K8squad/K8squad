@@ -225,7 +225,10 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 	if err != nil {
 		return nil, fmt.Errorf("contextasm: project meta: %w", err)
 	}
-	recall, err := a.gatherMemoryRecall(ctx, req.TeamID, req.Run.Spec.ProjectRef.Name, recallQueryText(wi), pinnedDocIDs)
+	// M1.2 (ISI-4128): scoped recall keys on the project's Postgres uuid
+	// (coord.work_item.project_id = Project CR uid) — the ref NAME is not a
+	// uuid and fails the scoped-recall query. The resolved CR is in hand.
+	recall, err := a.gatherMemoryRecall(ctx, req.TeamID, string(req.Project.UID), recallQueryText(wi), pinnedDocIDs)
 	if err != nil {
 		return nil, fmt.Errorf("contextasm: memory recall: %w", err)
 	}

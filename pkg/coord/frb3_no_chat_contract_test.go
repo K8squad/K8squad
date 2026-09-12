@@ -245,6 +245,13 @@ var allowedSurface = map[string]string{
 	"ProdEffects.WithSnapshotter":         "§8.7c opt-in the build-snapshot capture at Collecting (custody-only)",
 	"ProdEffects.WithRunCredentialWriter": "ADR-0007 opt-in the Bind-path task-io Secret delivery (custody-only)",
 
+	// M1.2 sandbox-ref surface (ISI-4128): the observer is notified of the
+	// bound sandbox_ref under the same at-most-once gating as the credential
+	// writer — run-id + ref only, no content; the impl patches the operator-side
+	// Run status. Custody-only, no agent-to-agent channel.
+	"SandboxRefObserver":                 "M1.2/ISI-4128 Bind-path sandbox_ref notification port (custody/execution, run-id + ref only)",
+	"ProdEffects.WithSandboxRefObserver": "M1.2/ISI-4128 opt-in the sandbox_ref surface at Bind (custody-only)",
+
 	// Story 3.7 prod resume binding (resumeprod.go, ISI-2883): the uuid-keyed
 	// scheduled-resume surface — custody/schedule operations on the pause
 	// episode row, no agent-to-agent channel.
@@ -332,6 +339,27 @@ var allowedSurface = map[string]string{
 	"AppendComment":  "§6.1 append a provenanced coord.comment (sanctioned handoff half, server-authored author)",
 	"TaskDetail":     "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
 	"TaskComment":    "§6.1 one append-only provenanced note on a work item (read projection)",
+
+	// M1.5 agent change reporting + board read models (ISI-4131, epic ISI-4126):
+	// the run's change SUMMARY — commit SHAs / PR links — appended to its OWN card
+	// (coord.change_ref, migration 0015), plus the board-side reads that surface
+	// comments + status history + change refs. Custody/reporting only: a change
+	// ref is provenance (kind/ref/summary, author server-supplied from the run
+	// token) — the same §6.1 shape AppendComment pins, not an agent-to-agent
+	// channel; the reads are Team-scoped projections of a card's own content.
+	"ChangeKindCommit":                     "§6.1 change-ref kind enum: commit (M1.5 tight enum, migration 0015)",
+	"ChangeKindPullRequest":                "§6.1 change-ref kind enum: pull_request (M1.5 tight enum, migration 0015)",
+	"ValidChangeKinds":                     "§6.1 closed change-ref kind set (widening is a forward migration)",
+	"ErrInvalidChangeRef":                  "§6.1 guard: change-report kind/ref malformed (→400)",
+	"ChangeRef":                            "§6.1 one append-only provenanced change ref on a card (read projection)",
+	"AppendChangeRef":                      "§6.1 append a provenanced coord.change_ref + §6.5 audit (sanctioned M1.5 report half, author server-supplied)",
+	"BoardItem":                            "§13 one board card projection (state/holder/thread counts, read-only)",
+	"StatusChange":                         "§6.5 one state_transition audit row projected for the thread (read-only)",
+	"WorkItemThread":                       "§6.1/§6.5 ticket thread read: detail + recent status history (read-only)",
+	"WorkItemReadStore":                    "§13 board read store (card list + ticket thread) bound to the prod schema",
+	"NewWorkItemReadStore":                 "§13 constructor",
+	"WorkItemReadStore.ListWorkItems":      "§13 per-Project card list, Team-scoped (404 existence-hiding)",
+	"WorkItemReadStore.ReadWorkItemThread": "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
 
 	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
 	// (Stories 7.4+7.6 / ISI-2898, gap ISI-2876). Reuses the 2.11/3.7 resume

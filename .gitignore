@@ -31,3 +31,7 @@ bin/
 # Helm release build output (ISI-2632)
 dist/
 .cr-release-packages/
+
+# Local build artifacts (ISI-4161: 81MB operator binary leaked into the tree)
+/operator
+/shim

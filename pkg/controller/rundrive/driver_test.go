@@ -48,6 +48,15 @@ type fakeClaims struct {
 	laps    int
 	lapsErr error
 
+	acquireFence int64
+	acquireOK    bool
+	acquireErr   error
+	acquireCalls []string
+
+	renewOK    bool
+	renewErr   error
+	renewCalls int
+
 	retryNewFence int64
 	retryOK       bool
 	retryErr      error
@@ -73,6 +82,14 @@ func (f *fakeClaims) State(context.Context, string) (ClaimState, bool, error) {
 	return f.state, f.found, f.stateErr
 }
 func (f *fakeClaims) LapsUsed(context.Context, string) (int, error) { return f.laps, f.lapsErr }
+func (f *fakeClaims) Acquire(_ context.Context, workItemID, runID string) (int64, bool, error) {
+	f.acquireCalls = append(f.acquireCalls, workItemID+"/"+runID)
+	return f.acquireFence, f.acquireOK, f.acquireErr
+}
+func (f *fakeClaims) Renew(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
+	f.renewCalls++
+	return f.renewOK, f.renewErr
+}
 func (f *fakeClaims) RetryEnter(_ context.Context, workItemID, runID string, fence int64) (int64, bool, error) {
 	f.retryCalls = append(f.retryCalls, fmt.Sprintf("%s/%s/%d", workItemID, runID, fence))
 	return f.retryNewFence, f.retryOK, f.retryErr
@@ -243,7 +260,8 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
 		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
 
-	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1}}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
 	eff := &fakeMachineEffects{}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
@@ -260,6 +278,10 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 	}
 	if eff.binds == 0 || len(eff.dispatches) == 0 || eff.collects == 0 {
 		t.Fatalf("effects not driven: binds=%d dispatches=%v collects=%d", eff.binds, eff.dispatches, eff.collects)
+	}
+	if len(claims.acquireCalls) != 1 ||
+		claims.acquireCalls[0] != "wi-1/11111111-1111-1111-1111-111111111111" {
+		t.Fatalf("§6.2 acquire calls = %v, want exactly one for the driven run", claims.acquireCalls)
 	}
 }
 
@@ -298,7 +320,8 @@ func TestDriveTerminalStepIsAbsorbing(t *testing.T) {
 func TestDriveLapThreading(t *testing.T) {
 	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
-	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepClaimingSandbox, Fence: 2}, laps: 2}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepClaimingSandbox, Fence: 2, ItemState: "in_progress"},
+		laps: 2, acquireOK: true, acquireFence: 2}
 	store := &fakeMachineStore{step: reconcile.StepClaimingSandbox, fence: 2, advanceOK: true}
 	eff := &fakeMachineEffects{}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
@@ -318,7 +341,8 @@ func TestDriveLapThreading(t *testing.T) {
 func TestDriveEffectsErrorRequeues(t *testing.T) {
 	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
-	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1}}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
 	eff := &fakeMachineEffects{err: errors.New("db down")}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
@@ -333,7 +357,8 @@ func TestDriveEffectsErrorRequeues(t *testing.T) {
 func TestDriveSpinGuardRequeues(t *testing.T) {
 	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
-	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1}}
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: false}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
 
@@ -355,6 +380,149 @@ func TestDriveClaimStateReadError(t *testing.T) {
 
 	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err == nil {
 		t.Fatal("claim read error must surface")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// §6.2 checkout acquire at drive start (M1.3 / ISI-4183)
+// ---------------------------------------------------------------------------
+
+// TestDriveAcquireErrorSurfaces: an acquire infrastructure failure is a
+// reconcile error (controller-runtime backoff), never a silent drive without
+// custody.
+func TestDriveAcquireErrorSurfaces(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, ItemState: "todo"},
+		acquireErr: errors.New("claim db down")}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err == nil {
+		t.Fatal("acquire error must surface as a reconcile error")
+	}
+}
+
+// TestDriveAcquireContendedRequeuesShort: a guard rejection (live foreign
+// lease, or the lane raced us) requeues short — nothing changed, the next
+// pass re-reads the world. The machine must NOT drive without custody.
+func TestDriveAcquireContendedRequeuesShort(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, ItemState: "todo"},
+		acquireOK: false}
+	store := &fakeMachineStore{step: reconcile.StepPending, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("contended acquire: %v", err)
+	}
+	if rq != continueDelay {
+		t.Fatalf("requeue = %v, want %v", rq, continueDelay)
+	}
+	if store.advances != 0 {
+		t.Fatalf("machine drove without custody (%d advances)", store.advances)
+	}
+}
+
+// TestDriveNotClaimableLaneAbsorbs: backlog (§13: parked, never claimable),
+// in_review and done lanes offer no custody path — the drive absorbs (no
+// requeue poll, no machine drive) and the resync backstop owns any later
+// re-drive.
+func TestDriveNotClaimableLaneAbsorbs(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	store := &fakeMachineStore{step: reconcile.StepPending, advanceOK: true}
+	for _, lane := range []string{"backlog", "in_review", "done", ""} {
+		claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, ItemState: lane}}
+		d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+		rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+		if err != nil || rq != 0 {
+			t.Fatalf("lane %q: rq=%v err=%v, want 0/nil (absorb)", lane, rq, err)
+		}
+		if len(claims.acquireCalls) != 0 {
+			t.Fatalf("lane %q: acquire attempted (%v)", lane, claims.acquireCalls)
+		}
+	}
+	if store.advances != 0 {
+		t.Fatalf("machine drove an unclaimable item (%d advances)", store.advances)
+	}
+}
+
+// TestDriveHeldByRunRenewsAndSkipsAcquire: a checkout already stamped to THIS
+// run with a live lease is renewed (the §6.2 heartbeat, every drive pass) and
+// NOT re-acquired — the fence bump of a redundant acquire would churn custody.
+func TestDriveHeldByRunRenewsAndSkipsAcquire(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	future := time.Now().Add(time.Hour)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepPending, Fence: 4, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: &future, ItemState: "in_progress"}, renewOK: true}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 4, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("held drive: %v", err)
+	}
+	if len(claims.acquireCalls) != 0 {
+		t.Fatalf("held checkout re-acquired: %v", claims.acquireCalls)
+	}
+	if claims.renewCalls != 1 {
+		t.Fatalf("renew calls = %d, want 1", claims.renewCalls)
+	}
+	if store.step != reconcile.StepSucceeded {
+		t.Fatalf("durable step = %q, want succeeded", store.step)
+	}
+}
+
+// TestDriveRenewLostRequeuesShort: a failed renew (custody fenced/reclaimed
+// under us mid-life) requeues short instead of driving on a stale fence.
+func TestDriveRenewLostRequeuesShort(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	future := time.Now().Add(time.Hour)
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepPending, Fence: 4, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: &future, ItemState: "in_progress"}, renewOK: false}
+	store := &fakeMachineStore{step: reconcile.StepPending, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("lost renew: %v", err)
+	}
+	if rq != continueDelay {
+		t.Fatalf("requeue = %v, want %v", rq, continueDelay)
+	}
+	if store.advances != 0 {
+		t.Fatalf("machine drove on a lost checkout (%d advances)", store.advances)
+	}
+}
+
+// TestDriveExpiredOwnLeaseReAcquires: a checkout stamped to this run whose
+// lease lapsed at a NON-in-flight step (no 3.2 death) is re-acquired — the
+// free-or-expired guard accepts it and the lease is refreshed.
+func TestDriveExpiredOwnLeaseReAcquires(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "wi-1")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepPending, Fence: 2, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"}, acquireOK: true, acquireFence: 3}
+	store := &fakeMachineStore{step: reconcile.StepPending, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("re-acquire drive: %v", err)
+	}
+	if len(claims.acquireCalls) != 1 {
+		t.Fatalf("re-acquire calls = %v, want 1", claims.acquireCalls)
+	}
+	if store.step != reconcile.StepSucceeded {
+		t.Fatalf("durable step = %q, want succeeded", store.step)
 	}
 }
 
@@ -454,12 +622,14 @@ func TestDeathNotDetectedWithoutExpiry(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
 	future := time.Now().Add(time.Hour)
+	uid := "11111111-1111-1111-1111-111111111111"
 	for _, cs := range []ClaimState{
-		{Step: reconcile.StepRunning, Fence: 1, Holder: "a", LeaseExpiresAt: &future},
-		{Step: reconcile.StepRunning, Fence: 1},                                                   // unheld
-		{Step: reconcile.StepPending, Fence: 1, Holder: "a", LeaseExpiresAt: leaseAgo(time.Hour)}, // not in flight
+		{Step: reconcile.StepRunning, Fence: 1, Holder: "ksquad-operator", RunID: uid,
+			LeaseExpiresAt: &future, ItemState: "in_progress"}, // ours + live: renew
+		{Step: reconcile.StepRunning, Fence: 1, ItemState: "todo"},                                                   // unheld: acquire
+		{Step: reconcile.StepPending, Fence: 1, Holder: "a", LeaseExpiresAt: leaseAgo(time.Hour), ItemState: "todo"}, // not in flight: re-acquire
 	} {
-		claims := &fakeClaims{found: true, state: cs}
+		claims := &fakeClaims{found: true, state: cs, acquireOK: true, acquireFence: 1, renewOK: true}
 		store := &fakeMachineStore{step: cs.Step, fence: 1, advanceOK: true}
 		d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
 		if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {

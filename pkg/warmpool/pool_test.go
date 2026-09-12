@@ -88,7 +88,7 @@ func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id strin
 	return nil
 }
 
-func (f *fakeProvisioner) TearDown(_ context.Context, id string) error {
+func (f *fakeProvisioner) TearDown(_ context.Context, _ warmpool.PoolKey, id string) error {
 	f.mu.Lock()
 	f.teardownAttempts[id]++
 	attempt := f.teardownAttempts[id]

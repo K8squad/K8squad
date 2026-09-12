@@ -149,7 +149,7 @@ func NewOperatorDispatcher(cfg OperatorDispatchConfig) (*a2a.Dispatcher, error) 
 		d.source = sqlDispatchSource{db: cfg.DB}
 	}
 	return &a2a.Dispatcher{
-		Client:  a2a.New(&a2a.StdioTransport{Command: d.shimCommand, Stderr: cfg.Stderr}),
+		Client:  a2a.New(sandboxTransport{d}),
 		Builder: d.buildTask,
 		// Per-Run sink: the TelemetrySink's labels (Run/Agent) are per-Run —
 		// one process-wide sink would freeze the agent label across Runs.
@@ -365,6 +365,62 @@ func cleanRunID(taskOrRunID string) string {
 // and friends) leaks into a task subprocess. The W3C carrier (D1, finding 3)
 // joins the shim's spans onto the Run's trace exactly like the sandbox Boot
 // env does.
+// sandboxTransport picks the dispatch transport per task (ISI-4188 gap 6):
+// when the Run holds a bound sandbox (status.sandboxRef, stamped by the
+// claiming_sandbox step's warm-pool Bind), the task is POSTed to the pod's
+// in-pod supervisor (`POST /task`, cmd/shim supervisor) — the topology where
+// the runtime CLI actually exists, since the sandbox image ships shim+CLI
+// while the operator image ships the shim alone. With no sandbox bound it
+// falls back to the operator-spawned `shim run` stdio path (the §10.1 v1
+// topology) so the shim-only conformance lanes keep working.
+type sandboxTransport struct {
+	d *operatorDispatch
+}
+
+func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session, error) {
+	url, err := st.d.supervisorURL(ctx, t.A2ATaskID)
+	if err != nil {
+		return nil, err
+	}
+	if url != "" {
+		ht := &a2a.HTTPTransport{
+			URL: func(context.Context, wire.Task) (string, error) { return url, nil },
+		}
+		return ht.Submit(ctx, t)
+	}
+	std := &a2a.StdioTransport{Command: st.d.shimCommand, Stderr: st.d.cfg.Stderr}
+	return std.Submit(ctx, t)
+}
+
+// supervisorURL resolves the bound sandbox pod's supervisor task endpoint
+// (http://<podIP>:8080/task — the port cmd/shim's supervisorAddr and the
+// warm-pool Boot probes agree on). Returns "" when the Run has no sandboxRef
+// (pre-bind ordering or a sandbox-less lane); a bound sandbox whose pod is
+// missing or IP-less is a loud error so the re-drive retries instead of
+// silently degrading to the stdio path (which cannot exec the runtime CLI).
+func (d *operatorDispatch) supervisorURL(ctx context.Context, a2aTaskID string) (string, error) {
+	run, err := d.runByUID(ctx, cleanRunID(a2aTaskID))
+	if err != nil {
+		return "", err
+	}
+	ref := run.Status.SandboxRef
+	if ref == nil || ref.Name == "" {
+		return "", nil
+	}
+	ns := ref.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var pod corev1.Pod
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &pod); err != nil {
+		return "", fmt.Errorf("rundrive: resolve sandbox pod %s/%s: %w", ns, ref.Name, err)
+	}
+	if pod.Status.PodIP == "" {
+		return "", fmt.Errorf("rundrive: sandbox pod %s/%s has no IP yet", ns, ref.Name)
+	}
+	return "http://" + pod.Status.PodIP + ":8080/task", nil
+}
+
 func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.Cmd, error) {
 	runID := cleanRunID(t.A2ATaskID)
 	run, err := d.runByUID(ctx, runID)
@@ -503,13 +559,24 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		window = *snap.ContextWindow
 	}
 
+	// M1.2 (ISI-4128): TeamID is the team's Postgres uuid (scoped memory
+	// recall keys on coord.work_item.team_id = Team CR uid), never the CR
+	// name — resolve the Team like the run controller's snapshot path.
+	teamNS := run.Spec.TeamRef.Namespace
+	if teamNS == "" {
+		teamNS = run.Namespace
+	}
+	var team api.Team
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
+		return "", fmt.Errorf("rundrive: read Team %s/%s for run %s/%s: %w", teamNS, run.Spec.TeamRef.Name, run.Namespace, run.Name, err)
+	}
 	// The Source resolves the Project CRD in projNS (which honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
 		Run:           run,
 		Agent:         &agent,
 		Project:       &project,
-		TeamID:        run.Spec.TeamRef.Name,
+		TeamID:        string(team.UID),
 		ContextWindow: window,
 		Existing:      run.Status.ContextSnapshot,
 	})

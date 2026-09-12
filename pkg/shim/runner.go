@@ -31,27 +31,13 @@ import (
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 )
 
-// Progress is one normalized unit of runtime output the engine turns into a
-// sequenced A2A event (spec §4). A runner emits Progress; the engine assigns
-// the seq, timestamp and task id. Exactly one field is set per Progress,
-// selected by Kind.
-type Progress struct {
-	Kind        a2a.EventType
-	Message     *a2a.MessagePayload
-	Tool        *a2a.ToolPayload
-	SkillLoad   *a2a.SkillLoadPayload
-	Usage       *a2a.UsagePayload
-	Artifact    *a2a.ArtifactRef
-	Auth        *a2a.AuthRequiredPayload
-	RateLimited *a2a.RateLimitedPayload
-	// ToolArgs is the INTERNAL raw-arguments seam for a Kind==EventTool
-	// progress (Epic D, plan §2.4): the runtime adapter hands the raw tool
-	// call arguments here, and the engine's funnel hashes them onto
-	// Tool.ArgsSHA256 before the event is funneled any further — raw args
-	// never reach the wire payload, the SSE log, or the telemetry mapper.
-	// +optional
-	ToolArgs string
-}
+// Progress moved to pkg/shim/runtimes (ISI-4188 gap 7) so an adapter's
+// ExecSpec.Parse can emit typed events without an import cycle; the alias
+// keeps every existing reference (engine funnel, tests) source-compatible.
+// One Progress is one normalized unit of runtime output the engine turns into
+// a sequenced A2A event (spec §4) — the engine assigns the seq, timestamp and
+// task id, and exactly one payload field is set per Progress, selected by Kind.
+type Progress = runtimes.Progress
 
 // Outcome is the terminal result of a runtime process (spec §3.1). State is
 // TaskCompleted or TaskFailed; the engine maps a canceled context to
@@ -150,6 +136,12 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// Start from the ambient environment (the reconciler-injected secret env,
 	// PATH, etc.) and layer the runtime's mapped env on top.
 	cmd.Env = append(os.Environ(), spec.Env...)
+	// ISI-4188 gap 5: an adapter-set Stdin is the prompt channel for CLIs that
+	// read their message from stdin (opencode `run`). The reader is handed to
+	// the process before Start; exec closes it when the buffer drains.
+	if spec.Stdin != "" {
+		cmd.Stdin = strings.NewReader(spec.Stdin)
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -177,14 +169,24 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
-			emit(Progress{
-				Kind: a2a.EventMessage,
-				Message: &a2a.MessagePayload{
-					Role:  "agent",
-					Text:  line,
-					Trust: "untrusted",
-				},
-			})
+			// ISI-4188 gap 7: a structured-stream adapter (opencode --format=json)
+			// decodes its own line shape into typed events; the default stays the
+			// opaque line→message mapping. Emission and settle detection are
+			// orthogonal axes: SettleLine always sees the RAW line either way.
+			if spec.Parse != nil {
+				for _, p := range spec.Parse(line) {
+					emit(p)
+				}
+			} else {
+				emit(Progress{
+					Kind: a2a.EventMessage,
+					Message: &a2a.MessagePayload{
+						Role:  "agent",
+						Text:  line,
+						Trust: "untrusted",
+					},
+				})
+			}
 			if spec.SettleLine != nil && !terminalSeen && spec.SettleLine(line) {
 				terminalSeen = true
 			}

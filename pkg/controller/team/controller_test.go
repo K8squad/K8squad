@@ -754,6 +754,38 @@ func TestControlPlaneEgressPortScoped(t *testing.T) {
 	}
 }
 
+// TestControlPlaneIngressSupervisorPort (ISI-4188 gap 6): the pod-side
+// dispatch path POSTs the A2A task from the operator to the sandbox
+// supervisor's :8080 — the allow-control-plane policy must open exactly that
+// ingress hop (TCP 8080, control-plane namespace only) or the team
+// default-deny drops every dispatch.
+func TestControlPlaneIngressSupervisorPort(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var allowCP networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-control-plane", Namespace: team.Status.Namespace}, &allowCP); err != nil {
+		t.Fatalf("get allow-control-plane NetworkPolicy: %v", err)
+	}
+	if len(allowCP.Spec.Ingress) != 1 {
+		t.Fatalf("ingress rules = %d, want 1 (supervisor dispatch hop)", len(allowCP.Spec.Ingress))
+	}
+	rule := allowCP.Spec.Ingress[0]
+	if len(rule.From) != 1 || rule.From[0].NamespaceSelector == nil {
+		t.Fatalf("ingress from = %+v, want a single control-plane namespaceSelector", rule.From)
+	}
+	if got := rule.From[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got == "" {
+		t.Errorf("ingress namespaceSelector does not pin the control-plane namespace: %+v", rule.From[0].NamespaceSelector)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 8080 {
+		t.Errorf("ingress ports = %+v, want TCP 8080 only (the supervisor task port)", rule.Ports)
+	}
+}
+
 // TestConditionTransitionTimePinnedByClock (PR #89 follow-up F9): the
 // Reconciler.Now clock is actually wired into condition transitions — a
 // frozen clock produces a frozen LastTransitionTime instead of the wall
@@ -851,5 +883,89 @@ func TestProvisionCredentialTesterDefaults(t *testing.T) {
 	}
 	if binding.Subjects[0].Namespace != DefaultApiserverNamespace || binding.Subjects[0].Name != DefaultApiserverServiceAccount {
 		t.Errorf("default subject = %+v, want %s/%s", binding.Subjects[0], DefaultApiserverNamespace, DefaultApiserverServiceAccount)
+	}
+}
+
+// TestTelemetryTargetFromEndpoint (ISI-4188 gap 9): the OTLP endpoint env
+// parses into a namespace or IP egress target; a bare hostname (no namespace
+// label) and empty input yield nil — never a silently widened egress.
+func TestTelemetryTargetFromEndpoint(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantNS  string
+		wantIP  string
+		wantPt  int32
+		wantNil bool
+	}{
+		{in: "http://otel-gateway-collector.observability:4317", wantNS: "observability", wantPt: 4317},
+		{in: "otel-gateway-collector.observability:4318", wantNS: "observability", wantPt: 4318},
+		{in: "https://gw.observability.svc.cluster.local:4317", wantNS: "observability", wantPt: 4317},
+		{in: "otel-gateway-collector.observability", wantNS: "observability", wantPt: 4317},
+		{in: "http://10.0.0.50:4317", wantIP: "10.0.0.50", wantPt: 4317},
+		{in: "10.0.0.50", wantIP: "10.0.0.50", wantPt: 4317},
+		{in: "", wantNil: true},
+		{in: "   ", wantNil: true},
+		{in: "localhost:4317", wantNil: true},
+	}
+	for _, tc := range cases {
+		got := TelemetryTargetFromEndpoint(tc.in)
+		if tc.wantNil {
+			if got != nil {
+				t.Errorf("TelemetryTargetFromEndpoint(%q) = %+v, want nil", tc.in, got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Errorf("TelemetryTargetFromEndpoint(%q) = nil, want ns=%q ip=%q port=%d", tc.in, tc.wantNS, tc.wantIP, tc.wantPt)
+			continue
+		}
+		if got.Namespace != tc.wantNS || got.IP != tc.wantIP || got.Port != tc.wantPt {
+			t.Errorf("TelemetryTargetFromEndpoint(%q) = %+v, want ns=%q ip=%q port=%d", tc.in, got, tc.wantNS, tc.wantIP, tc.wantPt)
+		}
+	}
+}
+
+// TestTelemetryEgressPolicyScoped (ISI-4188 gap 9): with a telemetry target
+// configured the scaffold gains the ksquad-allow-telemetry companion —
+// port-scoped TCP egress to the gateway namespace only — and without a
+// target the companion is absent (stdout-export posture gets no hole).
+func TestTelemetryEgressPolicyScoped(t *testing.T) {
+	r, c := newReconciler(t, newTeam("alpha", "uid-alpha"))
+	r.TelemetryTarget = &TelemetryTarget{Namespace: "observability", Port: 4317}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var allowOTel networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-telemetry", Namespace: team.Status.Namespace}, &allowOTel); err != nil {
+		t.Fatalf("get allow-telemetry NetworkPolicy: %v", err)
+	}
+	if len(allowOTel.Spec.Egress) != 1 {
+		t.Fatalf("telemetry egress rules = %d, want 1", len(allowOTel.Spec.Egress))
+	}
+	rule := allowOTel.Spec.Egress[0]
+	if len(rule.To) != 1 || rule.To[0].NamespaceSelector == nil {
+		t.Fatalf("telemetry peer = %+v, want namespaceSelector", rule.To)
+	}
+	if got := rule.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"]; got != "observability" {
+		t.Errorf("telemetry namespace = %q, want observability", got)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 4317 {
+		t.Errorf("telemetry ports = %+v, want TCP 4317 only", rule.Ports)
+	}
+
+	// No target → no companion.
+	r2, c2 := newReconciler(t, newTeam("beta", "uid-beta"))
+	if err := reconcileTeam(t, r2, "beta"); err != nil {
+		t.Fatalf("reconcile beta: %v", err)
+	}
+	var teamB api.Team
+	_ = c2.Get(context.Background(), types.NamespacedName{Name: "beta", Namespace: "default"}, &teamB)
+	var absent networkingv1.NetworkPolicy
+	err := c2.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-telemetry", Namespace: teamB.Status.Namespace}, &absent)
+	if err == nil {
+		t.Error("allow-telemetry policy rendered without a telemetry target")
 	}
 }

@@ -23,14 +23,40 @@ rules:
   - apiGroups: ["ksquad.io"]
     resources: ["projects", "agents", "runs", "teams", "sandboxpools", "egresspolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # M1.2 (ISI-4128): the operator's informer/cache watch surface — every type
+  # the manager caches must be listable/watchable cluster-wide or the caches
+  # (and every controller behind them) stall on forbidden errors. The
+  # team/run/credential/mcpserver reconcilers also own the namespaced
+  # scaffold objects (roles/rolebindings/services) inside squad namespaces.
+  - apiGroups: ["ksquad.io"]
+    resources: ["agentruntimes", "mcpservers", "skills", "prompts", "toolchains", "otelconfigs", "credentials", "roles"]
+    verbs: ["get", "list", "watch"]
+  # Status subresources the reconcilers write (otelgate stamps OTelConfig
+  # status, the credential controller stamps credential status, ...).
+  - apiGroups: ["ksquad.io"]
+    resources: ["otelconfigs/status", "credentials/status", "agentruntimes/status", "mcpservers/status", "skills/status", "prompts/status", "toolchains/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["resourcequotas", "limitranges", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["ksquad.io"]
     resources: ["projects/status", "runs/status", "agents/status", "teams/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: [""]
     resources: ["persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
     # configmaps create/update/patch is the OTelConfig→collector egress overlay
-    # write path (ADR-0008 M1(b), ISI-3724): the operator owns the
-    # {release}-otel-collector-egress ConfigMap.
+    # write path (ADR-0008 M1(b), ISI-3724): the operator owns the egress
+    # overlay ConfigMap of the operator-managed collector (deploy/otel/,
+    # namespace observability — ISI-4163).
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Patch the collector Deployment's pod-template annotation
   # (ksquad.io/otelconfig-generation) to trigger a rolling restart when egress
@@ -41,6 +67,13 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # M1.2 sandbox bring-up (ISI-4128): the warmpool kube provisioner creates
+  # sandbox pods in squad namespaces and the PodWatcher reports their
+  # readiness back into the pool (ADR-0007 D1). pods/status patch is the
+  # bind-error surface; delete is the drain/unclaim path.
+  - apiGroups: [""]
+    resources: ["pods", "pods/status"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

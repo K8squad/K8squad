@@ -11,11 +11,11 @@ metadata:
     {{- include "k8squad.componentLabels" (dict "root" $ "component" "operator") | nindent 4 }}
 rules:
 - apiGroups: [""]
-  # configmaps patch + namespaces merged into this rule: ISI-3724 (story 13.8,
-  # ADR-0008 M1b) — otelegress upserts the operator-owned collector-egress
-  # ConfigMap; controller-gen merged the namespace grant here.
-  resources: [configmaps, namespaces]
-  verbs: [create, delete, get, list, patch, update, watch]
+  # configmaps rule (ISI-3614 / mcpserver): per-sandbox config payloads.
+  # ISI-4165: otelegress is removed, so configmaps lost the patch verb and
+  # split back out of the namespaces/persistentvolumeclaims group below.
+  resources: [configmaps]
+  verbs: [create, delete, get, list, update, watch]
 - apiGroups: [""]
   # secrets create: ISI-3614 / ADR-0007 — the warm-pool Bind path writes a
   # per-sandbox task-io Secret (pod-owned, auto-GC) to deliver the run-scoped
@@ -23,26 +23,35 @@ rules:
   resources: [limitranges, resourcequotas, secrets, serviceaccounts]
   verbs: [create, get, list, patch, update, watch]
 - apiGroups: [""]
-  resources: [persistentvolumeclaims]
-  verbs: [create, delete, get, list, watch]
+  # namespaces (team reconciler) + persistentvolumeclaims (ISI-4127, the
+  # project-pvc reconciler: create/delete from the workspace manager,
+  # update/patch for in-place size expansion — the only mutable PVC field)
+  # share one verb set, and controller-gen groups resources with identical
+  # verbs into one rule; the lockstep test compares grouping, so the chart
+  # mirrors it.
+  resources: [namespaces, persistentvolumeclaims]
+  verbs: [create, delete, get, list, patch, update, watch]
 - apiGroups: [""]
   # ISI-3614 / ADR-0007: the warm-pool Bind path reads the booted sandbox pod
   # (by its unique label) to place the pod-owned task-io Secret in the pod's
-  # namespace with an OwnerReference for auto-GC.
+  # namespace with an OwnerReference for auto-GC. ISI-4132: create/delete join
+  # the set — the warm pool Boots/TearDowns sandbox pods imperatively
+  # (pkg/warmpool/kube.go), and a fresh install without them wedges every
+  # dispatch at sandbox bring-up.
   resources: [pods]
-  verbs: [get, list, watch]
-- apiGroups: [apps]
-  # ISI-3724 (story 13.8, ADR-0008 M1b): otelegress rolls the no-hot-reload
-  # collector by patching its Deployment with the otelconfig-generation
-  # annotation (collector located via the component label in POD_NAMESPACE).
-  resources: [deployments]
-  verbs: [get, list, patch, watch]
+  verbs: [create, delete, get, list, watch]
 - apiGroups: [batch]
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [ksquad.io]
-  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, runs, skills]
+  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, skills]
   verbs: [get, list, watch]
+- apiGroups: [ksquad.io]
+  # runs split out of the read-only pack (ISI-4132): the M1.3 intake sweep
+  # CREATES Run CRs for due board tickets (pkg/controller/rundrive/intake.go).
+  # Without create, dispatch 403s forever on a fresh install.
+  resources: [runs]
+  verbs: [create, get, list, watch]
 - apiGroups: [ksquad.io]
   resources: [mcpservers/status, otelconfigs/status, projects/status, runs/status, teams/status]
   verbs: [get, patch, update]

@@ -81,6 +81,26 @@ func TestEmptyManifestStillHashes(t *testing.T) {
 	assert.NotEmpty(t, m.CapabilityHash)
 }
 
+// TestIsBareEnvelope (ISI-4289): the bare posture is STRUCTURAL — nil, or an
+// envelope granting nothing (the assembler's pre-dispatch stamp on a
+// no-capability Run). Any granted toolchain/endpoint/skill makes it
+// non-bare regardless of the hash stamped on it.
+func TestIsBareEnvelope(t *testing.T) {
+	assert.True(t, IsBareEnvelope(nil), "nil manifest is the bare posture")
+
+	stamped := BuildManifest(nil, nil, nil)
+	assert.True(t, IsBareEnvelope(stamped), "the assembler's empty envelope is bare (hash %q must not de-bare it)", stamped.CapabilityHash)
+
+	withToolchain := BuildManifest(resolvedToolchains(), nil, nil)
+	assert.False(t, IsBareEnvelope(withToolchain))
+
+	withEndpoint := BuildManifest(nil, []Endpoint{httpEndpoint()}, nil)
+	assert.False(t, IsBareEnvelope(withEndpoint))
+
+	withSkill := BuildManifest(nil, nil, []GrantedSkill{{Namespace: "default", Name: "s"}})
+	assert.False(t, IsBareEnvelope(withSkill))
+}
+
 func TestCheckEgress(t *testing.T) {
 	run := newRun()
 

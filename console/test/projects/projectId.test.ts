@@ -72,6 +72,7 @@ vi.mock("@/lib/bff", () => ({
 }));
 
 import { GET as workItemsGET, POST as workItemsPOST } from "@/app/api/projects/[projectId]/work-items/route";
+import { GET as workItemThreadGET } from "@/app/api/work-items/[workItemId]/route";
 import { GET as threadsGET } from "@/app/api/projects/[projectId]/discussion/threads/route";
 import { GET as streamGET } from "@/app/api/projects/[projectId]/stream/route";
 import { GET as threadGET } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/route";
@@ -149,5 +150,17 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     const p = pathOf(proxyJsonWrite);
     expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads/t-1/messages`);
     expect(p).not.toContain("%252F");
+  });
+});
+
+describe("work-item thread BFF (ISI-4131/ISI-4132)", () => {
+  it("GET forwards the ticket id to the M1.5 thread read", async () => {
+    proxyJson.mockClear();
+    await workItemThreadGET(fakeReq(), {
+      params: Promise.resolve({ workItemId: "150aef38-b5dd-422b-9eb6-0eef91c50144" }),
+    });
+    expect(pathOf(proxyJson)).toBe(
+      "/api/work-items/150aef38-b5dd-422b-9eb6-0eef91c50144",
+    );
   });
 });

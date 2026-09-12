@@ -75,7 +75,7 @@ func workItemStateHandler(store WorkItemStateTransitioner) http.HandlerFunc {
 			return
 		}
 
-		result, err := store.TransitionState(r.Context(), id, auth.TeamID.String(), req.ToState, req.FromState, auth.Principal, "")
+		result, err := store.TransitionState(r.Context(), id, authTeamScope(r), req.ToState, req.FromState, auth.Principal, "")
 		switch {
 		case errors.Is(err, coord.ErrInvalidState):
 			writeJSONError(w, http.StatusBadRequest, err.Error())

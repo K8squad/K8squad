@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -64,8 +66,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
-	otelegress "github.com/K8squad/K8squad/pkg/controller/otelegress"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
+	projectpvc "github.com/K8squad/K8squad/pkg/controller/projectpvc"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
@@ -397,9 +399,131 @@ func main() {
 			ctrl.Log.Error(err, "unable to bind resume store")
 			os.Exit(1)
 		}
-		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution)
-		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi")
+		// M1.2: the classifier resolves the sandbox image Run→Agent→
+		// AgentRuntime-type (RuntimeImages env) and the runtime-class default
+		// (KSQUAD_SANDBOX_RUNTIME_CLASS; unset pins the story-1.3 gvisor
+		// default, "runc" selects the cluster default for clusters without a
+		// gvisor RuntimeClass). Resolved ONCE here because the §9.2 warm-pool
+		// controller (ISI-4211) must manage the SAME key the classifier
+		// derives for a default interactive Run — two independent resolutions
+		// could drift and warm a key Bind never claims.
+		defaultRuntimeClass := "gvisor"
+		if v, ok := os.LookupEnv("KSQUAD_SANDBOX_RUNTIME_CLASS"); ok {
+			defaultRuntimeClass = v
+		}
+		images := rundrive.RuntimeImagesFromEnv(os.Getenv)
+		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution).
+		// ISI-4208: sandbox scheduling requests are right-sized below the burst
+		// limits by default (500m CPU request vs 1 CPU limit) — warm sandboxes
+		// idle near zero CPU, and reserving a full core per pod saturated
+		// 2-worker nodes at 86-87% CPU requests, leaving the 5th warm-pool
+		// member permanently Pending (Insufficient cpu). Memory stays
+		// requests==limits (incompressible; OOM semantics unchanged). Both
+		// knobs are overridable per cluster via env.
+		sandboxCPURequest := os.Getenv("KSQUAD_SANDBOX_CPU_REQUEST")
+		if sandboxCPURequest == "" {
+			sandboxCPURequest = "500m"
+		}
+		sandboxMemoryRequest := os.Getenv("KSQUAD_SANDBOX_MEMORY_REQUEST")
+		if sandboxMemoryRequest == "" {
+			sandboxMemoryRequest = "512Mi"
+		}
+		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi").
+			WithRequests(sandboxCPURequest, sandboxMemoryRequest)
+		// M1.2: pass the operator's OTLP endpoint/protocol through to the
+		// sandbox pods so in-pod supervisor/runtime spans reach the SAME
+		// telemetry pipeline the operator reports to (values only — the
+		// minimal-env invariant holds; headers/keys never ride pod env).
+		if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
+			kubeProvisioner = kubeProvisioner.WithPodEnv(
+				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: ep},
+				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")},
+			)
+		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
+		// M1.2: the pod watch that reports sandbox pod readiness into the pool
+		// (the Provisioner contract's NotifyReady caller — without it warm
+		// boots never leave StateWarming in production).
+		if err := kubepool.NewPodWatcher(mgr.GetClient(), pool).SetupWithManager(mgr); err != nil {
+			ctrl.Log.Error(err, "unable to set up sandbox pod watcher")
+			os.Exit(1)
+		}
+
+		// ISI-4211: the §9.2 warm-pool controller — the loop that finally
+		// ENFORCES the warm target N. Everything above is mechanism (pool,
+		// provisioner, pod watcher, binder); this is the policy engine that
+		// replenishes toward target on every tick and reacts to bind misses
+		// (NewController registers the Pool.SetBindMiss trigger itself, so
+		// an empty-pool claim boots its replacement immediately). Without
+		// this runnable the pool only ever accrues as leftovers of Run
+		// activity — target N is never enforced.
+		//
+		// The managed key must byte-match what SpecClassifier derives for a
+		// default interactive Run (runtime class + resolved default image +
+		// team namespace + bare capability posture): RuntimeClass and Image
+		// come from the SAME env knobs the classifier reads, namespace from
+		// KSQUAD_WARM_POOL_NAMESPACE (ADR-044 step 9 keys warmth per team
+		// namespace; v1 manages one configured namespace).
+		if images.Default != "" {
+			warmKey := kubepool.PoolKey{
+				RuntimeClass: defaultRuntimeClass,
+				Image:        images.Default,
+				Namespace:    os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
+			}
+			replenishS, ok := kubepool.DefaultReplenish()[defaultRuntimeClass]
+			if !ok || replenishS <= 0 {
+				replenishS = kubepool.ReplenishRuncSeconds // conservative fallback for unmeasured classes
+			}
+			warmPolicy := kubepool.NewDefaultPolicy(map[kubepool.PoolKey]float64{warmKey: replenishS})
+			// KSQUAD_WARM_POOL_TARGET pins the enforced steady-state target N
+			// (raises MinReady; MaxReady lifts to keep the ceiling ≥ floor).
+			// At λ=0 the base-stock formula floors at 1, so the clamp holds
+			// the pool at exactly N until a real pressure signal (Epic 13's
+			// warmpool.claim.pressure gauge, ISI-2891) raises it.
+			if v := os.Getenv("KSQUAD_WARM_POOL_TARGET"); v != "" {
+				if n, err := strconv.Atoi(v); err != nil {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_TARGET; keeping policy default", "value", v)
+				} else if n > 0 {
+					warmPolicy.MinReady = n
+					if n > warmPolicy.MaxReady {
+						warmPolicy.MaxReady = n
+					}
+				}
+			}
+			warmTick := 10 * time.Second
+			if v := os.Getenv("KSQUAD_WARM_POOL_TICK"); v != "" {
+				if d, err := time.ParseDuration(v); err != nil || d <= 0 {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_TICK; keeping default", "value", v)
+				} else {
+					warmTick = d
+				}
+			}
+			warmController := kubepool.NewController(pool,
+				kubepool.NewAutoscaler(warmPolicy, kubepool.DefaultStabilizationTicks),
+				kubepool.ManagedKey{
+					Key:      warmKey,
+					Class:    kubepool.ClassInteractive,
+					Pressure: kubepool.StaticPressure(0),
+				})
+			// mgr.Add on a plain RunnableFunc defaults to the leader-election
+			// group (arch §5.2 — one owner, no racing resizers): the loop
+			// runs only on the elected leader, after the caches sync.
+			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				return warmController.Run(ctx, warmTick)
+			})); err != nil {
+				ctrl.Log.Error(err, "unable to register warm-pool controller")
+				os.Exit(1)
+			}
+			ctrl.Log.Info("warm-pool controller wired",
+				"key", warmKey, "target", warmPolicy.MinReady, "max", warmPolicy.MaxReady,
+				"tick", warmTick.String(), "replenishSeconds", replenishS)
+		} else {
+			// Degraded, loudly logged (never silently broken): without a
+			// default sandbox image the warm key cannot be resolved and warm
+			// boots would fail the provisioner's empty-image guard on every
+			// tick. Bind-path cold boots still classify per-Run images.
+			ctrl.Log.Info("warm-pool controller disabled: KSQUAD_SANDBOX_IMAGE unset (no default image to warm); pool replenishment stays inert")
+		}
 
 		// Epic D follow-up (ISI-3352): the physical A2A dispatch feed — the
 		// production caller the ISI-3348 review demanded. The mapper (Epic D,
@@ -462,10 +586,33 @@ func main() {
 		// run-scoped task-io credential via a per-sandbox Secret (the shim env
 		// carrier is topology 1). Same minter + coord URL as the shim, so both
 		// topologies mint identically; nil (no minter/URL) leaves credential-off.
+		// M1.2: the classifier resolves the sandbox image Run→Agent→
+		// AgentRuntime-type (RuntimeImages env) and the runtime-class default
+		// (KSQUAD_SANDBOX_RUNTIME_CLASS; unset pins the story-1.3 gvisor
+		// default, "runc" selects the cluster default for clusters without a
+		// gvisor RuntimeClass). The RunStatusSandboxWriter surfaces
+		// Run.status.sandboxRef at Bind (console/E2E visibility).
 		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
-			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient())), a2aDispatcher)
+			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient(),
+				images, defaultRuntimeClass)), a2aDispatcher)
 		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
 			runner = runner.WithCredentialWriter(credWriter)
+		}
+		runner = runner.WithSandboxRefObserver(rundrive.NewRunStatusSandboxWriter(mgr.GetClient()))
+
+		// §6.2 claimer (ISI-4183, M1.3 claim-back): the production caller
+		// ProdClaimer lacked — the drive loop acquired no checkout, so board
+		// lanes stuck in todo while Runs succeeded. NewProdClaims now binds
+		// the claimer itself (co-committed acquire + renewal); this instance
+		// stays for the hygiene sweep below (lease renewal backstop; the
+		// terminal release is co-committed by ProdEffects.Terminal).
+		// Outbox capture ON: the operator runs against the fully-migrated
+		// schema (0003+), so claimed/claim_released events ride the canonical
+		// transactional outbox.
+		claimer, err := coord.NewProdClaimer(db, coord.DefaultProdConfig(), coord.WithOutboxCapture())
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind §6.2 claimer")
+			os.Exit(1)
 		}
 
 		driver := rundrive.NewDriver(mgr.GetClient(),
@@ -481,6 +628,41 @@ func main() {
 		}
 		if err := mgr.Add(timerRunnable{t: timer}); err != nil {
 			ctrl.Log.Error(err, "unable to register resume timer")
+			os.Exit(1)
+		}
+
+		// Claim hygiene sweep (ISI-4183): renews the 30s lease of every
+		// in-flight held checkout (without it the 3.2 death detector would
+		// churn healthy minute-long agent runs into retry laps) and releases
+		// the custody of terminal held rows (claim_released; lane returns to
+		// todo on failure/cancel, stays in_progress on success for M1.5's
+		// reporting to move).
+		if err := mgr.Add(&rundrive.HeartbeatSweeper{
+			DB:      db,
+			Claimer: claimer,
+			Log:     func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
+			os.Exit(1)
+		}
+
+		// M1.3 ticket intake (ISI-4129): the bridge from the board to the Run
+		// plane. Every tick, team-assigned todo work items get their Run CR
+		// (deterministic name, idempotent) so the drive loop above can claim
+		// (todo → in_progress) and dispatch them. Level-triggered off the
+		// durable board state — bounded intake latency is the acceptance
+		// criterion; a missed tick costs delay, never correctness.
+		intakeSource, err := rundrive.NewSQLIntakeSource(db)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind ticket intake source")
+			os.Exit(1)
+		}
+		if err := mgr.Add(&rundrive.Intake{
+			Source: intakeSource,
+			Client: mgr.GetClient(),
+			Log:    func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+		}); err != nil {
+			ctrl.Log.Error(err, "unable to register ticket intake sweep")
 			os.Exit(1)
 		}
 
@@ -550,6 +732,17 @@ func main() {
 	if err := (&teamctrl.Reconciler{
 		ApiserverNamespace:      apiserverNS,
 		ApiserverServiceAccount: apiserverSA,
+		// ISI-4188 gap 6: the allow-control-plane NetworkPolicy (egress AND the
+		// sandbox-dispatch ingress) must target the namespace the control plane
+		// ACTUALLY runs in. The code default ("ksquad-system") drifted from the
+		// chart of record's namespace (k8squad-system), leaving the selector
+		// pointing at a namespace that does not exist — Cilium resolves it to
+		// zero identities and the hop dies (verified live on k8squad-test).
+		ControlPlaneNamespace: apiserverNS,
+		// ISI-4188 gap 9: the sandbox supervisor's OTLP export needs a squad
+		// egress hole to the gateway; parsed from the same env the chart
+		// stamps on every workload (nil when telemetry is not configured).
+		TelemetryTarget: teamctrl.TelemetryTargetFromEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
 	}).SetupWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Team reconciler")
 		os.Exit(1)
@@ -598,26 +791,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Story 13.8 (ISI-3724, ADR-0008 M1(b)): the otelegress reconciler renders
-	// the applied OTelConfig's per-signal routing into the collector's
-	// operator-owned `<collector>-egress` overlay ConfigMap (second `--config`
-	// source) and rolls the collector — so the CRD, not Helm values, is the
-	// source of truth for vendor egress, with redaction (13.7) always upstream.
-	// The collector lives in the operator's own namespace (POD_NAMESPACE).
-	if err := (&otelegress.Reconciler{Namespace: os.Getenv("POD_NAMESPACE")}).SetupWithManager(mgr); err != nil {
-		ctrl.Log.Error(err, "unable to set up otelegress reconciler")
-		os.Exit(1)
-	}
+	// ISI-4165: the otelegress reconciler (story 13.8, ISI-3724, ADR-0008
+	// M1(b)) is removed. Post collector-consolidation (ISI-4137) the
+	// helm-managed collector it used to overlay egress onto is gone; the
+	// surviving gateway is otel-operator-managed and egress is static
+	// collector-CR config, so the reconciler hot-looped on
+	// collector-Deployment-not-found. If OTelConfig→gateway egress sync is
+	// ever needed again it must reconcile the OpenTelemetryCollector CR, not
+	// raw ConfigMaps (which would fight the otel-operator).
+	// Note: the interim collector-selector fix (ISI-4152, PR #392) lived
+	// entirely inside the deleted controller and is subsumed by this
+	// removal — unregistering the controller stops the hot loop outright.
 
 	// Initialize workspace manager for PVC-based agent workspaces (ISI-2880)
 	workspaceManager := workspacepkg.NewWorkspaceManager(mgr.GetClient())
+
+	// Per-Project workspace PVC reconciler (ISI-4127): provisions the claim
+	// every PVC-backed Project's agent pods mount shared. Registered through
+	// its own SetupWithManager, which names the controller "project-pvc" to
+	// stay clear of the repo-sync reconciler's "project" (the same
+	// controller-runtime name-uniqueness rule the run-workspace comment
+	// below documents).
+	if err := projectpvc.NewReconciler(mgr.GetClient()).SetupWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up project workspace PVC reconciler")
+		os.Exit(1)
+	}
 
 	// Initialize network policy manager for team isolation (ISI-2884)
 	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
 
 	// Register custom controllers for workspace and network management.
-	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
-	// network policies are per-Team.
+	// The run-workspace controller is RECLAIM-ONLY (ISI-4236): per-Run claims
+	// were superseded by the per-Project claim (ISI-4127) that sandbox pods
+	// actually mount; this reconciler drains the never-binding per-Run
+	// backlog and provisions nothing. Network policies are per-Team.
 	// A dedicated controller name is required: controller-runtime derives the
 	// name from the primary Kind (lowercased) unless overridden, so a bare
 	// For(&Run{}) here collides with the Run drive-loop controller ("run") and
@@ -651,7 +858,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "mcpserver-discovery", "workspace", "networkpolicy"})
+	ctrl.Log.Info("starting ksquad-operator", "leaderElection", enableLeaderElection, "controllers", []string{"team", "run", "run-drive", "reposync", "credential", "mcpserver-discovery", "workspace", "project-pvc", "networkpolicy"})
 	if err := mgr.Start(ctx); err != nil {
 		ctrl.Log.Error(err, "manager exited with error")
 		os.Exit(1)

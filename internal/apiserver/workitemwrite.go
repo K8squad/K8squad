@@ -62,7 +62,11 @@ type updateWorkItemRequest struct {
 }
 
 // workItemCreateHandler answers POST /api/projects/{projectId}/work-items.
-func workItemCreateHandler(store WorkItemWriter) http.HandlerFunc {
+// refs (nil-tolerant) translates the console's "namespace/name" id to the
+// Project CR UID and pins root items to the Project's OWNING Team (ISI-4132) —
+// the board and the intake dispatcher agree on that tenancy, so a ticket created
+// from the console is immediately dispatchable.
+func workItemCreateHandler(store WorkItemWriter, refs ProjectRefResolver) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth, ok := discussion.AuthFromContext(r.Context())
 		if !ok || auth.Principal == "" {
@@ -79,6 +83,19 @@ func workItemCreateHandler(store WorkItemWriter) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "project id required")
 			return
 		}
+		// Resolve the console's project ref to the CR identity. The Project's
+		// owning Team is the root item's tenancy — uniform for members and
+		// fleet-admins alike (a member's Team IS the namespace owner), so the
+		// dangling-team admin path (ISI-3921) stops being a special case here.
+		projectTeam := ""
+		if refs != nil {
+			resolved, err := refs.ResolveProjectRef(r.Context(), projectID)
+			if mapProjectRefError(w, err) {
+				return
+			}
+			projectID = resolved.UID
+			projectTeam = resolved.TeamUID
+		}
 
 		var req createWorkItemRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
@@ -90,13 +107,13 @@ func workItemCreateHandler(store WorkItemWriter) http.HandlerFunc {
 			return
 		}
 
-		// Team scope: for a root item the caller's Team becomes the item's team; for a
-		// sub-issue the store overrides with the parent's (§6.1). A fleet-admin with no
-		// bound Team creating a ROOT item has no team to assign — the shared fleet-admin
-		// selector (ISI-3937) resolves the owning team; until it lands, that narrow path
-		// is refused honestly rather than writing a team-less root row.
-		teamID := ""
-		if auth.TeamID.String() != "00000000-0000-0000-0000-000000000000" {
+		// Team scope: the resolved Project's owning Team wins (above); without a
+		// resolver the caller's Team becomes the item's team as before, and for a
+		// sub-issue the store overrides with the parent's (§6.1). A fleet-admin
+		// with no bound Team creating a ROOT item against an unresolved project
+		// ref keeps the honest refusal until the ISI-3937 selector lands.
+		teamID := projectTeam
+		if teamID == "" && auth.TeamID.String() != "00000000-0000-0000-0000-000000000000" {
 			teamID = auth.TeamID.String()
 		}
 		if teamID == "" && req.ParentID == "" {
@@ -149,12 +166,10 @@ func workItemEditHandler(store WorkItemWriter) http.HandlerFunc {
 		}
 
 		// Team scope mirrors the state endpoint: the caller's Team fences the item
-		// (cross-tenant → 404). An admin still passes its Team here; fleet-wide
-		// cross-team edit is the ISI-3937 selector's job (not per-user rebind).
-		teamID := auth.TeamID.String()
-		if teamID == "00000000-0000-0000-0000-000000000000" {
-			teamID = ""
-		}
+		// (cross-tenant → 404). authTeamScope makes a global admin fleet-unscoped
+		// (dangling bootstrap Team, ISI-3921/ISI-4132); per-user rebind stays the
+		// ISI-3937 selector's job.
+		teamID := authTeamScope(r)
 
 		rec, err := store.UpdateWorkItem(r.Context(), id, coord.UpdateWorkItemInput{
 			Title:             req.Title,

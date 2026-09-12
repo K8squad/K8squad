@@ -212,6 +212,29 @@ The Project controller automatically creates corresponding NetworkPolicies that 
 
 See [docs/egress-configuration.md](../docs/egress-configuration.md) for detailed architecture and troubleshooting.
 
+## Telemetry — no collector in this chart (ISI-4163/ISI-4164)
+
+This chart ships **no otel-collector resources**. The chart-of-record for the
+collector topology is [`deploy/otel/`](../../otel) — the live
+otel-operator CRs in namespace `observability` — whose gateway serves the
+contract Service `otel-gateway-collector.observability` that every workload's
+`OTEL_EXPORTER_OTLP_ENDPOINT` points at. A Helm-rendered second collector would
+use the wrong Service name/namespace and fight the operator-managed stack, so
+the former `templates/otel-collector*.yaml` (gateway Deployment, node-log
+DaemonSet, NetworkPolicies) and the `observability.collector.*` /
+`observability.traces.*` / `observability.export.*` values were removed in
+ISI-4164.
+
+The §9 SLO PrometheusRule is collector-independent (it alerts on `ksquad_*`
+application metrics) and remains available behind `observability.sloRules.enabled`
+(requires the Prometheus Operator CRD, off by default):
+
+```yaml
+observability:
+  sloRules:
+    enabled: true
+```
+
 ## Verify the chart
 
 ```sh

@@ -38,8 +38,9 @@
     4. cp-monitoring-ingress — Prometheus scrape of the CP metrics ports.
 
   The apiserver's governed external hop (443 to model providers, ISI-3906) stays
-  in egress.yaml, and the otel-collector's vendor hop stays in
-  otel-collector-networkpolicy.yaml — both compose additively with the above.
+  in egress.yaml; the collector's vendor hop is owned by the operator-managed
+  collector stack (deploy/otel/, namespace observability — ISI-4163), not this
+  chart — both compose additively with the above.
 
   Verified on an enforcing CNI (kind + Calico) by test/cp-lockdown/run.sh and
   .github/workflows/cp-lockdown.yml: a conformance arm proves the CP is fully
@@ -168,14 +169,14 @@ spec:
   podSelector: {}
   ingress:
     # Prometheus scrape of the CP metrics/health endpoints (operator 8081,
-    # apiserver 8080, NATS 8222, otel-collector 8889, event-relay 9090, CNPG
+    # apiserver 8080, NATS 8222, event-relay 9090, CNPG
     # 9187 metrics + 8000 status). Default {} = all namespaces; tighten
     # monitoringNamespaceSelector to your monitoring namespace to scope it.
     - from:
         - namespaceSelector:
             {{- toYaml (dig "monitoringNamespaceSelector" (dict) $cp) | nindent 12 }}
       ports:
-        {{- range (dig "metricsPorts" (list 8000 8080 8081 8222 8889 9090 9187) $cp) }}
+        {{- range (dig "metricsPorts" (list 8000 8080 8081 8222 9090 9187) $cp) }}
         - protocol: TCP
           port: {{ . }}
         {{- end }}

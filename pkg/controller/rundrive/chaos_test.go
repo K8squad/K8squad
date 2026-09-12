@@ -102,8 +102,10 @@ func isolatedGateDB(t *testing.T, dsn, tag string) *sql.DB {
 }
 
 // driveFixture provisions an ISOLATED database with the full checked-in coord
-// schema (0001→0009), seeds one work item, and returns the DB handle + the
-// item's uuid.
+// schema (0001→0009), seeds one work item IN THE TODO LANE (the §13 claimable
+// lane intake dispatches from — the M1.3 §6.2 acquire advances todo →
+// in_progress, so a backlog-seeded fixture would absorb by design), and
+// returns the DB handle + the item's uuid.
 func driveFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -123,8 +125,8 @@ func driveFixture(t *testing.T) (*sql.DB, string) {
 
 	var item string
 	if err := db.QueryRowContext(ctx, `
-		INSERT INTO coord.work_item (project_id, title, created_by)
-		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos')
+		INSERT INTO coord.work_item (project_id, title, created_by, state)
+		VALUES (gen_random_uuid(), 'drive gate item', 'principal:chaos', 'todo')
 		RETURNING id::text`).Scan(&item); err != nil {
 		t.Fatalf("seed item: %v", err)
 	}
@@ -226,6 +228,39 @@ func TestSpineDrive(t *testing.T) {
 		if n := countOf(t, db, `SELECT count(*) FROM coord.artifact WHERE work_item_id=$1::uuid`, item); n != 1 {
 			t.Fatalf("artifacts = %d, want 1", n)
 		}
+		// The §6.2 claim-back half (M1.3 / ISI-4183): the drive ACQUIRED the
+		// checkout before driving — board lane todo → in_progress, one
+		// claim_acquired audit row, one claimed outbox event — and the terminal
+		// step RELEASED it: claim_released audit row, holder/lease cleared,
+		// fence strictly raised past the acquire's.
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='claim_acquired'`, item); n != 1 {
+			t.Fatalf("claim_acquired audit rows = %d, want 1", n)
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.outbox WHERE work_item_id=$1::uuid AND entity='work_item' AND event_type='claimed'`, item); n != 1 {
+			t.Fatalf("claimed outbox rows = %d, want 1", n)
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='claim_released'`, item); n != 1 {
+			t.Fatalf("claim_released audit rows = %d, want 1", n)
+		}
+		var lane string
+		var holder sql.NullString
+		var lease sql.NullTime
+		var fence int64
+		if err := db.QueryRowContext(ctx, `
+			SELECT wi.state, cl.holder_principal, cl.lease_expires_at, cl.fence_token
+			  FROM coord.work_item wi JOIN coord.claim cl ON cl.work_item_id = wi.id
+			 WHERE wi.id=$1::uuid`, item).Scan(&lane, &holder, &lease, &fence); err != nil {
+			t.Fatalf("post-terminal custody read: %v", err)
+		}
+		if lane != "in_progress" {
+			t.Fatalf("board lane = %q, want in_progress (todo advanced at acquire)", lane)
+		}
+		if holder.Valid || lease.Valid {
+			t.Fatalf("terminal Run left custody: holder=%v lease=%v", holder, lease)
+		}
+		if fence < 2 {
+			t.Fatalf("fence = %d, want ≥ 2 (acquire bump + terminal release bump)", fence)
+		}
 		// Re-drive is idempotent: terminal → absorbing, nothing duplicated.
 		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
 			t.Fatalf("re-drive: %v", err)
@@ -282,12 +317,26 @@ func TestSpineDrive(t *testing.T) {
 			t.Fatalf("retry_lap_entered audit rows = %d, want 1", n)
 		}
 
-		// The requeued drive completes the lap: terminal succeeded.
+		// The requeued drive completes the lap: terminal succeeded. The lap
+		// drive first RE-ACQUIRED the checkout RetryEnter released (§6.2 —
+		// the drive loop is the claim-back half here too).
 		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
 			t.Fatalf("lap drive: %v", err)
 		}
 		if got := stepOf(t, db, item); got != reconcile.StepSucceeded {
 			t.Fatalf("lap step = %q, want succeeded", got)
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='claim_acquired'`, item); n != 1 {
+			t.Fatalf("lap claim_acquired audit rows = %d, want 1", n)
+		}
+		// TWO custody lifetimes ⇒ two claim_released rows (ISI-4183 §6.5):
+		// (1) RetryEnter's re-entry cleared the DEAD holder's held checkout
+		//     (agent-x, fence 4) — enter() owes provenance for any held
+		//     release, "a released checkout can never exist without its
+		//     audit row" — and (2) the terminal step released the checkout
+		//     this lap RE-ACQUIRED (the claim_acquired=1 above).
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='claim_released'`, item); n != 2 {
+			t.Fatalf("lap claim_released audit rows = %d, want 2 (dead-holder release + terminal release)", n)
 		}
 	})
 
@@ -372,6 +421,61 @@ func TestSpineDrive(t *testing.T) {
 		}
 		if got := stepOf(t, db, item); got != reconcile.StepSucceeded {
 			t.Fatalf("post-wake terminal = %q, want succeeded", got)
+		}
+	})
+
+	// D5 (M1.3 / ISI-4183) §6.2 re-acquire on the retry lap over an ALREADY
+	// advanced lane: RetryEnter released the checkout mid-flight with the board
+	// lane at in_progress — the re-acquire must not roll back on the lane (the
+	// pre-ISI-4183 AcquireSpecific mark guard would have), and the drive must
+	// complete under the re-acquired fence.
+	t.Run("D5 retry-lap re-acquire keeps an in_progress lane claimable", func(t *testing.T) {
+		db, item := driveFixture(t)
+		cl := fake.NewClientBuilder().WithScheme(driveScheme(t)).Build()
+		max := int32(1)
+		run := newDriveRun(t, cl, "55555555-5555-5555-5555-555555555555", "run-1", item)
+		run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
+		if err := cl.Update(ctx, run); err != nil {
+			t.Fatalf("policy: %v", err)
+		}
+
+		// Stage a mid-flight death with the lane ALREADY advanced (the first
+		// attempt had acquired): in_progress + expired lease + holder.
+		if _, err := db.ExecContext(ctx, `
+			UPDATE coord.work_item SET state='in_progress' WHERE id=$1::uuid`, item); err != nil {
+			t.Fatalf("stage lane: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `
+			UPDATE coord.claim SET reconcile_step='running', holder_principal='agent-x',
+			       run_id='99999999-9999-9999-9999-999999999999',
+			       lease_expires_at = clock_timestamp() - interval '5 minutes', fence_token = 2
+			 WHERE work_item_id=$1::uuid`, item); err != nil {
+			t.Fatalf("stage death: %v", err)
+		}
+
+		driver, _ := newTestDriver(cl, db, coord.DefaultProdResumeConfig())
+		// Pass 1: death detected → RetryEnter (checkout released, lap re-enter).
+		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
+			t.Fatalf("death drive: %v", err)
+		}
+		// Pass 2: the requeued lap — re-acquire over the in_progress lane, then
+		// the machine runs to terminal.
+		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
+			t.Fatalf("lap drive: %v", err)
+		}
+		if got := stepOf(t, db, item); got != reconcile.StepSucceeded {
+			t.Fatalf("lap step = %q, want succeeded", got)
+		}
+		if n := countOf(t, db, `SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='claim_acquired'`, item); n != 1 {
+			t.Fatalf("claim_acquired audit rows = %d, want 1", n)
+		}
+		var lane string
+		if err := db.QueryRowContext(ctx,
+			`SELECT state FROM coord.work_item WHERE id=$1::uuid`, item).Scan(&lane); err != nil {
+			t.Fatalf("lane read: %v", err)
+		}
+		if lane != "in_progress" {
+			t.Fatalf("lane = %q, want in_progress (kept across the retry lap)", lane)
 		}
 	})
 }

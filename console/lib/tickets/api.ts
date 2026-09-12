@@ -3,8 +3,9 @@
 // The browser talks ONLY to the Next.js BFF (ADR-013 single choke point); these
 // helpers hit the local /api routes which forward the session cookie upstream.
 // The ONE mutation on this screen is the human status-transition
-// PATCH /api/work-items/{id}/state {to, expectedFrom} (8.14a, ADR-037) — no
-// claim/lease call is ever issued from the console (distinct authority path, §6.2).
+// PATCH /api/work-items/{id}/state {toState, fromState} (8.14a, ADR-037 — the
+// apiserver's field names, ISI-4225) — no claim/lease call is ever issued from
+// the console (distinct authority path, §6.2).
 
 import { encodeProjectId } from "@/lib/projectId";
 import type {
@@ -46,7 +47,13 @@ export async function listWorkItems(
   const url = `/api/projects/${encodeProjectId(projectId)}/work-items${qs ? `?${qs}` : ""}`;
   const res = await fetch(url, { cache: "no-store" });
   const payload = await jsonOrThrow(res);
-  const items = (payload as { items?: unknown }).items;
+  // The M1.5 board read model (ISI-4131) answers a BARE JSON array (never
+  // null); the 8.14d-era contract wrapped the list in { items }. Accept the
+  // array first — the envelope stays as a fallback for older apiservers so a
+  // mixed-version deploy degrades to an empty board, never a crash (ISI-4132).
+  const items = Array.isArray(payload)
+    ? payload
+    : (payload as { items?: unknown }).items;
   return Array.isArray(items) ? (items as WorkItem[]) : [];
 }
 
@@ -65,7 +72,7 @@ export async function patchWorkItemState(
     },
   );
   await jsonOrThrow(res);
-  return { state: body.to };
+  return { state: body.toState };
 }
 
 /**

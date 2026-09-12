@@ -8,13 +8,11 @@ rules:
   - ""
   resources:
   - configmaps
-  - namespaces
   verbs:
   - create
   - delete
   - get
   - list
-  - patch
   - update
   - watch
 - apiGroups:
@@ -34,29 +32,25 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
   - persistentvolumeclaims
   verbs:
   - create
   - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - ""
   resources:
   - pods
   verbs:
+  - create
+  - delete
   - get
   - list
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - deployments
-  verbs:
-  - get
-  - list
-  - patch
   - watch
 - apiGroups:
   - batch
@@ -77,7 +71,6 @@ rules:
   - mcpservers
   - otelconfigs
   - roles
-  - runs
   - skills
   verbs:
   - get
@@ -103,6 +96,15 @@ rules:
   - get
   - list
   - patch
+  - watch
+- apiGroups:
+  - ksquad.io
+  resources:
+  - runs
+  verbs:
+  - create
+  - get
+  - list
   - watch
 - apiGroups:
   - ksquad.io

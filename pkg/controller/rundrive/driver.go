@@ -92,15 +92,40 @@ type ClaimState struct {
 	Fence          int64
 	Holder         string
 	LeaseExpiresAt *time.Time
+	// RunID is the claim row's holder run (coord.claim.run_id). The §6.2
+	// acquire (M1.3 / ISI-4183) stamps THIS Run's uid there; the drive loop
+	// treats "RunID == the Run being driven + live lease" as already holding
+	// the checkout and everything else as an acquire (or re-acquire) to make.
+	RunID string
+	// ItemState is the work item's board lane (coord.work_item.state): the
+	// §6.2 claim only advances todo → in_progress (a re-acquire keeps an
+	// already-advanced lane). backlog (§13: parked, NOT claimable), in_review
+	// and done lanes cannot be acquired — a Run over such an item has no
+	// custody path and the drive absorbs instead of polling.
+	ItemState string
 }
 
 // Claims is the durable coordination surface the driver needs BEYOND the
-// machine's own Store/Effects: claim-row reads, the retry/fail guarded
-// re-entries (§6.3 fence-first + checkout release), the 3.7 resume re-entry,
-// and the retry-lap count (derived from the a2a_dispatch markers).
+// machine's own Store/Effects: claim-row reads, the §6.2 acquire + lease
+// renewal (M1.3 / ISI-4183), the retry/fail guarded re-entries (§6.3
+// fence-first + checkout release), the 3.7 resume re-entry, and the retry-lap
+// count (derived from the a2a_dispatch markers).
 type Claims interface {
 	State(ctx context.Context, workItemID string) (ClaimState, bool, error)
 	LapsUsed(ctx context.Context, runID string) (int, error)
+	// Acquire is the §6.2 checkout acquire for one Run at drive start: the
+	// guarded in-place rewrite of the claim row (holder, run, fence bump,
+	// lease) co-committed with the todo → in_progress board-lane advance, the
+	// claim_acquired audit row and the claimed outbox event. ok=false means
+	// the free-or-expired guard rejected us (a live foreign lease, or a lane
+	// the claim does not advance) — nothing changed; the caller re-reads the
+	// world on its next pass.
+	Acquire(ctx context.Context, workItemID, runID string) (fence int64, ok bool, err error)
+	// Renew extends the lease this Run holds (§6.2 heartbeat, one guarded
+	// UPDATE: holder + run + fence + live-lease match). ok=false means
+	// custody moved (fenced/reclaimed/lapsed) — the caller must not treat the
+	// checkout as ours.
+	Renew(ctx context.Context, workItemID, runID string, fence int64) (ok bool, err error)
 	// RetryEnter is the §8 retry re-entry: bump the fence (fencing any zombie),
 	// release the work-item checkout for reclaim, and re-point the durable step
 	// to claiming_sandbox — ONE transaction with its audit + outbox rows. ok is
@@ -258,6 +283,48 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return r.retryOrFail(ctx, &run, cs)
 	}
 
+	// §6.2 checkout acquire (M1.3 / ISI-4183): the drive loop IS the claim-back
+	// half of intake dispatch — a Run only drives an item whose checkout it
+	// HOLDS. Without this the machine advances reconcile_step to terminal while
+	// the board lane stays todo forever (no holder, no fence bump, no
+	// claim_acquired audit). Custody is made here, level-triggered, before the
+	// machine binds: acquire when the checkout is free-or-expired, renew when
+	// it is already ours-and-live, absorb when the lane offers no custody path.
+	if held := cs.RunID == runID && !r.leaseExpired(cs); held {
+		// Ours and live: keep it ours across passes (the §6.2 heartbeat — one
+		// guarded UPDATE; a false return means custody moved under us, so the
+		// next pass re-reads the world rather than driving on a stale fence).
+		ok, err := r.Claims.Renew(ctx, run.Spec.WorkItemRef, runID, cs.Fence)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: renew claim for %s: %w", req.NamespacedName, err)
+		}
+		if !ok {
+			return ctrl.Result{RequeueAfter: continueDelay}, nil
+		}
+	} else if cs.ItemState == coord.DefaultProdConfig().ClaimableState || cs.ItemState == coord.DefaultProdConfig().ClaimedState {
+		// todo (first acquire: lane advances todo → in_progress) or
+		// in_progress (re-acquire: a retry lap after RetryEnter released the
+		// checkout, or a takeover of a lapsed holder — the lane stays put).
+		_, ok, err := r.Claims.Acquire(ctx, run.Spec.WorkItemRef, runID)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: acquire claim for %s: %w", req.NamespacedName, err)
+		}
+		if !ok {
+			// Live foreign lease (contended) or a lane change raced us —
+			// nothing changed; re-read on the next pass. A short step, not a
+			// poll: contention is transient by the §6.2 guard design.
+			return ctrl.Result{RequeueAfter: continueDelay}, nil
+		}
+	} else {
+		// backlog (§13: not claimable), in_review or done: no custody path
+		// exists for this Run — absorb. The level-triggered resync re-drives
+		// if the lane ever returns to todo (e.g. an intake re-dispatch).
+		slog.InfoContext(ctx, "rundrive: work item not claimable; absorbing",
+			"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+			"work_item.state", cs.ItemState)
+		return ctrl.Result{}, nil
+	}
+
 	// 3.1 drive: bind the per-Run machine and run it toward a terminal step.
 	store, err := r.Runner.Store(ctx, &run)
 	if err != nil {
@@ -321,6 +388,13 @@ func (r *Driver) dead(cs ClaimState) bool {
 		cs.Step == reconcile.StepRunning ||
 		cs.Step == reconcile.StepCollecting
 	return inFlight && r.now().After(*cs.LeaseExpiresAt)
+}
+
+// leaseExpired reports whether the claim-row lease has lapsed (absent counts
+// as expired: an unheld or lease-less checkout is free-or-expired to the §6.2
+// guard, so the drive re-acquires rather than assuming stale custody).
+func (r *Driver) leaseExpired(cs ClaimState) bool {
+	return cs.LeaseExpiresAt == nil || r.now().After(*cs.LeaseExpiresAt)
 }
 
 // retryOrFail executes the §5.3 decision after a death (or a failed attempt):

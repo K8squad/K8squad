@@ -1,0 +1,48 @@
+# K8squad collector topology (ISI-4163 chart-of-record).
+# Install into the observability namespace to preserve the platform contract:
+#   helm install k8squad-otel deploy/otel/chart -n observability --create-namespace
+
+collector:
+  # ── Mode select (board requirement, ISI-4163) ─────────────────────────────
+  # operator   — render OpenTelemetryCollector CR (needs the otel-operator).
+  # deployment — render a plain Deployment+ConfigMap+Service, no operator.
+  # external   — render no gateway: the user already runs a collector.
+  mode: operator
+
+  # Gateway name. The Service contract is "<name>-collector.<release-ns>" —
+  # keep "otel-gateway" unless you also update config/helm
+  # controlPlane.otel.endpoint in lockstep.
+  name: otel-gateway
+  replicas: 1
+  image: otel/opentelemetry-collector-k8s:0.156.0
+
+  # Resource attributes stamped on every signal.
+  environment: test
+  serviceNamespace: k8squad-test
+
+  # Vendor backend (Dynatrace OTLP). Auth token is NEVER in values — it is
+  # referenced from an out-of-band Secret created before install.
+  vendor:
+    endpoint: "https://oat05854.dev.dynatracelabs.com/api/v2/otlp"
+  authSecretRef:
+    name: dynatrace-otlp
+    key: token
+
+  # BYO collector (mode=external). HTTP(S) OTLP endpoint of the user's own
+  # collector, e.g. "http://my-collector.monitoring:4318". Used by the
+  # node-logs DaemonSet when enabled; workload wiring is done by setting
+  # controlPlane.otel.endpoint in config/helm to the gRPC endpoint.
+  external:
+    endpoint: ""
+
+nodeLogs:
+  # Node-level pod log collection (filelog → gateway). Independent of mode:
+  # in external mode it ships logs to collector.external.endpoint.
+  enabled: true
+  image: otel/opentelemetry-collector-k8s:0.156.0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi

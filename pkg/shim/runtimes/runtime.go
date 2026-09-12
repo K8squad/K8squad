@@ -92,6 +92,18 @@ type ExecSpec struct {
 	Path string
 	Args []string
 	Env  []string
+	// Stdin, when non-empty, is fed to the process's stdin and the stream is
+	// then closed (ISI-4188 gap 5): this is how the prompt reaches CLIs that
+	// read their message from stdin (opencode `run`), keeping it out of argv
+	// and the process table (NFR-SEC1 — same invariant as the codex wrapper).
+	Stdin string
+	// Parse, when set, maps one stdout line onto zero or more Progress events
+	// (ISI-4188 gap 7): runtimes whose stdout is a structured event stream
+	// (opencode `--format=json`) decode it here so tool/skill activity reaches
+	// the A2A wire and the Epic D telemetry spine as typed events instead of
+	// opaque message text. Nil keeps the default line→message mapping.
+	// The func MUST be pure: no I/O, no logging, no shared state.
+	Parse func(line string) []Progress
 	// WorkDir is the sandbox working directory the CLI runs in (from
 	// LaunchContext.WorkDir); empty means the process's current directory.
 	WorkDir string
@@ -114,6 +126,29 @@ type ExecSpec struct {
 	// exit only. The func must be pure — it is called from the runner's
 	// scanner goroutine.
 	SettleLine func(line string) bool
+}
+
+// Progress is one runtime-stream progress event handed from the runner to the
+// engine (spec §4): the engine owns the seq, timestamp and task id. Exactly
+// one field is set per Progress, selected by Kind. It lives in this package
+// (not pkg/shim) so an adapter's ExecSpec.Parse can produce typed events
+// without an import cycle; pkg/shim re-exports it as a type alias.
+type Progress struct {
+	Kind        a2a.EventType
+	Message     *a2a.MessagePayload
+	Tool        *a2a.ToolPayload
+	SkillLoad   *a2a.SkillLoadPayload
+	Usage       *a2a.UsagePayload
+	Artifact    *a2a.ArtifactRef
+	Auth        *a2a.AuthRequiredPayload
+	RateLimited *a2a.RateLimitedPayload
+	// ToolArgs is the INTERNAL raw-arguments seam for a Kind==EventTool
+	// progress (Epic D, plan §2.4): the runtime adapter hands the raw tool
+	// call arguments here, and the engine's funnel hashes them onto
+	// Tool.ArgsSHA256 before the event is funneled any further — raw args
+	// never reach the wire payload, the SSE log, or the telemetry mapper.
+	// +optional
+	ToolArgs string
 }
 
 // Runtime is the adapter contract every conformant coding-agent flavor
@@ -206,6 +241,22 @@ func envelopeEnv(lc LaunchContext) []string {
 	return []string{
 		"KSQUAD_SYSTEM_CONTEXT=" + lc.Envelope.SystemContext,
 		"KSQUAD_INPUT=" + lc.Envelope.Input,
+	}
+}
+
+// EnvelopePrompt reassembles the single prompt a stdin-reading CLI consumes
+// out of the two envelope halves (ISI-4188 gap 5): the system context precedes
+// the concrete instruction, separated by a blank line; either half may be
+// empty. Mirrors the codex wrapper's buildEnvelope (cmd/ksquad-codex-exec) so
+// every runtime delivers the identical prompt text.
+func EnvelopePrompt(lc LaunchContext) string {
+	switch {
+	case lc.Envelope.SystemContext == "":
+		return lc.Envelope.Input
+	case lc.Envelope.Input == "":
+		return lc.Envelope.SystemContext
+	default:
+		return lc.Envelope.SystemContext + "\n\n" + lc.Envelope.Input
 	}
 }
 
