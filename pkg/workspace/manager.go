@@ -111,9 +111,16 @@ func envOrDefault(key, def string) string {
 //+kubebuilder:rbac:groups=ksquad.io,resources=runs/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;delete
 
-// Reconcile ensures a workspace PVC exists for each Run. PVC teardown is handled
-// by the owner reference set in createWorkspacePVC, so a deleted/absent Run is a
-// no-op here.
+// Reconcile (ISI-4236) reclaims the superseded per-Run workspace claim — it
+// NEVER provisions one. The per-Run claim was dead weight by construction:
+// nothing ever mounted it (sandbox pods mount the per-Project claim via the
+// pool key's ProjectPVC dimension, pkg/warmpool/kube.go, ISI-4127), so with a
+// WaitForFirstConsumer storage class it sat Pending forever, spammed
+// WaitForFirstConsumer events and pinned squad storage quota (the k8squad-test
+// incident: workspace-intake-* claims Pending 4-5h+). This reconciler stays
+// registered only to drain the backlog: any surviving workspace-{run} claim
+// is deleted; absent claims are a silent no-op. New Runs owe no per-Run
+// claim — their workspace is the per-Project claim (pkg/controller/projectpvc).
 func (wm *Manager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	run := &ksquadv1alpha1.Run{}
 	if err := wm.client.Get(ctx, req.NamespacedName, run); err != nil {
@@ -122,14 +129,45 @@ func (wm *Manager) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result
 	if !run.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
-	if _, err := wm.EnsureWorkspace(ctx, run); err != nil {
+	if err := wm.reclaimSupersededWorkspace(ctx, run); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
 }
 
+// reclaimSupersededWorkspace deletes the Run's per-Run workspace claim when
+// one survives (pre-ISI-4236 backlog, or an operator version-skew window
+// where an old replica re-created it). The claim is scratch nothing mounts
+// (artifacts live in coordination Postgres per ADR-001), so deletion owes
+// nothing. Silent no-op when no claim exists — this fires on every Run event
+// and must not log-spam.
+func (wm *Manager) reclaimSupersededWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) error {
+	logger := log.FromContext(ctx)
+	pvcName := fmt.Sprintf("workspace-%s", run.Name)
+	existing := &corev1.PersistentVolumeClaim{}
+	err := wm.client.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: run.Namespace}, existing)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return nil // nothing owed
+		}
+		return fmt.Errorf("failed to check existing PVC %s: %w", pvcName, err)
+	}
+	logger.Info("Reclaiming superseded per-Run workspace PVC (ISI-4236: never mounted; per-Project claim is the workspace)",
+		"pvc", pvcName, "run", run.Name)
+	if err := wm.client.Delete(ctx, existing); err != nil {
+		return fmt.Errorf("failed to delete workspace PVC %s: %w", pvcName, err)
+	}
+	return nil
+}
+
 // EnsureWorkspace ensures that a workspace PVC exists for the given Run.
 // If the PVC doesn't exist, it creates one. If it exists, it returns the reference.
+//
+// Deprecated: ISI-4236 — per-Run workspace claims are superseded by the
+// per-Project claim (pkg/controller/projectpvc; sandbox pods mount it via the
+// pool key's ProjectPVC dimension). Reconcile no longer calls this; it remains
+// only for direct API consumers. Do NOT wire it back into a reconcile loop:
+// a provisioned per-Run claim has no consumer and never binds.
 func (wm *Manager) EnsureWorkspace(ctx context.Context, run *ksquadv1alpha1.Run) (*corev1.PersistentVolumeClaim, error) {
 	logger := log.FromContext(ctx)
 

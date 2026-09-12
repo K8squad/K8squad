@@ -813,8 +813,10 @@ func main() {
 	networkPolicyManager := networkpkg.NewNetworkPolicyManager(mgr.GetClient())
 
 	// Register custom controllers for workspace and network management.
-	// Workspaces are per-Run (the manager keys off Run and owns the PVC);
-	// network policies are per-Team.
+	// The run-workspace controller is RECLAIM-ONLY (ISI-4236): per-Run claims
+	// were superseded by the per-Project claim (ISI-4127) that sandbox pods
+	// actually mount; this reconciler drains the never-binding per-Run
+	// backlog and provisions nothing. Network policies are per-Team.
 	// A dedicated controller name is required: controller-runtime derives the
 	// name from the primary Kind (lowercased) unless overridden, so a bare
 	// For(&Run{}) here collides with the Run drive-loop controller ("run") and
