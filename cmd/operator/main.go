@@ -39,6 +39,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -55,6 +56,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -397,6 +399,19 @@ func main() {
 			ctrl.Log.Error(err, "unable to bind resume store")
 			os.Exit(1)
 		}
+		// M1.2: the classifier resolves the sandbox image Run→Agent→
+		// AgentRuntime-type (RuntimeImages env) and the runtime-class default
+		// (KSQUAD_SANDBOX_RUNTIME_CLASS; unset pins the story-1.3 gvisor
+		// default, "runc" selects the cluster default for clusters without a
+		// gvisor RuntimeClass). Resolved ONCE here because the §9.2 warm-pool
+		// controller (ISI-4211) must manage the SAME key the classifier
+		// derives for a default interactive Run — two independent resolutions
+		// could drift and warm a key Bind never claims.
+		defaultRuntimeClass := "gvisor"
+		if v, ok := os.LookupEnv("KSQUAD_SANDBOX_RUNTIME_CLASS"); ok {
+			defaultRuntimeClass = v
+		}
+		images := rundrive.RuntimeImagesFromEnv(os.Getenv)
 		// Real kube provisioner for actual pod creation (enables cluster-testable agent execution).
 		// ISI-4208: sandbox scheduling requests are right-sized below the burst
 		// limits by default (500m CPU request vs 1 CPU limit) — warm sandboxes
@@ -432,6 +447,82 @@ func main() {
 		if err := kubepool.NewPodWatcher(mgr.GetClient(), pool).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up sandbox pod watcher")
 			os.Exit(1)
+		}
+
+		// ISI-4211: the §9.2 warm-pool controller — the loop that finally
+		// ENFORCES the warm target N. Everything above is mechanism (pool,
+		// provisioner, pod watcher, binder); this is the policy engine that
+		// replenishes toward target on every tick and reacts to bind misses
+		// (NewController registers the Pool.SetBindMiss trigger itself, so
+		// an empty-pool claim boots its replacement immediately). Without
+		// this runnable the pool only ever accrues as leftovers of Run
+		// activity — target N is never enforced.
+		//
+		// The managed key must byte-match what SpecClassifier derives for a
+		// default interactive Run (runtime class + resolved default image +
+		// team namespace + bare capability posture): RuntimeClass and Image
+		// come from the SAME env knobs the classifier reads, namespace from
+		// KSQUAD_WARM_POOL_NAMESPACE (ADR-044 step 9 keys warmth per team
+		// namespace; v1 manages one configured namespace).
+		if images.Default != "" {
+			warmKey := kubepool.PoolKey{
+				RuntimeClass: defaultRuntimeClass,
+				Image:        images.Default,
+				Namespace:    os.Getenv("KSQUAD_WARM_POOL_NAMESPACE"),
+			}
+			replenishS, ok := kubepool.DefaultReplenish()[defaultRuntimeClass]
+			if !ok || replenishS <= 0 {
+				replenishS = kubepool.ReplenishRuncSeconds // conservative fallback for unmeasured classes
+			}
+			warmPolicy := kubepool.NewDefaultPolicy(map[kubepool.PoolKey]float64{warmKey: replenishS})
+			// KSQUAD_WARM_POOL_TARGET pins the enforced steady-state target N
+			// (raises MinReady; MaxReady lifts to keep the ceiling ≥ floor).
+			// At λ=0 the base-stock formula floors at 1, so the clamp holds
+			// the pool at exactly N until a real pressure signal (Epic 13's
+			// warmpool.claim.pressure gauge, ISI-2891) raises it.
+			if v := os.Getenv("KSQUAD_WARM_POOL_TARGET"); v != "" {
+				if n, err := strconv.Atoi(v); err != nil {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_TARGET; keeping policy default", "value", v)
+				} else if n > 0 {
+					warmPolicy.MinReady = n
+					if n > warmPolicy.MaxReady {
+						warmPolicy.MaxReady = n
+					}
+				}
+			}
+			warmTick := 10 * time.Second
+			if v := os.Getenv("KSQUAD_WARM_POOL_TICK"); v != "" {
+				if d, err := time.ParseDuration(v); err != nil || d <= 0 {
+					ctrl.Log.Error(err, "invalid KSQUAD_WARM_POOL_TICK; keeping default", "value", v)
+				} else {
+					warmTick = d
+				}
+			}
+			warmController := kubepool.NewController(pool,
+				kubepool.NewAutoscaler(warmPolicy, kubepool.DefaultStabilizationTicks),
+				kubepool.ManagedKey{
+					Key:      warmKey,
+					Class:    kubepool.ClassInteractive,
+					Pressure: kubepool.StaticPressure(0),
+				})
+			// mgr.Add on a plain RunnableFunc defaults to the leader-election
+			// group (arch §5.2 — one owner, no racing resizers): the loop
+			// runs only on the elected leader, after the caches sync.
+			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+				return warmController.Run(ctx, warmTick)
+			})); err != nil {
+				ctrl.Log.Error(err, "unable to register warm-pool controller")
+				os.Exit(1)
+			}
+			ctrl.Log.Info("warm-pool controller wired",
+				"key", warmKey, "target", warmPolicy.MinReady, "max", warmPolicy.MaxReady,
+				"tick", warmTick.String(), "replenishSeconds", replenishS)
+		} else {
+			// Degraded, loudly logged (never silently broken): without a
+			// default sandbox image the warm key cannot be resolved and warm
+			// boots would fail the provisioner's empty-image guard on every
+			// tick. Bind-path cold boots still classify per-Run images.
+			ctrl.Log.Info("warm-pool controller disabled: KSQUAD_SANDBOX_IMAGE unset (no default image to warm); pool replenishment stays inert")
 		}
 
 		// Epic D follow-up (ISI-3352): the physical A2A dispatch feed — the
@@ -493,13 +584,9 @@ func main() {
 		// default, "runc" selects the cluster default for clusters without a
 		// gvisor RuntimeClass). The RunStatusSandboxWriter surfaces
 		// Run.status.sandboxRef at Bind (console/E2E visibility).
-		defaultRuntimeClass := "gvisor"
-		if v, ok := os.LookupEnv("KSQUAD_SANDBOX_RUNTIME_CLASS"); ok {
-			defaultRuntimeClass = v
-		}
 		runner := rundrive.NewProdRunner(db, rundrive.OperatorPrincipal,
 			kubepool.NewBinder(pool, rundrive.SpecClassifier(mgr.GetClient(),
-				rundrive.RuntimeImagesFromEnv(os.Getenv), defaultRuntimeClass)), a2aDispatcher)
+				images, defaultRuntimeClass)), a2aDispatcher)
 		if credWriter := rundrive.NewSecretCredentialWriter(mgr.GetClient(), taskIOMinter, taskIOCoordURL); credWriter != nil {
 			runner = runner.WithCredentialWriter(credWriter)
 		}
