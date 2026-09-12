@@ -14,8 +14,12 @@ spec:
     - "Ship the BMAD-method demo following the phased workflow."
     - "Keep every change small, tested, and reviewable."
   # The per-Project workspace PVC (ISI-4127, §9.4): the operator provisions
-  # one claim for this Project and the squad's agent pods mount it shared at
-  # /workspace — files persist across pod restarts and pass between agents.
+  # one claim for this Project in each consuming Team's SANDBOX namespace
+  # (via the Team's spec.projects ref — 08-team.yaml) and the squad's agent
+  # pods mount it shared at /workspace — files persist across pod restarts
+  # and pass between agents. Sandbox pods boot in the team namespace
+  # (ADR-044 step 9), and PVCs are namespace-scoped, so that is the only
+  # place a mount can resolve (ISI-4302).
   # class is optional; empty resolves from the operator's Helm storage
   # contract and fails closed (no cluster-default bind) when that is unset.
   workspacePVC:
