@@ -691,6 +691,42 @@ func main() {
 			ctrl.Log.Error(a2aErr, "A2A dispatch unavailable: Run drive loop stays ledger-only (operator ksquad_* series will stay empty)")
 		}
 
+		// ISI-4346: run-owned sandbox teardown at agent completion. The
+		// dispatcher's background follow ends when the in-sandbox agent
+		// session truly does — long AFTER the durable machine settles
+		// (dispatch is fire-and-forget by design, so the ledger reaches
+		// succeeded while the agent still works). OnDone is the completion
+		// seam the dispatcher has carried since ISI-2889, but production
+		// never wired it: the run-bound sandbox pod (an HTTP supervisor
+		// that keeps serving after the runtime exits, and pods carry no
+		// ownerReferences) was torn down only on the death/kill paths, so
+		// every happy-path Run leaked its pod at full CPU request.
+		//
+		// Release ONLY on a cleanly terminal follow: a follow ERROR is not
+		// proof the agent is done (a transient SSE/network blip on a live
+		// run must not tear down a healthy sandbox and force a fresh
+		// re-dispatch). An errored follow leaves the pod to the existing
+		// machinery — the drive loop's death/gone-sandbox paths while the
+		// claim is live, and ISI-4348's durable follow-settlement marker
+		// for the post-settlement straggler. Release itself is keyed on
+		// the real run uid Submit received, idempotent (pool.byRun
+		// delete), mutex-safe from the follow goroutine, and best-effort
+		// — a failed teardown parks the sandbox in draining for the
+		// pool's retry instead of failing the follow.
+		if a2aDispatcher != nil {
+			a2aDispatcher.OnDone = func(runID string, _ clienta2a.Result, followErr error) {
+				if followErr != nil {
+					ctrl.Log.Info("a2a follow ended with error; leaving run sandbox in place (error is not proof of completion)",
+						"run.id", runID, "followErr", followErr.Error())
+					return
+				}
+				if err := pool.Release(context.Background(), runID); err != nil {
+					ctrl.Log.Error(err, "sandbox release at agent completion failed (pool draining retries teardown)",
+						"run.id", runID)
+				}
+			}
+		}
+
 		// Topology 2 (ADR-0007 channel A): the warm-pool Bind path delivers the
 		// run-scoped task-io credential via a per-sandbox Secret (the shim env
 		// carrier is topology 1). Same minter + coord URL as the shim, so both
