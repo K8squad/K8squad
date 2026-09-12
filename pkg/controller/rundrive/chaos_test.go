@@ -117,6 +117,7 @@ func driveFixture(t *testing.T) (*sql.DB, string) {
 		"0005_reconcile_step.sql",
 		"0007_reconcile_effects.sql",
 		"0009_run_pause.sql",
+		"0017_claim_assignee.sql",
 	} {
 		if _, err := db.ExecContext(ctx, migrationFile(t, m)); err != nil {
 			t.Fatalf("apply %s: %v", m, err)

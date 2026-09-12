@@ -111,6 +111,14 @@ var allowedSurface = map[string]string{
 	// of record. Fenced like every other acquire; carries no worker content.
 	"ProdClaimer.AcquireSpecific": "§6.2 conditional fence-bump acquire of a specific prod work item",
 
+	// ISI-4237 terminal settle. The engine's terminal paths write the BOARD's
+	// reflection of a settled run: a work_item lane move (state change) plus one
+	// provenanced coord.comment summary — exactly the two sanctioned handoff
+	// halves (§6.1). No worker-authored content rides either; the summary is
+	// engine-derived from the record (terminal step + stamped assignee).
+	"SettleLaneOf":       "ISI-4237 terminal-step → board-lane mapping (state change on work_item, §6.1)",
+	"SettleTerminalLane": "ISI-4237 terminal settle: lane move + state_transition audit + summary comment (§6.5/§6.1)",
+
 	// §2.9/§6.1 dispatch-of-record (Story 2.9 / ISI-2526). The coordinator reads
 	// a completed dependency's handoff VIA THE COORDINATION RECORD and defines the
 	// next fenced work item. No parameter carries worker-authored content — the

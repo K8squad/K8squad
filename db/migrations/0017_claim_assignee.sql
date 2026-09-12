@@ -1,0 +1,23 @@
+-- 0017_claim_assignee.sql — agent attribution on the checkout row (ISI-4237).
+--
+-- DEFECT being fixed: a dispatched ticket showed NO assignee and no agent
+-- linkage on the board. The claim row carried only holder_principal — the
+-- OPERATOR machine principal ("ksquad-operator") while the run is live, NULL
+-- after the terminal release — so the §13 board projection (which reads the
+-- claim join in workitemread.go) could never answer "who is working this".
+--
+-- assignee_agent is the AGENT name from the Run's spec.agents[0] (e.g. "sam"),
+-- stamped in the SAME acquire transaction that takes the checkout. It is
+-- ATTRIBUTION, not custody:
+--   * the custody guard family (holder_principal / run_id / fence_token /
+--     lease_expires_at) is unchanged — renew/release/reclaim never read it;
+--   * it is deliberately NOT cleared on release: attribution must SURVIVE the
+--     terminal settle (holder goes NULL, run_id stays) so a completed ticket
+--     still shows which agent worked it;
+--   * it is rewritten in place on every (re)acquire (the claim-row discipline),
+--     so a retry lap or takeover restamps the new attempt's agent.
+--
+-- No backfill: rows predating this migration read NULL, which the board
+-- renders as its honest "unassigned" state (FR-I3 — never a fabricated value).
+
+ALTER TABLE coord.claim ADD COLUMN assignee_agent text;

@@ -116,11 +116,14 @@ type Claims interface {
 	// Acquire is the §6.2 checkout acquire for one Run at drive start: the
 	// guarded in-place rewrite of the claim row (holder, run, fence bump,
 	// lease) co-committed with the todo → in_progress board-lane advance, the
-	// claim_acquired audit row and the claimed outbox event. ok=false means
-	// the free-or-expired guard rejected us (a live foreign lease, or a lane
-	// the claim does not advance) — nothing changed; the caller re-reads the
-	// world on its next pass.
-	Acquire(ctx context.Context, workItemID, runID string) (fence int64, ok bool, err error)
+	// claim_acquired audit row and the claimed outbox event. agentName
+	// (ISI-4237) is the Run's spec.agents[0] name additionally stamped as the
+	// checkout's assignee_agent in the same transaction — the board's "who is
+	// working this" for a dispatched ticket; empty skips the stamp.
+	// ok=false means the free-or-expired guard rejected us (a live foreign
+	// lease, or a lane the claim does not advance) — nothing changed; the
+	// caller re-reads the world on its next pass.
+	Acquire(ctx context.Context, workItemID, runID, agentName string) (fence int64, ok bool, err error)
 	// Renew extends the lease this Run holds (§6.2 heartbeat, one guarded
 	// UPDATE: holder + run + fence + live-lease match). ok=false means
 	// custody moved (fenced/reclaimed/lapsed) — the caller must not treat the
@@ -305,7 +308,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		// todo (first acquire: lane advances todo → in_progress) or
 		// in_progress (re-acquire: a retry lap after RetryEnter released the
 		// checkout, or a takeover of a lapsed holder — the lane stays put).
-		_, ok, err := r.Claims.Acquire(ctx, run.Spec.WorkItemRef, runID)
+		_, ok, err := r.Claims.Acquire(ctx, run.Spec.WorkItemRef, runID, firstAgentName(&run))
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("rundrive: acquire claim for %s: %w", req.NamespacedName, err)
 		}
@@ -490,6 +493,18 @@ func (r *Driver) kickWorkItem(ctx context.Context, workItemID string) {
 		default: // full: level-triggered resync is the backstop
 		}
 	}
+}
+
+// firstAgentName is the board-attribution agent for one Run (ISI-4237): the
+// first entry of spec.agents — the M1 "one agent, one ticket" dispatch the
+// intake path builds and the dispatcher binds. "" when the spec names none
+// (the acquire then skips the assignee stamp — honest unassigned, never a
+// fabricated name).
+func firstAgentName(run *api.Run) string {
+	if len(run.Spec.Agents) == 0 {
+		return ""
+	}
+	return run.Spec.Agents[0].Name
 }
 
 // maxRetries reads the retry budget (nil policy = 0: no automatic retry).
