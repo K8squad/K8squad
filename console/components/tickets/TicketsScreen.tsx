@@ -9,9 +9,10 @@
 //     read/organization preference, NEVER coord state (R6 scope guard).
 //   • the sub-ticket tree's client-only state: lazy children cache + expanded
 //     set (8.17) — expansion adds no mutation.
-//   • the ONE mutation path: PATCH /work-items/{id}/state {to, expectedFrom}
-//     (8.14a). On 409 (or any failure) the screen RE-SYNCS to server truth —
-//     it never keeps client-authored state. No claim/lease call exists here.
+//   • the ONE mutation path: PATCH /work-items/{id}/state {toState, fromState}
+//     (8.14a; apiserver field names — ISI-4225). On 409 (or any failure) the
+//     screen RE-SYNCS to server truth — it never keeps client-authored state.
+//     No claim/lease call exists here.
 //   • the caller's role for the UI RBAC gate, resolved via the BFF and
 //     FAIL-CLOSED to viewer (§12.3 deny-by-default) — the server wall stays
 //     authoritative regardless.
@@ -156,7 +157,10 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   const onTransition = useCallback(
     async (item: WorkItem, to: WorkItemState) => {
       try {
-        await patchWorkItemState(item.id, { to, expectedFrom: item.state });
+        await patchWorkItemState(item.id, {
+          toState: to,
+          fromState: item.state,
+        });
         setNotice(null);
         setItems((prev) =>
           prev.map((it) => (it.id === item.id ? { ...it, state: to } : it)),

@@ -18,6 +18,7 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -242,11 +243,16 @@ func TestDeleteWorkspace(t *testing.T) {
 	}
 }
 
-func TestReconcileCreatesWorkspace(t *testing.T) {
+// TestReconcileReclaimsSupersededWorkspace (ISI-4236): the per-Run
+// reconciler is RECLAIM-ONLY. A fresh Run reconciles to no claim, and a
+// surviving pre-fix claim (the never-binding backlog) is deleted.
+func TestReconcileReclaimsSupersededWorkspace(t *testing.T) {
+	ctx := context.Background()
+
+	// Arm 1: fresh Run, no pre-existing claim — nothing is provisioned.
 	run := newRun()
 	m := newManager(t, run)
-
-	res, err := m.Reconcile(context.Background(), ctrl.Request{
+	res, err := m.Reconcile(ctx, ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: run.Name, Namespace: run.Namespace},
 	})
 	if err != nil {
@@ -255,8 +261,23 @@ func TestReconcileCreatesWorkspace(t *testing.T) {
 	if res != (ctrl.Result{}) {
 		t.Errorf("unexpected result: %+v", res)
 	}
-	if _, err := m.GetWorkspace(context.Background(), run); err != nil {
-		t.Errorf("workspace should exist post-reconcile: %v", err)
+	if _, err := m.GetWorkspace(ctx, run); err == nil {
+		t.Error("reconcile must NOT provision a per-Run workspace claim (ISI-4236)")
+	}
+
+	// Arm 2: pre-existing superseded claim (the incident backlog shape) —
+	// reclaimed on sight.
+	stale := m.createWorkspacePVC(run, fmt.Sprintf("workspace-%s", run.Name))
+	if err := m.client.Create(ctx, stale); err != nil {
+		t.Fatalf("seed stale claim: %v", err)
+	}
+	if _, err := m.Reconcile(ctx, ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: run.Name, Namespace: run.Namespace},
+	}); err != nil {
+		t.Fatalf("reconcile with stale claim: %v", err)
+	}
+	if _, err := m.GetWorkspace(ctx, run); err == nil {
+		t.Error("superseded per-Run claim should be reclaimed by reconcile (ISI-4236)")
 	}
 }
 
