@@ -15,10 +15,16 @@
 
 BEGIN;
 
--- (1) STRUCTURAL: the shipped trigger function still carries the no-op guard.
--- If someone reverts the function to the 0001 unconditional shape (or replaces
--- it with something that cannot compare whole rows), every assert below would
--- still pass vacuously only until the next no-op write — this fails first.
+-- (1) STRUCTURAL: the shipped trigger function still carries the no-op guard
+-- AND the generated-column exclusion (ISI-4298). If someone reverts the
+-- function to the 0001 unconditional shape (or replaces it with something
+-- that cannot compare whole rows), every assert below would still pass
+-- vacuously only until the next no-op write — this fails first. The exclusion
+-- assert fires even on a schema WITHOUT 0012 applied: the plain whole-row
+-- `NEW IS DISTINCT FROM OLD` shape passes block (2) vacuously there (no
+-- generated column ⇒ NEW/OLD match), which is exactly how 98eb5b8 verified
+-- green locally while being defeated live — so the exclusion is asserted on
+-- the function TEXT, not the behavior.
 DO $$
 DECLARE def text;
 BEGIN
@@ -26,6 +32,8 @@ BEGIN
     ASSERT def IS NOT NULL, 'coord.touch_updated_at() missing entirely — 0001 regressed';
     ASSERT def ~* 'IS\s+DISTINCT\s+FROM',
         format('coord.touch_updated_at() lost the NEW/OLD no-op guard (ISI-4217): %s', coalesce(def, '<none>'));
+    ASSERT def ~* '-\s*''search_tsv''',
+        format('coord.touch_updated_at() does not exclude the 0012 GENERATED column search_tsv from the row compare (ISI-4298) — the whole-row guard is defeated by it on any schema with 0012 applied: %s', coalesce(def, '<none>'));
 END $$;
 
 -- (2) THE WEDGE PRECONDITION: the exact ISI-4183 re-acquire mark shape over an
