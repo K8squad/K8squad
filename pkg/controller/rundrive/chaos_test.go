@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/contextasm"
+	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/controller/rundrive"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
@@ -101,27 +104,58 @@ func isolatedGateDB(t *testing.T, dsn, tag string) *sql.DB {
 	return db
 }
 
-// driveFixture provisions an ISOLATED database with the full checked-in coord
-// schema (0001→0009), seeds one work item IN THE TODO LANE (the §13 claimable
-// lane intake dispatches from — the M1.3 §6.2 acquire advances todo →
-// in_progress, so a backlog-seeded fixture would absorb by design), and
-// returns the DB handle + the item's uuid.
+// applyMigrations applies EVERY checked-in migration in filename order — the
+// same discipline the apiserver migration runner uses (db/migrations README:
+// "applied once, in order") — skipping the *_test.sql self-check companions.
+// The gate schema therefore always matches prod instead of a hand-picked
+// subset that drifts: the ISI-4298 fixture gap, where 98eb5b8's whole-row
+// no-op guard verified green locally PRECISELY because the fixture applied
+// only 0001..0009 and lacked 0012's GENERATED ALWAYS search_tsv — the column
+// that defeats a whole-row NEW/OLD compare inside a BEFORE trigger live.
+func applyMigrations(t *testing.T, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	dir := os.Getenv("COORD_MIGRATIONS_DIR")
+	if dir == "" {
+		for _, c := range []string{
+			filepath.Join("..", "..", "..", "db", "migrations"),
+			filepath.Join("db", "migrations"),
+		} {
+			if st, err := os.Stat(c); err == nil && st.IsDir() {
+				dir = c
+				break
+			}
+		}
+	}
+	if dir == "" {
+		t.Fatal("drive gate: cannot locate db/migrations (set COORD_MIGRATIONS_DIR)")
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("drive gate: read migrations dir %s: %v", dir, err)
+	}
+	for _, e := range ents { // ReadDir: sorted by filename — migration order
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".sql") || strings.HasSuffix(name, "_test.sql") {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, migrationFile(t, name)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+}
+
+// driveFixture provisions an ISOLATED database with the full checked-in
+// migration set (0001→NNNN, see applyMigrations — prod schema parity),
+// seeds one work item IN THE TODO LANE (the §13 claimable lane intake
+// dispatches from — the M1.3 §6.2 acquire advances todo → in_progress, so a
+// backlog-seeded fixture would absorb by design), and returns the DB handle
+// + the item's uuid.
 func driveFixture(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	ctx := context.Background()
 	db := isolatedGateDB(t, dsnOrFatal(t), "drive")
-	for _, m := range []string{
-		"0001_coord_schema.sql",
-		"0002_coord_dispatch.sql",
-		"0003_coord_outbox.sql",
-		"0005_reconcile_step.sql",
-		"0007_reconcile_effects.sql",
-		"0009_run_pause.sql",
-	} {
-		if _, err := db.ExecContext(ctx, migrationFile(t, m)); err != nil {
-			t.Fatalf("apply %s: %v", m, err)
-		}
-	}
+	applyMigrations(t, db)
 
 	var item string
 	if err := db.QueryRowContext(ctx, `
@@ -476,6 +510,134 @@ func TestSpineDrive(t *testing.T) {
 		}
 		if lane != "in_progress" {
 			t.Fatalf("lane = %q, want in_progress (kept across the retry lap)", lane)
+		}
+	})
+
+	// D6 (ISI-4217 / ISI-4298) pinned-revision round trip across a RetryEnter,
+	// over the FULL prod schema (applyMigrations now applies every migration,
+	// including 0012's GENERATED ALWAYS search_tsv — the column that defeated
+	// 98eb5b8's whole-row no-op guard live on k8squad-test). This replays the
+	// live wedge end-to-end: lap 1 dispatched with the work-item revision
+	// pinned (the §8.5 snapshot the run controller persists and the dispatcher
+	// re-reads), the holder dies, RetryEnter re-enters the lap, and the lap-2
+	// drive RE-ACQUIRES the already-in_progress lane — the §6.2 no-op VALUE
+	// mark. The pinned revision must still resolve after it
+	// (deterministic-resume contract), and a REAL edit must still break it
+	// (the pin keeps its teeth — the guard suppresses nothing genuine).
+	t.Run("D6 retry-lap re-acquire preserves the pinned work-item revision", func(t *testing.T) {
+		db, item := driveFixture(t)
+		cl := fake.NewClientBuilder().WithScheme(driveScheme(t)).Build()
+		max := int32(1)
+		run := newDriveRun(t, cl, "66666666-6666-6666-6666-666666666666", "run-1", item)
+		run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
+		if err := cl.Update(ctx, run); err != nil {
+			t.Fatalf("policy: %v", err)
+		}
+
+		// The §8.5 context trio assembleSystemContext resolves for the
+		// dispatch build (Agent window, Project meta, Team scope key).
+		agent := &api.Agent{ObjectMeta: metav1.ObjectMeta{
+			Name: "coder", Namespace: "default", UID: types.UID("77777777-7777-7777-7777-777777777777")}}
+		project := &api.Project{ObjectMeta: metav1.ObjectMeta{
+			Name: "p", Namespace: "default", UID: types.UID("88888888-8888-8888-8888-888888888888")}}
+		team := &api.Team{ObjectMeta: metav1.ObjectMeta{
+			Name: "t", Namespace: "default", UID: types.UID("99999999-9999-9999-9999-999999999999")}}
+		for _, o := range []client.Object{agent, project, team} {
+			if err := cl.Create(ctx, o); err != nil {
+				t.Fatalf("seed %s: %v", o.GetName(), err)
+			}
+		}
+		asm := contextsource.Deps{DB: db, Client: cl}.For("default")
+		window := contextsource.WindowForModel(agent.Spec.Model)
+
+		// Stage the lap-1 aftermath the way D5 does: the first attempt
+		// ACQUIRED (lane already advanced) and dispatched, then the holder
+		// died mid-flight with the lease expired.
+		if _, err := db.ExecContext(ctx, `
+			UPDATE coord.work_item SET state='in_progress' WHERE id=$1::uuid`, item); err != nil {
+			t.Fatalf("stage lane: %v", err)
+		}
+		if _, err := db.ExecContext(ctx, `
+			UPDATE coord.claim SET reconcile_step='running', holder_principal='agent-x',
+			       run_id='99999999-9999-9999-9999-999999999999',
+			       lease_expires_at = clock_timestamp() - interval '5 minutes', fence_token = 2
+			 WHERE work_item_id=$1::uuid`, item); err != nil {
+			t.Fatalf("stage death: %v", err)
+		}
+
+		// PIN — the fresh assembly the run controller persists at Claiming.
+		// The snapshot's WorkItemRevision encodes work_item.updated_at
+		// (ADR-001 opaque token); the lap-2 dispatch re-reads it exactly.
+		fresh, err := asm.Assemble(ctx, contextasm.AssembleRequest{
+			Run: run, Agent: agent, Project: project,
+			TeamID: string(team.UID), ContextWindow: window,
+		})
+		if err != nil {
+			t.Fatalf("pin assembly: %v", err)
+		}
+		var pinnedAt time.Time
+		if err := db.QueryRowContext(ctx,
+			`SELECT updated_at FROM coord.work_item WHERE id=$1::uuid`, item).Scan(&pinnedAt); err != nil {
+			t.Fatalf("read pinned updated_at: %v", err)
+		}
+
+		// Pass 1: death detected → RetryEnter (checkout released, lap entered).
+		driver, _ := newTestDriver(cl, db, coord.DefaultProdResumeConfig())
+		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
+			t.Fatalf("death drive: %v", err)
+		}
+		// Pass 2: the requeued lap re-acquires the in_progress lane — the
+		// no-op §6.2 mark that minted the phantom revision live — and runs
+		// the machine to terminal.
+		if _, err := driver.Reconcile(ctx, request("run-1")); err != nil {
+			t.Fatalf("lap drive: %v", err)
+		}
+		if got := stepOf(t, db, item); got != reconcile.StepSucceeded {
+			t.Fatalf("lap step = %q, want succeeded", got)
+		}
+
+		// RESOLVE — the exact call that wedged live: the dispatch build
+		// re-reads the pinned snapshot (Existing set, window pinned off the
+		// snapshot the way assembleSystemContext does) and the pinned
+		// revision must still match work_item.updated_at.
+		resumeWindow := window
+		if fresh.Snapshot != nil && fresh.Snapshot.ContextWindow != nil {
+			resumeWindow = *fresh.Snapshot.ContextWindow
+		}
+		if _, err := asm.Assemble(ctx, contextasm.AssembleRequest{
+			Run: run, Agent: agent, Project: project,
+			TeamID: string(team.UID), ContextWindow: resumeWindow,
+			Existing: fresh.Snapshot,
+		}); err != nil {
+			t.Fatalf("pinned revision no longer resolves after the no-op re-acquire — the ISI-4217 dispatch wedge (ISI-4298 guard defeated): %v", err)
+		}
+		var lane string
+		var updatedAt time.Time
+		if err := db.QueryRowContext(ctx,
+			`SELECT state, updated_at FROM coord.work_item WHERE id=$1::uuid`, item).Scan(&lane, &updatedAt); err != nil {
+			t.Fatalf("post-lap read: %v", err)
+		}
+		if lane != "in_progress" {
+			t.Fatalf("lane = %q, want in_progress (kept across the retry lap)", lane)
+		}
+		if !updatedAt.Equal(pinnedAt) {
+			t.Fatalf("no-op re-acquire moved updated_at: pinned %s, now %s — phantom revision minted (ISI-4298)",
+				pinnedAt.UTC().Format(time.RFC3339Nano), updatedAt.UTC().Format(time.RFC3339Nano))
+		}
+
+		// Teeth: a REAL edit must still break the pin — deterministic resume
+		// keeps failing loud on genuine edits (0012's generated column is
+		// excluded, title is not).
+		if _, err := db.ExecContext(ctx,
+			`UPDATE coord.work_item SET title='edited after pin' WHERE id=$1::uuid`, item); err != nil {
+			t.Fatalf("real edit: %v", err)
+		}
+		if _, err := asm.Assemble(ctx, contextasm.AssembleRequest{
+			Run: run, Agent: agent, Project: project,
+			TeamID: string(team.UID), ContextWindow: resumeWindow,
+			Existing: fresh.Snapshot,
+		}); err == nil {
+			t.Fatal("real edit still resolved the pinned revision — the WorkItemRevision pin lost its teeth")
 		}
 	})
 }

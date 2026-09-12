@@ -41,6 +41,24 @@
 --     phantom revision never exists, no window), fixes the whole class (every
 --     current or future no-op writer), zero application-SQL changes.
 --
+-- AMENDED (ISI-4298, pre-merge edit of this not-yet-shipped migration): the
+-- whole-row `NEW IS DISTINCT FROM OLD` compare is DEFEATED on any schema with
+-- 0012 applied. 0012's coord.work_item.search_tsv is GENERATED ALWAYS AS
+-- (tsvector) STORED — inside a BEFORE UPDATE trigger Postgres has not
+-- recomputed it yet, so NEW.search_tsv is NULL where OLD carries the stored
+-- value (verified live on k8squad-test, PG 17.0: per-column diagnostic on a
+-- no-op UPDATE shows [search_tsv] as the ONLY differing column). The whole-row
+-- compare is therefore always TRUE and the guard never suppresses — the fix
+-- was a no-op live, and the ISI-4220 QA pass caught it because the chaos
+-- fixture applied a 0001..0009 subset with no generated column to defeat it.
+-- Remedy (QA-verified live in a ROLLBACK tx): compare the jsonb row images
+-- with the generated column subtracted from BOTH sides. `- 'search_tsv'` on a
+-- schema WITHOUT 0012 removes a key that isn't there — a no-op — so the same
+-- function is correct with and without 0012. A future generated column would
+-- need its key added here (or an explicit ROW(column-list) compare, same
+-- maintenance property); the 0016 self-check's structural assert now fails
+-- first if this exclusion is dropped.
+--
 -- Blast radius: coord.touch_updated_at() is shared by 0009's
 -- rate_limit_reroute_touch_updated_at trigger. Suppression only affects no-op
 -- rewrites there; a real escalation episode rewrite (attempt/resume_at/released_
@@ -49,7 +67,7 @@
 CREATE OR REPLACE FUNCTION coord.touch_updated_at() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW IS DISTINCT FROM OLD THEN
+    IF to_jsonb(NEW) - 'search_tsv' IS DISTINCT FROM to_jsonb(OLD) - 'search_tsv' THEN
         NEW.updated_at := now();
     ELSE
         NEW.updated_at := OLD.updated_at;
