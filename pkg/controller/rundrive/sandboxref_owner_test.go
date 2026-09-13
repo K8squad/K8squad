@@ -44,22 +44,15 @@ const (
 
 // ownedPodFixture builds a fake client holding a Run (keyed by uid) and its
 // bound sandbox pod (no owner, mirroring a warm-pool boot), plus the writer.
-func ownedPodFixture(t *testing.T, mutatePod func(*corev1.Pod)) (*RunStatusSandboxWriter, client.Client) {
+func ownedPodFixture(t *testing.T) (*RunStatusSandboxWriter, client.Client) {
 	t.Helper()
 	run := newTestRun(ownerRunUID, "wi-owner")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: ownerPod, Namespace: run.Namespace},
 	}
-	objs := []client.Object{run}
-	if mutatePod != nil {
-		mutatePod(pod)
-	}
-	if pod != nil {
-		objs = append(objs, pod)
-	}
 	cl := fake.NewClientBuilder().
 		WithScheme(goneScheme(t)).
-		WithObjects(objs...).
+		WithObjects(run, pod).
 		WithStatusSubresource(&api.Run{}).
 		Build()
 	return NewRunStatusSandboxWriter(cl), cl
@@ -76,7 +69,7 @@ func getPod(t *testing.T, cl client.Client, name string) *corev1.Pod {
 // TestObserveSandboxRefAdoptsPodUnderRun: an unowned sandbox pod gets a
 // controller ownerReference to its Run at bind, and the status ref is written.
 func TestObserveSandboxRefAdoptsPodUnderRun(t *testing.T) {
-	w, cl := ownedPodFixture(t, nil)
+	w, cl := ownedPodFixture(t)
 
 	require.NoError(t, w.ObserveSandboxRef(context.Background(), ownerRunUID, ownerPod))
 
@@ -107,7 +100,7 @@ func TestObserveSandboxRefAdoptsPodUnderRun(t *testing.T) {
 // contract directly: the pod is owned (Controller=true) by the deleted Run's
 // uid. Before this fix the pod had zero ownerReferences and would be orphaned.
 func TestDeletedNonTerminalRunLeavesNoOrphanPod(t *testing.T) {
-	w, cl := ownedPodFixture(t, nil)
+	w, cl := ownedPodFixture(t)
 	ctx := context.Background()
 
 	require.NoError(t, w.ObserveSandboxRef(ctx, ownerRunUID, ownerPod))
@@ -132,7 +125,7 @@ func TestDeletedNonTerminalRunLeavesNoOrphanPod(t *testing.T) {
 // TestObserveSandboxRefAdoptionIdempotent: re-observing an already-adopted pod
 // (reattach / re-drive) does not append a duplicate ownerReference.
 func TestObserveSandboxRefAdoptionIdempotent(t *testing.T) {
-	w, cl := ownedPodFixture(t, nil)
+	w, cl := ownedPodFixture(t)
 	ctx := context.Background()
 
 	require.NoError(t, w.ObserveSandboxRef(ctx, ownerRunUID, ownerPod))
