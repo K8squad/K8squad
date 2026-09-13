@@ -19,10 +19,32 @@ spec:
         secretKeyRef:
           name: dynatrace-otlp
           key: token
+  # Backing store for the file_storage/queue extension (ISI-4371). The operator
+  # auto-wires liveness/readiness from the health_check extension; the persistent
+  # sending queue needs a writable volume the readOnlyRootFilesystem does not.
+  volumeMounts:
+    - name: otelcol-state
+      mountPath: /var/lib/otelcol
+  volumes:
+    - name: otelcol-state
+      emptyDir: {}
   config: |
     extensions:
       health_check:
         endpoint: 0.0.0.0:13133
+        # Self-heal (ISI-4040 / ISI-4371): report UNHEALTHY on :13133 once the
+        # export pipeline stalls so the liveness probe restarts the pod and
+        # clears a wedged exporter instead of silently dropping for hours.
+        check_collector_pipeline:
+          enabled: true
+          interval: 5m
+          exporter_failure_threshold: 5
+      # Disk-backed sending queue (ISI-4371): buffer to the otelcol-state volume
+      # so a transient CP/DNS brownout drains on recovery rather than wedging.
+      file_storage/queue:
+        directory: /var/lib/otelcol/sending-queue
+        create_directory: true
+        timeout: 10s
     receivers:
       otlp:
         protocols:
@@ -118,10 +140,23 @@ spec:
           Authorization: "${env:KSQUAD_OTLP_AUTH}"
         tls:
           insecure: false
+        # Buffer across vendor/DNS outages instead of dropping (ISI-4371). Disk-
+        # backed queue drains on recovery; retry never gives up (max_elapsed_time:
+        # 0), so a multi-hour CP brownout trips the self-heal rather than wedging.
+        sending_queue:
+          enabled: true
+          storage: file_storage/queue
+          num_consumers: 10
+          queue_size: 10000
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 0
       debug:
         verbosity: basic
     service:
-      extensions: [health_check]
+      extensions: [health_check, file_storage/queue]
       pipelines:
         traces:
           receivers: [otlp]
