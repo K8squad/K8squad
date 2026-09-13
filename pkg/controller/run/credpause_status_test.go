@@ -119,8 +119,8 @@ func TestProjectStatusWithPauseIgnoresDetailOnNonPausedStep(t *testing.T) {
 		t.Errorf("Phase = %q, want Running (detail must not fabricate a pause)", got.Phase)
 	}
 	cond := meta.FindStatusCondition(got.Conditions, ConditionReady)
-	if cond == nil || cond.Reason != reasonReconciling {
-		t.Errorf("Ready reason = %v, want Reconciling", cond)
+	if cond == nil || cond.Reason != reasonRunning {
+		t.Errorf("Ready reason = %v, want Running", cond)
 	}
 	if strings.Contains(cond.Message, "team-c/eve") {
 		t.Errorf("non-paused step must not carry credential attribution, got %q", cond.Message)

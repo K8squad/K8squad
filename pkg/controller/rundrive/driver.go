@@ -211,9 +211,19 @@ type Driver struct {
 	Sandbox   SandboxReleaser    // optional
 	BindClear SandboxBindClearer // optional (ISI-4310 gone-sandbox recovery)
 	Notify    func()             // kicks the resume timer after a fresh episode (optional)
-	Now       func() time.Time
-	Rand      func() float64
-	MaxPasses int
+	// NotifyPhase, when set, is called after a drive pass that committed a
+	// durable step transition so the status projector (pkg/controller/run)
+	// re-reads coord and projects the new phase IMMEDIATELY, instead of waiting
+	// for its bounded non-terminal resync (ISI-4381 Option A). The driver owns
+	// the durable step; the projector only watches the Run CR, so without this
+	// event-driven kick the projector samples coord once and typically lands on
+	// the terminal step — the intermediate Pending→Claiming→Running phases stay
+	// invisible. Optional — nil leaves the projector's resync as the sole
+	// re-trigger (the backstop when a kick is dropped).
+	NotifyPhase func(run *api.Run)
+	Now         func() time.Time
+	Rand        func() float64
+	MaxPasses   int
 
 	// resumeCh feeds the watched channel source: due 3.7 wakes land here as
 	// GenericEvents carrying the Run to re-drive. Buffered; a full channel is
@@ -396,6 +406,14 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
+	}
+
+	// A drive that advanced the durable step wakes the projector so the new
+	// phase is projected without waiting for its resync (ISI-4381 Option A). The
+	// kick is latency sugar — the projector's non-terminal resync is the
+	// correctness backstop — so a nil hook or a full channel is harmless.
+	if after := store.Step(); after != cs.Step && r.NotifyPhase != nil {
+		r.NotifyPhase(&run)
 	}
 
 	switch after := store.Step(); {

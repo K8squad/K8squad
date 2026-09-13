@@ -47,17 +47,24 @@ const ConditionReady = "Ready"
 // Ready condition reasons. Each is a valid k8s condition reason
 // (^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$) and maps 1:1 to a durable step class.
 const (
-	reasonReconciling        = "Reconciling"
-	reasonPaused             = "Paused"
-	reasonRateLimited        = "RateLimited"
-	reasonCredentialExpired  = "CredentialExpired"
-	reasonCredentialRotated  = "CredentialRotated"
-	reasonEndpointUnreach    = "EndpointUnreachable"
-	reasonCancelling         = "Cancelling"
-	reasonSucceeded          = "Succeeded"
-	reasonFailed             = "Failed"
-	reasonCancelled          = "Cancelled"
-	reasonUnknownStep        = "UnknownStep"
+	// The in-flight steps each carry a distinct reason so kubectl describe run
+	// shows a real progression (ISI-4381) instead of one flat Reconciling for
+	// every non-terminal step. They map 1:1 onto the durable happy-path steps.
+	reasonPending           = "Pending"
+	reasonClaiming          = "Claiming"
+	reasonDispatching       = "Dispatching"
+	reasonRunning           = "Running"
+	reasonCollecting        = "Collecting"
+	reasonPaused            = "Paused"
+	reasonRateLimited       = "RateLimited"
+	reasonCredentialExpired = "CredentialExpired"
+	reasonCredentialRotated = "CredentialRotated"
+	reasonEndpointUnreach   = "EndpointUnreachable"
+	reasonCancelling        = "Cancelling"
+	reasonSucceeded         = "Succeeded"
+	reasonFailed            = "Failed"
+	reasonCancelled         = "Cancelled"
+	reasonUnknownStep       = "UnknownStep"
 )
 
 // PhaseOf bridges the reconcile machine's coarse Phase (pkg/reconcile) onto the
@@ -202,11 +209,26 @@ func readyCondition(step reconcile.Step, generation int64, now metav1.Time, deta
 		c.Status = metav1.ConditionFalse
 		c.Reason = reasonEndpointUnreach
 		c.Message = pauseMessage(detail, "Run is paused: credential endpoint unreachable")
-	case reconcile.StepPending, reconcile.StepClaimingSandbox,
-		reconcile.StepDispatching, reconcile.StepRunning, reconcile.StepCollecting:
+	case reconcile.StepPending:
 		c.Status = metav1.ConditionFalse
-		c.Reason = reasonReconciling
-		c.Message = "Run is progressing toward completion"
+		c.Reason = reasonPending
+		c.Message = "Run admitted; awaiting a sandbox claim"
+	case reconcile.StepClaimingSandbox:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonClaiming
+		c.Message = "Claiming a warm sandbox for the run"
+	case reconcile.StepDispatching:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonDispatching
+		c.Message = "Dispatching the task to the agent over A2A"
+	case reconcile.StepRunning:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonRunning
+		c.Message = "Agent is working the item"
+	case reconcile.StepCollecting:
+		c.Status = metav1.ConditionFalse
+		c.Reason = reasonCollecting
+		c.Message = "Collecting run results"
 	default:
 		c.Status = metav1.ConditionUnknown
 		c.Reason = reasonUnknownStep
