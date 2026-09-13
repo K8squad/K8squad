@@ -152,9 +152,9 @@ func openCodeSettleLine(line string) bool {
 //	{"type":"text","part":{"text":"…"}}
 //	{"type":"error","error":{"name":"…","data":{"message":"…"}}}
 //	{"type":"step_start",…}          (progress bookkeeping; dropped)
-//	{"type":"step_finish","part":{"type":"step-finish","providerID":"…",
-//	  "modelID":"…","tokens":{"input":…,"output":…,"reasoning":…,
-//	  "cache":{"read":…,"write":…}},"cost":{…},"duration":…}}
+//	{"type":"step_finish","part":{"type":"step-finish","reason":"stop",
+//	  "tokens":{"input":…,"output":…,"reasoning":…,
+//	  "cache":{"read":…,"write":…}},"cost":0.001}}
 //
 // A tool_use event arrives once per call with a terminal state.status
 // (completed|error) — it maps to a single phase="result" ToolPayload; the
@@ -165,9 +165,10 @@ func openCodeSettleLine(line string) bool {
 // step_finish maps to an EventUsage (ISI-4238): the per-step token/cost
 // record is the raw material for the llm.call span, the run's token totals
 // and the interaction views. A step_finish without tokens (older wire,
-// bookkeeping-only) stays dropped. The model id rides providerID/modelID;
-// when the part omits them the engine fills the launch model before the
-// event leaves the process.
+// bookkeeping-only) stays dropped. The v1.18.27 step-finish part carries NO
+// providerID/modelID (they ride the message.updated assistant info, not the
+// part) so u.Model is left empty and the engine fills the launch model
+// before the event leaves the process (pkg/shim/engine.go).
 // openCodePart is the union `part` block of the opencode JSON wire: text
 // parts, tool_use parts and step-finish parts all ride the same envelope,
 // each populating its own fields.
@@ -192,12 +193,38 @@ type openCodePart struct {
 			Write int `json:"write"`
 		} `json:"cache"`
 	} `json:"tokens"`
-	Cost *struct {
-		Input  float64 `json:"input"`
-		Output float64 `json:"output"`
-		Total  float64 `json:"total"`
-	} `json:"cost"`
+	// Cost is the step's recorded USD cost. opencode v1.18.27 emits a scalar
+	// (`"cost":0.001`); an older wire emitted an object `{input,output,total}`.
+	// It rides as RawMessage and is decoded tolerantly (costUSD) so a
+	// scalar-vs-object drift can never fail the whole-line unmarshal — the
+	// ISI-4369 defect, where a scalar cost failed the object decode, degraded
+	// the entire step_finish line to an opaque message and silently dropped
+	// the usage event (llmInteractions=0, totalTokenUsage=null).
+	Cost json.RawMessage `json:"cost"`
+	// Duration is absent on the v1.18.27 step-finish wire; kept optional so a
+	// version that reports it still attributes latency.
 	DurationMS *int64 `json:"duration"`
+}
+
+// costUSD decodes the step-finish cost, tolerating both the v1.18.27 scalar
+// (`0.001`) and the legacy `{input,output,total}` object. A shape it cannot
+// read yields (0,false) — cost is best-effort and never blocks the usage
+// event.
+func costUSD(raw json.RawMessage) (float64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var scalar float64
+	if err := json.Unmarshal(raw, &scalar); err == nil {
+		return scalar, true
+	}
+	var obj struct {
+		Total float64 `json:"total"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		return obj.Total, true
+	}
+	return 0, false
 }
 
 func parseOpenCodeLine(line string) []Progress {
@@ -294,8 +321,8 @@ func usageFromStepFinish(part *openCodePart) *a2a.UsagePayload {
 		u.CacheRead = part.Tokens.Cache.Read
 		u.CacheWrite = part.Tokens.Cache.Write
 	}
-	if part.Cost != nil {
-		u.CostUSD = part.Cost.Total
+	if c, ok := costUSD(part.Cost); ok {
+		u.CostUSD = c
 	}
 	if part.DurationMS != nil {
 		u.DurationMS = *part.DurationMS

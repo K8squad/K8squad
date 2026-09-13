@@ -141,11 +141,35 @@ func TestParseOpenCodeLineDegrades(t *testing.T) {
 	assert.Equal(t, "not json at all", out[0].Message.Text)
 }
 
-// TestParseOpenCodeStepFinishUsage (ISI-4238): a step_finish carrying the
-// token block maps onto one EventUsage — the raw material for llm.call
-// spans, the run's token totals and the interaction views. Model
-// attribution is provider/model; cost + duration ride when reported.
-func TestParseOpenCodeStepFinishUsage(t *testing.T) {
+// TestParseOpenCodeStepFinishUsageLive (ISI-4369): the EXACT step_finish line
+// opencode v1.18.27 prints on k8squad-test (captured verbatim). Its cost is a
+// SCALAR (0.001) and it carries NO providerID/modelID/duration. The prior
+// fixture modeled cost as an object {input,output,total}; the scalar failed
+// that object decode, which failed the WHOLE-line json.Unmarshal, degraded the
+// line to an opaque message and dropped the usage event (llmInteractions=0,
+// totalTokenUsage=null). This asserts the live shape now yields one EventUsage;
+// Model is left empty (backfilled to the launch model by pkg/shim/engine.go).
+func TestParseOpenCodeStepFinishUsageLive(t *testing.T) {
+	line := `{"type":"step_finish","timestamp":1767036064273,"sessionID":"ses_x","part":{"id":"prt_x","sessionID":"ses_x","messageID":"msg_x","type":"step-finish","reason":"stop","snapshot":"abc","cost":0.001,"tokens":{"input":671,"output":8,"reasoning":0,"cache":{"read":21415,"write":0}}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	assert.Equal(t, a2a.EventUsage, out[0].Kind, "live step_finish must emit EventUsage, not degrade to a message")
+	require.NotNil(t, out[0].Usage)
+	u := out[0].Usage
+	assert.Equal(t, "", u.Model, "v1.18.27 part carries no model; engine backfills the launch model")
+	assert.Equal(t, 671, u.Input)
+	assert.Equal(t, 8, u.Output)
+	assert.Equal(t, 0, u.Reasoning)
+	assert.Equal(t, 21415, u.CacheRead)
+	assert.Equal(t, 0, u.CacheWrite)
+	assert.InDelta(t, 0.001, u.CostUSD, 1e-9)
+	assert.Equal(t, int64(0), u.DurationMS, "no duration on the v1.18.27 step-finish wire")
+}
+
+// TestParseOpenCodeStepFinishLegacyCostObject: the costUSD tolerance keeps the
+// older {input,output,total} cost object readable, and an optional duration
+// still attributes latency — so a wire drift never again fails the whole line.
+func TestParseOpenCodeStepFinishLegacyCostObject(t *testing.T) {
 	line := `{"type":"step_finish","part":{"type":"step-finish","providerID":"anthropic","modelID":"claude-sonnet-4","tokens":{"input":1200,"output":340,"reasoning":50,"cache":{"read":8000,"write":400}},"cost":{"input":0.0036,"output":0.0021,"total":0.0057},"duration":4200}}`
 	out := parseOpenCodeLine(line)
 	require.Len(t, out, 1)

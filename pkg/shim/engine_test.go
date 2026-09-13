@@ -509,17 +509,32 @@ func TestDriveMapsUsageAndStampsTraceID(t *testing.T) {
 		t.Fatalf("usage events = %d, want 2", usages)
 	}
 
-	// Spans: run.start root, 2 llm.call children, run.end marker.
+	// Spans: run.start root, 2 llm.call children, run.end marker. The
+	// run.start root and run.end marker are ended by drive()'s RunEnd, which
+	// runs AFTER tk.terminate() closes the wire stream — so draining the
+	// events above does NOT guarantee those two spans have flushed yet (the
+	// llm.call spans do end inline during the run). Poll the recorder until
+	// the run's spans settle instead of racing the drive goroutine (ISI-4369:
+	// this race made the pre-existing assertion flaky under -race and under
+	// unrelated scheduling perturbations). SpanRecorder.Ended() is mutex-safe.
 	var llm, runStart, runEnd int
-	for _, s := range sr.Ended() {
-		switch s.Name() {
-		case "llm.call":
-			llm++
-		case "run.start":
-			runStart++
-		case "run.end":
-			runEnd++
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		llm, runStart, runEnd = 0, 0, 0
+		for _, s := range sr.Ended() {
+			switch s.Name() {
+			case "llm.call":
+				llm++
+			case "run.start":
+				runStart++
+			case "run.end":
+				runEnd++
+			}
 		}
+		if (llm == 2 && runStart == 1 && runEnd == 1) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 	if llm != 2 || runStart != 1 || runEnd != 1 {
 		t.Errorf("spans llm=%d run.start=%d run.end=%d, want 2/1/1", llm, runStart, runEnd)
@@ -564,14 +579,26 @@ func TestDriveJoinsSubmitTraceContext(t *testing.T) {
 	dispatchSpan.End()
 
 	dispatchID := dispatchSpan.SpanContext().SpanID()
-	for _, s := range sr.Ended() {
-		if s.Name() != "run.start" {
-			continue
+	// drive() ends the run.start root via RunEnd AFTER tk.terminate() closes the
+	// wire stream, so draining events above does NOT guarantee run.start has
+	// flushed yet — the same span-timing race de-flaked in
+	// TestDriveMapsUsageAndStampsTraceID (ISI-4369). Poll the mutex-safe recorder
+	// until the run.start span settles instead of racing the drive goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, s := range sr.Ended() {
+			if s.Name() != "run.start" {
+				continue
+			}
+			if s.Parent().SpanID() != dispatchID {
+				t.Errorf("run.start parent = %v, want dispatcher span %v", s.Parent().SpanID(), dispatchID)
+			}
+			return
 		}
-		if s.Parent().SpanID() != dispatchID {
-			t.Errorf("run.start parent = %v, want dispatcher span %v", s.Parent().SpanID(), dispatchID)
+		if time.Now().After(deadline) {
+			break
 		}
-		return
+		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("no run.start span recorded")
 }
