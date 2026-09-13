@@ -38,7 +38,7 @@ const gateRunUID = "11111111-1111-1111-1111-111111111111"
 
 func gateHarness(t *testing.T, claims *fakeClaims, store *fakeMachineStore) (*Driver, client.ObjectKey) {
 	t.Helper()
-	run := newTestRun(gateRunUID, "wi-gate")
+	run := newTestRun(gateRunUID, "51510000-0000-0000-0000-000000000e7e")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
 		WithIndex(&api.Run{}, workItemField,
 			func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).
@@ -59,8 +59,8 @@ func TestClaimGateAcquiresThenDrives(t *testing.T) {
 	if _, err := runOnce(t, d, key); err != nil {
 		t.Fatalf("drive: %v", err)
 	}
-	if len(claims.acquireCalls) != 1 || claims.acquireCalls[0] != "wi-gate/"+gateRunUID {
-		t.Fatalf("acquire calls = %v, want exactly [wi-gate/%s]", claims.acquireCalls, gateRunUID)
+	if len(claims.acquireCalls) != 1 || claims.acquireCalls[0] != "51510000-0000-0000-0000-000000000e7e/"+gateRunUID {
+		t.Fatalf("acquire calls = %v, want exactly [51510000-0000-0000-0000-000000000e7e/%s]", claims.acquireCalls, gateRunUID)
 	}
 	if store.step != reconcile.StepSucceeded {
 		t.Fatalf("durable step = %q, want succeeded (the drive follows the acquire)", store.step)

@@ -205,6 +205,23 @@ func (s *PostgresUserStore) Update(ctx context.Context, id uuid.UUID, upd UserUp
 	return s.ByID(ctx, id)
 }
 
+// UpdatePassword overwrites the stored password hash for a single user. It exists
+// for the install-time bootstrap credential reconcile (ISI-4232): when a persisted
+// DB survives an upgrade whose configured admin password diverged from the stored
+// hash, the documented admin login must be brought back into sync. The caller
+// hashes the plaintext (argon2id) before calling — only PHC strings reach here.
+func (s *PostgresUserStore) UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE auth.user SET password_hash = $1 WHERE id = $2`, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("auth: update password: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Deactivate soft-deletes (one-way deactivated_at stamp). Session revocation is the
 // service layer's job (same transaction span is not required: the resolver filters
 // deactivated_at IS NULL, so the cookie dies immediately regardless). Deactivating

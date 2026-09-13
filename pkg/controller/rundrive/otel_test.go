@@ -59,7 +59,7 @@ func TestReconcileProducesOneRunSpan(t *testing.T) {
 	exp := installTestTracer(t)
 
 	const uid = "11111111-1111-1111-1111-111111111111"
-	run := newTestRun(uid, "wi-1")
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1}}
 	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
@@ -80,8 +80,8 @@ func TestReconcileProducesOneRunSpan(t *testing.T) {
 	if got := attrString(span.Attributes, "ksquad.run.id"); got != uid {
 		t.Errorf("ksquad.run.id = %q, want %q", got, uid)
 	}
-	if got := attrString(span.Attributes, "ksquad.run.work_item_ref"); got != "wi-1" {
-		t.Errorf("ksquad.run.work_item_ref = %q, want wi-1", got)
+	if got := attrString(span.Attributes, "ksquad.run.work_item_ref"); got != "10000000-0000-0000-0000-000000000001" {
+		t.Errorf("ksquad.run.work_item_ref = %q, want 10000000-0000-0000-0000-000000000001", got)
 	}
 	if span.Status.Code == codes.Error {
 		t.Errorf("healthy drive should not mark the span as error: %q", span.Status.Description)
@@ -95,7 +95,7 @@ func TestReconcileSpanJoinsInboundTrace(t *testing.T) {
 	exp := installTestTracer(t)
 
 	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
-	run := newTestRun("22222222-2222-2222-2222-222222222222", "wi-2")
+	run := newTestRun("22222222-2222-2222-2222-222222222222", "20000000-0000-0000-0000-000000000002")
 	run.Annotations = map[string]string{
 		"traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01",
 	}

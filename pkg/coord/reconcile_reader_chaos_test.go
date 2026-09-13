@@ -18,6 +18,8 @@
 //   RR2 reflects an advance read-only                        (running, no write side-effects)
 //   RR3 unknown work item → (found=false, nil err)           projected as Pending, never an error
 //   RR4 empty id → not-found without hitting the ::uuid cast
+//   RR5 non-uuid id → not-found without hitting the ::uuid cast (ISI-4354: a malformed
+//       spec.workItemRef must never loop the projector on 22P02)
 
 package coord_test
 
@@ -83,6 +85,16 @@ func TestReconcileStepReader(t *testing.T) {
 		step, found, err := reader.StepForWorkItem(ctx, "")
 		if err != nil || found || step != "" {
 			t.Fatalf("empty id: step=%q found=%v err=%v, want empty/false/nil", step, found, err)
+		}
+	})
+
+	t.Run("RR5_non_uuid_id_is_not_found", func(t *testing.T) {
+		// ISI-4354: a malformed spec.workItemRef (live: "verif-isi4334") is a
+		// permanent input defect — reported as not-found (→ Pending), never
+		// surfaced as a 22P02 infra error the projector would backoff-loop on.
+		step, found, err := reader.StepForWorkItem(ctx, "verif-isi4334")
+		if err != nil || found || step != "" {
+			t.Fatalf("non-uuid id: step=%q found=%v err=%v, want empty/false/nil", step, found, err)
 		}
 	})
 }

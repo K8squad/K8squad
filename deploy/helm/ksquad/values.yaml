@@ -218,8 +218,13 @@ apiserver:
     #   existingBootstrapPasswordSecret: { name: my-secret, key: admin-password }
     existingJwtKeySecret: null
     existingBootstrapPasswordSecret: null
-    # One-time initial admin (15.2). Created ONLY when the user table is empty.
-    # CLEAR THE PASSWORD after first login — it should not live in values.
+    # Documented install admin (15.2). Reconciled at apiserver startup keyed on
+    # the username (ISI-4232): created on a fresh install, and re-synced on an
+    # UPGRADE if the stored password hash has diverged — so the documented login
+    # keeps working across redeploys over a persisted DB. While a password is set
+    # here it is AUTHORITATIVE: an in-app rotation not mirrored back is reset on
+    # the next restart. CLEAR THE PASSWORD after first login — with reconcile that
+    # is load-bearing, not just hygiene. A deactivated admin is left deactivated.
     bootstrap:
       adminUsername: ""
       adminPassword: ""

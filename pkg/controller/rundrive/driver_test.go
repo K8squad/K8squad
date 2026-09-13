@@ -256,7 +256,7 @@ func runOnce(t *testing.T, d *Driver, name types.NamespacedName) (requeueAfter t
 // TestDriveHappyPathToTerminal: an enrolled, healthy claim drives the machine
 // to succeeded in one pass — no requeue, terminal effects recorded.
 func TestDriveHappyPathToTerminal(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
 		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
 
@@ -280,7 +280,7 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 		t.Fatalf("effects not driven: binds=%d dispatches=%v collects=%d", eff.binds, eff.dispatches, eff.collects)
 	}
 	if len(claims.acquireCalls) != 1 ||
-		claims.acquireCalls[0] != "wi-1/11111111-1111-1111-1111-111111111111" {
+		claims.acquireCalls[0] != "10000000-0000-0000-0000-000000000001/11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("§6.2 acquire calls = %v, want exactly one for the driven run", claims.acquireCalls)
 	}
 }
@@ -288,7 +288,7 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 // TestDriveNotEnrolledIsANoOp: a Run whose work item has no claim row is left
 // alone — the driver never invents coordination state (ADR-001).
 func TestDriveNotEnrolledIsANoOp(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-missing")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "ffffffff-ffff-ffff-ffff-ffffffffffff")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: false}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
@@ -301,7 +301,7 @@ func TestDriveNotEnrolledIsANoOp(t *testing.T) {
 
 // TestDriveTerminalStepIsAbsorbing: terminal durable steps are never re-driven.
 func TestDriveTerminalStepIsAbsorbing(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepSucceeded, Fence: 3}}
 	runner := &fakeRunner{store: &fakeMachineStore{}, effects: &fakeMachineEffects{}}
@@ -318,7 +318,7 @@ func TestDriveTerminalStepIsAbsorbing(t *testing.T) {
 // TestDriveLapThreading: retry laps used ⇒ the machine dispatches a FRESH
 // task id (run#lapN+1), never the first-attempt id.
 func TestDriveLapThreading(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepClaimingSandbox, Fence: 2, ItemState: "in_progress"},
 		laps: 2, acquireOK: true, acquireFence: 2}
@@ -339,7 +339,7 @@ func TestDriveLapThreading(t *testing.T) {
 // seam surfaces as a reconcile error (controller-runtime backoff), never as
 // "applied".
 func TestDriveEffectsErrorRequeues(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
 		acquireOK: true, acquireFence: 1}
@@ -355,7 +355,7 @@ func TestDriveEffectsErrorRequeues(t *testing.T) {
 // TestDriveSpinGuardRequeues: a store whose Advance cannot commit (fence raced)
 // exhausts MaxPasses and requeues short instead of wedging.
 func TestDriveSpinGuardRequeues(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
 		acquireOK: true, acquireFence: 1}
@@ -373,7 +373,7 @@ func TestDriveSpinGuardRequeues(t *testing.T) {
 
 // TestDriveClaimStateReadError: an infra read failure requeues with the error.
 func TestDriveClaimStateReadError(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	d := newDriver(cl, &fakeClaims{found: true, stateErr: errors.New("conn refused")},
 		&fakePauses{}, &fakeRunner{})
@@ -391,7 +391,7 @@ func TestDriveClaimStateReadError(t *testing.T) {
 // reconcile error (controller-runtime backoff), never a silent drive without
 // custody.
 func TestDriveAcquireErrorSurfaces(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, ItemState: "todo"},
 		acquireErr: errors.New("claim db down")}
@@ -406,7 +406,7 @@ func TestDriveAcquireErrorSurfaces(t *testing.T) {
 // lease, or the lane raced us) requeues short — nothing changed, the next
 // pass re-reads the world. The machine must NOT drive without custody.
 func TestDriveAcquireContendedRequeuesShort(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, ItemState: "todo"},
 		acquireOK: false}
@@ -430,7 +430,7 @@ func TestDriveAcquireContendedRequeuesShort(t *testing.T) {
 // requeue poll, no machine drive) and the resync backstop owns any later
 // re-drive.
 func TestDriveNotClaimableLaneAbsorbs(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	store := &fakeMachineStore{step: reconcile.StepPending, advanceOK: true}
 	for _, lane := range []string{"backlog", "in_review", "done", ""} {
@@ -454,7 +454,7 @@ func TestDriveNotClaimableLaneAbsorbs(t *testing.T) {
 // NOT re-acquired — the fence bump of a redundant acquire would churn custody.
 func TestDriveHeldByRunRenewsAndSkipsAcquire(t *testing.T) {
 	uid := "11111111-1111-1111-1111-111111111111"
-	run := newTestRun(uid, "wi-1")
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	future := time.Now().Add(time.Hour)
 	claims := &fakeClaims{found: true, state: ClaimState{
@@ -481,7 +481,7 @@ func TestDriveHeldByRunRenewsAndSkipsAcquire(t *testing.T) {
 // under us mid-life) requeues short instead of driving on a stale fence.
 func TestDriveRenewLostRequeuesShort(t *testing.T) {
 	uid := "11111111-1111-1111-1111-111111111111"
-	run := newTestRun(uid, "wi-1")
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	future := time.Now().Add(time.Hour)
 	claims := &fakeClaims{found: true, state: ClaimState{
@@ -507,7 +507,7 @@ func TestDriveRenewLostRequeuesShort(t *testing.T) {
 // free-or-expired guard accepts it and the lease is refreshed.
 func TestDriveExpiredOwnLeaseReAcquires(t *testing.T) {
 	uid := "11111111-1111-1111-1111-111111111111"
-	run := newTestRun(uid, "wi-1")
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{
 		Step: reconcile.StepPending, Fence: 2, Holder: "ksquad-operator", RunID: uid,
@@ -539,7 +539,7 @@ func leaseAgo(d time.Duration) *time.Time {
 // under a holder tears its sandbox down, enters the retry lap (fence-first),
 // and requeues on backoff.
 func TestDeathDetectedRetriesWithinBudget(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	max := int32(3)
 	run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max, BackoffSeconds: nil}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
@@ -561,7 +561,7 @@ func TestDeathDetectedRetriesWithinBudget(t *testing.T) {
 	if rq == 0 {
 		t.Fatal("retry lap must requeue on backoff")
 	}
-	if len(claims.retryCalls) != 1 || claims.retryCalls[0] != "wi-1/11111111-1111-1111-1111-111111111111/7" {
+	if len(claims.retryCalls) != 1 || claims.retryCalls[0] != "10000000-0000-0000-0000-000000000001/11111111-1111-1111-1111-111111111111/7" {
 		t.Fatalf("RetryEnter calls = %v", claims.retryCalls)
 	}
 	if len(rel.released) != 1 || rel.released[0] != "11111111-1111-1111-1111-111111111111" {
@@ -571,7 +571,7 @@ func TestDeathDetectedRetriesWithinBudget(t *testing.T) {
 
 // TestDeathOutsideBudgetFails: no retry budget left ⇒ terminal FailEnter.
 func TestDeathOutsideBudgetFails(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{
 		found: true,
@@ -595,7 +595,7 @@ func TestDeathOutsideBudgetFails(t *testing.T) {
 // requeues short to re-read the world.
 func TestDeathRetryRacedRequeuesShort(t *testing.T) {
 	max := int32(3)
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{
@@ -618,7 +618,7 @@ func TestDeathRetryRacedRequeuesShort(t *testing.T) {
 // TestDeathNotDetectedWithoutExpiry: unheld or unexpired leases never trigger
 // the death path — the machine just drives.
 func TestDeathNotDetectedWithoutExpiry(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
 	future := time.Now().Add(time.Hour)
@@ -694,7 +694,7 @@ func TestMaxRetriesPolicyTable(t *testing.T) {
 // with no pending episode gets exactly one recorded (nil Retry-After ⇒ the
 // backoff policy) and the timer is kicked.
 func TestParkRecordsEpisodeAndNotifies(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPausedRateLimited, Fence: 1}}
 	pauses := &fakePauses{}
@@ -717,7 +717,7 @@ func TestParkRecordsEpisodeAndNotifies(t *testing.T) {
 // TestParkKeepsExistingEpisode: a pending episode is never re-recorded (its
 // wake is already durable).
 func TestParkKeepsExistingEpisode(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPaused, Fence: 1}}
 	pauses := &fakePauses{pendingHas: true, pendingAt: time.Now().Add(time.Minute)}
@@ -735,13 +735,13 @@ func TestParkKeepsExistingEpisode(t *testing.T) {
 // TestOnResumeDueRequeuesAndKicks: a claimed due wake re-enters dispatching
 // and enqueues the owning Run through the resume channel.
 func TestOnResumeDueRequeuesAndKicks(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
 		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
 	claims := &fakeClaims{requeueOK: true}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
 
-	d.OnResumeDue(context.Background(), []coord.ProdDuePause{{WorkItemID: "wi-1", RunID: "11111111-1111-1111-1111-111111111111"}})
+	d.OnResumeDue(context.Background(), []coord.ProdDuePause{{WorkItemID: "10000000-0000-0000-0000-000000000001", RunID: "11111111-1111-1111-1111-111111111111"}})
 
 	if !claims.requeueCall {
 		t.Fatal("due wake did not re-enter dispatching")
@@ -759,13 +759,13 @@ func TestOnResumeDueRequeuesAndKicks(t *testing.T) {
 // TestOnResumeDueLostRaceIsQuiet: a requeue that lost its guard (already moved)
 // does not kick.
 func TestOnResumeDueLostRaceIsQuiet(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
 		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
 	claims := &fakeClaims{requeueOK: false}
 	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
 
-	d.OnResumeDue(context.Background(), []coord.ProdDuePause{{WorkItemID: "wi-1"}})
+	d.OnResumeDue(context.Background(), []coord.ProdDuePause{{WorkItemID: "10000000-0000-0000-0000-000000000001"}})
 
 	select {
 	case <-d.resumeCh:
@@ -777,8 +777,8 @@ func TestOnResumeDueLostRaceIsQuiet(t *testing.T) {
 // TestKickWorkItemChannelFullDrops: a full resume channel drops (the resync
 // backstop owns catch-up) instead of blocking the wake.
 func TestKickWorkItemChannelFullDrops(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
-	run2 := newTestRun("22222222-2222-2222-2222-222222222222", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
+	run2 := newTestRun("22222222-2222-2222-2222-222222222222", "10000000-0000-0000-0000-000000000001")
 	run2.Name = "run-2"
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run, run2).WithIndex(&api.Run{}, workItemField,
 		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
@@ -787,7 +787,7 @@ func TestKickWorkItemChannelFullDrops(t *testing.T) {
 		d.resumeCh <- event.TypedGenericEvent[client.Object]{Object: run}
 	}
 	done := make(chan struct{})
-	go func() { d.kickWorkItem(context.Background(), "wi-1"); close(done) }()
+	go func() { d.kickWorkItem(context.Background(), "10000000-0000-0000-0000-000000000001"); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -802,7 +802,7 @@ func TestKickWorkItemChannelFullDrops(t *testing.T) {
 // TestDriverSkipsDeletingAndReflessRuns.
 func TestDriverSkipsDeletingAndReflessRuns(t *testing.T) {
 	now := metav1.Now()
-	deleting := newTestRun("u1", "wi-1")
+	deleting := newTestRun("u1", "10000000-0000-0000-0000-000000000001")
 	deleting.Name = "dying"
 	deleting.Finalizers = []string{"ksquad.io/teardown"} // fake client refuses deletionTimestamp without one
 	deleting.DeletionTimestamp = &now
