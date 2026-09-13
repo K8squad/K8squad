@@ -119,8 +119,16 @@ type RunSpec struct {
 	// are Postgres rows, NOT CRDs — embedding the work item here, or making
 	// this an owned etcd object, would reintroduce the dual-write
 	// split-brain ADR-001 exists to prevent (story 1.2 AC6/AC7).
+	//
+	// The id's FORM is the coord.work_item.id column: a Postgres uuid
+	// (ISI-4354). A ref that is not a parseable uuid can never resolve a
+	// claim row — every durable read casts it ::uuid and would 22P02 — so
+	// admission rejects it here, fail-closed, instead of admitting a Run
+	// with no drive path.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=36
+	// +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`
 	WorkItemRef string `json:"workItemRef"`
 
 	// Inputs are free-form run parameters folded into the §8.5 context

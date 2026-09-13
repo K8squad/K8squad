@@ -36,7 +36,7 @@ import (
 // The drive does NOT run the happy-path machine (kill is a caller-owned
 // transition, never machine-driven).
 func TestCancelFinishDrivesTeardownThenTerminal(t *testing.T) {
-	run := newTestRun("11111111-1111-1111-1111-111111111111", "wi-1")
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
 	run.Status.Phase = api.RunPhaseCanceling
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
@@ -60,7 +60,7 @@ func TestCancelFinishDrivesTeardownThenTerminal(t *testing.T) {
 // TestCancelFinishFenceConflictRequeues: the fence moved under the finish
 // (another kill/teardown raced) — re-read the world next pass, no error.
 func TestCancelFinishFenceConflictRequeues(t *testing.T) {
-	run := newTestRun("22222222-2222-2222-2222-222222222222", "wi-2")
+	run := newTestRun("22222222-2222-2222-2222-222222222222", "20000000-0000-0000-0000-000000000002")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
 	claims := &fakeClaims{
@@ -78,7 +78,7 @@ func TestCancelFinishFenceConflictRequeues(t *testing.T) {
 // TestCancelFinishWithoutSandbox: no physical sandbox (ledger-only pool) still
 // finishes — teardown is best-effort sugar, the durable finish is the contract.
 func TestCancelFinishWithoutSandbox(t *testing.T) {
-	run := newTestRun("33333333-3333-3333-3333-333333333333", "wi-3")
+	run := newTestRun("33333333-3333-3333-3333-333333333333", "30000000-0000-0000-0000-000000000003")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
 	claims := &fakeClaims{
@@ -97,8 +97,8 @@ func TestCancelFinishWithoutSandbox(t *testing.T) {
 // TestOnCancelDueKicksWorkItems: the kill sweep's due list kicks every owning
 // Run back into the drive loop through the resume channel.
 func TestOnCancelDueKicksWorkItems(t *testing.T) {
-	run := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
-	run2 := newTestRun("55555555-5555-5555-5555-555555555555", "wi-4")
+	run := newTestRun("44444444-4444-4444-4444-444444444444", "40000000-0000-0000-0000-000000000004")
+	run2 := newTestRun("55555555-5555-5555-5555-555555555555", "40000000-0000-0000-0000-000000000004")
 	run2.Name = "run-2"
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(run, run2).
@@ -108,7 +108,7 @@ func TestOnCancelDueKicksWorkItems(t *testing.T) {
 
 	d := newDriver(cl, &fakeClaims{}, &fakePauses{}, &fakeRunner{store: &fakeMachineStore{}})
 
-	d.OnCancelDue(context.Background(), []string{"wi-4"})
+	d.OnCancelDue(context.Background(), []string{"40000000-0000-0000-0000-000000000004"})
 
 	kicked := 0
 	for {
@@ -125,7 +125,7 @@ func TestOnCancelDueKicksWorkItems(t *testing.T) {
 // TestCancelSweeperTicksAndDelegates: the sweeper lists CancelDue on its tick
 // and hands the result to OnDue; a Claims error is logged, not fatal.
 func TestCancelSweeperTicksAndDelegates(t *testing.T) {
-	claims := &fakeClaims{cancelDue: []string{"wi-a"}, cancelDueErr: nil}
+	claims := &fakeClaims{cancelDue: []string{"a0000000-0000-0000-0000-00000000000a"}, cancelDueErr: nil}
 	var got [][]string
 	s := &CancelSweeper{
 		Claims: claims,
@@ -139,14 +139,14 @@ func TestCancelSweeperTicksAndDelegates(t *testing.T) {
 	// delegates it at least once over the window; the contract under test is
 	// tick → CancelDue → OnDue, not the exact tick count.
 	require.GreaterOrEqual(t, len(got), 1)
-	assert.Equal(t, []string{"wi-a"}, got[0])
+	assert.Equal(t, []string{"a0000000-0000-0000-0000-00000000000a"}, got[0])
 }
 
 // TestCancellingNotDeadNotDriven: a cancelling claim is not death-detected
 // (the holder/lease were cleared at CancelEnter) and never reaches the
 // happy-path machine drive.
 func TestCancellingNotDeadNotDriven(t *testing.T) {
-	run := newTestRun("66666666-6666-6666-6666-666666666666", "wi-6")
+	run := newTestRun("66666666-6666-6666-6666-666666666666", "60000000-0000-0000-0000-000000000006")
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
 
 	store := &fakeMachineStore{step: reconcile.StepRunning}
