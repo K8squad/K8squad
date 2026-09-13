@@ -99,7 +99,7 @@ func (w *SecretCredentialWriter) WriteRunCredential(ctx context.Context, runID, 
 	cred.TraceParent = carrier["traceparent"]
 	cred.TraceState = carrier["tracestate"]
 
-	pod, err := w.findSandboxPod(ctx, sandboxRef)
+	pod, err := findSandboxPod(ctx, w.client, sandboxRef)
 	if err != nil {
 		return err
 	}
@@ -142,10 +142,11 @@ func (w *SecretCredentialWriter) WriteRunCredential(ctx context.Context, runID, 
 // findSandboxPod locates the booted sandbox pod by its name (== sandbox_ref).
 // The pod carries a unique "sandbox" label (warmpool.Boot), so a label-scoped
 // list finds it without the caller knowing its namespace — the coord bind frame
-// hands over only the ref string.
-func (w *SecretCredentialWriter) findSandboxPod(ctx context.Context, sandboxRef string) (*corev1.Pod, error) {
+// hands over only the ref string. Shared by the task-io Secret writer and the
+// bind-path ownerReference stamper (sandbox_owner.go).
+func findSandboxPod(ctx context.Context, c client.Client, sandboxRef string) (*corev1.Pod, error) {
 	var pods corev1.PodList
-	if err := w.client.List(ctx, &pods, client.MatchingLabels{"sandbox": sandboxRef}); err != nil {
+	if err := c.List(ctx, &pods, client.MatchingLabels{"sandbox": sandboxRef}); err != nil {
 		return nil, fmt.Errorf("list sandbox pod %s: %w", sandboxRef, err)
 	}
 	for i := range pods.Items {

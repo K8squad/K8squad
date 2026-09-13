@@ -54,6 +54,15 @@ func (w *RunStatusSandboxWriter) ObserveSandboxRef(ctx context.Context, runID, s
 	if err != nil {
 		return fmt.Errorf("resolve Run %s for sandboxRef status: %w", runID, err)
 	}
+	// ISI-4366: stamp the Run as the sandbox pod's controller owner so
+	// Kubernetes GC reaps it even if the Run CR is deleted while non-terminal
+	// (the terminal release path never runs then). Ordered BEFORE the status
+	// early-return so the reattach/re-drive path still converges the owner on a
+	// pod that was bound before this hardening shipped; adoptSandboxPodToRun is
+	// idempotent and fail-safe on the legacy default-namespace path.
+	if err := adoptSandboxPodToRun(ctx, w.client, run, sandboxRef); err != nil {
+		return fmt.Errorf("adopt sandbox pod %s for Run %s/%s: %w", sandboxRef, run.Namespace, run.Name, err)
+	}
 	if cur := run.Status.SandboxRef; cur != nil && cur.Name == sandboxRef {
 		return nil // already observed (reattach path)
 	}
