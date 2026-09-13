@@ -173,7 +173,26 @@ receivers:
     include:
       - /var/log/pods/*/*/*.log
       - /var/log/pods/*/*/*/*.log
-    exclude: [ "*.gz" ]
+    # Exclude the telemetry pipeline's OWN pod logs to break the self-ingestion
+    # loop (ISI-4372). node-logs tails /var/log/pods/* — which includes the
+    # gateway collector's and node-logs' own logs in the release namespace.
+    # Under load, collector logging (export retries, batch/queue chatter) about
+    # ingesting logs generates more logs, a positive-feedback amplifier that
+    # drove ~54k logs/s (~208M rows/60m), 100% service.name=k8s-node-logs in the
+    # observability namespace — pure cost and export-path pressure (see the
+    # ISI-4371 wedge). Scoped to the collectors by pod-name prefix (NOT the whole
+    # namespace) so real app logs co-located in that namespace still flow.
+    # Both kubelet layouts are covered: CRI 3-segment (<ns>_<pod>_<uid>/...) and
+    # 4-segment (<ns>/<pod>/<uid>/...); ** spans the <uid|restart>/<container>
+    # tail (doublestar, supported by the filelog matcher).
+    exclude:
+      - "*.gz"
+      # gateway collector (operator mode: <name>-collector-*; deployment mode: <name>-*)
+      - /var/log/pods/{{ .Release.Namespace }}_{{ .Values.collector.name }}*/**/*.log
+      - /var/log/pods/{{ .Release.Namespace }}/{{ .Values.collector.name }}*/**/*.log
+      # node-logs DaemonSet (this collector itself — the feedback-loop source)
+      - /var/log/pods/{{ .Release.Namespace }}_otel-node-logs*/**/*.log
+      - /var/log/pods/{{ .Release.Namespace }}/otel-node-logs*/**/*.log
     start_at: end
     include_file_path: true
     operators:
