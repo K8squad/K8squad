@@ -925,7 +925,11 @@ spec:
                     request:
                       description: |-
                         Request digest (prompt or tool-call arguments, truncated+hashed per
-                        ISI-4238 — raw secrets-bearing text never rides the CR)
+                        ISI-4238 — raw secrets-bearing text never rides the CR). Required for
+                        prompt/tool_call interactions (enforced by the struct XValidation
+                        above); omitted for response/tool_response, which carry only a
+                        Response digest and token accounting (the usage projection in
+                        rundrive.RunLLMStatusWriter is response-typed and has no request).
                       format: byte
                       maxLength: 4096
                       type: string
@@ -982,13 +986,14 @@ spec:
                   - durationMs
                   - id
                   - model
-                  - request
                   - timestamp
                   - type
                   type: object
                   x-kubernetes-validations:
                   - message: 'Type must be one of: prompt, response, tool_call, tool_response'
                     rule: self.type in ['prompt', 'response', 'tool_call', 'tool_response']
+                  - message: request digest is required for prompt and tool_call interactions
+                    rule: '!(self.type in [''prompt'', ''tool_call'']) || has(self.request)'
                 maxItems: 128
                 type: array
                 x-kubernetes-list-type: atomic
