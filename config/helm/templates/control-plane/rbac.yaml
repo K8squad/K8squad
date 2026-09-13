@@ -37,9 +37,11 @@ rules:
   # namespace with an OwnerReference for auto-GC. ISI-4132: create/delete join
   # the set — the warm pool Boots/TearDowns sandbox pods imperatively
   # (pkg/warmpool/kube.go), and a fresh install without them wedges every
-  # dispatch at sandbox bring-up.
+  # dispatch at sandbox bring-up. ISI-4366: patch joins the set — rundrive
+  # stamps an OwnerReference (the Run CR) onto run-owned sandbox pods at bind
+  # time so K8s GC reaps them if the Run is deleted while non-terminal.
   resources: [pods]
-  verbs: [create, delete, get, list, watch]
+  verbs: [create, delete, get, list, patch, watch]
 - apiGroups: [""]
   # ISI-4315: KubeCapacitySnapshot lists nodes on every controller tick
   # (allocatable minus live pod requests) to size the warm-pool capacity
