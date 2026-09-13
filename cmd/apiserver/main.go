@@ -19,6 +19,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
 	"log/slog"
 	"net"
@@ -633,23 +634,63 @@ func buildAuthService(ctx context.Context, db *sql.DB, cfg apiserver.Config) *au
 	})
 }
 
-// bootstrapAdmin provisions the initial admin (15.2): ONLY on a fresh install
-// (auth.user empty), from chart values / env. Idempotent by construction — a
-// non-empty user table skips entirely, so re-running is a no-op.
+// bootstrapUserStore is the narrow slice of auth.UserStore the credential
+// reconcile needs — keyed on the configured username, not on table emptiness.
+type bootstrapUserStore interface {
+	ByUsername(ctx context.Context, username string) (*auth.User, error)
+	Create(ctx context.Context, u *auth.User) error
+	UpdatePassword(ctx context.Context, id uuid.UUID, passwordHash string) error
+}
+
+// bootstrapAdmin reconciles the documented install admin (15.2) from chart
+// values / env. It builds the production store and delegates the decision to
+// reconcileBootstrapAdmin (unit-tested against a fake).
 func bootstrapAdmin(ctx context.Context, db *sql.DB, cfg apiserver.Config) {
 	if cfg.BootstrapAdminUsername == "" || cfg.BootstrapAdminPassword == "" {
 		return
 	}
-	users := auth.NewPostgresUserStore(db)
-	count, err := users.Count(ctx)
-	if err != nil {
-		log.Printf("ksquad-apiserver: bootstrap admin skipped — cannot probe user table: %v", err)
+	reconcileBootstrapAdmin(ctx, auth.NewPostgresUserStore(db), cfg)
+}
+
+// reconcileBootstrapAdmin brings the configured admin credential into sync so a
+// FRESH *or* UPGRADE install keeps a working documented login (ISI-4232). The
+// old create-only path skipped whenever any user existed, so a persisted DB
+// (users already present) whose configured password had diverged from the stored
+// hash left the documented admin login broken with no recovery but manual user
+// creation. The reconcile is keyed on the configured username:
+//   - user absent            -> create (fresh-install path, unchanged behaviour);
+//   - present, hash matches   -> no-op (idempotent; no rehash/rewrite per restart);
+//   - present, hash diverged  -> UpdatePassword to the configured value.
+//
+// DECLARATIVE CONTRACT / footgun: while a bootstrap password is configured it is
+// authoritative — an in-app password rotation that is not mirrored back to the
+// value/secret is reset to the configured value on the next restart. The
+// documented remedy stays "clear the bootstrap password after first login"; with
+// this reconcile that guidance is load-bearing, not just hygiene. A deliberately
+// deactivated admin is left deactivated — reconcile only touches the password.
+func reconcileBootstrapAdmin(ctx context.Context, users bootstrapUserStore, cfg apiserver.Config) {
+	existing, err := users.ByUsername(ctx, cfg.BootstrapAdminUsername)
+	switch {
+	case err == nil:
+		if verr := auth.VerifyPassword(cfg.BootstrapAdminPassword, existing.PasswordHash); verr == nil {
+			log.Printf("ksquad-apiserver: bootstrap admin %q already in sync (idempotent no-op)", cfg.BootstrapAdminUsername)
+			return
+		}
+		hash, herr := auth.HashPassword(cfg.BootstrapAdminPassword)
+		if herr != nil {
+			log.Printf("ksquad-apiserver: bootstrap admin reconcile skipped — hash: %v", herr)
+			return
+		}
+		if uerr := users.UpdatePassword(ctx, existing.ID, hash); uerr != nil {
+			log.Printf("ksquad-apiserver: bootstrap admin %q password reconcile FAILED: %v", cfg.BootstrapAdminUsername, uerr)
+			return
+		}
+		log.Printf("ksquad-apiserver: bootstrap admin %q password reconciled to the configured value — clear the bootstrap password now", cfg.BootstrapAdminUsername)
 		return
-	}
-	if count > 0 {
-		// #nosec G706 -- count is a SQL COUNT(*) int rendered with %d; no tainted
-		// string and no control characters can reach the log line.
-		log.Printf("ksquad-apiserver: bootstrap admin skipped — %d users exist (idempotent no-op)", count)
+	case errors.Is(err, auth.ErrNotFound):
+		// fall through to create below
+	default:
+		log.Printf("ksquad-apiserver: bootstrap admin skipped — cannot probe user %q: %v", cfg.BootstrapAdminUsername, err)
 		return
 	}
 
