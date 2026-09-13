@@ -579,14 +579,26 @@ func TestDriveJoinsSubmitTraceContext(t *testing.T) {
 	dispatchSpan.End()
 
 	dispatchID := dispatchSpan.SpanContext().SpanID()
-	for _, s := range sr.Ended() {
-		if s.Name() != "run.start" {
-			continue
+	// drive() ends the run.start root via RunEnd AFTER tk.terminate() closes the
+	// wire stream, so draining events above does NOT guarantee run.start has
+	// flushed yet — the same span-timing race de-flaked in
+	// TestDriveMapsUsageAndStampsTraceID (ISI-4369). Poll the mutex-safe recorder
+	// until the run.start span settles instead of racing the drive goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, s := range sr.Ended() {
+			if s.Name() != "run.start" {
+				continue
+			}
+			if s.Parent().SpanID() != dispatchID {
+				t.Errorf("run.start parent = %v, want dispatcher span %v", s.Parent().SpanID(), dispatchID)
+			}
+			return
 		}
-		if s.Parent().SpanID() != dispatchID {
-			t.Errorf("run.start parent = %v, want dispatcher span %v", s.Parent().SpanID(), dispatchID)
+		if time.Now().After(deadline) {
+			break
 		}
-		return
+		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("no run.start span recorded")
 }
