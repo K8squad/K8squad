@@ -96,6 +96,14 @@ const (
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
 	attrOutcome = attribute.Key("ksquad.outcome")
+	// attrDurationMS is the span's measured wall-clock duration in
+	// milliseconds, stamped as an explicit attribute so a backend can query /
+	// aggregate call latency as a dimension without deriving it from the span
+	// start/end timestamps (ISI-4385: WS-C "tool/skill calls appear ... with
+	// duration"). It rides tool / mcp.call spans (measured start→result) and
+	// skill.load spans (the point-event mapping instant); llm.call already
+	// carries its truthful step duration via the span timestamps (ISI-4238).
+	attrDurationMS = attribute.Key("ksquad.duration.ms")
 	// attrRunState carries the §3.1 terminal state on run.end
 	// (completed|failed|canceled) so the trace answers "how did it end"
 	// without joining back to the CR (ISI-4238).
@@ -354,6 +362,12 @@ func (m *Mapper) SkillEvent(ctx context.Context, labels Labels, p a2a.SkillLoadP
 	}
 	attrs = append(attrs, attrOutcome.String(mapOutcome(p.OK)))
 
+	// skill.load is a point event on the wire (a completed load, not a
+	// start/result pair — no runtime reports a load latency), so its duration
+	// is the mapping instant. Stamp it anyway (ISI-4385) so ksquad.duration.ms
+	// is present uniformly across every activity span (tool / mcp / skill), and
+	// so the attribute extends truthfully if a runtime ever pairs skill loads.
+	elapsed := m.now()
 	_, span := m.start(ctx, SpanSkillLoad, attrs)
 	if p.Err != "" {
 		span.SetStatus(codes.Error, p.Err)
@@ -361,6 +375,7 @@ func (m *Mapper) SkillEvent(ctx context.Context, labels Labels, p a2a.SkillLoadP
 	} else if p.OK != nil && *p.OK {
 		span.SetStatus(codes.Ok, "")
 	}
+	span.SetAttributes(attrDurationMS.Int64(durationMS(elapsed())))
 	span.End()
 
 	m.ins.SkillLoads.WithLabelValues(p.Name, labels.Agent).Inc()
@@ -553,11 +568,19 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	m.mu.Unlock()
 
 	if !ok {
+		// Orphan result (no start seen): the span's extent is unknowable — the
+		// start instant never arrived — so it carries outcome but no duration
+		// (never fabricated). The synthesized span is still complete + visible.
 		_, span := m.start(ctx, name, attrs)
 		span.End()
 		return
 	}
+	// Duration is truthfully measurable start→result for a paired call: stamp
+	// it on the span (ISI-4385) AND feed the histogram observer, from the one
+	// measurement so span and metric agree.
+	d := ps.start()
 	ps.span.SetAttributes(attrs...)
+	ps.span.SetAttributes(attrDurationMS.Int64(durationMS(d)))
 	switch outcome {
 	case outcomeError:
 		ps.span.SetStatus(codes.Error, "")
@@ -566,8 +589,18 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	}
 	ps.span.End()
 	if onDuration != nil {
-		onDuration(ps.start())
+		onDuration(d)
 	}
+}
+
+// durationMS converts a seconds duration to whole milliseconds (rounded) for
+// the ksquad.duration.ms span attribute. Negative inputs (a clock that ran
+// backwards) clamp to 0 — a duration attribute is never negative.
+func durationMS(seconds float64) int64 {
+	if seconds <= 0 {
+		return 0
+	}
+	return int64(seconds*1000 + 0.5)
 }
 
 // noopSpan is a non-recording span used when the tracer is nil (pre-Setup).
