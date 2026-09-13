@@ -27,6 +27,15 @@ spec:
         secretKeyRef:
           name: {{ .Values.collector.authSecretRef.name }}
           key: {{ .Values.collector.authSecretRef.key }}
+  # Backing store for the file_storage/queue extension (ISI-4371). The operator
+  # auto-wires liveness/readiness from the health_check extension; the persistent
+  # sending queue needs a writable volume the readOnlyRootFilesystem does not.
+  volumeMounts:
+    - name: otelcol-state
+      mountPath: /var/lib/otelcol
+  volumes:
+    - name: otelcol-state
+      emptyDir: {}
   config: |
     {{- include "k8squad-otel.gatewayConfig" . | nindent 4 }}
 {{- end }}

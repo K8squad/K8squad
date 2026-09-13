@@ -10,6 +10,23 @@ cumulativetodelta/redaction → tail_sampling → batch.
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133
+    # Self-heal (ISI-4040 / ISI-4371). Report UNHEALTHY on :13133 once the
+    # export pipeline stalls, so the liveness probe restarts the pod and clears
+    # a wedged exporter instead of silently dropping data for hours (the 11h
+    # CP-brownout failure mode). A restart is the proven remedy — it demonstrably
+    # cleared the wedged Dynatrace exporter during ISI-4371 recovery.
+    check_collector_pipeline:
+      enabled: true
+      interval: 5m
+      exporter_failure_threshold: 5
+  # Disk-backed sending queue (ISI-4371 hardening). Buffers to the otelcol-state
+  # volume so a transient CP/DNS brownout drains on recovery rather than
+  # drop-and-wedge. Survives container restarts (incl. the self-heal restart
+  # above) within the pod; not cross-reschedule (emptyDir) — acceptable boundary.
+  file_storage/queue:
+    directory: /var/lib/otelcol/sending-queue
+    create_directory: true
+    timeout: 10s
 receivers:
   otlp:
     protocols:
@@ -105,10 +122,25 @@ exporters:
       Authorization: "${env:KSQUAD_OTLP_AUTH}"
     tls:
       insecure: false
+    # Buffer across vendor/DNS outages instead of dropping (ISI-4371). The
+    # disk-backed queue drains when the endpoint recovers; retry backs off but
+    # never gives up (max_elapsed_time: 0) so a multi-hour CP brownout does not
+    # permanently drop telemetry — it accrues export failures, which trips the
+    # health_check self-heal above and makes the outage loud, not silent.
+    sending_queue:
+      enabled: true
+      storage: file_storage/queue
+      num_consumers: 10
+      queue_size: 10000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 0
   debug:
     verbosity: basic
 service:
-  extensions: [health_check]
+  extensions: [health_check, file_storage/queue]
   pipelines:
     traces:
       receivers: [otlp]
