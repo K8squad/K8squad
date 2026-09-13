@@ -112,6 +112,13 @@ func TestRunLLMStatusWriter_ProjectsUsageAndTrace(t *testing.T) {
 	if second.ID != llmTaskID+":3" || second.Model != "zai/glm-5" || second.Type != api.InteractionResponse {
 		t.Fatalf("interaction 2 = %+v", second)
 	}
+	// ISI-4378: the usage projection is a response-typed interaction with no
+	// request digest (EventUsage carries only token counts). Request MUST be
+	// nil so the CR patch is not rejected — the CRD requires Request only for
+	// prompt/tool_call types (LLMInteraction XValidation).
+	if second.Request != nil {
+		t.Fatalf("response interaction Request = %v, want nil (no request rides a usage event)", second.Request)
+	}
 	if second.TokenUsage == nil || second.TokenUsage.TotalTokens != 15 {
 		t.Fatalf("interaction 2 tokens = %+v, want total 15", second.TokenUsage)
 	}

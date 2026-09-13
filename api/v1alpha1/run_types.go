@@ -539,6 +539,7 @@ type GrantedSkill struct {
 // schema (MaxLength applies to the base64 string form) — full prompts and
 // responses never ride the CR; they stay in the §4 event stream.
 // +kubebuilder:validation:XValidation:message="Type must be one of: prompt, response, tool_call, tool_response",rule="self.type in ['prompt', 'response', 'tool_call', 'tool_response']"
+// +kubebuilder:validation:XValidation:message="request digest is required for prompt and tool_call interactions",rule="!(self.type in ['prompt', 'tool_call']) || has(self.request)"
 type LLMInteraction struct {
 	// ID is unique identifier for this interaction
 	// +kubebuilder:validation:Required
@@ -562,10 +563,14 @@ type LLMInteraction struct {
 	Timestamp metav1.Time `json:"timestamp"`
 
 	// Request digest (prompt or tool-call arguments, truncated+hashed per
-	// ISI-4238 — raw secrets-bearing text never rides the CR)
-	// +kubebuilder:validation:Required
+	// ISI-4238 — raw secrets-bearing text never rides the CR). Required for
+	// prompt/tool_call interactions (enforced by the struct XValidation
+	// above); omitted for response/tool_response, which carry only a
+	// Response digest and token accounting (the usage projection in
+	// rundrive.RunLLMStatusWriter is response-typed and has no request).
+	// +optional
 	// +kubebuilder:validation:MaxLength=4096
-	Request []byte `json:"request"`
+	Request []byte `json:"request,omitempty"`
 
 	// Response digest (model reply or tool output, truncated)
 	// +optional
