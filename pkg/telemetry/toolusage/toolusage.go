@@ -89,9 +89,18 @@ const (
 const (
 	attrRunID     = attribute.Key("ksquad.run.id")
 	attrAgentName = attribute.Key("ksquad.agent.name")
-	attrSkillName = attribute.Key("ksquad.skill.name")
-	attrSkillSHA  = attribute.Key("ksquad.skill.source.sha")
-	attrMCPServer = attribute.Key("ksquad.mcp.server")
+	// WS-A run-trace correlation (ISI-4382, ADR-0021 D1): every run-trace
+	// span carries team/project/ticket/sandbox identity, not only run+agent,
+	// so a single trace in the backend answers "whose run, which project,
+	// which ticket, which pod" without joining back to the CR. Span
+	// attributes ONLY — deliberately never metric labels (cardinality note).
+	attrTeamName    = attribute.Key("ksquad.team.name")
+	attrProjectName = attribute.Key("ksquad.project.name")
+	attrWorkItemRef = attribute.Key("ksquad.work_item.ref")
+	attrSandboxPod  = attribute.Key("ksquad.sandbox.pod")
+	attrSkillName   = attribute.Key("ksquad.skill.name")
+	attrSkillSHA    = attribute.Key("ksquad.skill.source.sha")
+	attrMCPServer   = attribute.Key("ksquad.mcp.server")
 	// attrOutcome records the mapped outcome ("success" | "error" |
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
@@ -130,22 +139,46 @@ func Enabled() bool { return enabled.Load() }
 
 func init() { enabled.Store(true) }
 
-// Labels identify the emitting Run/Agent. They ride every span (attributes)
-// so a backend can filter per run / per agent, but only agent flows into
-// metric label sets (run.id would explode counter cardinality; it stays an
-// attribute, same discipline as 13.6).
+// Labels identify the emitting Run and its context. They ride every span
+// (attributes) so a backend can filter one trace by run / agent / team /
+// project / ticket / sandbox pod (WS-A, ISI-4382). Only agent flows into
+// metric label sets — run.id and the WS-A identity fields would explode
+// counter cardinality, so they stay span attributes only (same discipline
+// as 13.6; ADR-0021 D1 cardinality note).
 type Labels struct {
 	RunID string
 	Agent string
+	// Team is the tenant team (Run.Spec.TeamRef / shim env KSQUAD_SQUAD).
+	Team string
+	// Project is the owning project (Run.Spec.ProjectRef / KSQUAD_PROJECT).
+	Project string
+	// WorkItemRef is the ticket/work-item the Run serves
+	// (Run.Spec.WorkItemRef) — the ticket identity on the trace.
+	WorkItemRef string
+	// SandboxPod is the sandbox pod hosting the Run (Run.Status.SandboxRef /
+	// the shim's own pod name) — one run per pod.
+	SandboxPod string
 }
 
 func (l Labels) spanAttrs() []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 2)
+	attrs := make([]attribute.KeyValue, 0, 6)
 	if l.RunID != "" {
 		attrs = append(attrs, attrRunID.String(l.RunID))
 	}
 	if l.Agent != "" {
 		attrs = append(attrs, attrAgentName.String(l.Agent))
+	}
+	if l.Team != "" {
+		attrs = append(attrs, attrTeamName.String(l.Team))
+	}
+	if l.Project != "" {
+		attrs = append(attrs, attrProjectName.String(l.Project))
+	}
+	if l.WorkItemRef != "" {
+		attrs = append(attrs, attrWorkItemRef.String(l.WorkItemRef))
+	}
+	if l.SandboxPod != "" {
+		attrs = append(attrs, attrSandboxPod.String(l.SandboxPod))
 	}
 	return attrs
 }

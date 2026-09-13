@@ -267,12 +267,24 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 
 	ctx = telemetry.Extract(ctx, run.Annotations)
-	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(
+	// WS-A (ISI-4382, ADR-0021 D1): mirror the run-trace identity set onto
+	// the operator-side reconcile span so one trace filters uniformly by
+	// team/project/ticket across shim spans AND run.reconcile. The canonical
+	// ksquad.work_item.ref key matches the toolusage span attrs; the legacy
+	// ksquad.run.work_item_ref key is retained for existing queries.
+	spanAttrs := []attribute.KeyValue{
 		attribute.String("ksquad.run.id", runID),
 		attribute.String("ksquad.run.work_item_ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.work_item.ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.team.name", run.Spec.TeamRef.Name),
+		attribute.String("ksquad.project.name", run.Spec.ProjectRef.Name),
 		attribute.String("ksquad.run.namespace", run.Namespace),
 		attribute.String("ksquad.run.name", run.Name),
-	))
+	}
+	if len(run.Spec.Agents) > 0 {
+		spanAttrs = append(spanAttrs, attribute.String("ksquad.agent.name", run.Spec.Agents[0].Name))
+	}
+	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(spanAttrs...))
 	defer func() {
 		if err != nil {
 			span.RecordError(err)

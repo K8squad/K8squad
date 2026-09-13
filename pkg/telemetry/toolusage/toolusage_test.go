@@ -96,6 +96,70 @@ func TestToolEventSpan(t *testing.T) {
 	}
 }
 
+// TestWSAIdentityAttrsRideSpans covers WS-A (ISI-4382): the widened Labels
+// set — team, project, ticket (work_item.ref), sandbox pod — rides every
+// run-trace span kind (run.start, gen_ai.tool.call, llm.call, skill.load),
+// so a single trace filters by the full identity set, not just run+agent.
+func TestWSAIdentityAttrsRideSpans(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	labels := Labels{
+		RunID:       "run-42",
+		Agent:       "coder",
+		Team:        "alpha",
+		Project:     "proj-x",
+		WorkItemRef: "TKT-9",
+		SandboxPod:  "ksquad-sbx-abc123",
+	}
+
+	runCtx, _ := m.RunStart(ctx, labels, "task-1")
+	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "start"})
+	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
+	m.SkillEvent(runCtx, labels, a2a.SkillLoadPayload{Name: "restart-deploy"})
+	m.RunEnd(runCtx, "task-1", "completed", "")
+
+	want := map[string]string{
+		"ksquad.team.name":     "alpha",
+		"ksquad.project.name":  "proj-x",
+		"ksquad.work_item.ref": "TKT-9",
+		"ksquad.sandbox.pod":   "ksquad-sbx-abc123",
+	}
+	for _, name := range []string{SpanRunStart, SpanToolCall, SpanLLMCall, SpanSkillLoad} {
+		attrs := attrMap(findSpan(t, sr, name).Attributes())
+		for key, val := range want {
+			if attrs[key] != val {
+				t.Errorf("span %s attr %s = %q, want %q", name, key, attrs[key], val)
+			}
+		}
+	}
+}
+
+// TestWSAIdentityNeverMetricLabels covers the ADR-0021 D1 cardinality note:
+// the WS-A identity fields are span attributes ONLY — they must never leak
+// into a metric label set (only agent does), or per-ticket/per-pod series
+// would explode the counters.
+func TestWSAIdentityNeverMetricLabels(t *testing.T) {
+	m, _, reg := newTestMapper(t)
+	labels := Labels{Agent: "coder", Team: "alpha", Project: "proj-x", WorkItemRef: "TKT-9", SandboxPod: "pod-1"}
+	m.ToolEvent(context.Background(), labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	forbidden := map[string]bool{"team": true, "project": true, "work_item_ref": true, "sandbox_pod": true}
+	for _, mf := range mfs {
+		for _, mtr := range mf.GetMetric() {
+			for _, lp := range mtr.GetLabel() {
+				if forbidden[lp.GetName()] {
+					t.Errorf("metric %s carries forbidden WS-A label %q", mf.GetName(), lp.GetName())
+				}
+			}
+		}
+	}
+}
+
 // TestToolEventFailureOutcome asserts a failed result settles the span as an
 // error with outcome=error.
 func TestToolEventFailureOutcome(t *testing.T) {
