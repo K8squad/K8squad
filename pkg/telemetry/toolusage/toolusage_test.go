@@ -315,9 +315,16 @@ func TestUsageEventLLMCallSpan(t *testing.T) {
 	if attrs["gen_ai.usage.input_tokens"] != "1200" {
 		t.Errorf("input tokens attr = %q", attrs["gen_ai.usage.input_tokens"])
 	}
-	// reasoning counts as output-class
-	if attrs["gen_ai.usage.output_tokens"] != "390" {
-		t.Errorf("output tokens attr = %q", attrs["gen_ai.usage.output_tokens"])
+	// ISI-4383: reasoning is now DISTINCT on the span — output_tokens is the
+	// bare output count, reasoning rides gen_ai.usage.reasoning_tokens.
+	if attrs["gen_ai.usage.output_tokens"] != "340" {
+		t.Errorf("output tokens attr = %q, want 340 (reasoning no longer folded)", attrs["gen_ai.usage.output_tokens"])
+	}
+	if attrs["gen_ai.usage.reasoning_tokens"] != "50" {
+		t.Errorf("reasoning tokens attr = %q, want 50", attrs["gen_ai.usage.reasoning_tokens"])
+	}
+	if attrs["gen_ai.operation.name"] != "chat" {
+		t.Errorf("operation attr = %q, want chat", attrs["gen_ai.operation.name"])
 	}
 	if attrs["gen_ai.usage.cache_read_tokens"] != "8000" {
 		t.Errorf("cache read attr = %q", attrs["gen_ai.usage.cache_read_tokens"])
@@ -363,6 +370,110 @@ func TestUsageEventLLMCallSpan(t *testing.T) {
 	}
 	if tokensOut != 390 {
 		t.Errorf("output tokens = %v, want 390 (output+reasoning)", tokensOut)
+	}
+}
+
+// TestUsageEventGenAISemconv (ISI-4383, ADR-0021 D2): the llm.call span
+// carries the full gen-AI semconv surface — system (provider), served
+// response model, finish reason and response id — when the runtime reports
+// them, alongside the request model already covered above.
+func TestUsageEventGenAISemconv(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.UsageEvent(context.Background(), Labels{RunID: "run-9", Agent: "dev"}, "run-9", a2a.UsagePayload{
+		Model:         "anthropic/claude-opus-4",
+		Provider:      "anthropic",
+		ResponseModel: "anthropic/claude-opus-4-20260101",
+		FinishReason:  "stop",
+		ResponseID:    "resp_abc123",
+		Input:         100, Output: 40,
+	})
+
+	s := findSpan(t, sr, SpanLLMCall)
+	attrs := attrMap(s.Attributes())
+	if attrs["gen_ai.system"] != "anthropic" {
+		t.Errorf("gen_ai.system = %q, want anthropic", attrs["gen_ai.system"])
+	}
+	if attrs["gen_ai.response.model"] != "anthropic/claude-opus-4-20260101" {
+		t.Errorf("gen_ai.response.model = %q", attrs["gen_ai.response.model"])
+	}
+	if attrs["gen_ai.response.id"] != "resp_abc123" {
+		t.Errorf("gen_ai.response.id = %q", attrs["gen_ai.response.id"])
+	}
+	// finish_reasons is a semconv string array — assert on the typed slice.
+	var reasons []string
+	for _, kv := range s.Attributes() {
+		if string(kv.Key) == "gen_ai.response.finish_reasons" {
+			reasons = kv.Value.AsStringSlice()
+		}
+	}
+	if len(reasons) != 1 || reasons[0] != "stop" {
+		t.Errorf("gen_ai.response.finish_reasons = %v, want [stop]", reasons)
+	}
+}
+
+// TestUsageEventFallbackMarker (ISI-4383, ADR-0021 D2): a step served by the
+// backup/fallback model is visibly flagged with ksquad.llm.fallback=true, and
+// requested-vs-served model is legible as request.model vs response.model.
+func TestUsageEventFallbackMarker(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+
+	// Primary-served step: no fallback marker at all (absent, not "false").
+	m.UsageEvent(context.Background(), Labels{Agent: "dev"}, "r", a2a.UsagePayload{
+		Model: "primary/model-a", ResponseModel: "primary/model-a", Input: 1, Output: 1,
+	})
+	primary := findSpan(t, sr, SpanLLMCall)
+	if _, ok := attrMap(primary.Attributes())["ksquad.llm.fallback"]; ok {
+		t.Error("primary-served call must not carry ksquad.llm.fallback")
+	}
+
+	// Fallback-served step: requested != served, marker present + true.
+	m.UsageEvent(context.Background(), Labels{Agent: "dev"}, "r2", a2a.UsagePayload{
+		Model: "primary/model-a", ResponseModel: "backup/model-b", Fallback: true, Input: 1, Output: 1,
+	})
+	var fb sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == SpanLLMCall {
+			fb = s // last llm.call is the fallback one
+		}
+	}
+	fattrs := attrMap(fb.Attributes())
+	if fattrs["ksquad.llm.fallback"] != "true" {
+		t.Errorf("ksquad.llm.fallback = %q, want true", fattrs["ksquad.llm.fallback"])
+	}
+	if fattrs["gen_ai.request.model"] != "primary/model-a" || fattrs["gen_ai.response.model"] != "backup/model-b" {
+		t.Errorf("requested/served = %q/%q, want primary/model-a / backup/model-b",
+			fattrs["gen_ai.request.model"], fattrs["gen_ai.response.model"])
+	}
+}
+
+// TestUsageEventContentGate (ISI-4383, ADR-0021 D3): prompt/response bodies
+// never ride the span by default (PII posture), and appear as gated span
+// EVENTS — never attributes — only when the content gate is explicitly on.
+func TestUsageEventContentGate(t *testing.T) {
+	p := a2a.UsagePayload{Model: "m", Input: 1, Output: 1, Prompt: "secret prompt", Response: "secret reply"}
+
+	// Default: gate off → no content events, no content attributes.
+	m, sr, _ := newTestMapper(t)
+	m.UsageEvent(context.Background(), Labels{}, "r", p)
+	off := findSpan(t, sr, SpanLLMCall)
+	if len(off.Events()) != 0 {
+		t.Errorf("gate off: %d span events, want 0 (content stays off by default)", len(off.Events()))
+	}
+
+	// Opt in: gate on → prompt/response ride as span events (dev/non-prod).
+	SetContentTracing(true)
+	t.Cleanup(func() { SetContentTracing(false) })
+	m2, sr2, _ := newTestMapper(t)
+	m2.UsageEvent(context.Background(), Labels{}, "r", p)
+	on := findSpan(t, sr2, SpanLLMCall)
+	if len(on.Events()) != 2 {
+		t.Fatalf("gate on: %d span events, want 2 (prompt + completion)", len(on.Events()))
+	}
+	// Content must never leak onto queryable attributes even when captured.
+	for _, kv := range on.Attributes() {
+		if kv.Value.AsString() == "secret prompt" || kv.Value.AsString() == "secret reply" {
+			t.Errorf("content leaked onto attribute %q", kv.Key)
+		}
 	}
 }
 
