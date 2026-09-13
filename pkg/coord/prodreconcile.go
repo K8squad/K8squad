@@ -58,6 +58,7 @@ type ProdReconcileStore struct {
 	runID       string // uuid — stamped onto audit_log.run_id / outbox.run_id
 	principal   string // who is driving (audit_log.principal, §6.5)
 	initiatedBy string // §12.4 control-plane stamp (may be empty → NULL)
+	traceID     string // Run.Status.TraceID for the WS-D lifecycle-event payloads (may be "")
 
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
@@ -85,6 +86,18 @@ func NewProdReconcileStore(ctx context.Context, db *sql.DB, workItemID, runID, p
 		principal:   principal,
 		initiatedBy: initiatedByUserID,
 	}, nil
+}
+
+// WithTraceID binds the Run's trace id (Run.Status.TraceID, projected off the
+// shim's a2a status) onto this Store so the WS-D discrete lifecycle events
+// (ADR-0021 D4, ISI-4386) carry the trace_id that correlates the event spine to
+// the OTel trace spine. It is an optional setter (not a constructor arg) so the
+// existing NewProdReconcileStore call sites keep working; a "" trace id — the
+// pre-dispatch transitions where no trace exists yet — stores NULL in the
+// payload rather than an empty string. Returns s for chaining.
+func (s *ProdReconcileStore) WithTraceID(traceID string) *ProdReconcileStore {
+	s.traceID = traceID
+	return s
 }
 
 // Err returns the first infrastructure error captured by any method, or nil. The
@@ -217,6 +230,50 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 		s.workItemID, s.runID, string(expected), string(next), fenceAfter); err != nil {
 		s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: outbox: %w", err))
 		return false
+	}
+
+	// (4) WS-D discrete lifecycle events (ADR-0021 D4, ISI-4386) — the domain
+	//     vocabulary a plugin subscribes to (`work_item.assigned`, `run.scheduled`,
+	//     `run.sandbox_bound`, `run.started`, `run.ended`), emitted IN ADDITION to
+	//     the coarse reconcile_advanced projection above and co-committed in this
+	//     SAME transaction. They exist IFF the guarded advance committed, so the
+	//     step-CAS + fence guard makes them exactly-once and crash-idempotent for
+	//     free (a re-drive whose expected/fence no longer holds writes neither the
+	//     advance nor these). Each payload carries the identity set — agent, team,
+	//     project, ticket, sandbox, trace_id — derived from the work_item/claim rows
+	//     (and the run-keyed sandbox_bind) so the event spine correlates to the
+	//     trace spine without threading those fields through the Store seam. Which
+	//     milestones a transition publishes is the machine's decision (reconcile.
+	//     LifecycleEventsFor), keeping the vocabulary next to the happy path it maps.
+	for _, ev := range reconcile.LifecycleEventsFor(expected, next) {
+		if _, err := tx.ExecContext(s.ctx, `
+			INSERT INTO coord.outbox
+			       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+			SELECT $6, wi.project_id, wi.team_id::text, $7, wi.id, $2::uuid,
+			       jsonb_build_object(
+			         'schema',       'ksquad.lifecycle.v1',
+			         'event',        $6::text || '.' || $7::text,
+			         'from_step',    $3::text,
+			         'to_step',      $4::text,
+			         'fence_token',  $5::bigint,
+			         'run_id',       $2::text,
+			         'ticket',       wi.id::text,
+			         'work_item_id', wi.id::text,
+			         'project',      wi.project_id::text,
+			         'team',         wi.team_id::text,
+			         'agent',        c.assignee_agent,
+			         'sandbox',      NULLIF(sb.sandbox_ref, ''),
+			         'trace_id',     NULLIF($8::text, ''))
+			  FROM coord.work_item wi
+			  JOIN coord.claim c ON c.work_item_id = wi.id
+			  LEFT JOIN coord.sandbox_bind sb ON sb.run_id = $2::uuid
+			 WHERE wi.id = $1::uuid`,
+			s.workItemID, s.runID, string(expected), string(next), fenceAfter,
+			ev.Entity, ev.EventType, s.traceID); err != nil {
+			s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: lifecycle %s.%s: %w",
+				ev.Entity, ev.EventType, err))
+			return false
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
