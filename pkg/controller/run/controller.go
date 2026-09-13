@@ -28,6 +28,7 @@ import (
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/reconcile"
+	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 )
 
 // DefaultResync bounds how long a non-terminal Run's status projection can lag
@@ -98,6 +99,9 @@ type Reconciler struct {
 	// Resync is the non-terminal requeue cadence (ISI-4195); zero uses
 	// DefaultResync. Tests pin it to observe the resync behaviour.
 	Resync time.Duration
+	// Health, when set, records this controller's reconcile latency + error
+	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
+	Health *cphealth.Metrics
 }
 
 // resync returns the configured non-terminal requeue cadence, or the default.
@@ -220,5 +224,5 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&api.Run{}).
 		Named("run").
-		Complete(r)
+		Complete(cphealth.WrapReconciler(r.Health, "run", r))
 }
