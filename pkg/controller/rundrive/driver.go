@@ -53,8 +53,12 @@ import (
 	"math/rand"
 	"time"
 
+	"github.com/google/uuid"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -248,6 +252,17 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 	runID := string(run.UID)
 
+	// ISI-4354 unparseable-ref terminal path: spec.workItemRef keys the
+	// durable world as a coord.work_item.id (a Postgres uuid). A ref that
+	// does not parse as one can NEVER resolve a claim row — every read the
+	// drive would make casts it ::uuid and 22P02s — so pre-admission CRs
+	// (and CRD-bypassing writes) with a malformed ref must be abandoned
+	// HERE, loudly on the status, never error-backoff-looped (the observed
+	// live defect: ~12 reconciler errors in 41s with no terminal path).
+	if _, err := uuid.Parse(run.Spec.WorkItemRef); err != nil {
+		return r.abandonInvalidRef(ctx, &run)
+	}
+
 	ctx = telemetry.Extract(ctx, run.Annotations)
 	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(
 		attribute.String("ksquad.run.id", runID),
@@ -388,6 +403,52 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		// re-read the world on the next pass.
 		return ctrl.Result{RequeueAfter: continueDelay}, nil
 	}
+}
+
+// ConditionInvalidWorkItemRef is the abandonment marker the driver stamps on a
+// Run whose spec.workItemRef cannot be a work-item id (ISI-4354): True means
+// run-drive will never drive this Run — the ref is not a uuid, so no
+// coordination row can exist for it. The projector's Ready condition is
+// unaffected (a different condition type survives its SetStatusCondition
+// merge), so both signals read side by side on the CR.
+const ConditionInvalidWorkItemRef = "InvalidWorkItemRef"
+
+// abandonInvalidRef is the ISI-4354 terminal path for an unparseable
+// spec.workItemRef: stamp the abandonment condition on the status (once —
+// meta.SetStatusCondition is a no-op when it already holds), then absorb.
+// No error, no requeue: nothing downstream can ever change — the ref is
+// immutable spec, and the level-triggered resync is the only re-touch, where
+// the guard short-circuits before any DB call.
+func (r *Driver) abandonInvalidRef(ctx context.Context, run *api.Run) (ctrl.Result, error) {
+	runID := string(run.UID)
+	slog.WarnContext(ctx, "rundrive: run abandoned — spec.workItemRef is not a work-item uuid",
+		"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace,
+		"run.work_item_ref", run.Spec.WorkItemRef)
+	patched := run.DeepCopy()
+	changed := meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+		Type:               ConditionInvalidWorkItemRef,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "UnparseableWorkItemRef",
+		Message: fmt.Sprintf("spec.workItemRef %q is not a work-item UUID; no coordination row can exist for it. "+
+			"run-drive abandons this Run — fix the ref to a coord work-item UUID or delete the Run.",
+			run.Spec.WorkItemRef),
+		LastTransitionTime: metav1.Now(),
+	})
+	if !changed {
+		return ctrl.Result{}, nil // already surfaced; pure absorb
+	}
+	if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil {
+		// NotFound: the Run left mid-flight — nothing to surface, absorb.
+		// Anything else is a real API failure: surface it (transient — the
+		// next pass re-stamps idempotently; this is NOT the 22P02 loop).
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("rundrive: surface invalid workItemRef for %s/%s: %w",
+			run.Namespace, run.Name, err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // park records the single durable wake for a Run parked on a pause step (3.7)

@@ -36,7 +36,7 @@ import (
 // normalizes to the empty hash — otherwise no bind ever matches the bare
 // warm stock the operator wires and every interactive Run cold-boots.
 func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
-	capRun := newTestRun("44444444-4444-4444-4444-444444444444", "wi-4")
+	capRun := newTestRun("44444444-4444-4444-4444-444444444444", "40000000-0000-0000-0000-000000000004")
 	capRun.Name = "cap-run"
 	capRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	// A REAL capability envelope (non-empty lists) — its hash is carried.
@@ -46,7 +46,7 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 	}
 	// The stamped BARE envelope: exactly what BuildManifest(nil, nil, nil)
 	// produces for a no-capability Run (empty lists, empty-envelope hash).
-	stampedBareRun := newTestRun("66666666-6666-6666-6666-666666666666", "wi-6")
+	stampedBareRun := newTestRun("66666666-6666-6666-6666-666666666666", "60000000-0000-0000-0000-000000000006")
 	stampedBareRun.Name = "stamped-bare-run"
 	stampedBareRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	stampedBareRun.Status.CapabilityManifest = capability.BuildManifest(nil, nil, nil)
@@ -67,7 +67,7 @@ func TestSpecClassifierCarriesNamespaceAndCapabilityHash(t *testing.T) {
 
 	// A Run without a manifest classifies to the bare posture (empty
 	// hash), not an error.
-	bareRun := newTestRun("55555555-5555-5555-5555-555555555555", "wi-5")
+	bareRun := newTestRun("55555555-5555-5555-5555-555555555555", "50000000-0000-0000-0000-000000000005")
 	bareRun.Spec.Agents = []api.ObjectRef{{Name: "coder"}}
 	cl2 := fake.NewClientBuilder().WithScheme(newScheme(t)).
 		WithObjects(bareRun, stampedBareRun, newTestAgent("coder"), newTestAgentRuntime("coder-runtime", api.RuntimeTypeCodex)).Build()

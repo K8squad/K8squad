@@ -49,7 +49,7 @@ func llmWriterScheme(t *testing.T) *runtime.Scheme {
 func llmTestRun(ns, uid string) *api.Run {
 	return &api.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-" + uid[:4], Namespace: ns, UID: types.UID(uid)},
-		Spec:       api.RunSpec{WorkItemRef: "wi-1"},
+		Spec:       api.RunSpec{WorkItemRef: "10000000-0000-0000-0000-000000000001"},
 	}
 }
 
