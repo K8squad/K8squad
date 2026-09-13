@@ -273,11 +273,17 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	default:
 		terminalState, terminalReason = outcome.State, outcome.Reason
 	}
-	tk.terminate(terminalState, terminalReason)
+	// End the run trace BEFORE terminate closes the event stream. terminate
+	// unblocks StreamEvents/drain consumers, and the terminal status carries
+	// the run TraceID — so the run.start/run.end spans must be finished before
+	// a consumer can drain the terminal event and race the still-open span
+	// End() calls (ISI-4370). terminalState/terminalReason are computed above,
+	// so this has no data dependency on terminate.
 	if e.telemetry != nil {
 		e.telemetry.RunEnd(telCtx, tk.id, string(terminalState), terminalReason)
 		e.telemetry.FinishTask(telCtx, tk.id)
 	}
+	tk.terminate(terminalState, terminalReason)
 }
 
 // modelID resolves the model this engine serves (launch config override
