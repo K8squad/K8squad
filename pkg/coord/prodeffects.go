@@ -579,8 +579,51 @@ func (e *ProdEffects) Terminal(s reconcile.Step) {
 		}
 	}
 
+	// §8.6 board-lane advance (ISI-4226): the Kanban card is a projection of
+	// coord.work_item.state, so releasing the checkout (above) is NOT enough —
+	// without this the card sits in the claimed lane (`in_progress`) forever even
+	// though the Run Succeeded, and coord.DispatchNextOfRecord (which requires the
+	// source item to already read `done`) can never hand off. Advance the card to
+	// the terminal projection of the committed step, in THIS transaction so a
+	// committed terminal advance implies the board moved (no separate settle race,
+	// cf. ISI-4224). The move is GUARDED to the claimed lane (`in_progress`): a
+	// re-drive after commit, a human who already moved the card, or an item that
+	// left the lane by any other path matches 0 rows and is left untouched — the
+	// advance is idempotent and never regresses a lane. A step with no board
+	// projection (lane == "") skips the move (e.g. cancelled, which settles the
+	// board via the ProdCancelStore path, not here).
+	if lane := terminalLane(s); lane != "" {
+		if _, err := tx.ExecContext(e.ctx, `
+			UPDATE coord.work_item
+			   SET state = $2, updated_at = now()
+			 WHERE id = $1::uuid AND state = 'in_progress'`,
+			e.workItemID, lane); err != nil {
+			e.fail(fmt.Errorf("coord.ProdEffects.Terminal: board advance: %w", err))
+			return
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: commit: %w", err))
+	}
+}
+
+// terminalLane maps a committed terminal reconcile step to the §8.6 board lane
+// the card must land in (0001 CHECK pins the lane enum:
+// backlog|todo|in_progress|in_review|done — there is no `failed`/`cancelled`
+// lane). A successful run completes the item (`done`); a terminally-FAILED run
+// (retries exhausted — a Failed→Claiming lap never reaches Terminal) is surfaced
+// for human triage in `in_review` rather than falsely marked `done` or silently
+// re-queued to `todo`. Any other step (including `cancelled`, whose board move is
+// owned by the cancel path) returns "" — no board move here.
+func terminalLane(s reconcile.Step) string {
+	switch s {
+	case reconcile.StepSucceeded:
+		return "done"
+	case reconcile.StepFailed:
+		return "in_review"
+	default:
+		return ""
 	}
 }
 

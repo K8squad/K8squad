@@ -114,6 +114,18 @@ func countEffectRows(t *testing.T, ctx context.Context, dsn, q, wi string) int {
 	return n
 }
 
+// boardLane reads the current §8.6 board lane (coord.work_item.state) for wi —
+// the projection a Kanban card and the BFF /api/work-items read (ISI-4226).
+func boardLane(t *testing.T, ctx context.Context, dsn, wi string) string {
+	t.Helper()
+	var lane string
+	if err := openDB(t, dsn).QueryRowContext(ctx,
+		`SELECT state FROM coord.work_item WHERE id=$1::uuid`, wi).Scan(&lane); err != nil {
+		t.Fatalf("read board lane: %v", err)
+	}
+	return lane
+}
+
 func TestProdEffects(t *testing.T) {
 	dsn := dsnOrFatal(t)
 	ctx := context.Background()
@@ -252,7 +264,9 @@ func TestProdEffects(t *testing.T) {
 		}
 	})
 
-	// E4: Terminal records exactly one §6.5 audit row carrying the terminal step.
+	// E4: Terminal records exactly one §6.5 audit row carrying the terminal step
+	// AND advances the board card off the claimed lane to the terminal projection
+	// (ISI-4226): a succeeded run lands the card in `done`, not stuck `in_progress`.
 	t.Run("E4_terminal_records", func(t *testing.T) {
 		eff, _, _, wi, _ := seedEffects(t, ctx, dsn)
 		eff.Terminal(reconcile.StepSucceeded)
@@ -262,6 +276,38 @@ func TestProdEffects(t *testing.T) {
 		if got := countEffectRows(t, ctx, dsn,
 			`SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='run_terminal' AND to_state='succeeded'`, wi); got != 1 {
 			t.Fatalf("terminal audit rows = %d, want 1", got)
+		}
+		// ISI-4226: the card must leave in_progress on settle, without human help.
+		if got := boardLane(t, ctx, dsn, wi); got != "done" {
+			t.Fatalf("board lane after succeeded Terminal = %q, want done (card stuck in claimed lane)", got)
+		}
+	})
+
+	// E4b: a terminally-FAILED run surfaces the card in `in_review` for human
+	// triage (ISI-4226) — never falsely `done`, never left in `in_progress`.
+	t.Run("E4b_terminal_failed_lane", func(t *testing.T) {
+		eff, _, _, wi, _ := seedEffects(t, ctx, dsn)
+		eff.Terminal(reconcile.StepFailed)
+		if err := eff.Err(); err != nil {
+			t.Fatalf("terminal error: %v", err)
+		}
+		if got := boardLane(t, ctx, dsn, wi); got != "in_review" {
+			t.Fatalf("board lane after failed Terminal = %q, want in_review", got)
+		}
+	})
+
+	// E4c: the board advance is guarded to the claimed lane and idempotent — a
+	// re-drive of Terminal after the card already moved (done) leaves it there and
+	// never resurrects it into a non-terminal lane.
+	t.Run("E4c_terminal_advance_idempotent", func(t *testing.T) {
+		eff, _, _, wi, _ := seedEffects(t, ctx, dsn)
+		eff.Terminal(reconcile.StepSucceeded)
+		eff.Terminal(reconcile.StepSucceeded)
+		if err := eff.Err(); err != nil {
+			t.Fatalf("terminal error: %v", err)
+		}
+		if got := boardLane(t, ctx, dsn, wi); got != "done" {
+			t.Fatalf("board lane after re-driven Terminal = %q, want done", got)
 		}
 	})
 
@@ -323,6 +369,11 @@ func TestProdEffects(t *testing.T) {
 		if got := countEffectRows(t, ctx, dsn,
 			`SELECT count(*) FROM coord.audit_log WHERE work_item_id=$1::uuid AND event_type='run_terminal'`, wi); got != 1 {
 			t.Fatalf("terminal audit rows = %d, want 1", got)
+		}
+		// ISI-4226: the full happy-path drive lands the card in `done` — the
+		// "progress visible" half of the M1.6 AC, end to end over real coord I/O.
+		if got := boardLane(t, ctx, dsn, wi); got != "done" {
+			t.Fatalf("board lane after full drive = %q, want done", got)
 		}
 	})
 }
