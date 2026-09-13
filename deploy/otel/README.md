@@ -58,6 +58,21 @@ helm install k8squad-otel deploy/otel/chart -n observability --create-namespace 
 # and in config/helm: controlPlane.otel.endpoint=http://my-collector.monitoring:4317
 ```
 
+### Validating chart changes (operator mode)
+
+`helm template` only proves the output is well-formed YAML text — it does **not**
+apply the `OpenTelemetryCollector` CR against a live API. `spec.config` is typed
+`object` under `opentelemetry.io/v1beta1` (it was a string only in v1alpha1), so a
+`config: |` literal-block string templates cleanly yet is rejected server-side
+(`.spec.config: expected map, got string`). This is exactly the ISI-4377 defect.
+Always re-validate operator-mode renders against a v1beta1 cluster:
+
+```sh
+helm template k8squad-otel deploy/otel/chart -n observability \
+  --show-only templates/gateway-operator.yaml \
+  | kubectl apply --server-side --dry-run=server -f -
+```
+
 ## Relationship to the other charts
 
 - `config/helm` (deployed): ships **no** collector templates by design — only

@@ -13,7 +13,7 @@ description: |
   otel-gateway-collector.<namespace> that config/helm injects into every
   workload's OTEL_EXPORTER_OTLP_* env.
 type: application
-version: 0.2.0
+version: 0.2.1
 appVersion: "0.156.0"
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/K8squad/K8squad
