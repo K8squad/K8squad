@@ -38,6 +38,17 @@ spec:
         - name: health
           containerPort: 8081
         env:
+        # The control-plane namespace this pod runs in. resolveTelemetryOptions
+        # (cmd/operator) reads $POD_NAMESPACE to resolve an OTelConfig auth Secret
+        # that omits an explicit namespace; without it the code falls back to a
+        # hardcoded default that need not match the release namespace, so the
+        # Dynatrace token Secret is looked up in a non-existent namespace, the
+        # lookup fails, and EVERY signal (traces/metrics/logs) silently drops to
+        # the stdout default — nothing reaches the gateway (ISI-4102/ISI-4146).
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         {{- include "k8squad.otelEnv" . | nindent 8 }}
         {{- /* ISI-3680 (E3-S2, AD-7): exact apiserver ServiceAccount name and
