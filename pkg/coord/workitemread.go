@@ -28,26 +28,39 @@ import (
 // card) and thread sizes for badges. Ordered by UpdatedAt DESC (the §13 List
 // sort key, backed by idx_work_item_updated).
 type BoardItem struct {
-	ID            string    `json:"id"`
-	Title         string    `json:"title"`
-	State         string    `json:"state"`
-	BlockedReason string    `json:"blockedReason,omitempty"`
-	Holder        string    `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
-	RunID         string    `json:"runId,omitempty"`
-	UpdatedAt     time.Time `json:"updatedAt"`
-	CommentCount  int       `json:"commentCount"`
-	ChangeCount   int       `json:"changeCount"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	State         string `json:"state"`
+	BlockedReason string `json:"blockedReason,omitempty"`
+	Holder        string `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
+	// Assignee is the AGENT name the dispatched run works this ticket as
+	// (coord.claim.assignee_agent, ISI-4237) — the board's "who is working
+	// this". Unlike Holder it survives the terminal checkout release, so a
+	// settled ticket still shows which agent worked it. "" ⇒ honestly
+	// unassigned (the console renders "unassigned", never a fabricated name).
+	Assignee     string    `json:"assignee,omitempty"`
+	RunID        string    `json:"runId,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	CommentCount int       `json:"commentCount"`
+	ChangeCount  int       `json:"changeCount"`
 }
 
-// StatusChange is one lane move from the §6.5 audit history — both human moves
-// (workitemstate.go) and agent moves (AgentTransitionState) land here with
-// their principal, so the thread can show "who moved it when" without a second
-// store.
+// StatusChange is one move from the §6.5 audit history — human lane moves
+// (workitemstate.go, state_transition), agent moves (AgentTransitionState,
+// state_transition) AND the engine's own progress events (ISI-4237:
+// claim_acquired todo → in_progress, reconcile_advanced step-to-step, the
+// terminal settle's lane move, run_terminal) all land here with their
+// principal, so the thread shows one narrative: claimed → advanced → settled.
 type StatusChange struct {
 	FromState  string    `json:"fromState"`
 	ToState    string    `json:"toState"`
 	Principal  string    `json:"principal"`
 	OccurredAt time.Time `json:"occurredAt"`
+	// EventType is the §6.5 audit event this row came from — the console can
+	// label human/agent lane moves ("state_transition") distinctly from
+	// engine progress ("claim_acquired" / "reconcile_advanced" /
+	// "run_terminal"). Additive JSON: older readers ignore it.
+	EventType string `json:"eventType,omitempty"`
 }
 
 // statusHistoryLimit bounds the audit tail the thread read returns — the
@@ -89,7 +102,7 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.state, wi.blocked_reason,
-		       c.holder_principal, c.run_id::text, wi.updated_at,
+		       c.holder_principal, c.assignee_agent, c.run_id::text, wi.updated_at,
 		       (SELECT count(*) FROM coord.comment k WHERE k.work_item_id = wi.id),
 		       (SELECT count(*) FROM coord.change_ref r WHERE r.work_item_id = wi.id)
 		  FROM coord.work_item wi
@@ -106,13 +119,14 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	var out []BoardItem
 	for rows.Next() {
 		var it BoardItem
-		var blocked, holder, run sql.NullString
-		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &holder, &run,
+		var blocked, holder, assignee, run sql.NullString
+		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &holder, &assignee, &run,
 			&it.UpdatedAt, &it.CommentCount, &it.ChangeCount); err != nil {
 			return nil, fmt.Errorf("coord.ListWorkItems: scan: %w", err)
 		}
 		it.BlockedReason = blocked.String
 		it.Holder = holder.String
+		it.Assignee = assignee.String
 		it.RunID = run.String
 		out = append(out, it)
 	}
@@ -157,13 +171,20 @@ func (s *WorkItemReadStore) ReadWorkItemThread(ctx context.Context, workItemID, 
 	return WorkItemThread{TaskDetail: td, StatusHistory: history}, nil
 }
 
-// readStatusHistory tails the §6.5 state_transition audit rows for one item,
-// newest first — the "status changes" the M1.5 AC wants visible on the ticket.
+// readStatusHistory tails the §6.5 audit rows for one item, newest first —
+// the "status changes" the M1.5 AC wants visible on the ticket. ISI-4237:
+// the filter is the ENGINE-PROGRESS set, not just human/agent lane moves —
+// a dispatched ticket's timeline reads claimed (todo → in_progress) →
+// advanced (claiming_sandbox → dispatching → …) → settled (the terminal lane
+// move / run_terminal), because the defect being fixed was a full dispatch
+// loop that left the board showing nothing but a silent in_progress.
 func readStatusHistory(ctx context.Context, db *sql.DB, workItemID string) ([]StatusChange, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT from_state, to_state, principal, created_at
+		SELECT from_state, to_state, principal, created_at, event_type
 		  FROM coord.audit_log
-		 WHERE work_item_id = $1::uuid AND event_type = 'state_transition'
+		 WHERE work_item_id = $1::uuid
+		   AND event_type IN ('state_transition', 'claim_acquired',
+		                      'reconcile_advanced', 'run_terminal')
 		 ORDER BY id DESC
 		 LIMIT $2`, workItemID, statusHistoryLimit)
 	if err != nil {
@@ -175,7 +196,7 @@ func readStatusHistory(ctx context.Context, db *sql.DB, workItemID string) ([]St
 	for rows.Next() {
 		var sc StatusChange
 		var from sql.NullString
-		if err := rows.Scan(&from, &sc.ToState, &sc.Principal, &sc.OccurredAt); err != nil {
+		if err := rows.Scan(&from, &sc.ToState, &sc.Principal, &sc.OccurredAt, &sc.EventType); err != nil {
 			return nil, fmt.Errorf("coord.ReadWorkItemThread: scan status history: %w", err)
 		}
 		sc.FromState = from.String

@@ -331,10 +331,19 @@ func (p *ProdClaimer) ClaimableCount(ctx context.Context) (int, error) {
 // claim_acquired audit row. ok=false, err=nil means the guard rejected us (a
 // live foreign lease, or the item left the claimable lane) — nothing changed.
 //
+// assigneeAgent (ISI-4237) is the AGENT attribution stamped on the checkout in
+// the SAME transaction, so a dispatched ticket is never observably claim-held
+// without its "who is working this". It is ATTRIBUTION, not custody: the
+// release/renew/reclaim guard family never reads it, and it deliberately
+// SURVIVES the terminal release (a settled ticket still shows which agent
+// worked it). Empty skips the stamp entirely — the 0001-only base spine chaos
+// gate provisions no assignee_agent column, so attribution stays strictly
+// opt-in per call site, exactly like the 0003 outbox capture.
+//
 // HAZARD — like ClaimNext, this is credential-BLIND and bypasses the Story 2.10
 // re-route hold (ISI-3083 Cursor F2). Use AcquireSpecificCredentialed on any
 // lane where rate-limit re-routing is active.
-func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, itemID, initiatedByUserID string) (string, int64, bool, error) {
+func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, itemID, initiatedByUserID, assigneeAgent string) (string, int64, bool, error) {
 	if principal == "" || runID == "" || itemID == "" {
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: principal, runID and itemID are required (got principal=%q runID=%q itemID=%q)", principal, runID, itemID)
 	}
@@ -355,6 +364,22 @@ func (p *ProdClaimer) AcquireSpecific(ctx context.Context, principal, runID, ite
 		return "", 0, false, nil // live foreign lease (or no such item): guard rejected
 	case err != nil:
 		return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: acquire: %w", err)
+	}
+
+	// ISI-4237 attribution stamp: same transaction as the acquire, guarded to
+	// the checkout row THIS acquire just rewrote (run + fresh fence), so the
+	// board's "who is working this" commits or rolls back with the claim —
+	// never a stamped agent on an unclaimed item.
+	if assigneeAgent != "" {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE coord.claim
+			   SET assignee_agent = $1
+			 WHERE work_item_id = $2::uuid
+			   AND run_id = $3::uuid
+			   AND fence_token = $4`,
+			assigneeAgent, itemID, runID, fence); err != nil {
+			return "", 0, false, fmt.Errorf("coord.ProdClaimer.AcquireSpecific: assignee: %w", err)
+		}
 	}
 
 	res, err := tx.ExecContext(ctx, p.mark, p.cfg.ClaimedState, itemID, p.cfg.ClaimableState)

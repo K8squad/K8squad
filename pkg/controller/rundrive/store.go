@@ -108,13 +108,16 @@ func (c *ProdClaims) State(ctx context.Context, workItemID string) (ClaimState, 
 // work item (ProdClaimer.AcquireSpecific under the operator principal) —
 // checkout rewrite (holder, run, fence bump, lease) + todo → in_progress lane
 // advance + claim_acquired audit + claimed outbox event, one transaction.
+// agentName (ISI-4237) additionally stamps the checkout's assignee_agent in
+// that same transaction — the board's "who is working this" for a dispatched
+// ticket; empty skips the stamp (no attribution, pre-4237 shape).
 // ok=false: the free-or-expired guard rejected us or the lane does not advance
 // — nothing changed.
-func (c *ProdClaims) Acquire(ctx context.Context, workItemID, runID string) (int64, bool, error) {
+func (c *ProdClaims) Acquire(ctx context.Context, workItemID, runID, agentName string) (int64, bool, error) {
 	if c.claimErr != nil {
 		return 0, false, c.claimErr
 	}
-	_, fence, ok, err := c.claimer.AcquireSpecific(ctx, c.principal, runID, workItemID, "")
+	_, fence, ok, err := c.claimer.AcquireSpecific(ctx, c.principal, runID, workItemID, "", agentName)
 	if err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.Acquire: %w", err)
 	}
@@ -245,6 +248,16 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
 		workItemID, runID, event, toState, fenceAfter); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: outbox: %w", event, err)
+	}
+
+	// ISI-4237 terminal settle: a terminal re-entry (FailEnter after the retry
+	// budget, CancelEnter) owes the board the same facts the machine's
+	// Terminal effect writes — lane move (failed/cancelled → todo) +
+	// state_transition audit + change-summary comment, in THIS transaction.
+	// RetryEnter maps to no lane (SettleLaneOf ""): a retry lap keeps the
+	// ticket in_progress by design.
+	if _, _, err := coord.SettleTerminalLane(ctx, tx, workItemID, runID, c.principal, toState); err != nil {
+		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: settle: %w", event, err)
 	}
 
 	if err := tx.Commit(); err != nil {

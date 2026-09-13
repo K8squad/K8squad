@@ -60,7 +60,7 @@ func applyCoordSchema(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
 		t.Fatalf("reset coord schema: %v", err)
 	}
-	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql"} {
+	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql", "0018_claim_assignee.sql"} {
 		var mig []byte
 		var err error
 		for _, c := range []string{

@@ -82,8 +82,8 @@ func (f *fakeClaims) State(context.Context, string) (ClaimState, bool, error) {
 	return f.state, f.found, f.stateErr
 }
 func (f *fakeClaims) LapsUsed(context.Context, string) (int, error) { return f.laps, f.lapsErr }
-func (f *fakeClaims) Acquire(_ context.Context, workItemID, runID string) (int64, bool, error) {
-	f.acquireCalls = append(f.acquireCalls, workItemID+"/"+runID)
+func (f *fakeClaims) Acquire(_ context.Context, workItemID, runID, agentName string) (int64, bool, error) {
+	f.acquireCalls = append(f.acquireCalls, workItemID+"/"+runID+"/"+agentName)
 	return f.acquireFence, f.acquireOK, f.acquireErr
 }
 func (f *fakeClaims) Renew(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
@@ -221,6 +221,9 @@ func newTestRun(uid, workItem string) *api.Run {
 			TeamRef:     api.ObjectRef{Name: "t"},
 			ProjectRef:  api.ObjectRef{Name: "p"},
 			WorkItemRef: workItem,
+			// ISI-4237: the dispatch attribution the drive stamps on the
+			// acquire — the board's "who is working this".
+			Agents: []api.ObjectRef{{Name: "sam"}},
 		},
 	}
 }
@@ -280,8 +283,8 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 		t.Fatalf("effects not driven: binds=%d dispatches=%v collects=%d", eff.binds, eff.dispatches, eff.collects)
 	}
 	if len(claims.acquireCalls) != 1 ||
-		claims.acquireCalls[0] != "wi-1/11111111-1111-1111-1111-111111111111" {
-		t.Fatalf("§6.2 acquire calls = %v, want exactly one for the driven run", claims.acquireCalls)
+		claims.acquireCalls[0] != "wi-1/11111111-1111-1111-1111-111111111111/sam" {
+		t.Fatalf("§6.2 acquire calls = %v, want exactly one for the driven run with its agent (ISI-4237)", claims.acquireCalls)
 	}
 }
 
