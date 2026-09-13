@@ -92,8 +92,13 @@ const leaderElectionID = "ksquad-operator.ksquad.io"
 
 // defaultSystemNamespace is where an OTelConfig auth Secret without an explicit
 // namespace is resolved. Overridable via $POD_NAMESPACE (the downward-API value
-// a pod is given), so the operator resolves Secrets in its own namespace.
-const defaultSystemNamespace = "ksquad-system"
+// a pod is given, stamped by the chart), so the operator resolves Secrets in its
+// own namespace. The literal matches the chart of record's namespace
+// ("k8squad-system"); the old value ("ksquad-system", no "8") had drifted from
+// the chart, so an unset POD_NAMESPACE resolved the Dynatrace auth Secret in a
+// non-existent namespace and every signal silently fell back to stdout
+// (ISI-4102/ISI-4146; same drift fixed for the Team reconciler below).
+const defaultSystemNamespace = "k8squad-system"
 
 // resolveTelemetryOptions performs the ONE-SHOT (restart-scoped, W6) read of the
 // cluster-scoped OTelConfig CR and folds its per-signal routing into opts before
