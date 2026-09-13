@@ -35,8 +35,10 @@ import (
 
 // TestSettleShowsAssigneeAndProgress drives the exact defect narrative:
 // acquire-with-agent → machine drive to succeeded → the board read reflects
-// agent attribution, the done lane, the state_transition history and the
-// summary comment.
+// agent attribution, the run_terminal progress in the statusHistory and the
+// change-summary comment — WITHOUT seizing the terminal lane (a succeeded
+// ticket stays in_progress; the move to done is the human's, and the engine
+// must not touch work_item on success — ISI-4298 / rundrive D1/D5/D6).
 func TestSettleShowsAssigneeAndProgress(t *testing.T) {
 	dsn := dsnOrFatal(t)
 	ctx := context.Background()
@@ -84,18 +86,20 @@ func TestSettleShowsAssigneeAndProgress(t *testing.T) {
 		t.Fatalf("Terminal: %v", err)
 	}
 
-	// (3) The board lane settled: in_progress → done.
+	// (3) The board lane is NOT seized on success: the ticket stays in_progress
+	// (the engine records completion but leaves the move to done to the human;
+	// touching work_item on success would break the ISI-4298 resume pin).
 	var state string
 	if err := db.QueryRowContext(ctx,
 		`SELECT state FROM coord.work_item WHERE id = $1::uuid`, wi).Scan(&state); err != nil {
 		t.Fatalf("read state: %v", err)
 	}
-	if state != "done" {
-		t.Fatalf("board lane = %q, want done (ISI-4237: terminal settle writes the terminal lane)", state)
+	if state != "in_progress" {
+		t.Fatalf("board lane = %q, want in_progress (ISI-4237: success records progress, does NOT seize the done lane)", state)
 	}
 
 	// (4) The statusHistory read surfaces the engine narrative: the
-	// claim_acquired lane move AND the settle's state_transition row.
+	// claim_acquired lane move AND the run_terminal completion row.
 	rd, err := coord.NewWorkItemReadStore(db)
 	if err != nil {
 		t.Fatalf("NewWorkItemReadStore: %v", err)
@@ -104,23 +108,24 @@ func TestSettleShowsAssigneeAndProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadWorkItemThread: %v", err)
 	}
-	var sawClaim, sawSettle bool
+	var sawClaim, sawTerminal bool
 	for _, sc := range thread.StatusHistory {
 		if sc.EventType == "claim_acquired" && sc.ToState == "in_progress" {
 			sawClaim = true
 		}
-		if sc.EventType == "state_transition" && sc.ToState == "done" {
-			sawSettle = true
+		if sc.EventType == "run_terminal" && sc.ToState == "succeeded" {
+			sawTerminal = true
 		}
 	}
-	if !sawClaim || !sawSettle {
-		t.Fatalf("statusHistory missing engine progress: claim=%v settle=%v (history=%+v)", sawClaim, sawSettle, thread.StatusHistory)
+	if !sawClaim || !sawTerminal {
+		t.Fatalf("statusHistory missing engine progress: claim=%v terminal=%v (history=%+v)", sawClaim, sawTerminal, thread.StatusHistory)
 	}
 
-	// (5) The change summary comment landed, agent-attributed.
+	// (5) The change summary comment landed, agent-attributed, reporting the
+	// success without claiming a lane move.
 	var sawSummary bool
 	for _, c := range thread.Comments {
-		if c.Author == "ksquad-operator" && contains(c.Body, "agent sam") && contains(c.Body, "done") {
+		if c.Author == "ksquad-operator" && contains(c.Body, "agent sam") && contains(c.Body, "Run succeeded") {
 			sawSummary = true
 		}
 	}
@@ -150,8 +155,8 @@ func TestSettleShowsAssigneeAndProgress(t *testing.T) {
 	for _, it := range items {
 		if it.ID == wi {
 			found = true
-			if it.Assignee != "sam" || it.State != "done" {
-				t.Fatalf("board card = %+v, want assignee sam in lane done", it)
+			if it.Assignee != "sam" || it.State != "in_progress" {
+				t.Fatalf("board card = %+v, want assignee sam in lane in_progress", it)
 			}
 		}
 	}
@@ -216,9 +221,12 @@ func TestSettleRespectsHumanLaneMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	lane, moved, err := coord.SettleTerminalLane(ctx, tx, wi, "", "ksquad-operator", "succeeded")
+	// A failed settle would move in_progress → todo, but the human already
+	// moved the card to in_review — the guard (WHERE state = 'in_progress')
+	// must leave it untouched.
+	lane, moved, err := coord.SettleTerminalLane(ctx, tx, wi, "", "ksquad-operator", "failed")
 	if err != nil {
-		t.Fatalf("SettleTerminalLane(succeeded over in_review): %v", err)
+		t.Fatalf("SettleTerminalLane(failed over in_review): %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatalf("commit: %v", err)
