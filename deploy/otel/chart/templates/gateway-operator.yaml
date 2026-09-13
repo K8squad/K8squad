@@ -36,6 +36,13 @@ spec:
   volumes:
     - name: otelcol-state
       emptyDir: {}
-  config: |
+  # spec.config MUST be a structured mapping, not a YAML literal-block string
+  # (ISI-4377). It was a string only under opentelemetry.io/v1alpha1; the live
+  # CRD is v1beta1, whose schema types spec.config as `object`. A `config: |`
+  # block renders well-formed YAML text that `helm template` accepts, but a
+  # v1beta1 apiserver rejects it ("expected map, got string"). Nesting the
+  # shared gatewayConfig under `config:` as an object makes the chart directly
+  # helm-applyable — no one-off string→object transform on deploy.
+  config:
     {{- include "k8squad-otel.gatewayConfig" . | nindent 4 }}
 {{- end }}
