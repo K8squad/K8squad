@@ -53,10 +53,13 @@ type TaskDetail struct {
 	ChangeRefs []ChangeRef
 	// Claim/fence state (coord.claim). FenceToken is the §6.2 monotonic token
 	// every artifact write is checked against; Holder is the current lease
-	// holder principal (empty ⇒ unclaimed); RunID is the holding run.
+	// holder principal (empty ⇒ unclaimed); RunID is the holding run;
+	// Assignee is the agent attribution of the current/last attempt
+	// (assignee_agent, ISI-4237 — survives the terminal release).
 	FenceToken int64
 	Holder     string
 	RunID      string
+	Assignee   string
 }
 
 // ReadTaskDetail reads the richer detail for one work item. It is read-only and
@@ -75,6 +78,7 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 		blockedReason sql.NullString
 		holder        sql.NullString
 		runID         sql.NullString
+		assignee      sql.NullString
 		fence         sql.NullInt64
 	)
 	// One row: the item joined to its (always-present, 0001 trigger-provisioned)
@@ -82,12 +86,12 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	// missing (reads as unclaimed/fence 0 rather than erroring).
 	err := db.QueryRowContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.body, wi.state, wi.blocked_reason,
-		       c.holder_principal, c.run_id::text, c.fence_token
+		       c.holder_principal, c.run_id::text, c.fence_token, c.assignee_agent
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid`, workItemID).
 		Scan(&td.WorkItemID, &td.Title, &body, &td.State, &blockedReason,
-			&holder, &runID, &fence)
+			&holder, &runID, &fence, &assignee)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return TaskDetail{}, ErrWorkItemNotFound
@@ -99,6 +103,7 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	td.Holder = holder.String
 	td.RunID = runID.String
 	td.FenceToken = fence.Int64
+	td.Assignee = assignee.String
 
 	comments, err := readComments(ctx, db, workItemID)
 	if err != nil {

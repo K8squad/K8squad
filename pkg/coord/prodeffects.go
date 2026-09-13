@@ -505,7 +505,9 @@ func (e *ProdEffects) collectBuildSnapshot() {
 
 // Terminal records a terminal transition (succeeded/failed/cancelled) as a §6.5
 // audit row — and RELEASES the §6.2 checkout (ISI-4183: claim_released on
-// terminal). The machine calls Terminal only when the step-advance INTO the
+// terminal) and SETTLES the board lane (ISI-4237: lane move + state_transition
+// audit + change-summary comment via SettleTerminalLane, same transaction).
+// The machine calls Terminal only when the step-advance INTO the
 // terminal step committed (runPhase: `if s.Advance(...) && IsTerminal(next)`),
 // and Advance is the exactly-once serialization point — so a plain append is
 // at-most-once per committed terminal advance (no separate dedup marker
@@ -514,8 +516,9 @@ func (e *ProdEffects) collectBuildSnapshot() {
 // holder and lease cleared, guarded to THIS run's checkout
 // (holder_principal/run_id match) so a terminal advance raced by a reclaim
 // releases nothing and writes no claim_released row. The run_terminal audit,
-// the release and the claim_released audit are ONE transaction: a terminal
-// step with a live lease can never be observed.
+// the release, the claim_released audit and the settle are ONE transaction: a
+// terminal step with a live lease, or a settled run with an unsettled ticket,
+// can never be observed.
 func (e *ProdEffects) Terminal(s reconcile.Step) {
 	if e.err != nil {
 		return
@@ -577,6 +580,17 @@ func (e *ProdEffects) Terminal(s reconcile.Step) {
 			e.fail(fmt.Errorf("coord.ProdEffects.Terminal: claim_released audit: %w", err))
 			return
 		}
+	}
+
+	// ISI-4237 terminal settle: the board reflects the engine — the ticket's
+	// lane moves (succeeded → done, failed/cancelled → todo) with a
+	// state_transition audit row (lands in the board statusHistory) and the
+	// one-line change summary comment on the thread, all in THIS transaction:
+	// a settled run can never be observed with its ticket still zombie
+	// in_progress. A human lane move raced ahead of the settle is respected.
+	if _, _, err := SettleTerminalLane(e.ctx, tx, e.workItemID, e.runID, e.principal, string(s)); err != nil {
+		e.fail(fmt.Errorf("coord.ProdEffects.Terminal: settle: %w", err))
+		return
 	}
 
 	if err := tx.Commit(); err != nil {

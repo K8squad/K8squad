@@ -59,8 +59,8 @@ func TestClaimGateAcquiresThenDrives(t *testing.T) {
 	if _, err := runOnce(t, d, key); err != nil {
 		t.Fatalf("drive: %v", err)
 	}
-	if len(claims.acquireCalls) != 1 || claims.acquireCalls[0] != "51510000-0000-0000-0000-000000000e7e/"+gateRunUID {
-		t.Fatalf("acquire calls = %v, want exactly [51510000-0000-0000-0000-000000000e7e/%s]", claims.acquireCalls, gateRunUID)
+	if len(claims.acquireCalls) != 1 || claims.acquireCalls[0] != "51510000-0000-0000-0000-000000000e7e/"+gateRunUID+"/sam" {
+		t.Fatalf("acquire calls = %v, want exactly [51510000-0000-0000-0000-000000000e7e/%s/sam] (agent attribution, ISI-4237)", claims.acquireCalls, gateRunUID)
 	}
 	if store.step != reconcile.StepSucceeded {
 		t.Fatalf("durable step = %q, want succeeded (the drive follows the acquire)", store.step)

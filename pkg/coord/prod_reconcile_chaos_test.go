@@ -71,9 +71,10 @@ func migrationFile(t *testing.T, name string) string {
 	return ""
 }
 
-// seedItem resets the coord schema (0001 + 0002 + 0003_coord_outbox + 0005), inserts one work_item (its
-// trigger auto-provisions the claim row at step 'pending', fence 0) and returns a
-// Store bound to it plus its uuid.
+// seedItem resets the coord schema (0001 + 0002 + 0003_coord_outbox + 0005 +
+// 0017 assignee attribution), inserts one work_item (its
+// trigger auto-provisions the claim row at step 'pending', fence 0) and returns
+// a Store bound to it plus its uuid.
 func seedItem(t *testing.T, ctx context.Context, dsn string) (*coord.ProdReconcileStore, string) {
 	t.Helper()
 	db := openDB(t, dsn)
@@ -85,6 +86,7 @@ func seedItem(t *testing.T, ctx context.Context, dsn string) (*coord.ProdReconci
 		"0002_coord_dispatch.sql",
 		"0003_coord_outbox.sql",
 		"0005_reconcile_step.sql",
+		"0018_claim_assignee.sql",
 	} {
 		if _, err := db.ExecContext(ctx, migrationFile(t, name)); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
