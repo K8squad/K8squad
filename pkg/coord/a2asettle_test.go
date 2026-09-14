@@ -156,3 +156,75 @@ func TestNewProdSettleWriter_Validation(t *testing.T) {
 		t.Fatal("empty principal must error")
 	}
 }
+
+// The S2 reader (ADR-0020 §2.3): Settled is a single indexed EXISTS over
+// idx_a2a_dispatch_settled — true when any lap of the run carries the marker,
+// false when none does, and a query failure surfaces (the reaper fails closed on
+// an error). Keyed by run_id::uuid.
+func TestSettleReader_Settled(t *testing.T) {
+	cases := []struct {
+		name string
+		rows bool
+		want bool
+	}{
+		{"settled", true, true},
+		{"not-settled", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			mock.ExpectQuery("SELECT EXISTS").
+				WithArgs(stRun).
+				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(tc.rows))
+
+			r, err := coord.NewProdSettleReader(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := r.Settled(context.Background(), stRun)
+			if err != nil {
+				t.Fatalf("Settled: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("Settled = %v, want %v", got, tc.want)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unexpected DB interaction: %v", err)
+			}
+		})
+	}
+}
+
+func TestSettleReader_QueryErrorSurfaces(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("SELECT EXISTS").
+		WithArgs(stRun).
+		WillReturnError(errors.New("connection reset"))
+
+	r, err := coord.NewProdSettleReader(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Settled(context.Background(), stRun); err == nil {
+		t.Fatal("a query failure must surface (reaper fails closed on error)")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected DB interaction: %v", err)
+	}
+}
+
+func TestNewProdSettleReader_Validation(t *testing.T) {
+	if _, err := coord.NewProdSettleReader(nil); err == nil {
+		t.Fatal("nil db must error")
+	}
+}

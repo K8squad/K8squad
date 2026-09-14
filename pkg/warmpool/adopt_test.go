@@ -161,7 +161,7 @@ func TestAdoptOrReapAdoptsWarmReapsStaleLeavesRunOwned(t *testing.T) {
 	bootWarmPod(t, ctx, c, kp, kataKey, "unmanaged-key", 2, true)
 
 	pool := warmpool.NewPool(newFakeProvisioner())
-	report, err := warmpool.AdoptOrReap(ctx, c, pool, gvisorKey)
+	report, err := warmpool.AdoptOrReap(ctx, c, pool, nil, nil, gvisorKey)
 	if err != nil {
 		t.Fatalf("adopt-or-reap: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestAdoptOrReapAdoptedPoolNeedsNoReplacementBoot(t *testing.T) {
 
 	fp := newFakeProvisioner()
 	pool := warmpool.NewPool(fp)
-	report, err := warmpool.AdoptOrReap(ctx, c, pool, gvisorKey)
+	report, err := warmpool.AdoptOrReap(ctx, c, pool, nil, nil, gvisorKey)
 	if err != nil {
 		t.Fatalf("adopt-or-reap: %v", err)
 	}

@@ -80,7 +80,40 @@ const (
 	AnnPoolNamespace      = "k8squad.io/pool-namespace"
 	AnnPoolCapabilityHash = "k8squad.io/pool-capability-hash"
 	AnnPoolProjectPVC     = "k8squad.io/pool-project-pvc"
+
+	// AnnRunID carries the Run's id on a run-owned sandbox pod (ADR-0020 §2.3,
+	// ISI-4348-S2). Boot stamps only the pool-key dimensions above — a warm pod
+	// has no Run — so the Bind-path credential writer stamps this at Bind, the
+	// same instant it writes the task-io Secret that marks the pod run-owned.
+	// The restart-safe reaper reads it back (runIDFromPod) to ask the settlement
+	// reader "did this run's follow settle?".
+	AnnRunID = "k8squad.io/run-id"
 )
+
+// SettlementReader answers whether a run's a2a follow has durably settled
+// (ADR-0020 §2.1 marker on coord.a2a_dispatch). The restart-safe reaper needs
+// exactly this one bit; pkg/coord's ProdSettleReader satisfies it. Kept as a
+// local interface so warmpool stays free of a coord/DB import.
+type SettlementReader interface {
+	Settled(ctx context.Context, runID string) (bool, error)
+}
+
+// FollowOracle reports whether a live follow goroutine exists for runID in THIS
+// operator process — the ADR-0020 §2.3 liveness half of the reap proof.
+// internal/a2a.Dispatcher.IsFollowing satisfies it. Local interface for the same
+// decoupling reason as SettlementReader.
+type FollowOracle interface {
+	IsFollowing(runID string) bool
+}
+
+// runIDFromPod recovers the Run id AnnRunID stamped on a run-owned pod at Bind.
+// Empty when absent — a pre-ADR-0020 pod, or a bound pod whose stamp write
+// raced/failed. An empty run id fails the reap decision CLOSED (kept, never
+// reaped): without a provable run id the reaper cannot query settlement, and a
+// pod that MIGHT belong to a live Run is never killed on a maybe.
+func runIDFromPod(pod *corev1.Pod) string {
+	return pod.Annotations[AnnRunID]
+}
 
 // AdoptReport is the one-pass outcome AdoptOrReap returns (logged by the
 // operator at startup — the restart-churn observable).
@@ -123,7 +156,7 @@ func poolKeyFromAnnotations(pod *corev1.Pod) (PoolKey, bool) {
 // inventory and no replacement set is booted. Per-pod failures are
 // collected into the returned error and do not abort the pass (a wedged
 // pod must not shield the others from their disposition).
-func AdoptOrReap(ctx context.Context, c client.Client, pool *Pool, managed ...PoolKey) (AdoptReport, error) {
+func AdoptOrReap(ctx context.Context, c client.Client, pool *Pool, settled SettlementReader, following FollowOracle, managed ...PoolKey) (AdoptReport, error) {
 	managedSet := make(map[PoolKey]struct{}, len(managed))
 	for _, k := range managed {
 		managedSet[k] = struct{}{}
@@ -160,7 +193,21 @@ func AdoptOrReap(ctx context.Context, c client.Client, pool *Pool, managed ...Po
 				err := c.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: pod.Name}, &secret)
 				switch {
 				case err == nil:
-					report.LeftRunOwned++
+					// Run-owned pod. ADR-0020 §2.3: reap it iff its follow has
+					// durably settled AND no live follow exists in this process
+					// — a leaked-across-restart sandbox. Otherwise leave it: the
+					// agent may still be working, or it settled but is still
+					// following (steady state, OnDone will release it).
+					reaped, derr := reapIfSettled(ctx, c, pod, settled, following)
+					if derr != nil {
+						errs = append(errs, derr)
+						continue // reader/delete error: keep — never reap on a maybe
+					}
+					if reaped {
+						report.Reaped++
+					} else {
+						report.LeftRunOwned++
+					}
 					continue
 				case !apierrors.IsNotFound(err):
 					errs = append(errs, fmt.Errorf("warmpool.AdoptOrReap: check task-io secret for %s/%s: %w", pod.Namespace, pod.Name, err))
@@ -189,6 +236,102 @@ func AdoptOrReap(ctx context.Context, c client.Client, pool *Pool, managed ...Po
 			continue
 		}
 		report.Reaped++
+	}
+	return report, errors.Join(errs...)
+}
+
+// reapIfSettled applies the ADR-0020 §2.3 restart-safe reap decision to ONE
+// run-owned pod (task-io Secret already confirmed present by the caller). It
+// reaps — foreground delete, which also drops the Secret — iff the pod's run is
+// durably settled AND has no live follow in this process, and reports whether it
+// did. Every uncertain case fails CLOSED to "keep" (reaped=false, err=nil): no
+// stamped run id, a nil reader/oracle, a run not yet settled, or a still-live
+// follow all leave the pod for the run-drive lifecycle. Only a settlement-reader
+// error or a delete failure returns err (the caller keeps the pod and records
+// the error) — never reap on a maybe (F3: protect an agent still working).
+func reapIfSettled(ctx context.Context, c client.Client, pod *corev1.Pod, settled SettlementReader, following FollowOracle) (bool, error) {
+	if settled == nil || following == nil {
+		return false, nil // reaper not wired: leave run-owned pods to run-drive
+	}
+	runID := runIDFromPod(pod)
+	if runID == "" {
+		return false, nil // no provable run id ⇒ cannot check settlement ⇒ keep
+	}
+	isSettled, err := settled.Settled(ctx, runID)
+	if err != nil {
+		return false, fmt.Errorf("warmpool: settlement check for run %s (pod %s/%s): %w", runID, pod.Namespace, pod.Name, err)
+	}
+	if !isSettled {
+		return false, nil // agent may still be working across the restart (F3)
+	}
+	if following.IsFollowing(runID) {
+		return false, nil // a live follow owns it here — steady state, not leaked
+	}
+	// Settled ⇒ the follow reached completion; not-following ⇒ none is in flight
+	// in this process ⇒ the agent finished and the pod leaked. Safe to reap.
+	if err := reapPod(ctx, c, pod); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// SweepSettledRunOwned is the ADR-0020 §2.3 steady-state backstop for the
+// warm-pool Tick. AdoptOrReap catches the common crash-recovery case on the new
+// leader's first pass; this sweep re-checks run-owned sandbox pods on the tick
+// cadence so a pod that settles AFTER that pass — or one whose OnDone in-memory
+// Release failed and left the Secret — is still reclaimed. It is deliberately
+// narrower than AdoptOrReap: it ONLY reaps settled-and-not-following run-owned
+// pods and NEVER adopts, scales, or reaps anything else (orphan/unproven-key
+// disposition stays AdoptOrReap's job, run once at start). One indexed
+// settlement query per run-owned pod; per-pod failures are collected, not fatal.
+func SweepSettledRunOwned(ctx context.Context, c client.Client, settled SettlementReader, following FollowOracle, managed ...PoolKey) (AdoptReport, error) {
+	if settled == nil || following == nil {
+		return AdoptReport{}, nil // reaper not wired
+	}
+	managedSet := make(map[PoolKey]struct{}, len(managed))
+	for _, k := range managed {
+		managedSet[k] = struct{}{}
+	}
+
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.MatchingLabels{SandboxAppLabel: SandboxAppValue}); err != nil {
+		return AdoptReport{}, fmt.Errorf("warmpool.SweepSettledRunOwned: list sandbox pods: %w", err)
+	}
+
+	var report AdoptReport
+	var errs []error
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil {
+			continue // already terminating
+		}
+		key, proven := poolKeyFromAnnotations(pod)
+		if !proven {
+			continue // orphan/unproven key — AdoptOrReap's job, not the backstop's
+		}
+		if _, managedKey := managedSet[key]; !managedKey {
+			continue // config drift — left to AdoptOrReap
+		}
+		// Run-ownership discriminator, same as AdoptOrReap: only a pod carrying
+		// its task-io Secret is a Run's sandbox worth the settlement check.
+		var secret corev1.Secret
+		switch err := c.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: pod.Name}, &secret); {
+		case apierrors.IsNotFound(err):
+			continue // not run-owned (warm/adoptable) — not this sweep's concern
+		case err != nil:
+			errs = append(errs, fmt.Errorf("warmpool.SweepSettledRunOwned: check task-io secret for %s/%s: %w", pod.Namespace, pod.Name, err))
+			continue
+		}
+		reaped, derr := reapIfSettled(ctx, c, pod, settled, following)
+		if derr != nil {
+			errs = append(errs, derr)
+			continue
+		}
+		if reaped {
+			report.Reaped++
+		} else {
+			report.LeftRunOwned++
+		}
 	}
 	return report, errors.Join(errs...)
 }

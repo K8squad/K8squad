@@ -716,6 +716,44 @@ func main() {
 				}
 			}
 			warmController.SetCapacity(kubepool.KubeCapacitySource(mgr.GetClient()), warmCapacityCfg)
+
+			// ISI-4348-S2 (ADR-0020 §2.3): the restart-safe settled-follow
+			// reaper deps. reaperDeps resolves the (settlement reader, follow
+			// oracle) pair NIL-SAFELY at CALL time — a2aDispatcher is assigned
+			// later in this wiring, so an eager capture would pin nil, and a
+			// typed-nil *Dispatcher handed to the FollowOracle interface would
+			// pass a nil-interface guard yet panic on the first method call.
+			// A nil in either slot makes the reaper fail closed (keep all
+			// run-owned pods) — never a wrongful reap on a mis-wired operator.
+			settleReader, srerr := coord.NewProdSettleReader(db)
+			if srerr != nil {
+				ctrl.Log.Error(srerr, "warm-pool settled-follow reaper disabled: no settlement reader (run-owned pods leaked across a restart will not be reaped)")
+				settleReader = nil
+			}
+			reaperDeps := func() (kubepool.SettlementReader, kubepool.FollowOracle) {
+				var sr kubepool.SettlementReader
+				if settleReader != nil {
+					sr = settleReader
+				}
+				var fo kubepool.FollowOracle
+				if a2aDispatcher != nil {
+					fo = a2aDispatcher
+				}
+				return sr, fo
+			}
+			// The steady-state backstop (ADR-0020 §2.3): each Tick sweeps
+			// run-owned pods that settled AFTER AdoptOrReap's start pass, or
+			// whose OnDone in-memory Release failed and left the Secret.
+			warmController.SetSettledReaper(func(ctx context.Context) {
+				sr, fo := reaperDeps()
+				rep, err := kubepool.SweepSettledRunOwned(ctx, mgr.GetClient(), sr, fo, warmKey)
+				if err != nil {
+					ctrl.Log.Error(err, "warm-pool settled-follow reaper backstop had per-pod failures")
+				}
+				if rep.Reaped > 0 {
+					ctrl.Log.Info("warm-pool settled-follow reaper backstop reclaimed leaked run-owned sandboxes", "reaped", rep.Reaped)
+				}
+			})
 			// ISI-4291: restart reconciliation BEFORE the first tick —
 			// the pool's inventory is in-memory only, so without this
 			// pass a restart orphans the previous generation's warm pods
@@ -731,7 +769,8 @@ func main() {
 			// group (arch §5.2 — one owner, no racing resizers): the loop
 			// runs only on the elected leader, after the caches sync.
 			if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
-				report, err := kubepool.AdoptOrReap(ctx, mgr.GetClient(), pool, warmKey)
+				sr, fo := reaperDeps()
+				report, err := kubepool.AdoptOrReap(ctx, mgr.GetClient(), pool, sr, fo, warmKey)
 				if err != nil {
 					// Best-effort by design: a wedged pod must not block
 					// replenishment. The controller still enforces the

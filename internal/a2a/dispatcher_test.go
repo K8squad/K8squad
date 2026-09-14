@@ -89,6 +89,51 @@ func TestDispatcherAsyncFollowSettles(t *testing.T) {
 	}
 }
 
+// IsFollowing is the ADR-0020 §2.3 (ISI-4348-S2) liveness oracle: true from
+// Submit spawning the follow until that follow's OnDone returns, false before
+// and after. Critically it must stay TRUE for the whole OnDone body — that is
+// the window the durable settlement marker is written in, and a reaper that saw
+// "settled AND not-following" mid-OnDone could race the release. This blocks
+// inside OnDone to pin every transition deterministically.
+func TestDispatcherIsFollowingTracksLiveFollow(t *testing.T) {
+	fs := &fakeShim{
+		autoClose: true,
+		terminal:  wire.Status{State: wire.TaskCompleted, LastSeq: 1},
+		events:    []wire.Event{statusEvent(1, wire.TaskCompleted)},
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	d := &clienta2a.Dispatcher{
+		Client: clienta2a.New(clienta2a.NewEngineTransport(fs)),
+		Builder: func(_ context.Context, a2aTaskID, _ string) (wire.Task, error) {
+			return wire.Task{A2ATaskID: a2aTaskID, WorkItemID: "wi-1"}, nil
+		},
+		OnDone: func(_, _ string, _ clienta2a.Result, _ error) {
+			close(entered)
+			<-release // hold the follow open inside the settlement window
+		},
+	}
+
+	if d.IsFollowing("run-9") {
+		t.Fatal("IsFollowing true before Submit")
+	}
+	if err := d.Submit(context.Background(), "run-9", "run-9"); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	<-entered // OnDone is running ⇒ the follow goroutine is live
+	if !d.IsFollowing("run-9") {
+		t.Fatal("IsFollowing false while OnDone in flight — the settle window is unprotected")
+	}
+	if d.IsFollowing("other-run") {
+		t.Fatal("IsFollowing true for an unrelated run")
+	}
+	close(release)
+	d.Wait()
+	if d.IsFollowing("run-9") {
+		t.Fatal("IsFollowing true after the follow completed — not decremented")
+	}
+}
+
 // SettleOutcome maps a completed follow onto the closed set coord's marker CHECK
 // admits (ADR-0020 §2.1): a follow error is follow_error regardless of state;
 // a clean Completed is succeeded; every other clean terminal state is failed.
