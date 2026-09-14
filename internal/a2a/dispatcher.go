@@ -58,8 +58,11 @@ type Dispatcher struct {
 	SinkFor func(runID string) EventSink
 	// OnDone, if set, is invoked with the terminal Result (or follow error) when
 	// a background follow completes — the seam for run-status settlement and
-	// usage metering. It runs on the follow goroutine.
-	OnDone func(runID string, res Result, err error)
+	// usage metering. It runs on the follow goroutine. It carries the a2aTaskID
+	// (the per-lap dispatch key, run_id or run_id#lapN) alongside the runID so
+	// the durable follow-settlement marker (ADR-0020, ISI-4348) keys the exact
+	// lap that settled, not just the run.
+	OnDone func(a2aTaskID, runID string, res Result, err error)
 
 	follows sync.WaitGroup
 }
@@ -95,7 +98,7 @@ func (d *Dispatcher) Submit(ctx context.Context, a2aTaskID, runID string) error 
 		defer d.follows.Done()
 		res, ferr := d.Client.Follow(bg, sess, d.sinkFor(runID))
 		if d.OnDone != nil {
-			d.OnDone(runID, res, ferr)
+			d.OnDone(a2aTaskID, runID, res, ferr)
 		}
 	}()
 	return nil
@@ -105,6 +108,26 @@ func (d *Dispatcher) Submit(ctx context.Context, a2aTaskID, runID string) error 
 // graceful-shutdown / test barrier; the controller calls it on drain so a Run's
 // SSE is fully flushed to run_events before the process exits.
 func (d *Dispatcher) Wait() { d.follows.Wait() }
+
+// SettleOutcome maps a completed follow onto its durable follow-settlement
+// outcome (ADR-0020 §2.1). The three results are exactly the closed set the
+// coord marker's CHECK admits — 'succeeded' | 'failed' | 'follow_error' (keep in
+// lockstep with coord.SettleOutcome* and migration 0019):
+//   - a follow ERROR is 'follow_error': an SSE/transport failure is NOT proof the
+//     agent finished, so the OnDone release path leaves the pod in place — but
+//     the durable marker still records that the follow ended, so the S2 reaper is
+//     not blind to it.
+//   - a clean terminal follow is 'succeeded' iff the task reached Completed, and
+//     'failed' for every other terminal state (failed/canceled).
+func SettleOutcome(res Result, followErr error) string {
+	if followErr != nil {
+		return "follow_error"
+	}
+	if res.Status.State == wire.TaskCompleted {
+		return "succeeded"
+	}
+	return "failed"
+}
 
 func (d *Dispatcher) sink() EventSink {
 	if d.Sink == nil {

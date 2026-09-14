@@ -44,9 +44,10 @@ func TestDispatcherAsyncFollowSettles(t *testing.T) {
 
 	var builtTask, builtRun string
 	var done struct {
-		runID string
-		res   clienta2a.Result
-		err   error
+		a2aTaskID string
+		runID     string
+		res       clienta2a.Result
+		err       error
 	}
 	d := &clienta2a.Dispatcher{
 		Client: clienta2a.New(clienta2a.NewEngineTransport(fs)),
@@ -55,8 +56,8 @@ func TestDispatcherAsyncFollowSettles(t *testing.T) {
 			return wire.Task{A2ATaskID: a2aTaskID, WorkItemID: "wi-1"}, nil
 		},
 		Sink: sink,
-		OnDone: func(runID string, res clienta2a.Result, err error) {
-			done.runID, done.res, done.err = runID, res, err
+		OnDone: func(a2aTaskID, runID string, res clienta2a.Result, err error) {
+			done.a2aTaskID, done.runID, done.res, done.err = a2aTaskID, runID, res, err
 		},
 	}
 
@@ -74,6 +75,9 @@ func TestDispatcherAsyncFollowSettles(t *testing.T) {
 	if done.runID != "run-1" {
 		t.Fatalf("OnDone runID = %q, want run-1", done.runID)
 	}
+	if done.a2aTaskID != "run-1" {
+		t.Fatalf("OnDone a2aTaskID = %q, want run-1", done.a2aTaskID)
+	}
 	if done.res.Status.State != wire.TaskCompleted {
 		t.Fatalf("OnDone state = %q, want completed", done.res.Status.State)
 	}
@@ -82,6 +86,31 @@ func TestDispatcherAsyncFollowSettles(t *testing.T) {
 	}
 	if len(sink.events) != 3 {
 		t.Fatalf("sink saw %d events, want 3", len(sink.events))
+	}
+}
+
+// SettleOutcome maps a completed follow onto the closed set coord's marker CHECK
+// admits (ADR-0020 §2.1): a follow error is follow_error regardless of state;
+// a clean Completed is succeeded; every other clean terminal state is failed.
+func TestSettleOutcome(t *testing.T) {
+	cases := []struct {
+		name string
+		res  clienta2a.Result
+		err  error
+		want string
+	}{
+		{"clean completed", clienta2a.Result{Status: wire.Status{State: wire.TaskCompleted}}, nil, "succeeded"},
+		{"clean failed", clienta2a.Result{Status: wire.Status{State: wire.TaskFailed}}, nil, "failed"},
+		{"clean canceled", clienta2a.Result{Status: wire.Status{State: wire.TaskCanceled}}, nil, "failed"},
+		{"follow error over completed", clienta2a.Result{Status: wire.Status{State: wire.TaskCompleted}}, errors.New("sse blip"), "follow_error"},
+		{"follow error empty", clienta2a.Result{}, errors.New("eof"), "follow_error"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := clienta2a.SettleOutcome(c.res, c.err); got != c.want {
+				t.Fatalf("SettleOutcome = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
