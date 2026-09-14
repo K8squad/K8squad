@@ -43,6 +43,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
 // The closed set of a2a follow-settlement outcomes (ADR-0020 §2.1). These are the
@@ -182,4 +184,48 @@ func (r *ProdSettleReader) Settled(ctx context.Context, runID string) (bool, err
 		return false, fmt.Errorf("coord.ProdSettleReader.Settled: query run %s: %w", runID, err)
 	}
 	return settled, nil
+}
+
+// SettledForWorkItem is the S3 read path (ADR-0020 §2.4, ISI-4403). Keyed by a
+// Run's spec.workItemRef — which IS coord.a2a_dispatch.work_item_id (0005: the
+// driver parses it as a uuid and hands the SAME id to the reconcile-step reader,
+// ADR-001) — it answers BOTH questions the Run status projector needs to hold the
+// phase honest across the a2a finalize window:
+//
+//   - dispatched=false → no a2a_dispatch row for this work item: the Run is not an
+//     a2a follow (or was never dispatched). There is no finalize window, so the
+//     projector flips to the terminal phase on the durable step alone. A "" or a
+//     non-uuid workItemID (ISI-4354, a malformed ref on a pre-validation CR) is
+//     likewise dispatched=false WITHOUT touching the DB — the ::uuid cast would
+//     otherwise reject it (22P02) and stall the projector in error backoff.
+//   - dispatched=true, settled=false → a follow is in flight (dispatched, not yet
+//     observed to complete): the finalize window is open, hold the phase at Running.
+//   - dispatched=true, settled=true → the follow completed durably. A run may have
+//     several laps (a re-drive mints run_id#lapN, §8); the question is "did this
+//     run's follow reach completion at all", so bool_or across laps answers yes.
+//
+// One indexed aggregate scan rides idx_a2a_dispatch_run (work_item_id leading,
+// 0005) — count/bool_or over the empty set yield (0, NULL→false), so the query
+// returns exactly one row and never sql.ErrNoRows.
+func (r *ProdSettleReader) SettledForWorkItem(ctx context.Context, workItemID string) (dispatched, settled bool, err error) {
+	if r == nil || r.db == nil {
+		return false, false, errors.New("coord.ProdSettleReader: nil db")
+	}
+	if workItemID == "" {
+		return false, false, nil
+	}
+	if _, perr := uuid.Parse(workItemID); perr != nil {
+		return false, false, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT count(*) > 0, COALESCE(bool_or(settled_at IS NOT NULL), false)
+		  FROM coord.a2a_dispatch
+		 WHERE work_item_id = $1::uuid`,
+		workItemID).Scan(&dispatched, &settled); err != nil {
+		return false, false, fmt.Errorf("coord.ProdSettleReader.SettledForWorkItem: query work item %s: %w", workItemID, err)
+	}
+	return dispatched, settled, nil
 }

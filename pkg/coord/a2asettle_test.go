@@ -228,3 +228,98 @@ func TestNewProdSettleReader_Validation(t *testing.T) {
 		t.Fatal("nil db must error")
 	}
 }
+
+// The S3 read path (ADR-0020 §2.4, ISI-4403): SettledForWorkItem returns the
+// (dispatched, settled) pair from one aggregate scan of coord.a2a_dispatch keyed
+// by work_item_id::uuid. count>0 is dispatched; bool_or(settled_at IS NOT NULL)
+// is settled across §8 retry laps.
+func TestSettleReader_SettledForWorkItem(t *testing.T) {
+	cases := []struct {
+		name         string
+		dispatched   bool
+		settled      bool
+		wantDispatch bool
+		wantSettled  bool
+	}{
+		{"dispatched-and-settled", true, true, true, true},
+		{"dispatched-in-flight", true, false, true, false},
+		{"never-dispatched", false, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			mock.ExpectQuery("FROM coord.a2a_dispatch").
+				WithArgs(stItem).
+				WillReturnRows(sqlmock.NewRows([]string{"dispatched", "settled"}).
+					AddRow(tc.dispatched, tc.settled))
+
+			r, err := coord.NewProdSettleReader(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotD, gotS, err := r.SettledForWorkItem(context.Background(), stItem)
+			if err != nil {
+				t.Fatalf("SettledForWorkItem: %v", err)
+			}
+			if gotD != tc.wantDispatch || gotS != tc.wantSettled {
+				t.Fatalf("SettledForWorkItem = (%v,%v), want (%v,%v)",
+					gotD, gotS, tc.wantDispatch, tc.wantSettled)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unexpected DB interaction: %v", err)
+			}
+		})
+	}
+}
+
+// A "" or non-uuid workItemRef (ISI-4354: a malformed ref on a pre-validation CR)
+// short-circuits to (false,false) WITHOUT touching the DB — the ::uuid cast would
+// otherwise reject it (22P02) and stall the projector in error backoff.
+func TestSettleReader_SettledForWorkItem_BadKeyNoDBTouch(t *testing.T) {
+	for _, id := range []string{"", "not-a-uuid"} {
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, err := coord.NewProdSettleReader(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, s, err := r.SettledForWorkItem(context.Background(), id)
+		if err != nil || d || s {
+			t.Fatalf("id %q: got (%v,%v,%v), want (false,false,nil) with no DB touch", id, d, s, err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("id %q: DB was touched: %v", id, err)
+		}
+		db.Close()
+	}
+}
+
+func TestSettleReader_SettledForWorkItem_QueryErrorSurfaces(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.a2a_dispatch").
+		WithArgs(stItem).
+		WillReturnError(errors.New("connection reset"))
+
+	r, err := coord.NewProdSettleReader(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.SettledForWorkItem(context.Background(), stItem); err == nil {
+		t.Fatal("a query failure must surface (projector requeues rather than reading terminal)")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unexpected DB interaction: %v", err)
+	}
+}

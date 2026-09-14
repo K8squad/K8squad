@@ -65,6 +65,30 @@ type StepSource interface {
 	StepForWorkItem(ctx context.Context, workItemID string) (step reconcile.Step, found bool, err error)
 }
 
+// SettleSource reads the durable a2a follow-settlement marker (migration 0019,
+// ISI-4348-S1) for a work item — the read side of coord.a2a_dispatch.settled_at,
+// keyed by the SAME work_item_id the StepSource uses (ADR-0020 §2.4). The
+// production implementation is pkg/coord.ProdSettleReader.SettledForWorkItem.
+//
+// It exists so the projector can tell a Succeeded/Failed durable step (the §6.4
+// step machine reached terminal) from true agent-done: for an a2a-dispatched Run
+// the follow that owns the sandbox pod may still be tearing down after the step
+// commits, and phase should not read terminal until the follow settles (S3, F6).
+//
+// Nil disables the finalize-window hold (S3 is opt-in): the projector then flips
+// straight to the terminal phase on the durable step alone (the pre-S3 behaviour),
+// so a deployment wired without the settlement reader is strictly non-regressing.
+type SettleSource interface {
+	// SettledForWorkItem answers, for a Run's spec.workItemRef, both whether an a2a
+	// follow was ever dispatched for this work item and whether any dispatch lap has
+	// durably settled (§8 retry laps; settled iff any lap carries settled_at):
+	//   dispatched=false → not an a2a follow (or never dispatched): no finalize
+	//     window, project the terminal step unchanged.
+	//   dispatched=true, settled=false → follow in flight: the finalize window is open.
+	//   dispatched=true, settled=true → the follow completed durably.
+	SettledForWorkItem(ctx context.Context, workItemID string) (dispatched, settled bool, err error)
+}
+
 // Clock returns the timestamp stamped onto condition transitions. It is a field
 // so tests pin it and a no-op requeue produces byte-identical status.
 type Clock func() metav1.Time
@@ -88,6 +112,13 @@ type Clock func() metav1.Time
 type Reconciler struct {
 	client.Client
 	Source StepSource
+	// Settlement holds the projected phase at Running through the a2a finalize
+	// window (S3, ISI-4403): a Succeeded/Failed durable step whose follow has not
+	// yet durably settled projects Running, not terminal, so phase reflects true
+	// agent-done. Nil disables the hold — the projector flips on the step alone
+	// (pre-S3 behaviour), which is why it is a separate opt-in seam, not folded
+	// into StepSource.
+	Settlement SettleSource
 	// Now defaults to metav1.Now when nil.
 	Now Clock
 	// RBAC renders the per-Run toolchain Role union. Nil disables the
@@ -122,6 +153,15 @@ type Reconciler struct {
 	Recorder record.EventRecorder
 }
 
+// isFinalizableStep reports whether a durable step has an a2a follow finalize
+// window the S3 hold applies to. Succeeded and Failed both settle their follow
+// (coord.SettleOutcome{Succeeded,Failed,FollowError} all write settled_at), so
+// both can be held at Running until settlement lands. Cancelled is out of scope:
+// its teardown is the operator-driven Cancelling window, not an a2a follow settle.
+func isFinalizableStep(s reconcile.Step) bool {
+	return s == reconcile.StepSucceeded || s == reconcile.StepFailed
+}
+
 // resync returns the configured non-terminal requeue cadence, or the default.
 func (r *Reconciler) resync() time.Duration {
 	if r.Resync > 0 {
@@ -149,6 +189,28 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		// No coord claim row yet: the Run is admitted but not enrolled in the
 		// coordination DB. Pending is the truthful projection until it is.
 		step = reconcile.StepPending
+	}
+
+	// S3 finalize-window hold (ADR-0020 §2.4 / F6, ISI-4403): a Succeeded/Failed
+	// durable step means the §6.4 step machine reached terminal, but for an
+	// a2a-dispatched Run the follow that owns the sandbox pod may still be tearing
+	// down. Until the durable settlement marker (migration 0019) lands, project the
+	// pre-terminal StepCollecting so phase reads Running — `phase=Succeeded/Failed`
+	// then reflects true agent-done, not step-done, and the Run's RBAC/MCP
+	// side-channels stay converged until the agent is truly finished. Non-a2a Runs
+	// (no dispatch row) and already-settled Runs project their terminal step
+	// unchanged; a nil Settlement source disables the hold entirely (S3 opt-in).
+	// The non-terminal projection requeues on the resync cadence below, which is
+	// the backstop that flips Running → terminal once settlement lands (settlement
+	// is not a step transition, so it does not ride the PhaseKicks channel).
+	if r.Settlement != nil && isFinalizableStep(step) {
+		dispatched, settled, serr := r.Settlement.SettledForWorkItem(ctx, runObj.Spec.WorkItemRef)
+		if serr != nil {
+			return ctrl.Result{}, fmt.Errorf("read a2a settlement for run %s: %w", req.NamespacedName, serr)
+		}
+		if dispatched && !settled {
+			step = reconcile.StepCollecting
+		}
 	}
 
 	now := metav1.Now()

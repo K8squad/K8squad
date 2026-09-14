@@ -513,8 +513,17 @@ func main() {
 		// status projector watches it, so intermediate phases are projected at
 		// once instead of waiting for the projector's non-terminal resync.
 		phaseKicks := make(chan event.TypedGenericEvent[client.Object], 128)
+		// S3 finalize-window hold (ADR-0020 §2.4, ISI-4403): the projector reads the
+		// durable a2a follow-settlement marker (migration 0019) so phase=Succeeded/
+		// Failed reflects true agent-done, not just the §6.4 step going terminal.
+		phaseSettleReader, err := coord.NewProdSettleReader(db)
+		if err != nil {
+			ctrl.Log.Error(err, "unable to bind settlement reader for Run status projection")
+			os.Exit(1)
+		}
 		if err := (&runctrl.Reconciler{
 			Source:            coord.NewReconcileStepReader(db),
+			Settlement:        phaseSettleReader,
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			ContextAssemblers: ctxDeps,
