@@ -136,6 +136,11 @@ type Options struct {
 	// Nil ⇒ those routes keep the documented 501 (a DB-less dev run), exactly like the
 	// state route above. State edits stay on the separate .../state path.
 	WorkItemWrites WorkItemWriter
+	// WorkItemDispatch is the ADR-0022 board dispatch op (coord.WorkItemDispatchStore,
+	// ISI-4411): POST /api/work-items/{id}/dispatch — record the human's agent choice
+	// as intent + advance backlog→todo so Intake starts the Run with that agent. Nil ⇒
+	// the route keeps the documented 501 (a DB-less dev run), exactly like the siblings.
+	WorkItemDispatch WorkItemDispatcher
 	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
 	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
 	// /api/work-items/{id} (ticket thread — comments, status history, change
@@ -881,6 +886,22 @@ func (s *Server) routes(opts Options) {
 			kill.HandleFunc("", killRunHandler(opts.Killer)).Methods(http.MethodPost)
 		} else {
 			kill.HandleFunc("", notImplemented("run kill seam", "ISI-2884: wire a RunKiller (coord ProdCancelStore) to enable")).
+				Methods(http.MethodPost)
+		}
+
+		// ADR-0022 board dispatch (ISI-4411): POST /api/work-items/{id}/dispatch —
+		// the second control-plane verb beside kill. Records the human's agent
+		// choice as intent + advances backlog→todo in one txn (coord
+		// WorkItemDispatchStore) so the operator Intake sweep mints the Run with
+		// that agent. Human-only; Team scope + agent-∈-Team enforced server-side.
+		dispatch := s.router.Path("/api/work-items/{id}/dispatch").Subrouter()
+		dispatch.Use(authz)
+		dispatch.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		dispatch.Use(maxBytesBody(4 << 10))
+		if opts.WorkItemDispatch != nil {
+			dispatch.HandleFunc("", workItemDispatchHandler(opts.WorkItemDispatch)).Methods(http.MethodPost)
+		} else {
+			dispatch.HandleFunc("", notImplemented("work-item dispatch seam", "ISI-4411: wire a coord.WorkItemDispatchStore (Postgres + Team resolver) to enable")).
 				Methods(http.MethodPost)
 		}
 

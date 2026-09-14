@@ -198,6 +198,8 @@ func mapWorkItemWriteError(w http.ResponseWriter, err error) bool {
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, coord.ErrWorkItemNotFound):
 		writeJSONError(w, http.StatusNotFound, "work item not found")
+	case errors.Is(err, coord.ErrAgentNotInTeam):
+		writeJSONError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, coord.ErrStateConflict):
 		writeJSONError(w, http.StatusConflict, err.Error())
 	default:
