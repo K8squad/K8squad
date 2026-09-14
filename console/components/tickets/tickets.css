@@ -580,3 +580,165 @@
     transition: none !important;
   }
 }
+
+/* ---- Ticket-detail screen (ISI-4399 S3 / design ISI-4231 §3) ---- */
+.ksq-ticket-detail {
+  padding: 24px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.ksq-ticket-detail__crumb {
+  margin-bottom: 12px;
+}
+
+.ksq-ticket-detail__ids {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ksq-ticket-detail__head h1 {
+  font-size: 1.4rem;
+}
+
+.ksq-ticket-detail__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 62fr) minmax(240px, 38fr);
+  gap: 16px;
+  margin-top: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .ksq-ticket-detail__grid {
+    grid-template-columns: 1fr; /* stack sidebar under the main column */
+  }
+}
+
+.ksq-ticket-detail__main,
+.ksq-ticket-detail__side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.ksq-ticket-detail .card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.ksq-ticket-detail .card h2 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.ksq-prose {
+  white-space: pre-wrap; /* mirror the markdown source; no rich-text black box */
+  margin: 0;
+  color: var(--text-1);
+}
+
+/* ---- Sub-tickets ---- */
+.ksq-subticket-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ksq-subticket-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ---- Activity thread ---- */
+.ksq-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ksq-activity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ksq-activity--comment {
+  flex-direction: column;
+  align-items: stretch;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+}
+
+.ksq-activity__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ksq-activity__body {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  color: var(--text-1);
+}
+
+.ksq-chip[data-role="agent"] {
+  border-color: var(--ksq-run);
+  color: var(--ksq-run);
+}
+
+.ksq-activity__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--text-2);
+  display: inline-block;
+}
+
+/* ---- Disabled composer (write path not wired yet) ---- */
+.ksq-composer-note {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.ksq-composer-note textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  padding: 10px 12px;
+  opacity: 0.7;
+}
+
+/* ---- Properties list ---- */
+.ksq-proplist {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0;
+}
+
+.ksq-proplist dd {
+  margin: 0;
+}

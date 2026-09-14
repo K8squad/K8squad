@@ -57,6 +57,7 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         tree={controller({ expanded: new Set(["par"]), children: { par: [child] } })}
         sort={SORT}
         onSortChange={vi.fn()}
+        projectId="ns/demo"
       />,
     );
     const tbody = screen.getByTestId("row-par").closest("tbody")!;
@@ -76,6 +77,7 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         tree={controller({})}
         sort={SORT}
         onSortChange={vi.fn()}
+        projectId="ns/demo"
       />,
     );
     expect(screen.getByTestId("tree-caret-par")).toBeInTheDocument();
@@ -92,6 +94,7 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         tree={controller({ children: { par: [child] } })}
         sort={SORT}
         onSortChange={vi.fn()}
+        projectId="ns/demo"
       />,
     );
     expect(screen.queryByTestId("row-kid")).toBeNull();
@@ -101,6 +104,7 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         tree={controller({ expanded: new Set(["par"]), children: { par: [child] } })}
         sort={SORT}
         onSortChange={vi.fn()}
+        projectId="ns/demo"
       />,
     );
     expect(screen.getByTestId("row-kid")).toBeInTheDocument();
@@ -114,6 +118,7 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         tree={controller({})}
         sort={SORT}
         onSortChange={onSortChange}
+        projectId="ns/demo"
       />,
     );
     fireEvent.click(screen.getByTestId("sort-title"));
@@ -131,6 +136,7 @@ describe("KanbanBoard — blocked overlay in-lane, RBAC drag gate (8.14b)", () =
         tree={controller({})}
         role="viewer"
         onTransition={noop}
+        projectId="ns/demo"
       />,
     );
     const lane = screen.getByTestId("column-in_progress");
@@ -145,6 +151,7 @@ describe("KanbanBoard — blocked overlay in-lane, RBAC drag gate (8.14b)", () =
         tree={controller({})}
         role="viewer"
         onTransition={noop}
+        projectId="ns/demo"
       />,
     );
     expect(screen.getByTestId("card-v").getAttribute("draggable")).toBe("false");
@@ -158,6 +165,7 @@ describe("KanbanBoard — blocked overlay in-lane, RBAC drag gate (8.14b)", () =
         tree={controller({})}
         role="contributor"
         onTransition={noop}
+        projectId="ns/demo"
       />,
     );
     expect(screen.getByTestId("card-c").getAttribute("draggable")).toBe("true");
