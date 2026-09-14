@@ -887,6 +887,39 @@ func main() {
 						"run.id", runID)
 				}
 			}
+
+			// ISI-4348-S4 (ADR-0020 §5 option (a)): re-attach the background
+			// follow on leader-elect for every unsettled, non-terminal dispatch
+			// lap. Closes the residual "restart during work, agent finishes
+			// post-restart" leak (§4 last row): without a re-opened follow the
+			// OnDone above never fires again, so the S1 marker is never written
+			// and the run-owned pod leaks forever. Submit reattaches to the
+			// still-serving supervisor (C1, never re-executes); its OnDone then
+			// writes the marker and releases the pod. mgr.Add defaults the plain
+			// Runnable to the leader-election group, so this runs once per won
+			// leadership, after caches sync.
+			reader, rerr := coord.NewProdReattachReader(db)
+			if rerr != nil {
+				ctrl.Log.Error(rerr, "a2a follow re-attach disabled: reader unavailable (post-restart stragglers rely on S2 reaper / TTL backstop only)")
+			} else {
+				reattachWindow := rundrive.DefaultReattachWindow
+				if v := os.Getenv("KSQUAD_A2A_REATTACH_WINDOW"); v != "" {
+					if d, derr := time.ParseDuration(v); derr != nil {
+						ctrl.Log.Error(derr, "invalid KSQUAD_A2A_REATTACH_WINDOW; using default", "value", v, "default", reattachWindow.String())
+					} else {
+						reattachWindow = d
+					}
+				}
+				if err := mgr.Add(&rundrive.ReattachFollows{
+					Reader:     reader,
+					Dispatcher: a2aDispatcher,
+					Window:     reattachWindow,
+					Log:        func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+				}); err != nil {
+					ctrl.Log.Error(err, "unable to register a2a follow re-attach")
+					os.Exit(1)
+				}
+			}
 		}
 
 		// Topology 2 (ADR-0007 channel A): the warm-pool Bind path delivers the

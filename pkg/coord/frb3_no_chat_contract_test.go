@@ -451,6 +451,15 @@ var allowedSurface = map[string]string{
 	"SettleOutcomeSucceeded":   "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 	"SettleOutcomeFailed":      "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 	"SettleOutcomeFollowError": "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+
+	// ADR-0020 §5(a) (ISI-4348-S4) leader-elect follow re-attach read side: a
+	// read-only lookup of unsettled dispatch laps whose follow must be re-opened
+	// after a restart, NOT an agent-to-agent channel — it returns only coord ids
+	// (a2a_task_id/run_id), carries no worker content, and reattaches never re-executes.
+	"ProdReattachReader":                     "ADR-0020 §5(a) read side: list unsettled non-terminal dispatch laps to re-attach on leader-elect",
+	"NewProdReattachReader":                  "ADR-0020 §5(a) constructor (re-attach reader)",
+	"ProdReattachReader.UnsettledDispatches": "ADR-0020 §5(a) latest unsettled non-terminal dispatch lap per work item, within the supervisor session-retention window",
+	"ReattachTarget":                         "ADR-0020 §5(a) (a2aTaskID, runID) pair a re-attach Submit needs — coord ids only, no content",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The
