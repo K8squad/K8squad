@@ -65,6 +65,15 @@ type Dispatcher struct {
 	OnDone func(a2aTaskID, runID string, res Result, err error)
 
 	follows sync.WaitGroup
+
+	// followsMu guards live, the per-run in-flight follow count. It is the
+	// liveness oracle backing IsFollowing (ADR-0020 §2.3, ISI-4348-S2): the
+	// restart-safe reaper reaps a settled run-owned pod only when NO live follow
+	// exists for it in THIS process. A run may have more than one concurrent lap
+	// in flight (a re-drive reattaches, C1), so this is a count, not a bool —
+	// the run is following until the LAST lap's follow goroutine returns.
+	followsMu sync.Mutex
+	live      map[string]int
 }
 
 // Submit builds the task for (a2aTaskID, runID), submits it over A2A, and spawns
@@ -94,14 +103,56 @@ func (d *Dispatcher) Submit(ctx context.Context, a2aTaskID, runID string) error 
 	}
 
 	d.follows.Add(1)
+	d.followEnter(runID)
 	go func() {
 		defer d.follows.Done()
+		// followLeave runs AFTER OnDone so IsFollowing stays true for the whole
+		// settlement write: the reaper must never observe "settled AND not
+		// following" for a run whose OnDone is mid-flight (that window is
+		// exactly the leak the marker+oracle close together — ADR-0020 §2.3).
+		defer d.followLeave(runID)
 		res, ferr := d.Client.Follow(bg, sess, d.sinkFor(runID))
 		if d.OnDone != nil {
 			d.OnDone(a2aTaskID, runID, res, ferr)
 		}
 	}()
 	return nil
+}
+
+// followEnter records one more live follow goroutine for runID.
+func (d *Dispatcher) followEnter(runID string) {
+	d.followsMu.Lock()
+	defer d.followsMu.Unlock()
+	if d.live == nil {
+		d.live = make(map[string]int)
+	}
+	d.live[runID]++
+}
+
+// followLeave records one fewer live follow for runID, dropping the key at zero
+// so IsFollowing's map does not grow without bound across a long-lived process.
+func (d *Dispatcher) followLeave(runID string) {
+	d.followsMu.Lock()
+	defer d.followsMu.Unlock()
+	if d.live[runID] <= 1 {
+		delete(d.live, runID)
+		return
+	}
+	d.live[runID]--
+}
+
+// IsFollowing reports whether a live follow goroutine exists for runID in THIS
+// process — the ADR-0020 §2.3 liveness oracle. It is true from the moment
+// Submit spawns the follow until that follow's OnDone returns; false after a
+// restart (the map starts empty, so every prior follow reads as not-live). The
+// restart-safe reaper (ISI-4348-S2) reaps a settled run-owned pod ONLY when this
+// returns false: settled ⇒ the follow reached completion, and not-following ⇒
+// no follow is in flight here, so the agent is finished and the pod is safe to
+// reap.
+func (d *Dispatcher) IsFollowing(runID string) bool {
+	d.followsMu.Lock()
+	defer d.followsMu.Unlock()
+	return d.live[runID] > 0
 }
 
 // Wait blocks until every in-flight background follow finishes. It is the

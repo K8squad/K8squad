@@ -142,3 +142,44 @@ func (s *ProdSettler) Settle(ctx context.Context, a2aTaskID, runID, outcome stri
 	}
 	return nil
 }
+
+// ProdSettleReader is the read side of the follow-settlement marker (ADR-0020
+// §2.3, ISI-4348-S2). The restart-safe reaper asks it "has this run's a2a follow
+// durably settled?" for a run-owned sandbox pod; a true answer, combined with
+// the dispatcher's in-process not-following oracle, is the provably-safe signal
+// to reap. It is a distinct type from ProdSettler (write vs read) but shares the
+// coord Postgres.
+type ProdSettleReader struct {
+	db *sql.DB
+}
+
+// NewProdSettleReader binds the settlement reader to the coord Postgres.
+func NewProdSettleReader(db *sql.DB) (*ProdSettleReader, error) {
+	if db == nil {
+		return nil, errors.New("coord.NewProdSettleReader: nil db")
+	}
+	return &ProdSettleReader{db: db}, nil
+}
+
+// Settled reports whether ANY dispatch lap of runID carries the durable
+// follow-settlement marker (settled_at IS NOT NULL). A run may have several laps
+// (a re-drive mints run_id#lapN, C1); the reaper's question is "did this run's
+// follow reach completion at all", so any one settled lap answers yes. The query
+// rides the partial idx_a2a_dispatch_settled index (run_id WHERE settled_at IS
+// NOT NULL) — one indexed EXISTS, cheap enough for the warm-tick backstop.
+//
+// An unknown / never-dispatched runID returns (false, nil): no lap, not settled.
+func (r *ProdSettleReader) Settled(ctx context.Context, runID string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var settled bool
+	if err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM coord.a2a_dispatch
+			 WHERE run_id = $1::uuid AND settled_at IS NOT NULL)`,
+		runID).Scan(&settled); err != nil {
+		return false, fmt.Errorf("coord.ProdSettleReader.Settled: query run %s: %w", runID, err)
+	}
+	return settled, nil
+}

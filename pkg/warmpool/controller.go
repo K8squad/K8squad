@@ -117,6 +117,15 @@ type Controller struct {
 	// DefaultWarmBootDeadline.
 	warmBootDeadline time.Duration
 
+	// settledReaper, when set, runs once at the top of each Tick — the
+	// ADR-0020 §2.3 (ISI-4348-S2) steady-state backstop that sweeps run-owned
+	// sandbox pods whose a2a follow has durably settled and is no longer live
+	// in this process, reclaiming any that leaked after AdoptOrReap's start
+	// pass. It is opaque to the controller (which owns no kube/DB handle): the
+	// operator wiring closes over warmpool.SweepSettledRunOwned + the coord
+	// reader + the dispatcher oracle. nil = no backstop (pre-ISI-4348).
+	settledReaper func(context.Context)
+
 	mu sync.Mutex // serializes Ticks against concurrent ReplenishKey
 }
 
@@ -276,6 +285,15 @@ func (c *Controller) SetMaxBootPerTick(n int) {
 	c.maxBootPerTick = n
 }
 
+// SetSettledReaper installs the ADR-0020 §2.3 steady-state reaper backstop the
+// controller runs at the top of every Tick (ISI-4348-S2). fn is the operator's
+// SweepSettledRunOwned closure; nil disables the backstop.
+func (c *Controller) SetSettledReaper(fn func(context.Context)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.settledReaper = fn
+}
+
 // liveFor reads the pool's replenish-relevant count for key: Warming +
 // Ready. Bound sandboxes are excluded (claimed capacity is not pool
 // capacity; §9.3 replaces them after Release), and so are Reserved
@@ -296,6 +314,15 @@ func (c *Controller) Tick(ctx context.Context) (map[PoolKey]int, error) {
 	if err := ctx.Err(); err != nil {
 		// Shutting down: no boot fan-out on a dead context.
 		return nil, err
+	}
+
+	// ISI-4348-S2 (ADR-0020 §2.3): the steady-state settled-follow reaper
+	// backstop — sweep run-owned pods that leaked after AdoptOrReap's start
+	// pass. Best-effort and opaque (the closure logs its own per-pod errors);
+	// runs before replenishment so a reclaimed pod's freed CPU is visible to
+	// this tick's capacity cap.
+	if c.settledReaper != nil {
+		c.settledReaper(ctx)
 	}
 
 	// ISI-4315: reap stale unbound Warming boots FIRST. On a saturated

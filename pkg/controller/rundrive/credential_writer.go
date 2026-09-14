@@ -23,14 +23,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/warmpool"
 )
 
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch
 
 // SecretCredentialWriter implements coord.RunCredentialWriter for topology 2
 // (ADR-0007 channel A): at Bind it mints the run-scoped task-io credential and
@@ -104,6 +106,16 @@ func (w *SecretCredentialWriter) WriteRunCredential(ctx context.Context, runID, 
 		return err
 	}
 
+	// ADR-0020 §2.3 (ISI-4348-S2): stamp the Run id on the pod at Bind — the
+	// same instant the task-io Secret below marks it run-owned — so the
+	// restart-safe reaper can recover run_id from the pod alone (runIDFromPod)
+	// and ask whether the run's follow has durably settled. A warm pod carries
+	// no Run, so this is the only point a run id exists to stamp. Best-effort: a
+	// patch failure must not fail the bind (the credential is what the run
+	// needs); the pod simply stays unstamped and the reaper keeps it (fails
+	// closed) until a later bind or the next restart re-stamps it.
+	w.stampRunID(ctx, pod, runID)
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      sandboxRef,
@@ -137,6 +149,22 @@ func (w *SecretCredentialWriter) WriteRunCredential(ctx context.Context, runID, 
 		}
 	}
 	return nil
+}
+
+// stampRunID adds the AnnRunID annotation to the bound sandbox pod so the
+// restart-safe reaper (ADR-0020 §2.3) can recover its run_id. Best-effort and
+// idempotent: a JSON merge patch that only touches the one annotation (never
+// clobbering the pool-key set Boot stamped), skipped when already present. A
+// failure is swallowed — the reaper fails closed on an unstamped pod, so a
+// missed stamp costs at most one leaked pod until the next bind/restart, never a
+// wrongful reap.
+func (w *SecretCredentialWriter) stampRunID(ctx context.Context, pod *corev1.Pod, runID string) {
+	if runID == "" || pod.Annotations[warmpool.AnnRunID] == runID {
+		return
+	}
+	patch := client.RawPatch(types.MergePatchType,
+		[]byte(fmt.Sprintf(`{"metadata":{"annotations":{%q:%q}}}`, warmpool.AnnRunID, runID)))
+	_ = w.client.Patch(ctx, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace}}, patch)
 }
 
 // findSandboxPod locates the booted sandbox pod by its name (== sandbox_ref).
