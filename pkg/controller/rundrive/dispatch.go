@@ -768,10 +768,31 @@ func (d *operatorDispatch) sinkFor(runID string) a2a.EventSink {
 	if d.cfg.LLMStatus != nil {
 		inner = chainSinks(d.cfg.LLMStatus, inner)
 	}
-	return a2a.NewTelemetrySink(inner, d.cfg.Mapper, toolusage.Labels{
-		RunID: cleanRunID(runID),
-		Agent: d.agentName(context.Background(), cleanRunID(runID)),
-	})
+	return a2a.NewTelemetrySink(inner, d.cfg.Mapper, d.telemetryLabels(cleanRunID(runID)))
+}
+
+// telemetryLabels resolves the WS-A run-trace identity set (ISI-4382,
+// ADR-0021 D1) for a run's spans from its CR: run id + agent + team +
+// project + ticket (workItemRef) + sandbox pod. A single CR lookup feeds
+// every field (replacing the former agentName-only lookup). A lookup miss
+// degrades to run.id alone — telemetry is observational, never load-bearing,
+// so a missing CR must never abort the dispatch.
+func (d *operatorDispatch) telemetryLabels(runID string) toolusage.Labels {
+	l := toolusage.Labels{RunID: runID}
+	run, err := d.runByUID(context.Background(), runID)
+	if err != nil {
+		return l
+	}
+	if len(run.Spec.Agents) > 0 {
+		l.Agent = run.Spec.Agents[0].Name
+	}
+	l.Team = run.Spec.TeamRef.Name
+	l.Project = run.Spec.ProjectRef.Name
+	l.WorkItemRef = run.Spec.WorkItemRef
+	if run.Status.SandboxRef != nil {
+		l.SandboxPod = run.Status.SandboxRef.Name
+	}
+	return l
 }
 
 // chainSinks fans one event out to a then b (a first: the projection must

@@ -51,7 +51,7 @@ func Render() string {
 	b.WriteString("trace. Its trace id is the Run's `TraceID`.\n\n")
 
 	for _, sc := range SpanConventions {
-		b.WriteString(fmt.Sprintf("### `%s`\n\n", sc.Name))
+		fmt.Fprintf(&b, "### `%s`\n\n", sc.Name)
 		b.WriteString(sc.Brief + "\n\n")
 		writeAttrTable(&b, sc.Attributes)
 		b.WriteString("\n")
@@ -67,12 +67,12 @@ func Render() string {
 	b.WriteString("| Event type | Entity | WS | Description |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, ec := range EventConventions {
-		b.WriteString(fmt.Sprintf("| `%s` | `%s` | %s | %s |\n", ec.EventType, ec.Entity, ec.Workstream, ec.Brief))
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s |\n", ec.EventType, ec.Entity, ec.Workstream, ec.Brief)
 	}
 	b.WriteString("\n")
 
 	for _, ec := range EventConventions {
-		b.WriteString(fmt.Sprintf("### `%s` payload\n\n", ec.EventType))
+		fmt.Fprintf(&b, "### `%s` payload\n\n", ec.EventType)
 		writeAttrTable(&b, ec.PayloadFields)
 		b.WriteString("\n")
 	}
@@ -84,7 +84,7 @@ func writeAttrTable(b *strings.Builder, attrs []Attribute) {
 	b.WriteString("| Attribute | Type | Requirement | Stability | WS | Description |\n")
 	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, a := range attrs {
-		b.WriteString(fmt.Sprintf("| `%s` | %s | %s | %s | %s | %s |\n",
-			a.Key, a.Type, a.Requirement, a.Stability, a.Workstream, a.Brief))
+		fmt.Fprintf(b, "| `%s` | %s | %s | %s | %s | %s |\n",
+			a.Key, a.Type, a.Requirement, a.Stability, a.Workstream, a.Brief)
 	}
 }

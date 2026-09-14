@@ -43,6 +43,12 @@ rules:
   resources: [pods]
   verbs: [create, delete, get, list, patch, watch]
 - apiGroups: [""]
+  # ISI-4381: the Run status projector emits a Normal Event on each phase
+  # transition (Pending→Claiming→Running→Succeeded) so `kubectl describe run`
+  # shows the lifecycle. Runs live in team namespaces, so this is cluster-wide.
+  resources: [events]
+  verbs: [create, patch]
+- apiGroups: [""]
   # ISI-4315: KubeCapacitySnapshot lists nodes on every controller tick
   # (allocatable minus live pod requests) to size the warm-pool capacity
   # ceiling, so idle warmth yields to project Runs instead of saturating

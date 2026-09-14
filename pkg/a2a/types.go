@@ -268,6 +268,43 @@ type UsagePayload struct {
 	// the runtime reports one (ISI-4238) — the llm.call span truthfully
 	// carries it as its span duration. +optional
 	DurationMS int64 `json:"durationMS,omitempty"`
+
+	// Provider is the gen-AI system that served the step ("anthropic",
+	// "openai", …), mapped onto gen_ai.system (ISI-4383 / ADR-0021 D2).
+	// Empty when the runtime does not report it — the span then omits the
+	// attribute rather than fabricating one. +optional
+	Provider string `json:"provider,omitempty"`
+	// ResponseModel is the model that actually SERVED the step, mapped onto
+	// gen_ai.response.model (ISI-4383). Model (above) is the REQUESTED model
+	// (gen_ai.request.model); when a fallback fired the two differ, which is
+	// how a backup-served call is made visible on the span. Empty when the
+	// runtime reports only one model. +optional
+	ResponseModel string `json:"responseModel,omitempty"`
+	// FinishReason is the provider's stop reason for the step ("stop",
+	// "length", "tool_use", …), mapped onto gen_ai.response.finish_reasons
+	// (ISI-4383). Empty when the runtime does not report it. +optional
+	FinishReason string `json:"finishReason,omitempty"`
+	// ResponseID is the provider's response identifier, mapped onto
+	// gen_ai.response.id (ISI-4383). Empty when the runtime does not report
+	// one. +optional
+	ResponseID string `json:"responseID,omitempty"`
+	// Fallback is true when this step was served by the Run's backup/fallback
+	// model instead of the requested primary (story 5.11, correlated to
+	// ksquad_fallback_activations_total). It sets the ksquad.llm.fallback=true
+	// span marker so a fallback-served call is visibly flagged even when the
+	// runtime cannot report requested-vs-served model separately (ISI-4383,
+	// ADR-0021 D2 / limitation §74). +optional
+	Fallback bool `json:"fallback,omitempty"`
+
+	// Prompt / Response are the D3 opt-in content-capture fields (ISI-4383,
+	// ADR-0021 D3). They are NEVER populated in prod: content stays off by
+	// default (the PII posture — tool args are SHA-256 only). They ride the
+	// span as gated span events ONLY when KSQUAD_TRACE_CONTENT is set
+	// (dev/non-prod). Absent the flag, toolusage drops them even if present.
+	// +optional
+	Prompt string `json:"prompt,omitempty"`
+	// Response is the model's response body — see Prompt. +optional
+	Response string `json:"response,omitempty"`
 }
 
 // AuthRequiredPayload is the payload of an EventAuthRequired event (spec §4/§7).

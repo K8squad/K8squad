@@ -211,6 +211,8 @@ var SpanConventions = []SpanConvention{
 				Brief: "The skill this tool call belongs to, when the call is skill-scoped."},
 			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "Call outcome on the result phase (success|error|unknown)."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-C",
+				Brief: "Wall-clock call duration in ms, measured start→result (ISI-4385)."},
 		),
 	},
 	{
@@ -225,6 +227,8 @@ var SpanConventions = []SpanConvention{
 				Brief: "The MCPServer that served the call."},
 			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "Call outcome on the result phase (success|error|unknown)."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-C",
+				Brief: "Wall-clock call duration in ms, measured start→result (ISI-4385)."},
 		),
 	},
 	{
@@ -237,6 +241,8 @@ var SpanConventions = []SpanConvention{
 				Brief: "Pinned source SHA of the loaded skill, when known."},
 			Attribute{Key: "ksquad.outcome", Type: TypeString, Requirement: Required, Stability: Stable,
 				Brief: "Load outcome (success|error|unknown)."},
+			Attribute{Key: "ksquad.duration.ms", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-C",
+				Brief: "Stamped for uniformity across activity spans; skill.load is a point event so this is the mapping instant (ISI-4385)."},
 		),
 	},
 }

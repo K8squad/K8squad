@@ -81,8 +81,8 @@ func TestProjectStatusPhaseAndGeneration(t *testing.T) {
 	if cond == nil {
 		t.Fatalf("Ready condition missing")
 	}
-	if cond.Status != metav1.ConditionFalse || cond.Reason != reasonReconciling {
-		t.Errorf("Ready = %v/%s, want False/Reconciling", cond.Status, cond.Reason)
+	if cond.Status != metav1.ConditionFalse || cond.Reason != reasonRunning {
+		t.Errorf("Ready = %v/%s, want False/Running", cond.Status, cond.Reason)
 	}
 	if cond.ObservedGeneration != 7 {
 		t.Errorf("condition ObservedGeneration = %d, want 7", cond.ObservedGeneration)
@@ -95,11 +95,11 @@ func TestProjectStatusReadyConditionPerStep(t *testing.T) {
 		wantStatus metav1.ConditionStatus
 		wantReason string
 	}{
-		{reconcile.StepPending, metav1.ConditionFalse, reasonReconciling},
-		{reconcile.StepClaimingSandbox, metav1.ConditionFalse, reasonReconciling},
-		{reconcile.StepDispatching, metav1.ConditionFalse, reasonReconciling},
-		{reconcile.StepRunning, metav1.ConditionFalse, reasonReconciling},
-		{reconcile.StepCollecting, metav1.ConditionFalse, reasonReconciling},
+		{reconcile.StepPending, metav1.ConditionFalse, reasonPending},
+		{reconcile.StepClaimingSandbox, metav1.ConditionFalse, reasonClaiming},
+		{reconcile.StepDispatching, metav1.ConditionFalse, reasonDispatching},
+		{reconcile.StepRunning, metav1.ConditionFalse, reasonRunning},
+		{reconcile.StepCollecting, metav1.ConditionFalse, reasonCollecting},
 		{reconcile.StepPaused, metav1.ConditionFalse, reasonPaused},
 		{reconcile.StepPausedRateLimited, metav1.ConditionFalse, reasonRateLimited},
 		{reconcile.StepSucceeded, metav1.ConditionTrue, reasonSucceeded},

@@ -602,3 +602,67 @@ func TestDriveJoinsSubmitTraceContext(t *testing.T) {
 	}
 	t.Fatal("no run.start span recorded")
 }
+
+// TestDriveStampsWSAIdentity (WS-A, ISI-4382): the engine's run-trace spans
+// carry the full identity set — agent + team (Squad) + project + ticket
+// (WorkItemID) + sandbox pod + run id — sourced from the shim's launch
+// Config and per-task run identity, so a single shim-emitted trace filters
+// by team/project/ticket/pod, not just agent.
+func TestDriveStampsWSAIdentity(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(rt, &fakeRunner{
+		emits:   []Progress{{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolTrue()}}},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}, Config{
+		Identity:    Identity{Name: "coder-1", Squad: "alpha", Project: "demo"},
+		SandboxPod:  "ksquad-sbx-xyz",
+		ShimVersion: "test",
+	})
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{A2ATaskID: "run-wsa", WorkItemID: "TKT-7"}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-wsa", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+
+	want := map[string]string{
+		"ksquad.agent.name":    "coder-1",
+		"ksquad.team.name":     "alpha",
+		"ksquad.project.name":  "demo",
+		"ksquad.work_item.ref": "TKT-7",
+		"ksquad.sandbox.pod":   "ksquad-sbx-xyz",
+		"ksquad.run.id":        "run-wsa",
+	}
+	var checked int
+	for _, s := range sr.Ended() {
+		if s.Name() != "run.start" && s.Name() != "gen_ai.tool.call" {
+			continue
+		}
+		checked++
+		attrs := map[string]string{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.AsString()
+		}
+		for k, v := range want {
+			if attrs[k] != v {
+				t.Errorf("span %s attr %s = %q, want %q", s.Name(), k, attrs[k], v)
+			}
+		}
+	}
+	if checked < 2 {
+		t.Fatalf("expected run.start + gen_ai.tool.call spans, checked %d", checked)
+	}
+}
+
+func boolTrue() *bool { b := true; return &b }

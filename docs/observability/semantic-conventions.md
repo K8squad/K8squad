@@ -89,6 +89,7 @@ A local/CLI tool call. Follows OTel gen-AI tool-call conventions; raw arguments 
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments (the hash IS the argument surface; raw args never leave the process). |
 | `ksquad.skill.name` | string | conditional | stable |  | The skill this tool call belongs to, when the call is skill-scoped. |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |
+| `ksquad.duration.ms` | int | required | stable | WS-C | Wall-clock call duration in ms, measured start→result (ISI-4385). |
 
 ### `mcp.call`
 
@@ -106,6 +107,7 @@ A tool call served by an MCPServer. Same shape as gen_ai.tool.call plus the serv
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments. |
 | `ksquad.mcp.server` | string | required | stable |  | The MCPServer that served the call. |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |
+| `ksquad.duration.ms` | int | required | stable | WS-C | Wall-clock call duration in ms, measured start→result (ISI-4385). |
 
 ### `skill.load`
 
@@ -122,6 +124,7 @@ A skill entering the runtime session.
 | `ksquad.skill.name` | string | required | stable |  | The skill loaded. |
 | `ksquad.skill.source.sha` | string | conditional | stable |  | Pinned source SHA of the loaded skill, when known. |
 | `ksquad.outcome` | string | required | stable |  | Load outcome (success|error|unknown). |
+| `ksquad.duration.ms` | int | required | stable | WS-C | Stamped for uniformity across activity spans; skill.load is a point event so this is the mapping instant (ISI-4385). |
 
 ## NATS domain lifecycle events
 
