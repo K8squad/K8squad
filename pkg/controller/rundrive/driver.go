@@ -74,6 +74,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 )
 
 // workItemField is the Run index key the resume kick lists Runs by (a work
@@ -211,9 +212,23 @@ type Driver struct {
 	Sandbox   SandboxReleaser    // optional
 	BindClear SandboxBindClearer // optional (ISI-4310 gone-sandbox recovery)
 	Notify    func()             // kicks the resume timer after a fresh episode (optional)
-	Now       func() time.Time
-	Rand      func() float64
-	MaxPasses int
+	// NotifyPhase, when set, is called after a drive pass that committed a
+	// durable step transition so the status projector (pkg/controller/run)
+	// re-reads coord and projects the new phase IMMEDIATELY, instead of waiting
+	// for its bounded non-terminal resync (ISI-4381 Option A). The driver owns
+	// the durable step; the projector only watches the Run CR, so without this
+	// event-driven kick the projector samples coord once and typically lands on
+	// the terminal step — the intermediate Pending→Claiming→Running phases stay
+	// invisible. Optional — nil leaves the projector's resync as the sole
+	// re-trigger (the backstop when a kick is dropped).
+	NotifyPhase func(run *api.Run)
+	Now         func() time.Time
+	Rand        func() float64
+	MaxPasses   int
+
+	// Health, when set, records this controller's reconcile latency + error
+	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
+	Health *cphealth.Metrics
 
 	// resumeCh feeds the watched channel source: due 3.7 wakes land here as
 	// GenericEvents carrying the Run to re-drive. Buffered; a full channel is
@@ -267,12 +282,24 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 
 	ctx = telemetry.Extract(ctx, run.Annotations)
-	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(
+	// WS-A (ISI-4382, ADR-0021 D1): mirror the run-trace identity set onto
+	// the operator-side reconcile span so one trace filters uniformly by
+	// team/project/ticket across shim spans AND run.reconcile. The canonical
+	// ksquad.work_item.ref key matches the toolusage span attrs; the legacy
+	// ksquad.run.work_item_ref key is retained for existing queries.
+	spanAttrs := []attribute.KeyValue{
 		attribute.String("ksquad.run.id", runID),
 		attribute.String("ksquad.run.work_item_ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.work_item.ref", run.Spec.WorkItemRef),
+		attribute.String("ksquad.team.name", run.Spec.TeamRef.Name),
+		attribute.String("ksquad.project.name", run.Spec.ProjectRef.Name),
 		attribute.String("ksquad.run.namespace", run.Namespace),
 		attribute.String("ksquad.run.name", run.Name),
-	))
+	}
+	if len(run.Spec.Agents) > 0 {
+		spanAttrs = append(spanAttrs, attribute.String("ksquad.agent.name", run.Spec.Agents[0].Name))
+	}
+	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(spanAttrs...))
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -396,6 +423,14 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
+	}
+
+	// A drive that advanced the durable step wakes the projector so the new
+	// phase is projected without waiting for its resync (ISI-4381 Option A). The
+	// kick is latency sugar — the projector's non-terminal resync is the
+	// correctness backstop — so a nil hook or a full channel is harmless.
+	if after := store.Step(); after != cs.Step && r.NotifyPhase != nil {
+		r.NotifyPhase(&run)
 	}
 
 	switch after := store.Step(); {
@@ -724,5 +759,5 @@ func (r *Driver) SetupWithManager(mgr ctrl.Manager) error {
 		For(&api.Run{}).
 		WatchesRawSource(source.Channel(r.resumeCh, &handler.EnqueueRequestForObject{})).
 		Named("run-drive").
-		Complete(r)
+		Complete(cphealth.WrapReconciler(r.Health, "run-drive", r))
 }

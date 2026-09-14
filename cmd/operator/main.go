@@ -38,6 +38,9 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -55,6 +58,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -79,6 +83,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 	"github.com/K8squad/K8squad/pkg/telemetry/otelcr"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
@@ -239,6 +244,107 @@ func init() {
 	utilruntime.Must(ksquadv1alpha1.AddToScheme(scheme))
 }
 
+// activeRunSnapshots returns the ActiveRuns callback for the runs.active gauge
+// (ISI-4384/WS-E). It lists the Run informer cache (in-memory, non-blocking —
+// safe on the metric collection path) and buckets every non-terminal Run by
+// (phase, team). Terminal Runs are excluded: "active" means in-flight, and
+// including them would let the series accrue succeeded/failed counts until GC.
+// Cardinality stays bounded — phase is the fixed §8 enum, team is the tenant set.
+func activeRunSnapshots(cl client.Client) func(context.Context) []cphealth.RunSnapshot {
+	return func(ctx context.Context) []cphealth.RunSnapshot {
+		var runs ksquadv1alpha1.RunList
+		if err := cl.List(ctx, &runs); err != nil {
+			return nil // transient cache miss: report no buckets, never a wrong count
+		}
+		type key struct{ phase, team string }
+		counts := map[key]int64{}
+		for i := range runs.Items {
+			r := &runs.Items[i]
+			phase := string(r.Status.Phase)
+			if phase == "" {
+				phase = string(ksquadv1alpha1.RunPhasePending) // unprojected == just admitted
+			}
+			switch ksquadv1alpha1.RunPhase(phase) {
+			case ksquadv1alpha1.RunPhaseSucceeded,
+				ksquadv1alpha1.RunPhaseFailed,
+				ksquadv1alpha1.RunPhaseCancelled:
+				continue // terminal: not active
+			}
+			counts[key{phase: phase, team: r.Spec.TeamRef.Name}]++
+		}
+		out := make([]cphealth.RunSnapshot, 0, len(counts))
+		for k, n := range counts {
+			out = append(out, cphealth.RunSnapshot{Phase: k.phase, Team: k.team, Count: n})
+		}
+		return out
+	}
+}
+
+// dependencyProbes builds the ksquad.dependency.up probe set (ISI-4384/WS-E):
+// real liveness of the operator's hard dependencies, not just its own healthz
+// ping. postgres uses the coord pool's Ping; apiserver GETs /readyz through the
+// authenticated rest client; nats does a plain TCP dial of $KSQUAD_NATS_URL
+// (absent URL ⇒ no nats probe, so we never report a misleading "down").
+func dependencyProbes(cfg *rest.Config, db *sql.DB) []cphealth.Dependency {
+	deps := []cphealth.Dependency{
+		{Name: "postgres", Probe: func(ctx context.Context) bool { return db.PingContext(ctx) == nil }},
+		{Name: "apiserver", Probe: apiServerProbe(cfg)},
+	}
+	if raw := os.Getenv("KSQUAD_NATS_URL"); raw != "" {
+		deps = append(deps, cphealth.Dependency{Name: "nats", Probe: natsDialProbe(raw)})
+	}
+	return deps
+}
+
+// apiServerProbe returns a probe that GETs the apiserver's /readyz endpoint over
+// the operator's own authenticated transport. A build failure for the client
+// yields an always-down probe rather than a panic.
+func apiServerProbe(cfg *rest.Config) func(context.Context) bool {
+	hc, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		return func(context.Context) bool { return false }
+	}
+	url := strings.TrimRight(cfg.Host, "/") + "/readyz"
+	return func(ctx context.Context) bool {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return false
+		}
+		resp, err := hc.Do(req)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}
+}
+
+// natsDialProbe returns a probe that opens a bounded TCP connection to the NATS
+// URL's host:port. A dial is a sufficient liveness signal without pulling the
+// NATS client into the operator, and a bad/unparseable URL is treated as down.
+func natsDialProbe(raw string) func(context.Context) bool {
+	u, err := url.Parse(raw)
+	host := ""
+	if err == nil {
+		host = u.Host
+	}
+	if host == "" {
+		return func(context.Context) bool { return false }
+	}
+	if u.Port() == "" {
+		host = net.JoinHostPort(host, "4222") // NATS default client port
+	}
+	return func(ctx context.Context) bool {
+		var d net.Dialer
+		conn, err := d.DialContext(ctx, "tcp", host)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+}
+
 func main() {
 	var metricsAddr, probeAddr, coordDSN string
 	var enableLeaderElection bool
@@ -381,11 +487,38 @@ func main() {
 			ctrl.Log.Info("memory recall wired (fresh + pinned arms)", "embedderEndpoint", memCfg.EmbedderEndpoint)
 		}
 		memCancel()
+		// ISI-4384 / WS-E (ADR-0021 D5): register the control-plane health
+		// instruments on the operator's OTel meter. This is also the fix for
+		// the "operator meter has no instruments" gap (ISI-4102/4128): until
+		// now nothing ever created an instrument on telemetry.Meter(), so the
+		// OTLP metrics leg exported nothing. runs.active buckets the Run cache
+		// by (phase, team); dependency.up probes postgres/nats/apiserver off
+		// the collection path; the driver + projector below record reconcile
+		// latency/errors through Health. Best-effort: a registration failure
+		// degrades to no health metrics, never a dead operator.
+		health, herr := cphealth.Register(telemetry.Meter(), cphealth.Options{
+			ActiveRuns:   activeRunSnapshots(mgr.GetClient()),
+			Dependencies: dependencyProbes(cfg, db),
+		})
+		if herr != nil {
+			ctrl.Log.Error(herr, "control-plane health metrics disabled (Register failed)")
+			health = nil
+		} else if err := mgr.Add(health); err != nil {
+			ctrl.Log.Error(err, "control-plane dependency prober not scheduled (metrics still export last-known state)")
+		}
+
+		// Shared per-transition kick channel (ISI-4381 Option A): the driver
+		// pushes a Run onto it on every committed durable step advance and the
+		// status projector watches it, so intermediate phases are projected at
+		// once instead of waiting for the projector's non-terminal resync.
+		phaseKicks := make(chan event.TypedGenericEvent[client.Object], 128)
 		if err := (&runctrl.Reconciler{
 			Source:            coord.NewReconcileStepReader(db),
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			ContextAssemblers: ctxDeps,
+			Health:            health,
+			PhaseKicks:        phaseKicks,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
@@ -770,12 +903,23 @@ func main() {
 			prodClaims,
 			rundrive.NewProdPauses(resumeStore),
 			runner)
-		driver.Sandbox = pool // dead-run sandbox teardown on the retry path (§9.3)
+		driver.Sandbox = pool  // dead-run sandbox teardown on the retry path (§9.3)
+		driver.Health = health // ISI-4384: per-controller reconcile latency/error metrics
 		// ISI-4310 gone-sandbox recovery: when a bound sandbox pod is provably
 		// gone (deploy-restart AdoptOrReap, eviction, node loss), the driver
 		// clears the durable bind marker so the retry lap binds fresh warmth
 		// instead of NotFound-looping on the dead pod forever.
 		driver.BindClear = prodClaims
+		// ISI-4381 Option A: on every committed durable step advance, wake the
+		// status projector on the shared kick channel so it projects the new
+		// phase at once. Non-blocking — a full channel falls back to the
+		// projector's resync (correctness backstop), never blocks the drive.
+		driver.NotifyPhase = func(run *ksquadv1alpha1.Run) {
+			select {
+			case phaseKicks <- event.TypedGenericEvent[client.Object]{Object: run.DeepCopy()}:
+			default:
+			}
+		}
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
 		if err := driver.SetupWithManager(mgr); err != nil {

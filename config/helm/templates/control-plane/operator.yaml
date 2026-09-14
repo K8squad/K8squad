@@ -64,6 +64,12 @@ spec:
           value: {{ include "k8squad.namespace" . | quote }}
         - name: KSQUAD_TOOLCHAIN_CLUSTER_SCOPE_ENABLED
           value: {{ .Values.tools.rbac.clusterScopeEnabled | default false | quote }}
+        {{- /* ISI-4384 (WS-E/D5): the NATS client URL the operator TCP-dials for
+               the ksquad.dependency.up{dep="nats"} health gauge. Same address the
+               event-relay drains to; unset ⇒ the operator skips the nats probe
+               (no misleading "down") rather than dialing nothing. */}}
+        - name: KSQUAD_NATS_URL
+          value: {{ include "k8squad.nats.url" . | quote }}
         {{- /* ISI-3745: hand the operator the workspace PVC StorageClass / size /
                access mode from Helm values so every per-Run workspace PVC comes
                from the storage contract, never the cluster default (which on
