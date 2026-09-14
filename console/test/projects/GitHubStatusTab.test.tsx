@@ -45,6 +45,7 @@ const projection: GithubStatus = {
     lastWebhookTime: new Date(Date.now() - 5_000).toISOString(),
     mirrorRecordCount: 6,
   },
+  sync: { reason: "Synced", trigger: "webhook", ageSeconds: 120 },
 };
 
 describe("GitHubStatusTab", () => {
@@ -86,12 +87,75 @@ describe("GitHubStatusTab", () => {
     expect(screen.queryByTestId("panel-branches")).toBeNull();
   });
 
-  it("shows honest freshness 'synced Ns ago' from timestamps, not a live badge (AC2)", async () => {
+  it("shows honest freshness 'Synced · N ago · via <trigger>' from the mirror, not a live badge (AC2)", async () => {
     stub(200, projection);
     render(<GitHubStatusTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("github-freshness")).toBeTruthy());
-    expect(screen.getByTestId("github-freshness").textContent).toMatch(/synced .*ago/);
+    const chip = screen.getByTestId("github-freshness").textContent ?? "";
+    expect(chip).toMatch(/Synced · .*ago/);
+    // Trigger source proves the AC "no manual kick" — refresh is automatic.
+    expect(chip).toMatch(/via webhook/);
+    expect(screen.getByTestId("github-autoline").textContent).toMatch(/no manual kick/);
+    // A green (running) chip; never a fabricated "live" badge.
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("running");
     expect(screen.queryByText(/live/i)).toBeNull();
+  });
+
+  it("drives the chip green→amber→red machine off sync.reason (DESIGN-SPEC §2)", async () => {
+    // CredentialMissing ⇒ red "blocked" chip + reconnect state card, last-good
+    // data kept ghosted (degrade, don't blank).
+    stub(200, {
+      ...projection,
+      sync: { reason: "CredentialMissing", trigger: "poll", ageSeconds: 900 },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-chip")).toBeTruthy());
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("blocked");
+    expect(screen.getByTestId("github-chip").textContent).toMatch(/reconnect required/);
+    const cardCred = screen.getByTestId("github-state-card");
+    expect(cardCred.getAttribute("data-reason")).toBe("CredentialMissing");
+    expect(cardCred.textContent).toMatch(/GitHub token can't be resolved/);
+    // Degrade, don't blank: panels remain, marked ghosted.
+    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe("true");
+  });
+
+  it("renders the ProviderError card amber with auto-retry copy, keeping last-good data", async () => {
+    stub(200, {
+      ...projection,
+      sync: { reason: "ProviderError", trigger: "poll", ageSeconds: 840 },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("paused");
+    expect(screen.getByTestId("github-chip").textContent).toMatch(/last good/);
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(/GitHub unreachable — retrying/);
+    expect(screen.getByTestId("github-panels").getAttribute("data-ghost")).toBe("true");
+  });
+
+  it("surfaces the freshness SLI: Synced but past the SLO ⇒ amber 'Data is behind schedule'", async () => {
+    stub(200, {
+      ...projection,
+      sync: { reason: "Synced", trigger: "poll", ageSeconds: 600 }, // > 360 SLO
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
+    expect(screen.getByTestId("github-chip").getAttribute("data-tone")).toBe("paused");
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(/Data is behind schedule/);
+  });
+
+  it("renders the first-run 'No repository linked' card for SyncNotConfigured (no chip)", async () => {
+    stub(200, {
+      project: { name: "web", namespace: "squad-a" },
+      pullRequests: [], issues: [], checkRuns: [], artifacts: [], releases: [], branches: [],
+      freshness: { mirrorRecordCount: 0 },
+      sync: { reason: "SyncNotConfigured" },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-state-card")).toBeTruthy());
+    expect(screen.queryByTestId("github-chip")).toBeNull();
+    expect(screen.getByTestId("github-state-card").textContent).toMatch(/No repository linked/);
+    // CTA is a link into project settings to link the repo.
+    expect(screen.getByTestId("github-state-card-cta").getAttribute("href")).toMatch(/\/settings$/);
   });
 
   it("never leaks a credential/secret/token into the DOM (AC6)", async () => {
@@ -114,6 +178,7 @@ describe("GitHubStatusTab", () => {
       releases: [],
       branches: [],
       freshness: { mirrorRecordCount: 0 },
+      sync: { reason: "Synced", trigger: "poll", ageSeconds: 30 },
     });
     render(<GitHubStatusTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("github-empty")).toBeTruthy());
