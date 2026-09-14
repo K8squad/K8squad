@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // BoardItem is one card of the per-Project board list — the §13 projection of
@@ -126,7 +128,9 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	for rows.Next() {
 		var it BoardItem
 		var blocked, priority, holder, assignee, run sql.NullString
-		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &priority, &it.Labels,
+		// labels via pq.Array — pgx stdlib returns text[] as a *string* on Go < 1.27
+		// (see coord.ReadTaskDetail); a direct &it.Labels scan 500s. ISI-4409.
+		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &priority, pq.Array(&it.Labels),
 			&holder, &assignee, &run,
 			&it.UpdatedAt, &it.CommentCount, &it.ChangeCount); err != nil {
 			return nil, fmt.Errorf("coord.ListWorkItems: scan: %w", err)

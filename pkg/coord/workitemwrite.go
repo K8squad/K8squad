@@ -30,6 +30,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // ErrInvalidWorkItem — the create/edit input is malformed (empty title, no editable
@@ -227,12 +229,15 @@ func (s *WorkItemWriteStore) CreateWorkItem(ctx context.Context, in CreateWorkIt
 	var rec WorkItemRecord
 	var teamOut, parentOut sql.NullString
 	var body, priorityOut, workModeOut sql.NullString
+	// labels binds natively ([]string ⇒ text[], pgx picks the right param OID) but
+	// the RETURNING scan needs pq.Array — see ReadTaskDetail for why (pgx stdlib
+	// hands text[] back as a *string* on Go < 1.27). ISI-4409.
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO coord.work_item (project_id, team_id, parent_id, title, body, state, created_by, priority, work_mode, labels)
 		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, NULLIF($5,''), 'backlog', $6, NULLIF($7,''), NULLIF($8,''), $9)
 		RETURNING id::text, project_id::text, team_id::text, parent_id::text, title, body, state, created_by, created_at, updated_at, priority, work_mode, labels`,
 		in.ProjectID, teamParam, parentParam, in.Title, in.Body, in.Principal, priority, workMode, labels,
-	).Scan(&rec.ID, &rec.ProjectID, &teamOut, &parentOut, &rec.Title, &body, &rec.State, &rec.CreatedBy, &rec.CreatedAt, &rec.UpdatedAt, &priorityOut, &workModeOut, &rec.Labels)
+	).Scan(&rec.ID, &rec.ProjectID, &teamOut, &parentOut, &rec.Title, &body, &rec.State, &rec.CreatedBy, &rec.CreatedAt, &rec.UpdatedAt, &priorityOut, &workModeOut, pq.Array(&rec.Labels))
 	if err != nil {
 		return WorkItemRecord{}, fmt.Errorf("coord.CreateWorkItem: insert: %w", err)
 	}

@@ -24,6 +24,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // TaskComment is one append-only note on a work item (coord.comment), in
@@ -92,6 +94,12 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	// One row: the item joined to its (always-present, 0001 trigger-provisioned)
 	// claim row. LEFT JOIN keeps the read robust even if a claim row were ever
 	// missing (reads as unclaimed/fence 0 rather than erroring).
+	//
+	// labels is text[] and MUST be scanned via pq.Array: on Go < 1.27 the pgx
+	// stdlib driver hands database/sql the raw array literal as a *string*, which
+	// convertAssign cannot put into a []string (a direct &td.Labels scan errors at
+	// runtime → 500). pq.Array's sql.Scanner parses that literal. Do not "simplify"
+	// it back to &td.Labels. (ISI-4409.)
 	err := db.QueryRowContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.body, wi.state, wi.blocked_reason,
 		       wi.priority, wi.work_mode, wi.labels,
@@ -100,7 +108,7 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid`, workItemID).
 		Scan(&td.WorkItemID, &td.Title, &body, &td.State, &blockedReason,
-			&priority, &workMode, &td.Labels,
+			&priority, &workMode, pq.Array(&td.Labels),
 			&holder, &runID, &fence, &assignee)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
