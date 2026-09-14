@@ -33,6 +33,7 @@ SQL migrations** applied in filename order.
 | 0015 | `0015_work_item_change_ref.sql` | `coord` — `change_ref` (append-only agent-reported change refs: commit SHAs / PR links with server-supplied author + run provenance; reject_mutation triggers, tight kind enum) | M1.5 (ISI-4131), Arch §6.1/§6.5 |
 | 0016 | `0016_work_item_touch_on_change.sql` | `coord` — `touch_updated_at()` bumps `updated_at` only when the row actually changes (no-op custody writes mint no revision) | ISI-4217, Arch §8.5 deterministic-resume (AC3) |
 | 0017 | `0017_reconcile_cancel_step.sql` | `coord` — `claim_reconcile_step_enum` extension admitting `'cancelling'`, the 3.3 operator-kill transitional step (CancelEnter writes it; no earlier migration ever admitted it — every kill died 23514). Originally authored as 0016 on a side branch; renumbered when 0016 was taken by the touch-trigger migration | ISI-4299, Arch §6.4/§3.3 |
+| 0019 | `0019_a2a_settlement.sql` | `coord` — `a2a_dispatch.settled_at` + `settle_outcome` (`succeeded`\|`failed`\|`follow_error` CHECK) + partial `idx_a2a_dispatch_settled`: the durable, at-most-once follow-settlement marker a post-restart reaper reads to reclaim run-owned sandbox pods leaked across an operator restart. NOT a reconcile step (deliberately does not touch the 0005/0017 `reconcile_step` enum). Renumbered from the ADR's working name 0017 (0017/0018 were taken). | ISI-4348-S1, ADR-0020 §2.1 |
 
 ### Name mapping (Story 2.1 wording ↔ Arch §6.1 authoritative names)
 

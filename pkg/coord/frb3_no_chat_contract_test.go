@@ -441,6 +441,16 @@ var allowedSurface = map[string]string{
 	"ProdCancelStore.CancelEnter":  "§3.3 fence-first running-ish → cancelling (kill-side entry)",
 	"ProdCancelStore.CancelFinish": "§3.3 guarded cancelling → cancelled after teardown (operator-side finish)",
 	"ProdCancelStore.Due":          "§3.3 list work items parked at cancelling (the kill sweep's backlog)",
+
+	// ADR-0020 (ISI-4348-S1) durable a2a follow-settlement marker: a custody
+	// annotation on coord.a2a_dispatch + its §6.5 audit, NOT an agent-to-agent
+	// channel — settlement is a post-terminal marker on the follow goroutine.
+	"ProdSettler":              "ADR-0020 §2.2 durable a2a follow-settlement writer bound to coord.a2a_dispatch",
+	"NewProdSettleWriter":      "ADR-0020 §2.2 constructor (follow-settlement marker writer)",
+	"ProdSettler.Settle":       "ADR-0020 §2.2 at-most-once settled_at/settle_outcome marker + a2a_settled audit (§6.5)",
+	"SettleOutcomeSucceeded":   "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFailed":      "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFollowError": "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 }
 
 // forbiddenNetCalls are selector calls the spine must never issue. The

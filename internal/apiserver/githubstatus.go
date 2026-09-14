@@ -18,10 +18,12 @@ import (
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/controller/reposync"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/gorilla/mux"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -41,7 +43,44 @@ type GithubStatus struct {
 	Releases     []GithubRelease  `json:"releases"`
 	Branches     []GithubBranch   `json:"branches"`
 	Freshness    GithubFreshness  `json:"freshness"`
+	Sync         GithubSync       `json:"sync"`
 }
+
+// GithubSync is the sync-state summary the GitHub tab renders as a freshness
+// chip + state cards (ISI-4229 / ISI-4398). Every field is derived from the
+// resolved Project.status the operator's reposync reconciler already writes —
+// this endpoint makes NO extra call and stores NO new state. It carries the
+// three read-model fields the data-driven tab is keyed on (obs spec GH-4):
+//
+//   - Reason  — the SyncReady condition reason (repo_sync.go taxonomy: Synced |
+//     SyncNotConfigured | CredentialMissing | ProviderError | MirrorWriteError |
+//     IssueSyncError). Drives the chip green→amber→red machine + the state cards.
+//   - Trigger — "webhook" | "poll" | "" — which path drove the last mirror pass,
+//     derived from whether the last webhook time bounds the last mirror time. It
+//     PROVES the AC "refresh is automatic, no manual kick".
+//   - AgeSeconds — now − lastMirrorTime, the freshness SLI the chip + mirror-age
+//     meter render ("Synced · N ago"). Nil when the mirror has never synced.
+//
+// It NEVER carries the condition Message (which could echo a provider error
+// string): the tab uses the fixed per-reason copy from the design spec, keyed on
+// Reason alone, so no operator-authored/error text — and thus no BYO token — can
+// reach the wire (obs spec PII posture).
+type GithubSync struct {
+	Reason     string `json:"reason"`
+	Trigger    string `json:"trigger,omitempty"`
+	AgeSeconds *int64 `json:"ageSeconds,omitempty"`
+}
+
+// Sync reason taxonomy mirrored onto the wire (values match reposync's
+// SyncReady condition reasons verbatim). SyncNotConfigured is the derived
+// default when a Project has never produced a SyncReady condition or a mirror
+// pass — the tab renders its first-run "No repository linked" empty state.
+const (
+	syncReasonSynced        = "Synced"
+	syncReasonNotConfigured = "SyncNotConfigured"
+	syncTriggerWebhook      = "webhook"
+	syncTriggerPoll         = "poll"
+)
 
 // GithubPR is one mirrored PR. ReviewState maps the raw provider state onto a
 // mini-board column (ready-for-review | merged) best-effort from what the
@@ -130,6 +169,9 @@ type GithubFreshness struct {
 type GithubStatusService struct {
 	reader client.Reader
 	mirror scm.MirrorReader
+	// now sources the wall clock used to compute mirror age; overridable in
+	// tests. Defaulted to time.Now by the constructor.
+	now func() time.Time
 }
 
 // NewGithubStatusService builds the read model. Both dependencies are required;
@@ -137,7 +179,7 @@ type GithubStatusService struct {
 // and the route answers the documented 501 (AC5) rather than constructing a
 // half-wired service.
 func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader) *GithubStatusService {
-	return &GithubStatusService{reader: reader, mirror: mirror}
+	return &GithubStatusService{reader: reader, mirror: mirror, now: time.Now}
 }
 
 // GithubStatus composes the payload for one Project. Resolution and every read
@@ -200,6 +242,11 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 			}
 			out.Freshness.MirrorRecordCount = sync.MirrorRecordCount
 		}
+		out.Sync = s.syncSummary(&proj)
+	} else {
+		// No Project object at all (e.g. mirror rows but the CR is gone from the
+		// informer): the tab treats this as not-configured rather than a blank.
+		out.Sync = GithubSync{Reason: syncReasonNotConfigured}
 	}
 
 	// GH-4: enrich the inbound server span with the domain identity + the
@@ -222,6 +269,44 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 	}
 
 	return out, nil
+}
+
+// syncSummary derives the wire sync-state from the resolved Project.status. The
+// reason comes from the SyncReady condition the reposync reconciler stamps;
+// when it has never run (no condition and no mirror pass) the derived reason is
+// SyncNotConfigured (the tab's first-run empty state). Trigger and age are pure
+// functions of the two status timestamps — no new state, no extra call.
+func (s *GithubStatusService) syncSummary(proj *ksquadv1.Project) GithubSync {
+	sum := GithubSync{}
+
+	sync := proj.Status.Sync
+	if cond := meta.FindStatusCondition(proj.Status.Conditions, reposync.ConditionSyncReady); cond != nil {
+		sum.Reason = cond.Reason
+	} else if sync != nil && sync.LastMirrorTime != nil {
+		// A mirror pass landed but no condition surfaced: it synced.
+		sum.Reason = syncReasonSynced
+	} else {
+		sum.Reason = syncReasonNotConfigured
+	}
+
+	if sync != nil && sync.LastMirrorTime != nil {
+		mirror := sync.LastMirrorTime.Time
+		age := int64(s.now().Sub(mirror).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		sum.AgeSeconds = &age
+
+		// The last mirror pass was webhook-driven iff the last good-signature
+		// webhook is no older than that pass; otherwise it was a poll tick.
+		if sync.LastWebhookTime != nil && !sync.LastWebhookTime.Time.Before(mirror) {
+			sum.Trigger = syncTriggerWebhook
+		} else {
+			sum.Trigger = syncTriggerPoll
+		}
+	}
+
+	return sum
 }
 
 // projectRow appends one mirror row onto the matching panel. Unknown kinds are

@@ -2785,3 +2785,154 @@ a:hover {
   align-items: center;
   flex: none;
 }
+
+/* ============================================================================
+ * GitHub sync tab (ISI-4229 / ISI-4398) — data-driven from GET .../github.
+ * Reuses the locked tokens: one accent (--accent) + status tones
+ * (running/paused/blocked). No new palette, no motion, dark-first.
+ * ==========================================================================*/
+.github-status__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.github-status__head h1 {
+  margin: 0;
+  margin-right: auto;
+}
+.github-status__autoline {
+  margin: 0 0 14px;
+  font-size: 0.85rem;
+}
+
+/* Freshness chip — green (healthy) → amber (stale/retry) → red (paused). */
+.github-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.github-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.github-chip--running {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+  background: color-mix(in srgb, var(--status-running) 12%, transparent);
+}
+.github-chip--paused {
+  color: var(--status-paused);
+  border-color: color-mix(in srgb, var(--status-paused) 55%, transparent);
+  background: color-mix(in srgb, var(--status-paused) 12%, transparent);
+}
+.github-chip--blocked {
+  color: var(--status-blocked);
+  border-color: color-mix(in srgb, var(--status-blocked) 55%, transparent);
+  background: color-mix(in srgb, var(--status-blocked) 12%, transparent);
+}
+
+/* Refresh is an understated escape hatch (the AC is auto-refresh). */
+.github-refresh {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-control, 8px);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.github-refresh:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.github-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* State cards — one per sync.reason, tone-bordered. */
+.github-state-card {
+  border-left: 3px solid var(--border);
+}
+.github-state-card--paused {
+  border-left-color: var(--status-paused);
+}
+.github-state-card--blocked {
+  border-left-color: var(--status-blocked);
+}
+.github-state-card__headline {
+  margin: 0 0 6px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.github-state-card__cta {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 14px;
+  border-radius: var(--radius-control, 8px);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+.github-state-card__cta:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.github-state-card__cta:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.github-state-card--blocked .github-state-card__cta {
+  border-color: var(--status-blocked);
+  background: var(--status-blocked);
+}
+.github-state-card--paused .github-state-card__cta {
+  border-color: var(--status-paused);
+  background: var(--status-paused);
+  color: #1a1400;
+}
+
+/* Stat tiles — snapshot counts. */
+.github-stat-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.github-stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.github-stat-tile__value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.github-stat-tile__label {
+  font-size: 0.8rem;
+}
+
+/* Degrade, don't blank: last-good data stays visible but ghosted behind the
+ * error banner on a transient failure. */
+.github-status__panels--ghost {
+  opacity: 0.45;
+  filter: grayscale(0.35);
+  pointer-events: none;
+}

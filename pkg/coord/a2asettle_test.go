@@ -1,0 +1,158 @@
+/*
+Copyright 2026 The K8squad Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package coord_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/K8squad/K8squad/pkg/coord"
+)
+
+const (
+	stTaskID  = "22222222-2222-2222-2222-222222222222#lap1"
+	stRun     = "22222222-2222-2222-2222-222222222222"
+	stItem    = "11111111-1111-1111-1111-111111111111"
+	stPrincip = "ksquad-operator"
+)
+
+// The FIRST writer for a dispatch lap marks it settled and emits exactly one
+// 'a2a_settled' audit row — both inside one committed transaction. RETURNING
+// work_item_id feeds the audit without a second read.
+func TestSettle_FirstWriterMarksAndAudits(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE coord.a2a_dispatch").
+		WithArgs(stTaskID, coord.SettleOutcomeSucceeded).
+		WillReturnRows(sqlmock.NewRows([]string{"work_item_id"}).AddRow(stItem))
+	mock.ExpectExec("INSERT INTO coord.audit_log").
+		WithArgs(stItem, stRun, stPrincip, coord.SettleOutcomeSucceeded).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	s, err := coord.NewProdSettleWriter(db, stPrincip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeSucceeded); err != nil {
+		t.Fatalf("first Settle: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("first Settle must mark + audit + commit exactly once: %v", err)
+	}
+}
+
+// At-most-once: a SECOND Settle for the same lap (the conditional UPDATE matches
+// nothing — already settled) is a no-op: NO audit row, NO duplicate marker, and
+// no error. This is the OnDone-re-entry / restart-boundary case.
+func TestSettle_SecondWriterIsNoOp(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	// WHERE settled_at IS NULL matches nothing → RETURNING yields no rows.
+	mock.ExpectQuery("UPDATE coord.a2a_dispatch").
+		WithArgs(stTaskID, coord.SettleOutcomeFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"work_item_id"}))
+	// NO ExpectExec for the audit INSERT: a no-op settle must not audit.
+	mock.ExpectRollback()
+
+	s, err := coord.NewProdSettleWriter(db, stPrincip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFailed); err != nil {
+		t.Fatalf("re-entrant Settle should be a silent no-op, got: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("re-entrant Settle must NOT write a second audit row: %v", err)
+	}
+}
+
+// An invalid outcome is rejected before any DB work — fail-closed on a value the
+// 0019 CHECK would reject anyway, with a clear error and no transaction.
+func TestSettle_InvalidOutcomeRejected(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// No expectations: Settle must return before BeginTx.
+	s, err := coord.NewProdSettleWriter(db, stPrincip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(context.Background(), stTaskID, stRun, "bogus"); err == nil {
+		t.Fatal("Settle must reject an out-of-family outcome")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("an invalid outcome must not touch the DB: %v", err)
+	}
+}
+
+// A marker-write failure surfaces and aborts before the audit — the audit lands
+// only when the marker did.
+func TestSettle_MarkErrorSurfacesNoAudit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE coord.a2a_dispatch").
+		WithArgs(stTaskID, coord.SettleOutcomeFollowError).
+		WillReturnError(errors.New("deadlock detected"))
+	mock.ExpectRollback()
+
+	s, err := coord.NewProdSettleWriter(db, stPrincip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFollowError); err == nil {
+		t.Fatal("a marker-write failure must surface as an error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("no audit row may be attempted after a marker failure: %v", err)
+	}
+}
+
+func TestNewProdSettleWriter_Validation(t *testing.T) {
+	if _, err := coord.NewProdSettleWriter(nil, stPrincip); err == nil {
+		t.Fatal("nil db must error")
+	}
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := coord.NewProdSettleWriter(db, ""); err == nil {
+		t.Fatal("empty principal must error")
+	}
+}

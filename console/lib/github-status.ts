@@ -65,6 +65,86 @@ export type GithubFreshness = {
   mirrorRecordCount: number;
 };
 
+/** GithubSync mirrors internal/apiserver/githubstatus.go GithubSync (ISI-4398 /
+ * obs GH-4). It carries the three read-model fields the data-driven tab is keyed
+ * on — reason (the SyncReady taxonomy), trigger (webhook|poll, proves the AC
+ * "no manual kick"), and ageSeconds (the freshness SLI). All are derived by the
+ * apiserver from Project.status; never a fabricated "live" signal. */
+export type GithubSync = {
+  reason: string;
+  trigger?: string;
+  ageSeconds?: number;
+};
+
+/** The reposync SyncReady reason taxonomy (repo_sync.go:70-76), surfaced 1:1 on
+ * the wire. The tab keys its state cards + chip tone on these. */
+export const SyncReason = {
+  Synced: "Synced",
+  NotConfigured: "SyncNotConfigured",
+  CredentialMissing: "CredentialMissing",
+  ProviderError: "ProviderError",
+  MirrorWriteError: "MirrorWriteError",
+  IssueSyncError: "IssueSyncError",
+} as const;
+
+/** Freshness SLO for the mirror age, in seconds: pollInterval (300s default,
+ * repo_sync.go DefaultPollIntervalSeconds) + 60s slack — obs spec SLO #1
+ * (p99 < pollInterval + slack). A Synced mirror older than this drives the
+ * amber "Data is behind schedule" state. */
+export const MIRROR_SLO_SECONDS = 360;
+
+/** Chip tone maps 1:1 onto the locked status tones (globals.css): running
+ * (green) · paused (amber) · blocked (red) · neutral (no chip). */
+export type ChipTone = "running" | "paused" | "blocked" | "neutral";
+
+export type ChipState = { tone: ChipTone; text: string };
+
+/** chipState is the green→amber→red freshness-chip machine (DESIGN-SPEC §2),
+ * keyed on sync.reason + mirror age. A Synced-but-stale mirror goes amber; a
+ * provider error goes amber ("last good"); a missing credential goes red; an
+ * unconfigured project shows no chip (neutral) — its empty state carries the CTA. */
+export function chipState(sync: GithubSync | undefined): ChipState {
+  const reason = sync?.reason ?? SyncReason.NotConfigured;
+  const age = sync?.ageSeconds;
+  const ago = age === undefined ? "" : ageLabel(age);
+
+  switch (reason) {
+    case SyncReason.NotConfigured:
+      return { tone: "neutral", text: "" };
+    case SyncReason.CredentialMissing:
+      return { tone: "blocked", text: "Paused · reconnect required" };
+    case SyncReason.ProviderError:
+    case SyncReason.MirrorWriteError:
+    case SyncReason.IssueSyncError:
+      return { tone: "paused", text: ago ? `Retrying · last good ${ago}` : "Retrying" };
+    case SyncReason.Synced:
+    default:
+      if (age !== undefined && age >= MIRROR_SLO_SECONDS) {
+        // Synced but behind the freshness SLO — amber, and the "Sync delayed"
+        // card explains it. Trigger source is dropped once we're stale.
+        return { tone: "paused", text: ago ? `Synced · ${ago}` : "Synced" };
+      }
+      return {
+        tone: "running",
+        text:
+          `Synced${ago ? ` · ${ago}` : ""}` +
+          (sync?.trigger ? ` · via ${sync.trigger}` : ""),
+      };
+  }
+}
+
+/** ageLabel humanizes an age in seconds as "N sec/min/hr/days ago" — the chip +
+ * mirror-age meter copy (DESIGN-SPEC uses "2 min ago", "14 min ago"). */
+export function ageLabel(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s} sec ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} hr ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+
 /** GET /api/projects/{id}/github response (apiserver githubstatus.go). Every
  * panel arrives as a non-null array (the Go read model seeds `[]`), so the tab
  * never crashes on a null slice. */
@@ -77,6 +157,7 @@ export type GithubStatus = {
   releases: GithubRelease[];
   branches: GithubBranch[];
   freshness: GithubFreshness;
+  sync: GithubSync;
 };
 
 /** The distinct honest state an HTTP status carries (mirrors SquadOverview). */

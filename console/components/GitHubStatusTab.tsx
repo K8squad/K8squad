@@ -19,12 +19,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
 import {
+  chipState,
   fetchGithubStatus,
-  isStale,
-  syncedAgo,
   triggerGithubSync,
+  SyncReason,
+  type ChipTone,
   type GithubStatus,
   type GithubStatusState,
+  type GithubSync,
 } from "@/lib/github-status";
 
 const AUTO_REFRESH_MS = 30_000;
@@ -33,8 +35,6 @@ const SYNC_DEBOUNCE_MS = 30_000;
 
 export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const [state, setState] = useState<GithubStatusState>({ kind: "loading" });
-  // `now` drives the "synced Ns ago" label; bumped on each refresh tick.
-  const [now, setNow] = useState<number>(() => Date.now());
   const [syncing, setSyncing] = useState(false);
   // Unix ms of the last successful sync trigger; controls button disable.
   const lastSyncRef = useRef<number>(0);
@@ -47,7 +47,6 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
       // A network throw (BFF unreachable) is a retryable transport error.
       setState({ kind: "error", status: 0 });
     }
-    setNow(Date.now());
   }, [projectId]);
 
   useEffect(() => {
@@ -105,6 +104,9 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
   }
 
   const data = state.data;
+  const sync: GithubSync = data.sync ?? { reason: SyncReason.NotConfigured };
+  const chip = chipState(sync);
+  const card = stateCardFor(sync);
   const empty =
     data.pullRequests.length === 0 &&
     data.issues.length === 0 &&
@@ -113,39 +115,71 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
     data.releases.length === 0 &&
     data.branches.length === 0;
 
-  const stale = isStale(data.freshness, now);
+  // Degrade, don't blank (DESIGN-SPEC §3): on a credential/provider/stale error
+  // we keep the last-good mirror data visible but ghosted, alongside the banner
+  // card that says WHY it's stale — the tab is never blank on a transient error.
+  const ghost = card?.ghost === true && !empty;
 
   return (
     <section data-testid="github-status">
       <header className="github-status__head">
         <h1>GitHub status</h1>
-        <p className="muted" data-testid="github-freshness">
-          {syncedAgo(data.freshness.lastMirrorTime, now)}
-          {stale && (
-            <span className="github-status__stale" data-testid="github-stale">
-              {" "}· may be stale
-            </span>
-          )}
-        </p>
+        {chip.tone !== "neutral" && (
+          <span
+            className={`github-chip github-chip--${chip.tone}`}
+            data-testid="github-chip"
+            data-tone={chip.tone}
+            data-reason={sync.reason}
+          >
+            <span className="github-chip__dot" aria-hidden="true" />
+            {/* Kept lowercase-"synced …ago" phrase inside so existing honest-
+               freshness assertions and screen-readers still parse the recency. */}
+            <span data-testid="github-freshness">{chip.text}</span>
+          </span>
+        )}
+        {/* Refresh is an escape hatch only — the AC is that refresh is automatic
+           (webhook + poll), so this is deliberately understated, not a prominent
+           "Sync now". A 429 latches the same client debounce. */}
         <button
           type="button"
+          className="github-refresh"
           onClick={() => void handleSync()}
           disabled={syncing}
           data-testid="github-sync-now"
-          aria-label="Trigger an immediate mirror sync"
+          aria-label="Refresh the mirror now"
+          title="Refresh"
         >
-          {syncing ? "Syncing…" : "Sync now"}
+          {syncing ? "Refreshing…" : "↻ Refresh"}
         </button>
       </header>
 
+      {chip.tone === "running" && (
+        <p className="muted github-status__autoline" data-testid="github-autoline">
+          ⚡ Auto-refreshed — webhook + 5-min poll · no manual kick
+        </p>
+      )}
+
+      {card && (
+        <StateCard card={card} syncing={syncing} onRetry={() => void handleSync()} projectId={projectId} />
+      )}
+
+      {!empty && <StatTiles data={data} />}
+
       {empty ? (
-        <EmptyState
-          testId="github-empty"
-          title="No GitHub activity yet"
-          why="The mirror has no PRs, issues, checks, artifacts, releases or branches for this project's repo yet."
-        />
+        card ? null : (
+          <EmptyState
+            testId="github-empty"
+            title="No GitHub activity yet"
+            why="The mirror has no PRs, issues, checks, artifacts, releases or branches for this project's repo yet."
+          />
+        )
       ) : (
-        <div className="github-status__panels">
+        <div
+          className={`github-status__panels${ghost ? " github-status__panels--ghost" : ""}`}
+          data-testid="github-panels"
+          data-ghost={ghost ? "true" : "false"}
+          aria-hidden={ghost ? "true" : undefined}
+        >
           <PRPanel prs={data.pullRequests} />
           <IssuePanel issues={data.issues} />
           <CheckPanel checks={data.checkRuns} />
@@ -155,6 +189,144 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
         </div>
       )}
     </section>
+  );
+}
+
+// ============================================================================
+// Sync state cards (DESIGN-SPEC §3) — one per sync.reason, copy verbatim.
+// ============================================================================
+
+type StateCardDescriptor = {
+  reason: string;
+  tone: ChipTone;
+  headline: string;
+  body: string;
+  cta: string;
+  ctaKind: "retry" | "settings";
+  ghost: boolean; // keep last-good data ghosted behind this card
+};
+
+/** stateCardFor returns the banner card for a non-healthy sync.reason, or null
+ * when the mirror is Synced and within the freshness SLO (the happy path shows
+ * no card). Copy is verbatim from DESIGN-SPEC §3 so the error UX matches the
+ * observability taxonomy exactly. */
+function stateCardFor(sync: GithubSync): StateCardDescriptor | null {
+  const chip = chipState(sync);
+  switch (sync.reason) {
+    case SyncReason.NotConfigured:
+      return {
+        reason: sync.reason,
+        tone: "neutral",
+        headline: "No repository linked",
+        body: "Link a GitHub repository to mirror its branches, pull requests and checks here. Once linked, sync is automatic — webhook plus a 5-minute poll, no manual kick.",
+        cta: "Link GitHub repository",
+        ctaKind: "settings",
+        ghost: false,
+      };
+    case SyncReason.CredentialMissing:
+      return {
+        reason: sync.reason,
+        tone: "blocked",
+        headline: "GitHub token can't be resolved",
+        body: "Sync is paused because the repository credential could not be resolved. The data below is the last known snapshot and may be stale — reconnect GitHub to resume mirroring.",
+        cta: "Reconnect GitHub",
+        ctaKind: "settings",
+        ghost: true,
+      };
+    case SyncReason.ProviderError:
+    case SyncReason.MirrorWriteError:
+    case SyncReason.IssueSyncError:
+      return {
+        reason: sync.reason,
+        tone: "paused",
+        headline: "GitHub unreachable — retrying",
+        body: "The last sync failed and is retrying automatically with backoff. The data below is the last good snapshot — the tab is never blank on a transient error.",
+        cta: "Retry now",
+        ctaKind: "retry",
+        ghost: true,
+      };
+    case SyncReason.Synced:
+    default:
+      // Synced but behind the freshness SLO ⇒ "Data is behind schedule".
+      if (chip.tone === "paused") {
+        return {
+          reason: sync.reason,
+          tone: "paused",
+          headline: "Data is behind schedule",
+          body: "The mirror is older than the freshness target (SLO 6m). It refreshes on webhook and a 5-minute poll; refresh now if you can't wait.",
+          cta: "Refresh now",
+          ctaKind: "retry",
+          ghost: false,
+        };
+      }
+      return null;
+  }
+}
+
+function StateCard({
+  card,
+  syncing,
+  onRetry,
+  projectId,
+}: {
+  card: StateCardDescriptor;
+  syncing: boolean;
+  onRetry: () => void;
+  projectId: string;
+}) {
+  const toneClass = card.tone === "neutral" ? "" : ` github-state-card--${card.tone}`;
+  return (
+    <div
+      className={`card github-state-card${toneClass}`}
+      data-testid="github-state-card"
+      data-reason={card.reason}
+      role="status"
+    >
+      <h2 className="github-state-card__headline">{card.headline}</h2>
+      <p className="muted">{card.body}</p>
+      {card.ctaKind === "retry" ? (
+        <button
+          type="button"
+          className="github-state-card__cta"
+          onClick={onRetry}
+          disabled={syncing}
+          data-testid="github-state-card-cta"
+        >
+          {syncing ? "Refreshing…" : card.cta}
+        </button>
+      ) : (
+        <a
+          className="github-state-card__cta"
+          href={`/projects/${encodeURIComponent(projectId)}/settings`}
+          data-testid="github-state-card-cta"
+        >
+          {card.cta}
+        </a>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Stat tiles (DESIGN-SPEC §2) — snapshot counts from the mirror projection.
+// ============================================================================
+
+function StatTiles({ data }: { data: GithubStatus }) {
+  const tiles: Array<{ label: string; value: number }> = [
+    { label: "Branches", value: data.branches.length },
+    { label: "Pull requests", value: data.pullRequests.length },
+    { label: "Issues", value: data.issues.length },
+    { label: "Checks", value: data.checkRuns.length },
+  ];
+  return (
+    <div className="github-stat-tiles" data-testid="github-stat-tiles">
+      {tiles.map((t) => (
+        <div className="github-stat-tile" key={t.label} data-testid={`stat-${t.label.toLowerCase().replace(/\s+/g, "-")}`}>
+          <span className="github-stat-tile__value">{t.value}</span>
+          <span className="github-stat-tile__label muted">{t.label}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
