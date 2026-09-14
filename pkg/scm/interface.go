@@ -83,6 +83,17 @@ type SourceProvider interface {
 // SourceProvider.
 type SourceControlProvider = SourceProvider
 
+// RateLimitReporter is an OPTIONAL provider capability (ISI-4395 GH-3): a
+// provider that tracks the rate-limit headroom of its API responses exposes the
+// most recent value so the reconciler can feed the
+// ksquad.scm.provider.rate_limit.remaining gauge. Providers that cannot report
+// it simply do not implement this; the reconciler type-asserts and skips the
+// observation when absent. remaining is requests-left; ok is false before any
+// response has been observed.
+type RateLimitReporter interface {
+	LastRateRemaining() (remaining int64, ok bool)
+}
+
 // WebhookEvent is the provider-agnostic summary of one webhook delivery,
 // extracted AFTER verification. It exists for logging/trigger attribution
 // only — the mirror is written exclusively from provider snapshots, never

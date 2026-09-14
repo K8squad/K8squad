@@ -25,7 +25,11 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/controller/reposync"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/gorilla/mux"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -55,7 +59,23 @@ func NewGithubSyncService(reader client.Reader, writer client.Client) *GithubSyn
 
 // TriggerSync bumps the scm-sync-trigger annotation on the Project. Returns
 // errDebounced when called again within debounceWindow for the same project.
-func (s *GithubSyncService) TriggerSync(ctx context.Context, auth discussion.AuthorContext, projectID string) error {
+func (s *GithubSyncService) TriggerSync(ctx context.Context, auth discussion.AuthorContext, projectID string) (retErr error) {
+	// GH-4: the manual "Sync now" path gets its OWN span tagged trigger=manual.
+	// The reconcile it kicks bumps the SAME trigger annotation a webhook does,
+	// so without this span a manual refresh and a webhook refresh are
+	// indistinguishable downstream — this is what lets a dashboard PROVE a
+	// mirror refresh was (or was not) a human button press.
+	ctx, span := telemetry.Tracer().Start(ctx, "scm.sync.trigger", trace.WithAttributes(
+		attribute.String("ksquad.scm.trigger", "manual"),
+	))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	var ns, name string
 	var err error
 	if auth.IsAdmin {
@@ -66,6 +86,7 @@ func (s *GithubSyncService) TriggerSync(ctx context.Context, auth discussion.Aut
 	if err != nil {
 		return err
 	}
+	span.SetAttributes(attribute.String("ksquad.scm.project", ns+"/"+name))
 
 	key := ns + "/" + name
 	s.mu.Lock()

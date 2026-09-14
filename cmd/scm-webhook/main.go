@@ -47,6 +47,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -56,6 +57,9 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -67,6 +71,8 @@ import (
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/controller/reposync"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
 )
 
 const (
@@ -103,6 +109,35 @@ func main() {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 	logger := ctrl.Log.WithName("scm-webhook")
 
+	// Telemetry spine (GH-1): without telemetry.Setup here telemetry.Tracer()
+	// and telemetry.Meter() are no-ops and the /scm/webhook handler is a total
+	// blind spot — the exact undiagnosability this issue closes. The env
+	// OTEL_EXPORTER_OTLP_* fallback is the same one the operator uses, so the
+	// ingress exports to whatever gateway the operator does. Setup is fail-open:
+	// a bad exporter config must never keep the ingress from serving.
+	ctx := ctrl.SetupSignalHandler()
+	telemetryOpts := telemetry.Options{ServiceName: "ksquad-scm-webhook"}
+	if env := telemetry.EnvSignalExport(os.Getenv); env != nil {
+		telemetry.ApplyEnvOTLPFallback(&telemetryOpts, env)
+	}
+	_, otelShutdown, err := telemetry.Setup(ctx, telemetryOpts)
+	if err != nil {
+		logger.Error(err, "telemetry spine: setup failed; continuing without OTLP export")
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := otelShutdown(shutdownCtx); err != nil {
+				logger.Error(err, "telemetry spine: shutdown flush failed")
+			}
+		}()
+	}
+	metrics, err := scmmetrics.Register(telemetry.Meter())
+	if err != nil {
+		logger.Error(err, "telemetry spine: scm metrics registration failed; webhook counter disabled")
+		metrics = nil
+	}
+
 	k8sClient, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
 		logger.Error(err, "unable to create Kubernetes client")
@@ -115,6 +150,7 @@ func main() {
 		providers:       scm.NewProviderRegistry(),
 		maxPayloadBytes: maxPayloadBytes,
 		inflight:        make(chan struct{}, maxInFlightDeliveries),
+		metrics:         metrics,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -148,6 +184,10 @@ type webhookHandler struct {
 	providers       *scm.ProviderRegistry
 	maxPayloadBytes int64
 	inflight        chan struct{}
+	// metrics counts deliveries on ksquad.scm.webhook.total{event,outcome}
+	// (GH-1). Nil when telemetry registration failed — every call site is
+	// nil-safe so the ingress never fails a delivery for a metrics gap.
+	metrics *scmmetrics.Metrics
 }
 
 // unauthorized is the uniform refusal for everything an unauthenticated
@@ -160,9 +200,33 @@ func (h *webhookHandler) unauthorized(w http.ResponseWriter, detail string, logK
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
-// handle enforces the AC4 pipeline: identify Project → resolve secret →
-// read body → verify HMAC → (only then) parse header → bump trigger.
+// handle opens the scm.webhook.receive span and records the delivery on
+// ksquad.scm.webhook.total{event,outcome} (GH-1). The verify-gate pipeline
+// itself lives in serve; this wrapper owns only the observability envelope so
+// every return path is counted exactly once with a bounded (event, outcome).
 func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
+	ctx, span := telemetry.Tracer().Start(r.Context(), "scm.webhook.receive")
+	r = r.WithContext(ctx)
+
+	event, outcome := h.serve(w, r)
+
+	span.SetAttributes(
+		attribute.String("scm.webhook.event", event),
+		attribute.String("scm.webhook.outcome", outcome),
+	)
+	if outcome == scmmetrics.OutcomeError {
+		span.SetStatus(codes.Error, "webhook delivery not processed")
+	}
+	span.End()
+	h.metrics.RecordWebhook(ctx, event, outcome)
+}
+
+// serve enforces the AC4 pipeline: identify Project → resolve secret →
+// read body → verify HMAC → (only then) parse header → bump trigger. It
+// returns the bounded (event, outcome) pair the caller records; the payload
+// itself is NEVER placed on a span attribute or the counter (PII hygiene).
+func (h *webhookHandler) serve(w http.ResponseWriter, r *http.Request) (event, outcome string) {
+	span := trace.SpanFromContext(r.Context())
 	// Bound concurrent deliveries before anything expensive happens.
 	if h.inflight != nil {
 		select {
@@ -170,13 +234,13 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 			defer func() { <-h.inflight }()
 		default:
 			http.Error(w, "overloaded", http.StatusServiceUnavailable)
-			return
+			return "unknown", scmmetrics.OutcomeError
 		}
 	}
 
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+		return "unknown", scmmetrics.OutcomeError
 	}
 
 	projectName := firstNonEmpty(r.Header.Get("X-KSquad-Project"), r.URL.Query().Get("project"))
@@ -185,15 +249,21 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		// The Project must be identified out-of-band: identifying it from
 		// the payload would mean parsing before verify (AC4 regression).
 		http.Error(w, "missing project identification (X-KSquad-Project header or ?project=)", http.StatusBadRequest)
-		return
+		return "unknown", scmmetrics.OutcomeError
 	}
 	// The namespace is fully attacker-controlled input; a silent "default"
 	// fallback would let probes target an unintended namespace. Explicit
 	// or reject.
 	if namespace == "" {
 		http.Error(w, "missing project namespace (X-KSquad-Namespace header or ?namespace=)", http.StatusBadRequest)
-		return
+		return "unknown", scmmetrics.OutcomeError
 	}
+	// Project identity is bounded (a tenant Project) — safe on the span. The
+	// payload is not, and never lands here (PII hygiene).
+	span.SetAttributes(
+		attribute.String("scm.project", projectName),
+		attribute.String("scm.namespace", namespace),
+	)
 
 	// Unknown project / unconfigured project / unresolvable secret / bad
 	// signature are indistinguishable to the caller (uniform 401): the
@@ -201,12 +271,12 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 	project := &ksquadv1alpha1.Project{}
 	if err := h.client.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: projectName}, project); err != nil {
 		h.unauthorized(w, "project lookup failed", "project", projectName, "namespace", namespace, "error", err.Error())
-		return
+		return "unknown", scmmetrics.OutcomeRejected
 	}
 	sync := project.Spec.Repo.Sync
 	if sync == nil || sync.WebhookSecretRef == nil || sync.WebhookSecretRef.Name == "" {
 		h.unauthorized(w, "project has no repo-sync webhook secret configured", "project", projectName)
-		return
+		return "unknown", scmmetrics.OutcomeRejected
 	}
 
 	maxBytes := h.maxPayloadBytes
@@ -218,10 +288,10 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
-			return
+			return "unknown", scmmetrics.OutcomeError
 		}
 		http.Error(w, "unreadable body", http.StatusBadRequest)
-		return
+		return "unknown", scmmetrics.OutcomeError
 	}
 
 	// ── THE VERIFY GATE (AC4): everything above is routing, not parsing ──
@@ -232,7 +302,7 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 	secret := &corev1.Secret{}
 	if err := h.client.Get(r.Context(), client.ObjectKey{Namespace: namespace, Name: sync.WebhookSecretRef.Name}, secret); err != nil {
 		h.unauthorized(w, "webhook secret not resolvable", "project", projectName, "error", err.Error())
-		return
+		return "unknown", scmmetrics.OutcomeRejected
 	}
 	// Resolve the delivery's provider through the SAME registry the
 	// reconciler uses (story 11.5): which header carries the credential
@@ -249,11 +319,12 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 	provider, err := registry.Provider(r.Context(), sync.Provider, scm.ProviderCredentials{})
 	if err != nil {
 		h.unauthorized(w, "provider not resolvable", "project", projectName, "provider", sync.Provider, "error", err.Error())
-		return
+		return "unknown", scmmetrics.OutcomeRejected
 	}
+	span.SetAttributes(attribute.String("scm.provider", sync.Provider))
 	if !provider.VerifyWebhookDelivery(r.Context(), r.Header, body, string(secret.Data[secretKey])) {
 		h.unauthorized(w, "bad delivery credential dropped", "project", projectName, "provider", sync.Provider)
-		return
+		return "unknown", scmmetrics.OutcomeRejected
 	}
 
 	// ── verified: payload may NOW be parsed (event attribution for logging) ──
@@ -278,14 +349,21 @@ func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
 		project.Annotations = map[string]string{}
 	}
 	project.Annotations[reposync.TriggerAnnotation] = time.Now().UTC().Format(time.RFC3339Nano)
+	// GH-1/GH-2 trace join: stamp the current span's W3C trace context onto the
+	// Project annotations (bare traceparent/tracestate keys — the same carrier
+	// convention the Run drive path uses). The operator's reposync reconcile
+	// Extracts it so the webhook→reconcile hop is ONE distributed trace, not two
+	// disconnected spans.
+	telemetry.Inject(r.Context(), project.Annotations)
 	if err := h.client.Patch(r.Context(), project, patch); err != nil {
 		h.logger.Error(err, "webhook: trigger patch failed", "project", projectName)
 		http.Error(w, "failed to trigger reconcile", http.StatusInternalServerError)
-		return
+		return attribution, scmmetrics.OutcomeError
 	}
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintln(w, "triggered")
+	return attribution, scmmetrics.OutcomeAccepted
 }
 
 func firstNonEmpty(values ...string) string {

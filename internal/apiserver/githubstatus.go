@@ -20,6 +20,8 @@ import (
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/gorilla/mux"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -181,12 +183,16 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 	// Freshness from the resolved Project's status.sync — the console's
 	// freshness IS the mirror's freshness (AC3). A Project with no sync slice
 	// yet leaves the timestamps nil (the tab renders "not synced yet").
+	var repoURL string
+	mirrorAgeSeconds := -1.0 // -1 = never synced (no freshness SLI yet)
 	var proj ksquadv1.Project
 	if err := s.reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &proj); err == nil {
+		repoURL = proj.Spec.Repo.URL
 		if sync := proj.Status.Sync; sync != nil {
 			if sync.LastMirrorTime != nil {
 				t := sync.LastMirrorTime.Time
 				out.Freshness.LastMirrorTime = &t
+				mirrorAgeSeconds = time.Since(t).Seconds()
 			}
 			if sync.LastWebhookTime != nil {
 				t := sync.LastWebhookTime.Time
@@ -194,6 +200,25 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 			}
 			out.Freshness.MirrorRecordCount = sync.MirrorRecordCount
 		}
+	}
+
+	// GH-4: enrich the inbound server span with the domain identity + the
+	// freshness SLI, so a GitHub-tab read is queryable by project/repo and the
+	// mirror.age_seconds freshness (now - lastSuccess) the ISI-4229 SLO scores.
+	// repo URL is bounded per Project; no run.id / entity ids on the span.
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(
+		attribute.String("ksquad.scm.project", ns+"/"+name),
+		attribute.String("ksquad.scm.repo_url", repoURL),
+		attribute.Int("ksquad.scm.result.pull_requests", len(out.PullRequests)),
+		attribute.Int("ksquad.scm.result.issues", len(out.Issues)),
+		attribute.Int("ksquad.scm.result.check_runs", len(out.CheckRuns)),
+		attribute.Int("ksquad.scm.result.artifacts", len(out.Artifacts)),
+		attribute.Int("ksquad.scm.result.releases", len(out.Releases)),
+		attribute.Int("ksquad.scm.result.branches", len(out.Branches)),
+	)
+	if mirrorAgeSeconds >= 0 {
+		span.SetAttributes(attribute.Float64("ksquad.scm.mirror.age_seconds", mirrorAgeSeconds))
 	}
 
 	return out, nil
