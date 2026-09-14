@@ -52,7 +52,8 @@ func openTaskIOTestDB(t *testing.T) *sql.DB {
 
 // applyCoordSchema resets coord and applies the SHIPPED files — not inline DDL —
 // so drift between the migrations and the adapter goes RED here (0001 base +
-// 0015 change_ref, which the M1.5 read/write path rides on).
+// 0015 change_ref, which the M1.5 read/write path rides on; 0020 create-fields,
+// which the shared ReadTaskDetail read now selects — ISI-4409).
 func applyCoordSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -60,7 +61,7 @@ func applyCoordSchema(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
 		t.Fatalf("reset coord schema: %v", err)
 	}
-	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql", "0018_claim_assignee.sql"} {
+	for _, name := range []string{"0001_coord_schema.sql", "0015_work_item_change_ref.sql", "0018_claim_assignee.sql", "0020_work_item_create_fields.sql"} {
 		var mig []byte
 		var err error
 		for _, c := range []string{
