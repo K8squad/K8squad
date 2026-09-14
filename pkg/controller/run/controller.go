@@ -33,6 +33,7 @@ import (
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/reconcile"
+	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 )
 
 // DefaultResync bounds how long a non-terminal Run's status projection can lag
@@ -103,6 +104,9 @@ type Reconciler struct {
 	// Resync is the non-terminal requeue cadence (ISI-4195); zero uses
 	// DefaultResync. Tests pin it to observe the resync behaviour.
 	Resync time.Duration
+	// Health, when set, records this controller's reconcile latency + error
+	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
+	Health *cphealth.Metrics
 	// PhaseKicks re-enqueues a Run for immediate re-projection when the driver
 	// commits a durable step transition (ISI-4381 Option A). It is the
 	// event-driven half of the projector's re-trigger: without it the projector
@@ -261,5 +265,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// re-enqueues the Run here so the new phase is projected at once.
 		b = b.WatchesRawSource(source.Channel(r.PhaseKicks, &handler.EnqueueRequestForObject{}))
 	}
-	return b.Complete(r)
+	// Wrap the reconciler so its latency + error count land on the operator's
+	// OTel meter (ISI-4384/WS-E); WrapReconciler is a no-op when Health is nil.
+	return b.Complete(cphealth.WrapReconciler(r.Health, "run", r))
 }

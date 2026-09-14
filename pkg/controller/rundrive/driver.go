@@ -74,6 +74,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 )
 
 // workItemField is the Run index key the resume kick lists Runs by (a work
@@ -224,6 +225,10 @@ type Driver struct {
 	Now         func() time.Time
 	Rand        func() float64
 	MaxPasses   int
+
+	// Health, when set, records this controller's reconcile latency + error
+	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
+	Health *cphealth.Metrics
 
 	// resumeCh feeds the watched channel source: due 3.7 wakes land here as
 	// GenericEvents carrying the Run to re-drive. Buffered; a full channel is
@@ -754,5 +759,5 @@ func (r *Driver) SetupWithManager(mgr ctrl.Manager) error {
 		For(&api.Run{}).
 		WatchesRawSource(source.Channel(r.resumeCh, &handler.EnqueueRequestForObject{})).
 		Named("run-drive").
-		Complete(r)
+		Complete(cphealth.WrapReconciler(r.Health, "run-drive", r))
 }
