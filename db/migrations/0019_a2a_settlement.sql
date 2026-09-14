@@ -40,3 +40,19 @@ ALTER TABLE coord.a2a_dispatch
 -- reaper scans by run_id, and stays out of the hot un-settled dispatch path.
 CREATE INDEX idx_a2a_dispatch_settled
     ON coord.a2a_dispatch (run_id) WHERE settled_at IS NOT NULL;
+
+-- S3 read path (ADR-0020 §2.4, ISI-4403) — workItemRef → settled_at join key.
+-- The Run controller's phase projector keys off `spec.workItemRef`, which IS a
+-- coord work_item id: the driver parses it as a uuid (pkg/controller/rundrive/
+-- driver.go, `uuid.Parse(run.Spec.WorkItemRef)`) and hands it to Claims.State /
+-- ReconcileStepReader.StepForWorkItem as `coord.claim.work_item_id` (ADR-001).
+-- That SAME uuid is `coord.a2a_dispatch.work_item_id` (0005: NOT NULL FK to
+-- coord.work_item(id)), so S3's `workItemRef → settled_at` read is simply
+--   SELECT settled_at FROM coord.a2a_dispatch WHERE work_item_id = $1 ...
+-- and it is ALREADY index-covered: `work_item_id` is the LEADING column of
+-- idx_a2a_dispatch_run (work_item_id, run_id) from 0005. No new index is needed
+-- for the join — this migration adds only the S2 partial index above.
+-- NB retry laps: one (work_item_id, run_id) can have several dispatch rows
+-- (a2a_task_id = 'run_id#lapN', §8). Settlement lands on the terminal lap, so a
+-- consumer answering "is this run's follow settled?" takes MAX(settled_at) /
+-- `settled_at IS NOT NULL` across the run's laps, not a single-row assumption.

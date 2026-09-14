@@ -111,4 +111,36 @@ BEGIN
         'the reaper lookup index idx_a2a_dispatch_settled must exist';
 END $$;
 
+-- (5) S3 read path (ADR-0020 §2.4, ISI-4403): the `workItemRef → settled_at` join.
+--     spec.workItemRef IS a coord work_item id, so S3 reads settled_at keyed by
+--     work_item_id. Prove (a) that read returns the settled marker, and (b) it is
+--     index-covered by the leading column of idx_a2a_dispatch_run (from 0005) —
+--     the guarantee ISI-4403 asked S1 to confirm, so no new join index is needed.
+DO $$
+DECLARE wi uuid; rid uuid := gen_random_uuid(); got timestamptz;
+BEGIN
+    INSERT INTO coord.work_item (project_id, title, created_by)
+         VALUES (gen_random_uuid(), 'settle join item', 'principal:test')
+      RETURNING id INTO wi;
+    INSERT INTO coord.a2a_dispatch (a2a_task_id, work_item_id, run_id)
+         VALUES (rid::text, wi, rid);
+    UPDATE coord.a2a_dispatch SET settled_at = now(), settle_outcome = 'succeeded'
+     WHERE a2a_task_id = rid::text AND settled_at IS NULL;
+
+    -- (a) S3's join key `wi` (= workItemRef) reads back the settlement marker.
+    SELECT settled_at INTO got
+      FROM coord.a2a_dispatch WHERE work_item_id = wi;
+    ASSERT got IS NOT NULL,
+        'S3 must be able to read settled_at keyed by work_item_id (= spec.workItemRef)';
+
+    -- (b) that lookup is index-covered: work_item_id is the LEADING column of
+    --     idx_a2a_dispatch_run, so no dedicated join index is required in S1.
+    ASSERT EXISTS (
+        SELECT 1 FROM pg_indexes
+         WHERE schemaname = 'coord'
+           AND tablename  = 'a2a_dispatch'
+           AND indexname  = 'idx_a2a_dispatch_run'),
+        'S3 join key work_item_id must be index-covered by idx_a2a_dispatch_run (0005)';
+END $$;
+
 ROLLBACK;
