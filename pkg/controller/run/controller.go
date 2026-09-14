@@ -21,10 +21,15 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/reconcile"
@@ -102,6 +107,19 @@ type Reconciler struct {
 	// Health, when set, records this controller's reconcile latency + error
 	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
 	Health *cphealth.Metrics
+	// PhaseKicks re-enqueues a Run for immediate re-projection when the driver
+	// commits a durable step transition (ISI-4381 Option A). It is the
+	// event-driven half of the projector's re-trigger: without it the projector
+	// leans on the coarse non-terminal resync alone and short-lived intermediate
+	// phases can elapse between two samples, so the CR appears to jump straight
+	// to Succeeded. Nil disables the watch (unit tests, or a resync-only
+	// deployment) — the resync stays the backstop for any dropped kick.
+	PhaseKicks <-chan event.TypedGenericEvent[client.Object]
+	// Recorder emits a Normal Kubernetes Event on each observed phase transition
+	// so `kubectl describe run` / `kubectl get events` show the lifecycle
+	// (ISI-4381 polish). Nil disables event emission (unit tests, or when no
+	// recorder is wired); SetupWithManager defaults it to the manager's recorder.
+	Recorder record.EventRecorder
 }
 
 // resync returns the configured non-terminal requeue cadence, or the default.
@@ -207,13 +225,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return result, nil
 	}
 
+	prevPhase := runObj.Status.Phase
 	patched := runObj.DeepCopy()
 	patched.Status = desired
 	if err := r.Status().Patch(ctx, patched, client.MergeFrom(&runObj)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("patch run status %s: %w", req.NamespacedName, err)
 	}
+	// A committed phase change gets a Normal Event so the lifecycle shows up in
+	// `kubectl describe run` (ISI-4381 polish). Only the phase field gates the
+	// event: a condition/side-channel-only patch that leaves the phase put emits
+	// nothing, so the event stream mirrors the phase transitions and no more.
+	if r.Recorder != nil && desired.Phase != prevPhase {
+		r.Recorder.Eventf(patched, corev1.EventTypeNormal, "Phase"+string(desired.Phase),
+			"Run phase %s", desired.Phase)
+	}
 	return result, nil
 }
+
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // SetupWithManager registers the reconciler for Run objects. The manager-managed
 // client is adopted when one was not injected (tests inject a fake).
@@ -221,8 +250,22 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if r.Client == nil {
 		r.Client = mgr.GetClient()
 	}
-	return ctrl.NewControllerManagedBy(mgr).
+	if r.Recorder == nil {
+		// record.EventRecorder (the "old" events API) is the ergonomic fit for a
+		// single-line phase Event; controller-runtime's GetEventRecorder returns
+		// the heavier events.EventRecorder (requires action + related object).
+		//nolint:staticcheck // SA1019: old events API is intentional here.
+		r.Recorder = mgr.GetEventRecorderFor("run")
+	}
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&api.Run{}).
-		Named("run").
-		Complete(cphealth.WrapReconciler(r.Health, "run", r))
+		Named("run")
+	if r.PhaseKicks != nil {
+		// The driver's per-transition kick (ISI-4381 Option A): a step advance
+		// re-enqueues the Run here so the new phase is projected at once.
+		b = b.WatchesRawSource(source.Channel(r.PhaseKicks, &handler.EnqueueRequestForObject{}))
+	}
+	// Wrap the reconciler so its latency + error count land on the operator's
+	// OTel meter (ISI-4384/WS-E); WrapReconciler is a no-op when Health is nil.
+	return b.Complete(cphealth.WrapReconciler(r.Health, "run", r))
 }

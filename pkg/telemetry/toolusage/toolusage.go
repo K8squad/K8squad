@@ -27,9 +27,16 @@ See the limitations under the License.
 //	gen_ai.tool.call   — a local/CLI tool call: gen_ai.tool.name, hashed
 //	                     args (gen_ai.tool.call.arguments carries the hex
 //	                     sha256 — raw arguments NEVER travel), outcome, duration
-//	llm.call           — one model round-trip (step): gen_ai.request.model,
-//	                     gen_ai.usage.input/output_tokens, provider cost,
-//	                     truthful step duration (ISI-4238)
+//	llm.call           — one model round-trip (step) with the full gen-AI
+//	                     semconv surface (ISI-4238, ISI-4383): gen_ai.system
+//	                     (provider), gen_ai.operation.name, request + response
+//	                     model, input/output/reasoning tokens (reasoning
+//	                     distinct, not folded), cache read/write, finish
+//	                     reason, response id, provider cost, truthful step
+//	                     duration; ksquad.llm.fallback=true marks a
+//	                     backup-model-served step. Prompt/response bodies stay
+//	                     OFF by default (D3 PII posture) — captured as gated
+//	                     span events only under KSQUAD_TRACE_CONTENT.
 //	skill.load         — a skill entering the runtime session: skill name +
 //	                     pinned source SHA
 //	mcp.call           — a tool call served by an MCPServer: mcp server +
@@ -56,6 +63,8 @@ package toolusage
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,25 +98,57 @@ const (
 const (
 	attrRunID     = attribute.Key("ksquad.run.id")
 	attrAgentName = attribute.Key("ksquad.agent.name")
-	attrSkillName = attribute.Key("ksquad.skill.name")
-	attrSkillSHA  = attribute.Key("ksquad.skill.source.sha")
-	attrMCPServer = attribute.Key("ksquad.mcp.server")
+	// WS-A run-trace correlation (ISI-4382, ADR-0021 D1): every run-trace
+	// span carries team/project/ticket/sandbox identity, not only run+agent,
+	// so a single trace in the backend answers "whose run, which project,
+	// which ticket, which pod" without joining back to the CR. Span
+	// attributes ONLY — deliberately never metric labels (cardinality note).
+	attrTeamName    = attribute.Key("ksquad.team.name")
+	attrProjectName = attribute.Key("ksquad.project.name")
+	attrWorkItemRef = attribute.Key("ksquad.work_item.ref")
+	attrSandboxPod  = attribute.Key("ksquad.sandbox.pod")
+	attrSkillName   = attribute.Key("ksquad.skill.name")
+	attrSkillSHA    = attribute.Key("ksquad.skill.source.sha")
+	attrMCPServer   = attribute.Key("ksquad.mcp.server")
 	// attrOutcome records the mapped outcome ("success" | "error" |
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
 	attrOutcome = attribute.Key("ksquad.outcome")
+	// attrDurationMS is the span's measured wall-clock duration in
+	// milliseconds, stamped as an explicit attribute so a backend can query /
+	// aggregate call latency as a dimension without deriving it from the span
+	// start/end timestamps (ISI-4385: WS-C "tool/skill calls appear ... with
+	// duration"). It rides tool / mcp.call spans (measured start→result) and
+	// skill.load spans (the point-event mapping instant); llm.call already
+	// carries its truthful step duration via the span timestamps (ISI-4238).
+	attrDurationMS = attribute.Key("ksquad.duration.ms")
 	// attrRunState carries the §3.1 terminal state on run.end
 	// (completed|failed|canceled) so the trace answers "how did it end"
 	// without joining back to the CR (ISI-4238).
 	attrRunState = attribute.Key("ksquad.run.state")
 	// GenAI semconv keys the v1.40 stable set does not export as typed
-	// constants yet (ISI-4238 llm.call spans).
+	// constants yet (ISI-4238 / ISI-4383 llm.call spans). Kept as raw keys
+	// so the whole gen_ai.* surface reads in one place.
 	attrGenAIRequestModel     = attribute.Key("gen_ai.request.model")
+	attrGenAIResponseModel    = attribute.Key("gen_ai.response.model")
+	attrGenAISystem           = attribute.Key("gen_ai.system")
+	attrGenAIOperationName    = attribute.Key("gen_ai.operation.name")
 	attrGenAIInputTokens      = attribute.Key("gen_ai.usage.input_tokens")
 	attrGenAIOutputTokens     = attribute.Key("gen_ai.usage.output_tokens")
+	attrGenAIReasoningTokens  = attribute.Key("gen_ai.usage.reasoning_tokens")
 	attrGenAICacheReadTokens  = attribute.Key("gen_ai.usage.cache_read_tokens")
 	attrGenAICacheWriteTokens = attribute.Key("gen_ai.usage.cache_write_tokens")
+	attrGenAIFinishReasons    = attribute.Key("gen_ai.response.finish_reasons")
+	attrGenAIResponseID       = attribute.Key("gen_ai.response.id")
 	attrLLMCostUSD            = attribute.Key("ksquad.llm.cost.usd")
+	// attrLLMFallback marks an llm.call whose step was served by the Run's
+	// backup/fallback model (ISI-4383): true correlates the span to a
+	// ksquad_fallback_activations_total increment (story 5.11).
+	attrLLMFallback = attribute.Key("ksquad.llm.fallback")
+
+	// operationChat is the gen_ai.operation.name for a model round-trip
+	// (llm.call). The OTel gen-AI semconv "chat" operation.
+	operationChat = "chat"
 
 	outcomeSuccess = "success"
 	outcomeError   = "error"
@@ -128,24 +169,77 @@ func SetEnabled(v bool) { enabled.Store(v) }
 // Enabled reports the current gate value (test seam + wiring assertions).
 func Enabled() bool { return enabled.Load() }
 
-func init() { enabled.Store(true) }
+// contentTracing is the D3 prompt/response content-capture gate (ISI-4383,
+// ADR-0021 D3). It is OFF by default: the PII posture means llm.call never
+// carries prompt/response bodies in prod (tool args are SHA-256 only). It
+// flips on ONLY via the KSQUAD_TRACE_CONTENT env flag (dev/non-prod, with the
+// documented risk) so an operator can opt in to prompt/response span events
+// for local debugging. Nothing populates UsagePayload.Prompt/Response in the
+// default build, so even with the flag on the events appear only when a
+// content-carrying event is deliberately produced.
+var contentTracing atomic.Bool
 
-// Labels identify the emitting Run/Agent. They ride every span (attributes)
-// so a backend can filter per run / per agent, but only agent flows into
-// metric label sets (run.id would explode counter cardinality; it stays an
-// attribute, same discipline as 13.6).
+// SetContentTracing flips the D3 content-capture gate (test seam + explicit
+// wiring). Safe for concurrent use.
+func SetContentTracing(v bool) { contentTracing.Store(v) }
+
+// ContentTracingEnabled reports the current D3 content-capture gate value.
+func ContentTracingEnabled() bool { return contentTracing.Load() }
+
+// envTruthy parses an env flag the same lenient way across the package:
+// strconv.ParseBool ("1"/"t"/"true"/…) with "" and unparseable → false.
+func envTruthy(v string) bool {
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
+}
+
+func init() {
+	enabled.Store(true)
+	// D3: opt in to content capture only when the env flag is explicitly
+	// truthy. Absent or unparseable → stays off (default-safe PII posture).
+	contentTracing.Store(envTruthy(os.Getenv("KSQUAD_TRACE_CONTENT")))
+}
+
+// Labels identify the emitting Run and its context. They ride every span
+// (attributes) so a backend can filter one trace by run / agent / team /
+// project / ticket / sandbox pod (WS-A, ISI-4382). Only agent flows into
+// metric label sets — run.id and the WS-A identity fields would explode
+// counter cardinality, so they stay span attributes only (same discipline
+// as 13.6; ADR-0021 D1 cardinality note).
 type Labels struct {
 	RunID string
 	Agent string
+	// Team is the tenant team (Run.Spec.TeamRef / shim env KSQUAD_SQUAD).
+	Team string
+	// Project is the owning project (Run.Spec.ProjectRef / KSQUAD_PROJECT).
+	Project string
+	// WorkItemRef is the ticket/work-item the Run serves
+	// (Run.Spec.WorkItemRef) — the ticket identity on the trace.
+	WorkItemRef string
+	// SandboxPod is the sandbox pod hosting the Run (Run.Status.SandboxRef /
+	// the shim's own pod name) — one run per pod.
+	SandboxPod string
 }
 
 func (l Labels) spanAttrs() []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 2)
+	attrs := make([]attribute.KeyValue, 0, 6)
 	if l.RunID != "" {
 		attrs = append(attrs, attrRunID.String(l.RunID))
 	}
 	if l.Agent != "" {
 		attrs = append(attrs, attrAgentName.String(l.Agent))
+	}
+	if l.Team != "" {
+		attrs = append(attrs, attrTeamName.String(l.Team))
+	}
+	if l.Project != "" {
+		attrs = append(attrs, attrProjectName.String(l.Project))
+	}
+	if l.WorkItemRef != "" {
+		attrs = append(attrs, attrWorkItemRef.String(l.WorkItemRef))
+	}
+	if l.SandboxPod != "" {
+		attrs = append(attrs, attrSandboxPod.String(l.SandboxPod))
 	}
 	return attrs
 }
@@ -354,6 +448,12 @@ func (m *Mapper) SkillEvent(ctx context.Context, labels Labels, p a2a.SkillLoadP
 	}
 	attrs = append(attrs, attrOutcome.String(mapOutcome(p.OK)))
 
+	// skill.load is a point event on the wire (a completed load, not a
+	// start/result pair — no runtime reports a load latency), so its duration
+	// is the mapping instant. Stamp it anyway (ISI-4385) so ksquad.duration.ms
+	// is present uniformly across every activity span (tool / mcp / skill), and
+	// so the attribute extends truthfully if a runtime ever pairs skill loads.
+	elapsed := m.now()
 	_, span := m.start(ctx, SpanSkillLoad, attrs)
 	if p.Err != "" {
 		span.SetStatus(codes.Error, p.Err)
@@ -361,6 +461,7 @@ func (m *Mapper) SkillEvent(ctx context.Context, labels Labels, p a2a.SkillLoadP
 	} else if p.OK != nil && *p.OK {
 		span.SetStatus(codes.Ok, "")
 	}
+	span.SetAttributes(attrDurationMS.Int64(durationMS(elapsed())))
 	span.End()
 
 	m.ins.SkillLoads.WithLabelValues(p.Name, labels.Agent).Inc()
@@ -448,31 +549,61 @@ func outcomeFromState(state string) string {
 	return outcomeError
 }
 
-// UsageEvent maps one EventUsage payload (ISI-4238): a complete llm.call
-// span carrying the GenAI semconv model + token attributes and the
-// provider-reported cost, with the span's duration set truthfully from the
-// runtime-reported step duration (start = now−duration, end = now); plus
-// the ksquad_llm_calls_total / ksquad_llm_tokens_total counters. With no
-// tracer attached the metrics still count. A usage without a model id is
-// dropped (unattributable — never fabricate "unknown" buckets).
+// UsageEvent maps one EventUsage payload (ISI-4238, ISI-4383): a complete
+// llm.call span carrying the OTel gen-AI semconv surface — system (provider),
+// operation, requested + served model, input/output/reasoning tokens, cache
+// read/write, finish reason, response id — plus the provider-reported cost,
+// with the span's duration set truthfully from the runtime-reported step
+// duration (start = now−duration, end = now); plus the ksquad_llm_calls_total
+// / ksquad_llm_tokens_total counters. A fallback-served step is flagged with
+// ksquad.llm.fallback=true (correlates to ksquad_fallback_activations_total).
+// With no tracer attached the metrics still count. A usage without a model id
+// is dropped (unattributable — never fabricate "unknown" buckets).
+//
+// Reasoning tokens are reported DISTINCTLY on the span
+// (gen_ai.usage.reasoning_tokens), no longer folded into output_tokens (D2).
+// The ksquad_llm_tokens_total "output" metric direction deliberately keeps
+// reasoning folded in — reasoning is billed as output-class, and that metric
+// is the billing/output view (its Help documents this).
 func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p a2a.UsagePayload) {
 	if !enabled.Load() || p.Model == "" {
 		return
 	}
 	attrs := labels.spanAttrs()
 	attrs = append(attrs,
+		attrGenAIOperationName.String(operationChat),
 		attrGenAIRequestModel.String(p.Model),
 		attrGenAIInputTokens.Int(p.Input),
-		attrGenAIOutputTokens.Int(p.Output+p.Reasoning),
+		attrGenAIOutputTokens.Int(p.Output),
 	)
+	if p.Provider != "" {
+		attrs = append(attrs, attrGenAISystem.String(p.Provider))
+	}
+	if p.ResponseModel != "" {
+		attrs = append(attrs, attrGenAIResponseModel.String(p.ResponseModel))
+	}
+	if p.Reasoning != 0 {
+		attrs = append(attrs, attrGenAIReasoningTokens.Int(p.Reasoning))
+	}
 	if p.CacheRead != 0 {
 		attrs = append(attrs, attrGenAICacheReadTokens.Int(p.CacheRead))
 	}
 	if p.CacheWrite != 0 {
 		attrs = append(attrs, attrGenAICacheWriteTokens.Int(p.CacheWrite))
 	}
+	if p.FinishReason != "" {
+		// semconv types finish_reasons as a string array: one step reports
+		// one reason, carried as a single-element slice.
+		attrs = append(attrs, attrGenAIFinishReasons.StringSlice([]string{p.FinishReason}))
+	}
+	if p.ResponseID != "" {
+		attrs = append(attrs, attrGenAIResponseID.String(p.ResponseID))
+	}
 	if p.CostUSD != 0 {
 		attrs = append(attrs, attrLLMCostUSD.Float64(p.CostUSD))
+	}
+	if p.Fallback {
+		attrs = append(attrs, attrLLMFallback.Bool(true))
 	}
 
 	var opts []trace.SpanStartOption
@@ -482,11 +613,34 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	}
 	opts = append(opts, trace.WithAttributes(attrs...))
 	_, span := m.startWithOptions(ctx, SpanLLMCall, opts)
+	// D3: prompt/response bodies ride as gated span events, never as
+	// attributes, and only when the content gate is on AND the payload
+	// actually carries them (default-off PII posture — see contentTracing).
+	if contentTracing.Load() {
+		recordContentEvents(span, p)
+	}
 	span.End()
 
 	m.ins.LLMCalls.WithLabelValues(p.Model, labels.Agent).Inc()
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "input").Add(float64(p.Input))
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "output").Add(float64(p.Output + p.Reasoning))
+}
+
+// recordContentEvents adds the D3 opt-in prompt/response bodies as span
+// events (gen_ai.content.prompt / gen_ai.content.completion). It is only
+// reached with the content gate on; it still no-ops on empty bodies so an
+// enabled-but-content-free step stays clean. Content NEVER becomes a span
+// attribute (attributes are indexed/queryable; events are the semconv-blessed
+// carrier for bulky, sensitive payloads).
+func recordContentEvents(span trace.Span, p a2a.UsagePayload) {
+	if p.Prompt != "" {
+		span.AddEvent("gen_ai.content.prompt",
+			trace.WithAttributes(attribute.String("gen_ai.prompt", p.Prompt)))
+	}
+	if p.Response != "" {
+		span.AddEvent("gen_ai.content.completion",
+			trace.WithAttributes(attribute.String("gen_ai.completion", p.Response)))
+	}
 }
 
 // FinishTask sweeps any still-open spans for taskID (a runtime that crashed
@@ -553,11 +707,19 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	m.mu.Unlock()
 
 	if !ok {
+		// Orphan result (no start seen): the span's extent is unknowable — the
+		// start instant never arrived — so it carries outcome but no duration
+		// (never fabricated). The synthesized span is still complete + visible.
 		_, span := m.start(ctx, name, attrs)
 		span.End()
 		return
 	}
+	// Duration is truthfully measurable start→result for a paired call: stamp
+	// it on the span (ISI-4385) AND feed the histogram observer, from the one
+	// measurement so span and metric agree.
+	d := ps.start()
 	ps.span.SetAttributes(attrs...)
+	ps.span.SetAttributes(attrDurationMS.Int64(durationMS(d)))
 	switch outcome {
 	case outcomeError:
 		ps.span.SetStatus(codes.Error, "")
@@ -566,8 +728,18 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	}
 	ps.span.End()
 	if onDuration != nil {
-		onDuration(ps.start())
+		onDuration(d)
 	}
+}
+
+// durationMS converts a seconds duration to whole milliseconds (rounded) for
+// the ksquad.duration.ms span attribute. Negative inputs (a clock that ran
+// backwards) clamp to 0 — a duration attribute is never negative.
+func durationMS(seconds float64) int64 {
+	if seconds <= 0 {
+		return 0
+	}
+	return int64(seconds*1000 + 0.5)
 }
 
 // noopSpan is a non-recording span used when the tracer is nil (pre-Setup).

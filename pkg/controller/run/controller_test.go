@@ -19,6 +19,7 @@ package run
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -84,6 +86,129 @@ func reconcileOnce(t *testing.T, c client.Client, src StepSource) (ctrl.Result, 
 	return r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
 	})
+}
+
+// mutableSource lets a test advance the durable step between reconciles, so the
+// projector can be driven through the happy-path sequence exactly as the driver
+// advances coord.claim.reconcile_step.
+type mutableSource struct {
+	step  reconcile.Step
+	found bool
+}
+
+func (m *mutableSource) StepForWorkItem(context.Context, string) (reconcile.Step, bool, error) {
+	return m.step, m.found, nil
+}
+
+// TestReconcileProjectsHappyPathInOrder is the ISI-4381 core (AC2): driven
+// through the durable happy-path step sequence, the projector patches
+// status.phase to the matching phase at each step, in order — the intermediate
+// Pending→Claiming→Running phases become visible instead of a single jump to
+// Succeeded. Idempotency is preserved: a re-reconcile at an unchanged step does
+// not rewrite status.
+func TestReconcileProjectsHappyPathInOrder(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	src := &mutableSource{found: true}
+	rec := record.NewFakeRecorder(32)
+	r := &Reconciler{Client: c, Source: src, Recorder: rec, Now: func() metav1.Time { return fixedNow }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"}}
+
+	steps := []struct {
+		step  reconcile.Step
+		phase api.RunPhase
+	}{
+		{reconcile.StepPending, api.RunPhasePending},
+		{reconcile.StepClaimingSandbox, api.RunPhaseClaiming},
+		{reconcile.StepDispatching, api.RunPhaseClaiming},
+		{reconcile.StepRunning, api.RunPhaseRunning},
+		{reconcile.StepCollecting, api.RunPhaseRunning},
+		{reconcile.StepSucceeded, api.RunPhaseSucceeded},
+	}
+	for _, s := range steps {
+		src.step = s.step
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("step %q: reconcile: %v", s.step, err)
+		}
+		got := getRun(t, c)
+		if got.Status.Phase != s.phase {
+			t.Fatalf("step %q: Phase = %q, want %q", s.step, got.Status.Phase, s.phase)
+		}
+		rvAfterFirst := got.ResourceVersion
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("step %q: re-reconcile: %v", s.step, err)
+		}
+		if again := getRun(t, c); again.ResourceVersion != rvAfterFirst {
+			t.Errorf("step %q: status rewritten on no-op reconcile: rv %s -> %s",
+				s.step, rvAfterFirst, again.ResourceVersion)
+		}
+	}
+}
+
+// TestReconcileEmitsEventPerPhaseTransition proves a Normal Event fires on each
+// phase change (ISI-4381 polish) and NOT on a same-phase or no-op reconcile —
+// so `kubectl describe run` shows the lifecycle and the event stream mirrors the
+// phase transitions, no more.
+func TestReconcileEmitsEventPerPhaseTransition(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	src := &mutableSource{found: true}
+	rec := record.NewFakeRecorder(32)
+	r := &Reconciler{Client: c, Source: src, Recorder: rec, Now: func() metav1.Time { return fixedNow }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"}}
+
+	// Pending → Claiming(claiming_sandbox) → Claiming(dispatching) → Running.
+	for _, step := range []reconcile.Step{
+		reconcile.StepPending, reconcile.StepClaimingSandbox,
+		reconcile.StepDispatching, reconcile.StepRunning, reconcile.StepRunning,
+	} {
+		src.step = step
+		if _, err := r.Reconcile(context.Background(), req); err != nil {
+			t.Fatalf("step %q: reconcile: %v", step, err)
+		}
+	}
+	// Phase changes: ""→Pending, Pending→Claiming, Running. The dispatching step
+	// stays Claiming (no event) and the repeated Running is a no-op (no event).
+	want := []string{"PhasePending", "PhaseClaiming", "PhaseRunning"}
+	var got []string
+	for {
+		select {
+		case e := <-rec.Events:
+			got = append(got, eventReason(e))
+			continue
+		default:
+		}
+		break
+	}
+	if len(got) != len(want) {
+		t.Fatalf("emitted %d events %v, want %d %v", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("event[%d] reason = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// eventReason pulls the reason token out of a FakeRecorder event string, whose
+// shape is "<Type> <Reason> <Message>".
+func eventReason(e string) string {
+	fields := strings.Fields(e)
+	if len(fields) < 2 {
+		return e
+	}
+	return fields[1]
+}
+
+func getRun(t *testing.T, c client.Client) api.Run {
+	t.Helper()
+	var got api.Run
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "run-1", Namespace: "default"}, &got); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	return got
 }
 
 func TestReconcileProjectsDurableStep(t *testing.T) {

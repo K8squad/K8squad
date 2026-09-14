@@ -288,6 +288,53 @@ func TestDriveHappyPathToTerminal(t *testing.T) {
 	}
 }
 
+// TestDriveNotifiesProjectorOnStepAdvance: a drive that advances the durable
+// step calls NotifyPhase with the driven Run so the status projector re-reads
+// coord and projects the new phase at once (ISI-4381 Option A), instead of
+// waiting for its non-terminal resync.
+func TestDriveNotifiesProjectorOnStepAdvance(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
+		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
+
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	var kicked []string
+	d.NotifyPhase = func(r *api.Run) { kicked = append(kicked, string(r.UID)) }
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	if len(kicked) != 1 || kicked[0] != string(run.UID) {
+		t.Fatalf("NotifyPhase calls = %v, want one for the driven run (step advanced pending→succeeded)", kicked)
+	}
+}
+
+// TestDriveDoesNotNotifyWhenStepUnchanged: a bounded drive that commits no
+// transition (spin-guard shape — Advance never lands) must not wake the
+// projector, since there is no new phase to project.
+func TestDriveDoesNotNotifyWhenStepUnchanged(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).WithIndex(&api.Run{}, workItemField,
+		func(obj client.Object) []string { return []string{obj.(*api.Run).Spec.WorkItemRef} }).Build()
+
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: false} // never commits
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	notified := false
+	d.NotifyPhase = func(*api.Run) { notified = true }
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("drive: %v", err)
+	}
+	if notified {
+		t.Fatalf("NotifyPhase called on a no-commit drive; want no kick when the durable step is unchanged")
+	}
+}
+
 // TestDriveNotEnrolledIsANoOp: a Run whose work item has no claim row is left
 // alone — the driver never invents coordination state (ADR-001).
 func TestDriveNotEnrolledIsANoOp(t *testing.T) {

@@ -75,6 +75,11 @@ type Config struct {
 	Experimental bool
 	// WorkDir is the sandbox working directory Runs execute in.
 	WorkDir string
+	// SandboxPod is the name of the sandbox pod this shim runs in (one run
+	// per pod). It rides every run-trace span as ksquad.sandbox.pod (WS-A,
+	// ISI-4382); empty in the operator-spawned stdio path where the shim is
+	// not pod-hosted. Sourced from env (KSQUAD_SANDBOX_POD / HOSTNAME).
+	SandboxPod string
 	// MCPEndpoints is the Run's resolved MCP IR (Epic C, ADR-044): parsed
 	// once at shim startup from the projected K8SQUAD_MCP_CONFIG document
 	// and handed to the runtime adapters, which render their native config
@@ -125,8 +130,24 @@ func New(rt runtimes.Runtime, runner Runner, cfg Config) *Engine {
 // mapped (telemetry is strictly observational, never load-bearing).
 func (e *Engine) SetTelemetry(m *toolusage.Mapper) { e.telemetry = m }
 
-func (e *Engine) labels() toolusage.Labels {
-	return toolusage.Labels{Agent: e.cfg.Identity.Name}
+// labels builds the run-trace correlation set for tk (WS-A, ISI-4382): the
+// static per-shim identity (agent/team/project/sandbox pod, fixed for the
+// shim's lifetime — one shim serves one Agent of one Team/Project in one
+// pod) plus the per-task run identity (run id + ticket). A nil task yields
+// the static set only (there is no run-scoped call site today, but the
+// method stays total). Team maps from the Agent Card's Squad.
+func (e *Engine) labels(tk *task) toolusage.Labels {
+	l := toolusage.Labels{
+		Agent:      e.cfg.Identity.Name,
+		Team:       e.cfg.Identity.Squad,
+		Project:    e.cfg.Identity.Project,
+		SandboxPod: e.cfg.SandboxPod,
+	}
+	if tk != nil {
+		l.RunID = tk.id
+		l.WorkItemRef = tk.workItem
+	}
+	return l
 }
 
 // Runtime returns the runtime this engine serves.
@@ -209,7 +230,7 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	// live, not only post-terminal).
 	if e.telemetry != nil {
 		var runSpan trace.Span
-		telCtx, runSpan = e.telemetry.RunStart(telCtx, e.labels(), tk.id)
+		telCtx, runSpan = e.telemetry.RunStart(telCtx, e.labels(tk), tk.id)
 		if sc := runSpan.SpanContext(); sc.HasTraceID() {
 			tk.setTraceID(sc.TraceID().String())
 		}
@@ -226,7 +247,7 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	// cannot know (review ISI-3348, non-blocking note).
 	if e.telemetry != nil {
 		for _, s := range e.cfg.Skills {
-			e.telemetry.SkillEvent(telCtx, e.labels(), a2a.SkillLoadPayload{
+			e.telemetry.SkillEvent(telCtx, e.labels(tk), a2a.SkillLoadPayload{
 				Name:   s,
 				SHA256: e.cfg.SkillSHAs[s],
 			})
@@ -248,15 +269,15 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 			switch p.Kind {
 			case a2a.EventTool:
 				if p.Tool != nil {
-					e.telemetry.ToolEvent(telCtx, e.labels(), tk.id, *p.Tool)
+					e.telemetry.ToolEvent(telCtx, e.labels(tk), tk.id, *p.Tool)
 				}
 			case a2a.EventSkillLoad:
 				if p.SkillLoad != nil {
-					e.telemetry.SkillEvent(telCtx, e.labels(), *p.SkillLoad)
+					e.telemetry.SkillEvent(telCtx, e.labels(tk), *p.SkillLoad)
 				}
 			case a2a.EventUsage:
 				if p.Usage != nil {
-					e.telemetry.UsageEvent(telCtx, e.labels(), tk.id, *p.Usage)
+					e.telemetry.UsageEvent(telCtx, e.labels(tk), tk.id, *p.Usage)
 				}
 			}
 		}

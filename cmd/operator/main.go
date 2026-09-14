@@ -58,6 +58,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -506,12 +507,18 @@ func main() {
 			ctrl.Log.Error(err, "control-plane dependency prober not scheduled (metrics still export last-known state)")
 		}
 
+		// Shared per-transition kick channel (ISI-4381 Option A): the driver
+		// pushes a Run onto it on every committed durable step advance and the
+		// status projector watches it, so intermediate phases are projected at
+		// once instead of waiting for the projector's non-terminal resync.
+		phaseKicks := make(chan event.TypedGenericEvent[client.Object], 128)
 		if err := (&runctrl.Reconciler{
 			Source:            coord.NewReconcileStepReader(db),
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
 			ContextAssemblers: ctxDeps,
 			Health:            health,
+			PhaseKicks:        phaseKicks,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up Run reconciler")
 			os.Exit(1)
@@ -903,6 +910,16 @@ func main() {
 		// clears the durable bind marker so the retry lap binds fresh warmth
 		// instead of NotFound-looping on the dead pod forever.
 		driver.BindClear = prodClaims
+		// ISI-4381 Option A: on every committed durable step advance, wake the
+		// status projector on the shared kick channel so it projects the new
+		// phase at once. Non-blocking — a full channel falls back to the
+		// projector's resync (correctness backstop), never blocks the drive.
+		driver.NotifyPhase = func(run *ksquadv1alpha1.Run) {
+			select {
+			case phaseKicks <- event.TypedGenericEvent[client.Object]{Object: run.DeepCopy()}:
+			default:
+			}
+		}
 		timer := coord.NewProdTimer(resumeStore, driver.OnResumeDue)
 		driver.Notify = timer.Notify
 		if err := driver.SetupWithManager(mgr); err != nil {
