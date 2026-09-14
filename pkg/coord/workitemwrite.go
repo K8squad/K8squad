@@ -28,24 +28,86 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // ErrInvalidWorkItem — the create/edit input is malformed (empty title, no editable
-// field, a self-parent, or a reparent that would form a cycle). Maps to 400.
+// field, a self-parent, a reparent that would form a cycle, or — ISI-4409 — a
+// priority/work_mode outside the enum or an over-long/over-large label set). Maps
+// to 400 so the API returns a clean message instead of a raw CHECK-violation 502.
 var ErrInvalidWorkItem = errors.New("coord: invalid work item write")
+
+// validPriorities / validWorkModes are the coord create-time enum vocabularies
+// (ISI-4409), mirroring the schema CHECK constraints in migration 0020. Membership
+// is validated in Go BEFORE the insert so a bad value is a 400, not a 502; the DB
+// CHECK is the backstop. priority mirrors the Paperclip issue priority set;
+// work_mode the Paperclip issue-layer work-mode set.
+var (
+	validPriorities = map[string]bool{"low": true, "medium": true, "high": true, "urgent": true}
+	validWorkModes  = map[string]bool{"standard": true, "planning": true}
+)
+
+// Label bounds keep the text[] array small and each entry sane — freeform chips
+// (v1), not a lookup table (O-4). Over the bound is ErrInvalidWorkItem, never a
+// silently truncated set.
+const (
+	maxLabels   = 20
+	maxLabelLen = 64
+)
+
+// normalizeCreateFields validates and normalizes the ISI-4409 create attributes.
+// It returns the priority/work_mode to bind (empty ⇒ NULL) and a non-nil labels
+// slice (trimmed, empties dropped, de-duped preserving first-seen order, bounded).
+// A non-member enum value or an over-bound label set is ErrInvalidWorkItem (400).
+func normalizeCreateFields(priority, workMode string, labels []string) (string, string, []string, error) {
+	if priority != "" && !validPriorities[priority] {
+		return "", "", nil, fmt.Errorf("%w: priority %q is not one of low|medium|high|urgent", ErrInvalidWorkItem, priority)
+	}
+	if workMode != "" && !validWorkModes[workMode] {
+		return "", "", nil, fmt.Errorf("%w: workMode %q is not one of standard|planning", ErrInvalidWorkItem, workMode)
+	}
+	// De-dup + trim; drop empties so a stray "" or "  " never becomes a label.
+	// Non-nil zero-length slice so pgx encodes '{}' (NOT NULL column), never NULL.
+	out := []string{}
+	seen := map[string]bool{}
+	for _, l := range labels {
+		l = strings.TrimSpace(l)
+		if l == "" || seen[l] {
+			continue
+		}
+		if len(l) > maxLabelLen {
+			return "", "", nil, fmt.Errorf("%w: label %q exceeds %d chars", ErrInvalidWorkItem, l, maxLabelLen)
+		}
+		seen[l] = true
+		out = append(out, l)
+		if len(out) > maxLabels {
+			return "", "", nil, fmt.Errorf("%w: more than %d labels", ErrInvalidWorkItem, maxLabels)
+		}
+	}
+	return priority, workMode, out, nil
+}
 
 // WorkItemRecord is the persisted item a create/edit returns — the columns the read
 // model (and the board projection) draw from. ParentID / TeamID are pointers so a
 // root item (no parent) and an unscoped item (no team) serialise as null, not "".
 type WorkItemRecord struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"projectId"`
-	TeamID    *string   `json:"teamId,omitempty"`
-	ParentID  *string   `json:"parentId,omitempty"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body,omitempty"`
-	State     string    `json:"state"`
+	ID        string  `json:"id"`
+	ProjectID string  `json:"projectId"`
+	TeamID    *string `json:"teamId,omitempty"`
+	ParentID  *string `json:"parentId,omitempty"`
+	Title     string  `json:"title"`
+	Body      string  `json:"body,omitempty"`
+	State     string  `json:"state"`
+	// Priority / WorkMode are the create-time attribute columns (ISI-4409):
+	// pointers so an unset column serialises as null (honest "none", FR-I3),
+	// not "". Labels is never nil — an item with no labels reads as [] so the
+	// board card never null-checks.
+	Priority  *string   `json:"priority,omitempty"`
+	WorkMode  *string   `json:"workMode,omitempty"`
+	Labels    []string  `json:"labels"`
 	CreatedBy string    `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -58,11 +120,19 @@ type WorkItemRecord struct {
 // team, not TeamID). Principal is the §6.5 author; InitiatedByUserID the §12.4
 // on-behalf-of id.
 type CreateWorkItemInput struct {
-	ProjectID         string
-	TeamID            string
-	ParentID          string
-	Title             string
-	Body              string
+	ProjectID string
+	TeamID    string
+	ParentID  string
+	Title     string
+	Body      string
+	// Priority / WorkMode / Labels are the optional create-time attributes
+	// (ISI-4409). Priority/WorkMode are validated against the coord enum in Go
+	// (empty ⇒ leave the column NULL); Labels are trimmed/de-duped/bounded and
+	// stored as text[] (nil/empty ⇒ '{}'). These are ATTRIBUTES of the item,
+	// orthogonal to state and custody — state stays absent from create.
+	Priority          string
+	WorkMode          string
+	Labels            []string
 	Principal         string
 	InitiatedByUserID string
 }
@@ -110,6 +180,12 @@ func (s *WorkItemWriteStore) CreateWorkItem(ctx context.Context, in CreateWorkIt
 	if in.ProjectID == "" || in.Title == "" || in.Principal == "" {
 		return WorkItemRecord{}, fmt.Errorf("%w: projectID, title and principal are required", ErrInvalidWorkItem)
 	}
+	// Validate the create-time attributes (ISI-4409) BEFORE opening the txn so a
+	// bad enum / oversized label set fails closed as a clean 400.
+	priority, workMode, labels, err := normalizeCreateFields(in.Priority, in.WorkMode, in.Labels)
+	if err != nil {
+		return WorkItemRecord{}, err
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,23 +228,34 @@ func (s *WorkItemWriteStore) CreateWorkItem(ctx context.Context, in CreateWorkIt
 
 	var rec WorkItemRecord
 	var teamOut, parentOut sql.NullString
-	var body sql.NullString
+	var body, priorityOut, workModeOut sql.NullString
+	// labels binds natively ([]string ⇒ text[], pgx picks the right param OID) but
+	// the RETURNING scan needs pq.Array — see ReadTaskDetail for why (pgx stdlib
+	// hands text[] back as a *string* on Go < 1.27). ISI-4409.
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO coord.work_item (project_id, team_id, parent_id, title, body, state, created_by)
-		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, NULLIF($5,''), 'backlog', $6)
-		RETURNING id::text, project_id::text, team_id::text, parent_id::text, title, body, state, created_by, created_at, updated_at`,
-		in.ProjectID, teamParam, parentParam, in.Title, in.Body, in.Principal,
-	).Scan(&rec.ID, &rec.ProjectID, &teamOut, &parentOut, &rec.Title, &body, &rec.State, &rec.CreatedBy, &rec.CreatedAt, &rec.UpdatedAt)
+		INSERT INTO coord.work_item (project_id, team_id, parent_id, title, body, state, created_by, priority, work_mode, labels)
+		VALUES ($1::uuid, $2::uuid, $3::uuid, $4, NULLIF($5,''), 'backlog', $6, NULLIF($7,''), NULLIF($8,''), $9)
+		RETURNING id::text, project_id::text, team_id::text, parent_id::text, title, body, state, created_by, created_at, updated_at, priority, work_mode, labels`,
+		in.ProjectID, teamParam, parentParam, in.Title, in.Body, in.Principal, priority, workMode, labels,
+	).Scan(&rec.ID, &rec.ProjectID, &teamOut, &parentOut, &rec.Title, &body, &rec.State, &rec.CreatedBy, &rec.CreatedAt, &rec.UpdatedAt, &priorityOut, &workModeOut, pq.Array(&rec.Labels))
 	if err != nil {
 		return WorkItemRecord{}, fmt.Errorf("coord.CreateWorkItem: insert: %w", err)
 	}
 	rec.TeamID = nullToPtr(teamOut)
 	rec.ParentID = nullToPtr(parentOut)
 	rec.Body = body.String
+	rec.Priority = nullToPtr(priorityOut)
+	rec.WorkMode = nullToPtr(workModeOut)
+	if rec.Labels == nil {
+		rec.Labels = []string{}
+	}
 
 	if err := s.writeAudit(ctx, tx, rec.ID, "work_item_created", in.Principal, in.InitiatedByUserID, map[string]any{
 		"title":     rec.Title,
 		"parent_id": parentOut.String,
+		"priority":  priority,
+		"work_mode": workMode,
+		"labels":    labels,
 	}); err != nil {
 		return WorkItemRecord{}, err
 	}
@@ -298,11 +385,17 @@ func (s *WorkItemWriteStore) UpdateWorkItem(ctx context.Context, workItemID stri
 		return WorkItemRecord{}, fmt.Errorf("%w: concurrent edit", ErrStateConflict)
 	}
 
-	// (6) Read back the committed row so the caller re-syncs to server truth.
+	// (6) Read back the committed row so the caller re-syncs to server truth. The
+	// create-time attributes (priority/work_mode/labels, ISI-4409) are read back
+	// too — an edit does not change them, but they are part of the shared record,
+	// so the PATCH response stays as honest as create's (never a spurious null
+	// that would hide an item's real labels/priority).
 	var updatedAt time.Time
+	var priorityOut, workModeOut sql.NullString
 	if err := tx.QueryRowContext(ctx, `
-		SELECT title, body, parent_id::text, updated_at FROM coord.work_item WHERE id = $1::uuid`,
-		workItemID).Scan(&newTitle, &newBody, &newParent, &updatedAt); err != nil {
+		SELECT title, body, parent_id::text, updated_at, priority, work_mode, labels
+		  FROM coord.work_item WHERE id = $1::uuid`,
+		workItemID).Scan(&newTitle, &newBody, &newParent, &updatedAt, &priorityOut, &workModeOut, &rec.Labels); err != nil {
 		return WorkItemRecord{}, fmt.Errorf("coord.UpdateWorkItem: read back: %w", err)
 	}
 
@@ -318,6 +411,11 @@ func (s *WorkItemWriteStore) UpdateWorkItem(ctx context.Context, workItemID stri
 	rec.ParentID = nullToPtr(newParent)
 	rec.TeamID = nullToPtr(teamOut)
 	rec.UpdatedAt = updatedAt
+	rec.Priority = nullToPtr(priorityOut)
+	rec.WorkMode = nullToPtr(workModeOut)
+	if rec.Labels == nil {
+		rec.Labels = []string{}
+	}
 	return rec, nil
 }
 

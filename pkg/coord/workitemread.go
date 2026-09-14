@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 // BoardItem is one card of the per-Project board list — the §13 projection of
@@ -32,7 +34,13 @@ type BoardItem struct {
 	Title         string `json:"title"`
 	State         string `json:"state"`
 	BlockedReason string `json:"blockedReason,omitempty"`
-	Holder        string `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
+	// Priority / Labels are the create-time attributes the card renders (ISI-4409,
+	// O-3): a priority pill and label chips. Priority is "" when unset (the console
+	// renders "none", never a fabricated value); Labels is never nil (empty ⇒ []).
+	// WorkMode is detail-only, so it is NOT on the card (see TaskDetail).
+	Priority string   `json:"priority,omitempty"`
+	Labels   []string `json:"labels"`
+	Holder   string   `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
 	// Assignee is the AGENT name the dispatched run works this ticket as
 	// (coord.claim.assignee_agent, ISI-4237) — the board's "who is working
 	// this". Unlike Holder it survives the terminal checkout release, so a
@@ -101,7 +109,7 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 		return nil, fmt.Errorf("coord.ListWorkItems: projectID required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT wi.id::text, wi.title, wi.state, wi.blocked_reason,
+		SELECT wi.id::text, wi.title, wi.state, wi.blocked_reason, wi.priority, wi.labels,
 		       c.holder_principal, c.assignee_agent, c.run_id::text, wi.updated_at,
 		       (SELECT count(*) FROM coord.comment k WHERE k.work_item_id = wi.id),
 		       (SELECT count(*) FROM coord.change_ref r WHERE r.work_item_id = wi.id)
@@ -119,12 +127,19 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	var out []BoardItem
 	for rows.Next() {
 		var it BoardItem
-		var blocked, holder, assignee, run sql.NullString
-		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &holder, &assignee, &run,
+		var blocked, priority, holder, assignee, run sql.NullString
+		// labels via pq.Array — pgx stdlib returns text[] as a *string* on Go < 1.27
+		// (see coord.ReadTaskDetail); a direct &it.Labels scan 500s. ISI-4409.
+		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &priority, pq.Array(&it.Labels),
+			&holder, &assignee, &run,
 			&it.UpdatedAt, &it.CommentCount, &it.ChangeCount); err != nil {
 			return nil, fmt.Errorf("coord.ListWorkItems: scan: %w", err)
 		}
 		it.BlockedReason = blocked.String
+		it.Priority = priority.String
+		if it.Labels == nil {
+			it.Labels = []string{}
+		}
 		it.Holder = holder.String
 		it.Assignee = assignee.String
 		it.RunID = run.String

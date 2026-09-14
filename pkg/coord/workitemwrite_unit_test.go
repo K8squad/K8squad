@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -50,6 +51,73 @@ func TestCreateWorkItemRejectsBadInput(t *testing.T) {
 				t.Fatalf("got %v, want ErrInvalidWorkItem", err)
 			}
 		})
+	}
+}
+
+// TestCreateWorkItemRejectsBadAttributes — the ISI-4409 create-attribute guards
+// (bad priority/workMode enum, over-long/over-many labels) fail closed with
+// ErrInvalidWorkItem BEFORE any BeginTx, so a bad value is a clean 400 and never a
+// raw CHECK-violation 502 (the offline DB would error if reached).
+func TestCreateWorkItemRejectsBadAttributes(t *testing.T) {
+	s := newOfflineWriteStore(t)
+	base := func() CreateWorkItemInput {
+		return CreateWorkItemInput{ProjectID: "p", Title: "t", Principal: "user:a"}
+	}
+	longLabel := make([]byte, maxLabelLen+1)
+	for i := range longLabel {
+		longLabel[i] = 'x'
+	}
+	tooMany := make([]string, maxLabels+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("l%d", i)
+	}
+	cases := map[string]func() CreateWorkItemInput{
+		"bad priority":  func() CreateWorkItemInput { in := base(); in.Priority = "critical"; return in },
+		"bad work mode": func() CreateWorkItemInput { in := base(); in.WorkMode = "yolo"; return in },
+		"label too long": func() CreateWorkItemInput {
+			in := base()
+			in.Labels = []string{string(longLabel)}
+			return in
+		},
+		"too many labels": func() CreateWorkItemInput { in := base(); in.Labels = tooMany; return in },
+	}
+	for name, mk := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := s.CreateWorkItem(context.Background(), mk())
+			if !errors.Is(err, ErrInvalidWorkItem) {
+				t.Fatalf("got %v, want ErrInvalidWorkItem", err)
+			}
+		})
+	}
+}
+
+// TestNormalizeCreateFields — valid enums pass through; labels are trimmed, empties
+// dropped, de-duped preserving first-seen order, and returned non-nil so an empty
+// set encodes '{}' (NOT NULL) rather than SQL NULL.
+func TestNormalizeCreateFields(t *testing.T) {
+	// Valid values + messy labels round-trip cleanly.
+	p, wm, labels, err := normalizeCreateFields("high", "planning",
+		[]string{" backend ", "backend", "", "  ", "security"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p != "high" || wm != "planning" {
+		t.Fatalf("enums not passed through: %q %q", p, wm)
+	}
+	if len(labels) != 2 || labels[0] != "backend" || labels[1] != "security" {
+		t.Fatalf("labels not trimmed/de-duped/ordered: %#v", labels)
+	}
+
+	// Empty everything ⇒ empty (non-nil) labels + empty enums.
+	_, _, empty, err := normalizeCreateFields("", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if empty == nil {
+		t.Fatal("labels must be non-nil so pgx encodes '{}' not NULL")
+	}
+	if len(empty) != 0 {
+		t.Fatalf("want empty labels, got %#v", empty)
 	}
 }
 
