@@ -852,7 +852,31 @@ func main() {
 		// — a failed teardown parks the sandbox in draining for the
 		// pool's retry instead of failing the follow.
 		if a2aDispatcher != nil {
-			a2aDispatcher.OnDone = func(runID string, _ clienta2a.Result, followErr error) {
+			// ISI-4348-S1 (ADR-0020 §2.2): the durable follow-settlement marker.
+			// OnDone persists it BEFORE the best-effort in-memory pool.Release, so
+			// an operator restart between the two leaves the S2 reaper a durable
+			// record ("this run's follow settled, outcome X") to finish teardown
+			// from instead of leaking the run-owned pod forever. Settle is
+			// at-most-once (WHERE settled_at IS NULL) and idempotent under OnDone
+			// re-entry, orthogonal to the §6.4 step machine (settlement is a
+			// post-terminal annotation on the follow goroutine, not a reconcile step).
+			settler, serr := coord.NewProdSettleWriter(db, rundrive.OperatorPrincipal)
+			if serr != nil {
+				ctrl.Log.Error(serr, "a2a follow-settlement writer disabled: OnDone will not persist the durable settlement marker (S2 reaper will be blind to post-restart stragglers)")
+			}
+			a2aDispatcher.OnDone = func(a2aTaskID, runID string, res clienta2a.Result, followErr error) {
+				// Durable marker FIRST — §2.2 ordering is a correctness invariant.
+				if settler != nil {
+					if err := settler.Settle(context.Background(), a2aTaskID, runID, clienta2a.SettleOutcome(res, followErr)); err != nil {
+						ctrl.Log.Error(err, "durable a2a follow-settlement marker write failed",
+							"run.id", runID, "a2a.task.id", a2aTaskID)
+					}
+				}
+				// A follow ERROR is not proof the agent is done (a transient
+				// SSE/network blip on a live run must not tear down a healthy
+				// sandbox and force a re-dispatch). Leave the pod in place — the
+				// durable marker above still records that the follow ended for the
+				// S2 reaper. Only a cleanly terminal follow releases the pod.
 				if followErr != nil {
 					ctrl.Log.Info("a2a follow ended with error; leaving run sandbox in place (error is not proof of completion)",
 						"run.id", runID, "followErr", followErr.Error())
