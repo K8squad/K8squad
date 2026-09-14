@@ -111,6 +111,26 @@ type Options struct {
 	Traces  *SignalExport
 	Metrics *SignalExport
 	Logs    *SignalExport
+
+	// CaptureUnsampledRemoteParent forces the traces head sampler to RECORD a
+	// span even when it continues a REMOTE parent whose W3C sampled flag is 0,
+	// while still honoring every other case (a sampled remote parent, a local
+	// parent, or no parent at all). It exists for the sandbox entrypoints
+	// (`shim run` / `shim supervisor`, ISI-4413): a sandbox continues the Run's
+	// distributed trace from the traceparent the operator injected into the
+	// run credential, so the run's spans (run.start / llm.call /
+	// gen_ai.tool.call / run.end) inherit that parent's sampling decision under
+	// the SDK-default ParentBased(AlwaysSample) sampler. When the injected
+	// parent carries sampled=0 (e.g. the bind-pass reconcile span the credential
+	// froze was itself dropped, or the operator samples probabilistically), the
+	// WHOLE run subtree is head-dropped in the sandbox and never reaches the
+	// collector — Henrik's "disconnected span, without run.start / run.end"
+	// (ISI-4365). A sandbox hosts exactly one Run, so its run trace must be
+	// captured unconditionally; this flag makes the remote-parent-not-sampled
+	// case sample-anyway without re-sampling any other case and without breaking
+	// dispatcher→run parenting (the span still uses the injected trace/parent
+	// id). Ignored when an explicit CR sampler is set (declared routing wins).
+	CaptureUnsampledRemoteParent bool
 }
 
 // ShutdownFunc flushes and stops the trace, metric and log pipelines. Call it
@@ -162,12 +182,29 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
 	}
-	// Apply a head sampler ONLY when the CR specified one; otherwise leave the
-	// SDK's default sampler untouched (unchanged pre-ISI-3620 behavior).
+	// Head sampler selection, in precedence order:
+	//   1. an explicit CR-declared sampler (opts.Traces.Sampler) — declared
+	//      routing always wins (unchanged pre-ISI-3620 behavior);
+	//   2. else, when CaptureUnsampledRemoteParent is set (sandbox path,
+	//      ISI-4413), a ParentBased sampler that captures the run subtree even
+	//      under a remote parent whose sampled flag is 0 — so the injected
+	//      credential traceparent can never head-drop the whole run trace;
+	//   3. else nothing: leave the SDK's default sampler untouched.
+	var sampler sdktrace.Sampler
 	if opts.Traces != nil {
-		if s := samplerFor(opts.Traces.Sampler); s != nil {
-			traceProviderOpts = append(traceProviderOpts, sdktrace.WithSampler(s))
-		}
+		sampler = samplerFor(opts.Traces.Sampler)
+	}
+	if sampler == nil && opts.CaptureUnsampledRemoteParent {
+		// Root/local/remote-sampled cases behave exactly like the SDK default
+		// (ParentBased(AlwaysSample)); ONLY the remote-parent-not-sampled case
+		// is overridden to sample, so a run's spans are recorded regardless of
+		// the injected parent's decision while every explicit-keep decision is
+		// still honored.
+		sampler = sdktrace.ParentBased(sdktrace.AlwaysSample(),
+			sdktrace.WithRemoteParentNotSampled(sdktrace.AlwaysSample()))
+	}
+	if sampler != nil {
+		traceProviderOpts = append(traceProviderOpts, sdktrace.WithSampler(sampler))
 	}
 	tp := sdktrace.NewTracerProvider(traceProviderOpts...)
 	otel.SetTracerProvider(tp)

@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // TestSetupEmitsSpanAndCorrelatedLog is the ISI-2915 end-to-end proof (AC1/AC2
@@ -202,6 +203,66 @@ func TestInjectWritesW3CTrace(t *testing.T) {
 	}
 	if !strings.Contains(tp, traceID) {
 		t.Errorf("traceparent %q does not carry trace id %q", tp, traceID)
+	}
+}
+
+// TestCaptureUnsampledRemoteParent is the ISI-4413 head-sampling proof: a
+// sandbox continues the operator-injected credential traceparent, and when that
+// remote parent carries sampled=0 the SDK-default ParentBased(AlwaysSample)
+// sampler head-drops the WHOLE run subtree (run.start/llm.call/run.end never
+// reach the collector). Options.CaptureUnsampledRemoteParent must flip ONLY
+// that case to sample, while still honoring a sampled remote parent, and still
+// rooting a fresh trace when there is no parent.
+func TestCaptureUnsampledRemoteParent(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+
+	remoteParent := func(sampled bool) context.Context {
+		flags := trace.TraceFlags(0)
+		if sampled {
+			flags = flags.WithSampled(true)
+		}
+		sc := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    traceID,
+			SpanID:     spanID,
+			TraceFlags: flags,
+			Remote:     true,
+		})
+		return trace.ContextWithRemoteSpanContext(context.Background(), sc)
+	}
+
+	cases := []struct {
+		name        string
+		capture     bool
+		parentCtx   context.Context
+		wantSampled bool
+	}{
+		{"default drops unsampled remote parent", false, remoteParent(false), false},
+		{"capture keeps unsampled remote parent", true, remoteParent(false), true},
+		{"capture still roots a fresh trace", true, context.Background(), true},
+		{"capture honors a sampled remote parent", true, remoteParent(true), true},
+		{"default honors a sampled remote parent", false, remoteParent(true), true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			_, shutdown, err := Setup(context.Background(), Options{
+				ServiceName:                  "sandbox-svc",
+				Writer:                       buf,
+				CaptureUnsampledRemoteParent: tc.capture,
+			})
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+			defer func() { _ = shutdown(context.Background()) }()
+
+			_, span := Tracer().Start(tc.parentCtx, "run.start")
+			got := span.SpanContext().IsSampled()
+			span.End()
+			if got != tc.wantSampled {
+				t.Errorf("IsSampled() = %v, want %v", got, tc.wantSampled)
+			}
+		})
 	}
 }
 

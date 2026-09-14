@@ -213,6 +213,11 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 		supTelemetryOpts := telemetry.Options{
 			ServiceName: "ksquad-supervisor",
 			Writer:      os.Stderr, // never stdout: /task's body IS the event wire
+			// ISI-4413: the run's spans continue the operator-injected credential
+			// traceparent; a sandbox hosts exactly one Run, so its run trace must
+			// be captured even when that injected parent carries sampled=0 (which
+			// would otherwise head-drop run.start/llm.call/run.end in the sandbox).
+			CaptureUnsampledRemoteParent: true,
 		} // M1.2 telemetry leg: the operator stamps OTEL_EXPORTER_OTLP_* (the
 		// observability gateway) onto the sandbox pod env (warmpool
 		// WithPodEnv); honor it for every signal still on the stdout default
@@ -226,6 +231,13 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 			s.mu.Lock()
 			s.telemetryShutdown = shutdown
 			s.mu.Unlock()
+		} else {
+			// A failed Setup leaves the global providers non-exporting (a partial
+			// install may even shut the trace provider down), so the supervisor's
+			// run spans would silently vanish — the exact ISI-4413 symptom. Never
+			// swallow it: surface it on stderr so a dead spine is diagnosable
+			// instead of masquerading as "OTLP export engaged".
+			fmt.Fprintf(os.Stderr, "shim supervisor: telemetry.Setup failed, run spans will not export: %v\n", terr)
 		}
 		toolusage.SetEnabled(s.toolUsage)
 
