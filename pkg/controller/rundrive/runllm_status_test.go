@@ -190,6 +190,70 @@ func TestRunLLMStatusWriter_BoundedWindowRunningTotal(t *testing.T) {
 	}
 }
 
+// ISI-4412: a token-bearing step_finish from an empty-provider runtime
+// (Ollama/qwen: no providerID/modelID, scalar zero cost) arrives over the
+// stdio transport as a generic map with an EMPTY model. It must still project
+// — dropping it on the missing model id was silently losing the only usage
+// event dispatched qwen runs ever emit, even while the traceID landed fine.
+func TestRunLLMStatusWriter_ProjectsEmptyModelUsage(t *testing.T) {
+	const ns = "bmad-squad"
+	run := llmTestRun(ns, llmRunUID)
+	c := fake.NewClientBuilder().WithScheme(llmWriterScheme(t)).WithObjects(run).WithStatusSubresource(run).Build()
+	w := NewRunLLMStatusWriter(c, nil)
+	ctx := context.Background()
+
+	// The exact qwen step_finish shape from the ISI-4412 repro: 7282 in /
+	// 22 out, empty model, cost 0 — delivered as a generic-map payload.
+	ev := wire.Event{
+		Seq: 4, A2ATaskID: llmTaskID, TS: time.Now().UTC(), Type: wire.EventUsage,
+		Payload: map[string]any{"model": "", "input": 7282, "output": 22, "reasoning": 0, "costUSD": 0},
+	}
+	if err := w.Event(ctx, ev); err != nil {
+		t.Fatalf("empty-model usage event: %v", err)
+	}
+
+	var got api.Run
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: run.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.LLMInteractions) != 1 {
+		t.Fatalf("llmInteractions = %d, want 1 (empty-model usage must project)", len(got.Status.LLMInteractions))
+	}
+	inter := got.Status.LLMInteractions[0]
+	if inter.Model != "" || inter.TokenUsage == nil || inter.TokenUsage.TotalTokens != 7304 {
+		t.Fatalf("interaction = %+v, want empty model + total 7304", inter)
+	}
+	tot := got.Status.TotalTokenUsage
+	if tot == nil || tot.InputTokens != 7282 || tot.OutputTokens != 22 || tot.TotalTokens != 7304 {
+		t.Fatalf("totalTokenUsage = %+v, want in=7282 out=22 total=7304", tot)
+	}
+}
+
+// The sentinel still rejects a genuinely empty blob (no model, no tokens, no
+// cost) so unrelated JSON on the EventUsage channel does not fabricate a
+// zero-token interaction that would pollute the interaction list.
+func TestRunLLMStatusWriter_DropsEmptyUsageBlob(t *testing.T) {
+	const ns = "bmad-squad"
+	run := llmTestRun(ns, llmRunUID)
+	c := fake.NewClientBuilder().WithScheme(llmWriterScheme(t)).WithObjects(run).WithStatusSubresource(run).Build()
+	w := NewRunLLMStatusWriter(c, nil)
+	ctx := context.Background()
+
+	if err := w.Event(ctx, wire.Event{
+		Seq: 5, A2ATaskID: llmTaskID, TS: time.Now().UTC(), Type: wire.EventUsage,
+		Payload: map[string]any{"model": "", "input": 0, "output": 0},
+	}); err != nil {
+		t.Fatalf("empty usage blob: %v", err)
+	}
+	var got api.Run
+	if err := c.Get(ctx, client.ObjectKey{Namespace: ns, Name: run.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.LLMInteractions) != 0 || got.Status.TotalTokenUsage != nil {
+		t.Fatalf("empty blob must not project: %+v", got.Status)
+	}
+}
+
 // Observability must never kill a run: the writer swallows resolution and
 // patch failures (Event returns nil) and ignores events for other runs or
 // of other types without touching the API.
