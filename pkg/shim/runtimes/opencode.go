@@ -317,6 +317,11 @@ func usageFromStepFinish(part *openCodePart) *a2a.UsagePayload {
 	default:
 		u.Model = part.ModelID
 	}
+	// ISI-4383: carry the provider distinctly as gen_ai.system. opencode
+	// reports one served model per step, so ResponseModel/FinishReason/
+	// ResponseID and the fallback marker stay for runtimes that report
+	// requested-vs-served separately (ADR-0021 D2 limitation §74).
+	u.Provider = part.ProviderID
 	if part.Tokens.Cache != nil {
 		u.CacheRead = part.Tokens.Cache.Read
 		u.CacheWrite = part.Tokens.Cache.Write

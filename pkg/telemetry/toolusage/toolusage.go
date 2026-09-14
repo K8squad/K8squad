@@ -27,9 +27,16 @@ See the limitations under the License.
 //	gen_ai.tool.call   — a local/CLI tool call: gen_ai.tool.name, hashed
 //	                     args (gen_ai.tool.call.arguments carries the hex
 //	                     sha256 — raw arguments NEVER travel), outcome, duration
-//	llm.call           — one model round-trip (step): gen_ai.request.model,
-//	                     gen_ai.usage.input/output_tokens, provider cost,
-//	                     truthful step duration (ISI-4238)
+//	llm.call           — one model round-trip (step) with the full gen-AI
+//	                     semconv surface (ISI-4238, ISI-4383): gen_ai.system
+//	                     (provider), gen_ai.operation.name, request + response
+//	                     model, input/output/reasoning tokens (reasoning
+//	                     distinct, not folded), cache read/write, finish
+//	                     reason, response id, provider cost, truthful step
+//	                     duration; ksquad.llm.fallback=true marks a
+//	                     backup-model-served step. Prompt/response bodies stay
+//	                     OFF by default (D3 PII posture) — captured as gated
+//	                     span events only under KSQUAD_TRACE_CONTENT.
 //	skill.load         — a skill entering the runtime session: skill name +
 //	                     pinned source SHA
 //	mcp.call           — a tool call served by an MCPServer: mcp server +
@@ -56,6 +63,8 @@ package toolusage
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,13 +119,28 @@ const (
 	// without joining back to the CR (ISI-4238).
 	attrRunState = attribute.Key("ksquad.run.state")
 	// GenAI semconv keys the v1.40 stable set does not export as typed
-	// constants yet (ISI-4238 llm.call spans).
+	// constants yet (ISI-4238 / ISI-4383 llm.call spans). Kept as raw keys
+	// so the whole gen_ai.* surface reads in one place.
 	attrGenAIRequestModel     = attribute.Key("gen_ai.request.model")
+	attrGenAIResponseModel    = attribute.Key("gen_ai.response.model")
+	attrGenAISystem           = attribute.Key("gen_ai.system")
+	attrGenAIOperationName    = attribute.Key("gen_ai.operation.name")
 	attrGenAIInputTokens      = attribute.Key("gen_ai.usage.input_tokens")
 	attrGenAIOutputTokens     = attribute.Key("gen_ai.usage.output_tokens")
+	attrGenAIReasoningTokens  = attribute.Key("gen_ai.usage.reasoning_tokens")
 	attrGenAICacheReadTokens  = attribute.Key("gen_ai.usage.cache_read_tokens")
 	attrGenAICacheWriteTokens = attribute.Key("gen_ai.usage.cache_write_tokens")
+	attrGenAIFinishReasons    = attribute.Key("gen_ai.response.finish_reasons")
+	attrGenAIResponseID       = attribute.Key("gen_ai.response.id")
 	attrLLMCostUSD            = attribute.Key("ksquad.llm.cost.usd")
+	// attrLLMFallback marks an llm.call whose step was served by the Run's
+	// backup/fallback model (ISI-4383): true correlates the span to a
+	// ksquad_fallback_activations_total increment (story 5.11).
+	attrLLMFallback = attribute.Key("ksquad.llm.fallback")
+
+	// operationChat is the gen_ai.operation.name for a model round-trip
+	// (llm.call). The OTel gen-AI semconv "chat" operation.
+	operationChat = "chat"
 
 	outcomeSuccess = "success"
 	outcomeError   = "error"
@@ -137,7 +161,36 @@ func SetEnabled(v bool) { enabled.Store(v) }
 // Enabled reports the current gate value (test seam + wiring assertions).
 func Enabled() bool { return enabled.Load() }
 
-func init() { enabled.Store(true) }
+// contentTracing is the D3 prompt/response content-capture gate (ISI-4383,
+// ADR-0021 D3). It is OFF by default: the PII posture means llm.call never
+// carries prompt/response bodies in prod (tool args are SHA-256 only). It
+// flips on ONLY via the KSQUAD_TRACE_CONTENT env flag (dev/non-prod, with the
+// documented risk) so an operator can opt in to prompt/response span events
+// for local debugging. Nothing populates UsagePayload.Prompt/Response in the
+// default build, so even with the flag on the events appear only when a
+// content-carrying event is deliberately produced.
+var contentTracing atomic.Bool
+
+// SetContentTracing flips the D3 content-capture gate (test seam + explicit
+// wiring). Safe for concurrent use.
+func SetContentTracing(v bool) { contentTracing.Store(v) }
+
+// ContentTracingEnabled reports the current D3 content-capture gate value.
+func ContentTracingEnabled() bool { return contentTracing.Load() }
+
+// envTruthy parses an env flag the same lenient way across the package:
+// strconv.ParseBool ("1"/"t"/"true"/…) with "" and unparseable → false.
+func envTruthy(v string) bool {
+	b, err := strconv.ParseBool(v)
+	return err == nil && b
+}
+
+func init() {
+	enabled.Store(true)
+	// D3: opt in to content capture only when the env flag is explicitly
+	// truthy. Absent or unparseable → stays off (default-safe PII posture).
+	contentTracing.Store(envTruthy(os.Getenv("KSQUAD_TRACE_CONTENT")))
+}
 
 // Labels identify the emitting Run and its context. They ride every span
 // (attributes) so a backend can filter one trace by run / agent / team /
@@ -481,31 +534,61 @@ func outcomeFromState(state string) string {
 	return outcomeError
 }
 
-// UsageEvent maps one EventUsage payload (ISI-4238): a complete llm.call
-// span carrying the GenAI semconv model + token attributes and the
-// provider-reported cost, with the span's duration set truthfully from the
-// runtime-reported step duration (start = now−duration, end = now); plus
-// the ksquad_llm_calls_total / ksquad_llm_tokens_total counters. With no
-// tracer attached the metrics still count. A usage without a model id is
-// dropped (unattributable — never fabricate "unknown" buckets).
+// UsageEvent maps one EventUsage payload (ISI-4238, ISI-4383): a complete
+// llm.call span carrying the OTel gen-AI semconv surface — system (provider),
+// operation, requested + served model, input/output/reasoning tokens, cache
+// read/write, finish reason, response id — plus the provider-reported cost,
+// with the span's duration set truthfully from the runtime-reported step
+// duration (start = now−duration, end = now); plus the ksquad_llm_calls_total
+// / ksquad_llm_tokens_total counters. A fallback-served step is flagged with
+// ksquad.llm.fallback=true (correlates to ksquad_fallback_activations_total).
+// With no tracer attached the metrics still count. A usage without a model id
+// is dropped (unattributable — never fabricate "unknown" buckets).
+//
+// Reasoning tokens are reported DISTINCTLY on the span
+// (gen_ai.usage.reasoning_tokens), no longer folded into output_tokens (D2).
+// The ksquad_llm_tokens_total "output" metric direction deliberately keeps
+// reasoning folded in — reasoning is billed as output-class, and that metric
+// is the billing/output view (its Help documents this).
 func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p a2a.UsagePayload) {
 	if !enabled.Load() || p.Model == "" {
 		return
 	}
 	attrs := labels.spanAttrs()
 	attrs = append(attrs,
+		attrGenAIOperationName.String(operationChat),
 		attrGenAIRequestModel.String(p.Model),
 		attrGenAIInputTokens.Int(p.Input),
-		attrGenAIOutputTokens.Int(p.Output+p.Reasoning),
+		attrGenAIOutputTokens.Int(p.Output),
 	)
+	if p.Provider != "" {
+		attrs = append(attrs, attrGenAISystem.String(p.Provider))
+	}
+	if p.ResponseModel != "" {
+		attrs = append(attrs, attrGenAIResponseModel.String(p.ResponseModel))
+	}
+	if p.Reasoning != 0 {
+		attrs = append(attrs, attrGenAIReasoningTokens.Int(p.Reasoning))
+	}
 	if p.CacheRead != 0 {
 		attrs = append(attrs, attrGenAICacheReadTokens.Int(p.CacheRead))
 	}
 	if p.CacheWrite != 0 {
 		attrs = append(attrs, attrGenAICacheWriteTokens.Int(p.CacheWrite))
 	}
+	if p.FinishReason != "" {
+		// semconv types finish_reasons as a string array: one step reports
+		// one reason, carried as a single-element slice.
+		attrs = append(attrs, attrGenAIFinishReasons.StringSlice([]string{p.FinishReason}))
+	}
+	if p.ResponseID != "" {
+		attrs = append(attrs, attrGenAIResponseID.String(p.ResponseID))
+	}
 	if p.CostUSD != 0 {
 		attrs = append(attrs, attrLLMCostUSD.Float64(p.CostUSD))
+	}
+	if p.Fallback {
+		attrs = append(attrs, attrLLMFallback.Bool(true))
 	}
 
 	var opts []trace.SpanStartOption
@@ -515,11 +598,34 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	}
 	opts = append(opts, trace.WithAttributes(attrs...))
 	_, span := m.startWithOptions(ctx, SpanLLMCall, opts)
+	// D3: prompt/response bodies ride as gated span events, never as
+	// attributes, and only when the content gate is on AND the payload
+	// actually carries them (default-off PII posture — see contentTracing).
+	if contentTracing.Load() {
+		recordContentEvents(span, p)
+	}
 	span.End()
 
 	m.ins.LLMCalls.WithLabelValues(p.Model, labels.Agent).Inc()
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "input").Add(float64(p.Input))
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "output").Add(float64(p.Output + p.Reasoning))
+}
+
+// recordContentEvents adds the D3 opt-in prompt/response bodies as span
+// events (gen_ai.content.prompt / gen_ai.content.completion). It is only
+// reached with the content gate on; it still no-ops on empty bodies so an
+// enabled-but-content-free step stays clean. Content NEVER becomes a span
+// attribute (attributes are indexed/queryable; events are the semconv-blessed
+// carrier for bulky, sensitive payloads).
+func recordContentEvents(span trace.Span, p a2a.UsagePayload) {
+	if p.Prompt != "" {
+		span.AddEvent("gen_ai.content.prompt",
+			trace.WithAttributes(attribute.String("gen_ai.prompt", p.Prompt)))
+	}
+	if p.Response != "" {
+		span.AddEvent("gen_ai.content.completion",
+			trace.WithAttributes(attribute.String("gen_ai.completion", p.Response)))
+	}
 }
 
 // FinishTask sweeps any still-open spans for taskID (a runtime that crashed
