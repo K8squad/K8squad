@@ -1,0 +1,95 @@
+# GitHub Sync Health — SLOs / KPIs  (ISI-4395 GH-6 / WS-GH; parent ISI-4229)
+#
+# Test-consumable KPI definitions for the ISI-4229 acceptance criteria and the
+# Testing Architect. Each KPI is a Dynatrace DQL query plus a threshold and a
+# comparator, so a harness can run the query (e.g. `dtctl query -f -`), read the
+# named numeric field, and assert it against the threshold. The metric keys are
+# the canonical OTel names documented in pkg/telemetry/semconv/scm.go (GH-5) and
+# emitted by pkg/telemetry/scmmetrics (GH-1..3); Dynatrace preserves the dotted
+# keys (see the sibling ksquad.controller.* metrics already in the tenant).
+#
+# STATUS: the DQL is syntax-validated against the DT dev tenant
+# (oat05854.dev.apps.dynatracelabs.com). Live threshold evaluation is gated on
+# the ksquad.scm.* metrics actually flowing — i.e. an operator carrying GH-3
+# deployed to the DT-exporting env AND at least one Project with GitHub sync
+# generating reconcile passes. Until then every query returns empty (no data),
+# which a harness must treat as "not yet measurable", NOT as pass/fail.
+
+meta:
+  slo_domain: github-sync
+  window: 1h            # rolling evaluation window; widen for release gates
+  poll_interval_seconds_default: 300   # reposync DefaultPollIntervalSeconds; per-Project via spec.repo.sync.pollIntervalSeconds
+  dt_tenant_context: dynatrace-dev
+  empty_result_means: not_yet_measurable
+
+kpis:
+  - id: mirror_freshness_p99
+    title: Mirror freshness (p99 age) under pollInterval + 60s
+    rationale: >
+      99% of the time a Project's mirror should be no older than one poll cycle
+      plus a 60s grace. A growing p99 age is the "stale mirror" symptom that
+      GH-1..4 made visible; it distinguishes a stalled reconcile from a healthy
+      one even when nothing errors.
+    metric: ksquad.scm.mirror.age
+    dql: |
+      timeseries age_p99 = percentile(ksquad.scm.mirror.age, 99), from:-1h
+    value_field: age_p99
+    comparator: lt
+    # threshold = pollInterval + 60; default shown, override per Project's pollIntervalSeconds.
+    threshold_seconds: 360
+    threshold_expr: pollIntervalSeconds + 60
+
+  - id: sync_success_rate
+    title: Reconcile success rate >= 0.99
+    rationale: >
+      Fraction of reconcile passes whose reason is Synced. The reason label
+      reuses the SyncReady condition taxonomy, so ProviderError / MirrorWriteError
+      / CredentialMissing all count against the rate.
+    metric: ksquad.scm.sync.total
+    # Returns two series; the harness computes synced_sum / total_sum over the window.
+    dql: |
+      timeseries
+        synced = sum(ksquad.scm.sync.total, filter: { reason == "Synced" }),
+        total  = sum(ksquad.scm.sync.total),
+        from: -1h
+    value_expr: sum(synced) / sum(total)
+    comparator: gte
+    threshold: 0.99
+
+  - id: reconcile_panics_zero
+    title: Reconcile panics == 0
+    rationale: >
+      GH-2 wraps Reconcile in a recover that records the error and increments
+      ksquad.scm.sync.panics.total before re-panicking, so the nil
+      Client/Providers/Store derefs (ISI-4113/ISI-4117) are countable. Any
+      non-zero value is a regression.
+    metric: ksquad.scm.sync.panics.total
+    dql: |
+      timeseries panics = sum(ksquad.scm.sync.panics.total), from:-1h
+    value_expr: sum(panics)
+    comparator: eq
+    threshold: 0
+
+  - id: webhook_accepted_positive
+    title: Webhook deliveries accepted > 0
+    rationale: >
+      Liveness of the scm-webhook ingress (GH-1). A dropped/misrouted webhook
+      stops incrementing outcome=accepted; zero over the window means the
+      ingress is a blind spot again.
+    metric: ksquad.scm.webhook.total
+    dql: |
+      timeseries accepted = sum(ksquad.scm.webhook.total, filter: { outcome == "accepted" }), from:-1h
+    value_expr: sum(accepted)
+    comparator: gt
+    threshold: 0
+
+# Supporting signals (not gated KPIs; surfaced on the dashboard for triage).
+supporting:
+  - id: sync_duration_p99
+    metric: ksquad.scm.sync.duration
+    dql: |
+      timeseries dur_p99 = percentile(ksquad.scm.sync.duration, 99), by:{provider}, from:-1h
+  - id: provider_rate_limit_remaining
+    metric: ksquad.scm.provider.rate_limit.remaining
+    dql: |
+      timeseries rl = min(ksquad.scm.provider.rate_limit.remaining), by:{provider}, from:-1h
