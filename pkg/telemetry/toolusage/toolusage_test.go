@@ -264,6 +264,66 @@ func TestSkillLoadSpan(t *testing.T) {
 	}
 }
 
+// fixedNow forces the mapper stopwatch to report a deterministic elapsed so
+// duration assertions are stable regardless of wall-clock (ISI-4385).
+func fixedNow(seconds float64) func() func() float64 {
+	return func() func() float64 { return func() float64 { return seconds } }
+}
+
+// TestToolCallSpanCarriesDuration (ISI-4385, WS-C): a settled tool call span
+// carries the explicit ksquad.duration.ms attribute measured start→result,
+// alongside its outcome.
+func TestToolCallSpanCarriesDuration(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.now = fixedNow(0.25) // 250ms
+	labels := Labels{RunID: "r", Agent: "a"}
+
+	m.ToolEvent(context.Background(), labels, "t", a2a.ToolPayload{Name: "kubectl", Phase: "start"})
+	m.ToolEvent(context.Background(), labels, "t", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+
+	attrs := attrMap(findSpan(t, sr, SpanToolCall).Attributes())
+	if got := attrs["ksquad.duration.ms"]; got != "250" {
+		t.Errorf("tool.call duration.ms = %q, want 250", got)
+	}
+	if got := attrs["ksquad.outcome"]; got != "success" {
+		t.Errorf("tool.call outcome = %q, want success", got)
+	}
+}
+
+// TestMCPCallSpanCarriesDuration (ISI-4385): an mcp.call span carries the same
+// explicit duration attribute (belt-and-braces with the histogram observation).
+func TestMCPCallSpanCarriesDuration(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.now = fixedNow(1.5) // 1500ms
+	labels := Labels{RunID: "r", Agent: "a"}
+
+	m.ToolEvent(context.Background(), labels, "t", a2a.ToolPayload{Name: "create_pr", Phase: "start", Server: "gh"})
+	m.ToolEvent(context.Background(), labels, "t", a2a.ToolPayload{Name: "create_pr", Phase: "result", OK: boolPtr(true), Server: "gh"})
+
+	attrs := attrMap(findSpan(t, sr, SpanMCPCall).Attributes())
+	if got := attrs["ksquad.duration.ms"]; got != "1500" {
+		t.Errorf("mcp.call duration.ms = %q, want 1500", got)
+	}
+}
+
+// TestSkillLoadSpanCarriesDurationAndOutcome (ISI-4385): a skill.load span
+// carries both ksquad.duration.ms (present, point-event instant) and outcome.
+func TestSkillLoadSpanCarriesDurationAndOutcome(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.now = fixedNow(0.03) // 30ms
+	m.SkillEvent(context.Background(), Labels{RunID: "r", Agent: "a"}, a2a.SkillLoadPayload{
+		Name: "restart-deploy", OK: boolPtr(true),
+	})
+
+	attrs := attrMap(findSpan(t, sr, SpanSkillLoad).Attributes())
+	if _, ok := attrs["ksquad.duration.ms"]; !ok {
+		t.Errorf("skill.load missing ksquad.duration.ms: %v", attrs)
+	}
+	if got := attrs["ksquad.outcome"]; got != "success" {
+		t.Errorf("skill.load outcome = %q, want success", got)
+	}
+}
+
 // TestOrphanResultSynthesizesSpan: a result with no start (at-least-once
 // redelivery) still produces a complete span — never dropped.
 func TestOrphanResultSynthesizesSpan(t *testing.T) {

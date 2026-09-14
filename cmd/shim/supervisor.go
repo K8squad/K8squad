@@ -55,6 +55,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/shim"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
@@ -89,12 +92,24 @@ func runSupervisor(args []string) error {
 		// toolusage gate mirrors `shim run` (default on; Boot stamps the
 		// operator's OTelConfig-derived toggle into the sandbox env).
 		toolUsage: env("KSQUAD_TOOL_USAGE_ENABLED", "true") != "false",
+		// A real registry backs the tool-usage mapper so the ksquad_tool_* /
+		// ksquad_skill_* / ksquad_llm_* series actually register and increment
+		// in supervisor-mode pods (ISI-4385: `shim supervisor` used to pass a
+		// NIL registry, so the metrics were built but never registered — every
+		// increment fell into the void and nothing was ever scrapeable). Unlike
+		// `shim run` (a one-shot process that dumps a textfile at exit), the
+		// supervisor is long-lived and exposes the exposition on GET /metrics.
+		metricsReg: prometheus.NewRegistry(),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", sup.handleHealth)
 	mux.HandleFunc("GET /ready", sup.handleReady)
 	mux.HandleFunc("GET /handshake", sup.handleHandshake)
 	mux.HandleFunc("POST /task", sup.handleTask)
+	// D2 pull surface: the in-pod tool-usage exposition. The mapper registers
+	// its ksquad_* set on sup.metricsReg the moment the first /task builds the
+	// engine; before that the endpoint serves an empty (but live) exposition.
+	mux.Handle("GET /metrics", promhttp.HandlerFor(sup.metricsReg, promhttp.HandlerOpts{}))
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -140,6 +155,11 @@ func runSupervisor(args []string) error {
 // supervisor is the shared state of the in-pod control surface.
 type supervisor struct {
 	toolUsage bool
+	// metricsReg backs the tool-usage mapper (ISI-4385): a real registry the
+	// engine's mapper registers its ksquad_* set on, served on GET /metrics.
+	// Created once at startup so the mux handler and the lazily-built engine
+	// share the same registry.
+	metricsReg *prometheus.Registry
 
 	mu   sync.RWMutex
 	cred *taskio.RunCredential
@@ -374,7 +394,12 @@ func (s *supervisor) runtime() (*shim.Engine, error) {
 			return
 		}
 		engine := shim.New(rt, shim.NewOSRunner(), cfg)
-		engine.SetTelemetry(toolusage.NewMapper(telemetry.Tracer(), nil))
+		// ISI-4385: register the tool-usage metric set on the supervisor's real
+		// registry (was nil → tool/skill/llm metrics never registered in
+		// supervisor-mode pods) so ksquad_tool_calls_total, ksquad_skill_loads_total,
+		// ksquad_mcp_call_duration_seconds and the llm counters flow from the pod
+		// via GET /metrics.
+		engine.SetTelemetry(toolusage.NewMapper(telemetry.Tracer(), s.metricsReg))
 		s.engine = engine
 	})
 	return s.engine, s.engineErr
