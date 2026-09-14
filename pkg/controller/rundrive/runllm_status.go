@@ -221,11 +221,30 @@ func llmUsagePayload(payload any) (wire.UsagePayload, bool) {
 			return wire.UsagePayload{}, false
 		}
 		var p wire.UsagePayload
-		if err := json.Unmarshal(b, &p); err != nil || p.Model == "" {
+		// Reject only genuinely empty blobs. The model id is NOT required:
+		// a byoModelEndpoint runtime (Ollama/qwen step_finish, ISI-4412)
+		// reports token-bearing usage with an empty provider/model and a
+		// scalar zero cost, and dropping it here was silently losing the
+		// only usage event dispatched runs ever emit. Any real usage
+		// signal — a model id OR any token count OR a cost — qualifies.
+		if err := json.Unmarshal(b, &p); err != nil || !usagePayloadHasSignal(p) {
 			return wire.UsagePayload{}, false
 		}
 		return p, true
 	}
+}
+
+// usagePayloadHasSignal reports whether a generic-JSON-decoded EventUsage
+// payload carries real usage worth projecting. Every JSON object unmarshals
+// into UsagePayload with zero values, so the sink needs a sentinel to reject
+// unrelated blobs; the model id is a poor one because empty-provider runtimes
+// legitimately omit it (ISI-4412). Presence of any token count, a reported
+// cost, or a model id is the honest discriminator.
+func usagePayloadHasSignal(p wire.UsagePayload) bool {
+	return p.Model != "" ||
+		p.Input != 0 || p.Output != 0 || p.Reasoning != 0 ||
+		p.CacheRead != 0 || p.CacheWrite != 0 ||
+		p.CostUSD != 0
 }
 
 // llmStatusPayload normalizes an EventStatus payload into the typed
