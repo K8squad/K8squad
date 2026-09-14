@@ -236,6 +236,10 @@ func configFromEnv() (shim.Config, error) {
 		ShimVersion:         version,
 		Experimental:        os.Getenv("KSQUAD_EXPERIMENTAL") == "true",
 		WorkDir:             os.Getenv("KSQUAD_WORKDIR"),
+		// WS-A (ISI-4382): the sandbox pod name rides run-trace spans as
+		// ksquad.sandbox.pod. Kubernetes sets HOSTNAME to the pod name by
+		// default; KSQUAD_SANDBOX_POD (downward-API metadata.name) overrides.
+		SandboxPod: env("KSQUAD_SANDBOX_POD", os.Getenv("HOSTNAME")),
 	}
 	// Epic C (ADR-044 step 6): the projected MCP IR, parsed once at
 	// startup — fail-closed on a set-but-broken document so a Run never
