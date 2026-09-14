@@ -200,3 +200,87 @@ context and the event spine joins the trace spine.
 | `work_item_ref` | string | required | planned | WS-D | The work item / ticket ref. |
 | `state` | string | required | planned | WS-D | Terminal state (completed|failed|canceled). |
 
+## GitHub-sync (SCM) telemetry
+
+The GitHub sync path (webhook ingress → operator reposync → GitHub-status tab)
+emits its own span family and metric set (ISI-4395 / WS-GH) so a dropped
+webhook, a recovered panic, a provider error and a stale mirror are
+distinguishable from outside. These spans are emitted by the scm-webhook,
+operator and apiserver processes (not the run-trace mapper) and are guarded by
+`pkg/telemetry/semconv/scm_conformance_test.go`. The webhook payload is never
+persisted and never travels on span attributes.
+
+### SCM spans
+
+#### `scm.webhook.receive`
+
+One inbound SCM webhook delivery at the scm-webhook ingress (GH-1). Opens the sync trace; a W3C traceparent is injected into the trigger-annotation patch so the operator's scm.sync joins it. Webhook payload is never persisted and never travels on span attributes (PII posture).
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `scm.webhook.event` | string | required | stable | WS-GH | The webhook event type (e.g. push, pull_request); "unknown" when absent. |
+| `scm.webhook.outcome` | string | required | stable | WS-GH | Delivery outcome (accepted|rejected|error). rejected is the uniform-401 verify gate; error is a processing failure. |
+| `scm.project` | string | conditional | stable | WS-GH | The Project the delivery maps to, when resolved (bare scm.* namespace — see NAMESPACE NOTE). |
+| `scm.namespace` | string | conditional | stable | WS-GH | The Project's namespace, when resolved. |
+| `scm.provider` | string | conditional | stable | WS-GH | The SCM provider the trigger is forwarded to, when resolved. |
+
+#### `scm.sync`
+
+One operator reposync Reconcile / mirror pass (GH-2). Joins the inbound webhook trace via the traceparent annotation. A deferred recover records the error and increments ksquad.scm.sync.panics.total before re-panicking, so a nil Client/Providers/Store deref is visible rather than silent.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.scm.provider` | string | required | stable | WS-GH | The SCM provider driving the pass (e.g. github). |
+| `ksquad.scm.trigger` | string | required | stable | WS-GH | What kicked the pass (webhook|poll) — proves whether a refresh was event-driven or the scheduled requeue. |
+| `ksquad.scm.reason` | string | conditional | stable | WS-GH | The reconcile reason/condition (Synced|ProviderError|MirrorWriteError|CredentialMissing|…); the SyncReady condition vocabulary. err.Error() on the CredentialMissing path never embeds the BYO token. |
+| `ksquad.scm.mirror.record_count` | int | conditional | stable | WS-GH | Total mirror records upserted this pass, when the pass reached the write phase. |
+
+#### `scm.fetch.<kind>`
+
+A child of scm.sync per entity kind (GH-2): scm.fetch.pull_requests, scm.fetch.issues, scm.fetch.check_runs, scm.fetch.artifacts, scm.fetch.releases, scm.fetch.branches. Isolates which provider fetch is slow or failing.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.scm.record_count` | int | required | stable | WS-GH | Number of records the per-kind fetcher returned. |
+
+#### `scm.sync.trigger`
+
+The apiserver manual "Sync now" path (GH-4). Carries trigger=manual so a dashboard can PROVE a mirror refresh was an operator kick, not the automatic webhook/poll pipeline.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.scm.trigger` | string | required | stable | WS-GH | Always "manual" for this span. |
+| `ksquad.scm.project` | string | required | stable | WS-GH | namespace/name of the Project whose mirror was kicked. |
+
+#### `scm.status.read`
+
+The apiserver GET /api/projects/{id}/github server span, enriched in place (GH-4) with domain attrs + the freshness SLI so the GitHub-status tab read carries a mirror-age signal rather than being a blind spot.
+
+| Attribute | Type | Requirement | Stability | WS | Description |
+|---|---|---|---|---|---|
+| `ksquad.scm.project` | string | required | stable | WS-GH | namespace/name of the Project being read. |
+| `ksquad.scm.repo_url` | string | recommended | stable | WS-GH | The mirrored repository URL (never the credential). |
+| `ksquad.scm.mirror.age_seconds` | double | conditional | stable | WS-GH | Freshness SLI: now − Project.status.sync.lastSuccess, present when a successful mirror exists. |
+| `ksquad.scm.result.pull_requests` | int | recommended | stable | WS-GH | Pull-request records served from the mirror. |
+| `ksquad.scm.result.issues` | int | recommended | stable | WS-GH | Issue records served from the mirror. |
+| `ksquad.scm.result.check_runs` | int | recommended | stable | WS-GH | Check-run records served from the mirror. |
+| `ksquad.scm.result.artifacts` | int | recommended | stable | WS-GH | Artifact records served from the mirror. |
+| `ksquad.scm.result.releases` | int | recommended | stable | WS-GH | Release records served from the mirror. |
+| `ksquad.scm.result.branches` | int | recommended | stable | WS-GH | Branch records served from the mirror. |
+
+### SCM metrics
+
+Operator metrics on `telemetry.Meter()`. Names are the OTel (dotted) instrument
+names; the Prometheus exporter renders them with underscores
+(`ksquad.scm.webhook.total` → `ksquad_scm_webhook_total`). Labels never include
+`repo` or `run.id` (cardinality).
+
+| Metric | Instrument | Unit | Labels | Stability | WS | Description |
+|---|---|---|---|---|---|---|
+| `ksquad.scm.webhook.total` | counter | 1 | `event`, `outcome` | stable | WS-GH | SCM webhook deliveries by event and outcome (GH-1). outcome=accepted proves ingress is alive; a dropped webhook stops incrementing. |
+| `ksquad.scm.sync.total` | counter | 1 | `provider`, `trigger`, `reason` | stable | WS-GH | SCM reconcile passes by provider, trigger and reason (GH-3). The reason label reuses the SyncReady condition taxonomy so success rate = Synced / total. |
+| `ksquad.scm.sync.duration` | histogram | s | `provider`, `trigger` | stable | WS-GH | SCM reconcile pass latency in seconds (GH-3). Freshness SLO source: p99 should stay under pollInterval+60s. |
+| `ksquad.scm.sync.panics.total` | counter | 1 | `provider` | stable | WS-GH | SCM reconcile panics recovered and re-raised (GH-2). The nil Client/Providers/Store deref SLO: this must stay 0. |
+| `ksquad.scm.mirror.age` | observable_gauge | s | `project` | stable | WS-GH | Seconds since each Project's last successful mirror pass (GH-3). A stalled reconcile shows an ever-growing age rather than dropping off the series. |
+| `ksquad.scm.provider.rate_limit.remaining` | observable_gauge | 1 | `provider` | stable | WS-GH | Last-seen provider rate-limit headroom (requests remaining) by provider (GH-3). Approaching 0 explains stale mirrors that are not errors. |
+
