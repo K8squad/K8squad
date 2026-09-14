@@ -1,0 +1,211 @@
+"use client";
+
+// components/tickets/CreateTicketSheet.tsx — the create-ticket form (ISI-4399 S2,
+// design ISI-4231 §2). A right slide-over sheet over a scrimmed Issues tab: chosen
+// over a modal so the list context stays visible (operator surface, anti-hero).
+//
+// Fields are the ones the human CREATE contract accepts today (title / description
+// / parent-as-sub-ticket, see lib/tickets/createForm.ts); the payload is assembled
+// exclusively by buildCreateBody so the wire body can't drift. On success the sheet
+// hands the server-assigned WorkItem back to the Issues screen for an optimistic
+// insert (design §2 "optimistic row + link to detail") and closes.
+//
+// Auth: the button that opens this is contributor+-gated in TicketsScreen, but the
+// apiserver is the real wall — a viewer POST is refused 403 and surfaced here, never
+// swallowed (fail-closed, §12.3).
+
+import { useEffect, useId, useRef, useState } from "react";
+import { ApiError, createWorkItem } from "@/lib/tickets/api";
+import {
+  buildCreateBody,
+  canCreate,
+  EMPTY_CREATE_TICKET,
+  type CreateTicketInput,
+} from "@/lib/tickets/createForm";
+import type { WorkItem } from "@/lib/tickets/types";
+
+export interface CreateTicketSheetProps {
+  projectId: string;
+  /** Root items offered as parent candidates for the sub-ticket search-select. */
+  parents: WorkItem[];
+  /** Receives the server-assigned item on 201 so the list inserts it optimistically. */
+  onCreated: (item: WorkItem) => void;
+  onClose: () => void;
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof ApiError) {
+    switch (err.status) {
+      case 400:
+        return "The server rejected the ticket — check the title and try again.";
+      case 403:
+        return "You don't have permission to create tickets in this project.";
+      case 404:
+        return "This project is no longer available.";
+      case 501:
+        return "Ticket creation isn't hosted on this deployment yet.";
+      default:
+        return `Could not create the ticket (HTTP ${err.status}).`;
+    }
+  }
+  return "Could not create the ticket — network error.";
+}
+
+export function CreateTicketSheet({
+  projectId,
+  parents,
+  onCreated,
+  onClose,
+}: CreateTicketSheetProps) {
+  const [input, setInput] = useState<CreateTicketInput>(EMPTY_CREATE_TICKET);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+  const titleId = useId();
+  const descId = useId();
+  const parentId = useId();
+
+  // Focus the title on open, and close on Escape (a11y for a slide-over dialog).
+  useEffect(() => {
+    titleRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const disabled = submitting || !canCreate(input);
+
+  const submit = async () => {
+    if (!canCreate(input) || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const created = await createWorkItem(projectId, buildCreateBody(input));
+      onCreated(created);
+      onClose();
+    } catch (err) {
+      setError(errorMessage(err));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="ksq-sheet-scrim" data-testid="create-ticket-scrim" onClick={onClose}>
+      <aside
+        className="ksq-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        data-testid="create-ticket-sheet"
+        // Clicks inside the sheet must not fall through to the scrim's close.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <form
+          className="ksq-sheet__form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submit();
+          }}
+        >
+          <header className="ksq-sheet__head">
+            <h2 id={titleId} style={{ margin: 0 }}>
+              New issue
+            </h2>
+            <button
+              type="button"
+              className="ksq-sheet__close"
+              aria-label="Close"
+              data-testid="create-ticket-cancel-x"
+              onClick={onClose}
+            >
+              ×
+            </button>
+          </header>
+
+          <div className="ksq-sheet__body">
+            <label className="ksq-field">
+              <span className="ksq-field__label">
+                Title <span aria-hidden="true">*</span>
+              </span>
+              <input
+                ref={titleRef}
+                type="text"
+                required
+                data-testid="create-ticket-title"
+                aria-label="Title"
+                value={input.title}
+                onChange={(e) => setInput((s) => ({ ...s, title: e.target.value }))}
+              />
+            </label>
+
+            <label className="ksq-field" htmlFor={descId}>
+              <span className="ksq-field__label">Description</span>
+              <textarea
+                id={descId}
+                rows={8}
+                data-testid="create-ticket-description"
+                aria-label="Description"
+                placeholder="Describe the work… Markdown supported."
+                value={input.body}
+                onChange={(e) => setInput((s) => ({ ...s, body: e.target.value }))}
+              />
+              <span className="ksq-field__hint muted">Markdown supported</span>
+            </label>
+
+            <label className="ksq-field" htmlFor={parentId}>
+              <span className="ksq-field__label">Parent (optional)</span>
+              <select
+                id={parentId}
+                data-testid="create-ticket-parent"
+                aria-label="Parent issue"
+                value={input.parentId ?? ""}
+                onChange={(e) =>
+                  setInput((s) => ({ ...s, parentId: e.target.value || null }))
+                }
+              >
+                <option value="">None — a top-level issue</option>
+                {parents.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.title}
+                  </option>
+                ))}
+              </select>
+              <span className="ksq-field__hint muted">
+                Pick a parent to file this as a sub-ticket.
+              </span>
+            </label>
+
+            {error && (
+              <p className="ksq-notice" role="alert" data-testid="create-ticket-error">
+                {error}
+              </p>
+            )}
+          </div>
+
+          <footer className="ksq-sheet__foot">
+            <button
+              type="button"
+              className="ksq-btn"
+              data-testid="create-ticket-cancel"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="ksq-btn ksq-btn--primary"
+              data-testid="create-ticket-submit"
+              disabled={disabled}
+            >
+              {submitting ? "Creating…" : "Create ticket"}
+            </button>
+          </footer>
+        </form>
+      </aside>
+    </div>
+  );
+}
+
+export default CreateTicketSheet;

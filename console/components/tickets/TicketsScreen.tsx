@@ -51,7 +51,13 @@ import {
 import { useTreeKeyboardNav, type TreeController } from "./SubTicketTree";
 import { KanbanBoard } from "./KanbanBoard";
 import { ListView } from "./ListView";
+import { CreateTicketSheet } from "./CreateTicketSheet";
 import "./tickets.css";
+
+/** Contributor+ may author board items; a viewer is create-hidden (server-walled too). */
+function canCreate(role: string): boolean {
+  return role !== "viewer";
+}
 
 const EXPANDED_STORAGE_KEY = "ksq.tickets.expanded";
 
@@ -67,6 +73,7 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [sort, setSort] = useState<SortSpec>({ key: "updated", dir: "desc" });
   const [reloadKey, setReloadKey] = useState(0);
+  const [creating, setCreating] = useState(false);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
 
@@ -184,6 +191,27 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
     [],
   );
 
+  /**
+   * Land a freshly-created item (design §2 optimistic insert). A root item is
+   * prepended to the board immediately; a sub-ticket instead invalidates its
+   * parent's lazy-loaded children so the tree re-fetches truth on next expand
+   * and re-syncs the list — cheaper and safer than splicing into the cache.
+   */
+  const onCreated = useCallback((item: WorkItem) => {
+    setNotice(null);
+    if (item.parentId) {
+      setChildrenCache((prev) => {
+        if (prev[item.parentId as string] == null) return prev;
+        const next = { ...prev };
+        delete next[item.parentId as string];
+        return next;
+      });
+      setReloadKey((k) => k + 1);
+      return;
+    }
+    setItems((prev) => [item, ...prev.filter((it) => it.id !== item.id)]);
+  }, []);
+
   function switchView(next: TicketsView) {
     setView(next);
     persistView(next, window.localStorage);
@@ -205,6 +233,16 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
     >
       <header className="ksq-tickets__head">
         <h1>Tickets</h1>
+        {canCreate(role) && (
+          <button
+            type="button"
+            className="ksq-btn ksq-btn--primary"
+            data-testid="new-issue"
+            onClick={() => setCreating(true)}
+          >
+            + New issue
+          </button>
+        )}
         <div className="ksq-viewtoggle" role="group" aria-label="View">
           <button
             type="button"
@@ -317,6 +355,15 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       )}
 
       <p className="ksq-sr-only">States: {Object.values(STATE_LABELS).join(", ")}</p>
+
+      {creating && (
+        <CreateTicketSheet
+          projectId={projectId}
+          parents={items}
+          onCreated={onCreated}
+          onClose={() => setCreating(false)}
+        />
+      )}
     </div>
   );
 }

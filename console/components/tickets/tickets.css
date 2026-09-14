@@ -410,6 +410,158 @@
   }
 }
 
+/* ---- Buttons (shared) ---- */
+.ksq-btn {
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ksq-btn:hover:not(:disabled),
+.ksq-btn:focus-visible {
+  border-color: var(--accent);
+}
+
+.ksq-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.ksq-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ---- Create-ticket slide-over sheet (ISI-4399 S2 / design ISI-4231 §2) ---- */
+.ksq-sheet-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.55);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 50;
+}
+
+.ksq-sheet {
+  width: min(620px, 100vw);
+  height: 100%;
+  background: var(--surface);
+  border-inline-start: 1px solid var(--border);
+  box-shadow: -12px 0 32px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  animation: ksq-sheet-in 160ms ease-out;
+}
+
+@keyframes ksq-sheet-in {
+  from {
+    transform: translateX(24px);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.ksq-sheet__form {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.ksq-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ksq-sheet__close {
+  min-height: 44px;
+  min-width: 44px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ksq-sheet__close:hover,
+.ksq-sheet__close:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ksq-sheet__body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ksq-sheet__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- Form fields ---- */
+.ksq-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ksq-field__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.ksq-field__hint {
+  font-size: 0.75rem;
+}
+
+.ksq-field input,
+.ksq-field textarea,
+.ksq-field select {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  padding: 10px 12px;
+  min-height: 44px;
+}
+
+.ksq-field textarea {
+  resize: vertical;
+  min-height: 120px;
+}
+
+.ksq-field input:focus-visible,
+.ksq-field textarea:focus-visible,
+.ksq-field select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ---- A11y helpers ---- */
 .ksq-sr-only {
   position: absolute;
