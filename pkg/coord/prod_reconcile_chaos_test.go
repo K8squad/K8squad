@@ -86,7 +86,8 @@ func seedItem(t *testing.T, ctx context.Context, dsn string) (*coord.ProdReconci
 		"0002_coord_dispatch.sql",
 		"0003_coord_outbox.sql",
 		"0005_reconcile_step.sql",
-		"0018_claim_assignee.sql",
+		"0007_reconcile_effects.sql", // coord.sandbox_bind — WS-D sandbox identity source
+		"0018_claim_assignee.sql",    // coord.claim.assignee_agent — WS-D agent identity source
 	} {
 		if _, err := db.ExecContext(ctx, migrationFile(t, name)); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
@@ -189,6 +190,94 @@ func TestProdReconcile(t *testing.T) {
 		cur := s.Fence()
 		if !s.Advance(reconcile.StepPending, reconcile.StepClaimingSandbox, &cur) {
 			t.Fatalf("advance with the current fence should commit")
+		}
+	})
+
+	// R6 (WS-D / ISI-4386): a full durable drive co-commits the FIVE discrete
+	// lifecycle events — work_item.assigned, run.scheduled, run.sandbox_bound,
+	// run.started, run.ended — in ADDITION to the coarse reconcile_advanced rows,
+	// each carrying the identity set (agent/team/project/ticket/sandbox/trace_id)
+	// derived from the work_item + claim + sandbox_bind rows.
+	t.Run("R6_lifecycle_events_cocommit_with_identity", func(t *testing.T) {
+		s, wi := seedItem(t, ctx, dsn)
+		db := openDB(t, dsn)
+		const run = "22222222-2222-2222-2222-222222222222"
+		// Seed the identity the payloads project: agent on the claim, a run-keyed
+		// sandbox bind. trace_id rides the store (Run.Status.TraceID at reconcile).
+		if _, err := db.ExecContext(ctx,
+			`UPDATE coord.claim SET assignee_agent='sam' WHERE work_item_id=$1::uuid`, wi); err != nil {
+			t.Fatalf("seed assignee_agent: %v", err)
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO coord.sandbox_bind (run_id, work_item_id, sandbox_ref, bound_by)
+			 VALUES ($1::uuid, $2::uuid, 'pod-abc', 'principal:test')`, run, wi); err != nil {
+			t.Fatalf("seed sandbox_bind: %v", err)
+		}
+		st, err := coord.NewProdReconcileStore(ctx, db, wi, run, "principal:test", "")
+		if err != nil {
+			t.Fatalf("NewProdReconcileStore: %v", err)
+		}
+		st.WithTraceID("trace-xyz")
+		_ = s
+
+		fence := st.Fence()
+		if err := reconcile.Reconcile(&recordingEffects{}, st, reconcile.Options{Durable: true, Fence: fence}); err != nil {
+			t.Fatalf("durable drive: %v", err)
+		}
+		if st.Err() != nil {
+			t.Fatalf("store error during drive: %v", st.Err())
+		}
+
+		// Exactly the five lifecycle events, once each, in happy-path order.
+		rows, err := db.QueryContext(ctx, `
+			SELECT entity, event_type,
+			       payload->>'agent', payload->>'team', payload->>'project',
+			       payload->>'ticket', payload->>'sandbox', payload->>'trace_id'
+			  FROM coord.outbox
+			 WHERE run_id=$1::uuid
+			   AND event_type IN ('assigned','scheduled','sandbox_bound','started','ended')
+			 ORDER BY id`, run)
+		if err != nil {
+			t.Fatalf("query lifecycle events: %v", err)
+		}
+		defer rows.Close()
+		type ev struct{ entity, etype, agent, team, project, ticket, sandbox, trace string }
+		var got []ev
+		for rows.Next() {
+			var e ev
+			var team, sandbox, trace *string
+			if err := rows.Scan(&e.entity, &e.etype, &e.agent, &team, &e.project,
+				&e.ticket, &sandbox, &trace); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			if team != nil {
+				e.team = *team
+			}
+			if sandbox != nil {
+				e.sandbox = *sandbox
+			}
+			if trace != nil {
+				e.trace = *trace
+			}
+			got = append(got, e)
+		}
+		want := []struct{ entity, etype string }{
+			{"work_item", "assigned"}, {"run", "scheduled"},
+			{"run", "sandbox_bound"}, {"run", "started"}, {"run", "ended"},
+		}
+		if len(got) != len(want) {
+			t.Fatalf("lifecycle events = %d, want 5: %+v", len(got), got)
+		}
+		for i, w := range want {
+			if got[i].entity != w.entity || got[i].etype != w.etype {
+				t.Fatalf("event %d = %s.%s, want %s.%s", i, got[i].entity, got[i].etype, w.entity, w.etype)
+			}
+			// Identity present on every event (project/ticket always; agent from
+			// the claim; trace_id from the store; sandbox once the bind exists).
+			if got[i].agent != "sam" || got[i].project == "" || got[i].ticket != wi ||
+				got[i].sandbox != "pod-abc" || got[i].trace != "trace-xyz" {
+				t.Fatalf("event %d missing identity: %+v", i, got[i])
+			}
 		}
 	})
 

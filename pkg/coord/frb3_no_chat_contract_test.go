@@ -204,16 +204,17 @@ var allowedSurface = map[string]string{
 	// content and nothing published re-enters coordination (§6.4/§17.4 no-P2P) —
 	// from_step/to_step ride in a one-way outbox projection, not an agent-to-agent
 	// channel.
-	"ProdReconcileStore":            "§6.4 durable reconcile Store bound to the prod coord schema",
-	"NewProdReconcileStore":         "§6.4 constructor (binds one Run's claim row)",
-	"ProdReconcileStore.Step":       "§6.4 read the durable reconcile_step (source of truth, AC2)",
-	"ProdReconcileStore.Fence":      "§6.3 read the monotonic fence token",
-	"ProdReconcileStore.Advance":    "§6.4 conditional step-CAS advance co-committing audit+outbox (AC3/AC6)",
-	"ProdReconcileStore.Reclaim":    "§6.3 monotonic fence-first reclaim (bump + stamp reclaim_fenced_at)",
-	"ProdReconcileStore.SetStep":    "§8 unguarded re-point for the Failed→Claiming retry re-entry",
-	"ProdReconcileStore.AuditRows":  "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
-	"ProdReconcileStore.OutboxRows": "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
-	"ProdReconcileStore.Err":        "§6.4 sticky infrastructure-error accessor (requeue signal)",
+	"ProdReconcileStore":             "§6.4 durable reconcile Store bound to the prod coord schema",
+	"NewProdReconcileStore":          "§6.4 constructor (binds one Run's claim row)",
+	"ProdReconcileStore.Step":        "§6.4 read the durable reconcile_step (source of truth, AC2)",
+	"ProdReconcileStore.Fence":       "§6.3 read the monotonic fence token",
+	"ProdReconcileStore.Advance":     "§6.4 conditional step-CAS advance co-committing audit+outbox (AC3/AC6)",
+	"ProdReconcileStore.WithTraceID": "§17.4 bind Run.Status.TraceID into co-committed lifecycle-event payloads (emit-only, ADR-0021 D4/ISI-4386)",
+	"ProdReconcileStore.Reclaim":     "§6.3 monotonic fence-first reclaim (bump + stamp reclaim_fenced_at)",
+	"ProdReconcileStore.SetStep":     "§8 unguarded re-point for the Failed→Claiming retry re-entry",
+	"ProdReconcileStore.AuditRows":   "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
+	"ProdReconcileStore.OutboxRows":  "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
+	"ProdReconcileStore.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
 
 	// §6.4 READ side of the durable step (ISI-2655 slice-3): the Run status
 	// controller projects reconcile_step → Run.status. Read-only — no advance, no

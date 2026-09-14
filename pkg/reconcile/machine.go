@@ -76,10 +76,10 @@ import "fmt"
 type Phase string
 
 const (
-	PhasePending   Phase = "Pending"
-	PhaseClaiming  Phase = "Claiming"
-	PhaseRunning   Phase = "Running"
-	PhasePaused    Phase = "Paused"
+	PhasePending  Phase = "Pending"
+	PhaseClaiming Phase = "Claiming"
+	PhaseRunning  Phase = "Running"
+	PhasePaused   Phase = "Paused"
 	// PhaseCanceling is the 3.3 operator-kill transitional phase (spec
 	// "Canceling"): teardown owed, terminal Cancelled pending.
 	PhaseCanceling Phase = "Canceling"
@@ -95,14 +95,14 @@ const (
 type Step string
 
 const (
-	StepPending           Step = "pending"
-	StepClaimingSandbox   Step = "claiming_sandbox"
-	StepDispatching       Step = "dispatching"
-	StepRunning           Step = "running"
-	StepCollecting        Step = "collecting"
-	StepSucceeded         Step = "succeeded"
-	StepFailed            Step = "failed"
-	StepCancelled         Step = "cancelled"
+	StepPending         Step = "pending"
+	StepClaimingSandbox Step = "claiming_sandbox"
+	StepDispatching     Step = "dispatching"
+	StepRunning         Step = "running"
+	StepCollecting      Step = "collecting"
+	StepSucceeded       Step = "succeeded"
+	StepFailed          Step = "failed"
+	StepCancelled       Step = "cancelled"
 	// StepCancelling is the 3.3 operator-kill transitional step: kill was
 	// issued (fence-first CancelEnter), the driver owes the sandbox teardown
 	// and the guarded finish → cancelled. Resumable (not terminal): a driver
@@ -203,6 +203,58 @@ func Classify(s Step) Classification {
 
 // IsTerminal reports whether a durable step is absorbing (AC5).
 func IsTerminal(s Step) bool { return terminalSteps[s] }
+
+// LifecycleEvent is a DISCRETE run/ticket domain event emitted at a durable
+// happy-path transition (ADR-0021 WS-D / decision D4, ISI-4386). It is published
+// IN ADDITION to the generic per-transition `reconcile_advanced` projection —
+// the coarse event stays the canonical step-audit projection, while these carry
+// the domain vocabulary (`work_item.assigned`, `run.started`, …) a plugin
+// subscribes to without decoding from/to steps. Entity is the outbox subject
+// entity family ("run"|"work_item", both already admitted by the §17.4 taxonomy,
+// so no CHECK-constraint change); EventType is the subject's terminal token.
+type LifecycleEvent struct {
+	Entity    string // "run" | "work_item" — outbox subject entity + CHECK member
+	EventType string // subject event_type token, e.g. "scheduled"|"started"|"ended"
+}
+
+// LifecycleEventsFor returns the discrete lifecycle event(s) a happy-path
+// transition from→to publishes, or nil for a transition that carries no discrete
+// domain event (running→collecting is an internal checkpoint with no new
+// externally-meaningful milestone). The mapping mirrors ADR-0021's five
+// milestones onto the machine's happy path (arch §8):
+//
+//	pending          → claiming_sandbox : work_item.assigned + run.scheduled
+//	claiming_sandbox → dispatching      : run.sandbox_bound
+//	dispatching      → running          : run.started
+//	collecting       → succeeded        : run.ended
+//
+// The first transition — the operator committing the queued Run to execution on
+// its assigned agent — is the single machine-transition point that carries BOTH
+// the ticket-assignment milestone (entity=work_item) and the run-scheduled
+// milestone (entity=run); the claim-acquire `claimed` event predates the machine
+// and is left untouched (no double-emit). Emission is co-committed with the
+// step-advance transaction (see coord.ProdReconcileStore.Advance), so a
+// lifecycle event exists IFF its transition committed — exactly-once, idempotent
+// under crash re-drive by the same step-CAS + fence guard that gates the advance.
+// Coordinated with ISI-4379, whose status.phase projector fix emits Kubernetes
+// Events (a different sink), not coord.outbox rows — so the two never double-emit.
+func LifecycleEventsFor(from, to Step) []LifecycleEvent {
+	switch {
+	case from == StepPending && to == StepClaimingSandbox:
+		return []LifecycleEvent{
+			{Entity: "work_item", EventType: "assigned"},
+			{Entity: "run", EventType: "scheduled"},
+		}
+	case from == StepClaimingSandbox && to == StepDispatching:
+		return []LifecycleEvent{{Entity: "run", EventType: "sandbox_bound"}}
+	case from == StepDispatching && to == StepRunning:
+		return []LifecycleEvent{{Entity: "run", EventType: "started"}}
+	case from == StepCollecting && to == StepSucceeded:
+		return []LifecycleEvent{{Entity: "run", EventType: "ended"}}
+	default:
+		return nil
+	}
+}
 
 // PhaseOf projects a durable reconcile_step onto the coarse CRD Run.status.phase
 // enum (arch §5.1 r28) — status is downstream of the durable step (AC2). The

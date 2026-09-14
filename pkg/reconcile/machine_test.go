@@ -308,6 +308,47 @@ func TestPhaseProjection(t *testing.T) {
 	}
 }
 
+// TestLifecycleEventsForHappyPath pins the WS-D milestone vocabulary (ADR-0021
+// D4, ISI-4386): the discrete lifecycle events each durable happy-path transition
+// publishes, and — as important — that the internal running→collecting checkpoint
+// and every off-path/terminal edge publish NONE (no double-emit vs the coarse
+// reconcile_advanced projection or ISI-4379's Kubernetes Events).
+func TestLifecycleEventsForHappyPath(t *testing.T) {
+	type ev = LifecycleEvent
+	cases := []struct {
+		from, to Step
+		want     []LifecycleEvent
+	}{
+		{StepPending, StepClaimingSandbox, []ev{{"work_item", "assigned"}, {"run", "scheduled"}}},
+		{StepClaimingSandbox, StepDispatching, []ev{{"run", "sandbox_bound"}}},
+		{StepDispatching, StepRunning, []ev{{"run", "started"}}},
+		{StepCollecting, StepSucceeded, []ev{{"run", "ended"}}},
+		// No discrete milestone off the externally-meaningful path:
+		{StepRunning, StepCollecting, nil},      // internal checkpoint
+		{StepRunning, StepFailed, nil},          // terminal failed already has its own event
+		{StepDispatching, StepFailed, nil},      // retry-lap divert
+		{StepClaimingSandbox, StepPending, nil}, // not a real forward edge
+	}
+	for _, c := range cases {
+		got := LifecycleEventsFor(c.from, c.to)
+		if !reflect.DeepEqual(got, c.want) {
+			t.Fatalf("LifecycleEventsFor(%s→%s) = %v, want %v", c.from, c.to, got, c.want)
+		}
+	}
+	// Exactly the five ADR milestones across the full happy path, once each.
+	var all []LifecycleEvent
+	for i := 0; i+1 < len(happyPath); i++ {
+		all = append(all, LifecycleEventsFor(happyPath[i], happyPath[i+1])...)
+	}
+	want := []LifecycleEvent{
+		{"work_item", "assigned"}, {"run", "scheduled"},
+		{"run", "sandbox_bound"}, {"run", "started"}, {"run", "ended"},
+	}
+	if !reflect.DeepEqual(all, want) {
+		t.Fatalf("happy-path lifecycle events = %v, want the five ADR milestones %v", all, want)
+	}
+}
+
 // assertExactlyOnce is the shared post-failover invariant: the Run reached
 // succeeded with each external effect having happened exactly once, zero lost
 // progress, and one audit + one outbox row per committed transition (AC2/AC3/AC6).

@@ -491,8 +491,15 @@ func (r *ProdRunner) WithSandboxRefObserver(o coord.SandboxRefObserver) *ProdRun
 
 // Store implements Runner.Store.
 func (r *ProdRunner) Store(ctx context.Context, run *api.Run) (machineStore, error) {
-	return coord.NewProdReconcileStore(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
+	s, err := coord.NewProdReconcileStore(ctx, r.db, run.Spec.WorkItemRef, string(run.UID),
 		r.principal, r.initiatedBy)
+	if err != nil {
+		return nil, err
+	}
+	// WS-D (ISI-4386): carry the run's trace id onto the store so its discrete
+	// lifecycle events correlate to the OTel trace spine. Empty pre-dispatch
+	// (before the shim's a2a status projects Run.Status.TraceID) → NULL trace_id.
+	return s.WithTraceID(run.Status.TraceID), nil
 }
 
 // Effects implements Runner.Effects.
