@@ -251,3 +251,124 @@ func TestGithubStatusUnauthenticated(t *testing.T) {
 		t.Fatalf("unauthenticated: got %d, want 401", rec.Code)
 	}
 }
+
+// --- ISI-4398 / GH-4 sync-summary derivation ----------------------------------------------------
+
+// TestGithubSyncSummary covers the wire sync-state the data-driven GitHub tab
+// (ISI-4398) is keyed on: reason (SyncReady condition), trigger (webhook vs
+// poll, derived from the two status timestamps), and mirror age. These are pure
+// functions of Project.status — the service makes no extra call.
+func TestGithubSyncSummary(t *testing.T) {
+	base := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	fixedNow := func() time.Time { return base }
+	svc := &GithubStatusService{now: fixedNow}
+
+	mirror := base.Add(-2 * time.Minute) // synced 120s ago
+
+	cases := []struct {
+		name        string
+		status      ksquadv1.ProjectStatus
+		wantReason  string
+		wantTrigger string
+		wantAge     *int64
+	}{
+		{
+			name: "webhook-driven synced",
+			status: ksquadv1.ProjectStatus{
+				Conditions: []metav1.Condition{{Type: "SyncReady", Status: metav1.ConditionTrue, Reason: "Synced"}},
+				Sync: &ksquadv1.ProjectSyncStatus{
+					LastMirrorTime:  &metav1.Time{Time: mirror},
+					LastWebhookTime: &metav1.Time{Time: mirror},
+				},
+			},
+			wantReason:  "Synced",
+			wantTrigger: "webhook",
+			wantAge:     int64Ptr(120),
+		},
+		{
+			name: "poll-driven synced (webhook older than mirror pass)",
+			status: ksquadv1.ProjectStatus{
+				Conditions: []metav1.Condition{{Type: "SyncReady", Status: metav1.ConditionTrue, Reason: "Synced"}},
+				Sync: &ksquadv1.ProjectSyncStatus{
+					LastMirrorTime:  &metav1.Time{Time: mirror},
+					LastWebhookTime: &metav1.Time{Time: mirror.Add(-1 * time.Hour)},
+				},
+			},
+			wantReason:  "Synced",
+			wantTrigger: "poll",
+			wantAge:     int64Ptr(120),
+		},
+		{
+			name: "poll-driven synced (never any webhook)",
+			status: ksquadv1.ProjectStatus{
+				Sync: &ksquadv1.ProjectSyncStatus{LastMirrorTime: &metav1.Time{Time: mirror}},
+			},
+			wantReason:  "Synced", // no condition but a mirror pass landed
+			wantTrigger: "poll",
+			wantAge:     int64Ptr(120),
+		},
+		{
+			name: "credential missing keeps last-good age (degrade, don't blank)",
+			status: ksquadv1.ProjectStatus{
+				Conditions: []metav1.Condition{{Type: "SyncReady", Status: metav1.ConditionFalse, Reason: "CredentialMissing"}},
+				Sync:       &ksquadv1.ProjectSyncStatus{LastMirrorTime: &metav1.Time{Time: mirror}},
+			},
+			wantReason:  "CredentialMissing",
+			wantTrigger: "poll",
+			wantAge:     int64Ptr(120),
+		},
+		{
+			name: "provider error before any successful mirror pass",
+			status: ksquadv1.ProjectStatus{
+				Conditions: []metav1.Condition{{Type: "SyncReady", Status: metav1.ConditionFalse, Reason: "ProviderError"}},
+			},
+			wantReason:  "ProviderError",
+			wantTrigger: "",
+			wantAge:     nil,
+		},
+		{
+			name:        "never configured",
+			status:      ksquadv1.ProjectStatus{},
+			wantReason:  "SyncNotConfigured",
+			wantTrigger: "",
+			wantAge:     nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proj := &ksquadv1.Project{Status: tc.status}
+			got := svc.syncSummary(proj)
+			if got.Reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", got.Reason, tc.wantReason)
+			}
+			if got.Trigger != tc.wantTrigger {
+				t.Errorf("trigger = %q, want %q", got.Trigger, tc.wantTrigger)
+			}
+			switch {
+			case tc.wantAge == nil && got.AgeSeconds != nil:
+				t.Errorf("ageSeconds = %d, want nil", *got.AgeSeconds)
+			case tc.wantAge != nil && got.AgeSeconds == nil:
+				t.Errorf("ageSeconds = nil, want %d", *tc.wantAge)
+			case tc.wantAge != nil && *got.AgeSeconds != *tc.wantAge:
+				t.Errorf("ageSeconds = %d, want %d", *got.AgeSeconds, *tc.wantAge)
+			}
+		})
+	}
+}
+
+// TestGithubSyncAgeNeverNegative clamps a clock-skew case (mirror time in the
+// future relative to now) to 0 rather than a negative age.
+func TestGithubSyncAgeNeverNegative(t *testing.T) {
+	base := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	svc := &GithubStatusService{now: func() time.Time { return base }}
+	proj := &ksquadv1.Project{Status: ksquadv1.ProjectStatus{
+		Sync: &ksquadv1.ProjectSyncStatus{LastMirrorTime: &metav1.Time{Time: base.Add(30 * time.Second)}},
+	}}
+	got := svc.syncSummary(proj)
+	if got.AgeSeconds == nil || *got.AgeSeconds != 0 {
+		t.Fatalf("ageSeconds = %v, want 0", got.AgeSeconds)
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }
