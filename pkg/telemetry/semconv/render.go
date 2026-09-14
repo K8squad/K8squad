@@ -77,7 +77,55 @@ func Render() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString("## GitHub-sync (SCM) telemetry\n\n")
+	b.WriteString("The GitHub sync path (webhook ingress → operator reposync → GitHub-status tab)\n")
+	b.WriteString("emits its own span family and metric set (ISI-4395 / WS-GH) so a dropped\n")
+	b.WriteString("webhook, a recovered panic, a provider error and a stale mirror are\n")
+	b.WriteString("distinguishable from outside. These spans are emitted by the scm-webhook,\n")
+	b.WriteString("operator and apiserver processes (not the run-trace mapper) and are guarded by\n")
+	b.WriteString("`pkg/telemetry/semconv/scm_conformance_test.go`. The webhook payload is never\n")
+	b.WriteString("persisted and never travels on span attributes.\n\n")
+
+	b.WriteString("### SCM spans\n\n")
+	for _, sc := range SCMSpanConventions {
+		fmt.Fprintf(&b, "#### `%s`\n\n", sc.Name)
+		b.WriteString(sc.Brief + "\n\n")
+		writeAttrTable(&b, sc.Attributes)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("### SCM metrics\n\n")
+	b.WriteString("Operator metrics on `telemetry.Meter()`. Names are the OTel (dotted) instrument\n")
+	b.WriteString("names; the Prometheus exporter renders them with underscores\n")
+	b.WriteString("(`ksquad.scm.webhook.total` → `ksquad_scm_webhook_total`). Labels never include\n")
+	b.WriteString("`repo` or `run.id` (cardinality).\n\n")
+	b.WriteString("| Metric | Instrument | Unit | Labels | Stability | WS | Description |\n")
+	b.WriteString("|---|---|---|---|---|---|---|\n")
+	for _, m := range SCMMetricConventions {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s | %s | %s |\n",
+			m.Name, m.Instrument, unitOrDash(m.Unit), joinLabels(m.Labels), m.Stability, m.Workstream, m.Brief)
+	}
+	b.WriteString("\n")
+
 	return b.String()
+}
+
+func unitOrDash(u string) string {
+	if u == "" {
+		return "—"
+	}
+	return u
+}
+
+func joinLabels(labels []string) string {
+	if len(labels) == 0 {
+		return "—"
+	}
+	quoted := make([]string, len(labels))
+	for i, l := range labels {
+		quoted[i] = "`" + l + "`"
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func writeAttrTable(b *strings.Builder, attrs []Attribute) {

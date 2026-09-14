@@ -117,7 +117,14 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	// OTEL_EXPORTER_OTLP_* env (the observability gateway) for every signal
 	// still on the stdout default — without it the shim's spans stay on
 	// stderr and never reach the gateway/Dynatrace.
-	shimTelemetryOpts := telemetry.Options{ServiceName: "ksquad-shim", Writer: os.Stderr}
+	shimTelemetryOpts := telemetry.Options{
+		ServiceName: "ksquad-shim",
+		Writer:      os.Stderr,
+		// ISI-4413: like the supervisor, `shim run` continues the operator's
+		// injected traceparent; capture the one Run's trace even when that
+		// parent's sampled flag is 0 (else run.start/llm.call/run.end head-drop).
+		CaptureUnsampledRemoteParent: true,
+	}
 	if filled := telemetry.ApplyEnvOTLPFallback(&shimTelemetryOpts, telemetry.EnvSignalExport(os.Getenv)); len(filled) > 0 {
 		fmt.Fprintf(os.Stderr, "shim telemetry: OTLP export via OTEL_EXPORTER_OTLP_* env for %v (endpoint=%s)\n",
 			filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -125,6 +132,10 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 	_, otelShutdown, terr := telemetry.Setup(ctx, shimTelemetryOpts)
 	if terr == nil {
 		defer func() { _ = otelShutdown(context.Background()) }()
+	} else {
+		// Never swallow: a dead spine means the run's spans silently vanish
+		// (ISI-4413). Surface it on stderr (stdout is the SSE wire).
+		fmt.Fprintf(os.Stderr, "shim telemetry: Setup failed, run spans will not export: %v\n", terr)
 	}
 
 	// The mapper rides a REAL registry (ISI-3348 finding 1): the shim is a
