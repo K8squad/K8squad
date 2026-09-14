@@ -8,12 +8,22 @@ description: >-
   default. See §16.1 (exposure), §16.2 (storage), §9.4 (workspace) of the
   architecture, and ISI-2149.
 type: application
+# DEPRECATED (ISI-4233): config/helm (chart name `k8squad`) is the single chart
+# of record for deploying k8squad — it is what CI publishes (helm-release.yml),
+# what e2e.yml / getting-started-smoke.yml install, and what the quickstart
+# documents. This full-stack `ksquad` chart diverged (it hard-requires
+# exposure.hostnames.* and is neither published nor deployed) and is retained
+# ONLY as the source of the opt-in NetworkPolicy default-deny lockdown exercised
+# by cp-lockdown.yml, pending that hardening being ported into config/helm
+# (ISI-4393). Do NOT use this chart to install k8squad. See README.md.
+deprecated: true
 # Chart version tracks the chart; appVersion tracks the KSquad control plane.
 # 0.2.0 (ISI-4164): BREAKING — otel-collector templates + observability.collector/
 # traces/export values removed; deploy/otel/ (otel-operator CRs) is the
 # chart-of-record for the collector topology (ISI-4163). SLO PrometheusRule kept
 # behind observability.sloRules.enabled alone.
-version: 0.2.0
+# 0.2.1 (ISI-4233): marked deprecated (see above).
+version: 0.2.1
 appVersion: "0.1.0"
 kubeVersion: ">=1.29.0-0"
 keywords:
