@@ -16,6 +16,16 @@ independent cadences (ADR-0002, Option B — see *CRD lifecycle* below).
 This is the chart CI publishes to <https://charts.k8squad.io>
 (`make helm-package` / `.github/workflows/helm-release.yml`).
 
+> **This is the single chart of record for deploying k8squad (ISI-4233).**
+> `config/helm` is the chart that CI publishes (`helm-release.yml`), that the
+> e2e (`e2e.yml`) and getting-started (`getting-started-smoke.yml`) lanes
+> install, and that the [quickstart](../../README.md) and
+> [`docs/getting-started-bmad.md`](../../docs/getting-started-bmad.md) document.
+> The older full-stack [`deploy/helm/ksquad`](../../deploy/helm/ksquad/README.md)
+> chart is **deprecated** and is **not** a deploy path — it survives only as the
+> source of the opt-in NetworkPolicy default-deny lockdown exercised by
+> `cp-lockdown.yml`, pending that hardening being ported here (ISI-4393).
+
 ## Install
 
 CRDs first, control plane second (ADR-0002 §3):

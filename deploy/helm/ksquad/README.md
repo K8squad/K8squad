@@ -1,5 +1,22 @@
 # KSquad Helm chart
 
+> ## ⚠️ DEPRECATED — not a deploy path (ISI-4233)
+>
+> **`config/helm` (chart name `k8squad`) is the single chart of record for
+> deploying k8squad.** That is the chart CI publishes
+> (`.github/workflows/helm-release.yml` → <https://charts.k8squad.io>), the one
+> `e2e.yml` and `getting-started-smoke.yml` install, and the one the
+> [quickstart](../../../README.md) and
+> [`docs/getting-started-bmad.md`](../../../docs/getting-started-bmad.md)
+> document. See [`config/helm/README.md`](../../../config/helm/README.md).
+>
+> This full-stack `ksquad` chart diverged from the deployed release (it
+> hard-requires `exposure.hostnames.*` and is neither published nor installed by
+> any lane) and is **retained only** as the source of the opt-in NetworkPolicy
+> default-deny lockdown exercised by `cp-lockdown.yml`. Once that hardening is
+> ported into `config/helm` behind an opt-in flag, this chart will be removed
+> entirely (**ISI-4393**). Do **not** use it to install k8squad.
+
 Brings up the `ksquad-system` control plane and — per CEO directive (ISI-2149)
 and architecture §16.1 / §16.2 / §9.4 — **creates and parameterizes** its
 exposure and storage rather than assuming cluster defaults.
