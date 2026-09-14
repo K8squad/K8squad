@@ -108,6 +108,26 @@ func TestWorkItemCreateOK(t *testing.T) {
 	}
 }
 
+// TestWorkItemCreateForwardsAttributes — the ISI-4409 create-time attributes
+// (priority / workMode / labels) are forwarded verbatim to the store, which owns
+// enum validation and label normalization.
+func TestWorkItemCreateForwardsAttributes(t *testing.T) {
+	store := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-attr"}}
+	h := testWriteServer(t, uuid.New(), store)
+	rec := httptest.NewRecorder()
+	body := `{"title":"attrs","priority":"high","workMode":"planning","labels":["backend","security"]}`
+	h.ServeHTTP(rec, postCreate("proj-ok", body, devToken))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.gotCreate.Priority != "high" || store.gotCreate.WorkMode != "planning" {
+		t.Fatalf("priority/workMode not forwarded: %+v", store.gotCreate)
+	}
+	if len(store.gotCreate.Labels) != 2 || store.gotCreate.Labels[0] != "backend" || store.gotCreate.Labels[1] != "security" {
+		t.Fatalf("labels not forwarded: %+v", store.gotCreate)
+	}
+}
+
 // TestWorkItemCreateSubIssue — parentId is forwarded so the store lands a child.
 func TestWorkItemCreateSubIssue(t *testing.T) {
 	store := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-child"}}

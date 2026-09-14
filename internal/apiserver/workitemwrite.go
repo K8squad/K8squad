@@ -49,6 +49,13 @@ type createWorkItemRequest struct {
 	Title    string `json:"title"`
 	Body     string `json:"body,omitempty"`
 	ParentID string `json:"parentId,omitempty"`
+	// Priority / WorkMode / Labels are the create-time attributes (ISI-4409) —
+	// pure pass-through to coord, which validates the enums and normalizes the
+	// labels. No RBAC change: same human-only wall, same Team scoping. State
+	// stays absent (board-derivation invariant).
+	Priority string   `json:"priority,omitempty"`
+	WorkMode string   `json:"workMode,omitempty"`
+	Labels   []string `json:"labels,omitempty"`
 }
 
 // updateWorkItemRequest is the PATCH body. Each field is a pointer so an absent field
@@ -127,6 +134,9 @@ func workItemCreateHandler(store WorkItemWriter, refs ProjectRefResolver) http.H
 			ParentID:          req.ParentID,
 			Title:             req.Title,
 			Body:              req.Body,
+			Priority:          req.Priority,
+			WorkMode:          req.WorkMode,
+			Labels:            req.Labels,
 			Principal:         auth.Principal,
 			InitiatedByUserID: "",
 		})

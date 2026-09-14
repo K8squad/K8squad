@@ -42,6 +42,12 @@ type TaskDetail struct {
 	Description   string // coord.work_item.body
 	State         string
 	BlockedReason string
+	// Priority / WorkMode / Labels are the create-time attributes (ISI-4409).
+	// Priority/WorkMode are "" when unset (honest "none", FR-I3); Labels is
+	// never nil (an item with no labels reads as an empty slice).
+	Priority string
+	WorkMode string
+	Labels   []string
 	// AcceptanceCriteria / Goals: agreed shape, not yet backed by a column
 	// (nil today). See file header — one wiring site when the surface lands.
 	AcceptanceCriteria []string
@@ -76,6 +82,8 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 		td            TaskDetail
 		body          sql.NullString
 		blockedReason sql.NullString
+		priority      sql.NullString
+		workMode      sql.NullString
 		holder        sql.NullString
 		runID         sql.NullString
 		assignee      sql.NullString
@@ -86,11 +94,13 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	// missing (reads as unclaimed/fence 0 rather than erroring).
 	err := db.QueryRowContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.body, wi.state, wi.blocked_reason,
+		       wi.priority, wi.work_mode, wi.labels,
 		       c.holder_principal, c.run_id::text, c.fence_token, c.assignee_agent
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid`, workItemID).
 		Scan(&td.WorkItemID, &td.Title, &body, &td.State, &blockedReason,
+			&priority, &workMode, &td.Labels,
 			&holder, &runID, &fence, &assignee)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -100,6 +110,11 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	}
 	td.Description = body.String
 	td.BlockedReason = blockedReason.String
+	td.Priority = priority.String
+	td.WorkMode = workMode.String
+	if td.Labels == nil {
+		td.Labels = []string{}
+	}
 	td.Holder = holder.String
 	td.RunID = runID.String
 	td.FenceToken = fence.Int64
