@@ -123,9 +123,10 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 		t.Fatalf("NewSQLIntakeSource: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a")
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text, team_id::text, project_id::text
+	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder").
+		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil)
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text, team_id::text, project_id::text, requested_agent
 		  FROM coord.work_item
 		 WHERE state = 'todo' AND team_id IS NOT NULL
 		 ORDER BY created_at, id
@@ -137,9 +138,16 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DueWorkItems: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "11111111-1111-1111-1111-111111111111" ||
+	if len(items) != 2 || items[0].ID != "11111111-1111-1111-1111-111111111111" ||
 		items[0].TeamID != "22222222-2222-2222-2222-222222222222" || items[0].ProjectID != "proj-a" {
 		t.Fatalf("unexpected items: %+v", items)
+	}
+	// requested_agent is selected and NULL scans to "" (Intake → Team.Spec.Agents[0]).
+	if items[0].RequestedAgent != "coder" {
+		t.Fatalf("row 0 requested_agent: got %q want coder", items[0].RequestedAgent)
+	}
+	if items[1].RequestedAgent != "" {
+		t.Fatalf("row 1 requested_agent (NULL): got %q want empty", items[1].RequestedAgent)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -208,6 +216,91 @@ func TestIntakeSweepDispatchesTodoWorkItem(t *testing.T) {
 	}
 	if run.Spec.OwnedBy != api.PrincipalRef(IntakePrincipal) {
 		t.Fatalf("ownedBy: got %q want %q", run.Spec.OwnedBy, IntakePrincipal)
+	}
+}
+
+// twoAgentSquad builds a resolvable world with a Team whose composition is
+// [agent0, agent1] (both Agent CRs present in the squad ns) + a Project. Used to
+// prove the requested_agent preference actually selects a non-default agent.
+func twoAgentSquad(teamUID, squadNS, teamName, agent0, agent1, projectName string) []client.Object {
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: teamName, UID: types.UID(teamUID)},
+		Spec: api.TeamSpec{
+			NamespaceStrategy: "dedicated",
+			Agents:            []api.ObjectRef{{Name: agent0}, {Name: agent1}},
+		},
+	}
+	team.Status.Namespace = squadNS
+	return []client.Object{
+		team,
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent0, Namespace: squadNS}},
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent1, Namespace: squadNS}},
+		&api.Project{ObjectMeta: metav1.ObjectMeta{Name: projectName, Namespace: squadNS}},
+	}
+}
+
+// ADR-0022 §7.4: a ticket carrying requested_agent mints its Run addressed to
+// THAT agent, not the hardcoded Team.Spec.Agents[0] — the whole point of the
+// dispatch path (the human's choice rides the level-triggered pipeline).
+func TestIntakeSweepHonorsRequestedAgent(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		squadNS = "squad-alpha"
+	)
+	objs := twoAgentSquad(teamUID, squadNS, "alpha", "coder", "reviewer", "proj")
+	in, cl, _ := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj", RequestedAgent: "reviewer"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("want 1 Run, got %d", len(runs.Items))
+	}
+	if got := runs.Items[0].Spec.Agents; len(got) != 1 || got[0].Name != "reviewer" {
+		t.Fatalf("requested agent must win over Agents[0]: got %+v want [reviewer]", got)
+	}
+}
+
+// Defensive validation (§7.4): a requested_agent no longer in the composition
+// (the team changed between dispatch and this tick) falls back to Agents[0]
+// rather than minting a Run for an off-team agent — and says so in the log.
+func TestIntakeSweepStaleRequestedAgentFallsBack(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		squadNS = "squad-alpha"
+	)
+	objs := twoAgentSquad(teamUID, squadNS, "alpha", "coder", "reviewer", "proj")
+	in, cl, logs := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj", RequestedAgent: "ghost"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("want 1 Run, got %d", len(runs.Items))
+	}
+	if got := runs.Items[0].Spec.Agents; len(got) != 1 || got[0].Name != "coder" {
+		t.Fatalf("stale requested agent must fall back to Agents[0]: got %+v want [coder]", got)
+	}
+	found := false
+	for _, l := range *logs {
+		if strings.Contains(l, "no longer in team") && strings.Contains(l, "ghost") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a fallback log mentioning the stale agent; logs=%v", *logs)
 	}
 }
 

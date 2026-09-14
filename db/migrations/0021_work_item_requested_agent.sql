@@ -1,0 +1,31 @@
+-- 0021_work_item_requested_agent.sql — the human's pre-run agent choice as
+-- durable INTENT on the board item (ADR-0022 §3 D2, ISI-4411 / ISI-4400 Part B).
+--
+-- WHY (ADR-0022 §1.1/§1.2): "assign an agent → start a Run" is NOT a new
+-- synchronous dispatch-to-operator path. A Run already mints out-of-band: the
+-- operator Intake sweep scans coord.work_item WHERE state='todo' and creates the
+-- Run CR, hardcoding the agent to Team.Spec.Agents[0] (intake.go:287-314). The
+-- ONLY missing capability is letting a human pick a *specific* agent for one
+-- ticket. That choice must survive BEFORE any coord.claim/Run row exists, so it
+-- cannot live on coord.claim.assignee_agent (mig 0018): that column is
+-- claim-scoped, post-hoc attribution with NO production writer (§1.1) — the wrong
+-- lifecycle for a pre-run request.
+--
+-- DECISION (§3 D2): one nullable column on the item itself — the minimal honest
+-- slot for "who a human wants to run this ticket." The board's dispatch verb
+-- (POST /api/work-items/{id}/dispatch) writes it in the same txn that advances
+-- backlog→todo; the Intake sweep reads it and prefers it over Team.Spec.Agents[0]
+-- (validating membership defensively). No backfill: an item with no explicit
+-- choice keeps requested_agent NULL and Intake keeps its pre-existing behavior.
+--
+-- The value is an agent identifier (Team.Spec.Agents[].Name) — a free-form text
+-- ref, not an FK: the composition it names lives in the Team CR (Kubernetes), not
+-- this schema, so the agent-∈-Team check is enforced in the write path
+-- (pkg/coord RequestDispatch via the apiserver's Team-composition resolver), not
+-- by a database constraint (§3 D4).
+--
+-- Forward-only, additive, non-breaking: reads/writes that never mention the
+-- column are unaffected.
+
+ALTER TABLE coord.work_item
+    ADD COLUMN requested_agent text;   -- NULL = no human agent choice (Intake → Team.Spec.Agents[0])

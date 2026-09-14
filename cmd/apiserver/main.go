@@ -337,6 +337,23 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item write store: %v", err)
 	}
 
+	// ADR-0022 board dispatch (ISI-4411): the "assign agent → start a Run" verb.
+	// It needs BOTH the DB (intent write + lane advance) and the informer cache
+	// (the agent-∈-Team authority, §3 D4) — the same reader the dashboard/project
+	// resolver use, so dispatch authorizes an agent against the exact Team
+	// composition Intake dispatches from. A cluster-less dev run (nil cache) can't
+	// resolve the composition, so it leaves the store unset and the route keeps its
+	// documented 501 rather than authorizing against an empty world.
+	var workItemDispatch apiserver.WorkItemDispatcher
+	if dashboardReader != nil {
+		dispatchStore, derr := coord.NewWorkItemDispatchStore(db, apiserver.NewClientTeamAgentResolver(dashboardReader))
+		if derr != nil {
+			log.Fatalf("ksquad-apiserver: work-item dispatch store: %v", derr)
+		}
+		workItemDispatch = dispatchStore
+		log.Printf("ksquad-apiserver: work-item dispatch ready (POST /api/work-items/{id}/dispatch)")
+	}
+
 	// M1.5 board read models (ISI-4131): the per-Project card list + the ticket
 	// thread (comments, status history, change refs) the console Issues tab
 	// (M1.6) draws from. Same DB hard-dependency posture as the write stores.
@@ -524,6 +541,7 @@ func main() {
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,
+		WorkItemDispatch: workItemDispatch,
 		WorkItemReads:    workItemReads,
 		ProjectRefs:      projectRefs,
 		Search:           searcher,

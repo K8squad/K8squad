@@ -339,6 +339,21 @@ var allowedSurface = map[string]string{
 	"WorkItemWriteStore.CreateWorkItem": "§6.1/§6.5 insert in default entry lane + audit, no-fence, Team-scoped",
 	"WorkItemWriteStore.UpdateWorkItem": "§6.1/§6.5 conditional field CAS (expectedUpdatedAt) + audit, Team-scoped",
 
+	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
+	// custody op. Records the human's pre-run agent choice as durable INTENT on
+	// the work item (requested_agent, mig 0021) + advances the lane backlog→todo
+	// so the existing operator Intake sweep mints the Run — NOT an agent-to-agent
+	// channel: the intent is a human decision on the work_item, consumed by the
+	// operator, exactly the §6.1/§8.6 board custody surface. The agent-∈-Team
+	// resolver (TeamAgentResolver) is the §D4 authorization seam, not a chat path.
+	"ErrAgentNotInTeam":                     "§8.6/D4 guard: requested agent not in owning Team composition (→403)",
+	"TeamAgentResolver":                     "§D4 seam: list a Team's agent composition (agent-∈-Team authority), k8s-backed",
+	"RequestDispatchInput":                  "§8.6 human dispatch input (workItem/agent/team-scope + provenance)",
+	"WorkItemDispatchResult":                "§8.6 dispatch outcome (backlog→todo advance + chosen agent)",
+	"WorkItemDispatchStore":                 "§8.6/§13 human board dispatch store bound to the prod schema",
+	"NewWorkItemDispatchStore":              "§8.6 constructor (db + Team-agent resolver)",
+	"WorkItemDispatchStore.RequestDispatch": "§8.6/§6.5 agent-∈-Team check + intent write + backlog→todo CAS + audit, no-fence, Team-scoped",
+
 	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
 	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own
 	// content + claim/fence state; AppendComment is the SANCTIONED handoff half

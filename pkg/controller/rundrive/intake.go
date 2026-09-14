@@ -92,6 +92,11 @@ type IntakeItem struct {
 	ID        string // coord.work_item.id (uuid)
 	TeamID    string // coord.work_item.team_id (Team CR uid)
 	ProjectID string // coord.work_item.project_id (Project CR uid or name)
+	// RequestedAgent is the human's pre-run agent choice (mig 0021, ADR-0022),
+	// "" when none. buildRun prefers it over Team.Spec.Agents[0], validating
+	// membership defensively — a stale choice (composition changed since dispatch)
+	// falls back rather than dispatching to an agent no longer on the team.
+	RequestedAgent string
 }
 
 // IntakeSource is the board read-side seam, minimal so tests bind a fake (the
@@ -122,7 +127,7 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 		limit = DefaultIntakeMaxPerPass
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, team_id::text, project_id::text
+		SELECT id::text, team_id::text, project_id::text, requested_agent
 		  FROM coord.work_item
 		 WHERE state = 'todo' AND team_id IS NOT NULL
 		 ORDER BY created_at, id
@@ -134,9 +139,11 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	var items []IntakeItem
 	for rows.Next() {
 		var it IntakeItem
-		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID); err != nil {
+		var requestedAgent sql.NullString
+		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent); err != nil {
 			return nil, fmt.Errorf("rundrive.intake: scan due work item: %w", err)
 		}
+		it.RequestedAgent = requestedAgent.String // "" when NULL
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -280,14 +287,34 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 		return nil, err
 	}
 
-	// Agent selection (M1: one agent, one ticket): the Team composition's
-	// first entry. spec.agents empty would defer to a reconciler default
-	// (story 1.3) that has not landed — selecting the composition here keeps
-	// the dispatch concrete instead of relying on an unimplemented default.
+	// Agent selection (M1: one agent, one ticket). The default is the Team
+	// composition's first entry; spec.agents empty would defer to a reconciler
+	// default (story 1.3) that has not landed — selecting the composition here
+	// keeps the dispatch concrete instead of relying on an unimplemented default.
 	if len(team.Spec.Agents) == 0 {
 		return nil, fmt.Errorf("team %s/%s composition names no agent to dispatch to", team.Namespace, team.Name)
 	}
 	agentRef := team.Spec.Agents[0]
+	// The human's pre-run choice (mig 0021, ADR-0022 §3 D2) wins over the default
+	// — but only if it is STILL a member of the composition. Validating membership
+	// here (not just trusting the column) is the §7.4 "defensive" check: the
+	// dispatch write already enforced agent-∈-Team, yet the composition can change
+	// between dispatch and this tick, so a stale choice falls back to Agents[0]
+	// rather than minting a Run for an agent no longer on the team.
+	if item.RequestedAgent != "" {
+		matched := false
+		for _, a := range team.Spec.Agents {
+			if a.Name == item.RequestedAgent {
+				agentRef = a
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			i.logf("rundrive.intake: work item %s requested agent %q no longer in team %s/%s composition; falling back to %s",
+				item.ID, item.RequestedAgent, team.Namespace, team.Name, team.Spec.Agents[0].Name)
+		}
+	}
 	agentNS := agentRef.Namespace
 	if agentNS == "" {
 		agentNS = ns
