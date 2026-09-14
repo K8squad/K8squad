@@ -41,6 +41,9 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -55,6 +58,8 @@ import (
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
 )
 
 // TriggerAnnotation is stamped (server-side patch) by the verified webhook
@@ -125,6 +130,12 @@ type Reconciler struct {
 	// provider records authored by this actor are OUR reflected writes and are
 	// dropped on the way in (AC6).
 	BotActor string
+
+	// Metrics records the scm sync surface (ISI-4395 GH-2/GH-3): the
+	// scm.sync span, the sync/duration/panic counters and the mirror-age /
+	// rate-limit gauges. Nil is safe — every method is a no-op on a nil
+	// receiver — so unit tests and stripped binaries need not wire it.
+	Metrics *scmmetrics.Metrics
 }
 
 // +kubebuilder:rbac:groups=ksquad.io,resources=projects,verbs=get;list;watch;patch
@@ -135,7 +146,7 @@ type Reconciler struct {
 // and schedules the poll fallback. Missing Projects are not errors (deleted
 // mid-queue); provider/store failures set SyncReady=False and return the
 // error so controller-runtime requeues with backoff.
-func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, retErr error) {
 	logger := log.FromContext(ctx)
 
 	project := &ksquadapi.Project{}
@@ -146,9 +157,59 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	sync := project.Spec.Repo.Sync
 	if sync == nil {
 		// Repo-sync not configured: nothing to mirror, no poll to schedule.
-		// A Project without sync is not an error state (§5.4).
+		// A Project without sync is not an error state (§5.4). No scm.sync span
+		// is opened for an unconfigured Project — it is not a sync at all.
 		return ctrl.Result{}, nil
 	}
+
+	// GH-2 trace join: a good-signature webhook (cmd/scm-webhook) Inject-ed its
+	// W3C trace context onto the Project annotations before bumping the trigger.
+	// Extracting it here re-parents the scm.sync span onto the webhook's trace,
+	// so the webhook→reconcile hop reads as ONE distributed trace. A poll-driven
+	// pass has no inbound context and simply roots a fresh trace.
+	ctx = telemetry.Extract(ctx, project.Annotations)
+	trigger := classifyTrigger(project)
+	projectKey := project.Namespace + "/" + project.Name
+
+	ctx, span := telemetry.Tracer().Start(ctx, "scm.sync", trace.WithAttributes(
+		attribute.String("ksquad.scm.provider", sync.Provider),
+		attribute.String("ksquad.scm.trigger", trigger),
+		attribute.String("ksquad.project.name", project.Name),
+		attribute.String("ksquad.project.namespace", project.Namespace),
+	))
+	start := time.Now()
+	reason := reasonSynced
+	success := false
+	// One defer owns the span close AND the sync/panic metric (GH-2/GH-3).
+	// A panic in the Providers/Store/Snapshot derefs (repo_sync.go nil-guard
+	// history, ISI-4113/4117) is recorded on the span + counted on
+	// ksquad_scm_sync_panics_total and then RE-RAISED: the crash stays a crash,
+	// it just stops being invisible. controller-runtime's own panic recovery
+	// and the SetupWithManager nil-Client guard still backstop the r.Get above,
+	// which runs before this span exists.
+	defer func() {
+		if rec := recover(); rec != nil {
+			span.RecordError(fmt.Errorf("scm.sync panic: %v", rec))
+			span.SetStatus(codes.Error, "panic")
+			r.Metrics.RecordPanic(ctx, sync.Provider)
+			span.End()
+			panic(rec)
+		}
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.SetAttributes(attribute.String("ksquad.scm.reason", reason))
+		r.Metrics.RecordSync(ctx, scmmetrics.SyncOutcome{
+			Provider: sync.Provider,
+			Trigger:  trigger,
+			Reason:   reason,
+			Project:  projectKey,
+			Duration: time.Since(start),
+			Success:  success,
+		})
+		span.End()
+	}()
 
 	// Resolve the BYO credential per Project (AC5): the token comes from the
 	// referenced Secret, is handed to the provider factory, and leaves no
@@ -156,6 +217,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	creds, err := r.resolveCredentials(ctx, project)
 	if err != nil {
 		logger.Error(err, "repo-sync: BYO credential not resolvable", "project", req.NamespacedName)
+		reason = reasonNoCredential
+		// The error text is surfaced on status/span, but the CredentialMissing
+		// path must never let a BYO token leak into it — resolveCredentials
+		// only ever returns "secret not resolvable"/"empty key" shapes, never
+		// the secret bytes (PII hygiene, NFR-SEC8).
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonNoCredential, err.Error())})
 		// Error only: controller-runtime ignores RequeueAfter alongside a
 		// non-nil error (it requeues with backoff instead).
@@ -165,14 +231,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	provider, err := r.Providers.Provider(ctx, sync.Provider, creds)
 	if err != nil {
 		logger.Error(err, "repo-sync: provider not resolvable", "project", req.NamespacedName)
+		reason = reasonProviderFail
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
 		return ctrl.Result{}, err
 	}
 
 	// ── the level-triggered pass: provider snapshot → mirror upsert (AC2) ──
 	records, err := provider.Snapshot(ctx, project.Spec.Repo.URL, r.snapshotOptions(sync))
+	// Feed the provider rate-limit headroom gauge from whatever the pass saw,
+	// success or failure (GH-3): a snapshot that just tripped the limit reports
+	// 0-ish headroom, which is exactly the signal the dashboard needs.
+	r.observeRateLimit(provider)
 	if err != nil {
 		logger.Error(err, "repo-sync: provider snapshot failed", "project", req.NamespacedName)
+		reason = reasonProviderFail
 		// A provider rate limit gets a respectful scheduled retry at the
 		// provider's own Retry-After — not exponential backoff fighting it.
 		var rateLimited *scm.RateLimitedError
@@ -202,6 +274,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	applied, err := r.Store.ApplySnapshot(ctx, project.Namespace, project.Name, rows)
 	if err != nil {
 		logger.Error(err, "repo-sync: mirror upsert failed", "project", req.NamespacedName)
+		reason = reasonMirrorFail
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})
 		return ctrl.Result{}, err
 	}
@@ -212,6 +285,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	// surfaces as a failed reconcile so the next pass re-anchors.
 	if err := r.Store.UpsertRepo(ctx, project.Namespace, project.Name, sync.Provider, project.Spec.Repo.URL, time.Now()); err != nil {
 		logger.Error(err, "repo-sync: scm.repo anchor upsert failed", "project", req.NamespacedName)
+		reason = reasonMirrorFail
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})
 		return ctrl.Result{}, err
 	}
@@ -226,6 +300,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if _, err := r.IssueSync.SyncProject(ctx, project.Namespace, project.Name,
 			provider, project.Spec.Repo.URL, sync.EffectiveIssueSyncDirection(), rows); err != nil {
 			logger.Error(err, "repo-sync: issue link pass failed", "project", req.NamespacedName)
+			reason = reasonIssueSync
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonIssueSync, err.Error())})
 			return ctrl.Result{}, err
 		}
@@ -249,9 +324,56 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		},
 	})
 
+	// The pass applied the mirror: mark success so the deferred metric stamps
+	// the mirror-age gauge for this Project and records reason=Synced.
+	success = true
+	span.SetAttributes(attribute.Int("ksquad.scm.mirror.record_count", applied))
+
 	// Poll fallback (AC3): the interval comes from the spec values — two
 	// Projects with distinct intervals schedule distinctly.
 	return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, nil
+}
+
+// classifyTrigger labels a reconcile pass as webhook- or poll-driven for the
+// scm.sync span and the ksquad_scm_sync_total{trigger} metric. Heuristic (the
+// reconcile itself is level-triggered and identical either way): a scm-sync
+// trigger annotation whose timestamp is NEWER than the last recorded successful
+// mirror means an external trigger arrived since the last pass — a webhook
+// delivery OR a manual "Sync now" (both bump the same annotation; the apiserver
+// side tags the manual path distinctly, GH-4). Otherwise it is the scheduled
+// poll requeue (or a spec change). Both values are bounded — no cardinality
+// risk.
+func classifyTrigger(project *ksquadapi.Project) string {
+	raw, ok := project.Annotations[TriggerAnnotation]
+	if !ok || raw == "" {
+		return scmmetrics.TriggerPoll
+	}
+	triggeredAt, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return scmmetrics.TriggerPoll
+	}
+	if sync := project.Status.Sync; sync != nil && sync.LastMirrorTime != nil {
+		if !triggeredAt.After(sync.LastMirrorTime.Time) {
+			return scmmetrics.TriggerPoll
+		}
+	}
+	return scmmetrics.TriggerWebhook
+}
+
+// observeRateLimit feeds the provider rate-limit headroom gauge when the
+// provider implements the optional scm.RateLimitReporter seam (GH-3). Providers
+// that cannot report headroom are simply skipped.
+func (r *Reconciler) observeRateLimit(provider scm.SourceProvider) {
+	if r.Metrics == nil {
+		return
+	}
+	reporter, ok := provider.(scm.RateLimitReporter)
+	if !ok {
+		return
+	}
+	if remaining, seen := reporter.LastRateRemaining(); seen {
+		r.Metrics.ObserveRateLimit(provider.Name(), remaining)
+	}
 }
 
 // SetupWithManager registers the reconciler for Project events.

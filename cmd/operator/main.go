@@ -85,6 +85,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
 	"github.com/K8squad/K8squad/pkg/telemetry/otelcr"
+	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 	"github.com/K8squad/K8squad/pkg/toolchain"
 	kubepool "github.com/K8squad/K8squad/pkg/warmpool"
@@ -1006,11 +1007,24 @@ func main() {
 			ctrl.Log.Error(err, "unable to bind issue-link store")
 			os.Exit(1)
 		}
+		// ISI-4395 GH-2/GH-3: register the scm sync instruments on the operator's
+		// OTel meter — the scm.sync span + ksquad_scm_sync_total /
+		// _duration_seconds / _panics_total and the mirror-age / rate-limit
+		// gauges — so a dropped webhook, a nil-Client panic, a provider error and
+		// a stale mirror stop looking identical from outside (ISI-4229). Nil on a
+		// registration failure: the reconciler no-ops every metric call, never a
+		// dead controller.
+		scmMetrics, smErr := scmmetrics.Register(telemetry.Meter())
+		if smErr != nil {
+			ctrl.Log.Error(smErr, "scm sync metrics disabled (Register failed)")
+			scmMetrics = nil
+		}
 		if err := (&reposync.Reconciler{
 			Client:    mgr.GetClient(),
 			Store:     scm.NewSQLMirrorStore(db),
 			Providers: scm.NewProviderRegistry(),
 			IssueSync: issuesync.NewSyncer(issueLinkStore),
+			Metrics:   scmMetrics,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
 			os.Exit(1)

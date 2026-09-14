@@ -22,11 +22,17 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/go-github/v57/github"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/oauth2"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // githubHTTPTimeout bounds every provider API call. A snapshot fans out to
@@ -95,6 +101,47 @@ func wrapRateLimit(err error) error {
 type GitHubProvider struct {
 	client *github.Client
 	creds  ProviderCredentials
+
+	// lastRate is the rate-limit headroom (requests remaining) reported on the
+	// most recent API response of a Snapshot, or -1 before any call. It feeds
+	// the ksquad.scm.provider.rate_limit.remaining gauge (ISI-4395 GH-3) via
+	// LastRateRemaining. Snapshot's fetchers run sequentially, but the field is
+	// atomic so a caller may read it without racing an in-flight pass.
+	lastRate atomic.Int64
+}
+
+// LastRateRemaining reports the rate-limit headroom seen on the provider's most
+// recent API response, and whether any response has been observed yet. It
+// implements the scm.RateLimitReporter seam the reposync reconciler reads after
+// a Snapshot to feed the provider-headroom gauge (GH-3).
+func (p *GitHubProvider) LastRateRemaining() (int64, bool) {
+	v := p.lastRate.Load()
+	if v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// rateTrackingTransport records GitHub's X-RateLimit-Remaining response header
+// into a shared atomic on every round trip, so the provider's rate-limit
+// headroom is captured from ONE place — every list call, every pagination page,
+// every fan-out ref — with no per-fetcher plumbing. It is a pure observer: the
+// response and error pass through untouched.
+type rateTrackingTransport struct {
+	base      http.RoundTripper
+	remaining *atomic.Int64
+}
+
+func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if resp != nil {
+		if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
+			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+				t.remaining.Store(n)
+			}
+		}
+	}
+	return resp, err
 }
 
 // NewGitHubProvider creates a new GitHub provider instance. A malformed
@@ -102,6 +149,9 @@ type GitHubProvider struct {
 // `client.BaseURL, _ = url.Parse(baseURL)` dropped it and pointed every
 // call at github.com).
 func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvider, error) {
+	p := &GitHubProvider{creds: creds}
+	p.lastRate.Store(-1) // -1 = no response observed yet (LastRateRemaining ok=false)
+
 	transport := http.DefaultTransport
 	if creds.Token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
@@ -110,6 +160,9 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 			Source: ts,
 		}
 	}
+	// Wrap AFTER auth so the rate header (present on every GitHub response) is
+	// observed regardless of whether the call was authenticated (GH-3).
+	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate}
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   githubHTTPTimeout,
@@ -125,11 +178,8 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 			return nil, fmt.Errorf("invalid provider baseURL %q: %w", baseURL, err)
 		}
 	}
-
-	return &GitHubProvider{
-		client: client,
-		creds:  creds,
-	}, nil
+	p.client = client
+	return p, nil
 }
 
 // Name returns "github".
@@ -146,9 +196,16 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 		return nil, fmt.Errorf("invalid repo URL: %w", err)
 	}
 
+	// Each mirrored kind fetches under its OWN child span (GH-2), so a slow or
+	// failing kind is attributable inside the scm.sync trace instead of hiding
+	// in one opaque snapshot. The per-kind record count rides on the span; repo
+	// URLs / entity ids never do (span hygiene mirrors the metric firewall).
+
 	// Fetch issues
 	if len(options.Types) == 0 || contains(options.Types, RecordTypeIssue) {
-		issueRecords, err := p.fetchIssues(ctx, repoOwner, repoName, options)
+		issueRecords, err := p.traceFetch(ctx, "issues", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchIssues(ctx, repoOwner, repoName, options)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch issues: %w", err)
 		}
@@ -157,7 +214,9 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 
 	// Fetch PRs
 	if len(options.Types) == 0 || contains(options.Types, RecordTypePR) {
-		prRecords, err := p.fetchPullRequests(ctx, repoOwner, repoName, options)
+		prRecords, err := p.traceFetch(ctx, "pull_requests", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchPullRequests(ctx, repoOwner, repoName, options)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch pull requests: %w", err)
 		}
@@ -166,7 +225,9 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 
 	// Fetch check runs
 	if len(options.Types) == 0 || contains(options.Types, RecordTypeCheckRun) {
-		checkRecords, err := p.fetchCheckRuns(ctx, repoOwner, repoName)
+		checkRecords, err := p.traceFetch(ctx, "check_runs", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchCheckRuns(ctx, repoOwner, repoName)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch check runs: %w", err)
 		}
@@ -175,7 +236,9 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 
 	// Fetch artifacts
 	if len(options.Types) == 0 || contains(options.Types, RecordTypeArtifact) {
-		artifactRecords, err := p.fetchArtifacts(ctx, repoOwner, repoName)
+		artifactRecords, err := p.traceFetch(ctx, "artifacts", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchArtifacts(ctx, repoOwner, repoName)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch artifacts: %w", err)
 		}
@@ -187,7 +250,9 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 	// solely when RecordTypeRelease is explicitly requested (Mirror.Releases=true),
 	// so the default full sync spends no extra API budget on them.
 	if contains(options.Types, RecordTypeRelease) {
-		releaseRecords, err := p.fetchReleases(ctx, repoOwner, repoName)
+		releaseRecords, err := p.traceFetch(ctx, "releases", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchReleases(ctx, repoOwner, repoName)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch releases: %w", err)
 		}
@@ -199,7 +264,9 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 	// fetched solely when RecordTypeBranch is explicitly requested
 	// (Mirror.Branches=true).
 	if contains(options.Types, RecordTypeBranch) {
-		branchRecords, err := p.fetchBranches(ctx, repoOwner, repoName)
+		branchRecords, err := p.traceFetch(ctx, "branches", func(ctx context.Context) ([]NormalizedRecord, error) {
+			return p.fetchBranches(ctx, repoOwner, repoName)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch branches: %w", err)
 		}
@@ -207,6 +274,22 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 	}
 
 	return records, nil
+}
+
+// traceFetch runs one per-kind fetch under a scm.fetch.<kind> child span,
+// tagging it with the record count and marking span error status on failure
+// (GH-2). The span is a pure observability wrapper — it never alters the
+// fetch's result or error.
+func (p *GitHubProvider) traceFetch(ctx context.Context, kind string, fn func(context.Context) ([]NormalizedRecord, error)) ([]NormalizedRecord, error) {
+	ctx, span := telemetry.Tracer().Start(ctx, "scm.fetch."+kind)
+	defer span.End()
+	recs, err := fn(ctx)
+	span.SetAttributes(attribute.Int("ksquad.scm.record_count", len(recs)))
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return recs, err
 }
 
 // GitHub webhook delivery headers — provider knowledge that lives here,
