@@ -39,9 +39,13 @@ export interface ListViewProps {
   tree: TreeController;
   sort: SortSpec;
   onSortChange: (sort: SortSpec) => void;
+  /** Project id for the per-row ticket-detail deep-link (ISI-4399 S3). */
+  projectId: string;
 }
 
-export function ListView({ items, tree, sort, onSortChange }: ListViewProps) {
+export function ListView({ items, tree, sort, onSortChange, projectId }: ListViewProps) {
+  const detailHref = (id: string) =>
+    `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(id)}`;
   const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(new Set());
   const sorted = sortWorkItems(items, sort);
 
@@ -93,7 +97,13 @@ export function ListView({ items, tree, sort, onSortChange }: ListViewProps) {
                 </span>
               )}
               <TicketTreeToggle item={item} tree={tree} />
-              <span className="ksq-list-title__text">{item.title}</span>
+              <a
+                className="ksq-list-title__text"
+                href={detailHref(item.id)}
+                data-testid={`row-title-${item.id}`}
+              >
+                {item.title}
+              </a>
               {item.provenance && (
                 <span
                   className="ksq-chip ksq-chip--prov"

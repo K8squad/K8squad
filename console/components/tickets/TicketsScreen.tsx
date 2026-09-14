@@ -311,9 +311,21 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           </p>
         </div>
       ) : view === "kanban" ? (
-        <KanbanBoard items={visible} tree={tree} role={role} onTransition={onTransition} />
+        <KanbanBoard
+          items={visible}
+          tree={tree}
+          role={role}
+          onTransition={onTransition}
+          projectId={projectId}
+        />
       ) : (
-        <ListView items={visible} tree={tree} sort={sort} onSortChange={setSort} />
+        <ListView
+          items={visible}
+          tree={tree}
+          sort={sort}
+          onSortChange={setSort}
+          projectId={projectId}
+        />
       )}
 
       <p className="ksq-sr-only">States: {Object.values(STATE_LABELS).join(", ")}</p>

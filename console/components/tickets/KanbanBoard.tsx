@@ -37,12 +37,16 @@ export interface KanbanBoardProps {
   items: WorkItem[];
   tree: TreeController;
   role: string;
+  /** Project id for the per-card ticket-detail deep-link (ISI-4399 S3). */
+  projectId: string;
   /** Perform the human status-transition; resolves on 200, throws on 409/error (screen resyncs). */
   onTransition: (item: WorkItem, to: WorkItemState) => Promise<void>;
 }
 
-export function KanbanBoard({ items, tree, role, onTransition }: KanbanBoardProps) {
+export function KanbanBoard({ items, tree, role, onTransition, projectId }: KanbanBoardProps) {
   const draggable = canDrag(role);
+  const detailHref = (id: string) =>
+    `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(id)}`;
   const dragged = useRef<WorkItem | null>(null);
   const inFlight = useRef<string | null>(null);
   const [dropTarget, setDropTarget] = useState<WorkItemState | null>(null);
@@ -88,7 +92,11 @@ export function KanbanBoard({ items, tree, role, onTransition }: KanbanBoardProp
           </span>
           {toggle}
         </div>
-        <div className="ksq-kanban-card__title">{item.title}</div>
+        <div className="ksq-kanban-card__title">
+          <a href={detailHref(item.id)} data-testid={`card-title-${item.id}`}>
+            {item.title}
+          </a>
+        </div>
         <div className="ksq-kanban-card__meta">
           <span className="ksq-chip" data-testid={`card-priority-${item.id}`}>
             {item.priority ?? "—"}
