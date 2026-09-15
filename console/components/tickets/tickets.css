@@ -625,6 +625,39 @@
   min-width: 0;
 }
 
+/* The Properties rail is PINNED right (ISI-4447): it stays in view as the main
+   column scrolls, so properties + sub-ticket status are always reachable — the
+   board's fix for "properties buried at the bottom of a flat column". Falls back
+   to normal flow when the columns stack on narrow viewports. */
+.ksq-ticket-detail__side {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+}
+
+@media (max-width: 900px) {
+  .ksq-ticket-detail__side {
+    position: static;
+  }
+}
+
+/* ---- Header + Description card (top of the main column) ---- */
+.ksq-ticket-detail__title {
+  font-size: 1.4rem;
+  margin: 8px 0 0;
+}
+
+.ksq-ticket-detail__meta {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+}
+
+.ksq-hairline {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+
 .ksq-ticket-detail .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -741,4 +774,71 @@
 
 .ksq-proplist dd {
   margin: 0;
+}
+
+/* ---- Sub-tickets status card (right rail, ISI-4447) ---- */
+/* The three segment/tile hues are the LOCKED reserved status colors (design §2:
+   running #34d399, paused #fbbf24, idle #64748b) — no new palette values. A
+   colored segment always MEANS a state. */
+.ksq-progress {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  margin: 8px 0 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+}
+
+.ksq-progress__seg {
+  height: 100%;
+  display: block;
+}
+
+.ksq-progress__seg--done {
+  background: #34d399;
+}
+
+.ksq-progress__seg--inprogress {
+  background: #fbbf24;
+}
+
+.ksq-progress__seg--todo {
+  background: #64748b;
+}
+
+.ksq-count-tiles {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.ksq-count-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip, 6px);
+}
+
+.ksq-count-tile__n {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+
+.ksq-count-tile__label {
+  font-size: 0.7rem;
+}
+
+.ksq-subticket-add {
+  width: 100%;
+  margin-top: 4px;
 }

@@ -213,3 +213,29 @@ export function subTicketProgress(children: { state: string }[]): {
   for (const c of children) if (c.state === "done") done += 1;
   return { done, total: children.length };
 }
+
+/**
+ * Sub-ticket status roll-up for the ISI-4447 redesign's right-rail "Sub-tickets
+ * status" card: the three buckets the count tiles + progress bar render (done /
+ * in-progress / todo) plus the total. The board's five states collapse to the
+ * card's three columns the same way the Kanban lanes group for a summary —
+ * `in_review` counts as in-progress work (it is not yet done, not backlog), and
+ * `backlog`+`todo` both read as "todo" (not-yet-started). Pure + DOM-free so the
+ * bucketing rule is unit-tested without mounting the card.
+ */
+export function subTicketStatus(children: { state: string }[]): {
+  done: number;
+  inProgress: number;
+  todo: number;
+  total: number;
+} {
+  let done = 0;
+  let inProgress = 0;
+  let todo = 0;
+  for (const c of children) {
+    if (c.state === "done") done += 1;
+    else if (c.state === "in_progress" || c.state === "in_review") inProgress += 1;
+    else todo += 1; // backlog + todo == not-yet-started
+  }
+  return { done, inProgress, todo, total: children.length };
+}

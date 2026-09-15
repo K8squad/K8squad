@@ -9,6 +9,7 @@ import {
   buildActivity,
   normalizeThread,
   subTicketProgress,
+  subTicketStatus,
   type NormalizedThread,
 } from "@/lib/tickets/thread";
 
@@ -117,5 +118,28 @@ describe("subTicketProgress", () => {
       subTicketProgress([{ state: "done" }, { state: "todo" }, { state: "done" }]),
     ).toEqual({ done: 2, total: 3 });
     expect(subTicketProgress([])).toEqual({ done: 0, total: 0 });
+  });
+});
+
+describe("subTicketStatus", () => {
+  it("buckets the five board states into done / in-progress / todo (ISI-4447)", () => {
+    expect(
+      subTicketStatus([
+        { state: "done" },
+        { state: "in_progress" },
+        { state: "in_review" }, // in-review counts as in-progress work
+        { state: "todo" },
+        { state: "backlog" }, // backlog counts as todo (not-yet-started)
+      ]),
+    ).toEqual({ done: 1, inProgress: 2, todo: 2, total: 5 });
+  });
+
+  it("is all-zero for no sub-tickets", () => {
+    expect(subTicketStatus([])).toEqual({
+      done: 0,
+      inProgress: 0,
+      todo: 0,
+      total: 0,
+    });
   });
 });

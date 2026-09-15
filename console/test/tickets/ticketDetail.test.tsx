@@ -88,6 +88,38 @@ describe("TicketDetail", () => {
     expect(within(screen.getByTestId("detail-run-trace")).getByText("run-9")).toBeTruthy();
   });
 
+  it("lays out the ISI-4447 redesign: header card + pinned rail with Properties and Sub-tickets status", async () => {
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-header")).toBeTruthy());
+
+    // Header + Description live in one card at the top of the main column.
+    const header = screen.getByTestId("detail-header");
+    expect(within(header).getByText("ship the thing")).toBeTruthy();
+    expect(within(header).getByTestId("detail-description")).toBeTruthy();
+
+    // Right-rail Properties expose all seven fields; the ones the M1.5 read model
+    // doesn't carry yet render an honest em-dash, never a fabricated value.
+    expect(within(screen.getByTestId("prop-project")).getByText("ns/demo")).toBeTruthy();
+    for (const id of ["prop-priority", "prop-workmode", "prop-parent", "prop-labels"]) {
+      expect(screen.getByTestId(id).textContent).toContain("—");
+    }
+
+    // Sub-tickets STATUS card (rail): roll-up + progress bar + three count tiles.
+    const statusCard = screen.getByTestId("detail-subticket-status");
+    expect(within(statusCard).getByTestId("detail-subticket-summary").textContent).toContain(
+      "1 of 2 done",
+    );
+    const bar = within(statusCard).getByTestId("detail-progressbar");
+    expect(bar.getAttribute("aria-valuenow")).toBe("1");
+    expect(bar.getAttribute("aria-valuemax")).toBe("2");
+    expect(within(screen.getByTestId("detail-count-done")).getByText("1")).toBeTruthy();
+    expect(within(screen.getByTestId("detail-count-inprogress")).getByText("0")).toBeTruthy();
+    expect(within(screen.getByTestId("detail-count-todo")).getByText("1")).toBeTruthy();
+    expect(screen.getByTestId("detail-add-subticket")).toBeTruthy();
+  });
+
   it("degrades honestly to not-available on a 404", async () => {
     routeFetch(404);
     render(<TicketDetail projectId="ns/demo" workItemId="missing" />);
