@@ -66,7 +66,7 @@ make verify-codegen   # fails on drift
 
 ```sh
 helm lint config/helm-crds
-helm template k8squad-crds config/helm-crds        # renders 11 CRDs
+helm template k8squad-crds config/helm-crds        # renders 12 CRDs
 helm template k8squad-crds config/helm-crds --set keep=false | grep -c resource-policy   # 0
 ```
 

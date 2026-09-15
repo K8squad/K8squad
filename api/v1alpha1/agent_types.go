@@ -69,11 +69,17 @@ type AgentSpec struct {
 	// +optional
 	CapabilityOverrides *CapabilityOverrides `json:"capabilityOverrides,omitempty"`
 
-	// Model is the resolved model name (e.g. a Claude model id, or an
-	// Ollama-served model name when a BYO endpoint is configured).
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
-	Model string `json:"model"`
+	// Model is the model name for this agent (e.g. a Claude model id, or an
+	// Ollama-served model name when a BYO endpoint is configured). OPTIONAL
+	// as of the Model-Per-Role work (ISI-4430): an empty model falls through
+	// to the Role tier (Role.spec.model) and finally the system-default
+	// ModelConfig singleton. Existing Agents all set model, so making this
+	// optional is backward-compatible — they keep resolving at the agent tier.
+	// The effective model must still resolve non-empty across all tiers; an
+	// Agent whose model resolves empty everywhere is rejected fail-closed at
+	// admission (that guard is ISI-4430 S4, not this schema).
+	// +optional
+	Model string `json:"model,omitempty"`
 
 	// ModelEndpointRef optionally references a per-user Secret holding a
 	// BYO / Ollama / OpenAI-compatible model endpoint (arch §10.3, ADR-026,
