@@ -1,7 +1,8 @@
 //go:build integration
 
 // Integration proof of the capture half of the event seam against a REAL
-// Postgres with the shipped coord schema (0001) + the outbox migration (0003).
+// Postgres with the shipped coord schema (0001) + the outbox migration (0003)
+// + the trace-carrier column (0022, ISI-4440 — Capture now stamps trace_carrier).
 // Run in CI with DATABASE_URL set:
 //
 //	go test -tags=integration ./pkg/events/ -run TestOutbox
@@ -43,7 +44,7 @@ func integrationDB(t *testing.T) *sql.DB {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
 		t.Fatalf("drop schema: %v", err)
 	}
-	for _, f := range []string{"0001_coord_schema.sql", "0003_coord_outbox.sql"} {
+	for _, f := range []string{"0001_coord_schema.sql", "0003_coord_outbox.sql", "0022_coord_outbox_trace_carrier.sql"} {
 		sqlText, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", f))
 		if err != nil {
 			t.Fatalf("read %s: %v", f, err)

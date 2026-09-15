@@ -16,8 +16,10 @@
 
 BEGIN;
 
--- A project_id is needed for the NOT NULL subject component.
-CREATE TEMP TABLE t_ctx AS SELECT gen_random_uuid() AS pid;
+-- A project_id is needed for the NOT NULL subject component. The column is named
+-- `proj` (not `pid`) so `SELECT proj INTO pid` below is unambiguous — a column
+-- named `pid` would collide with the PL/pgSQL variable of the same name.
+CREATE TEMP TABLE t_ctx AS SELECT gen_random_uuid() AS proj;
 
 -- (1) The column exists, is jsonb, and is NULLABLE (no backfill / no default).
 DO $$
@@ -35,7 +37,7 @@ END $$;
 DO $$
 DECLARE pid uuid; withc bigint; withoutc bigint; tc jsonb;
 BEGIN
-    SELECT pid INTO pid FROM t_ctx;
+    SELECT proj INTO pid FROM t_ctx;
 
     INSERT INTO coord.outbox (entity, project_id, event_type, payload, trace_carrier)
          VALUES ('run', pid, 'started', '{}'::jsonb,
@@ -56,7 +58,7 @@ END $$;
 DO $$
 DECLARE pid uuid; rid bigint; got text;
 BEGIN
-    SELECT pid INTO pid FROM t_ctx;
+    SELECT proj INTO pid FROM t_ctx;
     INSERT INTO coord.outbox (entity, project_id, event_type, payload, trace_carrier)
          VALUES ('run', pid, 'started', '{}'::jsonb, '{"traceparent":"tp-a"}'::jsonb)
       RETURNING id INTO rid;
@@ -72,7 +74,7 @@ END $$;
 DO $$
 DECLARE pid uuid; rid bigint; pub timestamptz;
 BEGIN
-    SELECT pid INTO pid FROM t_ctx;
+    SELECT proj INTO pid FROM t_ctx;
     INSERT INTO coord.outbox (entity, project_id, event_type, payload, trace_carrier)
          VALUES ('run', pid, 'started', '{}'::jsonb, '{"traceparent":"tp-a"}'::jsonb)
       RETURNING id INTO rid;
