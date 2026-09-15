@@ -48,6 +48,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -64,6 +65,43 @@ const (
 	aliasURL   = "url"
 	aliasToken = "token"
 )
+
+// Model-Per-Role (ISI-4430) well-known singleton. The system-default model
+// tier lives in ONE ModelConfig named "default" in the operator namespace —
+// the floor of the tier-as-a-unit walk (D4). Namespaced-singleton identity is
+// a convention the resolver enforces (O3b), not a schema constraint.
+const (
+	// DefaultModelConfigName is the well-known name of the system-default
+	// ModelConfig singleton the resolver reads.
+	DefaultModelConfigName = "default"
+
+	// DefaultSystemNamespace is the fallback operator namespace the resolver
+	// looks in for the ModelConfig singleton when Resolver.SystemNamespace is
+	// unset. Mirrors cmd/operator's defaultSystemNamespace.
+	DefaultSystemNamespace = "k8squad-system"
+)
+
+// Tier names which of the three Model-Per-Role tiers supplied the effective
+// (primary, fallback) pair (ISI-4430 D4). It rides back to callers so S4 can
+// stamp provenance ("which tier chose this model") without re-deriving it.
+type Tier string
+
+const (
+	// TierAgent: the effective model came from Agent.spec.model (highest).
+	TierAgent Tier = "agent"
+	// TierRole: Agent.spec.model was empty; Role.spec.model supplied it.
+	TierRole Tier = "role"
+	// TierDefault: neither agent nor role set a model; the ModelConfig
+	// singleton's spec.model is the floor (D3 — must always exist).
+	TierDefault Tier = "default"
+)
+
+// ErrNoModel is the fail-closed sentinel (ISI-4430 D3/D4): no tier — not even
+// the system-default ModelConfig — yielded a primary model. Typed so callers
+// distinguish a misconfigured install ("no model anywhere") from a transient
+// API read error or a dangling endpoint Secret. Returned by ResolveEffective;
+// NEVER an empty-model Endpoint.
+var ErrNoModel = &ErrUnresolved{Reason: "no tier (agent, role, or system-default ModelConfig) supplies a model — fail-closed (ISI-4430 D3)"}
 
 // Endpoint is one resolved model endpoint (arch §10.3): a base URL riding
 // an OpenAI-compatible (or Ollama-native) wire, an optional bearer token,
@@ -144,45 +182,191 @@ func (e *ErrUnresolved) Unwrap() error { return e.Err }
 // its admission reader; the reconciler its manager client — the seam stays
 // unit-testable against a fake).
 type Resolver struct {
+	// Reader reads Agents/Roles/ModelConfig/Secrets. In production it is the
+	// manager's CACHE-backed client, so ResolveEffective's ModelConfig Get is
+	// served from the informer cache (the "cached Get of the singleton" seam),
+	// not a live API round-trip; tests pass a fake client.
 	Reader client.Reader
+
+	// SystemNamespace is where the ModelConfig "default" singleton lives. Empty
+	// means DefaultSystemNamespace ("k8squad-system"). Wired from the
+	// operator's POD_NAMESPACE so the seam stays overridable in tests.
+	SystemNamespace string
 }
 
-// Resolve returns the Agent's primary model endpoint. An Agent with no
-// modelEndpointRef resolves to the provider-default endpoint (BaseURL "",
-// the Agent's own model) — the common paid-provider shape — so callers get
-// ONE type for both postures.
-func (r *Resolver) Resolve(ctx context.Context, agent *api.Agent) (Endpoint, error) {
-	ref := agent.Spec.ModelEndpointRef
-	if ref == nil {
-		return Endpoint{Model: agent.Spec.Model}, nil
+// systemNamespace returns the configured operator namespace or the default.
+func (r *Resolver) systemNamespace() string {
+	if r.SystemNamespace != "" {
+		return r.SystemNamespace
 	}
-	return r.ResolveRef(ctx, agent.Namespace, ref, agent.Spec.Model)
+	return DefaultSystemNamespace
 }
 
-// ResolveFallback returns the Agent's fallback endpoint (5.11). The
-// fallback carries its own endpoint Secret, or — when its
-// modelEndpointRef is unset — resolves against the Agent's OWN endpoint
-// Secret (same wire, second model) per the FallbackModel contract. ok is
-// false when the Agent configures no fallback at all.
-func (r *Resolver) ResolveFallback(ctx context.Context, agent *api.Agent) (endpoint Endpoint, ok bool, err error) {
-	fb := agent.Spec.FallbackModel
-	if fb == nil {
+// tierInput is one Model-Per-Role tier's raw resolution inputs (ISI-4430 D4):
+// its model name, its optional fallback, the endpoint Secret its credentials
+// resolve through, and the namespace those Secrets live in. resolvePrimary /
+// resolveFallback turn it into Endpoints — the SINGLE place endpoint+credential
+// resolution happens, so agent-only (Resolve/ResolveFallback) and tier-as-a-unit
+// (ResolveEffective) can never drift.
+type tierInput struct {
+	tier        Tier
+	model       string
+	fallback    *api.FallbackModel
+	endpointRef *api.SecretRef
+	namespace   string
+}
+
+// resolvePrimary turns a tier's model+endpointRef into its primary Endpoint. No
+// endpointRef means the provider-default endpoint (BaseURL "") — "no BYO
+// endpoint" is a first-class value, not an error.
+func (r *Resolver) resolvePrimary(ctx context.Context, t tierInput) (Endpoint, error) {
+	if t.endpointRef == nil {
+		return Endpoint{Model: t.model}, nil
+	}
+	return r.ResolveRef(ctx, t.namespace, t.endpointRef, t.model)
+}
+
+// resolveFallback turns a tier's fallback into an Endpoint. The fallback carries
+// its own endpoint Secret, or — when unset — rides the SAME tier's primary
+// endpoint (same wire, second model) per the FallbackModel contract. A lower
+// tier's endpoint is NEVER grafted here: fallback stays inside the winning tier
+// (D4). ok is false when this tier configures no fallback.
+func (r *Resolver) resolveFallback(ctx context.Context, t tierInput) (endpoint Endpoint, ok bool, err error) {
+	if t.fallback == nil {
 		return Endpoint{}, false, nil
 	}
-	ref := fb.ModelEndpointRef
+	ref := t.fallback.ModelEndpointRef
 	if ref == nil {
-		ref = agent.Spec.ModelEndpointRef
+		ref = t.endpointRef
 	}
 	if ref == nil {
-		// No BYO endpoint anywhere: the fallback is a second model on the
-		// runtime's own provider default.
-		return Endpoint{Model: fb.Model}, true, nil
+		return Endpoint{Model: t.fallback.Model}, true, nil
 	}
-	ep, err := r.ResolveRef(ctx, agent.Namespace, ref, fb.Model)
+	ep, err := r.ResolveRef(ctx, t.namespace, ref, t.fallback.Model)
 	if err != nil {
 		return Endpoint{}, true, err
 	}
 	return ep, true, nil
+}
+
+// agentTier is the agent-tier resolution inputs (highest tier).
+func agentTier(agent *api.Agent) tierInput {
+	return tierInput{
+		tier:        TierAgent,
+		model:       agent.Spec.Model,
+		fallback:    agent.Spec.FallbackModel,
+		endpointRef: agent.Spec.ModelEndpointRef,
+		namespace:   agent.Namespace,
+	}
+}
+
+// Resolve returns the Agent's primary model endpoint (agent tier only — the
+// pre-Model-Per-Role seam kept for callers that have no Role/default context;
+// S4 moves them to ResolveEffective). An Agent with no modelEndpointRef
+// resolves to the provider-default endpoint (BaseURL "", the Agent's own
+// model), so callers get ONE type for both postures.
+func (r *Resolver) Resolve(ctx context.Context, agent *api.Agent) (Endpoint, error) {
+	return r.resolvePrimary(ctx, agentTier(agent))
+}
+
+// ResolveFallback returns the Agent's fallback endpoint (5.11), agent tier
+// only. The fallback carries its own endpoint Secret, or — when unset —
+// resolves against the Agent's OWN endpoint Secret. ok is false when the Agent
+// configures no fallback at all.
+func (r *Resolver) ResolveFallback(ctx context.Context, agent *api.Agent) (endpoint Endpoint, ok bool, err error) {
+	return r.resolveFallback(ctx, agentTier(agent))
+}
+
+// ResolveEffective is the Model-Per-Role (ISI-4430) core seam: it walks the
+// three model tiers TIER-AS-A-UNIT (D4) and returns the effective (primary,
+// fallback) pair from the HIGHEST tier whose model is non-empty —
+// Agent.spec.model → Role.spec.model → the ModelConfig "default" singleton. A
+// lower tier's fallback is NEVER grafted onto a higher tier's primary: the pair
+// is taken as a unit from the winning tier.
+//
+// Endpoint/credential resolution follows the WINNING tier (D5): the agent tier
+// uses Agent.spec.modelEndpointRef; the role tier uses the provider/operator
+// default endpoint (role-level modelEndpointRef is O1, deferred — a role-tier
+// model has no BYO endpoint of its own in v1); the default tier uses
+// ModelConfig.spec.modelEndpointRef. In every tier an unset fallback endpoint
+// rides that tier's own primary endpoint.
+//
+// FAIL-CLOSED (D3): if no tier — not even the system-default ModelConfig —
+// yields a primary model, it returns ErrNoModel and a zero primary Endpoint,
+// never an empty-model Endpoint. A transient ModelConfig read error (not
+// NotFound) propagates as itself so the caller can retry.
+//
+// tier reports which tier won (for S4 provenance). ok reports whether a
+// fallback was resolved for the winning tier.
+func (r *Resolver) ResolveEffective(ctx context.Context, agent *api.Agent, role *api.Role) (primary Endpoint, fallback Endpoint, tier Tier, ok bool, err error) {
+	win, err := r.winningTier(ctx, agent, role)
+	if err != nil {
+		return Endpoint{}, Endpoint{}, "", false, err
+	}
+
+	primary, err = r.resolvePrimary(ctx, win)
+	if err != nil {
+		return Endpoint{}, Endpoint{}, win.tier, false, err
+	}
+	fallback, ok, err = r.resolveFallback(ctx, win)
+	if err != nil {
+		return Endpoint{}, Endpoint{}, win.tier, false, err
+	}
+	return primary, fallback, win.tier, ok, nil
+}
+
+// winningTier selects the highest tier with a non-empty model (D4). It only
+// reads the ModelConfig singleton when agent and role both fall through, so the
+// common path costs no extra API read. Returns ErrNoModel when nothing supplies
+// a model (fail-closed).
+func (r *Resolver) winningTier(ctx context.Context, agent *api.Agent, role *api.Role) (tierInput, error) {
+	if agent != nil && agent.Spec.Model != "" {
+		return agentTier(agent), nil
+	}
+	if role != nil && role.Spec.Model != "" {
+		// O1 deferred: no role-level endpointRef in v1 — the role-tier model
+		// uses the provider/operator default endpoint. Its fallback may still
+		// carry its own Secret, resolved in role.Namespace.
+		return tierInput{
+			tier:      TierRole,
+			model:     role.Spec.Model,
+			fallback:  role.Spec.FallbackModel,
+			namespace: role.Namespace,
+		}, nil
+	}
+
+	mc, found, err := r.defaultModelConfig(ctx)
+	if err != nil {
+		return tierInput{}, err
+	}
+	if found && mc.Spec.Model != "" {
+		return tierInput{
+			tier:        TierDefault,
+			model:       mc.Spec.Model,
+			fallback:    mc.Spec.FallbackModel,
+			endpointRef: mc.Spec.ModelEndpointRef,
+			namespace:   mc.Namespace,
+		}, nil
+	}
+	return tierInput{}, ErrNoModel
+}
+
+// defaultModelConfig reads the well-known ModelConfig singleton ("default" in
+// the operator namespace). found=false on NotFound (an install without the
+// default CR yet — the caller decides whether that is fail-closed); a genuine
+// read error propagates for retry.
+func (r *Resolver) defaultModelConfig(ctx context.Context) (mc api.ModelConfig, found bool, err error) {
+	key := client.ObjectKey{Namespace: r.systemNamespace(), Name: DefaultModelConfigName}
+	if err := r.Reader.Get(ctx, key, &mc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return api.ModelConfig{}, false, nil
+		}
+		return api.ModelConfig{}, false, &ErrUnresolved{
+			Reason: fmt.Sprintf("system-default ModelConfig %s/%s read failed: %v", key.Namespace, key.Name, err),
+			Err:    err,
+		}
+	}
+	return mc, true, nil
 }
 
 // ResolveRef reads one endpoint Secret and validates its shape (7.5):
