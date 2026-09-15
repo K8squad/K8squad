@@ -541,6 +541,7 @@ func main() {
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,
+		WorkItemComments: workItemWrites, // ISI-4406: same store exposes AppendHumanComment
 		WorkItemDispatch: workItemDispatch,
 		WorkItemReads:    workItemReads,
 		ProjectRefs:      projectRefs,
