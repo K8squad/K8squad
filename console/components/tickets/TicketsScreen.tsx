@@ -325,11 +325,28 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       )}
 
       {loading ? (
-        <p className="ksq-empty-hint" data-testid="tickets-loading">
-          Loading tickets…
-        </p>
+        <div
+          className="ksq-list-skeleton"
+          data-testid="tickets-loading"
+          role="status"
+          aria-label="Loading tickets"
+        >
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="ksq-skel-row" aria-hidden="true">
+              <span className="ksq-skel-spine" />
+              <span className="ksq-skel-bar ksq-skel-bar--id" />
+              <span className="ksq-skel-bar ksq-skel-bar--chip" />
+              <span className="ksq-skel-bar ksq-skel-bar--title" />
+              <span className="ksq-skel-bar ksq-skel-bar--meta" />
+            </div>
+          ))}
+          <span className="ksq-sr-only">Loading tickets…</span>
+        </div>
       ) : unavailable ? (
-        <div className="ksq-empty-state" data-testid="tickets-unavailable">
+        <div className="ksq-empty-state ksq-empty-state--notice" data-testid="tickets-unavailable">
+          <p className="ksq-empty-state__icon" aria-hidden="true">
+            ⏳
+          </p>
           <p className="ksq-empty-state__title">Tickets are not available yet.</p>
           <p className="muted">
             The work-items read model is not hosted by the apiserver yet — nothing
@@ -339,6 +356,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
         </div>
       ) : visible.length === 0 ? (
         <div className="ksq-empty-state" data-testid="tickets-empty">
+          <p className="ksq-empty-state__icon" aria-hidden="true">
+            {items.length === 0 ? "🗂️" : "🔍"}
+          </p>
           <p className="ksq-empty-state__title">
             {items.length === 0 ? "No tickets in this Project." : "No tickets match."}
           </p>

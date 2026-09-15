@@ -5,6 +5,26 @@
  * horizontally on narrow viewports, and the List collapses to 3 columns under
  * 720px with a row-expand for the rest. */
 
+/* ---- Phase-status tokens (ISI-4452 S1, design §1 · ISI-4431 model) ----
+ * The single colour source for List (ISI-4456) + Kanban re-skin (ISI-4457),
+ * consumed via lib/tickets/statusColor. Hex pinned byte-for-byte to design §1
+ * (mirrors the ISI-4455 backend enum). Locked story-8.9 tokens (globals.css) are
+ * ALIASED where a phase reuses one; the 4 mid-phase extension hues
+ * (planning / code_review / testing / documentation) are net-new shared tokens.
+ * Theme-invariant, like the status channel they extend. */
+:root {
+  --ksq-phase-backlog: var(--status-idle); /* #64748B locked */
+  --ksq-phase-todo: var(--accent); /* #3D7DFF locked */
+  --ksq-phase-design: var(--ksq-run); /* #A78BFA locked */
+  --ksq-phase-planning: #8b5cf6; /* NEW */
+  --ksq-phase-implementation: var(--status-paused); /* #FBBF24 locked */
+  --ksq-phase-code_review: #f97316; /* NEW */
+  --ksq-phase-testing: #2dd4bf; /* NEW */
+  --ksq-phase-documentation: #38bdf8; /* NEW */
+  --ksq-phase-done: var(--status-running); /* #34D399 locked */
+  --ksq-phase-cancelled: var(--status-idle); /* #64748B + strike, locked */
+}
+
 /* ---- Layout ---- */
 .ksq-tickets-page {
   padding: 24px;
@@ -25,29 +45,38 @@
   font-size: 1.4rem;
 }
 
-/* ---- View toggle (8.14d) ---- */
+/* ---- View toggle (8.14d; segmented re-skin ISI-4452 S5) ---- */
 .ksq-viewtoggle {
   display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--surface);
+  background: var(--inset, var(--canvas));
 }
 
 .ksq-viewtoggle button {
-  min-height: 44px;
-  min-width: 88px;
-  padding: 8px 16px;
+  min-height: 38px;
+  min-width: 84px;
+  padding: 6px 16px;
   border: none;
+  border-radius: calc(var(--radius) - 3px);
   background: transparent;
   color: var(--text-2);
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.ksq-viewtoggle button:hover:not(.is-active) {
+  color: var(--text-1);
 }
 
 .ksq-viewtoggle button.is-active {
-  background: var(--accent);
-  color: #fff;
+  background: var(--surface);
+  color: var(--text-1);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
 /* ---- Filters (8.14d) ---- */
@@ -93,6 +122,63 @@
   color: var(--ksq-run);
 }
 
+/* Phase-status chip: dot + label, tinted from --phase-hue (statusColor, S1). The
+ * fill is a low-alpha wash of the hue so the chip reads in dark and light alike. */
+.ksq-chip--phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-1);
+  border-color: color-mix(in srgb, var(--phase-hue, var(--border)) 45%, transparent);
+  background: color-mix(in srgb, var(--phase-hue, var(--border)) 14%, transparent);
+}
+
+.ksq-phase-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--phase-hue, var(--text-2));
+  flex: 0 0 auto;
+}
+
+.ksq-chip--priority {
+  text-transform: capitalize;
+  color: var(--text-1);
+}
+
+/* Rose "blocked" warn glyph (§8.6 — a condition, never a lane). */
+.ksq-warn-glyph {
+  color: var(--status-blocked);
+  font-size: 0.85rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+/* Honest empty field (FR-I3) — a dim em-dash, never a fabricated value. */
+.ksq-dim {
+  color: var(--text-2);
+}
+
+/* Assignee avatar; a dashed ring means unassigned (design §1 List row). */
+.ksq-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--text-1);
+  font-size: 0.62rem;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+
+.ksq-avatar--empty {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
 .ksq-ticket-id {
   font-family: var(--font-mono);
   font-size: 0.75rem;
@@ -124,6 +210,17 @@
   font-weight: 600;
   margin: 0 0 4px;
   color: var(--text-1);
+}
+
+.ksq-empty-state__icon {
+  font-size: 1.8rem;
+  margin: 0 0 8px;
+  line-height: 1;
+}
+
+.ksq-empty-state--notice {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--status-paused) 45%, var(--border));
 }
 
 /* ---- Kanban (8.14b) ---- */
@@ -304,109 +401,285 @@
   padding: 4px 0;
 }
 
-/* ---- List view (8.14c) ---- */
-.ksq-list-scroll {
-  overflow-x: auto;
+/* ---- List view — Paperclip row bands (8.14c re-skinned, ISI-4452 S2) ----
+ * The former <table> is now a stack of flex/grid bands. `--ksq-list-cols` is the
+ * shared column template so the sort header aligns over the row cells: lead
+ * (caret+id) · title(1fr) · status · priority · assignee · labels · updated. */
+.ksq-list {
+  --ksq-list-cols: minmax(120px, auto) minmax(180px, 1fr) 132px 96px minmax(120px, 168px)
+    minmax(90px, 160px) 128px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-card, var(--radius));
+  overflow: hidden;
 }
 
-.ksq-list-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9rem;
+.ksq-list__head,
+.ksq-listrow {
+  display: grid;
+  grid-template-columns: var(--ksq-list-cols);
+  align-items: center;
+  column-gap: 12px;
+  padding: 0 14px 0 16px;
 }
 
-.ksq-list-table th,
-.ksq-list-table td {
-  text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-
-.ksq-list-table th {
+.ksq-list__head {
   position: sticky;
   top: 0;
-  background: var(--surface);
+  z-index: 1;
+  background: var(--inset, var(--canvas));
+  border-bottom: 1px solid var(--border);
+}
+
+.ksq-list__rows {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .ksq-list-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: none;
   border: none;
-  color: var(--text-1);
+  color: var(--text-2);
   font: inherit;
-  font-weight: 600;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   cursor: pointer;
-  min-height: 44px;
+  min-height: 40px;
   padding: 0;
+  text-align: start;
+}
+
+.ksq-list-sort:hover,
+.ksq-list-sort.is-active {
+  color: var(--text-1);
 }
 
 .ksq-list-sort__dir {
-  margin-inline-start: 4px;
   color: var(--accent);
 }
 
-.ksq-list-title {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  /* Sub-ticket depth indent (8.17), capped at INDENT_CAP by --tree-indent-depth. */
-  padding-inline-start: calc(var(--tree-indent-depth, 0) * 18px);
+/* One row band: a coloured phase spine on the leading edge, then the cells. */
+.ksq-listrow {
+  position: relative;
+  min-height: 52px;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.ksq-list-title__text {
+.ksq-listrow:last-child {
+  border-bottom: none;
+}
+
+.ksq-listrow:hover {
+  background: color-mix(in srgb, var(--phase-hue, var(--accent)) 7%, transparent);
+}
+
+.ksq-listrow__spine {
+  position: absolute;
+  inset-block: 8px;
+  inset-inline-start: 0;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--phase-hue, var(--border));
+}
+
+/* A child row nudges its spine inward per depth (8.17), capped at INDENT_CAP. */
+.ksq-listrow--child .ksq-listrow__spine {
+  inset-inline-start: calc(var(--tree-indent-depth, 0) * 16px);
+}
+
+.ksq-listrow--child .ksq-listrow__lead {
+  padding-inline-start: calc(var(--tree-indent-depth, 0) * 16px);
+}
+
+/* `cancelled` — muted + struck (design §1 row 10). */
+.ksq-listrow--cancelled {
+  opacity: 0.6;
+}
+
+.ksq-listrow--cancelled .ksq-listrow__titletext {
+  text-decoration: line-through;
+}
+
+.ksq-listrow__lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Fixed caret slot keeps ids aligned whether or not a row has children. */
+.ksq-listrow__caret {
+  display: inline-flex;
+  align-items: center;
+  min-width: 24px;
+}
+
+.ksq-listrow__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ksq-listrow__titletext {
+  color: var(--text-1);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ksq-listrow__titletext:hover,
+.ksq-listrow__titletext:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.ksq-listrow__status,
+.ksq-listrow__priority,
+.ksq-listrow__labels {
+  min-width: 0;
+}
+
+.ksq-listrow__assignee {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ksq-listrow__assignee-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-1);
 }
 
-.ksq-list-rowdetail td {
-  background: var(--canvas);
-}
-
-.ksq-list-detail {
-  display: flex;
-  gap: 24px;
+.ksq-listrow__labels {
+  display: inline-flex;
+  gap: 4px;
   flex-wrap: wrap;
-  margin: 0;
 }
 
-.ksq-list-detail dt {
+.ksq-listrow__updated {
+  color: var(--text-2);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- Status legend (ISI-4452 S5) ---- */
+.ksq-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--inset, var(--canvas));
   font-size: 0.75rem;
+}
+
+.ksq-legend__label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--text-2);
 }
 
-.ksq-list-detail dd {
-  margin: 0;
+.ksq-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
 }
 
-.ksq-rowexpand {
-  display: none; /* mobile-only affordance (unhidden below) */
-  background: transparent;
-  border: none;
-  color: var(--text-2);
-  min-height: 44px;
-  min-width: 32px;
-  cursor: pointer;
-  font: inherit;
+.ksq-legend__item--blocked {
+  color: var(--status-blocked);
+}
+
+/* ---- Loading skeleton (ISI-4452 S6) ---- */
+.ksq-list-skeleton {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card, var(--radius));
+  overflow: hidden;
+}
+
+.ksq-skel-row {
+  display: grid;
+  grid-template-columns: 3px 80px 120px minmax(120px, 1fr) 140px;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ksq-skel-row:last-child {
+  border-bottom: none;
+}
+
+.ksq-skel-spine {
+  height: 24px;
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.ksq-skel-bar {
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(
+    90deg,
+    var(--border) 0%,
+    color-mix(in srgb, var(--border) 40%, var(--surface)) 50%,
+    var(--border) 100%
+  );
+  background-size: 200% 100%;
+  animation: ksq-skel-shimmer 1.3s ease-in-out infinite;
+}
+
+@keyframes ksq-skel-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 
 /* ---- Responsive (spec: Tickets — Kanban / List / tree rows) ---- */
 @media (max-width: 720px) {
-  .ksq-list-table .ksq-col-priority,
-  .ksq-list-table .ksq-col-assignee,
-  .ksq-list-table .ksq-col-labels,
-  .ksq-list-table .ksq-col-updated {
-    display: none; /* 3 visible columns: ID + Title + Status */
+  /* Collapse to 3 columns: id + title + status (design responsive rule). */
+  .ksq-list {
+    --ksq-list-cols: minmax(96px, auto) minmax(140px, 1fr) 120px;
   }
 
-  .ksq-rowexpand {
-    display: inline-flex;
+  .ksq-list-sort--priority,
+  .ksq-list-sort--assignee,
+  .ksq-list-sort--labels,
+  .ksq-list-sort--updated,
+  .ksq-listrow__priority,
+  .ksq-listrow__assignee,
+  .ksq-listrow__labels,
+  .ksq-listrow__updated {
+    display: none;
   }
 
   .ksq-kanban {
     grid-auto-columns: minmax(240px, 80vw); /* swipeable-pane feel */
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ksq-skel-bar {
+    animation: none;
   }
 }
 

@@ -2,11 +2,11 @@
 // (05-testing §3.2(b) blocked-badge, §3.2(d) List sort/tree, §3.2 8.17 tree).
 //
 // These cover what the pure-function units in derivation.test.ts cannot: that
-// the List view renders the sub-ticket tree as TABLE-VALID <tr> siblings (a
-// <div>/<ul> wrapper inside <tbody> is hoisted out by the browser and breaks the
-// table), that carets/count-badges follow the 8.17 leaf-vs-parent rule, that
-// expanding reveals child rows, and that the Kanban blocked overlay renders in
-// the item's own lane (§8.6).
+// the List view (Paperclip row bands, ISI-4452 S2) renders the sub-ticket tree
+// as sibling row bands, that carets/count-badges follow the 8.17 leaf-vs-parent
+// rule, that expanding reveals child rows, that the phase-status chip + colour
+// legend (S1/S5) render, and that the Kanban blocked overlay renders in the
+// item's own lane (§8.6).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, within } from "@testing-library/react";
@@ -47,8 +47,8 @@ function controller(opts: {
 
 const SORT: SortSpec = { key: "updated", dir: "desc" };
 
-describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
-  it("renders every node as a <tr> — nothing is hoisted out of <tbody>", () => {
+describe("ListView — Paperclip row bands + sub-ticket tree (8.14c + 8.17)", () => {
+  it("renders an expanded parent and its child as sibling row bands", () => {
     const parent = item({ id: "par", title: "Parent", childCount: 1 });
     const child = item({ id: "kid", title: "Child", parentId: "par" });
     render(
@@ -60,14 +60,60 @@ describe("ListView — table-valid sub-ticket tree (8.14c + 8.17)", () => {
         projectId="ns/demo"
       />,
     );
-    const tbody = screen.getByTestId("row-par").closest("tbody")!;
-    // Only <tr> may be a direct child of <tbody>; a stray <div>/<ul> here means
-    // the browser hoisted the tree out and the table is broken.
-    for (const el of Array.from(tbody.children)) {
-      expect(el.tagName).toBe("TR");
-    }
-    // The expanded child renders as its own sibling row.
-    expect(screen.getByTestId("row-kid")).toBeInTheDocument();
+    // Bands are siblings under the same rows container (no table wrapper).
+    const parentRow = screen.getByTestId("row-par");
+    const childRow = screen.getByTestId("row-kid");
+    expect(parentRow.parentElement).toBe(childRow.parentElement);
+    expect(childRow).toBeInTheDocument();
+    // The child band carries its depth for the indent/connector (8.17).
+    expect(childRow.getAttribute("data-tree-depth")).toBe("1");
+  });
+
+  it("tints the status chip + spine and renders the phase label (S1)", () => {
+    render(
+      <ListView
+        items={[item({ id: "d", state: "done" })]}
+        tree={controller({})}
+        sort={SORT}
+        onSortChange={vi.fn()}
+        projectId="ns/demo"
+      />,
+    );
+    expect(screen.getByTestId("row-state-d")).toHaveTextContent("Done");
+    // The row exposes the phase hue as a CSS custom property for spine/dot/chip.
+    expect(screen.getByTestId("row-d").getAttribute("style")).toContain("--phase-hue");
+  });
+
+  it("shows a warn glyph on a blocked row and struck styling class on cancelled", () => {
+    render(
+      <ListView
+        items={[
+          item({ id: "b", state: "in_progress", blockedReason: "needs_approval" }),
+          item({ id: "x", state: "cancelled" as unknown as WorkItem["state"] }),
+        ]}
+        tree={controller({})}
+        sort={SORT}
+        onSortChange={vi.fn()}
+        projectId="ns/demo"
+      />,
+    );
+    expect(screen.getByTestId("blocked-glyph-b")).toBeInTheDocument();
+    expect(screen.getByTestId("row-x").className).toContain("ksq-listrow--cancelled");
+  });
+
+  it("renders a 10-status colour legend in the footer (S5)", () => {
+    render(
+      <ListView
+        items={[item({ id: "a" })]}
+        tree={controller({})}
+        sort={SORT}
+        onSortChange={vi.fn()}
+        projectId="ns/demo"
+      />,
+    );
+    expect(screen.getByTestId("status-legend")).toBeInTheDocument();
+    expect(screen.getByTestId("legend-code_review")).toHaveTextContent("Code Review");
+    expect(screen.getByTestId("legend-blocked")).toBeInTheDocument();
   });
 
   it("a parent shows a caret + child-count badge; a leaf shows neither (8.17 AC1)", () => {
