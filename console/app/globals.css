@@ -1552,6 +1552,48 @@ a:hover {
   resize: vertical;
 }
 
+/* Phase multi-select + coordinator toggle/mode (ISI-4487 E6). A fieldset variant of
+   compose__field: layout-neutral reset + a legend styled like a field label. */
+.compose__fieldgroup {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.compose__fieldgroup legend {
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.compose__checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 4px 0;
+}
+.compose__radios {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+}
+.compose__check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+/* Undo the 44px min-height the generic `.compose__field input` rule sets — a
+   checkbox/radio must render at its native size, not as a tall bar. */
+.compose__check input[type="checkbox"],
+.compose__check input[type="radio"] {
+  min-height: 0;
+  width: auto;
+  margin: 0;
+  accent-color: var(--accent, #4f8cff);
+}
+
 .field-hint {
   color: var(--text-2);
   font-style: normal;

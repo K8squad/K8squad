@@ -13,6 +13,8 @@ import { useSearchParams } from "next/navigation";
 import { Field } from "./fields";
 import {
   COMPOSE_KINDS,
+  COORDINATOR_MODES,
+  COORDINATOR_MODE_LABELS,
   KIND_LABEL,
   RUNTIME_CLASS_HINTS,
   emptyForm,
@@ -27,6 +29,7 @@ import {
   type ComposeResult,
   type FieldErrors,
 } from "@/lib/compose";
+import { STATUS_META, WORKING_PHASES } from "@/lib/tickets/statusColor";
 import { TeamForm } from "./TeamForm";
 import { ProjectForm } from "./ProjectForm";
 import { AgentForm } from "./AgentForm";
@@ -1013,6 +1016,88 @@ function KindFields({
               onChange={(e) => patch({ defaultSkills: e.target.value })}
             />
           </Field>
+
+          {/* ── ISI-4431 phase-lifecycle authoring (E6) ── */}
+          {/* Phase multi-select → activePhases. Rendered as a fieldset (not a Field, whose
+              own <label> can't legally wrap per-option labels). None selected ⇒ phase-agnostic. */}
+          <fieldset className="compose__field compose__fieldgroup">
+            <legend>Active phases</legend>
+            <div className="compose__checks" data-testid="role-active-phases">
+              {WORKING_PHASES.map((p) => (
+                <label key={p} className="compose__check">
+                  <input
+                    type="checkbox"
+                    data-testid={`role-phase-${p}`}
+                    checked={f.activePhases.includes(p)}
+                    onChange={(e) =>
+                      patch({
+                        activePhases: e.target.checked
+                          ? [...f.activePhases, p]
+                          : f.activePhases.filter((x) => x !== p),
+                      })
+                    }
+                  />
+                  <span>{STATUS_META[p].label}</span>
+                </label>
+              ))}
+            </div>
+            {errors["activePhases"] ? (
+              <em className="field-error">{errors["activePhases"]}</em>
+            ) : (
+              <em className="field-hint">
+                optional — phases this role is dispatched in; none ⇒ eligible in every phase
+              </em>
+            )}
+          </fieldset>
+
+          {/* Coordinator toggle → coordinator; the mode radio shows ONLY when it is on. */}
+          <fieldset className="compose__field compose__fieldgroup">
+            <legend>Coordinator</legend>
+            <label className="compose__check">
+              <input
+                type="checkbox"
+                data-testid="role-coordinator"
+                checked={f.coordinator}
+                onChange={(e) =>
+                  // Turning it on seeds the default mode (auto); turning it off clears the
+                  // mode so a hidden value never rides the apply (webhook rejects a mode
+                  // while coordinator=false).
+                  patch(
+                    e.target.checked
+                      ? { coordinator: true, coordinatorMode: "auto" }
+                      : { coordinator: false, coordinatorMode: "" },
+                  )
+                }
+              />
+              <span>This role coordinates the team’s phase lifecycle</span>
+            </label>
+            <em className="field-hint">at most one coordinator per team (enforced on Team apply)</em>
+            {f.coordinator && (
+              <div
+                className="compose__radios"
+                role="radiogroup"
+                aria-label="Coordinator mode"
+                data-testid="role-coordinator-mode"
+              >
+                {COORDINATOR_MODES.map((m) => (
+                  <label key={m} className="compose__check">
+                    <input
+                      type="radio"
+                      name="coordinatorMode"
+                      value={m}
+                      data-testid={`role-coordinator-mode-${m}`}
+                      checked={f.coordinatorMode === m}
+                      onChange={() => patch({ coordinatorMode: m })}
+                    />
+                    <span>{COORDINATOR_MODE_LABELS[m]}</span>
+                  </label>
+                ))}
+                {errors["coordinatorMode"] && (
+                  <em className="field-error">{errors["coordinatorMode"]}</em>
+                )}
+              </div>
+            )}
+          </fieldset>
         </div>
       );
     }

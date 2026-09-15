@@ -46,6 +46,8 @@ import {
   type RunComment,
 } from "@/lib/tickets/runComments";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
+import { STATUS_META } from "@/lib/tickets/statusColor";
+import { workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 
 type ThreadState =
@@ -677,6 +679,22 @@ function TicketBody({
             <dt className="muted">Status</dt>
             <dd>
               <StatusChip state={thread.state} />
+            </dd>
+
+            {/* Phase is the honest lifecycle affordance (FR-7 / ISI-4487): the ticket's
+                working phase, folding the legacy engine lanes. A legacy ticket on an
+                intake/terminal lane (or a non-coordinator team) sits on NO phase — we say
+                "— no phase", never fabricate a "Design". */}
+            <dt className="muted">Phase</dt>
+            <dd data-testid="prop-phase">
+              {(() => {
+                const phase = workingPhaseOf(thread.state);
+                return phase ? (
+                  <span className="ksq-chip">{STATUS_META[phase].label}</span>
+                ) : (
+                  <span className="muted">— no phase</span>
+                );
+              })()}
             </dd>
 
             <dt className="muted">Assignee</dt>

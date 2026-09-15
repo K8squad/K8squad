@@ -58,6 +58,27 @@ export const PHASE_STATUSES = [
 export type PhaseStatus = (typeof PHASE_STATUSES)[number];
 
 /**
+ * The six lifecycle WORKING phases — the middle of the 10-status enum, in order.
+ * These are the ONLY statuses a Role can be bound to via `activePhases` (ISI-4431
+ * E3 §1) and the only statuses that count as "a phase" for the honest phase
+ * affordance (FR-7 / ISI-4487): `backlog`/`todo` are intake lanes and
+ * `done`/`cancelled` are terminal lanes — none is ever *worked* by a role, so a
+ * ticket sitting on one has NO phase (the UI says "— no phase" rather than fabricate
+ * one). The `satisfies` guard pins every value to a real PhaseStatus so this set can
+ * never drift from the enum without a compile error.
+ */
+export const WORKING_PHASES = [
+  "design",
+  "planning",
+  "implementation",
+  "code_review",
+  "testing",
+  "documentation",
+] as const satisfies readonly PhaseStatus[];
+
+export type WorkingPhase = (typeof WORKING_PHASES)[number];
+
+/**
  * Status → presentation metadata. Keyed by the 10 phase statuses PLUS the two
  * legacy read-model states (`in_progress` / `in_review`) that still ride the
  * current enum until ISI-4455 lands — each mapped to the closest phase hue so
