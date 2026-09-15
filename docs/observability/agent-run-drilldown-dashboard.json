@@ -1,0 +1,121 @@
+{
+  "//": "Agent/Team/Project/Ticket run drill-down — Dynatrace dashboard-as-code (ISI-4387 WS-F part 2; parent ISI-4380 / ADR-0021). Portable template (no tenant IDs): import via the Dynatrace Dashboards app or dtctl. SKELETON: every tile's DQL is written against the ksquad.* / gen_ai.* span + metric keys defined in pkg/telemetry/semconv/registry.go (Part 1, merged PR #431) and syntax-modeled on docs/observability/github-sync-health-dashboard.json. Field/metric names still need ONE live-sample validation against dynatrace-dev once the WS-A/B/D/E telemetry is emitting there (tracked by ISI-4391 real-qwen e2e) — do not treat rendered numbers as validated until then. Drill-down model: pick ticket -> run -> inspect spans + per-team/project metrics.",
+  "version": 18,
+  "variables": [
+    {
+      "key": "project",
+      "type": "query",
+      "visible": true,
+      "input": "fetch spans, from:-24h | filter isNotNull(ksquad.project.name) | summarize c = count(), by:{ksquad.project.name} | fields ksquad.project.name",
+      "multiple": true
+    },
+    {
+      "key": "team",
+      "type": "query",
+      "visible": true,
+      "input": "fetch spans, from:-24h | filter isNotNull(ksquad.team.name) | summarize c = count(), by:{ksquad.team.name} | fields ksquad.team.name",
+      "multiple": true
+    },
+    {
+      "key": "ticket",
+      "type": "query",
+      "visible": true,
+      "input": "fetch spans, from:-24h | filter isNotNull(ksquad.work_item.ref) | summarize c = count(), by:{ksquad.work_item.ref} | fields ksquad.work_item.ref",
+      "multiple": false
+    },
+    {
+      "key": "run",
+      "type": "query",
+      "visible": true,
+      "input": "fetch spans, from:-24h | filter ksquad.work_item.ref == $ticket and span.name == \"run.start\" | fields ksquad.run.id, timestamp | sort timestamp desc | fields ksquad.run.id",
+      "multiple": false
+    }
+  ],
+  "tiles": {
+    "0": {
+      "type": "markdown",
+      "content": "# Agent / Team / Project / Ticket run drill-down\nOptimize a specific **agent / team / skill** by drilling **ticket → run → spans + metrics** (ADR-0021 WS-F, ISI-4387). Attribute contract: `pkg/telemetry/semconv/registry.go` + `docs/observability/semantic-conventions.md`.\n\n**Use:** pick a `ticket` (work-item ref) → pick a `run` → the run-trace, LLM cost/tokens, tool/skill error-rate and control-plane health below filter to your selection. `team`/`project` scope the roll-up tiles.\n\n> ⚠️ **Skeleton pending live-data validation (ISI-4391).** DQL is schema-built; field/metric names are validated against the registry, not yet against live `dynatrace-dev` output."
+    },
+    "1": {
+      "type": "data",
+      "title": "Runs for ticket $ticket",
+      "query": "fetch spans, from:-7d | filter span.name == \"run.start\" and ksquad.work_item.ref == $ticket | fields timestamp, ksquad.run.id, ksquad.agent.name, ksquad.team.name, ksquad.project.name, ksquad.run.state, ksquad.duration.ms | sort timestamp desc",
+      "visualization": "table"
+    },
+    "2": {
+      "type": "data",
+      "title": "Run-trace spans — run $run",
+      "query": "fetch spans, from:-7d | filter ksquad.run.id == $run | fields timestamp, span.name, span.parent_id, span.id, duration, ksquad.outcome | sort timestamp asc",
+      "visualization": "table"
+    },
+    "3": {
+      "type": "data",
+      "title": "LLM tokens + cost — run $run",
+      "query": "fetch spans, from:-7d | filter ksquad.run.id == $run and span.name == \"llm.call\" | summarize in_tok = sum(gen_ai.usage.input_tokens), out_tok = sum(gen_ai.usage.output_tokens), reason_tok = sum(gen_ai.usage.reasoning_tokens), cost_usd = sum(ksquad.llm.cost.usd)",
+      "visualization": "singleValue",
+      "visualizationSettings": { "unitsOverrides": [{ "unit": "USD" }] }
+    },
+    "4": {
+      "type": "data",
+      "title": "LLM cost by agent (team $team)",
+      "query": "fetch spans, from:-3h | filter span.name == \"llm.call\" and ksquad.team.name == $team | summarize cost_usd = sum(ksquad.llm.cost.usd), by:{ksquad.agent.name} | sort cost_usd desc",
+      "visualization": "barChart"
+    },
+    "5": {
+      "type": "data",
+      "title": "Backup/fallback-model activations by agent",
+      "query": "fetch spans, from:-3h | filter span.name == \"llm.call\" and ksquad.team.name == $team | filter ksquad.llm.fallback == true or gen_ai.request.model != gen_ai.response.model | summarize activations = count(), by:{ksquad.agent.name, gen_ai.response.model} | sort activations desc",
+      "visualization": "table"
+    },
+    "6": {
+      "type": "data",
+      "title": "Tool/skill error-rate by agent + skill",
+      "query": "fetch spans, from:-3h | filter span.name in (\"gen_ai.tool.call\", \"mcp.call\", \"skill.load\") and ksquad.team.name == $team | summarize calls = count(), errors = countIf(ksquad.outcome == \"error\"), by:{ksquad.agent.name, ksquad.skill.name, gen_ai.tool.name, ksquad.mcp.server} | fieldsAdd error_rate = errors * 100.0 / calls | sort error_rate desc",
+      "visualization": "table"
+    },
+    "7": {
+      "type": "data",
+      "title": "Lifecycle timeline — run $run (WS-D events)",
+      "query": "fetch spans, from:-7d | filter ksquad.run.id == $run and span.name in (\"run.scheduled\", \"run.sandbox_bound\", \"run.started\", \"run.ended\") | fields timestamp, span.name, ksquad.work_item.ref | sort timestamp asc",
+      "visualization": "table"
+    },
+    "8": {
+      "type": "data",
+      "title": "Active runs by phase (WS-E) — team $team",
+      "query": "timeseries active = avg(ksquad.runs.active), by:{phase, team}, from:-3h | filter team == $team",
+      "visualization": "lineChart"
+    },
+    "9": {
+      "type": "data",
+      "title": "Reconcile duration p95 (ms) by controller (WS-E)",
+      "query": "timeseries p95 = percentile(ksquad.reconcile.duration, 95), by:{controller}, from:-3h",
+      "visualization": "lineChart",
+      "visualizationSettings": { "unitsOverrides": [{ "unit": "MilliSecond" }] }
+    },
+    "10": {
+      "type": "data",
+      "title": "Control-plane dependency health (WS-E) — SLO == 1",
+      "query": "timeseries up = avg(ksquad.dependency.up), by:{dep}, from:-3h",
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "thresholds": [
+          { "value": 0, "color": "#dc172a" },
+          { "value": 1, "color": "#7dc540" }
+        ]
+      }
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 24, "h": 3 },
+    "1": { "x": 0, "y": 3, "w": 24, "h": 5 },
+    "2": { "x": 0, "y": 8, "w": 14, "h": 6 },
+    "3": { "x": 14, "y": 8, "w": 10, "h": 3 },
+    "7": { "x": 14, "y": 11, "w": 10, "h": 3 },
+    "4": { "x": 0, "y": 14, "w": 8, "h": 5 },
+    "5": { "x": 8, "y": 14, "w": 8, "h": 5 },
+    "6": { "x": 16, "y": 14, "w": 8, "h": 5 },
+    "8": { "x": 0, "y": 19, "w": 8, "h": 5 },
+    "9": { "x": 8, "y": 19, "w": 8, "h": 5 },
+    "10": { "x": 16, "y": 19, "w": 8, "h": 5 }
+  }
+}
