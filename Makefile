@@ -71,12 +71,14 @@ helm-sync-crds: ## Sync generated CRDs (config/crd/bases) into config/helm-crds/
 .PHONY: helm-lint
 helm-lint: ## Lint both Helm charts (control plane + CRDs).
 	$(HELM) lint $(CRDS_CHART_DIR)
-	$(HELM) lint $(CHART_DIR)
+	# modelConfig.default.model is required for install (ISI-4460); supply a dummy
+	# so the lint proves the chart is valid, not that the required value is missing.
+	$(HELM) lint $(CHART_DIR) --set modelConfig.default.model=make-lint-default
 
 .PHONY: helm-template
 helm-template: ## Render both Helm charts locally (no cluster needed).
 	$(HELM) template k8squad-crds $(CRDS_CHART_DIR)
-	$(HELM) template k8squad $(CHART_DIR)
+	$(HELM) template k8squad $(CHART_DIR) --set modelConfig.default.model=make-template-default
 
 .PHONY: helm-package
 helm-package: helm-sync-crds ## Package both charts into .cr-release-packages/ (what CI publishes to charts.k8squad.io).

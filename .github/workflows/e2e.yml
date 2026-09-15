@@ -151,6 +151,7 @@ jobs:
           # assertions run against whatever the operator resolves. Nothing is silently dropped.
           helm install ksquad-e2e config/helm \
             --namespace ksquad-system --create-namespace \
+            --set modelConfig.default.model=claude-sonnet-4 \
             --include-crds --wait --timeout 120s
           echo "Installed toolchains in the default catalog:"
           kubectl get toolchains.ksquad.io -A -o custom-columns=NAME:.metadata.name,VERSIONS:.spec.versions[*].version || true

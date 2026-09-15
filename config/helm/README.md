@@ -28,11 +28,14 @@ This is the chart CI publishes to <https://charts.k8squad.io>
 
 ## Install
 
-CRDs first, control plane second (ADR-0002 §3):
+CRDs first, control plane second (ADR-0002 §3). The control plane **requires a
+system default model** (`modelConfig.default.model`) — install aborts without it
+(see *Set the system default model* below):
 
 ```sh
 helm install k8squad-crds config/helm-crds --wait
-helm install k8squad config/helm -n k8squad-system --create-namespace
+helm install k8squad config/helm -n k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4
 kubectl api-resources --api-group=ksquad.io
 ```
 
@@ -49,6 +52,10 @@ namespace is fine.
 | `namespace.labels` | `{}` | Extra labels on the namespace. |
 | `namespace.annotations` | `{}` | Extra annotations on the namespace. |
 | `nameOverride` / `fullnameOverride` | `""` | Standard label-name overrides. |
+| `modelConfig.default.model` | _(none)_ | **Required for install.** System default model — the floor of agent→role→default resolution. `helm install`/`upgrade` aborts with a clear message when unset (see *Set the system default model*). |
+| `modelConfig.default.fallbackModel.model` | _(unset)_ | Optional secondary model for the default tier (§10.3 rate-limit recovery). |
+| `modelConfig.default.fallbackModel.modelEndpointRef.name` / `.key` | _(unset)_ | Optional Secret ref for the fallback's BYO endpoint. |
+| `modelConfig.default.modelEndpointRef.name` / `.key` | _(unset)_ | Optional Secret ref for the default tier's BYO / Ollama / OpenAI-compatible endpoint. Unset → provider-default endpoint. |
 | `tools.defaultCatalog.enabled` | `false` | Render the curated toolchain catalog as `Toolchain` objects in the control-plane namespace. |
 | `tools.defaultCatalog.entries` | curated set | Per-tool catalog entries (versions, images, RBAC) — override or extend. |
 | `tools.rbac.clusterScopeEnabled` | `false` | Allow cluster-catalog Toolchains to declare `rbac.scope: cluster`. Never default-on. |
@@ -72,6 +79,48 @@ namespace is fine.
 The event bus is best-effort: Postgres/CNPG is the sole source of truth
 (ADR-001), the write path uses a transactional outbox, and NATS-down never
 blocks a Run/claim/write — only live plugin event streaming/replay is degraded.
+
+## Set the system default model (required for install)
+
+Model-Per-Role (ISI-4430) resolves each Run's model as a tier walk:
+**agent (`Agent.spec.model`) → role (`Role.spec.model`) → the system default**.
+The first two are optional and fall through; the default tier is the floor — it
+has nothing below it, so it must never be empty. The chart ships exactly one
+system-default `ModelConfig` named `default` in the operator namespace, templated
+from `modelConfig.default.*`.
+
+Because the default is the last resort, **`modelConfig.default.model` has no
+default value and install fails without it** (board directive):
+
+```sh
+$ helm install k8squad config/helm -n k8squad-system
+Error: execution error at (k8squad/templates/modelconfig.yaml): modelConfig.default.model is required — set the system default model (see chart README)
+```
+
+Set it on install or upgrade:
+
+```sh
+helm upgrade --install k8squad config/helm -n k8squad-system \
+  --set modelConfig.default.model=claude-sonnet-4
+```
+
+Optional extras on the default tier — a rate-limit fallback (§10.3) and a BYO /
+Ollama / OpenAI-compatible endpoint Secret (created out-of-band):
+
+```yaml
+modelConfig:
+  default:
+    model: claude-sonnet-4
+    fallbackModel:
+      model: claude-haiku-4
+    modelEndpointRef:          # references a Secret; never a token value
+      name: byo-endpoint
+      key: endpointURL
+```
+
+The `ModelConfig` **CRD** ships in the separate `config/helm-crds` chart
+(ADR-0002 Option B) — install it first (see *Install* above) so the CRD exists
+before this CR is applied.
 
 ## Exposure (Gateway API)
 
@@ -357,4 +406,9 @@ make helm-template  # helm template both charts (local render, no cluster)
 # fixtures under ci/ and validates each rendered CR against the OTelConfig CRD schema
 # with kubeconform (installs kubeconform in CI; skips-with-reason if absent locally).
 bash config/helm/ci/otelconfig-test.sh
+
+# ModelConfig CR render + install-guard gate (ISI-4460): asserts bare render FAILS
+# with the required-message, that --set renders one valid default ModelConfig, and
+# validates the rendered CR against the ModelConfig CRD schema with kubeconform.
+bash config/helm/ci/modelconfig-test.sh
 ```

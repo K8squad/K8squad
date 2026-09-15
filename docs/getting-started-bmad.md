@@ -10,7 +10,8 @@ about ten minutes.
 # 1. Install the operator + the default toolchain catalog (once per cluster)
 helm repo add ksquad https://charts.k8squad.io
 helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
-  --set tools.defaultCatalog.enabled=true
+  --set tools.defaultCatalog.enabled=true \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # 2. Apply the predefined BMAD squad — Team, Roles, Agents, Project, Skills.
 #    The tool Skills reach GitHub/Dynatrace/rendering through CLI toolchains,
@@ -75,7 +76,8 @@ helm repo add ksquad https://charts.k8squad.io
 helm repo update
 helm install ksquad ksquad/k8squad \
   --namespace k8squad-system --create-namespace \
-  --set tools.defaultCatalog.enabled=true
+  --set tools.defaultCatalog.enabled=true \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # Wait for the control plane to be Ready
 kubectl -n k8squad-system rollout status deploy/ksquad-operator

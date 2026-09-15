@@ -56,6 +56,7 @@ crd_count() { kubectl get crd -l app.kubernetes.io/part-of=k8squad --no-headers 
 echo "== AC-6 reverse: CP chart before CRDs must fail fast =="
 if helm install "$CP_REL" "$CP_CHART" -n "$CP_NS" --create-namespace \
      --set controlPlane.enabled=false --set tools.defaultCatalog.enabled=true \
+     --set modelConfig.default.model=crd-upgrade-test \
      --wait --timeout 60s >/tmp/cp-first.log 2>&1; then
   fail "CP chart installed WITHOUT the CRDs present — ordering contract not enforced"
 fi
@@ -105,6 +106,7 @@ helm install "$CRDS_REL" "$OLD_CRDS" -n "$CRDS_NS" --create-namespace --wait --t
 helm install "$CP_REL" "$CP_CHART" -n "$CP_NS" --create-namespace \
   --set namespace.create=false \
   --set controlPlane.enabled=false --set tools.defaultCatalog.enabled=true \
+  --set modelConfig.default.model=crd-upgrade-test \
   --wait --timeout 120s
 kubectl get toolchain -n "$CP_NS" kubectl >/dev/null 2>&1 \
   || fail "toolchain-default-catalog Toolchain CR was not admitted after CRDs-first install"
