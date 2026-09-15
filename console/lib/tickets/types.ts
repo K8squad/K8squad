@@ -94,10 +94,17 @@ export interface SortSpec {
  * console always sends the lane it rendered from so a racing change 409s.
  * Pinned byte-for-byte by the shared contract fixture
  * (test/tickets/fixtures/state-transition-request.json) on both sides.
+ *
+ * The VALUES are the ISI-4455 ten-status enum (lib/tickets/statusColor
+ * `PhaseStatus`), for which the server is the authority — kept as `string` here
+ * rather than the legacy 5-value `WorkItemState` so the Kanban can target a
+ * phase (e.g. `code_review`) without forking the enum SSOT (ISI-4456 kept the
+ * read-model type narrow and folds via statusColor). `fromState` is whatever
+ * lane the card rendered from, which may still be a transitional engine state.
  */
 export interface StateTransitionBody {
-  toState: WorkItemState;
-  fromState: WorkItemState;
+  toState: string;
+  fromState: string;
 }
 
 /** Create-time priority vocabulary — mirrors the coord enum (validPriorities,

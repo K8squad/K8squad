@@ -22,19 +22,23 @@
 // blocked-reason / holder / run for a ticket — they do NOT carry priority,
 // work-mode, parent or labels yet. Those Properties rows render an explicit "—"
 // rather than a fabricated value; they light up automatically when the read model
-// grows the columns. The dependency-tree (S2), agent-run→comment renderer (S3) and
-// sticky prompt-to-agent composer (S4) mount into the marked regions of the main
-// column as their child tickets land; S1 ships their honest interim surfaces.
+// grows the columns. The dependency-tree (S2) and agent-run→comment renderer (S3)
+// mount into the marked regions of the main column as their child tickets land; S1
+// ships their honest interim surfaces. The human comment composer (ISI-4454) is now
+// LIVE — it posts to POST /api/work-items/{id}/comments (ISI-4406) for contributor+
+// callers and keeps the honest "not wired here" gap when that endpoint is absent.
 
-import { useCallback, useEffect, useState } from "react";
-import { ApiError, listWorkItems } from "@/lib/tickets/api";
+import { useEffect, useState } from "react";
+import { ApiError, fetchViewerRole, listWorkItems } from "@/lib/tickets/api";
 import {
   buildActivity,
   fetchWorkItemThread,
+  postWorkItemComment,
   subTicketProgress,
   subTicketStatus,
   type ActivityItem,
   type NormalizedThread,
+  type ThreadComment,
 } from "@/lib/tickets/thread";
 import {
   buildRunComments,
@@ -70,11 +74,13 @@ function fmt(ts: string): string {
   return Number.isNaN(t) ? "just now" : new Date(t).toLocaleString();
 }
 
-function useThread(workItemId: string): ThreadState {
+function useThread(workItemId: string, reloadKey: number): ThreadState {
   const [state, setState] = useState<ThreadState>({ kind: "loading" });
   useEffect(() => {
     let alive = true;
-    setState({ kind: "loading" });
+    // A composer re-fetch (reloadKey bump) should reconcile in place, NOT blank
+    // the whole thread back to a spinner — only the first load shows "loading".
+    setState((prev) => (prev.kind === "ready" ? prev : { kind: "loading" }));
     fetchWorkItemThread(workItemId)
       .then((thread) => alive && setState({ kind: "ready", thread }))
       .catch((err: unknown) => {
@@ -89,7 +95,7 @@ function useThread(workItemId: string): ThreadState {
     return () => {
       alive = false;
     };
-  }, [workItemId]);
+  }, [workItemId, reloadKey]);
   return state;
 }
 
@@ -297,6 +303,153 @@ function RunCommentCard({
   );
 }
 
+/** Contributor+ may post to the thread; a viewer is read-only (mirrors the
+ * TicketsScreen create gate — the apiserver is the real write wall). */
+function canComment(role: string): boolean {
+  return role !== "viewer";
+}
+
+type ComposerStatus =
+  | { kind: "idle" }
+  | { kind: "posting" }
+  | { kind: "error"; message: string }
+  | { kind: "not-wired" }; // POST 404/501 — endpoint absent on this deployment
+
+/**
+ * The human comment composer (ISI-4454). Posts { body } to
+ * POST /api/work-items/{id}/comments (ISI-4406) and, on 201, appends the persisted
+ * comment optimistically before asking the parent to re-fetch the thread. A viewer
+ * (or an unresolved-role caller, fail-closed) sees the read-only surface; a 404/501
+ * from the endpoint degrades to the honest "not wired on this deployment" gap
+ * rather than a broken control (FR-I3). Plain Comment only — Comment-&-assign
+ * (assign-half) waits on backend child f72cb481.
+ */
+function Composer({
+  workItemId,
+  canComment,
+  onOptimisticAppend,
+  onPosted,
+}: {
+  workItemId: string;
+  canComment: boolean;
+  onOptimisticAppend: (c: ThreadComment) => void;
+  onPosted: () => void;
+}) {
+  const [text, setText] = useState("");
+  const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
+
+  if (!canComment) {
+    return (
+      <div className="ksq-composer-note" data-testid="detail-composer-disabled">
+        <textarea
+          disabled
+          aria-label="Write a message to the agents"
+          placeholder="Write a message to the agents…"
+        />
+        <p className="muted">
+          You have read-only access to this project — commenting is available to
+          contributors and maintainers.
+        </p>
+      </div>
+    );
+  }
+
+  if (status.kind === "not-wired") {
+    return (
+      <div className="ksq-composer-note" data-testid="detail-composer-disabled">
+        <textarea
+          disabled
+          aria-label="Write a message to the agents"
+          placeholder="Write a message to the agents…"
+        />
+        <p className="muted">
+          Posting to the agents from the console isn’t available on this
+          deployment yet — the human comment write path isn’t wired here.
+        </p>
+      </div>
+    );
+  }
+
+  const posting = status.kind === "posting";
+  const submitDisabled = posting || text.trim() === "";
+
+  async function submit() {
+    const value = text.trim();
+    if (value === "" || posting) return;
+    setStatus({ kind: "posting" });
+    try {
+      const comment = await postWorkItemComment(workItemId, value);
+      onOptimisticAppend(comment);
+      setText("");
+      setStatus({ kind: "idle" });
+      onPosted();
+    } catch (err) {
+      const code = err instanceof ApiError ? err.status : 0;
+      if (code === 404 || code === 501) {
+        setStatus({ kind: "not-wired" });
+        return;
+      }
+      setStatus({
+        kind: "error",
+        message:
+          code === 403
+            ? "You don’t have permission to comment on this ticket."
+            : code === 401
+              ? "Your session has expired — sign in again to comment."
+              : code >= 400 && code < 500
+                ? "That comment couldn’t be posted. Check the text and try again."
+                : "Couldn’t reach the server. Try again.",
+      });
+    }
+  }
+
+  return (
+    <form
+      className="ksq-composer"
+      data-testid="detail-composer"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <textarea
+        aria-label="Write a message to the agents"
+        placeholder="Write a message to the agents…"
+        value={text}
+        disabled={posting}
+        data-testid="detail-composer-input"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          // ⌘/Ctrl+Enter posts, matching the board's other composers.
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+      />
+      {status.kind === "error" && (
+        <p
+          className="ksq-composer__error"
+          role="alert"
+          data-testid="detail-composer-error"
+        >
+          {status.message}
+        </p>
+      )}
+      <div className="ksq-composer__actions">
+        <button
+          type="submit"
+          className="ksq-btn ksq-btn--primary"
+          data-testid="detail-composer-submit"
+          disabled={submitDisabled}
+        >
+          {posting ? "Posting…" : "Comment"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function TicketDetail({
   projectId,
   workItemId,
@@ -304,11 +457,21 @@ export function TicketDetail({
   projectId: string;
   workItemId: string;
 }) {
-  const thread = useThread(workItemId);
+  // The thread re-fetches after a human comment posts, reconciling the optimistic
+  // append against server truth (bumped by the composer via onCommentPosted).
+  const [threadReload, setThreadReload] = useState(0);
+  const thread = useThread(workItemId, threadReload);
   // Children reload after an inline "Add sub-ticket" create so the rail roll-up
   // and the main list re-sync to server truth (no optimistic fabrication).
   const [childReload, setChildReload] = useState(0);
   const children = useChildren(projectId, workItemId, childReload);
+  // Contributor+ may post to the thread; a viewer is read-only (mirror the
+  // TicketsScreen create gate). FAIL-CLOSED to viewer until proven otherwise —
+  // the apiserver stays the real write wall (§12.3).
+  const [role, setRole] = useState("viewer");
+  useEffect(() => {
+    void fetchViewerRole().then(setRole);
+  }, []);
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
 
   return (
@@ -341,7 +504,9 @@ export function TicketDetail({
           projectId={projectId}
           thread={thread.thread}
           childrenState={children}
+          role={role}
           onChildCreated={() => setChildReload((k) => k + 1)}
+          onCommentPosted={() => setThreadReload((k) => k + 1)}
         />
       )}
     </div>
@@ -352,25 +517,43 @@ function TicketBody({
   projectId,
   thread,
   childrenState,
+  role,
   onChildCreated,
+  onCommentPosted,
 }: {
   projectId: string;
   thread: NormalizedThread;
   childrenState: ChildrenState;
+  role: string;
   onChildCreated: () => void;
+  onCommentPosted: () => void;
 }) {
-  const activity = buildActivity(thread);
+  const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
+  const [addingSub, setAddingSub] = useState(false);
+  // Optimistically-appended comments shown immediately after a successful POST;
+  // cleared once the reconciling thread re-fetch lands (a new `thread` object),
+  // which by then carries the same comment as server truth (no double-render).
+  const [pending, setPending] = useState<ThreadComment[]>([]);
+  useEffect(() => {
+    setPending([]);
+  }, [thread]);
+  // Single pending-inclusive projection drives both the chronological Activity
+  // timeline and the S3 run-meta map, so an optimistically-posted comment and its
+  // run bubble stay consistent (buildRunComments still owns the attribution rules).
+  const threadWithPending = {
+    ...thread,
+    comments: [...thread.comments, ...pending],
+  };
+  const activity = buildActivity(threadWithPending);
   // Run meta (run-id / live dot / trace ribbon) keyed by comment identity so the
-  // chronological Activity timeline can render each comment as its S3 run bubble
-  // without re-deriving the attribution rules (buildRunComments owns them).
+  // Activity timeline can render each comment as its S3 run bubble without
+  // re-deriving the attribution rules.
   const runMeta = new Map(
-    buildRunComments(thread).map((rc) => [
+    buildRunComments(threadWithPending).map((rc) => [
       runCommentKey(rc.author, rc.at, rc.body),
       rc,
     ]),
   );
-  const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
-  const [addingSub, setAddingSub] = useState(false);
 
   // The one WorkItem the "Add sub-ticket" sheet offers as a parent candidate:
   // this very ticket, synthesized from the thread we already loaded.
@@ -466,20 +649,18 @@ function TicketBody({
             </ul>
           )}
 
-          {/* S4 mount region — the sticky prompt-to-agent composer (ISI-4450). The
-              human comment write path isn't wired yet, so it stays honestly
-              disabled rather than posting to an endpoint that isn't there. */}
-          <div className="ksq-composer-note" data-testid="detail-composer-disabled">
-            <textarea
-              disabled
-              aria-label="Write a message to the agents"
-              placeholder="Write a message to the agents…"
-            />
-            <p className="muted">
-              Posting to the agents from the console is coming soon — the human
-              comment write path isn’t wired yet.
-            </p>
-          </div>
+          {/* S4 mount region — the human comment composer (ISI-4454). Posts to
+              POST /api/work-items/{id}/comments (ISI-4406); contributor+ only, a
+              viewer stays read-only. If the endpoint is absent on this deployment
+              (404/501) it falls back to the honest "not wired here" gap (FR-I3),
+              never a broken control. Comment-&-assign (assign-half) awaits backend
+              child f72cb481 and is deferred. */}
+          <Composer
+            workItemId={thread.workItemId}
+            canComment={canComment(role)}
+            onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
+            onPosted={onCommentPosted}
+          />
         </section>
       </div>
 

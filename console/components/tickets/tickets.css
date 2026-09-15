@@ -223,45 +223,236 @@
   border-color: color-mix(in srgb, var(--status-paused) 45%, var(--border));
 }
 
-/* ---- Kanban (8.14b) ---- */
-.ksq-kanban {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(260px, 1fr);
+/* ---- Kanban — 10 phase columns, grouped (ISI-4452 S3/S4) ---- */
+
+/* Coordinator strip above the board: the orchestrator owns dispatch; column
+ * moves here are audited human overrides, never agent claims (§6.2). */
+.ksq-coordinator-strip {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  overflow-x: auto; /* horizontal scroll on narrow viewports (responsive spec) */
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 10%, var(--surface)),
+    var(--surface)
+  );
+}
+
+.ksq-coordinator-strip__label {
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  color: var(--text-1);
+}
+
+.ksq-coordinator-strip__note {
+  flex: 1 1 auto;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
+.ksq-coordinator-strip__count {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 10px;
+}
+
+/* The board is a horizontal row of phase super-groups; 10 columns overflow one
+ * screen (design: horizontal scroll + sticky headers + collapsible groups). */
+.ksq-kanban {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  overflow-x: auto;
   padding-bottom: 8px;
 }
 
+.ksq-phase-group {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ksq-phase-group__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.ksq-phase-group__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 10px;
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ksq-phase-group__toggle:hover,
+.ksq-phase-group__toggle:focus-visible {
+  border-color: var(--accent);
+}
+
+.ksq-phase-group__chevron {
+  color: var(--text-2);
+}
+
+.ksq-phase-group__count {
+  margin-inline-start: auto;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.ksq-phase-group__cols {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* A collapsed group shrinks to a slim vertical rail (the head only). */
+.ksq-phase-group--collapsed .ksq-phase-group__toggle {
+  writing-mode: vertical-rl;
+  min-height: 200px;
+  min-width: 32px;
+  justify-content: flex-start;
+}
+
 .ksq-kanban-column {
+  flex: 0 0 auto;
+  width: 260px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   min-height: 200px;
   display: flex;
   flex-direction: column;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, width 0.12s ease;
 }
 
+/* A quiet (empty) column collapses to a slim rail so the busy phases stay wide. */
+.ksq-kanban-column--quiet {
+  width: 60px;
+}
+.ksq-kanban-column--quiet .ksq-kanban-column__name,
+.ksq-kanban-column--quiet .ksq-kanban-column__owner,
+.ksq-kanban-column--quiet .ksq-empty-hint,
+.ksq-kanban-column--quiet .ksq-kanban-column__add {
+  display: none;
+}
+
+/* cancelled column: dim + dashed (design §1 row 10). */
+.ksq-kanban-column--cancelled {
+  border-style: dashed;
+  opacity: 0.72;
+}
+
+/* Allowed drop target: hue glow + accent ring. */
 .ksq-kanban-column--over {
-  border-color: var(--accent);
+  border-color: var(--phase-hue, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--phase-hue, var(--accent)) 45%, transparent);
+}
+
+/* Disallowed drop (fail-closed): rose "no-drop" cue, never accepts the drop. */
+.ksq-kanban-column--nodrop {
+  border-color: var(--status-blocked);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--status-blocked) 40%, transparent);
+  cursor: not-allowed;
 }
 
 .ksq-kanban-column__head {
+  position: sticky;
+  top: 40px; /* below the group super-header */
+  z-index: 1;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius) var(--radius) 0 0;
 }
 
-.ksq-kanban-column__head h3 {
+/* Per-phase hue bar down the head lead (design: coloured header). */
+.ksq-kanban-column__bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 999px;
+  background: var(--phase-hue, var(--border));
+  flex: 0 0 auto;
+}
+
+.ksq-kanban-column__name {
   margin: 0;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 
 .ksq-kanban-column__count {
   font-size: 0.75rem;
   color: var(--text-2);
+  margin-inline-start: auto;
+}
+
+.ksq-kanban-column__cue {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--phase-hue, var(--accent));
+  white-space: nowrap;
+}
+
+.ksq-kanban-column__add {
+  flex: 0 0 auto;
+  min-width: 24px;
+  min-height: 24px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+.ksq-kanban-column__add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The owning-Role chip under a work-phase column header. */
+.ksq-kanban-column__owner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 0.72rem;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.ksq-kanban-owner-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--phase-hue, var(--text-2));
+  flex: 0 0 auto;
 }
 
 .ksq-kanban-column__cards {
@@ -271,6 +462,14 @@
   gap: 8px;
 }
 
+/* Dashed ghost placeholder / drop-line at the head of an allowed target. */
+.ksq-kanban-dropline {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--phase-hue, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--phase-hue, var(--accent)) 30%, transparent);
+}
+
 .ksq-kanban-card {
   position: relative;
   background: var(--canvas);
@@ -278,6 +477,7 @@
   border-radius: var(--radius);
   padding: 10px 12px;
   min-height: 44px;
+  transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease;
 }
 
 .ksq-kanban-card[data-tree-depth="0"] {
@@ -286,6 +486,14 @@
 
 .ksq-kanban-card[draggable="true"] {
   cursor: grab;
+}
+
+/* Lifted card while dragging. */
+.ksq-kanban-card--dragging {
+  opacity: 0.6;
+  transform: scale(1.02);
+  box-shadow: 0 8px 20px rgb(0 0 0 / 0.28);
+  cursor: grabbing;
 }
 
 .ksq-kanban-card--blocked {
@@ -324,8 +532,16 @@
 }
 
 .ksq-quickmove {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-top: 8px;
+}
+
+.ksq-quickmove__arrow {
+  color: var(--text-2);
+  font-weight: 700;
+  flex: 0 0 auto;
 }
 
 .ksq-quickmove select {
@@ -337,6 +553,10 @@
   color: var(--text-1);
   font: inherit;
   padding: 6px 8px;
+}
+
+.ksq-quickmove select:disabled {
+  opacity: 0.5;
 }
 
 /* ---- Sub-ticket tree (8.17) ---- */
@@ -672,8 +892,11 @@
     display: none;
   }
 
-  .ksq-kanban {
-    grid-auto-columns: minmax(240px, 80vw); /* swipeable-pane feel */
+  .ksq-kanban-column {
+    width: 80vw; /* swipeable-pane feel on narrow viewports */
+  }
+  .ksq-kanban-column--quiet {
+    width: 60px;
   }
 }
 
@@ -1179,7 +1402,7 @@
   white-space: nowrap;
 }
 
-/* ---- Disabled composer (write path not wired yet) ---- */
+/* ---- Composer: read-only fallback (viewer / write path not wired) ---- */
 .ksq-composer-note {
   margin-top: 16px;
   border-top: 1px solid var(--border);
@@ -1196,6 +1419,44 @@
   font: inherit;
   padding: 10px 12px;
   opacity: 0.7;
+}
+
+/* ---- Composer: live human comment post-box (ISI-4454) ---- */
+.ksq-composer {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ksq-composer textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1, var(--text));
+  font: inherit;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.ksq-composer textarea:focus-visible {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 1px;
+}
+
+.ksq-composer__error {
+  color: var(--danger, #d64545);
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.ksq-composer__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* ---- Properties list ---- */

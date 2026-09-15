@@ -136,6 +136,46 @@ export async function fetchWorkItemThread(
   return normalizeThread(raw);
 }
 
+/**
+ * Append a HUMAN comment to a ticket's thread via the BFF
+ * (POST /api/work-items/{id}/comments, ISI-4406 endpoint / ISI-4454 composer).
+ * The body carries only { body } text — authorship is server-stamped from the
+ * session principal, never trusted from the client. On 201 the apiserver returns
+ * the persisted comment in the SAME shape the thread read emits
+ * ({ author, body, createdAt }), so the composer can append it optimistically
+ * before the reconciling re-fetch lands. Non-2xx throws ApiError (status + body):
+ * the composer surfaces 400/401/403 inline and treats 404/501 as the honest
+ * "endpoint not wired on this deployment" gap (FR-I3).
+ */
+export async function postWorkItemComment(
+  workItemId: string,
+  body: string,
+): Promise<ThreadComment> {
+  const res = await fetch(
+    `/api/work-items/${encodeURIComponent(workItemId)}/comments`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ body }),
+      cache: "no-store",
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) throw new ApiError(res.status, text);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new ApiError(res.status, text);
+  }
+  const o = (raw ?? {}) as Record<string, unknown>;
+  return {
+    author: str(o, "author", "Author"),
+    body: str(o, "body", "Body"),
+    createdAt: str(o, "createdAt", "CreatedAt"),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Pure activity-timeline shaping (unit-tested — no fetch, no DOM).
 // ---------------------------------------------------------------------------

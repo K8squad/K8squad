@@ -136,6 +136,11 @@ type Options struct {
 	// Nil ⇒ those routes keep the documented 501 (a DB-less dev run), exactly like the
 	// state route above. State edits stay on the separate .../state path.
 	WorkItemWrites WorkItemWriter
+	// WorkItemComments is the ISI-4406 human comment write op (coord.WorkItemWriteStore's
+	// AppendHumanComment): POST /api/work-items/{id}/comments — the post-box half of the
+	// S3 ticket-detail composer. Nil ⇒ the route keeps the documented 501 (a DB-less dev
+	// run), exactly like the create/edit siblings. Agents keep the run-token comment path.
+	WorkItemComments WorkItemCommenter
 	// WorkItemDispatch is the ADR-0022 board dispatch op (coord.WorkItemDispatchStore,
 	// ISI-4411): POST /api/work-items/{id}/dispatch — record the human's agent choice
 	// as intent + advance backlog→todo so Intake starts the Run with that agent. Nil ⇒
@@ -816,6 +821,22 @@ func (s *Server) routes(opts Options) {
 		} else {
 			workItemEdit.HandleFunc("", notImplemented("work-item edit", "ISI-3959: wire a coord.WorkItemWriteStore (Postgres) to enable")).
 				Methods(http.MethodPatch)
+		}
+
+		// S3 human work-item COMMENT (ISI-4406): POST /api/work-items/{id}/comments —
+		// the post-box half of the ticket-detail composer. Same choke point + guards as
+		// the field-edit above (authz + same-origin + bounded body); keyed by item id so
+		// tenancy is the store's Team fence (cross-tenant → 404) plus the handler's
+		// human-only gate. Author is server-stamped. Nil commenter ⇒ documented 501.
+		workItemComment := s.router.Path("/api/work-items/{id}/comments").Subrouter()
+		workItemComment.Use(authz)
+		workItemComment.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		workItemComment.Use(maxBytesBody(64 << 10))
+		if opts.WorkItemComments != nil {
+			workItemComment.HandleFunc("", workItemCommentHandler(opts.WorkItemComments)).Methods(http.MethodPost)
+		} else {
+			workItemComment.HandleFunc("", notImplemented("work-item comment", "ISI-4406: wire a coord.WorkItemWriteStore (Postgres) to enable")).
+				Methods(http.MethodPost)
 		}
 
 		// M1.5 ticket thread read (ISI-4131): GET /api/work-items/{id} — the full

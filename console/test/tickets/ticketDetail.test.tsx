@@ -1,10 +1,19 @@
-// test/tickets/ticketDetail.test.tsx — the ticket-detail screen (ISI-4399 S3):
-// it renders the thread (header/description/activity/sub-tickets) from the two
-// reads it owns, degrades honestly on a 404, and shows the deferred write/trace
-// surfaces (disabled composer + trace-pending) rather than faking them.
+// test/tickets/ticketDetail.test.tsx — the ticket-detail screen (ISI-4399 S3 /
+// ISI-4447 S1 redesign): it renders the thread (header/description/activity/
+// sub-tickets) from the two reads it owns, degrades honestly on a 404, and now
+// (ISI-4454) hosts the LIVE human comment composer — contributor+ posts with an
+// optimistic append + reconciling re-fetch, a viewer stays read-only, and a
+// 404/501 from the endpoint keeps the honest "not wired here" gap (FR-I3).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  cleanup,
+  waitFor,
+  within,
+  fireEvent,
+} from "@testing-library/react";
 import { TicketDetail } from "@/components/tickets/TicketDetail";
 
 const fetchMock = vi.fn();
@@ -42,13 +51,49 @@ const CHILDREN = [
   { id: "wi-3", projectId: "ns/demo", parentId: "wi-1", title: "sub b", state: "todo", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
 ];
 
-function routeFetch(threadStatus = 200) {
-  fetchMock.mockImplementation((url: string) => {
+const POSTED_COMMENT = {
+  author: "user:me",
+  body: "hello agents",
+  createdAt: "2026-09-14T10:10:00Z",
+};
+
+/**
+ * Route the stubbed fetch. `role` drives /api/session (fetchViewerRole); a POST to
+ * …/comments returns `postStatus` (default 201 POSTED_COMMENT). The thread GET is
+ * STATEFUL: once a 201 post lands it returns THREAD + the posted comment, mirroring
+ * the real backend so the reconciling re-fetch keeps (not drops) the new comment.
+ */
+function routeFetch(opts?: {
+  threadStatus?: number;
+  role?: string;
+  postStatus?: number;
+}) {
+  const threadStatus = opts?.threadStatus ?? 200;
+  const role = opts?.role ?? "viewer";
+  const postStatus = opts?.postStatus ?? 201;
+  let posted = false;
+  fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("/api/work-items/")) {
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (u.includes("/api/session")) {
+      return Promise.resolve(jsonResponse({ role }));
+    }
+    if (u.includes("/api/work-items/") && u.includes("/comments") && method === "POST") {
+      if (postStatus === 201) posted = true;
       return Promise.resolve(
-        threadStatus === 200 ? jsonResponse(THREAD) : jsonResponse({ error: "x" }, threadStatus),
+        postStatus === 201
+          ? jsonResponse(POSTED_COMMENT, 201)
+          : jsonResponse({ error: "x" }, postStatus),
       );
+    }
+    if (u.includes("/api/work-items/")) {
+      if (threadStatus !== 200) {
+        return Promise.resolve(jsonResponse({ error: "x" }, threadStatus));
+      }
+      const body = posted
+        ? { ...THREAD, Comments: [...THREAD.Comments, POSTED_COMMENT] }
+        : THREAD;
+      return Promise.resolve(jsonResponse(body));
     }
     if (u.includes("/work-items")) return Promise.resolve(jsonResponse(CHILDREN));
     return Promise.resolve(jsonResponse([], 200));
@@ -81,7 +126,8 @@ describe("TicketDetail", () => {
     expect(screen.getByTestId("detail-subtickets-progress").textContent).toContain("1 of 2 done");
     expect(screen.getAllByTestId("detail-subticket")).toHaveLength(2);
 
-    // Deferred surfaces are present but honest (not faked writes).
+    // A viewer (default fail-closed role) sees the read-only composer + the
+    // honest trace-pending surface (no faked writes).
     expect(screen.getByTestId("detail-composer-disabled")).toBeTruthy();
     expect(screen.getByTestId("detail-trace-pending")).toBeTruthy();
     // Run id shown in the sidebar.
@@ -141,15 +187,76 @@ describe("TicketDetail", () => {
   });
 
   it("degrades honestly to not-available on a 404", async () => {
-    routeFetch(404);
+    routeFetch({ threadStatus: 404 });
     render(<TicketDetail projectId="ns/demo" workItemId="missing" />);
     await waitFor(() => expect(screen.getByTestId("detail-unavailable")).toBeTruthy());
     expect(screen.queryByTestId("detail-description")).toBeNull();
   });
 
   it("shows an error state (not a blank page) on a 500", async () => {
-    routeFetch(500);
+    routeFetch({ threadStatus: 500 });
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
     await waitFor(() => expect(screen.getByTestId("detail-error")).toBeTruthy());
+  });
+
+  it("lets a contributor post a comment (optimistic append + reconciling refetch)", async () => {
+    routeFetch({ role: "contributor" });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    // Contributor gets the LIVE composer, not the read-only surface.
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    expect(screen.queryByTestId("detail-composer-disabled")).toBeNull();
+
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    // The posted comment appears and survives the reconciling re-fetch (3 total).
+    await waitFor(() =>
+      expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
+    );
+    expect(screen.getByText("hello agents")).toBeTruthy();
+    // Input cleared after a successful post.
+    expect(
+      (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement).value,
+    ).toBe("");
+  });
+
+  it("keeps the honest gap copy when the endpoint isn't wired (POST 404)", async () => {
+    routeFetch({ role: "contributor", postStatus: 404 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    // Falls back to the read-only surface with honest "not wired here" copy.
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer-disabled")).toBeTruthy(),
+    );
+    expect(screen.getByText(/isn.t wired here/)).toBeTruthy();
+    // No fabricated comment was appended.
+    expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
+  });
+
+  it("surfaces an inline error on a non-404 4xx and keeps the composer usable", async () => {
+    routeFetch({ role: "contributor", postStatus: 400 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer-error")).toBeTruthy(),
+    );
+    // Composer stays live so the caller can retry (not swapped to read-only).
+    expect(screen.getByTestId("detail-composer")).toBeTruthy();
+    expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
   });
 });
