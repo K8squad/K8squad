@@ -1,0 +1,132 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    app.kubernetes.io/part-of: k8squad
+  annotations:
+    {{- if .Values.keep }}
+    helm.sh/resource-policy: keep
+    {{- end }}
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: modelconfigs.ksquad.io
+spec:
+  group: ksquad.io
+  names:
+    categories:
+    - ksquad
+    kind: ModelConfig
+    listKind: ModelConfigList
+    plural: modelconfigs
+    shortNames:
+    - modelcfg
+    singular: modelconfig
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ModelConfig is the Schema for the modelconfigs API — the system-default
+          model tier for Model-Per-Role resolution (ISI-4430). It is a namespaced
+          well-known singleton: the resolver reads the object named "default" in the
+          operator namespace (k8squad-system). Namespaced keeps it inside the
+          operator's existing watch/RBAC scope (O3b, board-accepted). The Helm chart
+          ships one such CR at install so the default tier is never empty; singleton
+          identity is enforced by the resolver + install convention, not the schema.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              ModelConfigSpec defines the system-default model tier for the Model-Per-Role
+              resolution (ISI-4430). It is the floor of the tier-as-a-unit walk (D4):
+              agent (Agent.spec.model) → role (Role.spec.model) → this default. It is
+              data-only and validated, not reconciled — the resolver (pkg/modelendpoint)
+              reads it; no ModelConfig controller exists.
+            properties:
+              fallbackModel:
+                description: |-
+                  FallbackModel optionally names the default-tier secondary model for
+                  mid-Run switches on rate_limited signals (arch §8 tier-1 recovery,
+                  §10.3). Used only when the effective model comes from this default tier.
+                  Reuses the shared FallbackModel type (common_types.go) so the fallback
+                  contract is identical across Agent, Role, and ModelConfig.
+                properties:
+                  model:
+                    description: Model is the secondary model name.
+                    minLength: 1
+                    type: string
+                  modelEndpointRef:
+                    description: |-
+                      ModelEndpointRef optionally gives the fallback its own BYO endpoint
+                      Secret (§10.3). Unset means the fallback resolves against the Agent's
+                      own endpoint.
+                    properties:
+                      key:
+                        description: Key inside the Secret; empty means the consumer-defined
+                          default key.
+                        type: string
+                      name:
+                        description: Name of the referenced Secret.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - model
+                type: object
+              model:
+                description: |-
+                  Model is the system-default model name — the floor that must always
+                  exist so an Agent/Role with no model still resolves (ISI-4430 D3, the
+                  explicit guard against "hidden failures"). REQUIRED on this CRD: unlike
+                  Agent.spec.model and Role.spec.model (both optional, they fall through),
+                  the default tier has nothing below it to fall through to.
+                minLength: 1
+                type: string
+              modelEndpointRef:
+                description: |-
+                  ModelEndpointRef optionally references a Secret holding the default-tier
+                  BYO / Ollama / OpenAI-compatible model endpoint (endpointURL + optional
+                  apiToken), used when the effective model comes from this default tier
+                  (ISI-4430 D5). Unset means the provider-default endpoint. It is a
+                  *SecretRef — NOT an ObjectRef — to match Agent.spec.modelEndpointRef and
+                  FallbackModel.modelEndpointRef and to resolve through the same
+                  modelendpoint.Resolver.ResolveRef seam, which reads a Secret. (Architect
+                  call, ISI-4459: the plan text said ObjectRef, but the endpoint seam is a
+                  Secret everywhere; an ObjectRef would be unresolvable by the resolver.)
+                properties:
+                  key:
+                    description: Key inside the Secret; empty means the consumer-defined
+                      default key.
+                    type: string
+                  name:
+                    description: Name of the referenced Secret.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+            required:
+            - model
+            type: object
+        type: object
+    served: true
+    storage: true

@@ -94,6 +94,22 @@ func sampleRole() *Role {
 			PromptRef:        ObjectRef{Name: "coder-prompt"},
 			DefaultSkills:    []ObjectRef{{Name: "go-toolchain"}},
 			RuntimeClassHint: "gvisor",
+			Model:            "claude-sonnet-4", // role-tier model (ISI-4430 D2)
+			FallbackModel: &FallbackModel{
+				Model:            "llama3.1",
+				ModelEndpointRef: &SecretRef{Name: "squad-ollama"},
+			},
+		},
+	}
+}
+
+func sampleModelConfig() *ModelConfig {
+	return &ModelConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "k8squad-system"},
+		Spec: ModelConfigSpec{
+			Model:            "claude-sonnet-4", // system-default floor (ISI-4430 D3)
+			FallbackModel:    &FallbackModel{Model: "claude-haiku-4-5"},
+			ModelEndpointRef: &SecretRef{Name: "house-ollama", Key: "baseUrl"},
 		},
 	}
 }
@@ -182,6 +198,7 @@ func TestDeepCopyRoundTrip(t *testing.T) {
 		{"Skill", sampleSkill()},
 		{"Project", sampleProject()},
 		{"Run", sampleRun()},
+		{"ModelConfig", sampleModelConfig()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,4 +376,39 @@ func TestSchemeRegistersAllSixKinds(t *testing.T) {
 		assert.True(t, s.Recognizes(GroupVersion.WithKind(kind)),
 			"scheme must recognize ksquad.io/v1alpha1 kind %s", kind)
 	}
+}
+
+// TestModelConfigRegisters proves the new Model-Per-Role default CRD (ISI-4459)
+// registers into the ksquad.io/v1alpha1 group alongside its list type.
+func TestModelConfigRegisters(t *testing.T) {
+	s := runtime.NewScheme()
+	require.NoError(t, AddToScheme(s))
+	assert.True(t, s.Recognizes(GroupVersion.WithKind("ModelConfig")),
+		"scheme must recognize ksquad.io/v1alpha1 ModelConfig")
+	assert.True(t, s.Recognizes(GroupVersion.WithKind("ModelConfigList")),
+		"scheme must recognize ksquad.io/v1alpha1 ModelConfigList")
+}
+
+// TestModelConfigOptionalFieldsOmitEmpty pins the ISI-4459 field contract: the
+// default-tier model is REQUIRED (always marshalled), while fallbackModel and
+// modelEndpointRef are optional (omitempty). A bare ModelConfig — just a model
+// on the provider default — must not emit the optional keys, and a fully
+// populated one must round-trip through JSON.
+func TestModelConfigOptionalFieldsOmitEmpty(t *testing.T) {
+	bare := &ModelConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "k8squad-system"},
+		Spec:       ModelConfigSpec{Model: "claude-sonnet-4"},
+	}
+	rawBare, err := json.Marshal(bare)
+	require.NoError(t, err)
+	assert.Contains(t, string(rawBare), `"model":"claude-sonnet-4"`, "spec.model is required and always marshalled")
+	assert.NotContains(t, string(rawBare), "fallbackModel", "fallbackModel must be omitempty")
+	assert.NotContains(t, string(rawBare), "modelEndpointRef", "modelEndpointRef must be omitempty")
+
+	full := sampleModelConfig()
+	raw, err := json.Marshal(full)
+	require.NoError(t, err)
+	var back ModelConfig
+	require.NoError(t, json.Unmarshal(raw, &back))
+	assert.Equal(t, full.Spec, back.Spec, "fully-populated ModelConfig must round-trip through JSON")
 }

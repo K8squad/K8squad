@@ -72,6 +72,49 @@ spec:
                   - name
                   type: object
                 type: array
+              fallbackModel:
+                description: |-
+                  FallbackModel optionally names the role-tier secondary model for mid-Run
+                  model switches on rate_limited signals (arch §8 tier-1 recovery, §10.3).
+                  It is used only when the role tier supplies the effective model (i.e.
+                  Agent.spec.model is empty and Role.spec.model is set); a lower tier's
+                  fallback is never grafted onto a higher tier's primary (ISI-4430 D4).
+                  Reuses the shared FallbackModel type (common_types.go) so the fallback
+                  contract stays identical across Agent and Role.
+                properties:
+                  model:
+                    description: Model is the secondary model name.
+                    minLength: 1
+                    type: string
+                  modelEndpointRef:
+                    description: |-
+                      ModelEndpointRef optionally gives the fallback its own BYO endpoint
+                      Secret (§10.3). Unset means the fallback resolves against the Agent's
+                      own endpoint.
+                    properties:
+                      key:
+                        description: Key inside the Secret; empty means the consumer-defined
+                          default key.
+                        type: string
+                      name:
+                        description: Name of the referenced Secret.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                required:
+                - model
+                type: object
+              model:
+                description: |-
+                  Model is the role-tier model name applied to every agent assuming this
+                  role that does not set its own Agent.spec.model (Model-Per-Role,
+                  ISI-4430). OPTIONAL: an empty role model falls through to the
+                  system-default ModelConfig singleton. Resolution is tier-as-a-unit
+                  (ISI-4430 D4): the effective (primary, fallback) pair is taken from the
+                  highest tier — agent, then role, then default — whose model is non-empty.
+                type: string
               promptRef:
                 description: PromptRef references the prompt / behavior definition
                   for this role.
