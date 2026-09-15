@@ -553,6 +553,47 @@ func TestDriveMapsUsageAndStampsTraceID(t *testing.T) {
 	}
 }
 
+// TestDriveModellessUsageAttributedToRouteModel (ISI-4238): a modelless usage
+// payload is attributed to the run's RESOLVED model — the per-task
+// ModelRoute.Model (a BYO/Ollama-routed model) wins over the engine's launch
+// override. This is the "still showing claude sonnet" fix: on the warm-pool
+// sandbox path KSQUAD_MODEL is never set, so cfg.Model is empty and the runtime
+// default (opencode's claude-sonnet-4) would otherwise mislabel every routed
+// run. Here cfg.Model is "claude-sonnet-4" yet the route wins.
+func TestDriveModellessUsageAttributedToRouteModel(t *testing.T) {
+	runner := &fakeRunner{
+		emits:   []Progress{{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{Input: 3, Output: 4}}}, // modelless
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}
+	e := testEngine(t, runner) // cfg.Model = "claude-sonnet-4"
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID:  "run-route",
+		WorkItemID: "wi",
+		ModelRoute: a2a.ModelRoute{Model: "ollama/qwen2.5-coder"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-route", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	for _, ev := range drain(t, ch) {
+		if ev.Type != a2a.EventUsage {
+			continue
+		}
+		p, ok := ev.Payload.(a2a.UsagePayload)
+		if !ok {
+			t.Fatalf("usage payload type %T", ev.Payload)
+		}
+		got = p.Model
+	}
+	if got != "ollama/qwen2.5-coder" {
+		t.Errorf("modelless usage attributed to %q, want the route model ollama/qwen2.5-coder (not the launch/default claude-sonnet-4)", got)
+	}
+}
+
 // TestDriveJoinsSubmitTraceContext (ISI-4238): a valid trace context on the
 // SubmitTask ctx (the extracted W3C carrier) becomes the run root's parent,
 // so the run's spans join the dispatcher's distributed trace instead of

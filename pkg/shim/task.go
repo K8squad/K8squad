@@ -38,7 +38,14 @@ type task struct {
 	agent   string
 	team    string
 	project string
-	now     func() time.Time
+	// model is the model this run actually launches against — the resolved
+	// route (ModelRoute.Model → launch override → runtime default), matching
+	// runtimes.resolveModel (ISI-4238). It is the truthful attribution for a
+	// runtime whose usage wire omits the served model (opencode v1.18.27's
+	// step-finish carries no modelID), so the llm.call span reports the model
+	// the run really used instead of the runtime's generic default.
+	model string
+	now   func() time.Time
 
 	mu      sync.Mutex
 	state   a2a.TaskState

@@ -202,6 +202,7 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		agent:    t.Identity.Name,
 		team:     t.Identity.Squad,
 		project:  t.Identity.Project,
+		model:    e.runModel(t),
 		state:    a2a.TaskSubmitted,
 		stream:   newTaskStream(),
 		cancel:   cancel,
@@ -277,12 +278,17 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 	outcome, err := e.runner.Run(ctx, spec, func(p Progress) {
 		hashToolArgs(p)
 		// ISI-4238: usage payloads without a model (runtimes that report
-		// tokens but not which model served them) are attributed to the
-		// launch model — the engine's resolved truth — BEFORE the event
-		// leaves the process, so the wire event and the llm.call span
-		// carry the same attribution.
-		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Model == "" && e.modelID() != "" {
-			p.Usage.Model = e.modelID()
+		// tokens but not which model served them — opencode v1.18.27's
+		// step-finish omits modelID) are attributed to the run's RESOLVED
+		// model (tk.model = ModelRoute.Model → launch override → runtime
+		// default) BEFORE the event leaves the process, so the wire event
+		// and the llm.call span carry the same attribution. This is the
+		// model the run actually launched against (runtimes.resolveModel);
+		// the prior code used the runtime's generic default and so mislabeled
+		// every BYO/routed run (e.g. an Ollama qwen run reported as the
+		// opencode default claude-sonnet-4).
+		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Model == "" && tk.model != "" {
+			p.Usage.Model = tk.model
 		}
 		tk.emitProgress(p)
 		if e.telemetry != nil {
@@ -335,6 +341,21 @@ func (e *Engine) modelID() string {
 		return e.cfg.Model
 	}
 	return e.rt.DefaultModel().ID
+}
+
+// runModel resolves the model a specific task launches against, mirroring
+// runtimes.resolveModel's precedence: the per-task route (ModelRoute.Model,
+// the BYO/routed model — e.g. an Ollama-served qwen) wins over the engine's
+// launch override, which wins over the runtime default. It is the truthful
+// llm.call attribution for a runtime whose usage wire omits the served model
+// (ISI-4238): the warm-pool sandbox path never sets KSQUAD_MODEL, so
+// e.cfg.Model is empty and modelID() alone would collapse every routed run to
+// the runtime default (opencode's claude-sonnet-4) — the mislabel Henrik saw.
+func (e *Engine) runModel(t a2a.Task) string {
+	if t.ModelRoute.Model != "" {
+		return t.ModelRoute.Model
+	}
+	return e.modelID()
 }
 
 // hashToolArgs stamps the tool-call arguments hash at the shim's tool-call
