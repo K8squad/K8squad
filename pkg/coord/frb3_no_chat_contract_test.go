@@ -204,17 +204,18 @@ var allowedSurface = map[string]string{
 	// content and nothing published re-enters coordination (§6.4/§17.4 no-P2P) —
 	// from_step/to_step ride in a one-way outbox projection, not an agent-to-agent
 	// channel.
-	"ProdReconcileStore":             "§6.4 durable reconcile Store bound to the prod coord schema",
-	"NewProdReconcileStore":          "§6.4 constructor (binds one Run's claim row)",
-	"ProdReconcileStore.Step":        "§6.4 read the durable reconcile_step (source of truth, AC2)",
-	"ProdReconcileStore.Fence":       "§6.3 read the monotonic fence token",
-	"ProdReconcileStore.Advance":     "§6.4 conditional step-CAS advance co-committing audit+outbox (AC3/AC6)",
-	"ProdReconcileStore.WithTraceID": "§17.4 bind Run.Status.TraceID into co-committed lifecycle-event payloads (emit-only, ADR-0021 D4/ISI-4386)",
-	"ProdReconcileStore.Reclaim":     "§6.3 monotonic fence-first reclaim (bump + stamp reclaim_fenced_at)",
-	"ProdReconcileStore.SetStep":     "§8 unguarded re-point for the Failed→Claiming retry re-entry",
-	"ProdReconcileStore.AuditRows":   "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
-	"ProdReconcileStore.OutboxRows":  "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
-	"ProdReconcileStore.Err":         "§6.4 sticky infrastructure-error accessor (requeue signal)",
+	"ProdReconcileStore":                   "§6.4 durable reconcile Store bound to the prod coord schema",
+	"NewProdReconcileStore":                "§6.4 constructor (binds one Run's claim row)",
+	"ProdReconcileStore.Step":              "§6.4 read the durable reconcile_step (source of truth, AC2)",
+	"ProdReconcileStore.Fence":             "§6.3 read the monotonic fence token",
+	"ProdReconcileStore.Advance":           "§6.4 conditional step-CAS advance co-committing audit+outbox (AC3/AC6)",
+	"ProdReconcileStore.WithTraceID":       "§17.4 bind Run.Status.TraceID into co-committed lifecycle-event payloads (emit-only, ADR-0021 D4/ISI-4386)",
+	"ProdReconcileStore.WithA2AFollowGate": "ISI-4435 opt-in the follow-settlement gate: hold collecting→succeeded until the a2a follow durably settles (custody gate on the terminal advance, no content)",
+	"ProdReconcileStore.Reclaim":           "§6.3 monotonic fence-first reclaim (bump + stamp reclaim_fenced_at)",
+	"ProdReconcileStore.SetStep":           "§8 unguarded re-point for the Failed→Claiming retry re-entry",
+	"ProdReconcileStore.AuditRows":         "§6.5 count of reconcile-advance audit rows (co-commit assertion)",
+	"ProdReconcileStore.OutboxRows":        "§6.6 count of reconcile-advance outbox rows (co-commit assertion)",
+	"ProdReconcileStore.Err":               "§6.4 sticky infrastructure-error accessor (requeue signal)",
 
 	// §6.4 READ side of the durable step (ISI-2655 slice-3): the Run status
 	// controller projects reconcile_step → Run.status. Read-only — no advance, no
@@ -467,6 +468,8 @@ var allowedSurface = map[string]string{
 	"NewProdSettleReader":                 "ADR-0020 §2.3 constructor (follow-settlement marker reader)",
 	"ProdSettleReader.Settled":            "ADR-0020 §2.3 indexed EXISTS over idx_a2a_dispatch_settled: has this run's follow settled?",
 	"ProdSettleReader.SettledForWorkItem": "ADR-0020 §2.4 (ISI-4403) S3 read path: (dispatched, settled) by work_item_id for the Run status finalize-window hold",
+	"ProdSettleReader.RunFollowOutcome":   "ISI-4435 latest-lap (dispatched, settled, outcome) by run_id for the drive-loop terminal gate + death-path guard (read-only, no content)",
+	"A2AFollowGateOpen":                   "ISI-4435 pure predicate: may the terminal collecting→succeeded advance commit given the latest lap's settlement (custody decision, no content)",
 	"SettleOutcomeSucceeded":              "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 	"SettleOutcomeFailed":                 "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 	"SettleOutcomeFollowError":            "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
