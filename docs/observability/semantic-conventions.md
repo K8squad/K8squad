@@ -36,6 +36,7 @@ Root span of a run's trace: opens at dispatch, stays open for the run's lifetime
 | `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `ksquad.run.state` | string | recommended | stable |  | Terminal state stamped onto the root at RunEnd (completed|failed|canceled|unknown). |
 | `ksquad.outcome` | string | recommended | stable |  | Mapped outcome stamped at RunEnd (success|error|unknown). |
+| `ksquad.model.tier` | string | recommended | stable |  | Which Model-Per-Role tier supplied the run's effective model at dispatch (agent|role|default) — the resolved origin so an operator sees WHY the run used its model, without re-deriving the tier walk (ISI-4430 S5). Empty on runtime-default runs. Run root only; the per-step serving model of a fallback rides gen_ai.response.model + ksquad.llm.fallback on llm.call. |
 
 ### `run.end`
 

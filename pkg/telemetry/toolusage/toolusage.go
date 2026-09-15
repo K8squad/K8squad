@@ -122,6 +122,11 @@ const (
 	// skill.load spans (the point-event mapping instant); llm.call already
 	// carries its truthful step duration via the span timestamps (ISI-4238).
 	attrDurationMS = attribute.Key("ksquad.duration.ms")
+	// attrModelTier records which Model-Per-Role tier supplied the run's
+	// effective model at dispatch ("agent" | "role" | "default") — the resolved
+	// origin so an operator sees WHY the run used its model without re-deriving
+	// the tier walk (ISI-4430 S5). Stamped on the run.start root only.
+	attrModelTier = attribute.Key("ksquad.model.tier")
 	// attrRunState carries the §3.1 terminal state on run.end
 	// (completed|failed|canceled) so the trace answers "how did it end"
 	// without joining back to the CR (ISI-4238).
@@ -225,6 +230,13 @@ type Labels struct {
 	// SandboxPod is the sandbox pod hosting the Run (Run.Status.SandboxRef /
 	// the shim's own pod name) — one run per pod.
 	SandboxPod string
+	// ModelTier is the Model-Per-Role origin (agent|role|default) the operator
+	// resolved for the run's effective model at dispatch (ISI-4430 S5). Unlike
+	// the fields above it rides ONLY the run.start span (via RunStart), not
+	// spanAttrs — it is a run-level dispatch fact, and the per-step serving
+	// model of a fallback is already carried by gen_ai.response.model +
+	// ksquad.llm.fallback on the llm.call span. Empty when unresolved.
+	ModelTier string
 }
 
 func (l Labels) spanAttrs() []attribute.KeyValue {
@@ -519,7 +531,14 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 	if !enabled.Load() || taskID == "" {
 		return ctx, noopSpan()
 	}
-	runCtx, span := m.start(ctx, SpanRunStart, labels.spanAttrs())
+	attrs := labels.spanAttrs()
+	// ksquad.model.tier rides the run root ONLY (ISI-4430 S5): it is the
+	// run-level dispatch origin, not a per-span fact, so it stays off
+	// spanAttrs() and is appended here.
+	if labels.ModelTier != "" {
+		attrs = append(attrs, attrModelTier.String(labels.ModelTier))
+	}
+	runCtx, span := m.start(ctx, SpanRunStart, attrs)
 	m.mu.Lock()
 	m.runs[taskID] = span
 	// Arm the per-run step clock so an llm.call whose wire omits a duration is

@@ -130,6 +130,16 @@ type Task struct {
 	// the operator-spawned stdio path leaves it empty and keeps using the env.
 	// +optional
 	Identity AgentIdentity `json:"identity,omitempty"`
+	// ModelTier names which Model-Per-Role tier supplied the run's effective
+	// model at dispatch — "agent" (Agent.spec.model), "role" (Role.spec.model),
+	// or "default" (the system-default ModelConfig singleton) — the resolved
+	// origin the operator computes alongside the model endpoint (ISI-4430 S4).
+	// It rides the submit payload so the shim can stamp it as ksquad.model.tier
+	// on the run.start span (ISI-4430 S5), letting an operator see WHY a run
+	// used a given model directly on its trace, without re-deriving the tier
+	// walk. Empty when no agents resolve a tier (e.g. a runtime-default run).
+	// +optional
+	ModelTier string `json:"model_tier,omitempty"`
 }
 
 // Status is the V3 GetStatus result (spec §3 V3): the current task state, an

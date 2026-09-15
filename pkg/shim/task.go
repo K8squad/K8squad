@@ -45,7 +45,13 @@ type task struct {
 	// step-finish carries no modelID), so the llm.call span reports the model
 	// the run really used instead of the runtime's generic default.
 	model string
-	now   func() time.Time
+	// modelTier is the resolved Model-Per-Role origin (agent|role|default) the
+	// operator stamped at dispatch (ISI-4430 S5), carried on the submit payload
+	// like the identity fields. The shim surfaces it as ksquad.model.tier on the
+	// run.start span so an operator sees WHY the run used its model. Empty on
+	// runtime-default runs and on pre-S5 dispatchers.
+	modelTier string
+	now       func() time.Time
 
 	mu      sync.Mutex
 	state   a2a.TaskState

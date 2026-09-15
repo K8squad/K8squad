@@ -149,6 +149,10 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 	if tk != nil {
 		l.RunID = tk.id
 		l.WorkItemRef = tk.workItem
+		// ModelTier is per-task only: the operator resolves it at dispatch and
+		// there is no process-static launch equivalent, so it rides straight
+		// from the submit payload (ISI-4430 S5).
+		l.ModelTier = tk.modelTier
 		// ISI-4439: per-task run identity wins over the process-static launch
 		// config. On the warm-pool sandbox path the pod boots generic, so
 		// cfg.Identity is empty and the real agent/team/project arrive ONLY on
@@ -197,16 +201,17 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
 	tk := &task{
-		id:       t.A2ATaskID,
-		workItem: t.WorkItemID,
-		agent:    t.Identity.Name,
-		team:     t.Identity.Squad,
-		project:  t.Identity.Project,
-		model:    e.runModel(t),
-		state:    a2a.TaskSubmitted,
-		stream:   newTaskStream(),
-		cancel:   cancel,
-		now:      e.now,
+		id:        t.A2ATaskID,
+		workItem:  t.WorkItemID,
+		agent:     t.Identity.Name,
+		team:      t.Identity.Squad,
+		project:   t.Identity.Project,
+		model:     e.runModel(t),
+		modelTier: t.ModelTier,
+		state:     a2a.TaskSubmitted,
+		stream:    newTaskStream(),
+		cancel:    cancel,
+		now:       e.now,
 	}
 	// ISI-4238: a valid trace context on the submit ctx (the W3C carrier
 	// the dispatcher injected — extracted by `shim run`/supervisor before
