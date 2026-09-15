@@ -262,8 +262,9 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 
 	// ISI-4237 terminal settle: a terminal re-entry (FailEnter after the retry
 	// budget, CancelEnter) owes the board the same facts the machine's
-	// Terminal effect writes — lane move (failed/cancelled → todo) +
-	// state_transition audit + change-summary comment, in THIS transaction.
+	// Terminal effect writes — lane move (failed → todo; cancelled → cancelled
+	// terminal per ISI-4489) + state_transition audit + change-summary comment,
+	// in THIS transaction.
 	// RetryEnter maps to no lane (SettleLaneOf ""): a retry lap keeps the
 	// ticket in_progress by design.
 	if _, _, err := coord.SettleTerminalLane(ctx, tx, workItemID, runID, c.principal, toState); err != nil {

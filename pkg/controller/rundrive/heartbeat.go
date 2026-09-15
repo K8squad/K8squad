@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 )
 
@@ -171,8 +172,8 @@ func (s *HeartbeatSweeper) renew(ctx context.Context, hc heldClaim) {
 
 // releaseTerminal clears a terminal Run's checkout in one transaction:
 // custody (holder/lease/run_id) released, §6.5 claim_released audit + outbox
-// co-committed. The LANE returns to todo for failed/cancelled (reclaimable,
-// the re-enter paths' discipline) and stays in_progress for succeeded (M1.5's
+// co-committed. The LANE returns to todo for failed and moves to the cancelled
+// terminal for cancelled (ISI-4489), and stays in_progress for succeeded (M1.5's
 // reporting owns completion lane moves) — guarded on in_progress, so items a
 // human already moved are never disturbed.
 func (s *HeartbeatSweeper) releaseTerminal(ctx context.Context, hc heldClaim) error {
@@ -216,13 +217,18 @@ func (s *HeartbeatSweeper) releaseTerminal(ctx context.Context, hc heldClaim) er
 	}
 
 	if hc.step != reconcile.StepSucceeded {
-		// Failure/cancel returns the item to the claimable lane (idempotent,
-		// guarded on in_progress — a human-moved lane is never touched).
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE coord.work_item
-			   SET state = 'todo', updated_at = now()
-			 WHERE id = $1::uuid AND state = 'in_progress'`, hc.workItemID); err != nil {
-			return fmt.Errorf("lane return: %w", err)
+		// Failure/cancel moves the item off in_progress via the SAME
+		// terminal-step → lane mapping the settle uses (coord.SettleLaneOf):
+		// failed → todo (claimable again), cancelled → cancelled (terminal,
+		// ISI-4489). Idempotent, guarded on in_progress — a human-moved lane is
+		// never touched.
+		if lane := coord.SettleLaneOf(string(hc.step)); lane != "" {
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE coord.work_item
+				   SET state = $2, updated_at = now()
+				 WHERE id = $1::uuid AND state = 'in_progress'`, hc.workItemID, lane); err != nil {
+				return fmt.Errorf("lane return: %w", err)
+			}
 		}
 	}
 

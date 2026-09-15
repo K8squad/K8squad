@@ -129,7 +129,41 @@ func TestHeartbeatSweepReleasesTerminalFailedReturnsLane(t *testing.T) {
 	mock.ExpectExec(`INSERT INTO coord.outbox`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(`UPDATE coord.work_item`).
-		WithArgs("11111111-1111-1111-1111-111111111111").
+		WithArgs("11111111-1111-1111-1111-111111111111", "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	s := &HeartbeatSweeper{DB: db, Claimer: &fakeRenewer{}}
+	s.sweep(context.Background())
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A killed run reclaimed via the heartbeat backstop lands on the CANCELLED
+// terminal lane (ISI-4489/Q3), not todo — the same coord.SettleLaneOf mapping
+// the settle uses, guarded on in_progress so a human move is never clobbered.
+func TestHeartbeatSweepReleasesTerminalCancelledLandsCancelled(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "cancelled")
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs("11111111-1111-1111-1111-111111111111", "cancelled").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 

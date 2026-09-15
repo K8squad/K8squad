@@ -28,8 +28,18 @@
 //     worked, needs attention". NOTE: intake currently suppresses items whose
 //     workItemRef still owns a Run CR, so this is a board state, not an auto
 //     re-queue — the re-dispatch gap is tracked separately.)
-//   - cancelled → todo (same shape; a kill is human-initiated, the card is
-//     theirs to move, but the settle keeps it out of zombie in_progress).
+//   - cancelled → cancelled (TERMINAL, ISI-4489/Q3): a kill is human-initiated
+//     and the ticket is done for good — it lands on the Cancelled terminal lane,
+//     no longer bouncing back to todo. `done↔cancelled` remains the one forbidden
+//     human edge (humanstate.go phaseTransitionAllowed); the engine reaches
+//     cancelled from the in_progress working lane, never across the terminal
+//     boundary.
+//
+// The lane-move guard stays `WHERE state='in_progress'` (never clobber a human
+// move). Relaxing it to admit the ISI-4431 phase lanes belongs with the
+// coordinator drive loop (E5 core), which is the code that first parks tickets on
+// those lanes — landing the relaxation here, before any phase-lane ticket exists,
+// would ship guard behavior nothing exercises. See arch §3.4.
 //
 // The summary comment's author is the ENGINE principal; the agent attribution
 // is read from the checkout row's assignee_agent (stamped at acquire, retained
@@ -45,18 +55,26 @@ import (
 )
 
 // SettleLaneOf maps a terminal reconcile step onto the board lane the settle
-// WRITES. Only failed/cancelled map to a lane the engine moves (todo). succeeded
-// maps to "" — the engine records completion but does NOT move the lane (the
-// human owns the move to done; see the package doc). Non-terminal or
-// unrecognized steps also return "" — the caller skips the lane move.
+// WRITES. failed maps to `todo` (dispatchable again) and cancelled maps to the
+// `cancelled` terminal lane (ISI-4489/Q3); succeeded maps to "" — the engine
+// records completion but does NOT move the lane (the human owns the move to done;
+// see the package doc). Non-terminal or unrecognized steps also return "" — the
+// caller skips the lane move.
 //
 // A "" result is NOT "this step is a no-op": succeeded is terminal and still
 // owes the thread a summary. settleIsTerminal is the terminal test; SettleLaneOf
 // is only the lane a terminal step moves (if any).
+//
+// ISI-4489/Q3: cancelled now maps to the `cancelled` TERMINAL lane (a kill is
+// permanent), not back to `todo`. failed keeps mapping to `todo` (the safe v1
+// default — the ticket is dispatchable again; coordinator-team rework is layered
+// on top of, not inside, settle — arch §3.4).
 func SettleLaneOf(step string) string {
 	switch step {
-	case "failed", "cancelled":
+	case "failed":
 		return "todo"
+	case "cancelled":
+		return "cancelled"
 	default:
 		return ""
 	}
@@ -114,9 +132,9 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	}
 
 	// (1) The lane move — ONLY for a step that maps to an engine-owned lane
-	// (failed/cancelled → todo), from in_progress, never clobbering a human
-	// move. succeeded maps to "" and is deliberately NOT moved: the §6.2 drive
-	// contract keeps a succeeded ticket in_progress, and — critically — the
+	// (failed → todo, cancelled → cancelled), from in_progress, never clobbering
+	// a human move. succeeded maps to "" and is deliberately NOT moved: the §6.2
+	// drive contract keeps a succeeded ticket in_progress, and — critically — the
 	// engine must not touch coord.work_item on success, because the ISI-4298
 	// deterministic-resume pin reads work_item.updated_at and any UPDATE (even a
 	// same-lane one) would mint a phantom revision. Completion is still recorded
@@ -191,6 +209,6 @@ func settleSummary(terminalStep, lane string, moved bool, agent string) string {
 		// the move to done stays with the human.
 		return fmt.Sprintf("%s%s: recorded on the ticket; lane unchanged (awaiting review).", outcome, who)
 	default:
-		return fmt.Sprintf("%s%s: lane left as-is (moved by a human or not in progress).", outcome, who)
+		return fmt.Sprintf("%s%s: lane left as-is (human move respected, or already terminal/parked).", outcome, who)
 	}
 }
