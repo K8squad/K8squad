@@ -324,11 +324,25 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		}
 	}
 
+	// Per-run identity (ISI-4439): carry agent/team/project on the submit
+	// payload so the warm-pool sandbox shim — whose pod env is generic (no
+	// KSQUAD_AGENT_NAME/SQUAD/PROJECT) — stamps run/llm/tool spans with the
+	// real identity. Same sources shimCommand uses for the stdio env: the Run's
+	// TeamRef/ProjectRef and the dispatch agent (first spec.agents entry).
+	identity := wire.AgentIdentity{
+		Squad:   run.Spec.TeamRef.Name,
+		Project: run.Spec.ProjectRef.Name,
+	}
+	if len(run.Spec.Agents) > 0 {
+		identity.Name = run.Spec.Agents[0].Name
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
 		FenceToken: fence,
 		Envelope:   env,
+		Identity:   identity,
 		// CredentialsMounted is the §7.3 contract: the reconciler env-injects
 		// the credential Secret into the runtime container. The v1
 		// operator-spawned topology mounts no per-user credential into the

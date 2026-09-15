@@ -120,6 +120,16 @@ type Task struct {
 	CredentialsMounted bool `json:"credentials_ref_mounted"`
 	// ModelRoute is the resolved model-provider route (spec §11).
 	ModelRoute ModelRoute `json:"model_route"`
+	// Identity is the per-run agent identity (name/squad/project) the operator
+	// resolves at dispatch from the Run CR (ISI-4439). It rides the submit
+	// payload because a warm-pool sandbox pod boots GENERIC — its env carries
+	// no KSQUAD_AGENT_NAME/SQUAD/PROJECT (the pod is provisioned before a run is
+	// assigned), so the shim's process-static launch Identity is empty on that
+	// path and the run/llm/tool spans would otherwise omit agent/team/project.
+	// The shim prefers this per-task identity over its launch config when set;
+	// the operator-spawned stdio path leaves it empty and keeps using the env.
+	// +optional
+	Identity AgentIdentity `json:"identity,omitempty"`
 }
 
 // Status is the V3 GetStatus result (spec §3 V3): the current task state, an

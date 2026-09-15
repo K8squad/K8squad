@@ -133,9 +133,12 @@ func (e *Engine) SetTelemetry(m *toolusage.Mapper) { e.telemetry = m }
 // labels builds the run-trace correlation set for tk (WS-A, ISI-4382): the
 // static per-shim identity (agent/team/project/sandbox pod, fixed for the
 // shim's lifetime — one shim serves one Agent of one Team/Project in one
-// pod) plus the per-task run identity (run id + ticket). A nil task yields
-// the static set only (there is no run-scoped call site today, but the
-// method stays total). Team maps from the Agent Card's Squad.
+// pod) plus the per-task run identity (run id + ticket). On the warm-pool
+// sandbox path the shim boots GENERIC — the static identity is empty — so the
+// per-task fields carried on the submit payload (ISI-4439) take precedence
+// when set. A nil task yields the static set only (there is no run-scoped call
+// site today, but the method stays total). Team maps from the Agent Card's
+// Squad.
 func (e *Engine) labels(tk *task) toolusage.Labels {
 	l := toolusage.Labels{
 		Agent:      e.cfg.Identity.Name,
@@ -146,6 +149,20 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 	if tk != nil {
 		l.RunID = tk.id
 		l.WorkItemRef = tk.workItem
+		// ISI-4439: per-task run identity wins over the process-static launch
+		// config. On the warm-pool sandbox path the pod boots generic, so
+		// cfg.Identity is empty and the real agent/team/project arrive ONLY on
+		// the submit payload; per-field so a partially-populated payload still
+		// falls back to whatever the launch env did carry (the stdio path).
+		if tk.agent != "" {
+			l.Agent = tk.agent
+		}
+		if tk.team != "" {
+			l.Team = tk.team
+		}
+		if tk.project != "" {
+			l.Project = tk.project
+		}
 	}
 	return l
 }
@@ -182,6 +199,9 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	tk := &task{
 		id:       t.A2ATaskID,
 		workItem: t.WorkItemID,
+		agent:    t.Identity.Name,
+		team:     t.Identity.Squad,
+		project:  t.Identity.Project,
 		model:    e.runModel(t),
 		state:    a2a.TaskSubmitted,
 		stream:   newTaskStream(),

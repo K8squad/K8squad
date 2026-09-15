@@ -29,6 +29,15 @@ import (
 type task struct {
 	id       string
 	workItem string
+	// agent/team/project are the per-run identity carried on the submit
+	// payload (ISI-4439). On the warm-pool sandbox path the shim's launch
+	// Config.Identity is empty (the pod booted generic), so these are the only
+	// source of run identity for the run/llm/tool span labels. Empty on the
+	// operator-spawned stdio path, where the process-static Config.Identity is
+	// the truth instead.
+	agent   string
+	team    string
+	project string
 	// model is the model this run actually launches against — the resolved
 	// route (ModelRoute.Model → launch override → runtime default), matching
 	// runtimes.resolveModel (ISI-4238). It is the truthful attribution for a

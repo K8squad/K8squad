@@ -706,4 +706,69 @@ func TestDriveStampsWSAIdentity(t *testing.T) {
 	}
 }
 
+// TestDrivePrefersPerTaskIdentity (ISI-4439): on the warm-pool sandbox path
+// the shim's launch Config.Identity is EMPTY (the pod booted generic), and the
+// real agent/team/project arrive on the submit payload (a2a.Task.Identity). The
+// run/llm/tool spans must carry the per-task identity, not the empty launch
+// config — the regression Henrik saw was "no reference of project, ticket,
+// agent, team in the span" because labels() only read the empty cfg.Identity.
+func TestDrivePrefersPerTaskIdentity(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Launch config carries NO identity — the warm-pool generic-boot case.
+	e := New(rt, &fakeRunner{
+		emits:   []Progress{{Kind: a2a.EventTool, Tool: &a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolTrue()}}},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}, Config{SandboxPod: "ksquad-sbx-warm", ShimVersion: "test"})
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	// Identity rides the submit payload, not the pod env.
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID:  "run-4439",
+		WorkItemID: "TKT-9",
+		Identity:   a2a.AgentIdentity{Name: "coder-7", Squad: "bravo", Project: "warmproj"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-4439", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+
+	want := map[string]string{
+		"ksquad.agent.name":    "coder-7",
+		"ksquad.team.name":     "bravo",
+		"ksquad.project.name":  "warmproj",
+		"ksquad.work_item.ref": "TKT-9",
+		"ksquad.sandbox.pod":   "ksquad-sbx-warm",
+		"ksquad.run.id":        "run-4439",
+	}
+	var checked int
+	for _, s := range sr.Ended() {
+		if s.Name() != "run.start" && s.Name() != "gen_ai.tool.call" {
+			continue
+		}
+		checked++
+		attrs := map[string]string{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.AsString()
+		}
+		for k, v := range want {
+			if attrs[k] != v {
+				t.Errorf("span %s attr %s = %q, want %q", s.Name(), k, attrs[k], v)
+			}
+		}
+	}
+	if checked < 2 {
+		t.Fatalf("expected run.start + gen_ai.tool.call spans, checked %d", checked)
+	}
+}
+
 func boolTrue() *bool { b := true; return &b }
