@@ -100,15 +100,45 @@ export interface StateTransitionBody {
   fromState: WorkItemState;
 }
 
+/** Create-time priority vocabulary — mirrors the coord enum (validPriorities,
+ * pkg/coord/workitemwrite.go) and migration 0020's CHECK. Empty ⇒ no priority. */
+export const WORK_ITEM_PRIORITIES = ["low", "medium", "high", "urgent"] as const;
+export type WorkItemPriority = (typeof WORK_ITEM_PRIORITIES)[number];
+
+export const PRIORITY_LABELS: Record<WorkItemPriority, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  urgent: "Urgent",
+};
+
+/** Create-time work-mode vocabulary — mirrors the coord enum (validWorkModes).
+ * Only standard|planning are authored (ISI-4409); empty ⇒ default (standard). */
+export const WORK_ITEM_MODES = ["standard", "planning"] as const;
+export type WorkItemMode = (typeof WORK_ITEM_MODES)[number];
+
+export const WORK_MODE_LABELS: Record<WorkItemMode, string> = {
+  standard: "Standard",
+  planning: "Planning",
+};
+
 /**
  * Body for the human CREATE (S3 / ISI-3959): title is required; `parentId` makes
  * it a sub-issue. State is intentionally absent — a new item lands in the default
  * entry lane; picking a lane is a board move, not a create.
+ *
+ * priority / workMode / labels are the create-time attributes (ISI-4409): each is
+ * optional and only sent when set, so an untouched control is absent (server binds
+ * NULL / default), never a fabricated value. The apiserver validates the enums and
+ * normalizes labels; the console never posts a value outside the vocabularies above.
  */
 export interface CreateWorkItemBody {
   title: string;
   body?: string;
   parentId?: string;
+  priority?: WorkItemPriority;
+  workMode?: WorkItemMode;
+  labels?: string[];
 }
 
 /**
