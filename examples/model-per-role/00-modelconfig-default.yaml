@@ -1,0 +1,31 @@
+# The system-default model tier (Model-Per-Role, ISI-4430) — the FLOOR of the
+# agent → role → default resolution walk. Exactly one ModelConfig named
+# "default" lives in the operator namespace (k8squad-system); the resolver reads
+# only that singleton.
+#
+# The chart normally ships this CR for you from `modelConfig.default.*`
+# (`helm ... --set modelConfig.default.model=claude-sonnet-4`). Apply it by hand
+# only when you manage the default tier out-of-band. Because it is the last
+# resort, spec.model is REQUIRED — an empty/missing default is fail-closed.
+apiVersion: ksquad.io/v1alpha1
+kind: ModelConfig
+metadata:
+  name: default            # well-known singleton name — the resolver reads this exact name
+  namespace: k8squad-system # the operator namespace
+  labels:
+    ksquad.io/example: model-per-role
+spec:
+  model: claude-sonnet-4   # REQUIRED: the floor every Agent/Role without a model falls through to
+
+  # Optional rate-limit fallback for the default tier (§10.3). Used only when the
+  # effective model comes from THIS default tier (tier-as-a-unit).
+  fallbackModel:
+    model: claude-haiku-4
+
+  # Optional BYO / Ollama / OpenAI-compatible endpoint for the default tier.
+  # References a Secret (endpointURL + optional apiToken) — NEVER an inline URL
+  # or token. Unset means the provider-default endpoint. Uncomment to use:
+  #
+  # modelEndpointRef:
+  #   name: byo-endpoint
+  #   key: endpointURL
