@@ -86,6 +86,9 @@ func workItemStateHandler(store WorkItemStateTransitioner) http.HandlerFunc {
 		case errors.Is(err, coord.ErrStateConflict):
 			writeJSONError(w, http.StatusConflict, err.Error())
 			return
+		case errors.Is(err, coord.ErrTransitionNotAllowed):
+			writeJSONError(w, http.StatusUnprocessableEntity, err.Error())
+			return
 		case err != nil:
 			writeJSONError(w, http.StatusBadGateway, "state transition unavailable")
 			return

@@ -134,9 +134,11 @@ func mapCoordErr(err error) error {
 	switch {
 	case errors.Is(err, coord.ErrWorkItemNotFound):
 		return ErrNotFound
-	case errors.Is(err, coord.ErrInvalidState), errors.Is(err, coord.ErrStateConflict):
-		// Both "not a board lane" and "no-op / fromState conflict" are, to the
-		// agent, "that status transition is not permitted" → 422.
+	case errors.Is(err, coord.ErrInvalidState), errors.Is(err, coord.ErrStateConflict),
+		errors.Is(err, coord.ErrTransitionNotAllowed):
+		// "not a board lane", "no-op / fromState conflict", and "move not in the
+		// phase graph" are all, to the agent, "that status transition is not
+		// permitted" → 422.
 		return ErrInvalidTransition
 	case errors.Is(err, coord.ErrInvalidChangeRef):
 		return ErrInvalidChangeRef
