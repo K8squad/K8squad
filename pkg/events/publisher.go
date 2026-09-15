@@ -18,6 +18,20 @@ type Publisher interface {
 	Close() error
 }
 
+// HeaderPublisher is an OPTIONAL capability a Publisher may also implement to
+// carry per-message headers alongside the body. The relay uses it to inject the
+// W3C trace carrier (traceparent/tracestate) into NATS message headers so the
+// publish/consume hop joins the run trace (ISI-4440, OTel messaging semconv). A
+// Publisher that does not implement it falls back to the header-less Publish —
+// the event still flows, only without the trace headers, so this stays a purely
+// additive capability (no falsification-bench fake has to change).
+type HeaderPublisher interface {
+	// PublishMsg sends data to subject with headers attached. Like Publish it
+	// MUST block until the server acks persistence (at-least-once contract);
+	// headers may be nil/empty (⇒ equivalent to Publish).
+	PublishMsg(ctx context.Context, subject string, data []byte, headers map[string]string) error
+}
+
 // LagReporter is an OPTIONAL capability a Publisher may also implement to
 // surface the §17.2 JetStream consumer-lag signal (total messages pending
 // across the stream's durable consumers). The relay type-asserts for it; a

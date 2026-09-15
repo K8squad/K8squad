@@ -123,9 +123,26 @@ func Connect(ctx context.Context, cfg Config) (*Publisher, error) {
 // id if configured on the stream; the relay's set-once stamp already bounds
 // duplicates to a single redelivery on a mark-published failure.
 func (p *Publisher) Publish(ctx context.Context, subject string, data []byte) error {
+	return p.PublishMsg(ctx, subject, data, nil)
+}
+
+// PublishMsg is Publish plus per-message headers — the events.HeaderPublisher
+// capability the relay uses to carry the W3C trace carrier so the NATS hop joins
+// the run trace (ISI-4440). headers ride as native NATS message headers (a
+// JetStream *nats.Msg), so a consumer reads them back via msg.Header. A nil/empty
+// headers map is exactly equivalent to Publish. Like Publish it BLOCKS on the
+// server ack, so a nil return means the event (and its headers) is durable.
+func (p *Publisher) PublishMsg(ctx context.Context, subject string, data []byte, headers map[string]string) error {
 	ctx, cancel := context.WithTimeout(ctx, p.ackTO)
 	defer cancel()
-	if _, err := p.js.Publish(ctx, subject, data); err != nil {
+	msg := &nats.Msg{Subject: subject, Data: data}
+	if len(headers) > 0 {
+		msg.Header = nats.Header{}
+		for k, v := range headers {
+			msg.Header.Set(k, v)
+		}
+	}
+	if _, err := p.js.PublishMsg(ctx, msg); err != nil {
 		return fmt.Errorf("jetstream.Publish(%s): %w", subject, err)
 	}
 	return nil
@@ -163,6 +180,7 @@ func (p *Publisher) Close() error {
 }
 
 var (
-	_ events.Publisher   = (*Publisher)(nil)
-	_ events.LagReporter = (*Publisher)(nil)
+	_ events.Publisher       = (*Publisher)(nil)
+	_ events.LagReporter     = (*Publisher)(nil)
+	_ events.HeaderPublisher = (*Publisher)(nil)
 )

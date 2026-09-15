@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 )
 
@@ -15,7 +16,13 @@ type OutboxRow struct {
 	ProjectID string
 	Squad     string // "" when the column is NULL
 	EventType string
+	RunID     string // "" when the column is NULL; run-trace correlation on the NATS span
 	Payload   []byte
+	// TraceCarrier is the W3C trace carrier stamped at capture time
+	// (coord.outbox.trace_carrier, ISI-4440): nil/empty when the row was
+	// captured off the run trace. The relay Extracts it to make the NATS
+	// publish/consume hop a span in the run trace.
+	TraceCarrier map[string]string
 }
 
 // OutboxStore is the relay's view of coord.outbox: read the unflushed backlog in
@@ -46,7 +53,8 @@ func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
 // order. squad is read through COALESCE-to-"" so a NULL team_id surfaces as the
 // empty string the subject composer maps to the "_" token.
 func (s *SQLStore) Unpublished(ctx context.Context, limit int) ([]OutboxRow, error) {
-	q := `SELECT id, entity, project_id::text, COALESCE(squad, ''), event_type, payload
+	q := `SELECT id, entity, project_id::text, COALESCE(squad, ''), event_type,
+	             COALESCE(run_id::text, ''), payload, trace_carrier
 	        FROM coord.outbox
 	       WHERE published_at IS NULL
 	       ORDER BY id`
@@ -66,8 +74,16 @@ func (s *SQLStore) Unpublished(ctx context.Context, limit int) ([]OutboxRow, err
 	var out []OutboxRow
 	for rows.Next() {
 		var r OutboxRow
-		if err := rows.Scan(&r.ID, &r.Entity, &r.ProjectID, &r.Squad, &r.EventType, &r.Payload); err != nil {
+		var carrier []byte // jsonb; NULL for rows captured off the trace
+		if err := rows.Scan(&r.ID, &r.Entity, &r.ProjectID, &r.Squad, &r.EventType, &r.RunID, &r.Payload, &carrier); err != nil {
 			return nil, fmt.Errorf("events.SQLStore.Unpublished: scan: %w", err)
+		}
+		if len(carrier) > 0 {
+			// A malformed carrier must not poison the flush — the relay simply
+			// roots a fresh trace for that row (best effort, never fatal).
+			if err := json.Unmarshal(carrier, &r.TraceCarrier); err != nil {
+				r.TraceCarrier = nil
+			}
 		}
 		out = append(out, r)
 	}

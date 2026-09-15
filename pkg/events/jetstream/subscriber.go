@@ -19,8 +19,12 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/K8squad/K8squad/pkg/events"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // Message is one delivered domain event as a plugin sees it: the taxonomy
@@ -126,8 +130,28 @@ func (s *Subscriber) Consume(ctx context.Context, h Handler) error {
 			_ = m.Nak()
 			return
 		}
+		// ISI-4440: continue the run trace the relay stamped into the message
+		// headers. telemetry.Extract restores the producer's span context, and
+		// the consumer span joins the run trace (OTel messaging semconv). An
+		// unheadered message (untraced publisher) simply roots no parent.
+		msgCtx, span := telemetry.Tracer().Start(
+			telemetry.Extract(ctx, headerCarrier(m.Headers())),
+			"nats receive "+m.Subject(),
+			oteltrace.WithSpanKind(oteltrace.SpanKindConsumer),
+			oteltrace.WithAttributes(
+				attribute.String("messaging.system", "nats"),
+				attribute.String("messaging.operation", "receive"),
+				attribute.String("messaging.destination.name", m.Subject()),
+			),
+		)
 		msg := Message{SubjectParts: parts, Subject: m.Subject(), Payload: m.Data()}
-		if herr := h(ctx, msg); herr != nil {
+		herr := h(msgCtx, msg)
+		if herr != nil {
+			span.RecordError(herr)
+			span.SetStatus(codes.Error, "handler returned error (message NAK'd)")
+		}
+		span.End()
+		if herr != nil {
 			_ = m.Nak()
 			return
 		}
@@ -139,6 +163,22 @@ func (s *Subscriber) Consume(ctx context.Context, h Handler) error {
 	defer cc.Stop()
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// headerCarrier flattens NATS message headers into the single-value W3C carrier
+// map telemetry.Extract reads (traceparent/tracestate are single-valued). nil
+// headers ⇒ nil map ⇒ Extract returns the context unchanged (no parent).
+func headerCarrier(h nats.Header) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	c := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			c[k] = v[0]
+		}
+	}
+	return c
 }
 
 // Close releases the NATS connection. The durable consumer is retained on the
