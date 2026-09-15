@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // humanStates is the set of board states a caller may TARGET — the exact set the
@@ -262,6 +263,27 @@ func (s *HumanStateStore) transition(ctx context.Context, workItemID, teamID, ta
 		return StateTransition{}, fmt.Errorf("%w: concurrent lane change", ErrStateConflict)
 	}
 
+	// (4b) "Time in phase" for the NFR-5 observability emission (ISI-4490): when
+	// did the item enter the phase it is now leaving? The most recent prior
+	// state_transition INTO currentState, else the item's creation time. Read in
+	// the same txn (row still locked) for a consistent enteredAt/now pair. This
+	// is best-effort telemetry input — a read failure yields a zero duration and
+	// never blocks the move.
+	var timeInPhase time.Duration
+	var enteredAt, dbNow time.Time
+	if err := tx.QueryRowContext(ctx, `
+		SELECT
+		  COALESCE(
+		    (SELECT max(created_at) FROM coord.audit_log
+		      WHERE work_item_id = $1::uuid
+		        AND event_type = 'state_transition'
+		        AND to_state = $2),
+		    (SELECT created_at FROM coord.work_item WHERE id = $1::uuid)),
+		  now()`,
+		workItemID, currentState).Scan(&enteredAt, &dbNow); err == nil && !enteredAt.IsZero() {
+		timeInPhase = dbNow.Sub(enteredAt)
+	}
+
 	// (5) §6.5 audit provenance. fence_token is NULL by omission (ADR-037: a human
 	// lane move holds no custody). initiated_by_user_id is the §12.4 on-behalf-of id.
 	payload, err := json.Marshal(map[string]any{
@@ -287,5 +309,18 @@ func (s *HumanStateStore) transition(ctx context.Context, workItemID, teamID, ta
 	if err := tx.Commit(); err != nil {
 		return StateTransition{}, fmt.Errorf("coord.HumanStateStore.TransitionState: commit: %w", err)
 	}
+
+	// NFR-5 (ISI-4490): emit the per-phase timing span + bounded metrics AFTER
+	// commit — best-effort, never able to fail a committed move. Covers human
+	// and agent lane moves today; the E5 coordinator (ISI-4489) reuses the same
+	// EmitPhaseTransition for its auto-advance transitions.
+	EmitPhaseTransition(ctx, PhaseTransitionEvent{
+		WorkItemRef: workItemID,
+		From:        currentState,
+		To:          targetState,
+		Initiator:   initiator,
+		TimeInPhase: timeInPhase,
+	})
+
 	return StateTransition{WorkItemID: workItemID, FromState: currentState, ToState: targetState}, nil
 }

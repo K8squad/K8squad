@@ -306,6 +306,21 @@ var allowedSurface = map[string]string{
 	"PrometheusSweeperMetrics.ObserveSweepDuration": "§6.3 record one sweep-cycle duration",
 	"PrometheusSweeperMetrics.Signals":              "§6.3 emitted metric names (NFR-OBS3 cardinality proof)",
 
+	// NFR-5 per-phase timing observability (ISI-4490 / E7). Not a chat channel:
+	// EmitPhaseTransition records a state_transition it did NOT author as a span
+	// + BOUNDED metrics (no work_item.ref label — the cardinality firewall). It
+	// carries no worker content and mutates no custody; it is the read-only
+	// telemetry twin of the state_transition audit row.
+	"PhaseTransitionEvent":                        "NFR-5 one phase transition, the emitter input value",
+	"PhaseMetrics":                                "NFR-5 phase-timing metrics sink interface (bounded labels)",
+	"PrometheusPhaseMetrics":                      "NFR-5 Prometheus phase-timing sink",
+	"NewPrometheusPhaseMetrics":                   "NFR-5 constructor",
+	"PrometheusPhaseMetrics.IncPhaseTransition":   "NFR-5 count one transition on a (from,to,initiator) edge",
+	"PrometheusPhaseMetrics.ObservePhaseDuration": "NFR-5 record time-in-phase seconds",
+	"PrometheusPhaseMetrics.Signals":              "NFR-5 emitted metric names (cardinality proof)",
+	"SetPhaseMetrics":                             "NFR-5 install the process phase-metrics emitter at bootstrap",
+	"EmitPhaseTransition":                         "NFR-5 emit the per-phase timing span + bounded metrics",
+
 	// §8.6/§13 human board-lane status transition (Story 8.14a / ISI-2909, gap
 	// ISI-2876). The Kanban board is a PROJECTION of work_item.state; this is the
 	// write path for a HUMAN to move a card between lanes. Custody-only in the

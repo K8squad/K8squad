@@ -232,10 +232,26 @@ type IssueUpdate struct {
 	// Empty means leave the state unchanged.
 	State string
 
+	// StateReason refines a "closed" transition so a terminal board lane
+	// projects with the right upstream disposition (ISI-4490 / NFR-4):
+	// "completed" for a done ticket, "not_planned" for a cancelled one.
+	// Empty means "provider default" (a plain close). It is only meaningful
+	// alongside State=="closed"; providers that cannot model a close reason
+	// (e.g. GitLab) ignore it. Never travels on an "open" transition.
+	StateReason string
+
 	// Labels is the full replacement label set. Nil means leave labels
 	// unchanged; an empty non-nil slice means "remove all labels".
 	Labels []string
 }
+
+// Close-reason projections (ISI-4490): the two upstream dispositions a
+// terminal board lane maps onto. GitHub models both natively via
+// state_reason; other providers treat them as a plain close.
+const (
+	StateReasonCompleted  = "completed"
+	StateReasonNotPlanned = "not_planned"
+)
 
 // Status represents a commit or PR status.
 type Status struct {
