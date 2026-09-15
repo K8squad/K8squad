@@ -306,11 +306,18 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 	// to a paid provider default (weak local models must never fail silently
 	// mid-Run — story 5.7 + D3 fail-closed).
 	var modelRoute wire.ModelRoute
+	var modelTier string
 	if len(run.Spec.Agents) > 0 {
 		endpoint, tier, err := d.resolveEffectiveEndpoint(ctx, run)
 		if err != nil {
 			return wire.Task{}, err
 		}
+		// The winning tier is the resolved model-origin (agent|role|default);
+		// it rides the submit payload so the shim stamps ksquad.model.tier on
+		// the run.start span (ISI-4430 S5). Known even when the route is empty
+		// (a role- or default-tier model with no BYO endpoint), which is why it
+		// is captured off the resolution rather than off modelRoute.
+		modelTier = string(tier)
 		if endpoint.BaseURL != "" {
 			modelRoute = wire.ModelRoute{
 				Endpoint: endpoint.BaseURL,
@@ -354,6 +361,9 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// ModelRoute carries the resolved BYO endpoint (§11, §10.3). Empty
 		// means the runtime's own provider default (fixed-vendor).
 		ModelRoute: modelRoute,
+		// ModelTier is the resolved model-origin (agent|role|default) the shim
+		// stamps as ksquad.model.tier on the run.start span (ISI-4430 S5).
+		ModelTier: modelTier,
 	}, nil
 }
 

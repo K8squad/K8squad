@@ -52,7 +52,7 @@ func emitFullRunTrace(t *testing.T) map[string]sdktrace.ReadOnlySpan {
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
 	m := toolusage.NewMapper(tp.Tracer("conformance"), nil)
-	labels := toolusage.Labels{RunID: "run-conformance", Agent: "coder"}
+	labels := toolusage.Labels{RunID: "run-conformance", Agent: "coder", ModelTier: "role"}
 	const task = "task-1"
 
 	ctx := context.Background()

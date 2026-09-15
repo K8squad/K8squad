@@ -77,9 +77,15 @@ func TestDispatchRoleTierModelReachesShimAndRecordsProvenance(t *testing.T) {
 		t.Errorf("KSQUAD_MODEL=%q, want the Role's model to reach the shim", got)
 	}
 
-	// buildTask stamps the winning tier into Run provenance.
-	if _, err := d.buildTask(context.Background(), runUID, runUID); err != nil {
+	// buildTask stamps the winning tier into Run provenance AND onto the submit
+	// payload so the shim can surface ksquad.model.tier on the run.start span
+	// (ISI-4430 S5).
+	tk, err := d.buildTask(context.Background(), runUID, runUID)
+	if err != nil {
 		t.Fatalf("buildTask: %v", err)
+	}
+	if tk.ModelTier != "role" {
+		t.Errorf("task.ModelTier = %q, want %q", tk.ModelTier, "role")
 	}
 	segs := modelSegmentsOf(t, cl, run)
 	if len(segs) != 1 {
