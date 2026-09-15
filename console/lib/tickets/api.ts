@@ -118,13 +118,26 @@ export async function updateWorkItem(
   return (await jsonOrThrow(res)) as WorkItem;
 }
 
-/** Resolve the caller's role for the UI RBAC gate; any failure ⇒ viewer (FAIL-CLOSED, §12.3). */
+/**
+ * Resolve the caller's role for the UI RBAC gate; any failure ⇒ "viewer" (FAIL-CLOSED, §12.3).
+ *
+ * GET /api/session proxies /auth/me VERBATIM (see app/api/session/route.ts). That body is a
+ * publicUser whose role lives in `globalRole` ("admin" | "user") — NOT `role`, and NOT the
+ * per-Project vocab (viewer/contributor/maintainer), which is a route-scoped, existence-hidden
+ * axis /auth/me never exposes (mirrors lib/session.ts viewer(), which already reads globalRole).
+ * We therefore read `globalRole`: any signed-in caller clears the create/comment gate (the same
+ * doctrine as canCompose — offer the action, let the server wall be authoritative), and only an
+ * unresolved caller (no session / non-200 / field absent) fails closed to the "viewer" sentinel.
+ *
+ * ISI-4496: the prior read of `payload.role` matched no field, so EVERY caller pinned to "viewer"
+ * and the "+ New issue" button vanished for admins too — indistinguishable from "not shipped".
+ */
 export async function fetchViewerRole(): Promise<string> {
   try {
     const res = await fetch("/api/session", { cache: "no-store" });
     if (!res.ok) return "viewer";
-    const payload = (await res.json()) as { role?: string };
-    return payload.role ?? "viewer";
+    const payload = (await res.json()) as { globalRole?: string };
+    return payload.globalRole ?? "viewer";
   } catch {
     return "viewer";
   }
