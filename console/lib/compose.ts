@@ -10,6 +10,8 @@
 // mistakes surface before a round-trip (the apiserver stays the authority — a server 422 maps back
 // onto these same field keys).
 
+import { WORKING_PHASES } from "./tickets/statusColor";
+
 /** The five compose CRD kinds and their apiserver route segment (POST /api/{segment}). */
 export const COMPOSE_KINDS = [
   "teams",
@@ -130,12 +132,45 @@ export type AgentForm = {
   byoEnabled: boolean;
 };
 
+/**
+ * Coordinator drive modes (Role.spec.coordinatorMode, ISI-4431 E3 §1). "auto"
+ * advances the pipeline on a phase-agent's success and dispatches the next role;
+ * "propose" surfaces the next move for human confirmation instead. Meaningful ONLY
+ * when `coordinator` is on; an empty mode ⇒ the server default (auto).
+ */
+export const COORDINATOR_MODES = ["auto", "propose"] as const;
+export type CoordinatorMode = (typeof COORDINATOR_MODES)[number];
+
+/** Human labels for the coordinator-mode radio. */
+export const COORDINATOR_MODE_LABELS: Record<CoordinatorMode, string> = {
+  auto: "Auto — advance on success",
+  propose: "Propose — confirm each move",
+};
+
 export type RoleForm = {
   project: string;
   name: string;
   promptRef: string;
   defaultSkills: string; // one ref per line
   runtimeClassHint: string; // "" | gvisor | kata | runc
+  // ── ISI-4431 phase-lifecycle authoring (E3 fields, surfaced by E6) ──
+  // activePhases lists the lifecycle phases in which an agent holding this role is
+  // eligible to be dispatched (Role.spec.activePhases). EMPTY ⇒ phase-agnostic: the
+  // role is eligible in every phase (today's back-compat default). Values are the SIX
+  // working phases only (statusColor WORKING_PHASES) — intake/terminal lanes are never
+  // "worked". Held as string[] (the multi-select selection); toWire canonicalizes.
+  activePhases: string[];
+  // coordinator marks this the team's single coordinator role (Role.spec.coordinator)
+  // — the actor that advances tickets across phases and dispatches the phase-appropriate
+  // role. At most ONE per team, enforced server-side at the Team admission boundary (a
+  // Role is reusable across teams). Omitted from the wire when false (absent ⇒ not a
+  // coordinator).
+  coordinator: boolean;
+  // coordinatorMode is the drive mode, meaningful ONLY when coordinator is on
+  // (Role.spec.coordinatorMode). "" ⇒ server default (auto). Mirrors the webhook, which
+  // rejects a mode set while coordinator=false — so it never rides the wire unless the
+  // toggle is on.
+  coordinatorMode: string; // "" | "auto" | "propose"
 };
 
 export type SkillSourceType = "inline" | "git";
@@ -190,7 +225,16 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
     case "roles":
       return {
         kind,
-        form: { project: "", name: "", promptRef: "", defaultSkills: "", runtimeClassHint: "" },
+        form: {
+          project: "",
+          name: "",
+          promptRef: "",
+          defaultSkills: "",
+          runtimeClassHint: "",
+          activePhases: [],
+          coordinator: false,
+          coordinatorMode: "",
+        },
       };
     case "skills":
       return {
@@ -289,12 +333,27 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
     case "roles": {
       const f = cf.form;
       const defaultSkills = lines(f.defaultSkills).map(parseObjectRef);
+      // Emit only the canonical six phases, in canonical order, de-duped — a stray or
+      // unknown selection never rides the wire (mirrors the webhook enum). Absent /
+      // empty ⇒ phase-agnostic, so the field is omitted entirely (back-compat default).
+      const activePhases = WORKING_PHASES.filter((p) => f.activePhases.includes(p));
       return {
         project: f.project.trim(),
         name: f.name.trim(),
         promptRef: parseObjectRef(f.promptRef),
         ...(defaultSkills.length ? { defaultSkills } : {}),
         ...(f.runtimeClassHint.trim() ? { runtimeClassHint: f.runtimeClassHint.trim() } : {}),
+        ...(activePhases.length ? { activePhases } : {}),
+        // coordinator + its mode travel together: `coordinator` is omitted when false
+        // (absent ⇒ not a coordinator), and `coordinatorMode` rides ONLY when the toggle
+        // is on AND a mode is set (webhook rejects a mode while coordinator=false; an
+        // empty mode ⇒ the server default, auto — so it is simply omitted).
+        ...(f.coordinator
+          ? {
+              coordinator: true,
+              ...(f.coordinatorMode.trim() ? { coordinatorMode: f.coordinatorMode.trim() } : {}),
+            }
+          : {}),
       };
     }
     case "skills": {
@@ -376,6 +435,9 @@ interface RoleWire {
   promptRef?: WireObjectRef;
   defaultSkills?: WireObjectRef[];
   runtimeClassHint?: string;
+  activePhases?: string[];
+  coordinator?: boolean;
+  coordinatorMode?: string;
 }
 interface ProjectWire {
   name?: string;
@@ -450,6 +512,11 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
           promptRef: objectRefToString(r.promptRef),
           defaultSkills: refsToLines(r.defaultSkills),
           runtimeClassHint: r.runtimeClassHint ?? "",
+          // Re-canonicalize on hydration too: keep only the known six, in canonical
+          // order, so an edit form never carries a stray phase the multi-select can't show.
+          activePhases: WORKING_PHASES.filter((p) => (r.activePhases ?? []).includes(p)),
+          coordinator: !!r.coordinator,
+          coordinatorMode: r.coordinatorMode ?? "",
         },
       };
     }
@@ -510,6 +577,20 @@ export function validate(cf: ComposeForm): FieldErrors {
       checkRequired("promptRef.name", parseObjectRef(f.promptRef).name, errs);
       if (f.runtimeClassHint && !["gvisor", "kata", "runc"].includes(f.runtimeClassHint))
         errs["runtimeClassHint"] = "must be one of gvisor, kata, runc";
+      // Phase enum (webhook: unknown phase strings rejected). The UI only offers the
+      // six, but defend the model edge so a bad selection fails fast with a field error.
+      if (f.activePhases.some((p) => !(WORKING_PHASES as readonly string[]).includes(p)))
+        errs["activePhases"] =
+          "must be one of design, planning, implementation, code_review, testing, documentation";
+      // coordinatorMode is valid ONLY alongside coordinator=true (webhook rule): a mode
+      // set while the toggle is off is a config error; when the toggle is on, a non-empty
+      // mode must be one of the enum (empty ⇒ server default, auto — always allowed).
+      if (f.coordinatorMode.trim()) {
+        if (!f.coordinator)
+          errs["coordinatorMode"] = "is only valid when coordinator is enabled";
+        else if (!(COORDINATOR_MODES as readonly string[]).includes(f.coordinatorMode))
+          errs["coordinatorMode"] = "must be one of auto, propose";
+      }
       break;
     }
     case "skills": {

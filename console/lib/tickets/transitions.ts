@@ -13,7 +13,7 @@
 // SSOT). This module adds ONLY the adjacency graph + the legacy-lane fold — it
 // never forks the colour map.
 
-import { PHASE_STATUSES, type PhaseStatus } from "./statusColor";
+import { PHASE_STATUSES, WORKING_PHASES, type PhaseStatus, type WorkingPhase } from "./statusColor";
 
 /**
  * Fold a read-model `state` to the phase COLUMN it renders under. The coordinator's
@@ -31,6 +31,22 @@ const LEGACY_FOLD: Readonly<Record<string, PhaseStatus>> = {
 export function phaseOf(state: string): PhaseStatus | null {
   if ((PHASE_STATUSES as readonly string[]).includes(state)) return state as PhaseStatus;
   return LEGACY_FOLD[state] ?? null;
+}
+
+/**
+ * The WORKING phase a ticket sits on for the honest phase affordance (FR-7 /
+ * ISI-4487), folding the two legacy engine lanes (in_progress→implementation,
+ * in_review→code_review via phaseOf). Returns null for the intake lanes
+ * (backlog/todo), the terminal lanes (done/cancelled), and any unknown state —
+ * none of those is a *worked* phase, so the UI shows "— no phase" rather than
+ * fabricate a "Design". A legacy ticket on a non-coordinator team never sits on a
+ * phase lane, so it too resolves to null: the honesty is entirely state-driven, no
+ * team/coordinator lookup required. This never GUESSES a phase — same discipline as
+ * phaseOf dropping (rather than inventing a column for) an unknown state.
+ */
+export function workingPhaseOf(state: string): WorkingPhase | null {
+  const p = phaseOf(state);
+  return p && (WORKING_PHASES as readonly string[]).includes(p) ? (p as WorkingPhase) : null;
 }
 
 /**

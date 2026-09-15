@@ -70,7 +70,7 @@ describe("fromWire ∘ toWire round-trip", () => {
     if (back.kind === "agents") expect(back.form.byoEnabled).toBe(false);
   });
 
-  it("roles — prompt ref, default skills, runtime class hint", () => {
+  it("roles — prompt ref, default skills, runtime class hint, phases + coordinator", () => {
     const form: ComposeForm = {
       kind: "roles",
       form: {
@@ -79,6 +79,26 @@ describe("fromWire ∘ toWire round-trip", () => {
         promptRef: "boss-prompt",
         defaultSkills: "web-search\nshared/pg",
         runtimeClassHint: "gvisor",
+        activePhases: ["design", "planning"],
+        coordinator: true,
+        coordinatorMode: "propose",
+      },
+    };
+    expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);
+  });
+
+  it("roles — phase-agnostic, non-coordinator (all new fields at their defaults)", () => {
+    const form: ComposeForm = {
+      kind: "roles",
+      form: {
+        project: "widget",
+        name: "worker",
+        promptRef: "worker-prompt",
+        defaultSkills: "",
+        runtimeClassHint: "",
+        activePhases: [],
+        coordinator: false,
+        coordinatorMode: "",
       },
     };
     expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);
