@@ -1,37 +1,38 @@
 "use client";
 
-// components/tickets/ListView.tsx — the List view (story 8.14c).
+// components/tickets/ListView.tsx — the List view (story 8.14c; re-skinned for the
+// Paperclip look in ISI-4452 plan §5 S2 + S5/S6).
 //
-// A sortable table — ID · Title · Status · Priority · Assignee · Labels · Updated —
-// over the SAME filtered set as the Kanban (8.14d shared narrowing). The table is
-// READ-ONLY: no mutation issues from it (status DnD lives on the Kanban card,
-// 8.14b; R6 scope guard). Parent rows carry the 8.17 caret + child-count badge
-// and expand to indented children. SCM-synced items keep their provenance badge
-// (§5.4). Responsive (spec, Tickets — List row): under 720px the table shows
-// ID + Title + Status and a row-expand reveals the remaining fields; sort stays
-// server-side-identical regardless of viewport.
+// A read-only, sortable list over the SAME filtered set as the Kanban (8.14d
+// shared narrowing). The former <table> is now Paperclip-style row BANDS: each
+// row carries a left phase-colour spine, a status chip with a dot, the 8.17
+// caret + child-count badge (parents only), id · title · priority · assignee
+// (dashed ring = unassigned) · labels · updated. `cancelled` rows are muted +
+// struck; a `blocked` row adds a rose warn glyph (§8.6 — blocked is a condition,
+// never a lane). Colour comes exclusively from lib/tickets/statusColor (S1), the
+// single source of truth shared with the Kanban re-skin.
+//
+// The list is READ-ONLY: no mutation issues from it (status DnD lives on the
+// Kanban card, 8.14b; R6 scope guard). A row's title deep-links to the ticket
+// detail (ISI-4399 S3). Sub-ticket parents expand to indented children with a
+// connector, keeping the 8.17 lazy load. A 10-status colour legend sits in the
+// footer (S5). Optional fields degrade to an honest "—" / dashed ring, never a
+// fabricated value (FR-I3).
 
-import { Fragment, useState } from "react";
-import {
-  nextSortDir,
-  sortWorkItems,
-} from "@/lib/tickets/derivation";
-import {
-  STATE_LABELS,
-  type SortKey,
-  type SortSpec,
-  type WorkItem,
-} from "@/lib/tickets/types";
+import { Fragment } from "react";
+import { nextSortDir, sortWorkItems } from "@/lib/tickets/derivation";
+import { type SortKey, type SortSpec, type WorkItem } from "@/lib/tickets/types";
+import { PHASE_STATUSES, statusColor, statusMeta } from "@/lib/tickets/statusColor";
 import { INDENT_CAP, TicketTreeToggle, type TreeController } from "./SubTicketTree";
 
-const COLUMNS: ReadonlyArray<{ key: SortKey; label: string; className: string }> = [
-  { key: "id", label: "ID", className: "ksq-col-id" },
-  { key: "title", label: "Title", className: "ksq-col-title" },
-  { key: "status", label: "Status", className: "ksq-col-status" },
-  { key: "priority", label: "Priority", className: "ksq-col-priority" },
-  { key: "assignee", label: "Assignee", className: "ksq-col-assignee" },
-  { key: "labels", label: "Labels", className: "ksq-col-labels" },
-  { key: "updated", label: "Updated", className: "ksq-col-updated" },
+const COLUMNS: ReadonlyArray<{ key: SortKey; label: string }> = [
+  { key: "id", label: "ID" },
+  { key: "title", label: "Title" },
+  { key: "status", label: "Status" },
+  { key: "priority", label: "Priority" },
+  { key: "assignee", label: "Assignee" },
+  { key: "labels", label: "Labels" },
+  { key: "updated", label: "Updated" },
 ];
 
 export interface ListViewProps {
@@ -46,125 +47,138 @@ export interface ListViewProps {
 export function ListView({ items, tree, sort, onSortChange, projectId }: ListViewProps) {
   const detailHref = (id: string) =>
     `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(id)}`;
-  const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(new Set());
   const sorted = sortWorkItems(items, sort);
 
   function renderRow(item: WorkItem, depth: number) {
-    const mobileOpen = expandedRows.has(item.id);
+    const meta = statusMeta(item.state);
     const beyondCap = depth > INDENT_CAP;
     const indentDepth = Math.min(depth, INDENT_CAP);
+    // `cancelled` is an ISI-4455 phase status not yet in the read-model enum;
+    // compare as a string so the muted/struck skin is ready the day it lands.
+    const cancelled = (item.state as string) === "cancelled";
+    const blocked = Boolean(item.blockedReason);
+    const rowClass = [
+      "ksq-listrow",
+      depth > 0 ? "ksq-listrow--child" : "",
+      cancelled ? "ksq-listrow--cancelled" : "",
+      blocked ? "ksq-listrow--blocked" : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
     return (
-      <Fragment key={item.id}>
-        <tr
-          className={`ksq-list-row${depth > 0 ? " ksq-list-row--child" : ""}`}
-          data-tree-depth={depth}
-          data-testid={`row-${item.id}`}
-        >
-          <td className="ksq-col-id">
-            <button
-              type="button"
-              className="ksq-rowexpand"
-              aria-expanded={mobileOpen}
-              aria-label={`More fields for ${item.title}`}
-              data-testid={`row-expand-${item.id}`}
-              onClick={() =>
-                setExpandedRows((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(item.id)) next.delete(item.id);
-                  else next.add(item.id);
-                  return next;
-                })
-              }
-            >
-              <span aria-hidden="true">{mobileOpen ? "▾" : "▸"}</span>
-            </button>
-            <span className="ksq-ticket-id" title={item.id}>
-              {item.id.slice(0, 8)}
-            </span>
-          </td>
-          <td className="ksq-col-title">
+      <div
+        className={rowClass}
+        role="row"
+        data-tree-depth={depth}
+        data-testid={`row-${item.id}`}
+        style={{
+          ["--phase-hue" as string]: statusColor(item.state),
+          ["--tree-indent-depth" as string]: indentDepth,
+        }}
+      >
+        <span aria-hidden="true" className="ksq-listrow__spine" />
+
+        <span className="ksq-listrow__lead" role="cell">
+          {beyondCap && (
             <span
-              className="ksq-list-title"
-              style={{ ["--tree-indent-depth" as string]: indentDepth }}
+              aria-hidden="true"
+              className="ksq-tree-continue"
+              title="Continued child (indent capped)"
             >
-              {beyondCap && (
-                <span
-                  aria-hidden="true"
-                  className="ksq-tree-continue"
-                  title="Continued child (indent capped)"
-                >
-                  ↳
-                </span>
-              )}
-              <TicketTreeToggle item={item} tree={tree} />
-              <a
-                className="ksq-list-title__text"
-                href={detailHref(item.id)}
-                data-testid={`row-title-${item.id}`}
-              >
-                {item.title}
-              </a>
-              {item.provenance && (
-                <span
-                  className="ksq-chip ksq-chip--prov"
-                  data-testid={`prov-${item.id}`}
-                  title={`Synced from ${item.provenance}`}
-                >
-                  {item.provenance}
-                </span>
-              )}
+              ↳
             </span>
-          </td>
-          <td className="ksq-col-status">
-            <span className="ksq-chip ksq-chip--state" data-testid={`row-state-${item.id}`}>
-              {STATE_LABELS[item.state]}
+          )}
+          <span className="ksq-listrow__caret">
+            <TicketTreeToggle item={item} tree={tree} />
+          </span>
+          <span className="ksq-ticket-id" title={item.id}>
+            {item.id.slice(0, 8)}
+          </span>
+        </span>
+
+        <span className="ksq-listrow__title" role="cell">
+          {blocked && (
+            <span
+              className="ksq-warn-glyph"
+              data-testid={`blocked-glyph-${item.id}`}
+              title={`Blocked: ${item.blockedReason}`}
+            >
+              ⚠
             </span>
-          </td>
-          <td className="ksq-col-priority">{item.priority ?? "—"}</td>
-          <td className="ksq-col-assignee">{item.assignee ?? "unassigned"}</td>
-          <td className="ksq-col-labels">
-            {(item.labels ?? []).map((l) => (
-              <span key={l} className="ksq-chip">
-                {l}
+          )}
+          <a
+            className="ksq-listrow__titletext"
+            href={detailHref(item.id)}
+            data-testid={`row-title-${item.id}`}
+          >
+            {item.title}
+          </a>
+          {item.provenance && (
+            <span
+              className="ksq-chip ksq-chip--prov"
+              data-testid={`prov-${item.id}`}
+              title={`Synced from ${item.provenance}`}
+            >
+              {item.provenance}
+            </span>
+          )}
+        </span>
+
+        <span className="ksq-listrow__status" role="cell">
+          <span
+            className="ksq-chip ksq-chip--phase"
+            data-testid={`row-state-${item.id}`}
+            title={meta.role ? `${meta.group} · ${meta.role}` : meta.group}
+          >
+            <span aria-hidden="true" className="ksq-phase-dot" />
+            {meta.label}
+          </span>
+        </span>
+
+        <span className="ksq-listrow__priority" role="cell">
+          {item.priority ? (
+            <span className="ksq-chip ksq-chip--priority">{item.priority}</span>
+          ) : (
+            <span className="ksq-dim">—</span>
+          )}
+        </span>
+
+        <span className="ksq-listrow__assignee" role="cell">
+          {item.assignee ? (
+            <>
+              <span aria-hidden="true" className="ksq-avatar">
+                {initials(item.assignee)}
               </span>
-            ))}
-            {(item.labels ?? []).length === 0 && "—"}
-          </td>
-          <td className="ksq-col-updated">{formatUpdated(item.updatedAt)}</td>
-        </tr>
-        {mobileOpen && (
-          <tr className="ksq-list-rowdetail" data-testid={`row-detail-${item.id}`}>
-            <td colSpan={COLUMNS.length}>
-              <dl className="ksq-list-detail">
-                <div>
-                  <dt>Priority</dt>
-                  <dd>{item.priority ?? "—"}</dd>
-                </div>
-                <div>
-                  <dt>Assignee</dt>
-                  <dd>{item.assignee ?? "unassigned"}</dd>
-                </div>
-                <div>
-                  <dt>Labels</dt>
-                  <dd>{(item.labels ?? []).join(", ") || "—"}</dd>
-                </div>
-                <div>
-                  <dt>Updated</dt>
-                  <dd>{formatUpdated(item.updatedAt)}</dd>
-                </div>
-              </dl>
-            </td>
-          </tr>
-        )}
-      </Fragment>
+              <span className="ksq-listrow__assignee-name">{item.assignee}</span>
+            </>
+          ) : (
+            <>
+              <span aria-hidden="true" className="ksq-avatar ksq-avatar--empty" />
+              <span className="ksq-dim">Unassigned</span>
+            </>
+          )}
+        </span>
+
+        <span className="ksq-listrow__labels" role="cell">
+          {(item.labels ?? []).map((l) => (
+            <span key={l} className="ksq-chip">
+              {l}
+            </span>
+          ))}
+          {(item.labels ?? []).length === 0 && <span className="ksq-dim">—</span>}
+        </span>
+
+        <span className="ksq-listrow__updated" role="cell">
+          {formatUpdated(item.updatedAt)}
+        </span>
+      </div>
     );
   }
 
-  // Table-correct tree: emit the parent row then, when expanded, its lazily
-  // loaded children as sibling <tr> rows indented one level (8.17). Children
-  // that are themselves parents get their own caret and recurse. Rendering the
-  // tree as flat <tr> siblings (not nested <div>/<ul>) keeps the DOM valid
-  // inside <tbody> — a <div> wrapper would be hoisted out and break the table.
+  // Emit the parent band, then — when expanded — its lazily loaded children as
+  // sibling bands indented one level (8.17). A child that is itself a parent gets
+  // its own caret and recurses. Div bands (not <tr>) let the whole row be a flex
+  // band with a coloured spine; the tree is a flat sibling list, no table.
   function renderTreeRows(item: WorkItem, depth: number): React.ReactNode {
     const children = tree.isExpanded(item.id) ? tree.childrenOf(item.id) : undefined;
     return (
@@ -176,52 +190,83 @@ export function ListView({ items, tree, sort, onSortChange, projectId }: ListVie
   }
 
   return (
-    <div className="ksq-list-scroll" data-testid="tickets-list">
-      <table className="ksq-list-table">
-        <thead>
-          <tr>
-            {COLUMNS.map((col) => {
-              const active = sort.key === col.key;
-              const dir = active ? sort.dir : undefined;
-              return (
-                <th key={col.key} className={col.className} scope="col" aria-sort={ariaSort(dir)}>
-                  <button
-                    type="button"
-                    className="ksq-list-sort"
-                    data-testid={`sort-${col.key}`}
-                    onClick={() => onSortChange(nextSortDir(sort, col.key))}
-                  >
-                    {col.label}
-                    {active && (
-                      <span aria-hidden="true" className="ksq-list-sort__dir">
-                        {sort.dir === "asc" ? "▲" : "▼"}
-                      </span>
-                    )}
-                  </button>
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-        <tbody>
-          {sorted.map((item) => renderTreeRows(item, 0))}
-          {sorted.length === 0 && (
-            <tr>
-              <td colSpan={COLUMNS.length} className="ksq-empty-hint">
-                No tickets.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+    <div className="ksq-list" data-testid="tickets-list">
+      <div className="ksq-list__head" role="row">
+        {COLUMNS.map((col) => {
+          const active = sort.key === col.key;
+          return (
+            <button
+              key={col.key}
+              type="button"
+              className={`ksq-list-sort ksq-list-sort--${col.key}${active ? " is-active" : ""}`}
+              data-testid={`sort-${col.key}`}
+              aria-label={
+                active
+                  ? `Sort by ${col.label}, currently ${sort.dir === "asc" ? "ascending" : "descending"}`
+                  : `Sort by ${col.label}`
+              }
+              onClick={() => onSortChange(nextSortDir(sort, col.key))}
+            >
+              {col.label}
+              {active && (
+                <span aria-hidden="true" className="ksq-list-sort__dir">
+                  {sort.dir === "asc" ? "▲" : "▼"}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="ksq-list__rows">
+        {sorted.map((item) => renderTreeRows(item, 0))}
+        {sorted.length === 0 && (
+          <p className="ksq-empty-hint" data-testid="list-empty">
+            No tickets.
+          </p>
+        )}
+      </div>
+
+      <StatusLegend />
     </div>
   );
 }
 
-function ariaSort(dir: "asc" | "desc" | undefined): "ascending" | "descending" | "none" {
-  if (dir === "asc") return "ascending";
-  if (dir === "desc") return "descending";
-  return "none";
+/** The 10-status colour legend (S5) — documents every phase hue + the blocked note. */
+function StatusLegend() {
+  return (
+    <div className="ksq-legend" data-testid="status-legend" aria-label="Status colour legend">
+      <span className="ksq-legend__label">Phases</span>
+      {PHASE_STATUSES.map((state) => {
+        const meta = statusMeta(state);
+        return (
+          <span
+            key={state}
+            className="ksq-legend__item"
+            data-testid={`legend-${state}`}
+            style={{ ["--phase-hue" as string]: statusColor(state) }}
+            title={meta.role ? `${meta.group} · ${meta.role}` : meta.group}
+          >
+            <span aria-hidden="true" className="ksq-phase-dot" />
+            {meta.label}
+          </span>
+        );
+      })}
+      <span className="ksq-legend__item ksq-legend__item--blocked" data-testid="legend-blocked">
+        <span aria-hidden="true" className="ksq-warn-glyph">
+          ⚠
+        </span>
+        Blocked (condition, any phase)
+      </span>
+    </div>
+  );
+}
+
+function initials(name: string): string {
+  const parts = name.trim().split(/[\s._-]+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function formatUpdated(iso: string): string {
