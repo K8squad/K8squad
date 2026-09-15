@@ -134,6 +134,26 @@ describe("TicketDetail", () => {
     expect(within(screen.getByTestId("detail-run-trace")).getByText("run-9")).toBeTruthy();
   });
 
+  it("renders the newest agent comment as a GitHub-style run bubble (S3 anatomy)", async () => {
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    // The agent comment carries the run meta strip: run-id + a LIVE status dot
+    // (the fixture ticket is in_review — an in-flight Review phase — so the run
+    // pulses) + a trace ribbon deep-linking to the internal Run-detail surface.
+    const meta = screen.getByTestId("runcomment-meta");
+    expect(within(meta).getByText("run-9")).toBeTruthy();
+    expect(screen.getByTestId("runcomment-status").getAttribute("data-live")).toBe("true");
+    const trace = screen.getByTestId("runcomment-trace");
+    expect(trace.getAttribute("href")).toBe("/runs/run-9");
+    expect(trace.textContent).toContain("View trace");
+
+    // The human reply is a bubble too, but carries NO run meta (never fabricated).
+    expect(screen.getAllByTestId("runcomment-meta")).toHaveLength(1);
+  });
+
   it("lays out the ISI-4447 redesign: header card + pinned rail with Properties and Sub-tickets status", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

@@ -40,6 +40,11 @@ import {
   type NormalizedThread,
   type ThreadComment,
 } from "@/lib/tickets/thread";
+import {
+  buildRunComments,
+  runCommentKey,
+  type RunComment,
+} from "@/lib/tickets/runComments";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 
@@ -129,7 +134,13 @@ function StatusChip({ state }: { state: string }) {
   );
 }
 
-function ActivityRow({ item }: { item: ActivityItem }) {
+function ActivityRow({
+  item,
+  runMeta,
+}: {
+  item: ActivityItem;
+  runMeta: Map<string, RunComment>;
+}) {
   if (item.kind === "event" && item.event) {
     const e = item.event;
     return (
@@ -164,24 +175,132 @@ function ActivityRow({ item }: { item: ActivityItem }) {
     );
   }
   if (item.kind === "comment" && item.comment) {
+    const meta = runMeta.get(
+      runCommentKey(item.comment.author, item.at, item.comment.body),
+    );
+    return <RunCommentCard item={item} meta={meta} />;
+  }
+  return null;
+}
+
+/**
+ * The S3 anatomy (ISI-4449 · ISI-4433 Frame 02-B): one agent run rendered as a
+ * GitHub-style comment. Avatar on the spine, a header (name + agent/human pill +
+ * mono timestamp), the run meta strip (run-id + a live status dot that pulses
+ * while the run is in flight) when the run is honestly known, the comment body,
+ * and a trace-ribbon footer ("View trace →"). Older runs collapse to one line;
+ * the newest agent run + all human replies open. Every meta field comes from
+ * `meta` (buildRunComments) — an absent field is omitted, never fabricated.
+ */
+function RunCommentCard({
+  item,
+  meta,
+}: {
+  item: ActivityItem;
+  meta?: RunComment;
+}) {
+  const comment = item.comment!;
+  const author = comment.author || "unknown";
+  // Older agent runs collapse to a one-liner; the newest agent run and every
+  // human reply start open (design "newest last; older runs collapse").
+  const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
+  const [open, setOpen] = useState(!collapsible);
+
+  if (collapsible && !open) {
     return (
-      <li className="ksq-activity ksq-activity--comment" data-testid="activity-comment">
-        <div className="ksq-activity__head">
-          <strong>{item.comment.author || "unknown"}</strong>
-          <span
-            className="ksq-chip"
-            data-role={item.authorKind}
-            data-testid="activity-role"
-          >
+      <li
+        className="ksq-activity ksq-activity--comment ksq-runcomment ksq-runcomment--collapsed"
+        data-testid="activity-comment"
+        data-role={item.authorKind}
+      >
+        <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
+          {meta?.avatar ?? "?"}
+        </span>
+        <button
+          type="button"
+          className="ksq-runcomment__summary"
+          data-testid="runcomment-collapsed"
+          aria-expanded="false"
+          onClick={() => setOpen(true)}
+        >
+          <strong>{author}</strong>
+          <span className="ksq-chip" data-role={item.authorKind} data-testid="activity-role">
             {item.authorKind}
           </span>
-          <time className="ksq-ticket-id">{fmt(item.at)}</time>
-        </div>
-        <p className="ksq-activity__body">{item.comment.body}</p>
+          <span className="muted ksq-runcomment__snippet">{comment.body}</span>
+          <time className="ksq-ticket-id ksq-runcomment__time">{fmt(item.at)}</time>
+        </button>
       </li>
     );
   }
-  return null;
+
+  return (
+    <li
+      className="ksq-activity ksq-activity--comment ksq-runcomment"
+      data-testid="activity-comment"
+      data-role={item.authorKind}
+    >
+      <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
+        {meta?.avatar ?? "?"}
+      </span>
+      <div className="ksq-runcomment__bubble">
+        <div className="ksq-activity__head ksq-runcomment__head">
+          <strong>{author}</strong>
+          <span className="ksq-chip" data-role={item.authorKind} data-testid="activity-role">
+            {item.authorKind}
+          </span>
+          <time className="ksq-ticket-id ksq-runcomment__time">{fmt(item.at)}</time>
+          {collapsible && (
+            <button
+              type="button"
+              className="ksq-runcomment__collapse"
+              aria-expanded="true"
+              aria-label="Collapse run"
+              onClick={() => setOpen(false)}
+            >
+              −
+            </button>
+          )}
+        </div>
+
+        {/* Run meta strip — only when the run is honestly known (current holding
+            run on the newest agent bubble). Model is not carried by the read
+            model, so it is omitted rather than faked (FR-I3). */}
+        {meta?.runId && (
+          <div className="ksq-runcomment__meta" data-testid="runcomment-meta">
+            <span className="ksq-runcomment__runid">
+              run <code className="ksq-ticket-id">{shortId(meta.runId)}</code>
+            </span>
+            <span
+              className={`ksq-runcomment__dot${meta.running ? " ksq-runcomment__dot--live" : ""}`}
+              data-testid="runcomment-status"
+              data-live={meta.running ? "true" : "false"}
+              title={meta.running ? "Run in progress" : "Run idle"}
+              aria-label={meta.running ? "Run in progress" : "Run idle"}
+            />
+            {meta.running && (
+              <span className="muted ksq-runcomment__status-label">running</span>
+            )}
+          </div>
+        )}
+
+        <p className="ksq-activity__body">{comment.body}</p>
+
+        {/* Trace ribbon footer — the honest "View trace →" surface available
+            today is the internal Run-detail deep-link (Story 8.11). The external
+            Dynatrace link (ISI-4231 §4) stays deferred with the rail. */}
+        {meta?.traceHref && (
+          <a
+            className="ksq-runcomment__trace"
+            href={meta.traceHref}
+            data-testid="runcomment-trace"
+          >
+            View trace →
+          </a>
+        )}
+      </div>
+    </li>
+  );
 }
 
 /** Contributor+ may post to the thread; a viewer is read-only (mirrors the
@@ -418,10 +537,23 @@ function TicketBody({
   useEffect(() => {
     setPending([]);
   }, [thread]);
-  const activity = buildActivity({
+  // Single pending-inclusive projection drives both the chronological Activity
+  // timeline and the S3 run-meta map, so an optimistically-posted comment and its
+  // run bubble stay consistent (buildRunComments still owns the attribution rules).
+  const threadWithPending = {
     ...thread,
     comments: [...thread.comments, ...pending],
-  });
+  };
+  const activity = buildActivity(threadWithPending);
+  // Run meta (run-id / live dot / trace ribbon) keyed by comment identity so the
+  // Activity timeline can render each comment as its S3 run bubble without
+  // re-deriving the attribution rules.
+  const runMeta = new Map(
+    buildRunComments(threadWithPending).map((rc) => [
+      runCommentKey(rc.author, rc.at, rc.body),
+      rc,
+    ]),
+  );
 
   // The one WorkItem the "Add sub-ticket" sheet offers as a parent candidate:
   // this very ticket, synthesized from the thread we already loaded.
@@ -498,8 +630,11 @@ function TicketBody({
             honest sub-ticket list stands in. */}
         <SubTickets state={childrenState} issuesHref={issuesHref} />
 
-        {/* S3 mount region — the agent-run → GitHub-style comment renderer
-            (ISI-4449). The chronological Activity thread is the interim surface. */}
+        {/* S3 (ISI-4449) — the agent-run → GitHub-style comment renderer. Each
+            comment renders as a run bubble (avatar spine + header + run meta
+            strip + body + trace ribbon); status moves and change refs stay as
+            thin timeline rows, chronologically interleaved (GitHub's own model),
+            newest last. */}
         <section className="card" data-testid="detail-activity">
           <h2>Activity</h2>
           {activity.length === 0 ? (
@@ -509,7 +644,7 @@ function TicketBody({
           ) : (
             <ul className="ksq-activity-list">
               {activity.map((item, i) => (
-                <ActivityRow key={`${item.kind}-${i}`} item={item} />
+                <ActivityRow key={`${item.kind}-${i}`} item={item} runMeta={runMeta} />
               ))}
             </ul>
           )}
