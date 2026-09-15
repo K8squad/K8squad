@@ -109,10 +109,3 @@ func messagingAttrs(operation, subject, runID string) []attribute.KeyValue {
 	}
 	return attrs
 }
-
-// extractCarrier lifts a W3C carrier out of consumer-side message headers into
-// ctx so a consumer span continues the producer's trace. telemetry.Extract only
-// reads traceparent/tracestate, so passing the full header map is safe.
-func extractCarrier(ctx context.Context, headers map[string]string) context.Context {
-	return telemetry.Extract(ctx, headers)
-}
