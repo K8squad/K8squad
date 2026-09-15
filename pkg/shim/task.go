@@ -29,7 +29,16 @@ import (
 type task struct {
 	id       string
 	workItem string
-	now      func() time.Time
+	// agent/team/project are the per-run identity carried on the submit
+	// payload (ISI-4439). On the warm-pool sandbox path the shim's launch
+	// Config.Identity is empty (the pod booted generic), so these are the only
+	// source of run identity for the run/llm/tool span labels. Empty on the
+	// operator-spawned stdio path, where the process-static Config.Identity is
+	// the truth instead.
+	agent   string
+	team    string
+	project string
+	now     func() time.Time
 
 	mu      sync.Mutex
 	state   a2a.TaskState
