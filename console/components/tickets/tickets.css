@@ -1018,7 +1018,7 @@
   display: inline-block;
 }
 
-/* ---- Disabled composer (write path not wired yet) ---- */
+/* ---- Composer: read-only fallback (viewer / write path not wired) ---- */
 .ksq-composer-note {
   margin-top: 16px;
   border-top: 1px solid var(--border);
@@ -1035,6 +1035,44 @@
   font: inherit;
   padding: 10px 12px;
   opacity: 0.7;
+}
+
+/* ---- Composer: live human comment post-box (ISI-4454) ---- */
+.ksq-composer {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ksq-composer textarea {
+  width: 100%;
+  min-height: 64px;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1, var(--text));
+  font: inherit;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.ksq-composer textarea:focus-visible {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 1px;
+}
+
+.ksq-composer__error {
+  color: var(--danger, #d64545);
+  margin: 0;
+  font-size: 0.9em;
+}
+
+.ksq-composer__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* ---- Properties list ---- */
