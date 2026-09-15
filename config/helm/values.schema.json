@@ -22,6 +22,22 @@
         "supportedClasses": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "modelConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Model-Per-Role default tier (ISI-4460). Ships one system-default ModelConfig CR. `default.model` is REQUIRED at install — it is intentionally NOT required here so the Helm `required` template function emits the operator-facing message; the JSON schema only constrains shape.",
+      "properties": {
+        "default": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "model": { "type": "string", "description": "System default model. REQUIRED at install (has no default); install aborts if unset." },
+            "fallbackModel": { "$ref": "#/$defs/modelFallback" },
+            "modelEndpointRef": { "$ref": "#/$defs/secretRef" }
+          }
+        }
+      }
+    },
     "exposure": {
       "type": "object",
       "description": "Gateway API exposure for the console + apiserver (ISI-3515). OFF by default; the chart references an existing GatewayClass and never creates one.",
@@ -165,6 +181,24 @@
     }
   },
   "$defs": {
+    "secretRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Reference to a Secret (name + optional key). Never a value — the Secret is created out-of-band.",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "description": "Secret name. REQUIRED when the ref is set." },
+        "key": { "type": "string", "minLength": 1, "description": "Key inside the Secret; consumer-default key when omitted." }
+      }
+    },
+    "modelFallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Secondary model for §10.3 rate-limit recovery on the default tier.",
+      "properties": {
+        "model": { "type": "string", "minLength": 1, "description": "Fallback model name. REQUIRED when fallbackModel is set." },
+        "modelEndpointRef": { "$ref": "#/$defs/secretRef" }
+      }
+    },
     "otelSignal": {
       "type": "object",
       "additionalProperties": false,

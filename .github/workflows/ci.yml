@@ -373,7 +373,17 @@ jobs:
 
       - name: helm lint
         if: steps.guard.outputs.present == 'true'
-        run: helm lint "${{ matrix.path }}"
+        run: |
+          set -euo pipefail
+          # The control-plane chart requires modelConfig.default.model for install
+          # (ISI-4460, board directive 352a3ef2). Supply it here so the generic gate
+          # proves the chart is VALID, not that a required install value is missing —
+          # the dedicated modelconfig-test.sh lane below asserts the required-fails path.
+          EXTRA=()
+          if [ "${{ matrix.path }}" = "config/helm" ]; then
+            EXTRA=(--set modelConfig.default.model=ci-render-default)
+          fi
+          helm lint "${{ matrix.path }}" "${EXTRA[@]}"
 
       - name: helm template (render self-check)
         if: steps.guard.outputs.present == 'true'
@@ -383,7 +393,13 @@ jobs:
           # own chart (config/helm-crds, ADR-0002 Option B) rendered as ordinary templates;
           # the control-plane chart ships none. --include-crds is a harmless no-op here
           # (neither chart uses Helm's special crds/ dir) but kept for forward-compat.
-          helm template ksquad-ci "${{ matrix.path }}" --include-crds > /dev/null
+          # config/helm requires modelConfig.default.model (ISI-4460) — supply a dummy so
+          # this render self-check exercises the chart, not the required-value guard.
+          EXTRA=()
+          if [ "${{ matrix.path }}" = "config/helm" ]; then
+            EXTRA=(--set modelConfig.default.model=ci-render-default)
+          fi
+          helm template ksquad-ci "${{ matrix.path }}" --include-crds "${EXTRA[@]}" > /dev/null
           echo "chart '${{ matrix.chart }}' renders clean"
 
       # OTelConfig CR render + structural gate (Story B, ISI-3619). Renders the
@@ -407,6 +423,15 @@ jobs:
       - name: OTelConfig CR render + validate (ISI-3619)
         if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
         run: bash config/helm/ci/otelconfig-test.sh
+
+      # ModelConfig CR render + install-guard gate (Model-Per-Role S2, ISI-4460).
+      # Asserts: bare render FAILS with the operator-facing required-message
+      # (board directive 352a3ef2); --set renders one valid default ModelConfig;
+      # the rendered CR validates against the committed ModelConfig CRD schema.
+      # Only the control-plane chart carries the template, so it is gated on config/helm.
+      - name: ModelConfig CR render + validate (ISI-4460)
+        if: steps.guard.outputs.present == 'true' && matrix.path == 'config/helm'
+        run: bash config/helm/ci/modelconfig-test.sh
 
   node:
     name: node / ${{ matrix.component }}

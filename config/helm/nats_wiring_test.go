@@ -21,6 +21,9 @@ func render(t *testing.T, args ...string) (string, error) {
 		t.Skip("helm binary not on PATH; skipping chart-render guard")
 	}
 	base := []string{"template", "t", ".",
+		// modelConfig.default.model is required for install (ISI-4460); supply a
+		// dummy so the render exercises the chart, not the required-value guard.
+		"--set", "modelConfig.default.model=test-default",
 		"--set", "controlPlane.enabled=true",
 		"--set", "controlPlane.database.dsn=postgres://u@h/db"}
 	out, err := exec.Command("helm", append(base, args...)...).CombinedOutput()

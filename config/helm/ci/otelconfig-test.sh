@@ -30,7 +30,11 @@ pass() { printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; exit 1; }
 
 render() { # render <values-file> -> only the otelconfig template
-  "$HELM" template t "$CHART_DIR" -f "$1" -s templates/otelconfig.yaml 2>/dev/null || true
+  # modelConfig.default.model is required chart-wide (ISI-4460); supply a dummy
+  # so the whole-chart render succeeds and -s can filter to the otelconfig CR.
+  "$HELM" template t "$CHART_DIR" -f "$1" \
+    --set modelConfig.default.model=ci-otel-fixture \
+    -s templates/otelconfig.yaml 2>/dev/null || true
 }
 
 count_kind() { grep -c '^kind: OTelConfig' <<<"$1" || true; }

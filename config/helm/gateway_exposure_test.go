@@ -31,6 +31,9 @@ func renderGW(t *testing.T, args ...string) (string, error) {
 		t.Skip("helm binary not on PATH; skipping chart-render guard")
 	}
 	base := []string{"template", "t", ".",
+		// modelConfig.default.model is required for install (ISI-4460); supply a
+		// dummy so the render exercises exposure, not the required-value guard.
+		"--set", "modelConfig.default.model=test-default",
 		"--set", "controlPlane.enabled=true",
 		"--set", "controlPlane.database.dsn=postgres://u@h/db",
 		"--set", "controlPlane.nats.enabled=false"}
@@ -69,6 +72,9 @@ func TestGatewayRequiresControlPlane(t *testing.T) {
 		t.Skip("helm binary not on PATH; skipping chart-render guard")
 	}
 	out, err := exec.Command("helm", "template", "t", ".",
+		// Supply the required default model (ISI-4460) so the render fails for the
+		// reason under test (controlPlane.enabled), not the required-model guard.
+		"--set", "modelConfig.default.model=test-default",
 		"--set", "exposure.gateway.enabled=true",
 		"--set", "exposure.gateway.gatewayClassName=kgateway").CombinedOutput()
 	if err == nil {

@@ -19,6 +19,39 @@
 #  * event-relay — hard-requires NATS + Postgres; gated behind its own
 #    controlPlane.eventRelay.enabled and off until a NATS URL is supplied.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Model-Per-Role default tier (ISI-4460, parent ISI-4430). The chart ships a
+# single system-default ModelConfig CR named `default` — the floor of the
+# agent → role → default model resolution (ISI-4430 D4). The ModelConfig CRD
+# ships in the separate CRD chart (config/helm-crds); install it first.
+#
+# REQUIRED FOR INSTALL (board directive 352a3ef2): `modelConfig.default.model`
+# has NO default. `helm install`/`helm upgrade` ABORTS with a clear message
+# unless you set it, e.g. `--set modelConfig.default.model=claude-sonnet-4`.
+# The default tier is the last resort of resolution — it must never be empty.
+#
+#   modelConfig:
+#     default:
+#       model: claude-sonnet-4        # REQUIRED — no default; install fails if unset
+#       fallbackModel:                # optional §10.3 rate-limit secondary
+#         model: claude-haiku-4
+#         modelEndpointRef:           # optional BYO endpoint Secret for the fallback
+#           name: byo-endpoint
+#           key: endpointURL          # optional; consumer default key when omitted
+#       modelEndpointRef:             # optional BYO / Ollama / OpenAI-compatible endpoint Secret
+#         name: byo-endpoint
+#         key: endpointURL
+# ---------------------------------------------------------------------------
+modelConfig:
+  default:
+    # REQUIRED — set the system default model. No default value; install aborts
+    # if unset (see README "Set the system default model").
+    model: ""
+    # fallbackModel: {}       # optional; omit for none
+    # modelEndpointRef: {}    # optional; omit for the provider-default endpoint
+
+# ---------------------------------------------------------------------------
 controlPlane:
   # Master switch for the running control plane. false → chart installs only
   # the namespace, CRDs, and (optionally) the toolchain catalog.
