@@ -74,7 +74,12 @@ func (v *AgentCustomValidator) ValidateCreate(ctx context.Context, obj runtime.O
 	if !ok {
 		return nil, apierrors.NewBadRequest("expected an Agent but got " + obj.GetObjectKind().GroupVersionKind().String())
 	}
-	return nil, toInvalid("Agent", agent.Name, v.Validator.ValidateAgent(ctx, agent))
+	// ValidateAgentWithWarnings folds the Model-Per-Role effective-model guard
+	// (ISI-4430 S4) in with the cross-ref guards: a hard reject when no model
+	// resolves in any tier, plus a D3 soft-warn (returned even on admit) when
+	// the system-default ModelConfig singleton is missing.
+	warnings, errs := v.Validator.ValidateAgentWithWarnings(ctx, agent)
+	return warnings, toInvalid("Agent", agent.Name, errs)
 }
 
 // ValidateUpdate implements admission.Validator.
@@ -144,7 +149,7 @@ func toInvalid(kind, name string, errs field.ErrorList) error {
 		ksquadv1alpha1.GroupVersion.WithKind(kind).GroupKind(), name, errs)
 }
 
-// +kubebuilder:rbac:groups=ksquad.io,resources=teams;agents;agentruntimes;roles;skills;projects;mcpservers,verbs=get;list;watch
+// +kubebuilder:rbac:groups=ksquad.io,resources=teams;agents;agentruntimes;roles;skills;projects;mcpservers;modelconfigs,verbs=get;list;watch
 
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
 

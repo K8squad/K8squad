@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
@@ -292,28 +295,21 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		env.SystemContext = sysCtx
 	}
 
-	// Resolve the BYO model endpoint (§11, §10.3, ADR-026). An Agent with no
-	// modelEndpointRef resolves to an empty ModelRoute (the runtime's own
-	// provider default). When a modelEndpointRef IS set, resolution is
-	// fail-closed per the modelendpoint contract: a dangling Secret, a missing
-	// endpointURL, or a malformed URL aborts the dispatch rather than silently
-	// routing the Run to a paid provider default (weak local models must never
-	// fail silently mid-Run — the story 5.7 acceptance).
+	// Resolve the EFFECTIVE model endpoint across the Model-Per-Role tiers
+	// (ISI-4430 S4: agent → role → system-default ModelConfig). An Agent with
+	// no BYO modelEndpointRef resolves to an empty ModelRoute (the runtime's
+	// own provider default), but the winning tier's MODEL still rides through:
+	// a role- or default-tier model reaches the shim exactly as an agent-tier
+	// one does. Resolution is fail-closed: a dangling endpoint Secret, a
+	// malformed URL, OR no model in any tier (ErrNoModel — never even the
+	// system-default) aborts the dispatch rather than silently routing the Run
+	// to a paid provider default (weak local models must never fail silently
+	// mid-Run — story 5.7 + D3 fail-closed).
 	var modelRoute wire.ModelRoute
 	if len(run.Spec.Agents) > 0 {
-		ref := run.Spec.Agents[0]
-		ns := ref.Namespace
-		if ns == "" {
-			ns = run.Namespace
-		}
-		var agent api.Agent
-		if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
-			return wire.Task{}, fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
-		}
-		resolver := modelendpoint.Resolver{Reader: d.cfg.Client}
-		endpoint, err := resolver.Resolve(ctx, &agent)
+		endpoint, tier, err := d.resolveEffectiveEndpoint(ctx, run)
 		if err != nil {
-			return wire.Task{}, fmt.Errorf("rundrive: resolve model endpoint for Agent %s/%s: %w", ns, agent.Name, err)
+			return wire.Task{}, err
 		}
 		if endpoint.BaseURL != "" {
 			modelRoute = wire.ModelRoute{
@@ -322,6 +318,12 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 				Token:    endpoint.Token,
 			}
 		}
+		// Persist the winning tier into Run provenance (Run.status.modelSegments
+		// tier origin). Best-effort: a lost provenance stamp is an observability
+		// gap, not a correctness failure — the model has already resolved and
+		// will route correctly, so a status-write hiccup must not abort the
+		// dispatch. Idempotent, so a re-drive (C1) never duplicates the segment.
+		d.recordModelProvenance(ctx, run, endpoint, tier)
 	}
 
 	// Per-run identity (ISI-4439): carry agent/team/project on the submit
@@ -642,6 +644,62 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 	if len(run.Spec.Agents) == 0 {
 		return ""
 	}
+	// Model-Per-Role (ISI-4430 S4): the KSQUAD_MODEL the shim runs on is the
+	// EFFECTIVE model across tiers (agent → role → default), not the agent
+	// tier alone — so an Agent with no spec.model but a Role that sets one
+	// dispatches on the Role's model. Best-effort on THIS seam: any resolution
+	// gap yields "" and the shim falls back to its own provider default (the
+	// hard fail-closed guarantee lives at admission and in buildTask's
+	// ErrNoModel abort, so an empty here is a degraded-not-wrong shim env).
+	endpoint, _, err := d.resolveEffectiveEndpoint(ctx, run)
+	if err != nil {
+		return ""
+	}
+	return endpoint.Model
+}
+
+// roleFor resolves the Agent's Role via spec.roleRef (Model-Per-Role S4). An
+// empty roleRef, or a role that no longer exists, contributes no role tier
+// (nil) rather than failing the dispatch: a dangling roleRef is admission's
+// rejection to own (GuardAgentRole), and a role deleted after admission simply
+// falls the resolver through to the system-default tier — never empty. Only a
+// TRANSIENT read error fails closed, so a lookup glitch can never silently
+// widen or drop the model.
+func (d *operatorDispatch) roleFor(ctx context.Context, agent *api.Agent) (*api.Role, error) {
+	if agent.Spec.RoleRef.Name == "" {
+		return nil, nil
+	}
+	ns := agent.Spec.RoleRef.Namespace
+	if ns == "" {
+		ns = agent.Namespace
+	}
+	var role api.Role
+	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Spec.RoleRef.Name}, &role); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("rundrive: resolve Role %s/%s for Agent %s: %w", ns, agent.Spec.RoleRef.Name, agent.Name, err)
+	}
+	return &role, nil
+}
+
+// resolveEffectiveEndpoint walks the Model-Per-Role tiers (agent → role →
+// system-default ModelConfig) for the Run's dispatch Agent (first spec.agents
+// entry) and returns the effective PRIMARY endpoint plus the tier that supplied
+// it (ISI-4430 S4, plan rev v3 §4d). It is the SINGLE effective-model seam both
+// dispatch topologies read — the a2a wire.Task (buildTask) and the
+// operator-spawned KSQUAD_MODEL env (agentModel) — so the model the shim runs on
+// is identical whichever topology drives the Run.
+//
+// Fail-closed (D3): ErrNoModel (no tier supplies a model) and every endpoint
+// resolution failure (dangling Secret, malformed URL) propagate as errors — the
+// caller must abort rather than dispatch an empty model.
+//
+// ponytail: SystemNamespace is left at the resolver default ("k8squad-system",
+// matching the operator's own default namespace and the Helm chart) rather than
+// threaded from POD_NAMESPACE — a known ceiling if the operator ever runs in a
+// non-default namespace; wire cfg.SystemNamespace when that lands.
+func (d *operatorDispatch) resolveEffectiveEndpoint(ctx context.Context, run *api.Run) (modelendpoint.Endpoint, modelendpoint.Tier, error) {
 	ref := run.Spec.Agents[0]
 	ns := ref.Namespace
 	if ns == "" {
@@ -649,9 +707,44 @@ func (d *operatorDispatch) agentModel(ctx context.Context, run *api.Run) string 
 	}
 	var agent api.Agent
 	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agent); err != nil {
-		return "" // model resolution is best-effort on this seam; the shim defaults
+		return modelendpoint.Endpoint{}, "", fmt.Errorf("rundrive: resolve dispatch Agent %s/%s: %w", ns, ref.Name, err)
 	}
-	return agent.Spec.Model
+	role, err := d.roleFor(ctx, &agent)
+	if err != nil {
+		return modelendpoint.Endpoint{}, "", err
+	}
+	resolver := modelendpoint.Resolver{Reader: d.cfg.Client}
+	primary, _, tier, _, err := resolver.ResolveEffective(ctx, &agent, role)
+	if err != nil {
+		return modelendpoint.Endpoint{}, "", fmt.Errorf("rundrive: resolve effective model for Agent %s/%s: %w", ns, agent.Name, err)
+	}
+	return primary, tier, nil
+}
+
+// recordModelProvenance stamps the winning tier's model onto
+// Run.status.modelSegments (ISI-4430 S4 provenance origin). Idempotent: if the
+// latest open segment already serves this model+tier it is a no-op, so a
+// re-drive of the deterministic builder (C1) never appends a duplicate. A
+// provider-default run with no resolved model name (ep.Model == "") records
+// nothing — there is no model to attribute. Best-effort: a status-write failure
+// is logged, never returned, because provenance is observability and must not
+// abort a Run whose model already resolved.
+func (d *operatorDispatch) recordModelProvenance(ctx context.Context, run *api.Run, ep modelendpoint.Endpoint, tier modelendpoint.Tier) {
+	if ep.Model == "" {
+		return
+	}
+	for _, s := range run.Status.ModelSegments {
+		if s.EndedAt == nil && s.Model == ep.Model && s.Tier == string(tier) {
+			return // already recorded for this dispatch — idempotent
+		}
+	}
+	patched := run.DeepCopy()
+	patched.Status.ModelSegments = modelendpoint.OpenSegment(run.Status.ModelSegments, ep, tier, metav1.Now())
+	if err := d.cfg.Client.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil {
+		slog.WarnContext(ctx, "rundrive: could not record model provenance segment (best-effort)",
+			"run.name", run.Name, "run.namespace", run.Namespace,
+			"model", ep.Model, "tier", string(tier), "err", err)
+	}
 }
 
 // deriveRunScopes computes the ISI-3626 role-derived privilege scopes stamped

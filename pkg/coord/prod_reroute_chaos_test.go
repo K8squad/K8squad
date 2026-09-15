@@ -68,7 +68,10 @@ func seedRerouteSUT(t *testing.T, ctx context.Context, dsn string, withOutbox bo
 	}
 	migrations := []string{"0001_coord_schema.sql"}
 	if withOutbox {
-		migrations = append(migrations, "0003_coord_outbox.sql")
+		// 0022 completes the outbox schema: it adds coord.outbox.trace_carrier,
+		// which events.CaptureForWorkItem writes on the reroute co-commit path
+		// (ISI-4238/4440). Without it the release INSERT fails with 42703.
+		migrations = append(migrations, "0003_coord_outbox.sql", "0022_coord_outbox_trace_carrier.sql")
 	}
 	migrations = append(migrations, "0009_rate_limit_reroute.sql")
 	for _, name := range migrations {

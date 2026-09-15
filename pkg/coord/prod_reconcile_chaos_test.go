@@ -85,6 +85,7 @@ func seedItem(t *testing.T, ctx context.Context, dsn string) (*coord.ProdReconci
 		"0001_coord_schema.sql",
 		"0002_coord_dispatch.sql",
 		"0003_coord_outbox.sql",
+		"0022_coord_outbox_trace_carrier.sql", // coord.outbox.trace_carrier — events.CaptureForWorkItem writes it (ISI-4238/4440); 0003 alone is an incomplete outbox schema
 		"0005_reconcile_step.sql",
 		"0007_reconcile_effects.sql", // coord.sandbox_bind — WS-D sandbox identity source
 		"0018_claim_assignee.sql",    // coord.claim.assignee_agent — WS-D agent identity source

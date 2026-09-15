@@ -18,6 +18,13 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
   - limitranges
   - resourcequotas
   - secrets
@@ -42,13 +49,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
 - apiGroups:
   - ""
   resources:
@@ -85,6 +85,7 @@ rules:
   - agents
   - egresspolicies
   - mcpservers
+  - modelconfigs
   - otelconfigs
   - roles
   - skills

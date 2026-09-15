@@ -163,12 +163,15 @@ func CloseSegment(segments []api.ModelSegment, model string, endedAt metav1.Time
 
 // OpenSegment begins a new provenance portion on the given model. The
 // endpoint Secret NAME (never contents) rides along so attribution (7.6)
-// and the 8.8 fallback indicators can key off it.
-func OpenSegment(segments []api.ModelSegment, ep Endpoint, startedAt metav1.Time) []api.ModelSegment {
+// and the 8.8 fallback indicators can key off it. tier names which
+// Model-Per-Role tier supplied the model (ISI-4430 S4 provenance origin);
+// pass "" on paths that do not resolve a tier.
+func OpenSegment(segments []api.ModelSegment, ep Endpoint, tier Tier, startedAt metav1.Time) []api.ModelSegment {
 	seg := api.ModelSegment{
 		Model:      ep.Model,
 		StartedAt:  &startedAt,
 		SecretName: ep.SecretName,
+		Tier:       string(tier),
 	}
 	return append(segments, seg)
 }

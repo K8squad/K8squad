@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/credinject"
@@ -65,6 +66,17 @@ const (
 	// Secret (spec.fallbackModel.modelEndpointRef, story 5.11) with the
 	// same existence + shape discipline.
 	GuardAgentFallbackModelEndpoint = "agent/fallbackModel.modelEndpointRef"
+	// GuardAgentModelResolves is the Model-Per-Role D1 fail-closed guard
+	// (ISI-4430 S4): an Agent's EFFECTIVE model must resolve NON-EMPTY across
+	// the three tiers (Agent.spec.model → Role.spec.model → the system-default
+	// ModelConfig singleton). An Agent that resolves to no model in any tier is
+	// undispatchable — buildTask would abort it mid-flight — so it is rejected
+	// at ADMISSION instead, with the same resolver dispatch uses (what
+	// admission proved is what dispatch assumes). The D3 soft-guard rides the
+	// same check: a MISSING system-default ModelConfig is surfaced as an
+	// admission WARNING (not a rejection) so a deleted default CR shows up loud
+	// and immediately, not as a silent per-run failure later.
+	GuardAgentModelResolves = "agent/modelResolves"
 	// GuardAgentToolCredentials validates spec.toolCredentials (ISI-3565,
 	// pkg/toolcred): each aux credential must name a KNOWN purpose and a
 	// non-empty Secret — an unknown purpose or dangling Secret must fail at
@@ -148,6 +160,13 @@ type CrossRefValidator struct {
 	// falsification suite (delete-a-guard tests) and MUST stay empty in
 	// production wiring.
 	DisabledGuards map[string]bool
+
+	// SystemNamespace is where the Model-Per-Role system-default ModelConfig
+	// singleton lives (GuardAgentModelResolves). Empty defers to the resolver
+	// default ("k8squad-system"); production wiring passes the operator's
+	// POD_NAMESPACE so the effective-model check reads the same singleton the
+	// dispatch reconciler will.
+	SystemNamespace string
 }
 
 func (v *CrossRefValidator) on(guard string) bool {
@@ -373,6 +392,104 @@ func (v *CrossRefValidator) validateEndpointRef(ctx context.Context, namespace s
 		return invalidf(path, ref.Name, "admission read failed (fail-closed): %v", err)
 	}
 	return nil
+}
+
+// systemNamespace returns the configured operator namespace or the resolver
+// default. Kept local so GuardAgentModelResolves reads the SAME singleton
+// namespace the resolver walks.
+func (v *CrossRefValidator) systemNamespace() string {
+	if v.SystemNamespace != "" {
+		return v.SystemNamespace
+	}
+	return modelendpoint.DefaultSystemNamespace
+}
+
+// validateAgentModel is the Model-Per-Role D1/D3 admission guard
+// (GuardAgentModelResolves, ISI-4430 S4). It runs the SAME tier-as-a-unit
+// resolver the dispatch path uses (agent → role → system-default ModelConfig)
+// and turns its verdict into admission signal:
+//
+//   - No model in ANY tier (ErrNoModel) → REJECT (D1 fail-closed): the Agent is
+//     undispatchable and must never be admitted to strand a Run mid-flight.
+//   - A dangling endpoint Secret / malformed URL on the winning tier → REJECT,
+//     the same fail-closed shape as GuardAgentModelEndpoint.
+//   - Resolution succeeds but the system-default ModelConfig singleton is ABSENT
+//     → WARN (D3 soft-guard): a deleted default is a latent cluster-wide
+//     fail-closed risk for every Agent that leans on the default tier; surface
+//     it loudly now, do not reject THIS Agent (which resolved fine).
+//
+// The Role is fetched best-effort: a dangling roleRef is GuardAgentRole's
+// rejection to own — here a missing Role just means the role tier contributes
+// nothing. A transient Role read error fails closed.
+func (v *CrossRefValidator) validateAgentModel(ctx context.Context, agent *ksquadv1alpha1.Agent) (admission.Warnings, field.ErrorList) {
+	if !v.on(GuardAgentModelResolves) {
+		return nil, nil
+	}
+	var role *ksquadv1alpha1.Role
+	if agent.Spec.RoleRef.Name != "" {
+		ns := resolveNamespace(agent.Spec.RoleRef, agent.Namespace)
+		var r ksquadv1alpha1.Role
+		err := v.Reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Spec.RoleRef.Name}, &r)
+		switch {
+		case err == nil:
+			role = &r
+		case apierrors.IsNotFound(err):
+			// Dangling roleRef: GuardAgentRole rejects it; here the role tier
+			// simply contributes nothing to the walk.
+		default:
+			return nil, field.ErrorList{invalidf("spec.roleRef", agent.Spec.RoleRef, "admission read of Role %s/%s failed (fail-closed): %v", ns, agent.Spec.RoleRef.Name, err)}
+		}
+	}
+
+	resolver := modelendpoint.Resolver{Reader: v.Reader, SystemNamespace: v.SystemNamespace}
+	_, _, _, _, err := resolver.ResolveEffective(ctx, agent, role)
+	switch {
+	case errors.Is(err, modelendpoint.ErrNoModel):
+		return nil, field.ErrorList{invalidf("spec.model", agent.Spec.Model,
+			"no model resolves for this Agent in any tier (agent, role, or the system-default ModelConfig %q in %s) — set spec.model, give the referenced Role a model, or create the system-default ModelConfig (ISI-4430 D3 fail-closed: an Agent with no effective model is undispatchable)",
+			modelendpoint.DefaultModelConfigName, v.systemNamespace())}
+	case err != nil:
+		var unresolved *modelendpoint.ErrUnresolved
+		if errors.As(err, &unresolved) {
+			return nil, field.ErrorList{invalidf("spec.model", agent.Spec.Model, "%s; fix the endpoint Secret (endpointURL + optional apiToken, story 7.5 shape) and retry", unresolved.Reason)}
+		}
+		return nil, field.ErrorList{invalidf("spec.model", agent.Spec.Model, "effective-model resolution failed (fail-closed): %v", err)}
+	}
+
+	// Resolution succeeded (this Agent is dispatchable). D3 soft-guard: warn if
+	// the system-default ModelConfig singleton is missing, so a deleted default
+	// surfaces immediately on the next Agent write rather than silently at some
+	// future default-tier Run's dispatch.
+	return v.warnIfDefaultModelConfigAbsent(ctx), nil
+}
+
+// warnIfDefaultModelConfigAbsent returns a single admission WARNING when the
+// well-known system-default ModelConfig singleton is not found (D3 soft-guard).
+// A transient read error yields no warning — this is a best-effort surface, not
+// an assertion of presence, and must never turn a healthy Agent write into a
+// denial (that is validateAgentModel's ErrNoModel job, not this one's).
+func (v *CrossRefValidator) warnIfDefaultModelConfigAbsent(ctx context.Context) admission.Warnings {
+	var mc ksquadv1alpha1.ModelConfig
+	err := v.Reader.Get(ctx, client.ObjectKey{Namespace: v.systemNamespace(), Name: modelendpoint.DefaultModelConfigName}, &mc)
+	if apierrors.IsNotFound(err) {
+		return admission.Warnings{fmt.Sprintf(
+			"system-default ModelConfig %q not found in namespace %q: any Agent that resolves to the default model tier will fail closed at dispatch (ISI-4430 D3) — create the default ModelConfig singleton",
+			modelendpoint.DefaultModelConfigName, v.systemNamespace())}
+	}
+	return nil
+}
+
+// ValidateAgentWithWarnings runs the cross-ref Agent guards (ValidateAgent) and
+// the Model-Per-Role effective-model guard together, returning the D3 soft-warn
+// alongside the aggregated hard errors. It is the entry point the admission
+// wiring calls so a warning (missing default ModelConfig) can ride back on an
+// otherwise-admitted Agent — field.ErrorList carries no warning channel, so the
+// warning is threaded separately here.
+func (v *CrossRefValidator) ValidateAgentWithWarnings(ctx context.Context, agent *ksquadv1alpha1.Agent) (admission.Warnings, field.ErrorList) {
+	errs := v.ValidateAgent(ctx, agent)
+	warnings, modelErrs := v.validateAgentModel(ctx, agent)
+	errs = append(errs, modelErrs...)
+	return warnings, errs
 }
 
 // ValidateSkill rejects a Skill whose spec.mcpToolRefs target a missing

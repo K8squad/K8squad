@@ -132,10 +132,11 @@ func TestProvenanceSegments(t *testing.T) {
 	primary := Endpoint{Model: "qwen3:14b", BaseURL: "http://ollama.svc:11434", SecretName: "amelia-ollama"}
 	fallback := Endpoint{Model: "llama3:8b", BaseURL: "http://ollama.svc:11434", SecretName: "amelia-ollama"}
 
-	segs := OpenSegment(nil, primary, t0)
+	segs := OpenSegment(nil, primary, TierAgent, t0)
 	require.Len(t, segs, 1)
 	assert.Equal(t, "qwen3:14b", segs[0].Model)
 	assert.Equal(t, "amelia-ollama", segs[0].SecretName, "Secret NAME rides as provenance, never contents")
+	assert.Equal(t, string(TierAgent), segs[0].Tier, "tier origin rides as provenance (ISI-4430 S4)")
 	require.NotNil(t, segs[0].StartedAt)
 	assert.Nil(t, segs[0].EndedAt, "segment is open while serving")
 
@@ -144,14 +145,17 @@ func TestProvenanceSegments(t *testing.T) {
 	require.NotNil(t, segs[0].EndedAt, "portion closed at the switch boundary")
 	assert.Equal(t, ReasonRateLimited, segs[0].Reason)
 
-	segs = OpenSegment(segs, fallback, t1)
+	// The fallback stays inside the winning tier (D4), so the reopened
+	// segment carries the SAME tier as the primary it replaced.
+	segs = OpenSegment(segs, fallback, TierAgent, t1)
 	require.Len(t, segs, 2)
 	assert.Equal(t, "llama3:8b", segs[1].Model)
+	assert.Equal(t, string(TierAgent), segs[1].Tier)
 	assert.Nil(t, segs[1].EndedAt)
 
 	// The original slice is untouched (pure): the caller's status is never
 	// mutated behind its back.
-	assert.Nil(t, OpenSegment(nil, primary, t0)[0].EndedAt)
+	assert.Nil(t, OpenSegment(nil, primary, TierAgent, t0)[0].EndedAt)
 }
 
 // TestCloseSegmentOnlyClosesMatchingOpenSegment: a close for a model with
