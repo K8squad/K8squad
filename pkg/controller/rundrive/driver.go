@@ -418,9 +418,15 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		opts.Lap = &next
 	}
 	if err := reconcile.Reconcile(effects, store, opts); err != nil {
+		if errors.Is(err, errSandboxPending) {
+			return r.requeueSandboxPending(ctx, runID), nil
+		}
 		return ctrl.Result{}, fmt.Errorf("rundrive: drive %s: %w", req.NamespacedName, err)
 	}
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
+		if errors.Is(err, errSandboxPending) {
+			return r.requeueSandboxPending(ctx, runID), nil
+		}
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
 	}
@@ -701,6 +707,18 @@ func maxRetries(run *api.Run) int {
 		return 0
 	}
 	return int(*run.Spec.RetryPolicy.MaxRetries)
+}
+
+// requeueSandboxPending is the quiet requeue for the ISI-4441 bind/readiness
+// race: the sandbox is bound but its pod has no IP yet. It logs at debug (the
+// race is normal, not a warning) and requeues with the short continue delay,
+// returning a nil error to its caller so the reconcile span records NO
+// exception. A pod that never gets an IP ages past podIPReadyDeadline and stops
+// carrying errSandboxPending, so it surfaces as a loud, recorded error instead.
+func (r *Driver) requeueSandboxPending(ctx context.Context, runID string) ctrl.Result {
+	slog.DebugContext(ctx, "rundrive: sandbox pod has no IP yet; requeuing (bind/readiness race)",
+		"run.id", runID)
+	return ctrl.Result{RequeueAfter: continueDelay}
 }
 
 // BackoffFor is the retry-lap delay (attempt is 1-based): equal jitter over
