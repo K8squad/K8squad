@@ -106,6 +106,53 @@ describe("CreateTicketSheet", () => {
     });
   });
 
+  it("POSTs the full-fidelity body when Priority / Work-mode / Labels are set", async () => {
+    const created: WorkItem = {
+      id: "ISI-9002",
+      projectId: PROJECT,
+      parentId: null,
+      title: "rich",
+      state: "backlog",
+      blockedReason: null,
+      updatedAt: "2026-09-15T00:00:00Z",
+    };
+    fetchMock.mockResolvedValue(jsonResponse(created, 201));
+    const onCreated = vi.fn();
+
+    render(
+      <CreateTicketSheet
+        projectId={PROJECT}
+        parents={[]}
+        onCreated={onCreated}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByTestId("create-ticket-title"), {
+      target: { value: "rich" },
+    });
+    fireEvent.change(screen.getByTestId("create-ticket-priority"), {
+      target: { value: "high" },
+    });
+    fireEvent.change(screen.getByTestId("create-ticket-workmode"), {
+      target: { value: "planning" },
+    });
+    fireEvent.change(screen.getByTestId("create-ticket-labels"), {
+      target: { value: "backend, urgent-fix, backend" },
+    });
+    fireEvent.click(screen.getByTestId("create-ticket-submit"));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created));
+
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string)).toEqual({
+      title: "rich",
+      priority: "high",
+      workMode: "planning",
+      labels: ["backend", "urgent-fix"],
+    });
+  });
+
   it("surfaces a server refusal instead of faking a create", async () => {
     fetchMock.mockResolvedValue(jsonResponse({ error: "forbidden" }, 403));
     const onCreated = vi.fn();

@@ -4,9 +4,10 @@
 // design ISI-4231 §2). A right slide-over sheet over a scrimmed Issues tab: chosen
 // over a modal so the list context stays visible (operator surface, anti-hero).
 //
-// Fields are the ones the human CREATE contract accepts today (title / description
-// / parent-as-sub-ticket, see lib/tickets/createForm.ts); the payload is assembled
-// exclusively by buildCreateBody so the wire body can't drift. On success the sheet
+// Fields are the ones the human CREATE contract accepts today (title / description /
+// parent-as-sub-ticket, plus Priority / Work-mode / Labels since ISI-4409, see
+// lib/tickets/createForm.ts); the payload is assembled exclusively by buildCreateBody
+// so the wire body can't drift and an untouched optional stays absent. On success the sheet
 // hands the server-assigned WorkItem back to the Issues screen for an optimistic
 // insert (design §2 "optimistic row + link to detail") and closes.
 //
@@ -22,7 +23,13 @@ import {
   EMPTY_CREATE_TICKET,
   type CreateTicketInput,
 } from "@/lib/tickets/createForm";
-import type { WorkItem } from "@/lib/tickets/types";
+import {
+  PRIORITY_LABELS,
+  WORK_ITEM_PRIORITIES,
+  WORK_ITEM_MODES,
+  WORK_MODE_LABELS,
+  type WorkItem,
+} from "@/lib/tickets/types";
 
 export interface CreateTicketSheetProps {
   projectId: string;
@@ -64,6 +71,9 @@ export function CreateTicketSheet({
   const titleId = useId();
   const descId = useId();
   const parentId = useId();
+  const priorityId = useId();
+  const workModeId = useId();
+  const labelsId = useId();
 
   // Focus the title on open, and close on Escape (a11y for a slide-over dialog).
   useEffect(() => {
@@ -174,6 +184,70 @@ export function CreateTicketSheet({
               </select>
               <span className="ksq-field__hint muted">
                 Pick a parent to file this as a sub-ticket.
+              </span>
+            </label>
+
+            <label className="ksq-field" htmlFor={priorityId}>
+              <span className="ksq-field__label">Priority</span>
+              <select
+                id={priorityId}
+                data-testid="create-ticket-priority"
+                aria-label="Priority"
+                value={input.priority}
+                onChange={(e) =>
+                  setInput((s) => ({
+                    ...s,
+                    priority: e.target.value as CreateTicketInput["priority"],
+                  }))
+                }
+              >
+                <option value="">No priority</option>
+                {WORK_ITEM_PRIORITIES.map((p) => (
+                  <option key={p} value={p}>
+                    {PRIORITY_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="ksq-field" htmlFor={workModeId}>
+              <span className="ksq-field__label">Work mode</span>
+              <select
+                id={workModeId}
+                data-testid="create-ticket-workmode"
+                aria-label="Work mode"
+                value={input.workMode}
+                onChange={(e) =>
+                  setInput((s) => ({
+                    ...s,
+                    workMode: e.target.value as CreateTicketInput["workMode"],
+                  }))
+                }
+              >
+                <option value="">Default (standard)</option>
+                {WORK_ITEM_MODES.map((m) => (
+                  <option key={m} value={m}>
+                    {WORK_MODE_LABELS[m]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="ksq-field" htmlFor={labelsId}>
+              <span className="ksq-field__label">Labels</span>
+              <input
+                id={labelsId}
+                type="text"
+                data-testid="create-ticket-labels"
+                aria-label="Labels"
+                placeholder="e.g. backend, urgent-fix"
+                value={input.labels}
+                onChange={(e) =>
+                  setInput((s) => ({ ...s, labels: e.target.value }))
+                }
+              />
+              <span className="ksq-field__hint muted">
+                Comma-separated. Freeform chips — new labels are created on the fly.
               </span>
             </label>
 
