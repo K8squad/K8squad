@@ -29,7 +29,7 @@ rules:
   # team/run/credential/mcpserver reconcilers also own the namespaced
   # scaffold objects (roles/rolebindings/services) inside squad namespaces.
   - apiGroups: ["ksquad.io"]
-    resources: ["agentruntimes", "mcpservers", "skills", "prompts", "toolchains", "otelconfigs", "credentials", "roles"]
+    resources: ["agentruntimes", "mcpservers", "modelconfigs", "skills", "prompts", "toolchains", "otelconfigs", "credentials", "roles"]
     verbs: ["get", "list", "watch"]
   # Status subresources the reconcilers write (otelgate stamps OTelConfig
   # status, the credential controller stamps credential status, ...).

@@ -59,7 +59,7 @@ rules:
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [ksquad.io]
-  resources: [agentruntimes, agents, egresspolicies, mcpservers, otelconfigs, roles, skills]
+  resources: [agentruntimes, agents, egresspolicies, mcpservers, modelconfigs, otelconfigs, roles, skills]
   verbs: [get, list, watch]
 - apiGroups: [ksquad.io]
   # runs split out of the read-only pack (ISI-4132): the M1.3 intake sweep

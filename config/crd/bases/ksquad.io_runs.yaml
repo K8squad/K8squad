@@ -1038,6 +1038,19 @@ spec:
                       description: StartedAt is when the portion began.
                       format: date-time
                       type: string
+                    tier:
+                      description: |-
+                        Tier names which Model-Per-Role tier supplied this segment's model
+                        (ISI-4430 S4): "agent" (Agent.spec.model), "role" (Role.spec.model), or
+                        "default" (the system-default ModelConfig singleton). Provenance origin
+                        so an operator can see WHY a Run ran on a given model without
+                        re-deriving the tier walk. Empty on pre-S4 segments and on the 5.11
+                        fallback path until it stamps the winning tier.
+                      enum:
+                      - agent
+                      - role
+                      - default
+                      type: string
                   required:
                   - model
                   type: object
