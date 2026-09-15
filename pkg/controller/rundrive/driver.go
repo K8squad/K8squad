@@ -194,6 +194,15 @@ type SandboxReleaser interface {
 	Release(ctx context.Context, runID string) error
 }
 
+// FollowSettleReader reports a run's latest a2a dispatch lap settlement (ISI-4435,
+// bound to coord.ProdSettleReader.RunFollowOutcome). The drive loop uses it to tell
+// a successfully-completed run (whose sandbox pod OnDone tears down at agent
+// completion) from a true death, so the expected post-success teardown is never
+// misread as a dead sandbox. Nil disables the check (unit tests, ledger-only).
+type FollowSettleReader interface {
+	RunFollowOutcome(ctx context.Context, runID string) (dispatched, settled bool, outcome string, err error)
+}
+
 // SandboxBindClearer removes the Run's durable coord.sandbox_bind marker
 // (ISI-4310). The marker is what makes a retry lap REATTACH to the bound pod;
 // when the bound pod is provably gone, clearing it is what makes the retry lap
@@ -211,7 +220,16 @@ type Driver struct {
 	Runner    Runner
 	Sandbox   SandboxReleaser    // optional
 	BindClear SandboxBindClearer // optional (ISI-4310 gone-sandbox recovery)
-	Notify    func()             // kicks the resume timer after a fresh episode (optional)
+	// Settle reads a run's a2a follow-settlement (ISI-4435). When the latest
+	// dispatch lap settled SUCCESSFULLY, the drive skips the death / gone-sandbox
+	// paths for this pass: the sandbox pod OnDone tears down at agent completion is
+	// the EXPECTED teardown of a finished run, not a death, and a lease that lapsed
+	// while the agent ran must not retry a completed run — the machine (whose
+	// follow gate now opens) finalizes it to succeeded. Nil disables the guard so
+	// the death paths behave exactly as pre-4435; it is wired in lockstep with the
+	// store's follow gate (ProdRunner + cmd/operator/main.go).
+	Settle FollowSettleReader
+	Notify func() // kicks the resume timer after a fresh episode (optional)
 	// NotifyPhase, when set, is called after a drive pass that committed a
 	// durable step transition so the status projector (pkg/controller/run)
 	// re-reads coord and projects the new phase IMMEDIATELY, instead of waiting
@@ -336,25 +354,44 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		return r.cancelFinish(ctx, &run, cs)
 	}
 
-	// 3.2 death detection: in flight with a lease that expired under a holder
-	// that stopped heart-keeping — sandbox or agent died mid-execution (§5.3).
-	if r.dead(cs) {
-		return r.retryOrFail(ctx, &run, cs)
+	// ISI-4435: a successfully-settled a2a follow means the agent turn FINISHED.
+	// At completion OnDone tears down the run-owned sandbox pod, so a "gone" pod
+	// here — and a lease that lapsed while the (now-done) agent ran — is the
+	// EXPECTED end state, not a death. Skip the death / gone-sandbox paths for such
+	// a run and fall through to the machine drive, whose follow-settlement gate now
+	// opens and commits collecting→succeeded with the real outcome. A not-settled,
+	// failed, or follow_error lap is NOT settledOK and still routes through the
+	// death paths below (a failed/errored follow finalizes there, retry-budgeted).
+	settledOK := false
+	if inFlightStep(cs.Step) {
+		ok, ferr := r.followSucceeded(ctx, runID)
+		if ferr != nil {
+			return ctrl.Result{}, fmt.Errorf("rundrive: read follow settlement for %s: %w", req.NamespacedName, ferr)
+		}
+		settledOK = ok
 	}
 
-	// ISI-4310 gone-sandbox detection: a Run whose BOUND sandbox pod no longer
-	// exists has no terminal path through the machine — dispatch would resolve
-	// the pod forever (deploy-restart AdoptOrReap hit this live: a claim that
-	// was mid-flight across the restart got its pod reaped as unprovable, and
-	// the Run retried `resolve sandbox pod … Pod not found` indefinitely; pod
-	// eviction/node loss produce the same shape). The lease-death detector
-	// above cannot catch it while the HeartbeatSweeper keeps the held checkout
-	// renewed. Route it through the same retry-or-fail death path, with the
-	// stale bind cleared so the retry lap provisions fresh warmth.
-	if gone, err := r.reapGoneSandbox(ctx, &run, cs); err != nil {
-		return ctrl.Result{}, err
-	} else if gone {
-		return r.retryOrFail(ctx, &run, cs)
+	if !settledOK {
+		// 3.2 death detection: in flight with a lease that expired under a holder
+		// that stopped heart-keeping — sandbox or agent died mid-execution (§5.3).
+		if r.dead(cs) {
+			return r.retryOrFail(ctx, &run, cs)
+		}
+
+		// ISI-4310 gone-sandbox detection: a Run whose BOUND sandbox pod no longer
+		// exists has no terminal path through the machine — dispatch would resolve
+		// the pod forever (deploy-restart AdoptOrReap hit this live: a claim that
+		// was mid-flight across the restart got its pod reaped as unprovable, and
+		// the Run retried `resolve sandbox pod … Pod not found` indefinitely; pod
+		// eviction/node loss produce the same shape). The lease-death detector
+		// above cannot catch it while the HeartbeatSweeper keeps the held checkout
+		// renewed. Route it through the same retry-or-fail death path, with the
+		// stale bind cleared so the retry lap provisions fresh warmth.
+		if gone, err := r.reapGoneSandbox(ctx, &run, cs); err != nil {
+			return ctrl.Result{}, err
+		} else if gone {
+			return r.retryOrFail(ctx, &run, cs)
+		}
 	}
 
 	// §6.2 checkout acquire (M1.3 / ISI-4183): the drive loop IS the claim-back
@@ -511,6 +548,23 @@ func (r *Driver) park(ctx context.Context, run *api.Run, runID string) (ctrl.Res
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+// followSucceeded reports whether this run's latest a2a dispatch lap durably
+// settled with a succeeded outcome (ISI-4435). It returns false (not an error to
+// the caller) when no Settle reader is wired — unit tests and ledger-only runs
+// keep the pre-4435 death-path behaviour. A read error IS surfaced so the drive
+// requeues rather than misclassifying a completed run as a death on a transient
+// DB stall.
+func (r *Driver) followSucceeded(ctx context.Context, runID string) (bool, error) {
+	if r.Settle == nil {
+		return false, nil
+	}
+	_, settled, outcome, err := r.Settle.RunFollowOutcome(ctx, runID)
+	if err != nil {
+		return false, err
+	}
+	return settled && outcome == coord.SettleOutcomeSucceeded, nil
 }
 
 // dead reports the 3.2 death signal: in flight, held, and the lease expired.

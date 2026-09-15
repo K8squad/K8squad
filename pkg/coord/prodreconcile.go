@@ -60,6 +60,12 @@ type ProdReconcileStore struct {
 	initiatedBy string // §12.4 control-plane stamp (may be empty → NULL)
 	traceID     string // Run.Status.TraceID for the WS-D lifecycle-event payloads (may be "")
 
+	// a2aFollowGate holds the terminal collecting→succeeded advance until this
+	// run's a2a follow durably settles (ISI-4435). Enabled only by the real-
+	// dispatcher production path (ProdRunner); off for the falsification model and
+	// ledger-only runs, which have no detached follow to wait on.
+	a2aFollowGate bool
+
 	err error // first infrastructure error; sticky (see the error-seam note above)
 }
 
@@ -97,6 +103,18 @@ func NewProdReconcileStore(ctx context.Context, db *sql.DB, workItemID, runID, p
 // payload rather than an empty string. Returns s for chaining.
 func (s *ProdReconcileStore) WithTraceID(traceID string) *ProdReconcileStore {
 	s.traceID = traceID
+	return s
+}
+
+// WithA2AFollowGate enables (or disables) the ISI-4435 follow-settlement gate on
+// this store: when on, Advance holds the terminal collecting→succeeded transition
+// until this run's latest a2a dispatch lap durably settles with a succeeded
+// outcome (see the gate in Advance). It is an opt-in setter — not a constructor
+// arg — so every existing NewProdReconcileStore call site (the falsification-
+// backed chaos tests, ledger-only runs) keeps its pre-4435 synchronous walk; only
+// the real-dispatcher production Runner turns it on. Returns s for chaining.
+func (s *ProdReconcileStore) WithA2AFollowGate(enabled bool) *ProdReconcileStore {
+	s.a2aFollowGate = enabled
 	return s
 }
 
@@ -161,6 +179,32 @@ func (s *ProdReconcileStore) Fence() int64 {
 // fence requires fence_token = *fence. A guard rejection returns false with no
 // captured error; an infrastructure failure returns false AND captures Err().
 func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64) bool {
+	// ISI-4435 follow-settlement gate. The reconcile machine walks
+	// dispatching→running→collecting→succeeded synchronously in one drive pass,
+	// gated only on the a2a /task submit-ack — but the agent's LLM turn runs on a
+	// DETACHED follow that settles seconds later (ISI-4432). Committing the terminal
+	// collecting→succeeded advance here would release the claim, settle the board,
+	// and read Ready=Succeeded while the agent is still working (empty
+	// llmInteractions, null totalTokenUsage, no shim spans). So when this store is
+	// gated (the real-dispatcher production path), hold that ONE advance until this
+	// run's latest dispatch lap durably settles with a succeeded outcome: commit
+	// nothing (a guard rejection, not an error — no Err() capture), so the level-
+	// triggered driver requeues and the Run stays Running until the follow lands.
+	// The check keys on the run's LATEST lap (retry-lap-correct) and treats a run
+	// with no dispatch row as ungated (ledger-only / non-a2a). A settled-but-failed
+	// or follow_error lap keeps the gate closed here — the driver's death /
+	// gone-sandbox paths finalize those with the real outcome + retry budget.
+	if s.a2aFollowGate && expected == reconcile.StepCollecting && next == reconcile.StepSucceeded {
+		dispatched, settled, outcome, gerr := latestLapSettlement(s.ctx, s.db, s.runID)
+		if gerr != nil {
+			s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: follow-settlement gate: %w", gerr))
+			return false
+		}
+		if !A2AFollowGateOpen(dispatched, settled, outcome) {
+			return false // park: the follow has not yet settled-succeeded
+		}
+	}
+
 	tx, err := s.db.BeginTx(s.ctx, nil)
 	if err != nil {
 		s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: begin: %w", err))

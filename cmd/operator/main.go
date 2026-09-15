@@ -1016,6 +1016,16 @@ func main() {
 		// clears the durable bind marker so the retry lap binds fresh warmth
 		// instead of NotFound-looping on the dead pod forever.
 		driver.BindClear = prodClaims
+		// ISI-4435: the follow-settlement guard, wired in LOCKSTEP with the store's
+		// follow gate (ProdRunner enables the gate iff a real dispatcher exists).
+		// When the latest a2a lap settled successfully, the drive skips the death /
+		// gone-sandbox paths so the sandbox pod OnDone tears down at agent completion
+		// is not misread as a death — the machine finalizes the run to succeeded.
+		if settleReader, srerr := coord.NewProdSettleReader(db); srerr != nil {
+			ctrl.Log.Error(srerr, "a2a follow-settlement drive guard disabled: a completed run's sandbox teardown may be misread as a death (retry churn)")
+		} else {
+			driver.Settle = settleReader
+		}
 		// ISI-4381 Option A: on every committed durable step advance, wake the
 		// status projector on the shared kick channel so it projects the new
 		// phase at once. Non-blocking — a full channel falls back to the

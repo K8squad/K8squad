@@ -877,3 +877,77 @@ func TestDriverMissingRunIsNotAnError(t *testing.T) {
 		t.Fatalf("missing run: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ISI-4435: follow-settlement drive guard
+// ---------------------------------------------------------------------------
+
+// fakeFollowSettle is a FollowSettleReader stub: it reports one fixed latest-lap
+// settlement for every run.
+type fakeFollowSettle struct {
+	dispatched bool
+	settled    bool
+	outcome    string
+	err        error
+	calls      int
+}
+
+func (f *fakeFollowSettle) RunFollowOutcome(context.Context, string) (bool, bool, string, error) {
+	f.calls++
+	return f.dispatched, f.settled, f.outcome, f.err
+}
+
+// TestFollowSucceededSkipsDeathPath: a Run parked in-flight (collecting) whose a2a
+// follow durably settled SUCCEEDED must NOT be treated as a death even though its
+// lease lapsed (the operator was down while the agent finished) — the sandbox pod
+// OnDone tears down at completion is the expected end state. The drive re-acquires
+// and finalizes the machine to succeeded instead of entering the retry lap.
+func TestFollowSucceededSkipsDeathPath(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepCollecting, Fence: 7, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		acquireOK: true, acquireFence: 8, laps: 1, retryOK: true}
+	store := &fakeMachineStore{step: reconcile.StepCollecting, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeSucceeded}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("settled-succeeded drive: %v", err)
+	}
+	if len(claims.retryCalls) != 0 || claims.failCall {
+		t.Fatalf("settled-succeeded run entered the death path: retry=%v fail=%v", claims.retryCalls, claims.failCall)
+	}
+	if store.step != reconcile.StepSucceeded {
+		t.Fatalf("durable step = %q, want succeeded", store.step)
+	}
+}
+
+// TestFollowFailedStillTakesDeathPath: a settled-but-FAILED follow is NOT
+// settledOK, so an expired lease still routes through the retry lap — the guard
+// protects only the succeeded outcome, never masking a real failure.
+func TestFollowFailedStillTakesDeathPath(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	max := int32(3)
+	run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{
+		Step: reconcile.StepCollecting, Fence: 7, Holder: "ksquad-operator", RunID: uid,
+		LeaseExpiresAt: leaseAgo(time.Minute), ItemState: "in_progress"},
+		laps: 1, retryOK: true, retryNewFence: 8}
+	store := &fakeMachineStore{step: reconcile.StepCollecting, fence: 7, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+	d.Sandbox = &fakeReleaser{}
+	d.Settle = &fakeFollowSettle{dispatched: true, settled: true, outcome: coord.SettleOutcomeFailed}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("settled-failed drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 {
+		t.Fatalf("settled-failed run did not enter the retry lap: retry=%v", claims.retryCalls)
+	}
+}

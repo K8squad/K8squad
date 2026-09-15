@@ -145,6 +145,61 @@ func (s *ProdSettler) Settle(ctx context.Context, a2aTaskID, runID, outcome stri
 	return nil
 }
 
+// A2AFollowGateOpen reports whether the reconcile machine may commit the terminal
+// collecting→succeeded advance for an a2a-dispatched run, given its LATEST dispatch
+// lap's settlement (ISI-4435). It is the pure decision the durable follow gate is
+// built on:
+//
+//   - dispatched=false → no a2a_dispatch lap (a non-a2a / ledger-only run): there
+//     is no detached follow to wait on, so the advance is NOT gated (open).
+//   - dispatched=true  → the terminal-succeeded advance waits for the follow to
+//     durably settle with a SUCCEEDED outcome. A not-yet-settled lap keeps the
+//     machine parked at Running while the agent's LLM turn runs (the ISI-4432 fix:
+//     the Run must not go terminal on the submit-ack). A settled-but-failed /
+//     follow_error lap ALSO keeps this gate closed — those finalize through the
+//     drive loop's death / gone-sandbox paths with the follow's real outcome and
+//     the retry budget, never through this happy-path advance.
+func A2AFollowGateOpen(dispatched, settled bool, outcome string) bool {
+	if !dispatched {
+		return true
+	}
+	return settled && outcome == SettleOutcomeSucceeded
+}
+
+// latestLapSettlement reads a run's MOST RECENT dispatch lap settlement (by
+// dispatched_at, ISI-4435): dispatched=false when the run has no a2a_dispatch row
+// at all (non-a2a / ledger-only); otherwise settled (settled_at IS NOT NULL) and
+// the lap's settle_outcome. Keying on the LATEST lap — not a work-item-wide
+// bool_or — is load-bearing: a §8 retry lap must wait on ITS OWN follow, never
+// inherit a prior dead lap's follow_error settlement. A "" or non-uuid runID is a
+// silent (false, false, "", nil) without touching the DB (the ::uuid cast would
+// otherwise 22P02 on a malformed ref).
+func latestLapSettlement(ctx context.Context, db *sql.DB, runID string) (dispatched, settled bool, outcome string, err error) {
+	if runID == "" {
+		return false, false, "", nil
+	}
+	if _, perr := uuid.Parse(runID); perr != nil {
+		return false, false, "", nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var oc sql.NullString
+	switch qerr := db.QueryRowContext(ctx, `
+		SELECT settled_at IS NOT NULL, COALESCE(settle_outcome, '')
+		  FROM coord.a2a_dispatch
+		 WHERE run_id = $1::uuid
+		 ORDER BY dispatched_at DESC, a2a_task_id DESC
+		 LIMIT 1`,
+		runID).Scan(&settled, &oc); {
+	case errors.Is(qerr, sql.ErrNoRows):
+		return false, false, "", nil // no dispatch lap: non-a2a / ledger-only run
+	case qerr != nil:
+		return false, false, "", fmt.Errorf("coord.latestLapSettlement: query run %s: %w", runID, qerr)
+	}
+	return true, settled, oc.String, nil
+}
+
 // ProdSettleReader is the read side of the follow-settlement marker (ADR-0020
 // §2.3, ISI-4348-S2). The restart-safe reaper asks it "has this run's a2a follow
 // durably settled?" for a run-owned sandbox pod; a true answer, combined with
@@ -184,6 +239,19 @@ func (r *ProdSettleReader) Settled(ctx context.Context, runID string) (bool, err
 		return false, fmt.Errorf("coord.ProdSettleReader.Settled: query run %s: %w", runID, err)
 	}
 	return settled, nil
+}
+
+// RunFollowOutcome reports a run's LATEST a2a dispatch lap settlement for the
+// ISI-4435 drive-loop gate: dispatched (does an a2a lap exist), settled (has that
+// lap's follow durably settled), and its outcome. Keyed by run_id — the driver
+// holds the Run uid — which is distinct from the work-item-keyed SettledForWorkItem
+// the status projector uses, and reads only the MOST RECENT lap so a retry lap is
+// judged on its own follow (see latestLapSettlement).
+func (r *ProdSettleReader) RunFollowOutcome(ctx context.Context, runID string) (dispatched, settled bool, outcome string, err error) {
+	if r == nil || r.db == nil {
+		return false, false, "", errors.New("coord.ProdSettleReader: nil db")
+	}
+	return latestLapSettlement(ctx, r.db, runID)
 }
 
 // SettledForWorkItem is the S3 read path (ADR-0020 §2.4, ISI-4403). Keyed by a

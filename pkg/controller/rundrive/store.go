@@ -499,7 +499,13 @@ func (r *ProdRunner) Store(ctx context.Context, run *api.Run) (machineStore, err
 	// WS-D (ISI-4386): carry the run's trace id onto the store so its discrete
 	// lifecycle events correlate to the OTel trace spine. Empty pre-dispatch
 	// (before the shim's a2a status projects Run.Status.TraceID) → NULL trace_id.
-	return s.WithTraceID(run.Status.TraceID), nil
+	//
+	// ISI-4435: turn on the follow-settlement gate iff a REAL dispatcher is wired.
+	// With a dispatcher the dispatching step spawns a detached a2a follow that the
+	// terminal advance must wait on; ledger-only mode (nil dispatcher) has no follow
+	// to settle, so gating there would strand the run at collecting forever. The
+	// driver's Settle guard is wired in lockstep with this (cmd/operator/main.go).
+	return s.WithTraceID(run.Status.TraceID).WithA2AFollowGate(r.dispatcher != nil), nil
 }
 
 // Effects implements Runner.Effects.
