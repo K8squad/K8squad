@@ -43,6 +43,25 @@ type RoleSpec struct {
 	// +kubebuilder:validation:Enum=gvisor;kata;runc
 	// +optional
 	RuntimeClassHint string `json:"runtimeClassHint,omitempty"`
+
+	// Model is the role-tier model name applied to every agent assuming this
+	// role that does not set its own Agent.spec.model (Model-Per-Role,
+	// ISI-4430). OPTIONAL: an empty role model falls through to the
+	// system-default ModelConfig singleton. Resolution is tier-as-a-unit
+	// (ISI-4430 D4): the effective (primary, fallback) pair is taken from the
+	// highest tier — agent, then role, then default — whose model is non-empty.
+	// +optional
+	Model string `json:"model,omitempty"`
+
+	// FallbackModel optionally names the role-tier secondary model for mid-Run
+	// model switches on rate_limited signals (arch §8 tier-1 recovery, §10.3).
+	// It is used only when the role tier supplies the effective model (i.e.
+	// Agent.spec.model is empty and Role.spec.model is set); a lower tier's
+	// fallback is never grafted onto a higher tier's primary (ISI-4430 D4).
+	// Reuses the shared FallbackModel type (common_types.go) so the fallback
+	// contract stays identical across Agent and Role.
+	// +optional
+	FallbackModel *FallbackModel `json:"fallbackModel,omitempty"`
 }
 
 // +kubebuilder:object:root=true
