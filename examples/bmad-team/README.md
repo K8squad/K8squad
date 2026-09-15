@@ -84,7 +84,8 @@ against the cluster `Toolchain` catalog this example expects on the cluster
 
   ```bash
   helm install k8squad config/helm -n k8squad-system --create-namespace \
-    --set tools.defaultCatalog.enabled=true
+    --set tools.defaultCatalog.enabled=true \
+    --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
   ```
 
   That renders the curated fourteen-tool catalog (`kubectl`, `git`, `gh`,

@@ -61,7 +61,8 @@ Get a squad running on any Kubernetes 1.31+ cluster:
 ```bash
 # 1. Add the Helm repo and install the operator + console
 helm repo add ksquad https://charts.k8squad.io
-helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # 2. Apply the quickstart squad (a Team, an Agent, and a Project)
 kubectl apply -f https://charts.k8squad.io/quickstart.yaml

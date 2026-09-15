@@ -32,7 +32,8 @@ projects `OPENAI_BASE_URL` into the run.
 helm repo add ksquad https://charts.k8squad.io
 helm repo update
 helm install ksquad ksquad/k8squad \
-  --namespace k8squad-system --create-namespace
+  --namespace k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 ```
 
 Wait for the operator to be ready:
