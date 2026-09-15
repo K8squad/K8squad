@@ -55,10 +55,20 @@ import { ListView } from "./ListView";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 import "./tickets.css";
 
-/** Contributor+ may author board items; a viewer is create-hidden (server-walled too). */
+/**
+ * A signed-in caller may author board items; an unresolved caller (the "viewer"
+ * fail-closed sentinel from {@link fetchViewerRole}) may not. The role here is the
+ * caller's GLOBAL role ("admin" | "user") or the "viewer" sentinel — NOT the per-Project
+ * vocab, which /auth/me does not expose. The server wall stays authoritative regardless;
+ * this only decides whether the "+ New issue" affordance is offered or shown disabled.
+ */
 function canCreate(role: string): boolean {
   return role !== "viewer";
 }
+
+/** Tooltip shown when create is gated off, so a create-hidden state is diagnosable (ISI-4496). */
+const CREATE_GATED_HINT =
+  "Sign in with an account that has create access to open the new-issue form. Access is enforced by the server.";
 
 const EXPANDED_STORAGE_KEY = "ksq.tickets.expanded";
 
@@ -229,6 +239,7 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   const priorities = useMemo(() => distinctValues(items, "priority"), [items]);
   const assignees = useMemo(() => distinctValues(items, "assignee"), [items]);
   const labels = useMemo(() => distinctLabels(items), [items]);
+  const allowCreate = canCreate(role);
 
   return (
     <div
@@ -238,16 +249,22 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
     >
       <header className="ksq-tickets__head">
         <h1>Tickets</h1>
-        {canCreate(role) && (
-          <button
-            type="button"
-            className="ksq-btn ksq-btn--primary"
-            data-testid="new-issue"
-            onClick={() => setCreating(true)}
-          >
-            + New issue
-          </button>
-        )}
+        {/* Always rendered so a create-gated state is diagnosable, not invisible (ISI-4496):
+            an unresolved caller sees a DISABLED button with a hint rather than nothing —
+            "no button at all" was indistinguishable from "feature not shipped". */}
+        <button
+          type="button"
+          className="ksq-btn ksq-btn--primary"
+          data-testid="new-issue"
+          disabled={!allowCreate}
+          aria-disabled={!allowCreate}
+          title={allowCreate ? undefined : CREATE_GATED_HINT}
+          onClick={() => {
+            if (allowCreate) setCreating(true);
+          }}
+        >
+          + New issue
+        </button>
         <div className="ksq-viewtoggle" role="group" aria-label="View">
           <button
             type="button"

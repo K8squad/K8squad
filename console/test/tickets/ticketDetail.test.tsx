@@ -76,7 +76,8 @@ function routeFetch(opts?: {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
     if (u.includes("/api/session")) {
-      return Promise.resolve(jsonResponse({ role }));
+      // /auth/me carries the caller's role as `globalRole` (ISI-4496), not `role`.
+      return Promise.resolve(jsonResponse({ globalRole: role }));
     }
     if (u.includes("/api/work-items/") && u.includes("/comments") && method === "POST") {
       if (postStatus === 201) posted = true;

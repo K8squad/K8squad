@@ -16,7 +16,7 @@ import { resolve } from "node:path";
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { listWorkItems, patchWorkItemState } from "@/lib/tickets/api";
+import { fetchViewerRole, listWorkItems, patchWorkItemState } from "@/lib/tickets/api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -113,5 +113,43 @@ describe("patchWorkItemState request contract (ISI-4225)", () => {
         fromState: "todo",
       }),
     ).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("fetchViewerRole reads /auth/me's globalRole (ISI-4496 RBAC gate)", () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  it("returns the caller's globalRole so a signed-in caller clears the create gate", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ globalRole: "user", username: "ada" }));
+    // Regression: reading the (non-existent) `role` field pinned every caller to "viewer",
+    // hiding "+ New issue" for admins too. "user" !== "viewer" ⇒ create is offered.
+    expect(await fetchViewerRole()).toBe("user");
+  });
+
+  it("passes admin through unchanged", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ globalRole: "admin", username: "root" }));
+    expect(await fetchViewerRole()).toBe("admin");
+  });
+
+  it("fails closed to viewer when globalRole is absent from the payload", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ username: "ada" }));
+    expect(await fetchViewerRole()).toBe("viewer");
+  });
+
+  it("fails closed to viewer on a non-200 (no session / expired)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ error: "no valid session" }, 401));
+    expect(await fetchViewerRole()).toBe("viewer");
+  });
+
+  it("fails closed to viewer when the body is unreadable (catch branch: network/JSON error)", async () => {
+    // A 200 with a non-JSON body makes res.json() throw — the same catch that
+    // swallows a rejected fetch / network drop, proving the fail-closed default.
+    fetchMock.mockResolvedValue(
+      new Response("<html>gateway</html>", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(await fetchViewerRole()).toBe("viewer");
   });
 });
