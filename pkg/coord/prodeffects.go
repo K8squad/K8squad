@@ -583,7 +583,8 @@ func (e *ProdEffects) Terminal(s reconcile.Step) {
 	}
 
 	// ISI-4237 terminal settle: the board reflects the engine — the ticket's
-	// lane moves (succeeded → done, failed/cancelled → todo) with a
+	// lane moves (failed → todo, cancelled → cancelled terminal per ISI-4489;
+	// succeeded moves NO lane — the human owns the move to done) with a
 	// state_transition audit row (lands in the board statusHistory) and the
 	// one-line change summary comment on the thread, all in THIS transaction:
 	// a settled run can never be observed with its ticket still zombie
