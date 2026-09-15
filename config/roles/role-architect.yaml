@@ -1,0 +1,35 @@
+# Seeded Role preset: Architect (phase-lifecycle example, ISI-4431 E3).
+#
+# Architect produces solution designs and implementation plans, so it is a
+# PHASE-BOUND role: eligible only in the design and planning phases. When a
+# coordinator-driven Team's ticket sits on the design or planning lane, the
+# coordinator dispatches this role; on any other phase lane the Architect is
+# not eligible (activePhases gates dispatch — E4).
+#
+# activePhases lists the middle working phases only (design, planning,
+# implementation, code_review, testing, documentation). An empty activePhases
+# would mean phase-agnostic (eligible everywhere, the back-compat default);
+# here we constrain it to the two upstream phases the Architect owns.
+#
+# This is NOT a coordinator (coordinator defaults to false) — only one role per
+# Team is the coordinator (see role-manager.yaml).
+#
+# defaultSkills are UNIONED onto Agent.spec.skillRefs at materialize/run time
+# (ADR-044 step 1; api/v1alpha1/role_types.go), never replaced.
+#
+# Namespace is intentionally unset: apply this manifest into the squad/team
+# namespace where the Agents live — ObjectRefs are namespace-local.
+---
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: role-architect
+  labels:
+    ksquad.io/role-preset: architect
+spec:
+  promptRef:
+    name: role-architect-prompt
+  runtimeClassHint: gvisor
+  activePhases:
+    - design
+    - planning

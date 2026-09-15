@@ -62,6 +62,38 @@ type RoleSpec struct {
 	// contract stays identical across Agent and Role.
 	// +optional
 	FallbackModel *FallbackModel `json:"fallbackModel,omitempty"`
+
+	// ActivePhases lists the lifecycle phases in which an agent holding this
+	// role is eligible to be dispatched (phase-lifecycle, ISI-4431 E3). The
+	// values are the six middle working phases only — backlog/todo/done/
+	// cancelled are intake/terminal lanes never "worked" by a role, so a role
+	// active in e.g. "done" is a config error caught at admission.
+	// EMPTY ⇒ phase-agnostic: the role is eligible in every phase (today's
+	// behavior, the back-compat default).
+	// +kubebuilder:validation:items:Enum=design;planning;implementation;code_review;testing;documentation
+	// +optional
+	ActivePhases []string `json:"activePhases,omitempty"`
+
+	// Coordinator marks this role as its team's lifecycle driver: the single
+	// actor that advances tickets across phases and dispatches the phase-
+	// appropriate role (phase-lifecycle, ISI-4431 E3/E5). At most ONE
+	// coordinator role per Team — that cardinality is enforced at Team
+	// admission (a Role is reusable across teams), NOT on the Role itself. A
+	// coordinator MAY also carry activePhases (it can itself work a phase) but
+	// need not.
+	// +optional
+	Coordinator bool `json:"coordinator,omitempty"`
+
+	// CoordinatorMode selects coordinator autonomy (ISI-4431 Q4). It is
+	// IGNORED unless Coordinator=true (the webhook rejects it when
+	// coordinator=false).
+	//   auto    (default) — advance on phase-agent success, dispatch the next
+	//                        role, no human gate; backward "rework" edges allowed.
+	//   propose           — raise a request_confirmation / audit-logged proposal
+	//                        before each advance and wait for acceptance.
+	// +kubebuilder:validation:Enum=auto;propose
+	// +optional
+	CoordinatorMode string `json:"coordinatorMode,omitempty"`
 }
 
 // +kubebuilder:object:root=true
