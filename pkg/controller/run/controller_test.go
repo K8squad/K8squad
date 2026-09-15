@@ -59,6 +59,18 @@ func (c *capturingSource) StepForWorkItem(_ context.Context, workItemID string) 
 	return c.step, c.found, nil
 }
 
+// fakeSettle is a fixed (dispatched, settled) SettleSource answer, plus an
+// optional error, for exercising the S3 finalize-window hold.
+type fakeSettle struct {
+	dispatched bool
+	settled    bool
+	err        error
+}
+
+func (f fakeSettle) SettledForWorkItem(context.Context, string) (bool, bool, error) {
+	return f.dispatched, f.settled, f.err
+}
+
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -143,6 +155,79 @@ func TestReconcileProjectsHappyPathInOrder(t *testing.T) {
 			t.Errorf("step %q: status rewritten on no-op reconcile: rv %s -> %s",
 				s.step, rvAfterFirst, again.ResourceVersion)
 		}
+	}
+}
+
+// TestReconcile_S3FinalizeWindowHold is the S3 acceptance (ADR-0020 §2.4 / F6,
+// ISI-4403): a Succeeded/Failed durable step whose a2a follow has NOT durably
+// settled projects Running (the finalize window), and flips to the terminal phase
+// only once settlement lands. Non-a2a Runs (no dispatch row) and a nil Settlement
+// source are non-regressing — they project the terminal step straight through.
+func TestReconcile_S3FinalizeWindowHold(t *testing.T) {
+	cases := []struct {
+		name      string
+		step      reconcile.Step
+		settle    *fakeSettle // nil => no Settlement source wired (S3 disabled)
+		wantPhase api.RunPhase
+	}{
+		{"succeeded-unsettled-holds-running", reconcile.StepSucceeded,
+			&fakeSettle{dispatched: true, settled: false}, api.RunPhaseRunning},
+		{"succeeded-settled-is-succeeded", reconcile.StepSucceeded,
+			&fakeSettle{dispatched: true, settled: true}, api.RunPhaseSucceeded},
+		{"failed-unsettled-holds-running", reconcile.StepFailed,
+			&fakeSettle{dispatched: true, settled: false}, api.RunPhaseRunning},
+		{"failed-settled-is-failed", reconcile.StepFailed,
+			&fakeSettle{dispatched: true, settled: true}, api.RunPhaseFailed},
+		{"non-a2a-run-not-held", reconcile.StepSucceeded,
+			&fakeSettle{dispatched: false}, api.RunPhaseSucceeded},
+		{"nil-settlement-is-noregression", reconcile.StepSucceeded,
+			nil, api.RunPhaseSucceeded},
+		// A still-running step is never a finalize candidate: the settlement read
+		// must not fire and must not perturb the projection.
+		{"running-step-untouched", reconcile.StepRunning,
+			&fakeSettle{dispatched: true, settled: false}, api.RunPhaseRunning},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newRun()
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+				WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+			r := &Reconciler{
+				Client: c,
+				Source: fakeSource{step: tc.step, found: true},
+				Now:    func() metav1.Time { return fixedNow },
+			}
+			if tc.settle != nil {
+				r.Settlement = *tc.settle
+			}
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
+			}); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if got := getRun(t, c).Status.Phase; got != tc.wantPhase {
+				t.Fatalf("Phase = %q, want %q", got, tc.wantPhase)
+			}
+		})
+	}
+}
+
+// A Settlement read error surfaces so controller-runtime requeues with backoff,
+// rather than the projector reading a stalled settlement as terminal.
+func TestReconcile_S3SettlementErrorRequeues(t *testing.T) {
+	run := newRun()
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+	r := &Reconciler{
+		Client:     c,
+		Source:     fakeSource{step: reconcile.StepSucceeded, found: true},
+		Settlement: fakeSettle{err: errors.New("connection reset")},
+		Now:        func() metav1.Time { return fixedNow },
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: "run-1", Namespace: "default"},
+	}); err == nil {
+		t.Fatal("a settlement read error must surface so the reconciler requeues")
 	}
 }
 
