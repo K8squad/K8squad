@@ -103,6 +103,14 @@ func main() {
 		ctrl.Log.Error(err, "unable to set up MCPServer webhook")
 		os.Exit(1)
 	}
+
+	// Phase-lifecycle (ISI-4431 E3): Role admission — unknown activePhases
+	// strings and coordinatorMode-without-coordinator. Role stays data-only
+	// (NFR-3); the one-coordinator-per-Team rule lives at Team admission.
+	if err := ksquadv1alpha1.SetupRoleWebhookWithManager(mgr); err != nil {
+		ctrl.Log.Error(err, "unable to set up Role webhook")
+		os.Exit(1)
+	}
 	if err := crossrefs.SetupSkillWebhookWithManager(mgr); err != nil {
 		ctrl.Log.Error(err, "unable to set up Skill webhook")
 		os.Exit(1)
@@ -117,7 +125,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs", "mcpservers", "skills", "toolchains"})
+	ctrl.Log.Info("starting ksquad-webhook", "webhooks", []string{"teams", "projects", "agents", "runs", "otelconfigs", "mcpservers", "roles", "skills", "toolchains"})
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		ctrl.Log.Error(err, "webhook server exited with error")
 		os.Exit(1)

@@ -54,6 +54,48 @@ spec:
               A Role is a reusable behavior profile. It is data-only and validated, not
               reconciled (arch §5.1 table: "data only; validated").
             properties:
+              activePhases:
+                description: |-
+                  ActivePhases lists the lifecycle phases in which an agent holding this
+                  role is eligible to be dispatched (phase-lifecycle, ISI-4431 E3). The
+                  values are the six middle working phases only — backlog/todo/done/
+                  cancelled are intake/terminal lanes never "worked" by a role, so a role
+                  active in e.g. "done" is a config error caught at admission.
+                  EMPTY ⇒ phase-agnostic: the role is eligible in every phase (today's
+                  behavior, the back-compat default).
+                items:
+                  enum:
+                  - design
+                  - planning
+                  - implementation
+                  - code_review
+                  - testing
+                  - documentation
+                  type: string
+                type: array
+              coordinator:
+                description: |-
+                  Coordinator marks this role as its team's lifecycle driver: the single
+                  actor that advances tickets across phases and dispatches the phase-
+                  appropriate role (phase-lifecycle, ISI-4431 E3/E5). At most ONE
+                  coordinator role per Team — that cardinality is enforced at Team
+                  admission (a Role is reusable across teams), NOT on the Role itself. A
+                  coordinator MAY also carry activePhases (it can itself work a phase) but
+                  need not.
+                type: boolean
+              coordinatorMode:
+                description: |-
+                  CoordinatorMode selects coordinator autonomy (ISI-4431 Q4). It is
+                  IGNORED unless Coordinator=true (the webhook rejects it when
+                  coordinator=false).
+                    auto    (default) — advance on phase-agent success, dispatch the next
+                                         role, no human gate; backward "rework" edges allowed.
+                    propose           — raise a request_confirmation / audit-logged proposal
+                                         before each advance and wait for acceptance.
+                enum:
+                - auto
+                - propose
+                type: string
               defaultSkills:
                 description: |-
                   DefaultSkills are granted to every agent assuming this role. They are

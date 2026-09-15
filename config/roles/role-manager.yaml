@@ -9,6 +9,13 @@
 # defaultSkills are UNIONED onto Agent.spec.skillRefs at materialize/run time
 # (ADR-044 step 1; api/v1alpha1/role_types.go), never replaced.
 #
+# Phase-lifecycle (ISI-4431 E3): Manager is the reference COORDINATOR — the
+# single per-Team lifecycle driver that advances tickets across phases and
+# dispatches the phase-appropriate role. coordinatorMode=auto advances on
+# phase-agent success without a human gate. At most one coordinator role per
+# Team (enforced at Team admission). Manager carries no activePhases: it drives
+# the pipeline rather than working a specific phase lane.
+#
 # Namespace is intentionally unset: apply this manifest into the squad/team
 # namespace where the Agents live — ObjectRefs are namespace-local.
 ---
@@ -25,3 +32,5 @@ spec:
     - name: review
     - name: board
   runtimeClassHint: gvisor
+  coordinator: true
+  coordinatorMode: auto
