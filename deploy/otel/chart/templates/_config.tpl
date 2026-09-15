@@ -4,7 +4,8 @@ CR (operator mode) and the ConfigMap (deployment mode). Content is the live
 in-cluster pipeline captured in ISI-4153; only endpoints, resource attributes,
 and the auth secret reference are parameterized.
 Pipeline order is a hard rule: memory_limiter → k8sattributes → resource →
-cumulativetodelta/redaction → tail_sampling → batch.
+cumulativetodelta/redaction → batch. (tail_sampling is temporarily detached
+from the traces pipeline for 100% span capture — ISI-4238.)
 */}}
 {{- define "k8squad-otel.gatewayConfig" -}}
 extensions:
@@ -88,6 +89,10 @@ processors:
           - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
           - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
           - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
+  # NOTE (ISI-4238): defined but intentionally NOT wired into the traces
+  # pipeline right now — see the comment on the traces processors list. Kept
+  # here so re-enabling sampling is a one-line change once run spans are
+  # validated at 100% capture.
   tail_sampling:
     decision_wait: 10s
     num_traces: 50000
@@ -144,7 +149,13 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, tail_sampling, batch]
+      # tail_sampling temporarily detached for 100% span capture (ISI-4238).
+      # The engine run/LLM spans are still being validated end-to-end; the
+      # base-rate probabilistic policy would silently drop ~90% of
+      # successful-run traces and make that validation unreliable. Restore
+      # sampling by re-inserting `tail_sampling` before `batch` once spans are
+      # confirmed flowing.
+      processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
       exporters: [otlphttp/vendor]
     metrics:
       receivers: [otlp]
