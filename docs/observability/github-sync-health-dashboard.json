@@ -1,0 +1,107 @@
+{
+  "//": "GitHub Sync Health — Dynatrace dashboard-as-code (ISI-4395 GH-6 / WS-GH; parent ISI-4229). Portable template (no tenant IDs): import via the Dynatrace Dashboards app or dtctl. Every tile's DQL is syntax-validated against oat05854.dev.apps.dynatracelabs.com; tiles render data once ksquad.scm.* metrics flow (operator with GH-3 deployed + GitHub-sync traffic). Metric keys match pkg/telemetry/semconv/scm.go (GH-5).",
+  "version": 18,
+  "variables": [
+    {
+      "key": "project",
+      "type": "query",
+      "visible": true,
+      "input": "timeseries a = avg(ksquad.scm.mirror.age), by:{project} | fields project",
+      "multiple": true
+    }
+  ],
+  "tiles": {
+    "0": {
+      "type": "markdown",
+      "content": "# GitHub Sync Health\nOTel observability for the GitHub sync path (webhook → reposync → GitHub tab), ISI-4395. SLOs: **freshness p99 < pollInterval+60s**, **success rate ≥ 0.99**, **panics == 0**, **webhook accepted > 0**. Metric contract: `pkg/telemetry/semconv/scm.go`."
+    },
+    "1": {
+      "type": "data",
+      "title": "Mirror freshness p99 (s) — SLO < 360s",
+      "query": "timeseries age_p99 = percentile(ksquad.scm.mirror.age, 99), from:-1h",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "thresholds": [
+          { "value": 0, "color": "#7dc540" },
+          { "value": 360, "color": "#f5d30f" },
+          { "value": 600, "color": "#dc172a" }
+        ],
+        "unitsOverrides": [{ "unit": "Second" }]
+      }
+    },
+    "2": {
+      "type": "data",
+      "title": "Sync success rate — SLO ≥ 0.99",
+      "query": "timeseries synced = sum(ksquad.scm.sync.total, filter:{reason==\"Synced\"}), total = sum(ksquad.scm.sync.total), from:-1h | fieldsAdd rate = arrayAvg(synced) / arrayAvg(total)",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "thresholds": [
+          { "value": 0, "color": "#dc172a" },
+          { "value": 0.99, "color": "#7dc540" }
+        ]
+      }
+    },
+    "3": {
+      "type": "data",
+      "title": "Reconcile panics — SLO == 0",
+      "query": "timeseries panics = sum(ksquad.scm.sync.panics.total), from:-1h",
+      "visualization": "singleValue",
+      "visualizationSettings": {
+        "thresholds": [
+          { "value": 0, "color": "#7dc540" },
+          { "value": 1, "color": "#dc172a" }
+        ]
+      }
+    },
+    "4": {
+      "type": "data",
+      "title": "Webhook deliveries accepted — SLO > 0",
+      "query": "timeseries accepted = sum(ksquad.scm.webhook.total, filter:{outcome==\"accepted\"}), from:-1h",
+      "visualization": "singleValue"
+    },
+    "5": {
+      "type": "data",
+      "title": "Reconcile passes by reason",
+      "query": "timeseries passes = sum(ksquad.scm.sync.total), by:{reason}, from:-3h",
+      "visualization": "lineChart"
+    },
+    "6": {
+      "type": "data",
+      "title": "Webhook deliveries by outcome",
+      "query": "timeseries deliveries = sum(ksquad.scm.webhook.total), by:{outcome}, from:-3h",
+      "visualization": "lineChart"
+    },
+    "7": {
+      "type": "data",
+      "title": "Mirror age by project (s)",
+      "query": "timeseries age = avg(ksquad.scm.mirror.age), by:{project}, from:-3h",
+      "visualization": "lineChart",
+      "visualizationSettings": { "unitsOverrides": [{ "unit": "Second" }] }
+    },
+    "8": {
+      "type": "data",
+      "title": "Reconcile duration p99 (s) by provider",
+      "query": "timeseries dur_p99 = percentile(ksquad.scm.sync.duration, 99), by:{provider}, from:-3h",
+      "visualization": "lineChart",
+      "visualizationSettings": { "unitsOverrides": [{ "unit": "Second" }] }
+    },
+    "9": {
+      "type": "data",
+      "title": "Provider rate-limit headroom (min) by provider",
+      "query": "timeseries rl = min(ksquad.scm.provider.rate_limit.remaining), by:{provider}, from:-3h",
+      "visualization": "lineChart"
+    }
+  },
+  "layouts": {
+    "0": { "x": 0, "y": 0, "w": 24, "h": 2 },
+    "1": { "x": 0, "y": 2, "w": 6, "h": 4 },
+    "2": { "x": 6, "y": 2, "w": 6, "h": 4 },
+    "3": { "x": 12, "y": 2, "w": 6, "h": 4 },
+    "4": { "x": 18, "y": 2, "w": 6, "h": 4 },
+    "5": { "x": 0, "y": 6, "w": 12, "h": 5 },
+    "6": { "x": 12, "y": 6, "w": 12, "h": 5 },
+    "7": { "x": 0, "y": 11, "w": 12, "h": 5 },
+    "8": { "x": 12, "y": 11, "w": 12, "h": 5 },
+    "9": { "x": 0, "y": 16, "w": 12, "h": 5 }
+  }
+}
