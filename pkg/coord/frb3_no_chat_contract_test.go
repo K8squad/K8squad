@@ -460,15 +460,16 @@ var allowedSurface = map[string]string{
 	// ADR-0020 (ISI-4348-S1) durable a2a follow-settlement marker: a custody
 	// annotation on coord.a2a_dispatch + its §6.5 audit, NOT an agent-to-agent
 	// channel — settlement is a post-terminal marker on the follow goroutine.
-	"ProdSettler":              "ADR-0020 §2.2 durable a2a follow-settlement writer bound to coord.a2a_dispatch",
-	"NewProdSettleWriter":      "ADR-0020 §2.2 constructor (follow-settlement marker writer)",
-	"ProdSettler.Settle":       "ADR-0020 §2.2 at-most-once settled_at/settle_outcome marker + a2a_settled audit (§6.5)",
-	"ProdSettleReader":         "ADR-0020 §2.3 durable follow-settlement reader for the restart-safe reaper (ISI-4348-S2)",
-	"NewProdSettleReader":      "ADR-0020 §2.3 constructor (follow-settlement marker reader)",
-	"ProdSettleReader.Settled": "ADR-0020 §2.3 indexed EXISTS over idx_a2a_dispatch_settled: has this run's follow settled?",
-	"SettleOutcomeSucceeded":   "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
-	"SettleOutcomeFailed":      "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
-	"SettleOutcomeFollowError": "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"ProdSettler":                         "ADR-0020 §2.2 durable a2a follow-settlement writer bound to coord.a2a_dispatch",
+	"NewProdSettleWriter":                 "ADR-0020 §2.2 constructor (follow-settlement marker writer)",
+	"ProdSettler.Settle":                  "ADR-0020 §2.2 at-most-once settled_at/settle_outcome marker + a2a_settled audit (§6.5)",
+	"ProdSettleReader":                    "ADR-0020 §2.3 durable follow-settlement reader for the restart-safe reaper (ISI-4348-S2)",
+	"NewProdSettleReader":                 "ADR-0020 §2.3 constructor (follow-settlement marker reader)",
+	"ProdSettleReader.Settled":            "ADR-0020 §2.3 indexed EXISTS over idx_a2a_dispatch_settled: has this run's follow settled?",
+	"ProdSettleReader.SettledForWorkItem": "ADR-0020 §2.4 (ISI-4403) S3 read path: (dispatched, settled) by work_item_id for the Run status finalize-window hold",
+	"SettleOutcomeSucceeded":              "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFailed":                 "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
+	"SettleOutcomeFollowError":            "ADR-0020 §2.1 follow-settlement outcome enum (coord.a2a_dispatch CHECK)",
 
 	// ADR-0020 §5(a) (ISI-4348-S4) leader-elect follow re-attach read side: a
 	// read-only lookup of unsettled dispatch laps whose follow must be re-opened
