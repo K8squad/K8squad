@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -155,6 +156,9 @@ func NewOperatorDispatcher(cfg OperatorDispatchConfig) (*a2a.Dispatcher, error) 
 	if d.source == nil {
 		d.source = sqlDispatchSource{db: cfg.DB}
 	}
+	if d.now == nil {
+		d.now = time.Now
+	}
 	return &a2a.Dispatcher{
 		Client:  a2a.New(sandboxTransport{d}),
 		Builder: d.buildTask,
@@ -169,7 +173,24 @@ type operatorDispatch struct {
 	cfg     OperatorDispatchConfig
 	shimBin string
 	source  dispatchSource
+	// now is the clock supervisorURL reads to age the bound sandbox pod against
+	// podIPReadyDeadline (nil = time.Now; the seam tests pin it).
+	now func() time.Time
 }
+
+// errSandboxPending marks the benign bind/readiness race: the sandbox pod is
+// bound but has not yet been scheduled+networked, so it has no PodIP. It is the
+// EXPECTED path on the first reconcile pass(es) after bind, cleared on requeue
+// once the CNI assigns an IP (ISI-4441). The driver requeues quietly on it
+// instead of recording a span exception — only a pod that stays IP-less past
+// podIPReadyDeadline (a genuine scheduling/CNI failure) escalates to a loud,
+// recorded error so it stands out from the normal race.
+var errSandboxPending = errors.New("rundrive: sandbox pod has no IP yet")
+
+// podIPReadyDeadline bounds how long the pre-IP case stays benign. A bound pod
+// normally gets its IP within seconds; past this the IP-less state is no longer
+// a race but a scheduling/CNI fault worth surfacing on the reconcile span.
+const podIPReadyDeadline = 2 * time.Minute
 
 // dispatchSource is the coord read-side the TaskBuilder needs, kept minimal
 // so tests bind a fake instead of a live Postgres. The prod binding is over
@@ -403,8 +424,10 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 // (http://<podIP>:8080/task — the port cmd/shim's supervisorAddr and the
 // warm-pool Boot probes agree on). Returns "" when the Run has no sandboxRef
 // (pre-bind ordering or a sandbox-less lane); a bound sandbox whose pod is
-// missing or IP-less is a loud error so the re-drive retries instead of
-// silently degrading to the stdio path (which cannot exec the runtime CLI).
+// missing is a loud error so the re-drive retries instead of silently degrading
+// to the stdio path (which cannot exec the runtime CLI). A bound pod that has
+// no IP yet returns errSandboxPending (a benign requeue signal) until it ages
+// past podIPReadyDeadline, after which it is a loud error (ISI-4441).
 func (d *operatorDispatch) supervisorURL(ctx context.Context, a2aTaskID string) (string, error) {
 	run, err := d.runByUID(ctx, cleanRunID(a2aTaskID))
 	if err != nil {
@@ -423,7 +446,13 @@ func (d *operatorDispatch) supervisorURL(ctx context.Context, a2aTaskID string) 
 		return "", fmt.Errorf("rundrive: resolve sandbox pod %s/%s: %w", ns, ref.Name, err)
 	}
 	if pod.Status.PodIP == "" {
-		return "", fmt.Errorf("rundrive: sandbox pod %s/%s has no IP yet", ns, ref.Name)
+		if age := d.now().Sub(pod.CreationTimestamp.Time); age > podIPReadyDeadline {
+			// Past the readiness deadline: no longer a race but a stuck pod
+			// (scheduling/CNI fault). Loud, so it stands out on the span.
+			return "", fmt.Errorf("rundrive: sandbox pod %s/%s has no IP after %s", ns, ref.Name, age.Round(time.Second))
+		}
+		// Benign bind/readiness race: requeue quietly, no span exception.
+		return "", fmt.Errorf("resolve sandbox %s/%s: %w", ns, ref.Name, errSandboxPending)
 	}
 	return "http://" + pod.Status.PodIP + ":8080/task", nil
 }
