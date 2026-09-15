@@ -146,6 +146,12 @@ const (
 	// ksquad_fallback_activations_total increment (story 5.11).
 	attrLLMFallback = attribute.Key("ksquad.llm.fallback")
 
+	// attrLLMDurationMeasured marks an llm.call whose duration was measured by
+	// the shim's step clock rather than reported by the runtime wire (ISI-4238):
+	// true means the runtime (e.g. opencode v1.18.27) did not carry a step
+	// duration, so the span's latency is the wall-clock between step boundaries.
+	attrLLMDurationMeasured = attribute.Key("ksquad.llm.duration_measured")
+
 	// operationChat is the gen_ai.operation.name for a model round-trip
 	// (llm.call). The OTel gen-AI semconv "chat" operation.
 	operationChat = "chat"
@@ -343,6 +349,7 @@ type Mapper struct {
 	mu      sync.Mutex
 	pending map[string]pendingSpan // "task\x00tool" → open span
 	runs    map[string]trace.Span  // taskID → open run root span (ISI-4238)
+	steps   map[string]*stepTimer  // taskID → per-run llm.call step clock
 }
 
 // pendingSpan is one open tool/MCP call: its span and the wall-clock start
@@ -350,6 +357,39 @@ type Mapper struct {
 type pendingSpan struct {
 	span  trace.Span
 	start func() float64
+}
+
+// stepTimer measures the wall-clock latency of each llm.call step for a run
+// whose usage wire does NOT carry a step duration (opencode v1.18.27's
+// step-finish omits it — the source of the "7µs llm.call" Henrik flagged: with
+// no duration the span collapsed to its own open/close overhead). It rides the
+// run's stopwatch (elapsed seconds since run.start) and remembers the elapsed
+// value at the previous step boundary, so each step's measured duration is the
+// gap between consecutive step_finish events (the first step measured from
+// run.start) — a truthful step latency instead of an instantaneous point.
+type stepTimer struct {
+	elapsed func() float64
+	last    float64
+}
+
+// measureStepMS advances the run's step clock and returns the measured latency
+// of the step that just finished, in milliseconds. Zero when no timer exists
+// (a UsageEvent without a preceding RunStart) so the caller falls back to the
+// prior instantaneous behavior rather than fabricating a duration.
+func (m *Mapper) measureStepMS(taskID string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.steps[taskID]
+	if st == nil {
+		return 0
+	}
+	cur := st.elapsed()
+	stepSecs := cur - st.last
+	st.last = cur
+	if stepSecs <= 0 {
+		return 0
+	}
+	return int64(stepSecs * 1000)
 }
 
 // NewMapper builds a Mapper over tracer. reg non-nil registers the metric
@@ -364,6 +404,7 @@ func NewMapper(tracer trace.Tracer, reg prometheus.Registerer) *Mapper {
 		ins:     newInstruments(reg),
 		pending: map[string]pendingSpan{},
 		runs:    map[string]trace.Span{},
+		steps:   map[string]*stepTimer{},
 	}
 }
 
@@ -481,6 +522,9 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 	runCtx, span := m.start(ctx, SpanRunStart, labels.spanAttrs())
 	m.mu.Lock()
 	m.runs[taskID] = span
+	// Arm the per-run step clock so an llm.call whose wire omits a duration is
+	// measured from run.start onward (ISI-4238, the "7µs" fix).
+	m.steps[taskID] = &stepTimer{elapsed: m.now()}
 	m.mu.Unlock()
 	return runCtx, span
 }
@@ -498,6 +542,7 @@ func (m *Mapper) RunEnd(ctx context.Context, taskID, state, reason string) {
 	m.mu.Lock()
 	root, ok := m.runs[taskID]
 	delete(m.runs, taskID)
+	delete(m.steps, taskID)
 	m.mu.Unlock()
 
 	// run.end marker: the terminal instant, queryable on its own.
@@ -606,10 +651,27 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 		attrs = append(attrs, attrLLMFallback.Bool(true))
 	}
 
+	// Step duration: prefer the runtime-reported step duration; when the wire
+	// omits it (opencode v1.18.27's step-finish carries no `duration`, so the
+	// span otherwise collapsed to ~7µs — Henrik's finding), fall back to the
+	// wall-clock the run's step clock measured between this and the previous
+	// step boundary. attrGenAIStepDurationMeasured marks the fallback so the
+	// backend can tell a measured latency from a wire-reported one.
+	durMS := p.DurationMS
+	measured := false
+	if durMS <= 0 {
+		if ms := m.measureStepMS(taskID); ms > 0 {
+			durMS = ms
+			measured = true
+		}
+	}
 	var opts []trace.SpanStartOption
-	if p.DurationMS > 0 {
-		start := time.Now().Add(-time.Duration(p.DurationMS) * time.Millisecond)
+	if durMS > 0 {
+		start := time.Now().Add(-time.Duration(durMS) * time.Millisecond)
 		opts = append(opts, trace.WithTimestamp(start))
+	}
+	if measured {
+		attrs = append(attrs, attrLLMDurationMeasured.Bool(true))
 	}
 	opts = append(opts, trace.WithAttributes(attrs...))
 	_, span := m.startWithOptions(ctx, SpanLLMCall, opts)
@@ -665,6 +727,7 @@ func (m *Mapper) FinishTask(ctx context.Context, taskID string) {
 		root.End()
 		delete(m.runs, taskID)
 	}
+	delete(m.steps, taskID)
 }
 
 func taskIDOf(key string) string {

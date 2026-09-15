@@ -497,6 +497,53 @@ func TestUsageEventLLMCallSpan(t *testing.T) {
 	}
 }
 
+// TestUsageEventMeasuredDuration (ISI-4238): a runtime whose usage wire omits
+// the step duration (opencode v1.18.27 — the "7µs llm.call" Henrik flagged)
+// gets a truthful span duration measured by the run's step clock (now − the
+// previous step boundary), and the span is marked ksquad.llm.duration_measured.
+func TestUsageEventMeasuredDuration(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	// Deterministic step clock: the run's stopwatch reads 3.0s elapsed at the
+	// first step boundary, so a wire without a duration is measured as 3000ms.
+	m.now = func() func() float64 { return func() float64 { return 3.0 } }
+	ctx := context.Background()
+
+	m.RunStart(ctx, Labels{RunID: "run-dur", Agent: "dev"}, "run-dur")
+	m.UsageEvent(ctx, Labels{RunID: "run-dur", Agent: "dev"}, "run-dur", a2a.UsagePayload{
+		Model: "ollama/qwen2.5-coder", Input: 100, Output: 50, DurationMS: 0,
+	})
+
+	s := findSpan(t, sr, SpanLLMCall)
+	if d := s.EndTime().Sub(s.StartTime()); d < 2950*time.Millisecond || d > 3050*time.Millisecond {
+		t.Errorf("llm.call measured duration = %v, want ~3s (wall-clock fallback, not ~7µs)", d)
+	}
+	if attrMap(s.Attributes())["ksquad.llm.duration_measured"] != "true" {
+		t.Errorf("expected ksquad.llm.duration_measured=true for a wire without a step duration")
+	}
+}
+
+// TestUsageEventWireDurationWins (ISI-4238): when the runtime DOES report a
+// step duration it is honored verbatim and the measured-fallback marker is
+// absent — the step clock never overrides a truthful wire duration.
+func TestUsageEventWireDurationWins(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.now = func() func() float64 { return func() float64 { return 99.0 } }
+	ctx := context.Background()
+
+	m.RunStart(ctx, Labels{RunID: "run-w", Agent: "dev"}, "run-w")
+	m.UsageEvent(ctx, Labels{RunID: "run-w", Agent: "dev"}, "run-w", a2a.UsagePayload{
+		Model: "anthropic/claude-sonnet-4", Input: 10, Output: 5, DurationMS: 1500,
+	})
+
+	s := findSpan(t, sr, SpanLLMCall)
+	if d := s.EndTime().Sub(s.StartTime()); d < 1450*time.Millisecond || d > 1550*time.Millisecond {
+		t.Errorf("llm.call duration = %v, want ~1.5s (wire-reported, not the 99s clock)", d)
+	}
+	if _, ok := attrMap(s.Attributes())["ksquad.llm.duration_measured"]; ok {
+		t.Errorf("wire-reported duration must not be marked measured")
+	}
+}
+
 // TestUsageEventGenAISemconv (ISI-4383, ADR-0021 D2): the llm.call span
 // carries the full gen-AI semconv surface — system (provider), served
 // response model, finish reason and response id — when the runtime reports
