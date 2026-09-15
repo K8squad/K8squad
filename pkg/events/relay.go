@@ -5,6 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // Waker delivers outbox NOTIFY wakeups to the relay. The production
@@ -151,7 +156,7 @@ func (r *Relay) Flush(ctx context.Context) (published, failed int, err error) {
 			break
 		}
 		subject := Subject(r.prefix, row.Entity, row.ProjectID, row.Squad, row.EventType)
-		if perr := r.pub.Publish(ctx, subject, row.Payload); perr != nil {
+		if perr := r.publish(ctx, subject, row); perr != nil {
 			// AT-LEAST-ONCE: do NOT stamp — the row stays NULL and is retried.
 			failed++
 			r.metrics.IncPublishFailures()
@@ -172,6 +177,45 @@ func (r *Relay) Flush(ctx context.Context) (published, failed int, err error) {
 	}
 	r.refreshMetrics(ctx)
 	return published, failed, nil
+}
+
+// publish emits one outbox row to the bus INSIDE a producer span that joins the
+// run trace (ISI-4440). It restores the run's span context from the row, opens a
+// `nats publish <subject>` span (OTel messaging semconv), injects the resulting
+// carrier into the message headers, and prefers the HeaderPublisher path so the
+// consumer can continue the same trace; a Publisher without that capability
+// falls back to the header-less Publish (the event still flows, untraced). The
+// span records the publish outcome and always ends — a NATS-down error is
+// surfaced to the caller unchanged so the at-least-once retry is untouched.
+func (r *Relay) publish(ctx context.Context, subject string, row OutboxRow) error {
+	spanCtx, span := telemetry.Tracer().Start(
+		runTraceContext(ctx, row),
+		"nats publish "+subject,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(messagingAttrs("publish", subject, row.RunID)...),
+	)
+	defer span.End()
+
+	hp, ok := r.pub.(HeaderPublisher)
+	if !ok {
+		// No header capability: publish untraced. Do it under the row's original
+		// ctx (not spanCtx) so no half-propagated context leaks downstream.
+		err := r.pub.Publish(ctx, subject, row.Payload)
+		recordPublishSpan(span, err)
+		return err
+	}
+	headers := injectCarrier(spanCtx)
+	err := hp.PublishMsg(spanCtx, subject, row.Payload, headers)
+	recordPublishSpan(span, err)
+	return err
+}
+
+// recordPublishSpan stamps a producer span's status from the publish outcome.
+func recordPublishSpan(span trace.Span, err error) {
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "nats publish failed")
+	}
 }
 
 // refreshMetrics updates the depth/unflushed gauges and, when the Publisher can

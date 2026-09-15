@@ -3,7 +3,10 @@ package events
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // Execer is the subset of *sql.Tx / *sql.DB that Capture needs. Callers pass
@@ -28,8 +31,8 @@ type QueryExecer interface {
 // starts NULL — the relay's set-once flush marker).
 const captureInsert = `
 	INSERT INTO coord.outbox
-	       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
-	VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::uuid, $7::jsonb)`
+	       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
+	VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::uuid, $7::jsonb, $8::jsonb)`
 
 // Capture appends ev to coord.outbox using the caller's transaction, so the
 // event row and the state change commit as one atomic unit (AC-a / C1, §17.4).
@@ -49,7 +52,8 @@ func Capture(ctx context.Context, tx Execer, ev Event) error {
 	}
 	if _, err := tx.ExecContext(ctx, captureInsert,
 		ev.Entity, ev.ProjectID, nullable(ev.Squad), ev.EventType,
-		nullable(ev.WorkItemID), nullable(ev.RunID), string(payload)); err != nil {
+		nullable(ev.WorkItemID), nullable(ev.RunID), string(payload),
+		traceCarrierJSON(ctx)); err != nil {
 		return fmt.Errorf("events.Capture(%s/%s): %w", ev.Entity, ev.EventType, err)
 	}
 	return nil
@@ -63,8 +67,8 @@ func Capture(ctx context.Context, tx Execer, ev Event) error {
 // caught error) rather than a mis-tenanted event.
 const captureForWorkItemInsert = `
 	INSERT INTO coord.outbox
-	       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
-	SELECT 'work_item', w.project_id, w.team_id, $2, w.id, $3::uuid, $4::jsonb
+	       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
+	SELECT 'work_item', w.project_id, w.team_id, $2, w.id, $3::uuid, $4::jsonb, $5::jsonb
 	  FROM coord.work_item w
 	 WHERE w.id = $1::uuid
 	RETURNING 1`
@@ -86,7 +90,8 @@ func CaptureForWorkItem(ctx context.Context, tx QueryExecer, workItemID, runID, 
 	}
 	var one int
 	err := tx.QueryRowContext(ctx, captureForWorkItemInsert,
-		workItemID, eventType, nullable(runID), string(payload)).Scan(&one)
+		workItemID, eventType, nullable(runID), string(payload),
+		traceCarrierJSON(ctx)).Scan(&one)
 	if err == sql.ErrNoRows {
 		return fmt.Errorf("events.CaptureForWorkItem: work_item %s not found (no event captured)", workItemID)
 	}
@@ -103,4 +108,26 @@ func nullable(s string) any {
 		return nil
 	}
 	return s
+}
+
+// traceCarrierJSON serializes the active span context in ctx as a W3C carrier
+// map ({"traceparent":…,"tracestate":…}) for the coord.outbox.trace_carrier
+// column, so the relay can Extract it and make the NATS hop a span in the run
+// trace (ISI-4440). It returns a SQL NULL — not "{}" — when ctx has no active
+// span (Inject writes nothing), so a row captured off the trace stays cleanly
+// NULL and the relay falls back to the payload trace_id / a fresh trace. Best
+// effort by construction: a marshal error (never expected for a small string
+// map) also yields NULL rather than failing the capture, because an outbox
+// write must never depend on the tracer.
+func traceCarrierJSON(ctx context.Context) any {
+	carrier := map[string]string{}
+	telemetry.Inject(ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(carrier)
+	if err != nil {
+		return nil
+	}
+	return string(b)
 }
