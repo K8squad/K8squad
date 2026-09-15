@@ -317,6 +317,7 @@ var allowedSurface = map[string]string{
 	"ErrInvalidState":                 "§8.6 guard: target is not one of the pinned board lanes (→400)",
 	"ErrWorkItemNotFound":             "§12.1 guard: item outside the caller's Team scope is 404-not-403",
 	"ErrStateConflict":                "§8.6 guard: fromState precondition missed / already in target lane (→409)",
+	"ErrTransitionNotAllowed":         "§8.6 guard: valid target but move not in the authored phase-transition graph (→422, ISI-4455)",
 	"HumanStateStore":                 "§8.6/§13 human board-lane transition store bound to the prod schema",
 	"NewHumanStateStore":              "§8.6 constructor",
 	"HumanStateStore.TransitionState": "§8.6/§6.5 conditional lane CAS + audit, no-fence (ADR-037), Team-scoped",

@@ -25,15 +25,85 @@ import (
 	"fmt"
 )
 
-// humanStates is the canonical board-lane enum a human may target — the exact set
-// the 0001 work_item.state CHECK constraint pins (§8.6). `blocked` is intentionally
-// excluded: it is a condition (blocked_reason), not a lane.
+// humanStates is the set of board states a caller may TARGET — the exact set the
+// work_item.state CHECK constraint pins (§8.6, migration 0019 extends 0001).
+// `blocked` is intentionally excluded: it is a condition (blocked_reason), not a
+// lane.
+//
+// ISI-4431/ISI-4452 phase-status model. The 5-lane board grew into a 10-phase
+// human lifecycle:
+//
+//	backlog · todo · design · planning · implementation ·
+//	code_review · testing · documentation · done · cancelled
+//
+// `in_progress` and `in_review` are RETAINED as transitional ENGINE lanes: the
+// coordinator's mechanical dispatch projection writes `in_progress` on claim
+// (prodclaim.go ClaimedState) and settle/reroute read it (settle.go,
+// prodreroute.go), and agents self-report `in_review` (taskio). Dropping them
+// here would break the dispatch engine — out of scope for this child. They are
+// therefore kept valid and folded, for display, into the `implementation` /
+// `code_review` phase columns by the console (ISI-4452 handoff). Retiring them
+// (the literal ISI-4431 "Option A" enum replacement) is a later migration owned
+// by the coordinator auto-advance track, once the engine speaks the phase
+// vocabulary directly. See phaseTransitions for the human move graph.
 var humanStates = map[string]bool{
-	"backlog":     true,
-	"todo":        true,
+	"backlog":        true,
+	"todo":           true,
+	"design":         true,
+	"planning":       true,
+	"implementation": true,
+	"code_review":    true,
+	"testing":        true,
+	"documentation":  true,
+	"done":           true,
+	"cancelled":      true,
+	// Transitional engine lanes (see doc above) — valid targets, not phase columns.
 	"in_progress": true,
 	"in_review":   true,
-	"done":        true,
+}
+
+// terminalStates are the two lifecycle end-states. A card in a terminal state
+// re-enters the flow only by REOPENING into a working lane; it never crosses
+// DIRECTLY to the other terminal (done↔cancelled is the only forbidden edge
+// family — see phaseTransitionAllowed).
+var terminalStates = map[string]bool{
+	"done":      true,
+	"cancelled": true,
+}
+
+// phaseTransitionAllowed is the AUTHORED, fail-closed board-move graph
+// (ISI-4455, consumed by the ISI-4452 Kanban drag-and-drop guard). It is
+// deliberately GENEROUS among working lanes and strict ONLY at the terminal
+// boundary, for two reasons:
+//
+//  1. Safety with the live board. The deployed 5-lane Kanban (KanbanBoard.tsx)
+//     drags freely among backlog/todo/in_progress/in_review/done. Rejecting any
+//     of those moves would break a shipped human action mid-migration. A
+//     phase-ORDER graph (design→planning→…, rework edges only) is the RIGHT
+//     end-state, but it belongs CLIENT-side on the NEW guard-aware Kanban
+//     (ISI-4457), which owns its own drop affordances, not on the shared server
+//     that must keep answering the old board.
+//  2. Honesty. The only move that is nonsensical for EVERY board — old and new —
+//     is crossing directly between the two terminal states (a done card is not
+//     "cancelled", a cancelled card is not "done"; reopen first). That is the
+//     one edge the server fail-closes on; everything else it permits.
+//
+// Rules (from ≠ to; both already validated as members of humanStates):
+//   - from a WORKING lane  → any state (reshuffle, complete, or cancel).
+//   - from a TERMINAL state → any WORKING lane only (reopen); NEVER the other
+//     terminal.
+//
+// The richer forward-flow / rework graph the new Kanban should render as
+// no-drop cues is documented for the FE in the ISI-4455 handoff, not enforced
+// here (fail-open on the server, fail-closed on the new client).
+func phaseTransitionAllowed(from, to string) bool {
+	if from == to {
+		return false // a no-op is a conflict, not a transition (handled separately)
+	}
+	if !terminalStates[from] {
+		return true // working lane → anywhere
+	}
+	return !terminalStates[to] // terminal → working-only (reopen), never terminal→terminal
 }
 
 // StateTransition is the outcome of one human lane move: the lane the item left and
@@ -56,6 +126,11 @@ var (
 	// precondition: either an explicit fromState guard missed, or the item is already
 	// in the target lane (→ 409). Optimistic-concurrency guard for the board.
 	ErrStateConflict = errors.New("coord: state transition conflict")
+	// ErrTransitionNotAllowed — the target is a valid board state, but the move
+	// from the item's current state to it is not in the authored phase-transition
+	// graph (→ 422). Fail-closed: the only forbidden family is terminal→terminal
+	// (done↔cancelled) — see phaseTransitionAllowed.
+	ErrTransitionNotAllowed = errors.New("coord: state transition not allowed")
 )
 
 // HumanStateStore executes the human board-lane transition against the shipped coord
@@ -158,6 +233,15 @@ func (s *HumanStateStore) transition(ctx context.Context, workItemID, teamID, ta
 	}
 	if currentState == targetState {
 		return StateTransition{}, fmt.Errorf("%w: item already in %q", ErrStateConflict, targetState)
+	}
+
+	// (3b) Fail-closed phase-transition graph (ISI-4455). The target is a valid
+	// board state; this rejects the moves the authored graph forbids (today: only
+	// a direct hop between the two terminal states — reopen first). Applies to
+	// both human and agent moves; the engine's mechanical lane writes
+	// (prodclaim/settle/reroute) bypass this path by design.
+	if !phaseTransitionAllowed(currentState, targetState) {
+		return StateTransition{}, fmt.Errorf("%w: %q → %q", ErrTransitionNotAllowed, currentState, targetState)
 	}
 
 	// (4) Conditional UPDATE. The WHERE re-asserts the lane we locked so the write
