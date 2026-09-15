@@ -39,6 +39,10 @@ package observability
 //   - Epic D tool-usage (plan §2.4) — tool/skill/server are bounded registries.
 //   - story 13.10 — auth/RBAC event dims (bounded outcome/action enums; the
 //     two-valued user.role). user.id itself stays an exemplar (see forbidden).
+//   - ISI-4490 (E7 / NFR-5) — phase-timing dim: `initiator` is a bounded enum
+//     (human / agent / coordinator / unknown) attributing a phase move; phase /
+//     from / to are already covered above. The per-item work_item.ref rides the
+//     span, never a metric label (pkg/coord/phasespan.go cardinality firewall).
 //
 // Adding a key here is a deliberate cardinality decision: it must be a bounded
 // enum or a finite registry, never a free-text or per-entity identifier.
@@ -54,6 +58,8 @@ var MetricLabelAllowlist = []string{
 	"tool", "skill", "server",
 	// story 13.10 — auth + RBAC bounded event dims (user.id stays an exemplar).
 	"event_type", "resource_type", "action", "user_role",
+	// ISI-4490 (E7 / NFR-5) — phase-timing initiator enum (human/agent/coordinator/unknown).
+	"initiator",
 }
 
 // MetricLabelForbidden is the hard denylist: unbounded identifiers that must ride
