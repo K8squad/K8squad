@@ -13,7 +13,6 @@ import type {
   StateTransitionBody,
   UpdateWorkItemBody,
   WorkItem,
-  WorkItemState,
 } from "./types";
 
 export class ApiError extends Error {
@@ -61,7 +60,7 @@ export async function listWorkItems(
 export async function patchWorkItemState(
   workItemId: string,
   body: StateTransitionBody,
-): Promise<{ state: WorkItemState }> {
+): Promise<{ state: string }> {
   const res = await fetch(
     `/api/work-items/${encodeURIComponent(workItemId)}/state`,
     {

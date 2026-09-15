@@ -43,6 +43,7 @@ import {
   type WorkItem,
   type WorkItemState,
 } from "@/lib/tickets/types";
+import { type PhaseStatus } from "@/lib/tickets/statusColor";
 import {
   persistView,
   resolveInitialView,
@@ -162,20 +163,24 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
 
   /** 200 ⇒ the card lands in the target column; 409/any failure ⇒ re-sync to server truth. */
   const onTransition = useCallback(
-    async (item: WorkItem, to: WorkItemState) => {
+    async (item: WorkItem, to: PhaseStatus) => {
       try {
         await patchWorkItemState(item.id, {
           toState: to,
           fromState: item.state,
         });
         setNotice(null);
+        // `to` is a ten-status PhaseStatus (ISI-4455 enum); the read-model type
+        // is still the legacy 5-value WorkItemState (ISI-4456 kept it narrow and
+        // folds via statusColor), so assert at this one optimistic-write seam.
+        const optimistic = to as unknown as WorkItemState;
         setItems((prev) =>
-          prev.map((it) => (it.id === item.id ? { ...it, state: to } : it)),
+          prev.map((it) => (it.id === item.id ? { ...it, state: optimistic } : it)),
         );
         setChildrenCache((prev) => {
           const next: Record<string, WorkItem[]> = {};
           for (const [pid, kids] of Object.entries(prev)) {
-            next[pid] = kids.map((it) => (it.id === item.id ? { ...it, state: to } : it));
+            next[pid] = kids.map((it) => (it.id === item.id ? { ...it, state: optimistic } : it));
           }
           return next;
         });
