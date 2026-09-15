@@ -46,7 +46,8 @@ cat > "$work/index.html" <<HTML
 <h1>K8squad Helm repository</h1>
 <pre>helm repo add ksquad https://${DOMAIN}
 helm repo update
-helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace</pre>
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model</pre>
 <p><a href="index.yaml">index.yaml</a> &middot; <a href="quickstart.yaml">quickstart.yaml</a></p>
 HTML
 

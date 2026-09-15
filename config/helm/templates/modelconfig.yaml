@@ -1,0 +1,49 @@
+{{/*
+Model-Per-Role S2 (ISI-4460, parent ISI-4430 plan rev v3 §4b).
+
+Renders the system-default ModelConfig CR — the floor of the tier-as-a-unit
+resolution (agent → role → this default, ISI-4430 D4). The resolver
+(pkg/modelendpoint) reads the well-known singleton named `default` in the
+operator namespace; this template ships exactly that object so the default tier
+is never empty and an Agent/Role with no model still resolves (ISI-4430 D3).
+
+INSTALL FAILS IF THE MODEL IS UNSET (board directive 352a3ef2). Unlike
+Agent.spec.model and Role.spec.model — both optional, they fall through — the
+default tier has nothing below it to fall through to. `modelConfig.default.model`
+carries NO default in values.yaml; `required` aborts `helm install`/`helm upgrade`
+with a clear message when it is unset.
+
+The ModelConfig CRD itself ships in the separate CRD chart (config/helm-crds,
+ADR-0002 Option B), which is installed before this control-plane chart — so the
+CRD is always present before this CR is applied (S1, ISI-4459).
+*/}}
+{{- $default := (.Values.modelConfig | default dict).default | default dict -}}
+apiVersion: ksquad.io/v1alpha1
+kind: ModelConfig
+metadata:
+  # Well-known singleton the resolver reads by name in the operator namespace.
+  name: default
+  namespace: {{ include "k8squad.namespace" . }}
+  labels:
+    {{- include "k8squad.labels" . | nindent 4 }}
+    ksquad.io/component: model-config
+spec:
+  model: {{ required "modelConfig.default.model is required — set the system default model (see chart README)" $default.model | quote }}
+  {{- with $default.fallbackModel }}
+  fallbackModel:
+    model: {{ required "modelConfig.default.fallbackModel.model is required when fallbackModel is set" .model | quote }}
+    {{- with .modelEndpointRef }}
+    modelEndpointRef:
+      name: {{ required "modelConfig.default.fallbackModel.modelEndpointRef.name is required" .name | quote }}
+      {{- with .key }}
+      key: {{ . | quote }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+  {{- with $default.modelEndpointRef }}
+  modelEndpointRef:
+    name: {{ required "modelConfig.default.modelEndpointRef.name is required" .name | quote }}
+    {{- with .key }}
+    key: {{ . | quote }}
+    {{- end }}
+  {{- end }}

@@ -67,6 +67,7 @@ helm upgrade --install "$CRDS_RELEASE" "$CRDS_CHART" \
 helm upgrade --install "$RELEASE" "$CHART" \
   --namespace "$CP_NS" --create-namespace \
   --set tools.defaultCatalog.enabled=true \
+  --set "modelConfig.default.model=${DEFAULT_MODEL:-claude-sonnet-4}" \
   --wait --timeout "$CRD_TIMEOUT"
 endgroup
 

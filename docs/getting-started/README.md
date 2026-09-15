@@ -69,7 +69,8 @@ graph LR
 ### Path 1: Quick Setup (5 minutes)
 ```bash
 # 1. Install operator
-helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # 2. Apply quickstart
 kubectl apply -f https://charts.k8squad.io/quickstart.yaml
@@ -83,7 +84,8 @@ kubectl port-forward -n k8squad-system svc/ksquad-console 8080:80
 ### Path 2: BYO OpenAI (15 minutes)
 ```bash
 # 1. Install operator
-helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # 2. Follow BYO credentials guide
 # (Complete setup with your API key)
@@ -97,7 +99,9 @@ helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace
 ### Path 3: BMAD Team (30 minutes)
 ```bash
 # 1. Install operator with tools
-helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace --set tools.defaultCatalog.enabled=true
+helm install ksquad ksquad/k8squad --namespace k8squad-system --create-namespace \
+  --set tools.defaultCatalog.enabled=true \
+  --set modelConfig.default.model=claude-sonnet-4   # REQUIRED: system default model
 
 # 2. Apply BMAD squad
 kubectl apply -f examples/bmad-team/squad.yaml
