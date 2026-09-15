@@ -75,6 +75,7 @@ func prodResumeFixture(t *testing.T) (*coord.ProdResumeStore, *sql.DB, string) {
 		"0001_coord_schema.sql",
 		"0002_coord_dispatch.sql",
 		"0003_coord_outbox.sql",
+		"0022_coord_outbox_trace_carrier.sql", // coord.outbox.trace_carrier — events.CaptureForWorkItem writes it (ISI-4238/4440); 0003 alone is an incomplete outbox schema
 		"0005_reconcile_step.sql",
 		"0009_run_pause.sql",
 	} {

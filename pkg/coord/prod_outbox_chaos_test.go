@@ -54,10 +54,15 @@ func TestSpineProdOutbox(t *testing.T) {
 	db := openDB(t, dsn)
 	ctx := context.Background()
 
-	// Provision 0001 + 0003.
+	// Provision 0001 + 0003 + 0022. 0022 adds coord.outbox.trace_carrier, which
+	// events.CaptureForWorkItem now writes on every capture (ISI-4238/4440 run
+	// tracing); provisioning 0003 alone leaves the column absent and the co-commit
+	// INSERT fails with 42703 (undefined_column). The outbox schema is only
+	// complete once its additive follow-up migration is applied too.
 	mustExec(t, db, `DROP SCHEMA IF EXISTS coord CASCADE`)
 	mustExec(t, db, coordMigrationSQL(t))
 	mustExec(t, db, outboxMigrationSQL(t))
+	mustExec(t, db, migrationFile(t, "0022_coord_outbox_trace_carrier.sql"))
 
 	const n = 8
 	seedProdItems(t, db, n)
