@@ -18,12 +18,14 @@ package coord
 
 import "testing"
 
-// SettleLaneOf (ISI-4237): the terminal-step → board-lane mapping for the lane
-// the engine actually MOVES. failed/cancelled return the ticket to the
-// dispatchable lane; succeeded maps to NO lane — a settled run is finished work
-// the human moves to done, and the engine must not touch work_item on success
-// (the ISI-4298 resume pin / rundrive D1/D5/D6 keep it in_progress). A retry
-// re-entry (and anything off the terminal set) also maps to "".
+// SettleLaneOf (ISI-4237, ISI-4489): the terminal-step → board-lane mapping for
+// the lane the engine actually MOVES. failed returns the ticket to the
+// dispatchable lane (todo); cancelled lands on the Cancelled TERMINAL lane
+// (ISI-4489/Q3 — a kill is permanent, no longer a bounce to todo); succeeded
+// maps to NO lane — a settled run is finished work the human moves to done, and
+// the engine must not touch work_item on success (the ISI-4298 resume pin /
+// rundrive D1/D5/D6 keep it in_progress). A retry re-entry (and anything off the
+// terminal set) also maps to "".
 func TestSettleLaneOf(t *testing.T) {
 	cases := []struct {
 		step string
@@ -31,8 +33,8 @@ func TestSettleLaneOf(t *testing.T) {
 	}{
 		{"succeeded", ""}, // no engine lane move — human owns the move to done
 		{"failed", "todo"},
-		{"cancelled", "todo"},
-		{"claiming_sandbox", ""}, // retry lap: nothing owed
+		{"cancelled", "cancelled"}, // ISI-4489/Q3: kill → Cancelled terminal
+		{"claiming_sandbox", ""},   // retry lap: nothing owed
 		{"dispatching", ""},
 		{"running", ""},
 		{"collecting", ""},
@@ -75,7 +77,7 @@ func TestSettleSummary(t *testing.T) {
 	}
 	// A human lane move raced ahead of a failed/cancelled settle: the settle
 	// reports the outcome without claiming a lane move.
-	if got := settleSummary("cancelled", "todo", false, "sam"); got != "Run cancelled — agent sam: lane left as-is (moved by a human or not in progress)." {
+	if got := settleSummary("cancelled", "cancelled", false, "sam"); got != "Run cancelled — agent sam: lane left as-is (human move respected, or already terminal/parked)." {
 		t.Fatalf("unmoved summary = %q", got)
 	}
 }
