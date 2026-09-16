@@ -1,0 +1,105 @@
+graph TB
+    subgraph "Ticket Details Screen"
+        A[Ticket Thread Container] --> B[Agent Message Component]
+        A --> C[User Message Component]
+        
+        B --> B1[Agent Message Bubble]
+        B --> B2[AGENT Chip]
+        B --> B3[Agent Avatar]
+        B --> B4[Author Name: Agent]
+        B --> B5[Run Metadata]
+        B --> B6[Message Content]
+        
+        C --> C1[User Message Bubble]
+        C --> C2[USER Chip]
+        C --> C3[User Avatar]
+        C --> C4[Author Name: User]
+        C --> C5[Message Content]
+    end
+    
+    subgraph "CSS Styling System"
+        D[CSS Variables] --> E[Dark Theme]
+        D --> F[Light Theme]
+        
+        E --> E1[--canvas: #0b1220]
+        E --> E2[--border: #25324b]
+        E --> E3[--text: #b6c3d8]
+        
+        F --> F1[--canvas: #f6f8fc]
+        F --> F2[--border: #d6deec]
+        F --> F3[--text: #2a3852]
+        
+        D --> G[Message Colors]
+        G --> G1[--ksq-run: #a78bfa]
+        G --> G2[--status-running: #34d399]
+    end
+    
+    subgraph "Visual Distinction Features"
+        H[Message Bubbles] --> H1[Background Tints]
+        H --> H2[Border Accents]
+        H --> H3[Left Border Stripes]
+        
+        I[Role Chips] --> I1[Uppercase Text]
+        I --> I2[Color-Filled Background]
+        I --> I3[Matching Border Colors]
+        
+        J[Avatars] --> J1[Tinted Background]
+        J --> J2[Colored Border Rings]
+        J --> J3[Icon Color Matching]
+        
+        K[Author Names] --> K1[Role-Tinted Text]
+        K --> K2[Enhanced Visibility]
+    end
+    
+    subgraph "Implementation Files"
+        L[Component] --> L1[TicketDetail.tsx]
+        L1 --> L2[RunCommentCard Function]
+        L2 --> L3[data-role Attributes]
+        L2 --> L4[data-kind Attributes]
+        
+        M[Styling] --> M1[tickets.css]
+        M1 --> M2[Lines 1583-1641]
+        M2 --> M3[CSS Selectors]
+        M2 --> M4[color-mix Functions]
+    end
+    
+    B --> D
+    C --> D
+    B1 --> H
+    C1 --> H
+    B2 --> I
+    C2 --> I
+    B3 --> J
+    C3 --> J
+    B4 --> K
+    C4 --> K
+    
+    D --> H1
+    D --> H2
+    D --> I1
+    D --> I2
+    D --> J1
+    D --> J3
+    D --> K1
+    
+    L --> M
+    M --> G
+    G --> B1
+    G --> C1
+    
+    style A fill:#1a1a2e,stroke:#00bcd4,stroke-width:3px,color:#fff
+    style B fill:#a78bfa,stroke:#fff,stroke-width:2px,color:#fff
+    style C fill:#34d399,stroke:#fff,stroke-width:2px,color:#fff
+    style D fill:#16213e,stroke:#3d7dff,stroke-width:2px,color:#fff
+    style H fill:#0d1117,stroke:#ff6b35,stroke-width:2px,color:#fff
+    style I fill:#16213e,stroke:#00bcd4,stroke-width:2px,color:#fff
+    style J fill:#0d1117,stroke:#9c27b0,stroke-width:2px,color:#fff
+    style K fill:#1a1a2e,stroke:#4caf50,stroke-width:2px,color:#fff
+    style L fill:#16213e,stroke:#ff6b35,stroke-width:2px,color:#fff
+    style M fill:#0d1117,stroke:#00bcd4,stroke-width:2px,color:#fff
+    
+    classDef default fill:#1a1a2e,stroke:#25324b,stroke-width:1px,color:#b6c3d8
+    classDef agent fill:#a78bfa,stroke:#fff,stroke-width:2px,color:#fff
+    classDef user fill:#34d399,stroke:#fff,stroke-width:2px,color:#fff
+    classDef tech fill:#16213e,stroke:#3d7dff,stroke-width:2px,color:#fff
+    classDef visual fill:#0d1117,stroke:#ff6b35,stroke-width:2px,color:#fff

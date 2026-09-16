@@ -1,0 +1,78 @@
+```mermaid
+graph TB
+    subgraph "Frontend Layer"
+        A[TicketDetail.tsx] --> B[RunCommentCard.tsx]
+        B --> C[CSS Styling System]
+    end
+    
+    subgraph "Component Architecture"
+        B --> D[Message Bubble Component]
+        B --> E[Chip Component]
+        B --> F[Avatar Component]
+        B --> G[Author Name Component]
+    end
+    
+    subgraph "Styling Logic"
+        D --> H[Agent Message Styling]
+        D --> I[Human Message Styling]
+        E --> H
+        E --> I
+        F --> H
+        F --> I
+        G --> H
+        G --> I
+    end
+    
+    subgraph "Color System"
+        H --> J[Agent Colors: #00bcd4]
+        I --> K[Human Colors: #4caf50]
+        J --> L[CSS Variables]
+        K --> L
+        L --> M[tickets.css]
+    end
+    
+    subgraph "Data Flow"
+        N[Backend Data] --> O[item.authorKind]
+        O --> P{Conditional Styling}
+        P --> Q[agent class]
+        P --> R[human class]
+        Q --> D
+        R --> D
+    end
+    
+    subgraph "Accessibility Layer"
+        S[WCAG AA Compliance]
+        T[Contrast Ratios]
+        U[Color Blind Support]
+        S --> V[Quality Assurance]
+        T --> V
+        U --> V
+        V --> W[Final Testing]
+    end
+    
+    subgraph "Brand Guidelines"
+        X[IsItObservable Palette]
+        Y[Dark Theme]
+        Z[Vibrant Accents]
+        X --> C
+        Y --> C
+        Z --> C
+    end
+    
+    %% Styling
+    classDef frontEnd fill:#2c3e50,stroke:#34495e,stroke-width:2px,color:#fff
+    classDef component fill:#34495e,stroke:#2c3e50,stroke-width:2px,color:#fff
+    classDef styling fill:#1a1a2e,stroke:#16213e,stroke-width:2px,color:#00bcd4
+    classDef colorSystem fill:#0f3460,stroke:#16213e,stroke-width:2px,color:#4caf50
+    classDef dataFlow fill:#16213e,stroke:#0f3460,stroke-width:2px,color:#ff6b35
+    classDef accessibility fill:#533483,stroke:#6b46c1,stroke-width:2px,color:#fff
+    classDef brand fill:#9c27b0,stroke:#7b1fa2,stroke-width:2px,color:#fff
+    
+    class A,B frontEnd
+    class D,E,F,G component
+    class C,H,I styling
+    class J,K,L colorSystem
+    class N,O,P,Q,R dataFlow
+    class S,T,U,V,W accessibility
+    class X,Y,Z brand
+```

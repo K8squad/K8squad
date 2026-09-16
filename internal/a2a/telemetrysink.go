@@ -18,6 +18,8 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
@@ -56,6 +58,13 @@ func (s *TelemetrySink) Event(ctx context.Context, ev wire.Event) error {
 		switch ev.Type {
 		case wire.EventTool:
 			if p, ok := toolPayload(ev.Payload); ok {
+				// Add tool type categorization for better attribution
+				toolType := getToolType(p.Name)
+				if toolType != "" {
+					// Create a copy with tool type if we want to extend the mapper
+					// For now, just log the tool type for debugging
+					fmt.Printf("Tool event: %s (type: %s)\n", p.Name, toolType)
+				}
 				s.mapper.ToolEvent(ctx, s.labels, ev.A2ATaskID, p)
 			}
 		case wire.EventSkillLoad:
@@ -107,6 +116,34 @@ func toolPayload(payload any) (wire.ToolPayload, bool) {
 			return wire.ToolPayload{}, false
 		}
 		return p, true
+	}
+}
+
+// getToolType categorizes tools for better attribution
+func getToolType(toolName string) string {
+	switch {
+	case strings.HasPrefix(toolName, "bash"):
+		return "bash"
+	case strings.HasPrefix(toolName, "git"):
+		return "git"
+	case strings.HasPrefix(toolName, "mcp"):
+		return "mcp"
+	case strings.HasPrefix(toolName, "docker"):
+		return "docker"
+	case strings.HasPrefix(toolName, "npm"):
+		return "npm"
+	case strings.HasPrefix(toolName, "pip"):
+		return "pip"
+	case strings.HasPrefix(toolName, "python"):
+		return "python"
+	case strings.HasPrefix(toolName, "node"):
+		return "node"
+	default:
+		// Check for MCP server tools
+		if strings.Contains(toolName, ".") && !strings.Contains(toolName, "/") {
+			return "mcp"
+		}
+		return "system"
 	}
 }
 

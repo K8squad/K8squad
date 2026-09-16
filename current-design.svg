@@ -1,0 +1,68 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="600" fill="#1a1a2e"/>
+  
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#ffffff" font-size="24" font-weight="bold">Ticket Details Screen - Current Design</text>
+  
+  <!-- Activity Section -->
+  <rect x="50" y="80" width="700" height="40" fill="#0f3460" stroke="#16213e" stroke-width="2" rx="5"/>
+  <text x="60" y="105" fill="#ffffff" font-size="16" font-weight="600">Activity</text>
+  
+  <!-- Agent Message (Current) -->
+  <g transform="translate(50, 150)">
+    <!-- Avatar -->
+    <circle cx="25" cy="25" r="20" fill="#64748b" stroke="#475569" stroke-width="2"/>
+    <text x="25" y="30" text-anchor="middle" fill="#ffffff" font-size="12">A</text>
+    
+    <!-- Message Bubble -->
+    <rect x="55" y="10" width="500" height="60" fill="#f8f9fa" stroke="#e2e8f0" stroke-width="1" rx="8"/>
+    
+    <!-- Agent Chip -->
+    <rect x="65" y="20" width="60" height="20" fill="#e2e8f0" stroke="#cbd5e1" stroke-width="1" rx="10"/>
+    <text x="95" y="33" text-anchor="middle" fill="#64748b" font-size="10">agent</text>
+    
+    <!-- Author Name -->
+    <text x="135" y="33" fill="#334155" font-size="12">Unknown Agent</text>
+    
+    <!-- Message Text -->
+    <text x="65" y="55" fill="#475569" font-size="11">This is the current agent message design with subtle styling that makes it hard to distinguish from human messages.</text>
+  </g>
+  
+  <!-- Human Message (Current) -->
+  <g transform="translate(50, 250)">
+    <!-- Avatar -->
+    <circle cx="25" cy="25" r="20" fill="#64748b" stroke="#475569" stroke-width="2"/>
+    <text x="25" y="30" text-anchor="middle" fill="#ffffff" font-size="12">H</text>
+    
+    <!-- Message Bubble -->
+    <rect x="55" y="10" width="500" height="60" fill="#f8f9fa" stroke="#e2e8f0" stroke-width="1" rx="8"/>
+    
+    <!-- Human Chip -->
+    <rect x="65" y="20" width="60" height="20" fill="#e2e8f0" stroke="#cbd5e1" stroke-width="1" rx="10"/>
+    <text x="95" y="33" text-anchor="middle" fill="#64748b" font-size="10">human</text>
+    
+    <!-- Author Name -->
+    <text x="135" y="33" fill="#334155" font-size="12">Human User</text>
+    
+    <!-- Message Text -->
+    <text x="65" y="55" fill="#475569" font-size="11">Human messages currently blend with agent messages, making it difficult to quickly identify who posted what.</text>
+  </g>
+  
+  <!-- Issues List -->
+  <g transform="translate(50, 350)">
+    <text x="0" y="0" fill="#ffffff" font-size="16" font-weight="600">Current Issues:</text>
+    
+    <text x="0" y="25" fill="#e2e8f0" font-size="14">• Agent vs human messages have similar styling</text>
+    <text x="0" y="50" fill="#e2e8f0" font-size="14">• Agent names not prominently displayed</text>
+    <text x="0" y="75" fill="#e2e8f0" font-size="14">• Message bubbles use same background color</text>
+    <text x="0" y="100" fill="#e2e8f0" font-size="14">• Difficult to quickly distinguish message types</text>
+  </g>
+  
+  <!-- Visual Flow -->
+  <g transform="translate(600, 150)">
+    <text x="0" y="0" fill="#cbd5e1" font-size="12" font-weight="bold">Result:</text>
+    <text x="0" y="25" fill="#94a3b8" font-size="11" text-anchor="middle">Poor visual</text>
+    <text x="0" y="45" fill="#94a3b8" font-size="11" text-anchor="middle">distinction</text>
+  </g>
+</svg>

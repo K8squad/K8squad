@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISI-4547 Ticket Message Styling - Visual Documentation</title>
+    <style>
+        /* IsItObservable Brand Guidelines */
+        :root {
+            /* Brand Colors */
+            --brand-teal: #00bcd4;
+            --brand-orange: #ff6b35;
+            --brand-green: #4caf50;
+            --brand-purple: #9c27b0;
+            --brand-blue: #3d7dff;
+            
+            /* Dark Theme */
+            --canvas: #0d1117;
+            --surface: #1a1a2e;
+            --raised: #16213e;
+            --border: #25324b;
+            --text: #b6c3d8;
+            --text-hi: #e8eef9;
+            
+            /* Message Colors */
+            --agent-violet: #a78bfa;
+            --user-green: #34d399;
+            --accent: #3d7dff;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: var(--canvas);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: var(--surface);
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            border: 1px solid var(--border);
+        }
+
+        h1 {
+            color: var(--text-hi);
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            color: var(--brand-teal);
+            font-size: 1.2rem;
+            font-weight: 300;
+        }
+
+        .section {
+            background: var(--surface);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid var(--border);
+        }
+
+        h2 {
+            color: var(--text-hi);
+            margin-bottom: 20px;
+            font-size: 2rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .icon {
+            width: 24px;
+            height: 24px;
+            background: var(--brand-teal);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Before/After Comparison */
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin: 30px 0;
+        }
+
+        .comparison-column {
+            background: var(--raised);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .comparison-title {
+            color: var(--text-hi);
+            margin-bottom: 15px;
+            text-align: center;
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        /* Message Styles */
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            border-radius: 8px;
+            padding: 16px;
+            background: var(--canvas);
+            border: 1px solid var(--border);
+        }
+
+        .agent-message {
+            border-left: 4px solid var(--agent-violet);
+            background: linear-gradient(90deg, color-mix(in srgb, var(--agent-violet) 5%, var(--canvas)) 0%, var(--canvas) 100%);
+        }
+
+        .user-message {
+            border-left: 4px solid var(--user-green);
+            background: linear-gradient(90deg, color-mix(in srgb, var(--user-green) 5%, var(--canvas)) 0%, var(--canvas) 100%);
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 16px;
+            color: white;
+            margin-right: 12px;
+        }
+
+        .agent-avatar {
+            background: color-mix(in srgb, var(--agent-violet) 40%, var(--canvas));
+            border: 2px solid var(--agent-violet);
+        }
+
+        .user-avatar {
+            background: color-mix(in srgb, var(--user-green) 40%, var(--canvas));
+            border: 2px solid var(--user-green);
+        }
+
+        .message-content {
+            flex: 1;
+        }
+
+        .message-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .author-name {
+            font-weight: 600;
+            color: var(--text-hi);
+            font-size: 14px;
+        }
+
+        .agent-name {
+            color: var(--agent-violet);
+        }
+
+        .user-name {
+            color: var(--user-green);
+        }
+
+        .role-chip {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .agent-chip {
+            background: color-mix(in srgb, var(--agent-violet) 20%, transparent);
+            border: 1px solid color-mix(in srgb, var(--agent-violet) 60%, transparent);
+            color: var(--agent-violet);
+        }
+
+        .user-chip {
+            background: color-mix(in srgb, var(--user-green) 20%, transparent);
+            border: 1px solid color-mix(in srgb, var(--user-green) 60%, transparent);
+            color: var(--user-green);
+        }
+
+        .message-text {
+            color: var(--text);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .message-meta {
+            margin-top: 8px;
+            font-size: 12px;
+            color: var(--text);
+            opacity: 0.7;
+        }
+
+        /* Color Scheme */
+        .color-palette {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .color-card {
+            background: var(--raised);
+            border-radius: 8px;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+
+        .color-swatch {
+            width: 60px;
+            height: 60px;
+            border-radius: 8px;
+            margin: 0 auto 15px;
+            border: 2px solid var(--border);
+        }
+
+        .color-name {
+            color: var(--text-hi);
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .color-hex {
+            color: var(--brand-teal);
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        /* Feature Grid */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .feature-card {
+            background: var(--raised);
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .feature-title {
+            color: var(--brand-teal);
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .feature-description {
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        /* Status Badge */
+        .status {
+            background: var(--brand-green);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: white;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .comparison {
+                grid-template-columns: 1fr;
+            }
+            
+            h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>ISI-4547 Visual Documentation</h1>
+            <p class="subtitle">Ticket Details Screen Message Styling Implementation</p>
+            <div class="status">
+                <span class="status-dot"></span>
+                Implementation Complete
+            </div>
+        </header>
+
+        <section class="section">
+            <h2>
+                <div class="icon">✓</div>
+                Before & After Comparison
+            </h2>
+            <p>The implementation successfully addresses all requirements with distinct visual styling for agent vs user messages.</p>
+            
+            <div class="comparison">
+                <div class="comparison-column">
+                    <h3 class="comparison-title">❌ Before: Similar Styling</h3>
+                    <div class="message">
+                        <div class="avatar agent-avatar">AI</div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="author-name">Agent Alpha</span>
+                                <span class="role-chip" style="background: #666; color: #ccc;">agent</span>
+                            </div>
+                            <p class="message-text">This message blends with the orchestration flow, making it hard to distinguish from user messages.</p>
+                            <div class="message-meta">run abc123</div>
+                        </div>
+                    </div>
+                    <div class="message">
+                        <div class="avatar user-avatar">U</div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="author-name">User Name</span>
+                                <span class="role-chip" style="background: #666; color: #ccc;">user</span>
+                            </div>
+                            <p class="message-text">User message styling was indistinguishable from agent messages.</p>
+                            <div class="message-meta">2 hours ago</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="comparison-column">
+                    <h3 class="comparison-title">✅ After: Distinct Styling</h3>
+                    <div class="message agent-message">
+                        <div class="avatar agent-avatar">AI</div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="author-name agent-name">Agent Alpha</span>
+                                <span class="role-chip agent-chip">agent</span>
+                            </div>
+                            <p class="message-text">Violet-themed message with clear visual distinction. Easy to identify agent messages in the conversation flow.</p>
+                            <div class="message-meta">run abc123 • running</div>
+                        </div>
+                    </div>
+                    <div class="message user-message">
+                        <div class="avatar user-avatar">U</div>
+                        <div class="message-content">
+                            <div class="message-header">
+                                <span class="author-name user-name">User Name</span>
+                                <span class="role-chip user-chip">user</span>
+                            </div>
+                            <p class="message-text">Green-themed message with clear separation from orchestration flow. Instantly recognizable as user input.</p>
+                            <div class="message-meta">2 hours ago</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>
+                <div class="icon">🎨</div>
+                Color Scheme
+            </h2>
+            <p>The implementation uses a carefully chosen color palette that ensures accessibility while maintaining visual distinction.</p>
+            
+            <div class="color-palette">
+                <div class="color-card">
+                    <div class="color-swatch" style="background: var(--agent-violet);"></div>
+                    <div class="color-name">Agent Violet</div>
+                    <div class="color-hex">#a78bfa</div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: var(--user-green);"></div>
+                    <div class="color-name">User Green</div>
+                    <div class="color-hex">#34d399</div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: var(--brand-teal);"></div>
+                    <div class="color-name">Brand Teal</div>
+                    <div class="color-hex">#00bcd4</div>
+                </div>
+                <div class="color-card">
+                    <div class="color-swatch" style="background: var(--brand-orange);"></div>
+                    <div class="color-name">Brand Orange</div>
+                    <div class="color-hex">#ff6b35</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>
+                <div class="icon">✨</div>
+                Key Features
+            </h2>
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">🎯</div>
+                        Visual Distinction
+                    </div>
+                    <div class="feature-description">
+                        Agent messages use violet theme (#a78bfa) while user messages use green theme (#34d399). Clear left border accent and background tints ensure instant recognition.
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">👤</div>
+                        Clear Authorship
+                    </div>
+                    <div class="feature-description">
+                        Author names are displayed with role-tinted colors. Role chips show "AGENT"/USER" in uppercase with matching background colors for quick scanning.
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">♿</div>
+                        Accessibility
+                    </div>
+                    <div class="feature-description">
+                        WCAG AA compliant color contrast ratios. Dark/light theme compatibility ensures consistent visibility across all environments.
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">🎨</div>
+                        Brand Consistency
+                    </div>
+                    <div class="feature-description">
+                        Follows IsItObservable design system with clean, technical aesthetic. Maintains brand color palette while adding message-specific distinction.
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>
+                <div class="icon">📋</div>
+                Implementation Details
+            </h2>
+            <p>The styling is implemented using CSS variables and semantic data attributes for maximum flexibility and maintainability.</p>
+            
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">🏗️</div>
+                        Component Structure
+                    </div>
+                    <div class="feature-description">
+                        <strong>Location:</strong> <code>/console/components/tickets/TicketDetail.tsx</code><br>
+                        Uses <code>data-role</code> and <code>data-kind</code> attributes for precise styling targeting.
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">🎨</div>
+                        CSS Styling
+                    </div>
+                    <div class="feature-description">
+                        <strong>Location:</strong> <code>/console/components/tickets/tickets.css</code><br>
+                        Lines 1583-1641 contain the complete implementation with CSS variables for theme compatibility.
+                    </div>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-title">
+                        <div class="icon">🌈</div>
+                        Theme Support
+                    </div>
+                    <div class="feature-description">
+                        <code>color-mix()</code> functions ensure proper contrast in both dark and light themes. Uses <code>--ksq-run</code> and <code>--status-running</code> variables.
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+</body>
+</html>

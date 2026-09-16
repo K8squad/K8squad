@@ -421,18 +421,31 @@ func indexRunsByAgent(items []ksquadv1.Run, ns string) map[string][]*ksquadv1.Ru
 }
 
 // runsForAgent returns the Runs selecting agentName (same tenancy rule as indexRunsByAgent).
+// Includes both explicitly named agents and reconciler-defaulted agents.
 func runsForAgent(items []ksquadv1.Run, agentName, ns string) []*ksquadv1.Run {
 	var out []*ksquadv1.Run
 	for i := range items {
 		run := &items[i]
+		hasExplicitMatch := false
 		for _, ref := range run.Spec.Agents {
 			if ref.Namespace != "" && ref.Namespace != ns {
 				continue
 			}
 			if ref.Name == agentName {
-				out = append(out, run)
+				hasExplicitMatch = true
 				break
 			}
+		}
+		
+		// Include if there's an explicit match
+		if hasExplicitMatch {
+			out = append(out, run)
+			continue
+		}
+		
+		// Include if the Run has no explicit agents (defaulted by reconciler)
+		if len(run.Spec.Agents) == 0 {
+			out = append(out, run)
 		}
 	}
 	return out

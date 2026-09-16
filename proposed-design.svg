@@ -1,0 +1,69 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="600" fill="#1a1a2e"/>
+  
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#ffffff" font-size="24" font-weight="bold">Ticket Details Screen - Proposed Design</text>
+  
+  <!-- Activity Section -->
+  <rect x="50" y="80" width="700" height="40" fill="#0f3460" stroke="#16213e" stroke-width="2" rx="5"/>
+  <text x="60" y="105" fill="#ffffff" font-size="16" font-weight="600">Activity</text>
+  
+  <!-- Agent Message (Proposed) -->
+  <g transform="translate(50, 150)">
+    <!-- Avatar with distinct border -->
+    <circle cx="25" cy="25" r="20" fill="#00bcd4" stroke="#00acc1" stroke-width="3"/>
+    <text x="25" y="30" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="bold">A</text>
+    
+    <!-- Enhanced Message Bubble with tinted background -->
+    <rect x="55" y="10" width="500" height="60" fill="#e0f2f1" stroke="#80cbc4" stroke-width="2" rx="8"/>
+    
+    <!-- Prominent AGENT Chip -->
+    <rect x="65" y="18" width="70" height="24" fill="#00838f" stroke="#006064" stroke-width="1" rx="12"/>
+    <text x="100" y="33" text-anchor="middle" fill="#e0f2f1" font-size="11" font-weight="bold">AGENT</text>
+    
+    <!-- Bold Agent Name -->
+    <text x="145" y="33" fill="#00695c" font-size="13" font-weight="600">CodeBot Agent</text>
+    
+    <!-- Message Text -->
+    <text x="65" y="55" fill="#004d40" font-size="11">This agent message now has distinct teal styling with clear author identification.</text>
+  </g>
+  
+  <!-- Human Message (Proposed) -->
+  <g transform="translate(50, 250)">
+    <!-- Avatar with accent border -->
+    <circle cx="25" cy="25" r="20" fill="#4caf50" stroke="#388e3c" stroke-width="3"/>
+    <text x="25" y="30" text-anchor="middle" fill="#ffffff" font-size="12" font-weight="bold">H</text>
+    
+    <!-- Enhanced Message Bubble -->
+    <rect x="55" y="10" width="500" height="60" fill="#f1f8e9" stroke="#c5e1a5" stroke-width="2" rx="8"/>
+    
+    <!-- Prominent HUMAN Chip -->
+    <rect x="65" y="18" width="70" height="24" fill="#4caf50" stroke="#388e3c" stroke-width="1" rx="12"/>
+    <text x="100" y="33" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="bold">HUMAN</text>
+    
+    <!-- Human Name -->
+    <text x="145" y="33" fill="#33691e" font-size="13" font-weight="600">Sarah Johnson</text>
+    
+    <!-- Message Text -->
+    <text x="65" y="55" fill="#33691e" font-size="11">Human messages now have green styling with clear author identification.</text>
+  </g>
+  
+  <!-- Improvements List -->
+  <g transform="translate(50, 350)">
+    <text x="0" y="0" fill="#ffffff" font-size="16" font-weight="600">Improvements:</text>
+    
+    <text x="0" y="25" fill="#4caf50" font-size="14">• Agent messages: Teal theme (#00bcd4) with bold styling</text>
+    <text x="0" y="50" fill="#4caf50" font-size="14">• Human messages: Green theme (#4caf50) with distinct background</text>
+    <text x="0" y="75" fill="#4caf50" font-size="14">• Prominent chips with white text on colored backgrounds</text>
+    <text x="0" y="100" fill="#4caf50" font-size="14">• Author names displayed in bold with appropriate colors</text>
+    <text x="0" y="125" fill="#4caf50" font-size="14">• Clear visual hierarchy and consistent spacing</text>
+  </g>
+  
+  <!-- Visual Flow -->
+  <g transform="translate(600, 150)">
+    <text x="0" y="0" fill="#4caf50" font-size="12" font-weight="bold">Result:</text>
+    <text x="0" y="25" fill="#81c784" font-size="11" text-anchor="middle">Clear visual</text>
+    <text x="0" y="45" fill="#81c784" font-size="11" text-anchor="middle">distinction</text>
+  </g>
+</svg>

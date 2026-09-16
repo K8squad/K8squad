@@ -1579,3 +1579,63 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ---- ISI-4547: agent vs human comment distinction ----
+   Agent comments keep the reserved run hue (--ksq-run, violet) already used
+   by the chip/avatar rings, but now carry a tinted bubble + a 3px accent
+   edge so an agent's message reads at a glance against the orchestration
+   flow. Human ("user") comments take the LOCKED running-green hue. Every
+   tint goes through color-mix over theme variables so dark and light both
+   stay legible. Selectors key on the data-role / data-kind attributes the
+   renderer has always emitted (values: "agent" | "user"). */
+
+/* Expanded bubbles: tinted card + role accent edge on the left. */
+.ksq-runcomment[data-role="agent"] .ksq-runcomment__bubble {
+  background: color-mix(in srgb, var(--ksq-run) 7%, var(--canvas));
+  border-color: color-mix(in srgb, var(--ksq-run) 38%, var(--border));
+  border-left: 3px solid var(--ksq-run);
+}
+.ksq-runcomment[data-role="user"] .ksq-runcomment__bubble {
+  background: color-mix(in srgb, var(--status-running) 7%, var(--canvas));
+  border-color: color-mix(in srgb, var(--status-running) 38%, var(--border));
+  border-left: 3px solid var(--status-running);
+}
+
+/* Role chips: filled + uppercase so AGENT / USER scans instantly
+   (overrides the outline-only agent rule in the S3 section above). */
+.ksq-chip[data-role="agent"] {
+  background: color-mix(in srgb, var(--ksq-run) 16%, transparent);
+  border-color: color-mix(in srgb, var(--ksq-run) 55%, transparent);
+  color: var(--ksq-run);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ksq-chip[data-role="user"] {
+  background: color-mix(in srgb, var(--status-running) 16%, transparent);
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+  color: var(--status-running);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Avatars: tinted fill + 2px role ring (agent keeps its run hue). */
+.ksq-runcomment__avatar[data-kind="agent"] {
+  background: color-mix(in srgb, var(--ksq-run) 14%, var(--canvas));
+  border: 2px solid var(--ksq-run);
+  color: var(--ksq-run);
+}
+.ksq-runcomment__avatar[data-kind="user"] {
+  background: color-mix(in srgb, var(--status-running) 14%, var(--canvas));
+  border: 2px solid var(--status-running);
+  color: var(--status-running);
+}
+
+/* Author name: role-tinted so "who posted" leads the bubble. */
+.ksq-runcomment[data-role="agent"] .ksq-runcomment__head strong {
+  color: var(--ksq-run);
+}
+.ksq-runcomment[data-role="user"] .ksq-runcomment__head strong {
+  color: var(--status-running);
+}

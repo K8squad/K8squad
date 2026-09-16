@@ -205,6 +205,9 @@ type Options struct {
 	// CRDs. Nil ⇒ the four org routes keep the documented 501 (a cluster-less dev
 	// run without an informer cache), exactly like Overview/Credentials.
 	Org OrgReader
+	// Runs is the ISI-4571 run-list and run-detail read model (global listing, project-scoped listing, run detail with steps/comments)
+	// behind the SAME §13 choke point. When nil the run routes keep the documented 501 (dev run without an informer cache).
+	Runs *RunsService
 	// Onboarding is the E1 onboarding-progress read model (ISI-3673, AD-2): the
 	// derived 4-milestone projection over CRD existence (Team / preset Agents /
 	// credentials / Project-with-repo-auth) plus the non-CR-derivable flags held
@@ -607,6 +610,45 @@ func (s *Server) routes(opts Options) {
 			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
 		} else {
 			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// ISI-4571 run endpoints: global listing, project-scoped listing, and run detail
+		if opts.Runs != nil {
+			// Global run listing: GET /api/runs
+			globalRuns := s.router.Path("/api/runs").Subrouter()
+			globalRuns.Use(authz)
+			globalRuns.HandleFunc("", listRuns(opts.Runs)).Methods(http.MethodGet)
+			
+			// Project-scoped run listing: GET /api/projects/{projectId}/runs
+			projectRuns := s.router.Path("/api/projects/{projectId}/runs").Subrouter()
+			projectRuns.Use(authz)
+			if opts.ProjectRoles != nil {
+				projectRuns.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+			}
+			projectRuns.HandleFunc("", listRuns(opts.Runs)).Methods(http.MethodGet)
+			
+			// Run detail: GET /api/runs/{runId}
+			runDetail := s.router.Path("/api/runs/{runId}").Subrouter()
+			runDetail.Use(authz)
+			runDetail.HandleFunc("", getRunDetail(opts.Runs)).Methods(http.MethodGet)
+		} else {
+			globalRuns := s.router.Path("/api/runs").Subrouter()
+			globalRuns.Use(authz)
+			globalRuns.HandleFunc("", notImplemented("run listing endpoints", "ISI-4571: wire a RunsService (informer cache) to enable")).
+				Methods(http.MethodGet)
+			
+			projectRuns := s.router.Path("/api/projects/{projectId}/runs").Subrouter()
+			projectRuns.Use(authz)
+			if opts.ProjectRoles != nil {
+				projectRuns.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+			}
+			projectRuns.HandleFunc("", notImplemented("project run listing endpoints", "ISI-4571: wire a RunsService (informer cache) to enable")).
+				Methods(http.MethodGet)
+			
+			runDetail := s.router.Path("/api/runs/{runId}").Subrouter()
+			runDetail.Use(authz)
+			runDetail.HandleFunc("", notImplemented("run detail endpoint", "ISI-4571: wire a RunsService (informer cache + coord store) to enable")).
 				Methods(http.MethodGet)
 		}
 

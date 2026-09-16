@@ -568,3 +568,77 @@ func TestStatusStreamInitialSnapshot(t *testing.T) {
 		t.Fatalf("stream missing currentRunId: %q", body)
 	}
 }
+
+// TestRunsForAgentIncludesDefaultedRuns — ISI-4570: a Run the reconciler
+// defaulted (Spec.Agents empty — Intake mints these when no explicit selection
+// exists) must still count as "selecting" the agent, or every defaulted Run
+// vanishes from the agent/status surfaces. Explicit foreign-agent selections and
+// foreign-namespace refs stay excluded.
+func TestRunsForAgentIncludesDefaultedRuns(t *testing.T) {
+	ns := "squad-a"
+	runs := []ksquadv1.Run{
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "explicit-run"},
+			Spec:       ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{{Name: "busy"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "defaulted-run"},
+			Spec:       ksquadv1.RunSpec{}, // reconciler-defaulted: no explicit agents
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "other-agent-run"},
+			Spec:       ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{{Name: "someone-else"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "other-ns", Name: "foreign-ns-run"},
+			Spec:       ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{{Name: "busy", Namespace: "other-ns"}}},
+		},
+	}
+
+	got := runsForAgent(runs, "busy", ns)
+	names := make([]string, len(got))
+	for i, r := range got {
+		names[i] = r.Name
+	}
+	want := []string{"explicit-run", "defaulted-run"}
+	if len(names) != len(want) {
+		t.Fatalf("runsForAgent(busy) = %v, want %v", names, want)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range names {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("runsForAgent(busy) = %v, missing %q", names, w)
+		}
+	}
+
+	// A foreign explicit agent sees its own selection PLUS the defaulted run —
+	// a defaulted Run carries no name, so the surface cannot attribute it to
+	// one agent and it stays visible to every query (ISI-4570: visible beats
+	// precisely-attributed; the reconciler stamps Agents when it can).
+	got = runsForAgent(runs, "someone-else", ns)
+	names = make([]string, len(got))
+	for i, r := range got {
+		names[i] = r.Name
+	}
+	if len(names) != 2 {
+		t.Fatalf("runsForAgent(someone-else) = %v, want [other-agent-run defaulted-run]", names)
+	}
+	for _, w := range []string{"other-agent-run", "defaulted-run"} {
+		found := false
+		for _, g := range names {
+			if g == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("runsForAgent(someone-else) = %v, missing %q", names, w)
+		}
+	}
+}

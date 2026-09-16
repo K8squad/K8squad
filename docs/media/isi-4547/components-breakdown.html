@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ISI-4547: Visual Components Breakdown</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            text-align: center;
+            color: #00bcd4;
+            margin-bottom: 40px;
+            font-size: 2.5em;
+            text-shadow: 0 0 20px rgba(0, 188, 212, 0.3);
+        }
+        
+        .component-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+        
+        .component-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+        
+        .component-card h2 {
+            color: #ff6b35;
+            margin-top: 0;
+            font-size: 1.5em;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .component-demo {
+            background: #2c3e50;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 2px solid #34495e;
+        }
+        
+        .specs-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        
+        .specs-table th,
+        .specs-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .specs-table th {
+            background: rgba(0, 188, 212, 0.2);
+            font-weight: bold;
+            color: #00bcd4;
+        }
+        
+        .specs-table tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .color-preview {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            margin-right: 8px;
+            vertical-align: middle;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+        
+        /* Message Bubble Component */
+        .message-bubble {
+            margin-bottom: 20px;
+            border-radius: 15px;
+            padding: 18px;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+        
+        .message-bubble:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+        
+        .agent-message {
+            background: #e0f2f1;
+            border: 2px solid #80cbc4;
+            color: #00695c;
+        }
+        
+        .human-message {
+            background: #f1f8e9;
+            border: 2px solid #c5e1a5;
+            color: #33691e;
+        }
+        
+        /* Chip Component */
+        .chip {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .chip-agent {
+            background: #00bcd4;
+            color: #ffffff;
+            box-shadow: 0 2px 8px rgba(0, 188, 212, 0.3);
+        }
+        
+        .chip-human {
+            background: #4caf50;
+            color: #ffffff;
+            box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+        }
+        
+        /* Avatar Component */
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 16px;
+            margin-right: 12px;
+            border: 3px solid;
+        }
+        
+        .avatar-agent {
+            background: #00bcd4;
+            color: #ffffff;
+            border-color: #00838f;
+        }
+        
+        .avatar-human {
+            background: #4caf50;
+            color: #ffffff;
+            border-color: #388e3c;
+        }
+        
+        /* Name Component */
+        .author-name {
+            font-weight: bold;
+            font-size: 14px;
+            margin-left: 8px;
+            color: #ecf0f1;
+        }
+        
+        /* Implementation Notes */
+        .implementation-notes {
+            background: rgba(156, 39, 176, 0.1);
+            border-left: 4px solid #9c27b0;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .implementation-notes h3 {
+            color: #9c27b0;
+            margin-top: 0;
+            font-size: 1.2em;
+        }
+        
+        .implementation-notes ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        
+        .implementation-notes li {
+            margin-bottom: 5px;
+            line-height: 1.4;
+        }
+        
+        /* Interactive Demo */
+        .interactive-demo {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-top: 30px;
+        }
+        
+        .interactive-demo h3 {
+            color: #00bcd4;
+            margin-top: 0;
+        }
+        
+        .message-type-selector {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .type-button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #2c3e50;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .type-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .type-button.active {
+            background: #00bcd4;
+            box-shadow: 0 4px 15px rgba(0, 188, 212, 0.4);
+        }
+        
+        .type-button.human.active {
+            background: #4caf50;
+            box-shadow: 0 4px 15px rgba(76, 175, 80, 0.4);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ISI-4547: Visual Components Breakdown</h1>
+        
+        <div class="component-grid">
+            <!-- Message Bubble Component -->
+            <div class="component-card">
+                <h2>🔲 Message Bubble</h2>
+                <div class="component-demo">
+                    <div class="message-bubble agent-message">
+                        <strong>Agent Message Style</strong><br>
+                        Distinctive teal background with proper contrast for readability
+                    </div>
+                    <div class="message-bubble human-message" style="margin-top: 15px;">
+                        <strong>Human Message Style</strong><br>
+                        Clear green theme with excellent color contrast
+                    </div>
+                </div>
+                <table class="specs-table">
+                    <tr>
+                        <th>Property</th>
+                        <th>Agent</th>
+                        <th>Human</th>
+                    </tr>
+                    <tr>
+                        <td>Background</td>
+                        <td><span class="color-preview" style="background: #e0f2f1;"></span>#e0f2f1</td>
+                        <td><span class="color-preview" style="background: #f1f8e9;"></span>#f1f8e9</td>
+                    </tr>
+                    <tr>
+                        <td>Border</td>
+                        <td><span class="color-preview" style="background: #80cbc4;"></span>#80cbc4</td>
+                        <td><span class="color-preview" style="background: #c5e1a5;"></span>#c5e1a5</td>
+                    </tr>
+                    <tr>
+                        <td>Text Color</td>
+                        <td><span class="color-preview" style="background: #00695c;"></span>#00695c</td>
+                        <td><span class="color-preview" style="background: #33691e;"></span>#33691e</td>
+                    </tr>
+                    <tr>
+                        <td>Border Width</td>
+                        <td>2px</td>
+                        <td>2px</td>
+                    </tr>
+                    <tr>
+                        <td>Border Radius</td>
+                        <td>15px</td>
+                        <td>15px</td>
+                    </tr>
+                    <tr>
+                        <td>Padding</td>
+                        <td>18px</td>
+                        <td>18px</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Chip Component -->
+            <div class="component-card">
+                <h2>🏷️ Message Chip</h2>
+                <div class="component-demo">
+                    <div style="margin-bottom: 20px;">
+                        <span class="chip chip-agent">AGENT</span>
+                        <span class="author-name">Agent Support</span>
+                    </div>
+                    <div>
+                        <span class="chip chip-human">HUMAN</span>
+                        <span class="author-name">John Doe</span>
+                    </div>
+                </div>
+                <table class="specs-table">
+                    <tr>
+                        <th>Property</th>
+                        <th>Agent</th>
+                        <th>Human</th>
+                    </tr>
+                    <tr>
+                        <td>Background</td>
+                        <td><span class="color-preview" style="background: #00bcd4;"></span>#00bcd4</td>
+                        <td><span class="color-preview" style="background: #4caf50;"></span>#4caf50</td>
+                    </tr>
+                    <tr>
+                        <td>Text Color</td>
+                        <td>#ffffff</td>
+                        <td>#ffffff</td>
+                    </tr>
+                    <tr>
+                        <td>Padding</td>
+                        <td>6px 12px</td>
+                        <td>6px 12px</td>
+                    </tr>
+                    <tr>
+                        <td>Border Radius</td>
+                        <td>20px</td>
+                        <td>20px</td>
+                    </tr>
+                    <tr>
+                        <td>Font Weight</td>
+                        <td>Bold</td>
+                        <td>Bold</td>
+                    </tr>
+                    <tr>
+                        <td>Letter Spacing</td>
+                        <td>0.5px</td>
+                        <td>0.5px</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Avatar Component -->
+            <div class="component-card">
+                <h2>👤 Avatar</h2>
+                <div class="component-demo">
+                    <div style="display: flex; align-items: center; margin-bottom: 20px;">
+                        <div class="avatar avatar-agent">A</div>
+                        <span class="author-name">Agent Support</span>
+                    </div>
+                    <div style="display: flex; align-items: center;">
+                        <div class="avatar avatar-human">U</div>
+                        <span class="author-name">John Doe</span>
+                    </div>
+                </div>
+                <table class="specs-table">
+                    <tr>
+                        <th>Property</th>
+                        <th>Agent</th>
+                        <th>Human</th>
+                    </tr>
+                    <tr>
+                        <td>Size</td>
+                        <td>40px × 40px</td>
+                        <td>40px × 40px</td>
+                    </tr>
+                    <tr>
+                        <td>Background</td>
+                        <td><span class="color-preview" style="background: #00bcd4;"></span>#00bcd4</td>
+                        <td><span class="color-preview" style="background: #4caf50;"></span>#4caf50</td>
+                    </tr>
+                    <tr>
+                        <td>Border</td>
+                        <td><span class="color-preview" style="background: #00838f;"></span>#00838f</td>
+                        <td><span class="color-preview" style="background: #388e3c;"></span>#388e3c</td>
+                    </tr>
+                    <tr>
+                        <td>Border Width</td>
+                        <td>3px</td>
+                        <td>3px</td>
+                    </tr>
+                    <tr>
+                        <td>Border Radius</td>
+                        <td>50%</td>
+                        <td>50%</td>
+                    </tr>
+                    <tr>
+                        <td>Font Size</td>
+                        <td>16px</td>
+                        <td>16px</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <!-- Name Component -->
+            <div class="component-card">
+                <h2>✍️ Author Name</h2>
+                <div class="component-demo">
+                    <div style="display: flex; align-items: center; margin-bottom: 20px;">
+                        <div class="avatar avatar-agent">A</div>
+                        <span class="author-name">Agent Support</span>
+                    </div>
+                    <div style="display: flex; align-items: center;">
+                        <div class="avatar avatar-human">U</div>
+                        <span class="author-name">John Doe</span>
+                    </div>
+                </div>
+                <table class="specs-table">
+                    <tr>
+                        <th>Property</th>
+                        <th>Value</th>
+                    </tr>
+                    <tr>
+                        <td>Font Weight</td>
+                        <td>Bold</td>
+                    </tr>
+                    <tr>
+                        <td>Font Size</td>
+                        <td>14px</td>
+                    </tr>
+                    <tr>
+                        <td>Color</td>
+                        <td><span class="color-preview" style="background: #ecf0f1;"></span>#ecf0f1</td>
+                    </tr>
+                    <tr>
+                        <td>Margin Left</td>
+                        <td>8px</td>
+                    </tr>
+                    <tr>
+                        <td>Text Transform</td>
+                        <td>None</td>
+                    </tr>
+                    <tr>
+                        <td>Letter Spacing</td>
+                        <td>Normal</td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Implementation Notes -->
+        <div class="implementation-notes">
+            <h3>💡 Implementation Guidelines</h3>
+            <ul>
+                <li><strong>Component Structure:</strong> Use consistent class naming (ksq-activity--comment.agent/human)</li>
+                <li><strong>CSS Variables:</strong> Define colors as CSS variables for easy maintenance</li>
+                <li><strong>Responsive Design:</strong> Ensure components work at all screen sizes</li>
+                <li><strong>Accessibility:</strong> Maintain proper contrast ratios (WCAG AA compliant)</li>
+                <li><strong>Performance:</strong> Use CSS transforms for animations instead of properties that trigger repaints</li>
+                <li><strong>Testing:</strong> Verify components in different light/dark modes</li>
+            </ul>
+        </div>
+        
+        <!-- Interactive Demo -->
+        <div class="interactive-demo">
+            <h3>🎮 Interactive Demo</h3>
+            <p>Select a message type to see the styling differences:</p>
+            <div class="message-type-selector">
+                <button class="type-button active" onclick="switchMessageType('agent')">Agent</button>
+                <button class="type-button human" onclick="switchMessageType('human')">Human</button>
+            </div>
+            <div id="demo-message" class="message-bubble agent-message">
+                <span class="chip chip-agent">AGENT</span>
+                <span class="author-name">Agent Support</span><br>
+                This is a sample agent message showing the improved styling with clear visual distinction.
+            </div>
+            <p><strong>Tips:</strong> Hover over components to see interactive effects. Try switching between agent and human message types to compare styling.</p>
+        </div>
+    </div>
+    
+    <script>
+        function switchMessageType(type) {
+            const message = document.getElementById('demo-message');
+            const buttons = document.querySelectorAll('.type-button');
+            
+            // Remove active class from all buttons
+            buttons.forEach(btn => btn.classList.remove('active'));
+            
+            // Add active class to clicked button
+            if (type === 'agent') {
+                buttons[0].classList.add('active');
+                message.className = 'message-bubble agent-message';
+                message.innerHTML = '<span class="chip chip-agent">AGENT</span><span class="author-name">Agent Support</span><br>This is a sample agent message showing the improved styling with clear visual distinction.';
+            } else {
+                buttons[1].classList.add('active');
+                message.className = 'message-bubble human-message';
+                message.innerHTML = '<span class="chip chip-human">HUMAN</span><span class="author-name">John Doe</span><br>This is a sample human message showing the improved styling with clear visual distinction.';
+            }
+        }
+    </script>
+</body>
+</html>

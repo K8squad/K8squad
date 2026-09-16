@@ -1,0 +1,70 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="600" fill="#1a1a2e"/>
+  
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#ffffff" font-size="20" font-weight="bold">Implementation Plan</text>
+  
+  <!-- Current CSS Classes -->
+  <g transform="translate(50, 80)">
+    <text x="0" y="0" fill="#ffffff" font-size="16" font-weight="600">Current CSS Classes:</text>
+    
+    <rect x="0" y="20" width="700" height="120" fill="#0f3460" stroke="#16213e" stroke-width="1" rx="5"/>
+    
+    <text x="10" y="40" fill="#cbd5e1" font-size="12" font-family="monospace">.ksq-activity--comment {</text>
+    <text x="20" y="60" fill="#94a3b8" font-size="11" font-family="monospace">background: var(--canvas);</text>
+    <text x="20" y="80" fill="#94a3b8" font-size="11" font-family="monospace">border: 1px solid var(--border);</text>
+    <text x="20" y="100" fill="#94a3b8" font-size="11" font-family="monospace">border-radius: var(--radius);</text>
+    <text x="10" y="120" fill="#cbd5e1" font-size="12" font-family="monospace">}</text>
+    
+    <text x="10" y="140" fill="#cbd5e1" font-size="12" font-family="monospace">.ksq-chip[data-role="agent"] {</text>
+    <text x="20" y="160" fill="#94a3b8" font-size="11" font-family="monospace">border-color: var(--ksq-run);</text>
+    <text x="20" y="180" fill="#94a3b8" font-size="11" font-family="monospace">color: var(--ksq-run);</text>
+    <text x="10" y="200" fill="#cbd5e1" font-size="12" font-family="monospace">}</text>
+  </g>
+  
+  <!-- Proposed CSS Classes -->
+  <g transform="translate(50, 230)">
+    <text x="0" y="0" fill="#ffffff" font-size="16" font-weight="600">Proposed CSS Classes:</text>
+    
+    <rect x="0" y="20" width="700" height="180" fill="#0f3460" stroke="#16213e" stroke-width="1" rx="5"/>
+    
+    <text x="10" y="40" fill="#81c784" font-size="12" font-family="monospace">/* Agent Message Styling */</text>
+    <text x="10" y="60" fill="#cbd5e1" font-size="12" font-family="monospace">.ksq-activity--comment.agent {</text>
+    <text x="20" y="80" fill="#81c784" font-size="11" font-family="monospace">background: #e0f2f1;</text>
+    <text x="20" y="100" fill="#81c784" font-size="11" font-family="monospace">border-color: #80cbc4;</text>
+    <text x="20" y="120" fill="#81c784" font-size="11" font-family="monospace">border-width: 2px;</text>
+    <text x="10" y="140" fill="#cbd5e1" font-size="12" font-family="monospace">}</text>
+    
+    <text x="10" y="160" fill="#cbd5e1" font-size="12" font-family="monospace">.ksq-chip.agent {</text>
+    <text x="20" y="180" fill="#81c784" font-size="11" font-family="monospace">background: #00bcd4;</text>
+    <text x="20" y="200" fill="#81c784" font-size="11" font-family="monospace">color: #ffffff;</text>
+    <text x="20" y="220" fill="#81c784" font-size="11" font-family="monospace">font-weight: bold;</text>
+    <text x="10" y="240" fill="#cbd5e1" font-size="12" font-family="monospace">}</text>
+  </g>
+  
+  <!-- Implementation Steps -->
+  <g transform="translate(50, 450)">
+    <text x="0" y="0" fill="#ffffff" font-size="16" font-weight="600">Implementation Steps:</text>
+    
+    <text x="0" y="25" fill="#4caf50" font-size="14">1. Update RunCommentCard component to apply agent/human classes</text>
+    <text x="0" y="50" fill="#4caf50" font-size="14">2. Add new CSS classes for agent message styling</text>
+    <text x="0" y="75" fill="#4caf50" font-size="14">3. Update avatar styling for agents with teal border</text>
+    <text x="0" y="100" fill="#4caf50" font-size="14">4. Ensure author names are displayed in bold for agents</text>
+  </g>
+  
+  <!-- Component Updates -->
+  <g transform="translate(450, 230)">
+    <rect x="0" y="20" width="280" height="180" fill="#16213e" stroke="#0f3460" stroke-width="1" rx="5"/>
+    <text x="10" y="40" fill="#ffffff" font-size="14" font-weight="600">Component Updates:</text>
+    
+    <text x="10" y="65" fill="#cbd5e1" font-size="12">RunCommentCard.tsx:</text>
+    <text x="10" y="85" fill="#94a3b8" font-size="11">- Add conditional class based on authorKind</text>
+    <text x="10" y="105" fill="#94a3b8" font-size="11">- Enhance author name display</text>
+    
+    <text x="10" y="130" fill="#cbd5e1" font-size="12">tickets.css:</text>
+    <text x="10" y="150" fill="#94a3b8" font-size="11">- Add agent/human message styles</text>
+    <text x="10" y="170" fill="#94a3b8" font-size="11">- Update avatar styling</text>
+    <text x="10" y="190" fill="#94a3b8" font-size="11">- Enhance chip styling</text>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+```mermaid
+graph LR
+    subgraph Current State
+        A[Ticket Detail Screen] --> B[Message 1 - Agent]
+        A --> C[Message 2 - Human]
+        A --> D[Message 3 - Agent]
+        B --> E[Similar styling to human]
+        C --> E
+        D --> E
+        E --> F[Hard to distinguish message types]
+    end
+    
+    subgraph Improved State
+        G[Ticket Detail Screen] --> H[Message 1 - Agent]
+        G --> I[Message 2 - Human]
+        G --> J[Message 3 - Agent]
+        H --> K[Teal theme - Distinct styling]
+        I --> L[Green theme - Clear contrast]
+        J --> K
+        K --> M[Easy visual distinction]
+        L --> M
+        M --> N[Enhanced user experience]
+    end
+    
+    style A fill:#2c3e50,color:#fff,stroke:#34495e,stroke-width:2px
+    style G fill:#2c3e50,color:#fff,stroke:#34495e,stroke-width:2px
+    style E fill:#e74c3c,color:#fff
+    style M fill:#27ae60,color:#fff
+    style K fill:#00bcd4,color:#fff
+    style L fill:#4caf50,color:#fff
+```

@@ -1,0 +1,113 @@
+<svg viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="800" height="600" fill="#0d1117"/>
+  
+  <!-- Title -->
+  <text x="400" y="40" text-anchor="middle" fill="#e8eef9" font-size="24" font-weight="700" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    ISI-4547 Color Scheme
+  </text>
+  
+  <!-- Brand Colors Section -->
+  <text x="50" y="90" fill="#b6c3d8" font-size="16" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    Brand Palette
+  </text>
+  
+  <!-- Brand Teal -->
+  <rect x="50" y="110" width="80" height="60" fill="#00bcd4" rx="8"/>
+  <text x="90" y="145" text-anchor="middle" fill="#0d1117" font-size="12" font-weight="700" font-family="monospace">Teal</text>
+  <text x="90" y="180" text-anchor="middle" fill="#00bcd4" font-size="14" font-weight="600" font-family="monospace">#00bcd4</text>
+  
+  <!-- Brand Orange -->
+  <rect x="160" y="110" width="80" height="60" fill="#ff6b35" rx="8"/>
+  <text x="200" y="145" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="monospace">Orange</text>
+  <text x="200" y="180" text-anchor="middle" fill="#ff6b35" font-size="14" font-weight="600" font-family="monospace">#ff6b35</text>
+  
+  <!-- Brand Green -->
+  <rect x="270" y="110" width="80" height="60" fill="#4caf50" rx="8"/>
+  <text x="310" y="145" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="monospace">Green</text>
+  <text x="310" y="180" text-anchor="middle" fill="#4caf50" font-size="14" font-weight="600" font-family="monospace">#4caf50</text>
+  
+  <!-- Brand Purple -->
+  <rect x="380" y="110" width="80" height="60" fill="#9c27b0" rx="8"/>
+  <text x="420" y="145" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="monospace">Purple</text>
+  <text x="420" y="180" text-anchor="middle" fill="#9c27b0" font-size="14" font-weight="600" font-family="monospace">#9c27b0</text>
+  
+  <!-- Message Colors Section -->
+  <text x="50" y="230" fill="#b6c3d8" font-size="16" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    Message Colors
+  </text>
+  
+  <!-- Agent Violet -->
+  <rect x="50" y="250" width="80" height="60" fill="#a78bfa" rx="8"/>
+  <text x="90" y="285" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="monospace">Agent</text>
+  <text x="90" y="300" text-anchor="middle" fill="#a78bfa" font-size="14" font-weight="600" font-family="monospace">#a78bfa</text>
+  
+  <!-- User Green -->
+  <rect x="160" y="250" width="80" height="60" fill="#34d399" rx="8"/>
+  <text x="200" y="285" text-anchor="middle" fill="#fff" font-size="12" font-weight="700" font-family="monospace">User</text>
+  <text x="200" y="300" text-anchor="middle" fill="#34d399" font-size="14" font-weight="600" font-family="monospace">#34d399</text>
+  
+  <!-- Message Examples -->
+  <text x="50" y="370" fill="#b6c3d8" font-size="16" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    Message Examples
+  </text>
+  
+  <!-- Agent Message Example -->
+  <rect x="50" y="390" width="340" height="80" fill="url(#agentGradient)" stroke="#a78bfa" stroke-width="3" rx="8"/>
+  <rect x="50" y="390" width="340" height="4" fill="#a78bfa"/>
+  
+  <!-- Agent Avatar -->
+  <circle cx="80" cy="430" r="15" fill="color-mix(in srgb, #a78bfa 40%, #0d1117)" stroke="#a78bfa" stroke-width="2"/>
+  <text x="80" y="435" text-anchor="middle" fill="#fff" font-size="12" font-weight="600" font-family="monospace">AI</text>
+  
+  <!-- Agent Content -->
+  <text x="110" y="420" fill="#a78bfa" font-size="14" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">Agent Alpha</text>
+  <rect x="110" y="430" width="50" height="20" fill="color-mix(in srgb, #a78bfa 20%, transparent)" stroke="color-mix(in srgb, #a78bfa 60%, transparent)" stroke-width="1" rx="4"/>
+  <text x="135" y="444" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700" font-family="monospace">AGENT</text>
+  
+  <text x="170" y="420" fill="#b6c3d8" font-size="12" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">Agent message with violet styling and accent border</text>
+  <text x="170" y="440" fill="#b6c3d8" font-size="12" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">clear distinction from orchestration flow</text>
+  
+  <!-- User Message Example -->
+  <rect x="410" y="390" width="340" height="80" fill="url(#userGradient)" stroke="#34d399" stroke-width="3" rx="8"/>
+  <rect x="410" y="390" width="340" height="4" fill="#34d399"/>
+  
+  <!-- User Avatar -->
+  <circle cx="440" cy="430" r="15" fill="color-mix(in srgb, #34d399 40%, #0d1117)" stroke="#34d399" stroke-width="2"/>
+  <text x="440" y="435" text-anchor="middle" fill="#fff" font-size="12" font-weight="600" font-family="monospace">U</text>
+  
+  <!-- User Content -->
+  <text x="470" y="420" fill="#34d399" font-size="14" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">User Name</text>
+  <rect x="470" y="430" width="50" height="20" fill="color-mix(in srgb, #34d399 20%, transparent)" stroke="color-mix(in srgb, #34d399 60%, transparent)" stroke-width="1" rx="4"/>
+  <text x="495" y="444" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700" font-family="monospace">USER</text>
+  
+  <text x="530" y="420" fill="#b6c3d8" font-size="12" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">User message with green styling and clear</text>
+  <text x="530" y="440" fill="#b6c3d8" font-size="12" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">visual separation from agent messages</text>
+  
+  <!-- Accessibility Section -->
+  <text x="50" y="510" fill="#b6c3d8" font-size="16" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    Accessibility Features
+  </text>
+  
+  <circle cx="70" cy="540" r="8" fill="#00bcd4"/>
+  <text x="85" y="545" fill="#b6c3d8" font-size="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">WCAG AA compliant contrast ratios</text>
+  
+  <circle cx="300" cy="540" r="8" fill="#ff6b35"/>
+  <text x="315" y="545" fill="#b6c3d8" font-size="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">Dark/Light theme compatibility</text>
+  
+  <circle cx="530" cy="540" r="8" fill="#4caf50"/>
+  <text x="545" y="545" fill="#b6c3d8" font-size="14" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">High contrast for readability</text>
+  
+  <!-- Gradients -->
+  <defs>
+    <linearGradient id="agentGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:color-mix(in srgb, #a78bfa 5%, #0d1117)"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+    
+    <linearGradient id="userGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:color-mix(in srgb, #34d399 5%, #0d1117)"/>
+      <stop offset="100%" style="stop-color:#0d1117"/>
+    </linearGradient>
+  </defs>
+</svg>

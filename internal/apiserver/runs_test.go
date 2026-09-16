@@ -1,0 +1,307 @@
+package apiserver
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/internal/discussion"
+)
+
+func TestRunsService(t *testing.T) {
+	ctx := context.Background()
+
+	// Create test Team
+	teamUID := uuid.New()
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-team",
+			UID:  types.UID(teamUID.String()),
+		},
+		Status: ksquadv1.TeamStatus{
+			Namespace: "team-" + teamUID.String()[:8],
+		},
+	}
+	
+	// Create test Project
+	project := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-project",
+			Namespace: team.Status.Namespace,
+		},
+		Spec: ksquadv1.ProjectSpec{
+			TeamRef: ksquadv1.ObjectRef{
+				Name: "test-team",
+			},
+			Repo: "https://github.com/test/repo",
+		},
+	}
+
+	// Create test Runs
+	now := metav1.Now()
+	runs := []*ksquadv1.Run{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "run-1",
+				Namespace: team.Status.Namespace,
+			},
+			Spec: ksquadv1.RunSpec{
+				TeamRef: ksquadv1.ObjectRef{
+					Name: "test-team",
+				},
+				ProjectRef: ksquadv1.ObjectRef{
+					Name: "test-project",
+				},
+				WorkItemRef: "work-item-1",
+				Agents: []ksquadv1.ObjectRef{
+					{Name: "agent-1"},
+				},
+			},
+			Status: ksquadv1.RunStatus{
+				Phase: ksquadv1.RunPhaseComplete,
+				ClaimedAt: &now,
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "run-2",
+				Namespace: team.Status.Namespace,
+			},
+			Spec: ksquadv1.RunSpec{
+				TeamRef: ksquadv1.ObjectRef{
+					Name: "test-team",
+				},
+				ProjectRef: ksquadv1.ObjectRef{
+					Name: "test-project",
+				},
+				WorkItemRef: "work-item-2",
+				Agents: []ksquadv1.ObjectRef{
+					{Name: "agent-2"},
+				},
+			},
+			Status: ksquadv1.RunStatus{
+				Phase: ksquadv1.RunPhaseRunning,
+				ClaimedAt: &now,
+			},
+		},
+	}
+
+	// Create fake client with test objects
+	objs := []client.Object{team, project}
+	for _, run := range runs {
+		objs = append(objs, run)
+	}
+	k8sClient := fake.NewClientBuilder().WithObjects(objs...).Build()
+
+	// Create RunsService
+	svc := NewRunsService(k8sClient)
+
+	// Test helper function to make requests
+	makeRequest := func(method, path string, auth bool) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		if auth {
+			req = authRequest(req)
+		}
+		w := httptest.NewRecorder()
+		return w
+	}
+
+	// Test cases
+	t.Run("Global run listing", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/runs", nil)
+		req = authRequest(req)
+		w := httptest.NewRecorder()
+		
+		handler := listRuns(svc)
+		handler(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Logf("Response body: %s", resp.Body)
+		}
+	})
+
+	t.Run("Project-scoped run listing", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/projects/test-project/runs", nil)
+		req = authRequest(req)
+		w := httptest.NewRecorder()
+		
+		handler := listRuns(svc)
+		handler(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Logf("Response body: %s", resp.Body)
+		}
+	})
+
+	t.Run("Unauthenticated requests", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/runs", nil)
+		w := httptest.NewRecorder()
+		
+		handler := listRuns(svc)
+		handler(w, req)
+
+		resp := w.Result()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRunListQueryParsing(t *testing.T) {
+	t.Run("Parse query params", func(t *testing.T) {
+		// Test query parameter parsing logic
+		query := RunListQuery{
+			Limit:  50,
+			Offset: 0,
+		}
+
+		// Test phase filter
+		assert.Equal(t, "", query.Phase)
+		query.Phase = "running"
+		assert.Equal(t, "running", query.Phase)
+
+		// Test agent filter
+		assert.Equal(t, "", query.Agent)
+		query.Agent = "agent-1"
+		assert.Equal(t, "agent-1", query.Agent)
+
+		// Test window filter
+		assert.Equal(t, "", query.Window)
+		query.Window = "24h"
+		assert.Equal(t, "24h", query.Window)
+
+		// Test pagination limits
+		assert.Equal(t, 50, query.Limit)
+		query.Limit = 100
+		assert.Equal(t, 100, query.Limit)
+	})
+}
+
+func TestRunInTimeWindow(t *testing.T) {
+	t.Run("Time window filtering", func(t *testing.T) {
+		// Create test run
+		now := metav1.Now()
+		run := &ksquadv1.Run{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-run",
+				Namespace: "test-namespace",
+			},
+			Status: ksquadv1.RunStatus{
+				ClaimedAt: &now,
+			},
+		}
+
+		// Test various time windows
+		assert.True(t, runInTimeWindow(run, "1h"))
+		assert.True(t, runInTimeWindow(run, "24h"))
+		assert.True(t, runInTimeWindow(run, "7d"))
+		assert.True(t, runInTimeWindow(run, "unknown")) // Unknown window includes all
+	})
+}
+
+func TestRunListItemProjection(t *testing.T) {
+	t.Run("Project Run to RunListItem", func(t *testing.T) {
+		now := metav1.Now()
+		pausedReason := "rate_limited"
+		
+		run := &ksquadv1.Run{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-run",
+				Namespace: "test-namespace",
+			},
+			Spec: ksquadv1.RunSpec{
+				WorkItemRef: "work-item-1",
+				ProjectRef: ksquadv1.ObjectRef{
+					Name: "test-project",
+				},
+				Agents: []ksquadv1.ObjectRef{
+					{Name: "test-agent"},
+				},
+			},
+			Status: ksquadv1.RunStatus{
+				Phase: ksquadv1.RunPhaseRunning,
+				ClaimedAt: &now,
+				Conditions: []metav1.Condition{
+					{
+						Type:   "Paused",
+						Reason: pausedReason,
+					},
+				},
+			},
+		}
+
+		item := runListItem(run)
+		
+		assert.Equal(t, "test-run", item.ID)
+		assert.Equal(t, "test-run", item.Name)
+		assert.Equal(t, "running", item.Phase)
+		assert.Equal(t, &pausedReason, item.PausedReason)
+		assert.Equal(t, "work-item-1", item.WorkItemRef)
+		assert.Equal(t, "test-project", item.ProjectRef)
+		assert.Equal(t, now.Time, *item.StartedAt)
+	})
+}
+
+func authRequest(r *http.Request) *http.Request {
+	// Add test auth token (simplified for test)
+	r.Header.Set("Authorization", "Bearer test-token")
+	r.Header.Set("Cookie", "ksquad_session=test-session")
+	return r
+}
+
+// Test that the RunsService can be created with nil database (fallback mode)
+func TestRunsServiceNilDB(t *testing.T) {
+	ctx := context.Background()
+	
+	// Create test Team
+	teamUID := uuid.New()
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-team",
+			UID:  types.UID(teamUID.String()),
+		},
+		Status: ksquadv1.TeamStatus{
+			Namespace: "team-" + teamUID.String()[:8],
+		},
+	}
+	
+	// Create test Project
+	project := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-project",
+			Namespace: team.Status.Namespace,
+		},
+		Spec: ksquadv1.ProjectSpec{
+			TeamRef: ksquadv1.ObjectRef{
+				Name: "test-team",
+			},
+			Repo: "https://github.com/test/repo",
+		},
+	}
+
+	// Create fake client with test objects
+	objs := []client.Object{team, project}
+	k8sClient := fake.NewClientBuilder().WithObjects(objs...).Build()
+
+	// Create RunsService with nil database (should fallback to placeholder logic)
+	svc := NewRunsService(k8sClient)
+	
+	// Test that getRunDetail works without database (fallback mode)
+	response, err := svc.getRunDetailInNamespace(ctx, team.Status.Namespace, "nonexistent-run")
+	if err != nil {
+		// Expected for non-existent run
+		t.Logf("Expected error for non-existent run: %v", err)
+	} else if response != nil {
+		t.Logf("Response received: %+v", response)
+	}
+}

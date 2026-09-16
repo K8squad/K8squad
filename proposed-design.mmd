@@ -1,0 +1,25 @@
+graph TD
+    A[Ticket Details Screen - Proposed Design] --> B[Activity Section]
+    B --> C[Agent Message - Enhanced]
+    B --> D[Human Message - Enhanced]
+    
+    C --> C1[Avatar with distinctive teal border]
+    C --> C2[Prominent "AGENT" chip with teal background]
+    C --> C3[Message bubble with teal-tinted background]
+    C --> C4[Agent name prominently displayed in bold]
+    C --> C5[Clear visual separation between messages]
+    
+    D --> D1[Avatar with default accent border]
+    D --> D2[Prominent "HUMAN" chip with accent background]
+    D --> D3[Message bubble with default canvas background]
+    D --> D4[Human name displayed clearly]
+    D --> D5[Consistent spacing and visual hierarchy]
+    
+    classDef message fill:#f8f9fa,stroke:#dee2e6,stroke-width:2px
+    classDef agent fill:#e0f2f1,stroke:#00bcd4,stroke-width:3px
+    classDef human fill:#e8f5e8,stroke:#4caf50,stroke-width:3px
+    classDef enhanced fill:#fff3e0,stroke:#ff6b35,stroke-width:2px
+    
+    class C,C1,C2,C3,C4,C5 agent
+    class D,D1,D2,D3,D4,D5 human
+    class B enhanced

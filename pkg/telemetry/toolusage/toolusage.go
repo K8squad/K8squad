@@ -63,6 +63,7 @@ package toolusage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -401,7 +402,15 @@ func (m *Mapper) measureStepMS(taskID string) int64 {
 	if stepSecs <= 0 {
 		return 0
 	}
-	return int64(stepSecs * 1000)
+	
+	// Validate timing is realistic - local LLM should not respond in microseconds
+	ms := int64(stepSecs * 1000)
+	if ms > 0 && ms < 10 {
+		// Log unrealistic timing for debugging but still return the measured value
+		fmt.Fprintf(os.Stderr, "WARNING: Unrealistic LLM step timing detected: %dms for task %s\n", ms, taskID)
+	}
+	
+	return ms
 }
 
 // NewMapper builds a Mapper over tracer. reg non-nil registers the metric

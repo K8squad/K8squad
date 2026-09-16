@@ -1,0 +1,21 @@
+graph TD
+    A[Ticket Details Screen - Current Design] --> B[Activity Section]
+    B --> C[Agent Message]
+    B --> D[Human Message]
+    
+    C --> C1[Avatar with subtle border]
+    C --> C2[Generic "agent" chip]
+    C --> C3[Message bubble in default canvas color]
+    C --> C4[Author name not prominently displayed]
+    
+    D --> D1[Avatar with default border]
+    D --> D2[Generic "human" chip]
+    D --> D3[Message bubble in default canvas color]
+    D --> D4[Author name shown but not distinguished]
+    
+    classDef message fill:#f8f9fa,stroke:#dee2e6,stroke-width:2px
+    classDef agent fill:#e3f2fd,stroke:#2196f3,stroke-width:2px
+    classDef human fill:#f3e5f5,stroke:#9c27b0,stroke-width:2px
+    
+    class C,C1,C2,C3,C4 agent
+    class D,D1,D2,D3,D4 human

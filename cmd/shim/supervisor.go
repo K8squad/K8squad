@@ -56,13 +56,14 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/promhttp"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/shim"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
+	"github.com/K8squad/K8squad/pkg/telemetry/natstracing"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
 
@@ -88,6 +89,14 @@ func runSupervisor(args []string) error {
 		addr = args[0]
 	}
 
+	ctx := context.Background()
+	ctx, supSpan := telemetry.Tracer().Start(ctx, "supervisor.start",
+		trace.WithAttributes(
+			attribute.String("ksquad.supervisor.addr", addr),
+			attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
+		))
+	defer supSpan.End()
+
 	sup := &supervisor{
 		// toolusage gate mirrors `shim run` (default on; Boot stamps the
 		// operator's OTelConfig-derived toggle into the sandbox env).
@@ -100,6 +109,7 @@ func runSupervisor(args []string) error {
 		// `shim run` (a one-shot process that dumps a textfile at exit), the
 		// supervisor is long-lived and exposes the exposition on GET /metrics.
 		metricsReg: prometheus.NewRegistry(),
+		supervisorSpan: supSpan,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", sup.handleHealth)
@@ -160,6 +170,8 @@ type supervisor struct {
 	// Created once at startup so the mux handler and the lazily-built engine
 	// share the same registry.
 	metricsReg *prometheus.Registry
+	// supervisorSpan is the root span for this supervisor instance
+	supervisorSpan trace.Span
 
 	mu   sync.RWMutex
 	cred *taskio.RunCredential
@@ -324,9 +336,23 @@ func (s *supervisor) handleHandshake(w http.ResponseWriter, _ *http.Request) {
 // the a2a wire contract verbatim. 409 while another task is in flight (one
 // pod = one Run), 500 when no runtime flavor was baked into the image.
 func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
+	// Create a span for task handling
+	ctx := r.Context()
+	if s.supervisorSpan != nil {
+		ctx = trace.ContextWithSpan(ctx, s.supervisorSpan)
+	}
+	
+	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
+		trace.WithAttributes(
+			attribute.String("ksquad.task.id", r.URL.Query().Get("taskid")),
+			attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
+		))
+	defer taskHandleSpan.End()
+	
 	s.mu.Lock()
 	if s.busy {
 		s.mu.Unlock()
+		taskHandleSpan.SetStatus(codes.Error, "task already in flight")
 		http.Error(w, "task in flight (one pod = one run)", http.StatusConflict)
 		return
 	}
@@ -340,15 +366,25 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 
 	engine, err := s.runtime()
 	if err != nil {
+		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("runtime initialization failed: %v", err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	var task a2a.Task
 	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
+		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("decode task: %v", err))
 		http.Error(w, fmt.Sprintf("decode task: %v", err), http.StatusBadRequest)
 		return
 	}
+
+	// Add task correlation attributes
+	taskHandleSpan.SetAttributes(
+		attribute.String("ksquad.task.a2a_id", task.A2ATaskID),
+		attribute.String("ksquad.task.work_item_id", task.WorkItemID),
+		attribute.String("ksquad.task.model_route.endpoint", task.ModelRoute.Endpoint),
+		attribute.String("ksquad.task.model_route.model", task.ModelRoute.Model),
+	)
 
 	// ISI-4238: submit on the handshake's trace context when it landed so
 	// the run's spans join the Run's distributed trace; the request ctx
@@ -359,12 +395,23 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 		submitCtx = s.traceCtx
 	}
 	s.mu.RUnlock()
+	
 	if _, err := engine.SubmitTask(submitCtx, task); err != nil {
+		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("submit task: %v", err))
 		http.Error(w, fmt.Sprintf("submit: %v", err), http.StatusInternalServerError)
 		return
 	}
+	
+	// Create a span for event streaming
+	ctx, streamSpan := telemetry.Tracer().Start(ctx, "supervisor.stream_events",
+		trace.WithAttributes(
+			attribute.String("ksquad.task.a2a_id", task.A2ATaskID),
+		))
+	defer streamSpan.End()
+	
 	events, err := engine.StreamEvents(r.Context(), task.A2ATaskID, 0)
 	if err != nil {
+		streamSpan.SetStatus(codes.Error, fmt.Sprintf("stream events: %v", err))
 		http.Error(w, fmt.Sprintf("stream: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -376,35 +423,63 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
 	enc := json.NewEncoder(w)
+	
+	// Mark task as successfully submitted
+	taskHandleSpan.SetStatus(codes.Ok, "")
+	
 	for ev := range events {
 		if err := enc.Encode(ev); err != nil {
+			streamSpan.SetStatus(codes.Error, fmt.Sprintf("encode event: %v", err))
 			return
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
+	
+	streamSpan.SetStatus(codes.Ok, "")
 }
 
 // runtime lazily constructs the engine from the image's baked-in flavor
 // (Dockerfile.shim ENV KSQUAD_RUNTIME_TYPE) plus the pod env Boot stamped.
 func (s *supervisor) runtime() (*shim.Engine, error) {
 	s.engineOnce.Do(func() {
+		// Create a span for runtime initialization
+		ctx := context.Background()
+		if s.supervisorSpan != nil {
+			ctx = trace.ContextWithSpan(context.Background(), s.supervisorSpan)
+		}
+		
+		ctx, runtimeInitSpan := telemetry.Tracer().Start(ctx, "supervisor.runtime.init",
+			trace.WithAttributes(
+				attribute.String("ksquad.runtime.type", env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))),
+				attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
+			))
+		defer runtimeInitSpan.End()
+		
 		runtimeType := env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))
 		if runtimeType == "" {
 			s.engineErr = fmt.Errorf("no runtime selected: image lacks KSQUAD_RUNTIME_TYPE")
+			runtimeInitSpan.SetStatus(codes.Error, "no runtime selected")
 			return
 		}
+		
 		rt, err := runtimes.Get(runtimeType)
 		if err != nil {
 			s.engineErr = err
+			runtimeInitSpan.SetStatus(codes.Error, fmt.Sprintf("runtime.Get failed: %v", err))
+			runtimeInitSpan.RecordError(err)
 			return
 		}
+		
 		cfg, err := configFromEnv()
 		if err != nil {
 			s.engineErr = err
+			runtimeInitSpan.SetStatus(codes.Error, fmt.Sprintf("configFromEnv failed: %v", err))
+			runtimeInitSpan.RecordError(err)
 			return
 		}
+		
 		engine := shim.New(rt, shim.NewOSRunner(), cfg)
 		// ISI-4385: register the tool-usage metric set on the supervisor's real
 		// registry (was nil → tool/skill/llm metrics never registered in
@@ -412,6 +487,9 @@ func (s *supervisor) runtime() (*shim.Engine, error) {
 		// ksquad_mcp_call_duration_seconds and the llm counters flow from the pod
 		// via GET /metrics.
 		engine.SetTelemetry(toolusage.NewMapper(telemetry.Tracer(), s.metricsReg))
+		
+		// Mark runtime initialization as successful
+		runtimeInitSpan.SetStatus(codes.Ok, "")
 		s.engine = engine
 	})
 	return s.engine, s.engineErr

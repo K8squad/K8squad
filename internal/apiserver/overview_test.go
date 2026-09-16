@@ -441,3 +441,118 @@ func TestSquadProjectsNilReaderStill501(t *testing.T) {
 		t.Fatalf("projects(nil reader): got %d, want 501", rec.Code)
 	}
 }
+
+// TestClientOverviewReader_Overview_SplitNamespaces — verifies the fix for wrong namespace scoping.
+// Tests that Runs are listed in the reconciled squad namespace (Status.Namespace) not the CR namespace.
+func TestClientOverviewReader_Overview_SplitNamespaces(t *testing.T) {
+	ctx := context.Background()
+
+	// Create test data with Team CR in one namespace but reconciled squad namespace is different
+	teamCRNamespace := "team-cr-namespace"
+	reconciledSquadNamespace := "reconciled-squad-namespace"
+
+	teamID := uuid.New()
+	now := metav1.Now()
+	
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-team",
+			UID:               teamID,
+			Namespace:         teamCRNamespace,
+			CreationTimestamp: now,
+		},
+		Status: ksquadv1.TeamStatus{
+			Namespace: reconciledSquadNamespace, // Different from CR namespace - this is the key fix
+		},
+	}
+	
+	project := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-project",
+			Namespace:         reconciledSquadNamespace,
+			CreationTimestamp: now,
+		},
+		Spec: ksquadv1.ProjectSpec{
+			Repo: ksquadv1.RepoSpec{
+				URL: "https://github.com/test/repo",
+			},
+		},
+	}
+	
+	// Run with matching projectRef (should appear under project)
+	matchingRun := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "matching-run",
+			Namespace:         reconciledSquadNamespace,
+			CreationTimestamp: now,
+		},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "test-project"},
+			WorkItemRef: "item-1",
+		},
+	}
+	
+	// Run with unresolvable projectRef (should appear in unassigned bucket)
+	unassignedRun := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "unassigned-run",
+			Namespace:         reconciledSquadNamespace,
+			CreationTimestamp: now,
+		},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "nonexistent-project"},
+			WorkItemRef: "item-2",
+		},
+	}
+	
+	// Run in wrong namespace (should be ignored)
+	wrongNamespaceRun := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "wrong-namespace-run",
+			Namespace:         "other-namespace",
+			CreationTimestamp: now,
+		},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef: ksquadv1.ObjectRef{Name: "test-project"},
+		},
+	}
+
+	scheme := overviewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(team, project, matchingRun, unassignedRun, wrongNamespaceRun).
+		Build()
+
+	reader := NewClientOverviewReader(fakeClient)
+
+	overview, err := reader.Overview(ctx, teamID.String(), false)
+	require.NoError(t, err)
+
+	// Verify team info uses reconciled namespace
+	assert.Equal(t, "test-team", overview.Team.Name)
+	assert.Equal(t, reconciledSquadNamespace, overview.Team.Namespace)
+
+	// Should have 2 project buckets: actual project + unassigned
+	assert.Len(t, overview.Projects, 2)
+
+	// Find and verify the actual project bucket
+	var projectBucket *ProjectOverview
+	var unassignedBucket *ProjectOverview
+	for _, p := range overview.Projects {
+		if p.Name == "test-project" {
+			projectBucket = &p
+		} else if p.Name == "Unassigned/other" {
+			unassignedBucket = &p
+		}
+	}
+
+	require.NotNil(t, projectBucket)
+	assert.Equal(t, "test-project", projectBucket.Name)
+	assert.Len(t, projectBucket.Runs, 1)
+	assert.Equal(t, "matching-run", projectBucket.Runs[0].Name)
+
+	require.NotNil(t, unassignedBucket)
+	assert.Equal(t, "Unassigned/other", unassignedBucket.Name)
+	assert.Len(t, unassignedBucket.Runs, 1)
+	assert.Equal(t, "unassigned-run", unassignedBucket.Runs[0].Name)
+}
