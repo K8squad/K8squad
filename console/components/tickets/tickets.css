@@ -1034,6 +1034,21 @@
   font-size: 0.75rem;
 }
 
+/* Locked parent line in sub-ticket create mode (ISI-4504): reads like a filled,
+   disabled field so it's clearly not editable — the parent is pinned. */
+.ksq-field__fixed-parent {
+  margin: 0;
+  background: var(--surface-2, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  padding: 10px 12px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  font-weight: 500;
+}
+
 .ksq-field input,
 .ksq-field textarea,
 .ksq-field select {

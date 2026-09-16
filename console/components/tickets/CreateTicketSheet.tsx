@@ -35,6 +35,15 @@ export interface CreateTicketSheetProps {
   projectId: string;
   /** Root items offered as parent candidates for the sub-ticket search-select. */
   parents: WorkItem[];
+  /**
+   * Sub-ticket mode (ISI-4504): when set, the sheet opens with this item as the
+   * parent, PRE-SELECTED and LOCKED — the parent dropdown is replaced by a
+   * read-only "Sub-ticket of «title»" line and the header reads "New sub-ticket".
+   * Guards the Add-sub-ticket affordance against silently filing a top-level item
+   * when the user never touches the parent control (Gap A). Ignored (top-level
+   * create) when absent — `parents` is used for the free-choice dropdown instead.
+   */
+  fixedParent?: WorkItem;
   /** Receives the server-assigned item on 201 so the list inserts it optimistically. */
   onCreated: (item: WorkItem) => void;
   onClose: () => void;
@@ -61,10 +70,17 @@ function errorMessage(err: unknown): string {
 export function CreateTicketSheet({
   projectId,
   parents,
+  fixedParent,
   onCreated,
   onClose,
 }: CreateTicketSheetProps) {
-  const [input, setInput] = useState<CreateTicketInput>(EMPTY_CREATE_TICKET);
+  const [input, setInput] = useState<CreateTicketInput>(
+    // Sub-ticket mode pre-selects the parent so an untouched form still files a
+    // CHILD, never a top-level item (Gap A). Only the id ever reaches the wire.
+    fixedParent
+      ? { ...EMPTY_CREATE_TICKET, parentId: fixedParent.id }
+      : EMPTY_CREATE_TICKET,
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -121,7 +137,7 @@ export function CreateTicketSheet({
         >
           <header className="ksq-sheet__head">
             <h2 id={titleId} style={{ margin: 0 }}>
-              New issue
+              {fixedParent ? "New sub-ticket" : "New issue"}
             </h2>
             <button
               type="button"
@@ -164,28 +180,43 @@ export function CreateTicketSheet({
               <span className="ksq-field__hint muted">Markdown supported</span>
             </label>
 
-            <label className="ksq-field" htmlFor={parentId}>
-              <span className="ksq-field__label">Parent (optional)</span>
-              <select
-                id={parentId}
-                data-testid="create-ticket-parent"
-                aria-label="Parent issue"
-                value={input.parentId ?? ""}
-                onChange={(e) =>
-                  setInput((s) => ({ ...s, parentId: e.target.value || null }))
-                }
-              >
-                <option value="">None — a top-level issue</option>
-                {parents.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.title}
-                  </option>
-                ))}
-              </select>
-              <span className="ksq-field__hint muted">
-                Pick a parent to file this as a sub-ticket.
-              </span>
-            </label>
+            {fixedParent ? (
+              // Locked parent: the sheet was opened from a ticket's Add-sub-ticket,
+              // so the parent is fixed and shown read-only (Gap B). No control to
+              // unset it — the parentId is already pinned in state (Gap A).
+              <div className="ksq-field">
+                <span className="ksq-field__label">Parent</span>
+                <p
+                  className="ksq-field__fixed-parent"
+                  data-testid="create-ticket-parent-fixed"
+                >
+                  Sub-ticket of «{fixedParent.title}»
+                </p>
+              </div>
+            ) : (
+              <label className="ksq-field" htmlFor={parentId}>
+                <span className="ksq-field__label">Parent (optional)</span>
+                <select
+                  id={parentId}
+                  data-testid="create-ticket-parent"
+                  aria-label="Parent issue"
+                  value={input.parentId ?? ""}
+                  onChange={(e) =>
+                    setInput((s) => ({ ...s, parentId: e.target.value || null }))
+                  }
+                >
+                  <option value="">None — a top-level issue</option>
+                  {parents.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.title}
+                    </option>
+                  ))}
+                </select>
+                <span className="ksq-field__hint muted">
+                  Pick a parent to file this as a sub-ticket.
+                </span>
+              </label>
+            )}
 
             <label className="ksq-field" htmlFor={priorityId}>
               <span className="ksq-field__label">Priority</span>

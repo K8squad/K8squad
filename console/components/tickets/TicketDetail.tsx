@@ -557,8 +557,9 @@ function TicketBody({
     ]),
   );
 
-  // The one WorkItem the "Add sub-ticket" sheet offers as a parent candidate:
-  // this very ticket, synthesized from the thread we already loaded.
+  // This very ticket, synthesized from the thread we already loaded, handed to the
+  // "Add sub-ticket" sheet as its LOCKED parent (fixedParent, ISI-4504) so the
+  // create always files a child of the ticket in view.
   const selfAsParent: WorkItem = {
     id: thread.workItemId,
     projectId,
@@ -762,7 +763,10 @@ function TicketBody({
       {addingSub && (
         <CreateTicketSheet
           projectId={projectId}
-          parents={[selfAsParent]}
+          // Sub-ticket mode (ISI-4504): parent pre-filled + locked to this ticket
+          // so an untouched form still files a CHILD, never a top-level item.
+          parents={[]}
+          fixedParent={selfAsParent}
           onCreated={() => {
             onChildCreated();
           }}
