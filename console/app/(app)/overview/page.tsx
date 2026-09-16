@@ -9,36 +9,7 @@
 // (401/404/501/5xx). No scaffold/story-scaffold copy reaches the UI.
 
 import { OverviewSwitch } from "@/components/onboarding/OverviewSwitch";
-import Link from "next/link";
-import { useState, useEffect } from "react";
 
 export default function OverviewPage() {
-  const [isMounted, setIsMounted] = useState(false);
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
-
-  return (
-    <div>
-      {isMounted && (
-        <nav className="ov-band ov-band--padded ov-band--border-b ov-mb-xl">
-          <div className="ov-container">
-            <div className="ov-flex ov-flex--align-center ov-flex--justify-between">
-              <h1 className="ov-heading ov-heading--l">Overview</h1>
-              <div className="ov-tabs">
-                <Link href="/overview" className="ov-tab ov-tab--active">
-                  Squad
-                </Link>
-                <Link href="/overview/fleet" className="ov-tab">
-                  Fleet Control Room
-                </Link>
-              </div>
-            </div>
-          </div>
-        </nav>
-      )}
-      <OverviewSwitch />
-    </div>
-  );
+  return <OverviewSwitch />;
 }

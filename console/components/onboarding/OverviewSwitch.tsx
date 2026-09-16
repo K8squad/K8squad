@@ -5,7 +5,8 @@
 // "The Launchpad REPLACES Overview until complete." This component owns that decision for the
 // Overview route(s): it reads the server-truth projection (GET /api/onboarding/progress,
 // E1-S1) once per mount and renders either the Launchpad (setup incomplete, not dismissed) or
-// the normal SquadOverview.
+// the post-onboarding Overview surface — the fleet control room (ISI-4507 S2), which replaced
+// the story-8.1 SquadOverview as the completed-setup render.
 //
 // Fail-open (same discipline as E1-S3's nav lock): if the endpoint is unreachable,
 // unauthenticated, or not yet wired (the E1-S1 apiserver route still landing), the route
@@ -28,7 +29,7 @@
 // server flag on next mount. Harmless before the route lands (404/501 are swallowed).
 
 import { useEffect, useState } from "react";
-import { SquadOverview } from "@/components/SquadOverview";
+import { FleetOverview } from "@/components/overview/FleetOverview";
 import { Launchpad } from "@/components/onboarding/Launchpad";
 import {
   isJourneyComplete,
@@ -120,7 +121,7 @@ export function OverviewSwitch() {
           Finish setup ({progress.done}/{progress.total}) — Resume →
         </button>
       )}
-      <SquadOverview />
+      <FleetOverview />
     </>
   );
 }
