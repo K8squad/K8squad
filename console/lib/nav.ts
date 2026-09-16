@@ -82,7 +82,7 @@ export type NavNode = {
  *   - `build` is dropped from the menu but its route is kept reachable (legacy alias, AC6).
  */
 const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
-  { id: "landing", label: "Landing" },
+  { id: "landing", label: "Overview" },
   { id: "issues", label: "Issues" },
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
