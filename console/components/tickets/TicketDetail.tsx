@@ -29,6 +29,16 @@
 // callers and keeps the honest "not wired here" gap when that endpoint is absent.
 
 import { useEffect, useState } from "react";
+// The detail route (`/projects/[id]/issues/[workItemId]`) mounts this component
+// directly — TicketsScreen (the list/kanban) is NOT in its module graph, so its
+// `import "./tickets.css"` never reaches this route. Without this import the
+// redesign's layout classes (`ksq-ticket-detail__grid`, `ksq-runcomment`,
+// `ksq-proplist`, `ksq-count-tile`, …) are undefined on a hard refresh / direct
+// load, and the page collapses to a flat, unstyled single column — the "old
+// screen" the board reported (ISI-4503). tickets.css must be imported on every
+// route that renders a ticket surface, not just the list. (CSS side-effect
+// imports dedupe, so importing it here and in TicketsScreen is safe.)
+import "./tickets.css";
 import { ApiError, fetchViewerRole, listWorkItems } from "@/lib/tickets/api";
 import {
   buildActivity,
