@@ -35,3 +35,6 @@ dist/
 # Local build artifacts (ISI-4161: 81MB operator binary leaked into the tree)
 /operator
 /shim
+
+# accidental local build artifacts (ISI-4495 hygiene)
+/event-relay

@@ -1552,3 +1552,30 @@
   width: 100%;
   margin-top: 4px;
 }
+
+/* ---------------------------------------------------------------------------
+ * Rail mutation controls (ISI-4495 board ask) — the Properties-rail status
+ * select + backlog assignee dispatch dropdown. Same control skin as the create
+ * sheet's fields, sized for the pinned rail.
+ * ------------------------------------------------------------------------- */
+.ksq-rail-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ksq-rail-control select {
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-1);
+  font: inherit;
+  padding: 8px 10px;
+  min-height: 38px;
+  width: 100%;
+}
+
+.ksq-rail-control select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}

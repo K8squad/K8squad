@@ -37,7 +37,7 @@ import (
 // independently, and tests inject a fake without touching the create/edit fakes. The
 // concrete *coord.WorkItemWriteStore satisfies both.
 type WorkItemCommenter interface {
-	AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string) (coord.TaskComment, error)
+	AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string) (coord.HumanCommentOutcome, error)
 }
 
 // postCommentRequest is the POST body. body is the only field; author is NEVER taken
@@ -87,6 +87,9 @@ func workItemCommentHandler(store WorkItemCommenter) http.HandlerFunc {
 		if mapWorkItemWriteError(w, err) {
 			return
 		}
+		// 201 with the persisted comment (+ the ISI-4495 re-trigger outcome when
+		// the comment re-dispatched the item — additive fields the composer uses
+		// for its "agent re-triggered" feedback; older readers ignore them).
 		writeJSON(w, http.StatusCreated, comment)
 	}
 }

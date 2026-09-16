@@ -39,7 +39,15 @@ import { useEffect, useState } from "react";
 // route that renders a ticket surface, not just the list. (CSS side-effect
 // imports dedupe, so importing it here and in TicketsScreen is safe.)
 import "./tickets.css";
-import { ApiError, fetchViewerRole, listWorkItems } from "@/lib/tickets/api";
+import {
+  ApiError,
+  dispatchWorkItem,
+  fetchViewerRole,
+  listSquadAgents,
+  listWorkItems,
+  patchWorkItemState,
+  type AgentOption,
+} from "@/lib/tickets/api";
 import {
   buildActivity,
   fetchWorkItemThread,
@@ -48,6 +56,7 @@ import {
   subTicketStatus,
   type ActivityItem,
   type NormalizedThread,
+  type PostedComment,
   type ThreadComment,
 } from "@/lib/tickets/thread";
 import {
@@ -57,7 +66,7 @@ import {
 } from "@/lib/tickets/runComments";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
 import { STATUS_META } from "@/lib/tickets/statusColor";
-import { workingPhaseOf } from "@/lib/tickets/transitions";
+import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 
 type ThreadState =
@@ -143,6 +152,193 @@ function StatusChip({ state }: { state: string }) {
     <span className="ksq-chip ksq-chip--state" data-testid="detail-status">
       {stateLabel(state)}
     </span>
+  );
+}
+
+/**
+ * Rail STATUS control (ISI-4495 board ask): the tap/keyboard equivalent of a
+ * kanban drag, in the Properties rail. Contributor+ sees a guard-limited select
+ * (the SAME allowedTargets adjacency the kanban honours — a disallowed jump is
+ * never offered, mirroring the fail-closed no-drop cue); a viewer (or a state
+ * with no legal target) sees the read-only chip. One move issues exactly one
+ * PATCH /work-items/{id}/state {toState, fromState} — on 409/422 the thread
+ * re-syncs to server truth (the same discipline the kanban transition keeps).
+ */
+function StatusControl({
+  state,
+  workItemId,
+  canEdit,
+  onMoved,
+}: {
+  state: string;
+  workItemId: string;
+  canEdit: boolean;
+  onMoved: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const targets = canEdit ? allowedTargets(state) : [];
+
+  if (targets.length === 0) {
+    return <StatusChip state={state} />;
+  }
+
+  async function move(to: string) {
+    if (busy || to === "") return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await patchWorkItemState(workItemId, { toState: to, fromState: state });
+      onMoved(); // re-fetch the thread — the header chip + history follow server truth
+    } catch (e) {
+      const code = e instanceof ApiError ? e.status : 0;
+      setErr(
+        code === 409
+          ? "The ticket moved underneath you — re-synced from the server."
+          : code === 422
+            ? "That move isn't allowed from this lane."
+            : code === 403
+              ? "You don't have permission to move this ticket."
+              : "Couldn't move the ticket. Try again.",
+      );
+      onMoved(); // a 409/422 leaves OUR projection stale — always re-sync
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ksq-rail-control">
+      <select
+        data-testid="detail-status-select"
+        aria-label="Change status"
+        value=""
+        disabled={busy}
+        onChange={(e) => {
+          const to = e.target.value;
+          if (to) void move(to);
+        }}
+      >
+        <option value="">{stateLabel(state)}…</option>
+        {targets.map((s) => (
+          <option key={s} value={s}>
+            {STATUS_META[s].label}
+          </option>
+        ))}
+      </select>
+      {err && (
+        <p className="ksq-composer__error" role="alert" data-testid="detail-status-error">
+          {err}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Rail ASSIGNEE control (ISI-4495 board ask): on a BACKLOG ticket, contributor+
+ * gets the squad roster dropdown whose pick chains POST /work-items/{id}/dispatch
+ * {agentId} — the ADR-0022 "assign == start" verb that stamps requested_agent and
+ * advances backlog→todo so Intake mints the Run (the exact create-sheet
+ * semantics, ISI-4501, surfaced where the board asked for it). Off backlog the
+ * ticket already carries custody: the current holder renders read-only with a
+ * hint pointing at the comment nudge / kanban for re-entry.
+ */
+function AssigneeControl({
+  state,
+  holder,
+  workItemId,
+  canEdit,
+  onAssigned,
+}: {
+  state: string;
+  holder: string;
+  workItemId: string;
+  canEdit: boolean;
+  onAssigned: () => void;
+}) {
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dispatchable = canEdit && state === "backlog";
+
+  useEffect(() => {
+    if (!dispatchable) return;
+    let alive = true;
+    void listSquadAgents().then((list) => {
+      if (alive) setAgents(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [dispatchable]);
+
+  if (!dispatchable) {
+    return (
+      <div data-testid="detail-holder">
+        {holder ? (
+          <code className="ksq-ticket-id">{holder}</code>
+        ) : state === "todo" ? (
+          <span className="muted">dispatch pending</span>
+        ) : (
+          <span className="muted">unassigned</span>
+        )}
+      </div>
+    );
+  }
+
+  async function assign(name: string) {
+    if (busy || name === "") return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await dispatchWorkItem(workItemId, name);
+      onAssigned(); // re-fetch — the lane advance (backlog→todo) + holder follow
+    } catch (e) {
+      const code = e instanceof ApiError ? e.status : 0;
+      setErr(
+        code === 403
+          ? "That agent isn't a member of this project's team."
+          : code === 409
+            ? "The ticket already left the backlog — re-synced."
+            : code === 501
+              ? "Assigning agents isn't hosted on this deployment yet."
+              : "Couldn't assign the agent. Try again.",
+      );
+      onAssigned(); // a 409 means the lane moved under us — re-sync
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ksq-rail-control">
+      <select
+        data-testid="detail-assignee-select"
+        aria-label="Assign to agent"
+        value=""
+        disabled={busy}
+        onChange={(e) => {
+          const name = e.target.value;
+          if (name) void assign(name);
+        }}
+      >
+        <option value="">{agents.length > 0 ? "Assign agent…" : "Loading squad…"}</option>
+        {agents.map((a) => (
+          <option key={a.id} value={a.name}>
+            {a.name}
+          </option>
+        ))}
+      </select>
+      <span className="ksq-field__hint muted">
+        Assigning dispatches the agent to start this ticket.
+      </span>
+      {err && (
+        <p className="ksq-composer__error" role="alert" data-testid="detail-assignee-error">
+          {err}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -345,7 +541,7 @@ function Composer({
   workItemId: string;
   canComment: boolean;
   onOptimisticAppend: (c: ThreadComment) => void;
-  onPosted: () => void;
+  onPosted: (posted: PostedComment) => void;
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
@@ -394,7 +590,7 @@ function Composer({
       onOptimisticAppend(comment);
       setText("");
       setStatus({ kind: "idle" });
-      onPosted();
+      onPosted(comment);
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
       if (code === 404 || code === 501) {
@@ -542,6 +738,11 @@ function TicketBody({
 }) {
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
   const [addingSub, setAddingSub] = useState(false);
+  // The ISI-4495 comment-nudge receipt: when a posted comment re-dispatched the
+  // ticket (parked → todo), we surface the "agent re-triggered" line above the
+  // composer. It stays while the ticket sits in the dispatch lane and fades
+  // naturally the moment the run claims it (state leaves todo).
+  const [nudge, setNudge] = useState<{ from: string } | null>(null);
   // Optimistically-appended comments shown immediately after a successful POST;
   // cleared once the reconciling thread re-fetch lands (a new `thread` object),
   // which by then carries the same comment as server truth (no double-render).
@@ -662,17 +863,30 @@ function TicketBody({
             </ul>
           )}
 
+          {/* ISI-4495 receipt: the comment re-triggered work — show it while the
+              ticket waits in the dispatch lane (cleared by the claim itself). */}
+          {nudge && thread.state === "todo" && (
+            <p className="ksq-notice" role="status" data-testid="detail-retrigger-note">
+              ▶ Agent re-triggered — moved {stateLabel(nudge.from)} → Todo. The squad
+              picks this up on the next intake sweep.
+            </p>
+          )}
+
           {/* S4 mount region — the human comment composer (ISI-4454). Posts to
               POST /api/work-items/{id}/comments (ISI-4406); contributor+ only, a
               viewer stays read-only. If the endpoint is absent on this deployment
               (404/501) it falls back to the honest "not wired here" gap (FR-I3),
-              never a broken control. Comment-&-assign (assign-half) awaits backend
-              child f72cb481 and is deferred. */}
+              never a broken control. ISI-4495: on a parked (unheld, non-backlog)
+              ticket the comment ALSO re-dispatches the lane to todo — the
+              "comment to an agent triggers work" half the board asked for. */}
           <Composer
             workItemId={thread.workItemId}
             canComment={canComment(role)}
             onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
-            onPosted={onCommentPosted}
+            onPosted={(posted) => {
+              onCommentPosted();
+              if (posted.reTriggered) setNudge({ from: posted.fromState ?? "" });
+            }}
           />
         </section>
       </div>
@@ -689,7 +903,15 @@ function TicketBody({
 
             <dt className="muted">Status</dt>
             <dd>
-              <StatusChip state={thread.state} />
+              {/* ISI-4495 board ask: the detail page can MOVE the ticket — the
+                  guard-limited select (same allowedTargets adjacency as the
+                  kanban drag), one PATCH /state per move. */}
+              <StatusControl
+                state={thread.state}
+                workItemId={thread.workItemId}
+                canEdit={canComment(role)}
+                onMoved={onCommentPosted}
+              />
             </dd>
 
             {/* Phase is the honest lifecycle affordance (FR-7 / ISI-4487): the ticket's
@@ -709,12 +931,17 @@ function TicketBody({
             </dd>
 
             <dt className="muted">Assignee</dt>
-            <dd data-testid="detail-holder">
-              {thread.holder ? (
-                <code className="ksq-ticket-id">{thread.holder}</code>
-              ) : (
-                <span className="muted">unassigned</span>
-              )}
+            <dd>
+              {/* ISI-4495 board ask: on a backlog ticket the squad roster dropdown
+                  chains the dispatch verb (assign == start, ADR-0022 / ISI-4501
+                  semantics); off backlog the holder renders read-only. */}
+              <AssigneeControl
+                state={thread.state}
+                holder={thread.holder}
+                workItemId={thread.workItemId}
+                canEdit={canComment(role)}
+                onAssigned={onCommentPosted}
+              />
             </dd>
 
             {/* Priority / Work mode / Parent / Labels are not carried by the M1.5
