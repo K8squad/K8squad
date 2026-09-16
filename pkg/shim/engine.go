@@ -227,9 +227,16 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	// from seq 0 always sees the full lifecycle (C4).
 	tk.setState(a2a.TaskSubmitted, "")
 
+	// Snapshot the submitted status BEFORE launching drive: the goroutine
+	// advances tk.state to working→terminal, so reading tk.status() after the
+	// go statement races with a fast runner and can return a non-submitted
+	// state (flaky TestSubmitLifecycle). The submit call always reports the
+	// submitted state; callers observe later transitions over the SSE stream.
+	submitted := tk.status()
+
 	go e.drive(runCtx, tk, spec)
 
-	return tk.status(), nil
+	return submitted, nil
 }
 
 // drive runs the runtime to completion, funneling progress into the task's
