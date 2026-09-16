@@ -261,12 +261,12 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
     expect(screen.queryByTestId("quick-move-v")).toBeNull();
   });
 
-  it("a contributor gets the quick-move control and a draggable card", () => {
+  it("a signed-in (global-role) caller gets the quick-move control and a draggable card", () => {
     render(
       <KanbanBoard
         items={[item({ id: "c", state: "todo" })]}
         tree={controller({})}
-        role="contributor"
+        role="admin"
         onTransition={noop}
         projectId="ns/demo"
       />,
@@ -280,7 +280,7 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
       <KanbanBoard
         items={[item({ id: "c", state: "implementation" })]}
         tree={controller({})}
-        role="contributor"
+        role="admin"
         onTransition={noop}
         projectId="ns/demo"
       />,
@@ -301,7 +301,7 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
       <KanbanBoard
         items={[item({ id: "c", state: "backlog" })]}
         tree={controller({})}
-        role="contributor"
+        role="admin"
         onTransition={onTransition}
         projectId="ns/demo"
       />,
