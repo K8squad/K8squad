@@ -45,9 +45,25 @@ export function isBlocked(item: WorkItem): boolean {
   return item.blockedReason != null;
 }
 
-/** Only the human status-transition is mutable on this screen (R6 scope guard). */
+/**
+ * May the caller drag a card between lanes (the human status-transition — the one
+ * mutation this screen owns, R6 scope guard)?
+ *
+ * `role` is the caller's GLOBAL role from fetchViewerRole — "admin" | "user", or the
+ * "viewer" sentinel when the session is unresolved (fail-closed). It is NEVER a
+ * per-Project role (viewer/contributor/maintainer): /auth/me exposes only the global
+ * axis. The prior gate tested for "contributor"/"maintainer", values the global role
+ * can never hold, so it returned false for EVERYONE — admins included — and every card
+ * rendered draggable={false} (ISI-4502; same field-vocab mismatch class as ISI-4496).
+ *
+ * The server wall is authoritative: PATCH /work-items/{id}/state is human-only and
+ * accepts any signed-in non-agent caller (§6.7.2). So the client gate must not be
+ * STRICTER than that — we mirror canCreate/TicketDetail exactly: any resolved caller
+ * may drag, only the unresolved "viewer" sentinel is denied. A server that ultimately
+ * refuses only ever 422/403s, surfaced as a re-sync notice, never a silent lie.
+ */
 export function canDrag(role: string | undefined | null): boolean {
-  return role === "contributor" || role === "maintainer";
+  return role != null && role !== "" && role !== "viewer";
 }
 
 /** Roots of the tree: `parent_id IS NULL` — an orphan (ON DELETE SET NULL) IS a root (§6.1). */
