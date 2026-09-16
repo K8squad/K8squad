@@ -102,6 +102,37 @@ func TestWorkItemDispatchAgentForbidden(t *testing.T) {
 	}
 }
 
+// TestWorkItemReassignOK — the ISI-4573 todo re-assign rides the SAME route and
+// verb: success stays 200 (not 201) with the result body naming the states —
+// for a re-assign fromState==toState=="todo" — and the store input is
+// indistinguishable from a dispatch (the branch is store-internal).
+func TestWorkItemReassignOK(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	store := &fakeDispatcher{result: coord.WorkItemDispatchResult{
+		WorkItemID: "wi-1", FromState: "todo", ToState: "todo", RequestedAgent: "reviewer",
+	}}
+	h := testDispatchServer(t, teamID, store)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postDispatch("wi-1", `{"agentId":"reviewer"}`, devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-assign: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !store.called {
+		t.Fatal("store not called")
+	}
+	if store.got.AgentID != "reviewer" || store.got.TeamID != teamID.String() {
+		t.Fatalf("store input wrong for re-assign: %+v", store.got)
+	}
+	var got coord.WorkItemDispatchResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body: %v", err)
+	}
+	if got.FromState != "todo" || got.ToState != "todo" || got.RequestedAgent != "reviewer" {
+		t.Fatalf("re-assign body must report todo→todo with the swapped agent: %+v", got)
+	}
+}
+
 // TestWorkItemDispatchMissingAgentID — no agentId ⇒ 400 before the store.
 func TestWorkItemDispatchMissingAgentID(t *testing.T) {
 	store := &fakeDispatcher{}

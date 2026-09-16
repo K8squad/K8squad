@@ -105,17 +105,25 @@ func NewWorkItemDispatchStore(db *sql.DB, agents TeamAgentResolver) (*WorkItemDi
 // Intake sweep mints the Run — atomically, with a §6.5 'work_item_dispatch_requested'
 // audit row (fence NULL, ADR-037), and only after the agent-∈-Team check passes.
 //
+// RE-ASSIGN (ISI-4573): the same verb re-targets an item already in 'todo' that
+// no run has claimed yet — requested_agent is swapped in place (no lane move)
+// with a 'work_item_reassign_requested' audit row, same guards, same txn shape.
+//
 // Semantics:
-//   - (result, nil): requested_agent stamped, item now in 'todo'; Intake will
-//     prefer AgentID over Team.Spec.Agents[0] on its next tick.
+//   - (result, nil): requested_agent stamped and the item now in 'todo' (fresh
+//     dispatch), or requested_agent swapped on an unclaimed 'todo' item
+//     (re-assign, fromState==toState=="todo"); Intake will prefer AgentID over
+//     Team.Spec.Agents[0] on its next tick.
 //   - (zero, ErrInvalidWorkItem): missing required input, or the item has no
 //     owning Team to check membership against (400).
 //   - (zero, ErrWorkItemNotFound): no such item in the caller's Team scope (404,
 //     existence-hiding — never a cross-tenant 403).
 //   - (zero, ErrAgentNotInTeam): the agent is not in the owning Team's composition
 //     (403). The item is left untouched (§3 D5).
-//   - (zero, ErrStateConflict): the item is not in 'backlog' (already dispatched /
-//     past intake) — a re-dispatch is a clean 409, never a silent second start.
+//   - (zero, ErrStateConflict): the item is not in 'backlog' or an unclaimed
+//     'todo' — a claimed todo (coord.claim.run_id set), in_progress, in_review,
+//     done (…) is a clean 409 naming the state, never a silent second start
+//     behind a live run (§3 D5 idempotency).
 //   - (zero, err): infrastructure failure (incl. a dangling team the resolver
 //     cannot resolve); nothing was written.
 func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestDispatchInput) (WorkItemDispatchResult, error) {
@@ -156,18 +164,54 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 		return WorkItemDispatchResult{}, fmt.Errorf("%w: work item has no owning team to dispatch to", ErrInvalidWorkItem)
 	}
 
-	// (4) Lane precondition → 409. Dispatch is a backlog→todo advance; anything
-	// else (already todo/in_progress/in_review/done) is past this door. A
-	// re-dispatch of an already-todo item is therefore a clean 409, never a second
-	// intent write (§3 D5 idempotency).
-	if currentState != "backlog" {
+	// (4) Branch on the LOCKED lane, still inside the txn (ISI-4573): backlog is
+	// the dispatch advance below, unchanged; todo is the re-assign window iff no
+	// run has claimed the item yet; anything else is past this door.
+	var fromState, toState, eventType, updateSQL string
+	switch currentState {
+	case "backlog":
+		fromState, toState, eventType = "backlog", "todo", "work_item_dispatch_requested"
+		updateSQL = `
+			UPDATE coord.work_item
+			   SET requested_agent = $2, state = 'todo', updated_at = now()
+			 WHERE id = $1::uuid AND state = 'backlog'`
+	case "todo":
+		// The re-assign precondition: coord.claim must carry no run for this item.
+		// The claim row is locked FOR UPDATE in the same txn so a run claiming
+		// concurrently (prodclaim.go rewrites run_id) cannot interleave with this
+		// check — either the claim commits first and we see its run_id (409), or
+		// we commit first and the claimer re-reads the swapped intent. (The lock
+		// order work_item→claim is the inverse of prodclaim's claim→work_item, so
+		// a truly simultaneous pair is resolved by Postgres' deadlock detector as
+		// a retryable infra error, never a corrupted re-assign.)
+		var runID sql.NullString
+		err = tx.QueryRowContext(ctx, `
+			SELECT run_id FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`,
+			in.WorkItemID).Scan(&runID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// The shipped schema provisions exactly one claim row per item (mig
+			// 0001 trigger); a missing row cannot hold a run, so it reads
+			// unclaimed.
+		case err != nil:
+			return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: read claim: %w", err)
+		case runID.Valid:
+			return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q with a claimed run; re-assign requires an unclaimed todo item", ErrStateConflict, currentState)
+		}
+		fromState, toState, eventType = "todo", "todo", "work_item_reassign_requested"
+		updateSQL = `
+			UPDATE coord.work_item
+			   SET requested_agent = $2, updated_at = now()
+			 WHERE id = $1::uuid AND state = 'todo'`
+	default:
 		return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q, dispatch requires backlog", ErrStateConflict, currentState)
 	}
 
 	// (5) Authorization the admission layer does NOT cover (§3 D4): the agent must
 	// belong to the owning Team's composition. Checked inside the txn so a
-	// non-member can never advance the lane. A dangling team (resolver error)
-	// fails the whole op loudly rather than rejecting every agent vacuously.
+	// non-member can never advance the lane OR swap re-assign intent. A dangling
+	// team (resolver error) fails the whole op loudly rather than rejecting every
+	// agent vacuously.
 	names, err := s.agents.TeamAgents(ctx, itemTeam.String)
 	if err != nil {
 		return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: resolve team agents: %w", err)
@@ -176,14 +220,9 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 		return WorkItemDispatchResult{}, fmt.Errorf("%w: agent %q not in team %s", ErrAgentNotInTeam, in.AgentID, itemTeam.String)
 	}
 
-	// (6) Conditional advance: stamp intent + move backlog→todo in one CAS. The
-	// WHERE re-asserts the locked lane so a slipped write is a conflict, never a
-	// silent clobber.
-	res, err := tx.ExecContext(ctx, `
-		UPDATE coord.work_item
-		   SET requested_agent = $2, state = 'todo', updated_at = now()
-		 WHERE id = $1::uuid AND state = 'backlog'`,
-		in.WorkItemID, in.AgentID)
+	// (6) Conditional write: both branches CAS on the lane the lock read saw, so a
+	// slipped concurrent change is a conflict, never a silent clobber.
+	res, err := tx.ExecContext(ctx, updateSQL, in.WorkItemID, in.AgentID)
 	if err != nil {
 		return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: update: %w", err)
 	}
@@ -195,7 +234,8 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 
 	// (7) §6.5 audit provenance, same txn, fence NULL (ADR-037: a dispatch holds no
 	// custody). Mirrors humanstate.go's state_transition row shape so the whole
-	// board write surface reads one way.
+	// board write surface reads one way; the re-assign branch books its own event
+	// type with from==to=="todo" (the lane did not move).
 	payload, err := json.Marshal(map[string]any{
 		"initiator":       "human",
 		"requested_agent": in.AgentID,
@@ -210,8 +250,8 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO coord.audit_log
 		       (work_item_id, event_type, principal, initiated_by_user_id, from_state, to_state, payload)
-		VALUES ($1::uuid, 'work_item_dispatch_requested', $2, $3, 'backlog', 'todo', $4::jsonb)`,
-		in.WorkItemID, in.Principal, initiatedBy, string(payload)); err != nil {
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb)`,
+		in.WorkItemID, eventType, in.Principal, initiatedBy, fromState, toState, string(payload)); err != nil {
 		return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: audit: %w", err)
 	}
 
@@ -220,8 +260,8 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 	}
 	return WorkItemDispatchResult{
 		WorkItemID:     in.WorkItemID,
-		FromState:      "backlog",
-		ToState:        "todo",
+		FromState:      fromState,
+		ToState:        toState,
 		RequestedAgent: in.AgentID,
 	}, nil
 }
