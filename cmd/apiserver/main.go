@@ -362,6 +362,15 @@ func main() {
 		log.Fatalf("ksquad-apiserver: work-item read store: %v", err)
 	}
 
+	// Project-overview time-series read model (ISI-4509 / ISI-4505 S4): runs-by-status +
+	// token-sum from the SAME informer cache the dashboard uses, and tickets-by-status-over-time
+	// from the coord status-history seam (workItemReads.ProjectStatusSnapshots over
+	// coord.audit_log — no new store). Nil informer cache ⇒ nil service ⇒ documented 501.
+	var projectOverview *apiserver.OverviewService
+	if dashboardReader != nil {
+		projectOverview = apiserver.NewOverviewService(dashboardReader, workItemReads)
+	}
+
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
 	// (migration 0012). The DB is a hard start dependency here, so the searcher is
 	// always bound (the documented-501 fallback exists only for a searcher-less host
@@ -526,6 +535,7 @@ func main() {
 		Discussion:       discussion.NewHandler(discussion.NewStore(db)),
 		Ready:            dbReady{db},
 		Overview:         overview,
+		ProjectOverview:  projectOverview,
 		Teams:            teams,
 		FleetList:        fleetList,
 		Credentials:      credentials,
