@@ -63,7 +63,7 @@ func TestWorkItemReadStoreRequiresIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWorkItemReadStore: %v", err)
 	}
-	if _, err := s.ListWorkItems(context.Background(), "", ""); err == nil {
+	if _, err := s.ListWorkItems(context.Background(), "", "", ""); err == nil {
 		t.Fatal("ListWorkItems without projectID must fail")
 	}
 	if _, err := s.ReadWorkItemThread(context.Background(), "", ""); err == nil {

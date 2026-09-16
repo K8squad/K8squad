@@ -103,8 +103,11 @@ func NewWorkItemReadStore(db *sql.DB) (*WorkItemReadStore, error) {
 // first. teamID scopes tenancy (§12.1) EXACTLY like the write paths: a scoped
 // Team sees only its own cards (a team-less or foreign-team card is invisible,
 // never a 403); an empty teamID is the trusted fleet-admin path (ISI-3937) and
-// returns every card in the Project.
-func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID string) ([]BoardItem, error) {
+// returns every card in the Project. parentID, when non-empty, narrows the list
+// to that item's DIRECT children only (the 8.17 lazy-load the console's
+// sub-ticket card asks for, ISI-4536); empty keeps the full-Project card list
+// the board/kanban views draw from.
+func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID, parentID string) ([]BoardItem, error) {
 	if projectID == "" {
 		return nil, fmt.Errorf("coord.ListWorkItems: projectID required")
 	}
@@ -117,8 +120,9 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.project_id = $1::uuid
 		   AND ($2::uuid IS NULL OR wi.team_id = $2::uuid)
+		   AND ($3::uuid IS NULL OR wi.parent_id = $3::uuid)
 		 ORDER BY wi.updated_at DESC, wi.id
-		 LIMIT 500`, projectID, nullUUID(teamID))
+		 LIMIT 500`, projectID, nullUUID(teamID), nullUUID(parentID))
 	if err != nil {
 		return nil, fmt.Errorf("coord.ListWorkItems: list %s: %w", projectID, err)
 	}

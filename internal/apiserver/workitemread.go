@@ -26,6 +26,8 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/coord"
 )
@@ -35,7 +37,9 @@ import (
 // can leave the routes documented-501 without a DB, and tests can inject a fake.
 type WorkItemReader interface {
 	// ListWorkItems returns the board cards for one Project, Team-scoped.
-	ListWorkItems(ctx context.Context, teamID, projectID string) ([]coord.BoardItem, error)
+	// A non-empty parentID narrows to that item's direct children (8.17
+	// lazy-load, ISI-4536); empty lists the full card set.
+	ListWorkItems(ctx context.Context, teamID, projectID, parentID string) ([]coord.BoardItem, error)
 	// ReadWorkItemThread returns one ticket's full thread (comments, status
 	// history, change refs), Team-scoped.
 	ReadWorkItemThread(ctx context.Context, workItemID, teamID string) (coord.WorkItemThread, error)
@@ -64,7 +68,18 @@ func workItemListHandler(store WorkItemReader, refs ProjectRefResolver) http.Han
 			projectID = resolved.UID
 		}
 		teamID := authTeamScope(r)
-		items, err := store.ListWorkItems(r.Context(), teamID, projectID)
+		// ISI-4536: the console's sub-ticket card lazy-loads DIRECT children
+		// via ?parentId={id} (8.17). Absent ⇒ the full board list, unchanged.
+		// A malformed id is rejected up front — pushing it to the store would
+		// surface as a 502 "read unavailable" on what is a client error.
+		parentID := r.URL.Query().Get("parentId")
+		if parentID != "" {
+			if _, err := uuid.Parse(parentID); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "parentId must be a work-item UUID")
+				return
+			}
+		}
+		items, err := store.ListWorkItems(r.Context(), teamID, projectID, parentID)
 		if mapWorkItemReadError(w, err) {
 			return
 		}

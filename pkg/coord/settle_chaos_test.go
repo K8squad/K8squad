@@ -147,7 +147,7 @@ func TestSettleShowsAssigneeAndProgress(t *testing.T) {
 
 	// (7) The board card list carries the assignee (the console's WorkItem
 	// field the Kanban card renders).
-	items, err := rd.ListWorkItems(ctx, "", mustProjectOf(t, db, wi))
+	items, err := rd.ListWorkItems(ctx, "", mustProjectOf(t, db, wi), "")
 	if err != nil {
 		t.Fatalf("ListWorkItems: %v", err)
 	}
