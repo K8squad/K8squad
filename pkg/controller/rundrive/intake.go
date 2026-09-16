@@ -105,6 +105,16 @@ type IntakeSource interface {
 	// DueWorkItems lists team-assigned todo work items, oldest first, at most
 	// limit rows.
 	DueWorkItems(ctx context.Context, limit int) ([]IntakeItem, error)
+	// RearmSettled re-arms a SETTLED claim for the next generation (ISI-4556):
+	// when the work item sits on the dispatch lane ('todo') and its coord.claim
+	// row is terminal (succeeded/failed from a PREVIOUS generation's Run) with
+	// the checkout released (holder NULL), the durable reconcile_step is reset
+	// to 'pending' in the same discipline as a §6.3 re-entry — one transaction
+	// co-committing the guarded step reset + fence bump, its §6.5 audit row and
+	// §6.6 outbox event. Items that never ran (step already 'pending') or that
+	// are mid-flight match the guard zero times: a pure no-op, never a clobber
+	// of a live Run's step.
+	RearmSettled(ctx context.Context, workItemID string) error
 }
 
 // sqlIntakeSource binds IntakeSource to the coord schema. Only rows that can
@@ -150,6 +160,96 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 		return nil, fmt.Errorf("rundrive.intake: due work items cursor: %w", err)
 	}
 	return items, nil
+}
+
+// RearmSettled implements IntakeSource.RearmSettled: the ISI-4556 generation
+// re-arm. A settled ticket (terminal reconcile_step from a previous
+// generation's Run, checkout released by the §6.3 terminal effect) that
+// re-enters 'todo' carries a claim row the §6.2 acquire alone cannot revive —
+// the drive loop treats a terminal durable step as absorbing (AC5), so the
+// freshly minted next-generation Run would absorb within seconds (the
+// projector mirroring 'Succeeded' onto it), the item would STAY on 'todo',
+// and the next intake tick would mint yet another generation: the observed
+// runaway mint loop. Re-arming the durable step to 'pending' BEFORE the mint
+// closes that loop at its source: the new Run reads a dispatchable claim,
+// acquires and drives exactly like a first-generation ticket, and its
+// non-terminal phase suppresses further mints.
+//
+// One transaction, the §6.3 re-entry discipline (mirroring ProdClaims.enter):
+//
+//	UPDATE coord.claim SET reconcile_step='pending', fence_token+1 …
+//	  WHERE work_item_id = :item
+//	    AND holder_principal IS NULL                  (checkout released)
+//	    AND reconcile_step IN ('succeeded','failed','cancelled')
+//	    AND the work item still sits on 'todo'        (the dispatch signal)
+//	INSERT INTO coord.audit_log … 'reconcile_rearmed' (§6.5 provenance)
+//	INSERT INTO coord.outbox … 'reconcile_rearmed'    (§6.6 projection)
+//
+// The guard makes it self-policing and idempotent: a never-run item (step
+// 'pending'), a live or mid-flight claim, or an item that left 'todo' matches
+// zero rows and the whole transaction is an audited no-op — a racing lane
+// move can never resurrect a claim a live Run holds, and a second call after
+// a committed re-arm matches nothing. The fence bump keeps any same-fence
+// zombie of the settled generation fenced out of the re-armed epoch.
+func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rundrive.intake.RearmSettled: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	var fenceAfter int64
+	q := fmt.Sprintf(`
+		UPDATE coord.claim
+		   SET reconcile_step    = 'pending',
+		       fence_token       = fence_token + 1,
+		       reclaim_fenced_at = clock_timestamp()
+		 WHERE work_item_id = $1::uuid
+		   AND holder_principal IS NULL
+		   AND reconcile_step IN %s
+		   AND EXISTS (
+		         SELECT 1 FROM coord.work_item wi
+		          WHERE wi.id = coord.claim.work_item_id
+		            AND wi.state = 'todo')
+		 RETURNING fence_token`, terminalSet)
+	switch err := tx.QueryRowContext(ctx, q, workItemID).Scan(&fenceAfter); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Not a settled-on-todo shape (never ran, mid-flight, held, or the
+		// lane moved on): nothing to re-arm. Commit the empty transaction so
+		// success and audited no-op answer identically.
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("rundrive.intake.RearmSettled: commit (no-op): %w", err)
+		}
+		return nil
+	case err != nil:
+		return fmt.Errorf("rundrive.intake.RearmSettled: re-arm: %w", err)
+	}
+
+	// §6.5 provenance, same transaction (the enter shape: to_state carries the
+	// re-armed step; run_id stays NULL — no Run drives this transition yet).
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, fence_token, to_state)
+		VALUES ($1::uuid, NULL, 'reconcile_rearmed', $2, $3, 'pending')`,
+		workItemID, OperatorPrincipal, fenceAfter); err != nil {
+		return fmt.Errorf("rundrive.intake.RearmSettled: audit: %w", err)
+	}
+	// §6.6 exactly-once projection, same transaction (the enter outbox shape).
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'reconcile_rearmed',
+		       wi.id, NULL,
+		       jsonb_build_object('to_step', 'pending'::text, 'fence_token', $2::bigint)
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, fenceAfter); err != nil {
+		return fmt.Errorf("rundrive.intake.RearmSettled: outbox: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rundrive.intake.RearmSettled: commit: %w", err)
+	}
+	return nil
 }
 
 // Intake is a manager Runnable: every tick, dispatch due board tickets to the
@@ -222,9 +322,12 @@ func (i *Intake) sweep(ctx context.Context) {
 	// the ticket re-entered 'todo' (a human lane move, or the ISI-4495
 	// comment-triggered re-dispatch — a settled/succeeded run parks the item
 	// with the checkout RELEASED, settle.go), which is the board explicitly
-	// asking for the NEXT Run. Intake mints a fresh, deterministically-suffixed
-	// Run CR; the released claim row accepts the new acquisition exactly like a
-	// reroute re-claim (§6.2 fenced release → claim).
+	// asking for the NEXT Run. Intake first re-arms the settled claim
+	// (RearmSettled, ISI-4556) and then mints a fresh, deterministically-
+	// suffixed Run CR over the re-armed 'pending' step; without the re-arm the
+	// new Run would absorb on the terminal durable step (AC5), the projector
+	// would mirror 'Succeeded' onto it, and this sweep would mint the next
+	// generation every tick — the runaway mint loop this guard closes.
 	var runs api.RunList
 	if err := i.Client.List(ctx, &runs); err != nil {
 		i.logf("rundrive.intake: list runs: %v", err)
@@ -248,6 +351,17 @@ func (i *Intake) sweep(ctx context.Context) {
 		}
 		dispatched++
 		if liveRun[item.ID] {
+			continue
+		}
+		// ISI-4556: re-arm a settled claim BEFORE minting over it. The order is
+		// load-bearing: the minted Run must be born into a world whose durable
+		// step is already 'pending', or the projector (which keys on the work
+		// item's claim step) races the drive loop and stamps the newborn Run
+		// 'Succeeded' — and a terminal newborn re-mints on the next tick. An
+		// error here is honest-degraded: log, leave the item on 'todo', retry
+		// next tick — never mint over an unre-armed terminal step.
+		if err := i.Source.RearmSettled(ctx, item.ID); err != nil {
+			i.logf("rundrive.intake: work item %s not re-armed: %v", item.ID, err)
 			continue
 		}
 		run, err := i.buildRun(ctx, item, teamByUID, generation[item.ID])
