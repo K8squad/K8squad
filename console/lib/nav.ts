@@ -82,7 +82,7 @@ export type NavNode = {
  *   - `build` is dropped from the menu but its route is kept reachable (legacy alias, AC6).
  */
 const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
-  { id: "landing", label: "Landing" },
+  { id: "landing", label: "Overview" },
   { id: "issues", label: "Issues" },
   { id: "runs", label: "Runs" },
   { id: "discussion", label: "Discussion" },
@@ -284,8 +284,8 @@ const SECTION_LABEL: Record<string, string> = {
   tickets: "Tickets",
   discussion: "Discussion",
   users: "Users & Roles",
-  // Project-Detail Workspace sections (ISI-3957 S1).
-  landing: "Landing",
+  // Project-Detail Workspace sections (ISI-3957 S1). Label renamed Landing → Overview (ISI-4505).
+  landing: "Overview",
   issues: "Issues",
   files: "File Explorer",
   github: "GitHub",

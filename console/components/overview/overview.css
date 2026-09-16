@@ -1,0 +1,250 @@
+/* components/overview/overview.css — shared styling for the overview-dashboard primitives
+ * (ISI-4506 / DESIGN-SPEC-ISI-4505 §5). ZERO new tokens: every color, radius and font role
+ * resolves to an existing globals.css custom property (ISI-2126 visual system). Chart hues reuse
+ * the single semantic status system (--status-*) so "green == running/in-progress" holds fleet-wide.
+ *
+ * Imported by each primitive module (not by a single screen) so any route that mounts a primitive
+ * ships its own layout CSS — avoids the "unstyled route" gap that bit the ticket detail page
+ * (ISI-4503, where tickets.css was imported by only one screen).
+ */
+
+/* ---- semantic tone map (label -> existing status/brand token) ------------------------------ */
+.ov-tone--running { color: var(--status-running); }
+.ov-tone--paused { color: var(--status-paused); }
+.ov-tone--blocked { color: var(--status-blocked); }
+.ov-tone--idle { color: var(--status-idle); }
+.ov-tone--run { color: var(--ksq-run); }
+.ov-tone--accent { color: var(--accent); }
+.ov-tone--neutral { color: var(--text-hi); }
+
+/* ---- StatTile + 5-up band ------------------------------------------------------------------ */
+.ov-stat-band {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1100px) {
+  .ov-stat-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .ov-stat-band { grid-template-columns: minmax(0, 1fr); }
+}
+
+.ov-stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  min-width: 0;
+}
+.ov-stat__label {
+  font-size: 11px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.ov-stat__value {
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 600;
+  color: var(--text-hi); /* overridden by an .ov-tone--* class when a tone is set */
+}
+.ov-stat__sub {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ov-stat__glyph {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  color: var(--text-2);
+  opacity: 0.7;
+  display: inline-flex;
+}
+.ov-stat--loading .ov-stat__value,
+.ov-stat--loading .ov-stat__sub {
+  color: transparent;
+}
+.ov-skel {
+  border-radius: var(--radius-chip);
+  background: color-mix(in srgb, var(--text-2) 16%, transparent);
+  animation: ov-pulse 1.4s ease-in-out infinite;
+}
+.ov-skel--value { height: 26px; width: 60%; }
+.ov-skel--sub { height: 12px; width: 45%; }
+@keyframes ov-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.9; }
+}
+
+/* ---- RunStatusMixBar ----------------------------------------------------------------------- */
+.ov-mixbar {
+  display: flex;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--inset);
+  border: 1px solid var(--border);
+}
+.ov-mixbar__seg { height: 100%; }
+.ov-mixbar__seg--running { background: var(--status-running); }
+.ov-mixbar__seg--paused { background: var(--status-paused); }
+.ov-mixbar__seg--blocked { background: var(--status-blocked); }
+.ov-mixbar__seg--idle { background: var(--status-idle); }
+.ov-mixbar--empty { background: var(--inset); }
+
+/* ---- PanelCard ----------------------------------------------------------------------------- */
+.ov-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  min-width: 0;
+}
+.ov-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ov-panel__title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-hi);
+  letter-spacing: 0.2px;
+}
+.ov-panel__action {
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ov-panel__action:hover { text-decoration: underline; }
+.ov-panel__body {
+  padding: 12px 16px;
+  min-height: 0;
+}
+.ov-panel__state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.ov-panel__retry {
+  font-size: 12px;
+  color: var(--accent);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.ov-panel__retry:hover { border-color: var(--accent); }
+.ov-panel__skel-row {
+  height: 14px;
+  margin: 8px 0;
+}
+.ov-panel__skel-row:nth-child(2) { width: 85%; }
+.ov-panel__skel-row:nth-child(3) { width: 70%; }
+
+/* ---- charts (StackedAreaChart / HBarChart) shared shell ------------------------------------ */
+.ov-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ov-chart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.ov-chart__caption {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ov-chart__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.ov-chart__legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ov-chart__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: currentColor;
+}
+.ov-chart__state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 16px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 13px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+
+/* ---- HBarChart ----------------------------------------------------------------------------- */
+.ov-hbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ov-hbar__row {
+  display: grid;
+  grid-template-columns: minmax(70px, 22%) 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.ov-hbar__label {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-hbar__track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+.ov-hbar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent); /* overridden per-row via inline color token when provided */
+  min-width: 2px;
+}
+.ov-hbar__value {
+  font-size: 12px;
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

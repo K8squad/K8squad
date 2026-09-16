@@ -1,12 +1,13 @@
 // test/nav/projectMenu.test.ts — the Project-Detail Workspace left-menu model (ISI-3957 S1).
-// Covers AC1 (six entries, order), AC2 (Landing at the bare root, not a /landing sub-path),
-// AC3 (active-id derived from the pathname), AC6 (legacy routes don't false-highlight).
+// Covers AC1 (six entries, order), AC2 (Overview ("landing" id) at the bare root, not a
+// /landing sub-path), AC3 (active-id derived from the pathname), AC6 (legacy routes don't
+// false-highlight). Label renamed Landing → Overview by ISI-4505.
 
 import { describe, it, expect } from "vitest";
 import { projectMenu, projectSubnav, projectMenuActiveId } from "@/lib/nav";
 
 describe("projectMenu — AC1 entries in UX order", () => {
-  it("returns Landing · Issues · Runs · Discussion · File Explorer · GitHub · Settings as project-scoped nodes", () => {
+  it("returns Overview · Issues · Runs · Discussion · File Explorer · GitHub · Settings as project-scoped nodes", () => {
     const menu = projectMenu("webapp");
     expect(menu.map((n) => n.id)).toEqual([
       "landing",
@@ -18,7 +19,7 @@ describe("projectMenu — AC1 entries in UX order", () => {
       "settings",
     ]);
     expect(menu.map((n) => n.label)).toEqual([
-      "Landing",
+      "Overview",
       "Issues",
       "Runs",
       "Discussion",
@@ -29,7 +30,7 @@ describe("projectMenu — AC1 entries in UX order", () => {
     expect(menu.every((n) => n.scope === "project")).toBe(true);
   });
 
-  it("AC2 — Landing resolves to the bare project root; the rest map to /{section}", () => {
+  it("AC2 — Overview (landing id) resolves to the bare project root; the rest map to /{section}", () => {
     const byId = Object.fromEntries(projectMenu("webapp").map((n) => [n.id, n.href]));
     expect(byId.landing).toBe("/projects/webapp");
     expect(byId.issues).toBe("/projects/webapp/issues");
@@ -53,7 +54,7 @@ describe("projectMenu — AC1 entries in UX order", () => {
 });
 
 describe("projectMenuActiveId — AC3 active-tab derives from the pathname (URL is the state)", () => {
-  it("the bare project root is Landing", () => {
+  it("the bare project root is Overview (landing id)", () => {
     expect(projectMenuActiveId("/projects/webapp")).toBe("landing");
     expect(projectMenuActiveId("/projects/webapp/")).toBe("landing");
     expect(projectMenuActiveId("/projects/squad-alpha%2Fwebapp")).toBe("landing");
