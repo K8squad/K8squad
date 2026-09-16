@@ -1,0 +1,85 @@
+/* components/overview/dashboard.css — layout for the Frame 02 project-overview assembly
+ * (ISI-4508 S3; DESIGN-SPEC-ISI-4505 §3). Pure layout: it introduces NO colors, radii, or fonts
+ * of its own — every value is an existing token (globals.css / ISI-2126) or a flex/grid rule.
+ * The stat band, panel cards, and charts are the S1 primitives (overview.css); this sheet only
+ * stacks them into the mock's rows and skins the two S3-specific list bodies. */
+
+.ov-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Charts row — tickets-over-time (62%) + runs-by-status (38%), collapsing to one column narrow. */
+.ov-charts-row {
+  display: grid;
+  grid-template-columns: 62fr 38fr;
+  gap: 16px;
+}
+
+/* Bottom row — latest tickets (55%) + latest runs (45%). */
+.ov-bottom-row {
+  display: grid;
+  grid-template-columns: 55fr 45fr;
+  gap: 16px;
+}
+
+@media (max-width: 1100px) {
+  .ov-charts-row,
+  .ov-bottom-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Live-thinking feed — per-run row + latest-thought inset. */
+.ov-thinking {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ov-thinking__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ov-thinking__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ov-thinking__snippet {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  color: var(--text-2);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Latest tickets / latest runs — simple clickable rows. */
+.ov-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ov-list__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.ov-list__row:last-child {
+  border-bottom: none;
+}
