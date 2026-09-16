@@ -118,6 +118,74 @@ export async function updateWorkItem(
   return (await jsonOrThrow(res)) as WorkItem;
 }
 
+/** One assignable agent for the create-sheet dropdown (ISI-4501). */
+export interface AgentOption {
+  /** Object UID — React key only; NOT what dispatch matches on. */
+  id: string;
+  /** Agent NAME — the identity `POST .../dispatch {agentId}` resolves against
+   * (coord.RequestDispatch checks Team.Spec.Agents names, fleetlist.go). */
+  name: string;
+}
+
+/**
+ * List the squad's agents for the "Assign to" dropdown (ISI-4501). Proxies
+ * GET /api/squad/agents (fleetlist.go FleetAgentList → {agents:[{id,name}]}),
+ * project-scoped server-side. BEST-EFFORT: any failure (unhosted 501, 404,
+ * network) degrades to an empty roster so the sheet still creates unassigned —
+ * the dropdown just shows "Unassigned" alone rather than blocking create.
+ */
+export async function listSquadAgents(): Promise<AgentOption[]> {
+  try {
+    const res = await fetch("/api/squad/agents", {
+      headers: { accept: "application/json" },
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const payload = (await res.json()) as { agents?: unknown };
+    const rows = Array.isArray(payload.agents) ? payload.agents : [];
+    return rows
+      .map((r) => r as { id?: unknown; name?: unknown })
+      .filter((r) => typeof r.id === "string" && typeof r.name === "string")
+      .map((r) => ({ id: r.id as string, name: r.name as string }));
+  } catch {
+    return [];
+  }
+}
+
+/** Result of a board dispatch (workitemdispatch.go WorkItemDispatchResult). */
+export interface DispatchResult {
+  workItemId: string;
+  fromState: string;
+  toState: string;
+  requestedAgent: string;
+}
+
+/**
+ * Dispatch a human's agent choice for a work item (ISI-4501, ADR-0022 / ISI-4411):
+ * POST /api/work-items/{id}/dispatch {agentId}. This is NOT a create-body field —
+ * assignment is custody/dispatch-based: it stamps the requested agent and advances
+ * backlog→todo so operator Intake mints the Run. `agentId` is the agent NAME (the
+ * identity Team.Spec.Agents and Intake dispatch on). 200 ⇒ dispatched; 403 (agent
+ * not in team / human-only), 404 (item gone), 409 (item not in backlog) surface
+ * verbatim as ApiError so the sheet can report the assignment failed without
+ * pretending the create failed too.
+ */
+export async function dispatchWorkItem(
+  workItemId: string,
+  agentId: string,
+): Promise<DispatchResult> {
+  const res = await fetch(
+    `/api/work-items/${encodeURIComponent(workItemId)}/dispatch`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agentId }),
+      cache: "no-store",
+    },
+  );
+  return (await jsonOrThrow(res)) as DispatchResult;
+}
+
 /**
  * Resolve the caller's role for the UI RBAC gate; any failure ⇒ "viewer" (FAIL-CLOSED, §12.3).
  *

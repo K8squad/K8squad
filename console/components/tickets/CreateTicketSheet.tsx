@@ -11,12 +11,26 @@
 // hands the server-assigned WorkItem back to the Issues screen for an optimistic
 // insert (design §2 "optimistic row + link to detail") and closes.
 //
+// ASSIGN-TO (ISI-4501): assignment is NOT a create-body field — it is custody/dispatch
+// based (ADR-0022 / ISI-4411). So the "Assign to" dropdown does NOT feed buildCreateBody;
+// instead, on a successful 201 the sheet CHAINS POST /api/work-items/{id}/dispatch {agentId}
+// which advances the item backlog→todo so operator Intake mints the Run with that agent.
+// The agent identity dispatch matches is the agent NAME (Team.Spec.Agents), so the dropdown
+// carries the name, not the UID. A dispatch failure is surfaced inline WITHOUT losing the
+// created item — the ticket already exists in the backlog; only the assignment did not stick.
+//
 // Auth: the button that opens this is contributor+-gated in TicketsScreen, but the
 // apiserver is the real wall — a viewer POST is refused 403 and surfaced here, never
 // swallowed (fail-closed, §12.3).
 
 import { useEffect, useId, useRef, useState } from "react";
-import { ApiError, createWorkItem } from "@/lib/tickets/api";
+import {
+  ApiError,
+  createWorkItem,
+  dispatchWorkItem,
+  listSquadAgents,
+  type AgentOption,
+} from "@/lib/tickets/api";
 import {
   buildCreateBody,
   canCreate,
@@ -58,6 +72,29 @@ function errorMessage(err: unknown): string {
   return "Could not create the ticket — network error.";
 }
 
+// The create SUCCEEDED — only the follow-on dispatch failed. Every message keeps
+// that distinction explicit (the ticket is safe in the backlog) so the human
+// retries the assignment rather than the whole create (ISI-4501).
+function dispatchErrorMessage(err: unknown): string {
+  const tail =
+    " The ticket was created and is in the backlog — retry, or assign it from its detail.";
+  if (err instanceof ApiError) {
+    switch (err.status) {
+      case 403:
+        return "That agent can't be assigned here (not a member of this project's team)." + tail;
+      case 404:
+        return "The ticket could not be found to assign the agent." + tail;
+      case 409:
+        return "The ticket already moved out of the backlog, so it can't be dispatched." + tail;
+      case 501:
+        return "Assigning agents isn't hosted on this deployment yet." + tail;
+      default:
+        return `Could not assign the agent (HTTP ${err.status}).` + tail;
+    }
+  }
+  return "Could not assign the agent — network error." + tail;
+}
+
 export function CreateTicketSheet({
   projectId,
   parents,
@@ -67,12 +104,21 @@ export function CreateTicketSheet({
   const [input, setInput] = useState<CreateTicketInput>(EMPTY_CREATE_TICKET);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "Assign to" is held OUTSIDE CreateTicketInput on purpose: it is dispatched
+  // after create, never posted in the create body (buildCreateBody stays
+  // assignee-free, ISI-4501). Value is the agent NAME dispatch matches on.
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [assigneeName, setAssigneeName] = useState<string>("");
+  // Once created, we remember the item so a dispatch retry re-uses it instead of
+  // creating a duplicate ticket (the create is idempotent-by-hand this way).
+  const [created, setCreated] = useState<WorkItem | null>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
   const descId = useId();
   const parentId = useId();
   const priorityId = useId();
   const workModeId = useId();
+  const assigneeId = useId();
   const labelsId = useId();
 
   // Focus the title on open, and close on Escape (a11y for a slide-over dialog).
@@ -85,20 +131,58 @@ export function CreateTicketSheet({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // Populate the agent dropdown (best-effort; failure degrades to Unassigned-only).
+  useEffect(() => {
+    let alive = true;
+    void listSquadAgents().then((list) => {
+      if (alive) setAgents(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const disabled = submitting || !canCreate(input);
 
   const submit = async () => {
     if (!canCreate(input) || submitting) return;
     setSubmitting(true);
     setError(null);
-    try {
-      const created = await createWorkItem(projectId, buildCreateBody(input));
-      onCreated(created);
-      onClose();
-    } catch (err) {
-      setError(errorMessage(err));
-      setSubmitting(false);
+
+    // (1) Create — but only if we haven't already (a dispatch retry re-uses it).
+    let item = created;
+    if (!item) {
+      try {
+        item = await createWorkItem(projectId, buildCreateBody(input));
+      } catch (err) {
+        setError(errorMessage(err));
+        setSubmitting(false);
+        return;
+      }
+      setCreated(item);
+      // Hand the backlog item to the list immediately so it is never lost even if
+      // the follow-on dispatch fails (onCreated upserts by id, so a later
+      // assigned-row hand-back replaces this one).
+      onCreated(item);
     }
+
+    // (2) If an agent was picked, chain the dispatch (assignment == start).
+    if (assigneeName) {
+      try {
+        const res = await dispatchWorkItem(item.id, assigneeName);
+        onCreated({
+          ...item,
+          assignee: res.requestedAgent,
+          state: res.toState as WorkItem["state"],
+        });
+      } catch (err) {
+        setError(dispatchErrorMessage(err));
+        setSubmitting(false);
+        return;
+      }
+    }
+
+    onClose();
   };
 
   return (
@@ -233,6 +317,28 @@ export function CreateTicketSheet({
               </select>
             </label>
 
+            <label className="ksq-field" htmlFor={assigneeId}>
+              <span className="ksq-field__label">Assign to (optional)</span>
+              <select
+                id={assigneeId}
+                data-testid="create-ticket-assignee"
+                aria-label="Assign to agent"
+                value={assigneeName}
+                onChange={(e) => setAssigneeName(e.target.value)}
+              >
+                <option value="">Unassigned</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.name}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <span className="ksq-field__hint muted">
+                Assigning dispatches the agent to start this ticket. Leave
+                unassigned to keep it in the backlog.
+              </span>
+            </label>
+
             <label className="ksq-field" htmlFor={labelsId}>
               <span className="ksq-field__label">Labels</span>
               <input
@@ -273,7 +379,13 @@ export function CreateTicketSheet({
               data-testid="create-ticket-submit"
               disabled={disabled}
             >
-              {submitting ? "Creating…" : "Create ticket"}
+              {submitting
+                ? created
+                  ? "Assigning…"
+                  : "Creating…"
+                : created
+                  ? "Retry assign"
+                  : "Create ticket"}
             </button>
           </footer>
         </form>
