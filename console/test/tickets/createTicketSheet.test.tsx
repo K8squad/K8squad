@@ -387,7 +387,10 @@ describe("CreateTicketSheet", () => {
       blockedReason: null,
       updatedAt: "2026-09-16T00:00:00Z",
     };
-    fetchMock.mockResolvedValue(jsonResponse(created, 201));
+    // Route by request: the mount fires GET /api/squad/agents before submit, so a
+    // single shared Response would have its body consumed there and leave the create
+    // POST reading an already-read body. Hand each call a fresh Response.
+    route({ create: () => jsonResponse(created, 201) });
     const onCreated = vi.fn();
 
     render(
@@ -414,7 +417,7 @@ describe("CreateTicketSheet", () => {
     fireEvent.click(screen.getByTestId("create-ticket-submit"));
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created));
-    const [, opts] = fetchMock.mock.calls[0];
+    const [, opts] = postsTo("/work-items")[0] as [string, RequestInit];
     expect(JSON.parse(opts.body as string)).toEqual({
       title: "child",
       parentId: "ISI-7",
