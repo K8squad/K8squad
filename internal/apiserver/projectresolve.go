@@ -51,20 +51,31 @@ func resolveTeamNamespace(ctx context.Context, reader client.Reader, teamUID str
 // ErrProjectNotFound (404), indistinguishable (existence-hiding, NFR-SEC5).
 // Returns the resolved (namespace, Project name).
 func resolveProjectInTeam(ctx context.Context, reader client.Reader, teamUID, projectID string) (string, string, error) {
+	ns, name, _, err := resolveProjectInTeamWithUID(ctx, reader, teamUID, projectID)
+	return ns, name, err
+}
+
+// resolveProjectInTeamWithUID is resolveProjectInTeam plus the resolved Project
+// CR UID — the value coord.work_item.project_id keys on (ISI-4132). A read model
+// that spans BOTH the CRD cache (Runs, keyed by ProjectRef.Name) and the coord
+// board store (work items, keyed by project_id UID) — the project-overview
+// series (ISI-4509) — needs both identities from one resolution, so it cannot
+// call the (ns, name)-only spine and separately re-derive the UID.
+func resolveProjectInTeamWithUID(ctx context.Context, reader client.Reader, teamUID, projectID string) (string, string, string, error) {
 	ns, err := resolveTeamNamespace(ctx, reader, teamUID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var projects ksquadv1.ProjectList
 	if err := reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	for i := range projects.Items {
 		if projects.Items[i].Name == projectID {
-			return ns, projects.Items[i].Name, nil
+			return ns, projects.Items[i].Name, string(projects.Items[i].UID), nil
 		}
 	}
-	return "", "", ErrProjectNotFound
+	return "", "", "", ErrProjectNotFound
 }
 
 // resolveProjectFleetWide is the ADMIN scope resolver (ISI-3951, extends
@@ -82,29 +93,37 @@ func resolveProjectInTeam(ctx context.Context, reader client.Reader, teamUID, pr
 // and collapses to 409; when ISI-3941's shared fleet-read helper lands, this
 // resolver is the single place both read models pick it up.
 func resolveProjectFleetWide(ctx context.Context, reader client.Reader, projectID string) (string, string, error) {
+	ns, name, _, err := resolveProjectFleetWideWithUID(ctx, reader, projectID)
+	return ns, name, err
+}
+
+// resolveProjectFleetWideWithUID is resolveProjectFleetWide plus the resolved
+// Project CR UID (coord.work_item.project_id), for the cross-store project
+// overview series — see resolveProjectInTeamWithUID.
+func resolveProjectFleetWideWithUID(ctx context.Context, reader client.Reader, projectID string) (string, string, string, error) {
 	var projects ksquadv1.ProjectList
 	if err := reader.List(ctx, &projects); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	var nameNS, nameName string
+	var nameNS, nameName, nameUID string
 	nameMatches := 0
 	for i := range projects.Items {
 		p := &projects.Items[i]
 		if string(p.UID) == projectID && projectID != "" {
-			return p.Namespace, p.Name, nil // UID match is unique — wins over any name collision.
+			return p.Namespace, p.Name, string(p.UID), nil // UID match is unique — wins over any name collision.
 		}
 		if p.Name == projectID {
-			nameNS, nameName = p.Namespace, p.Name
+			nameNS, nameName, nameUID = p.Namespace, p.Name, string(p.UID)
 			nameMatches++
 		}
 	}
 	switch nameMatches {
 	case 0:
-		return "", "", ErrProjectNotFound
+		return "", "", "", ErrProjectNotFound
 	case 1:
-		return nameNS, nameName, nil
+		return nameNS, nameName, nameUID, nil
 	default:
-		return "", "", ErrProjectAmbiguous
+		return "", "", "", ErrProjectAmbiguous
 	}
 }
 

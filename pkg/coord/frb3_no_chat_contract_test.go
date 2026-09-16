@@ -389,19 +389,21 @@ var allowedSurface = map[string]string{
 	// ref is provenance (kind/ref/summary, author server-supplied from the run
 	// token) — the same §6.1 shape AppendComment pins, not an agent-to-agent
 	// channel; the reads are Team-scoped projections of a card's own content.
-	"ChangeKindCommit":                     "§6.1 change-ref kind enum: commit (M1.5 tight enum, migration 0015)",
-	"ChangeKindPullRequest":                "§6.1 change-ref kind enum: pull_request (M1.5 tight enum, migration 0015)",
-	"ValidChangeKinds":                     "§6.1 closed change-ref kind set (widening is a forward migration)",
-	"ErrInvalidChangeRef":                  "§6.1 guard: change-report kind/ref malformed (→400)",
-	"ChangeRef":                            "§6.1 one append-only provenanced change ref on a card (read projection)",
-	"AppendChangeRef":                      "§6.1 append a provenanced coord.change_ref + §6.5 audit (sanctioned M1.5 report half, author server-supplied)",
-	"BoardItem":                            "§13 one board card projection (state/holder/thread counts, read-only)",
-	"StatusChange":                         "§6.5 one state_transition audit row projected for the thread (read-only)",
-	"WorkItemThread":                       "§6.1/§6.5 ticket thread read: detail + recent status history (read-only)",
-	"WorkItemReadStore":                    "§13 board read store (card list + ticket thread) bound to the prod schema",
-	"NewWorkItemReadStore":                 "§13 constructor",
-	"WorkItemReadStore.ListWorkItems":      "§13 per-Project card list, Team-scoped (404 existence-hiding)",
-	"WorkItemReadStore.ReadWorkItemThread": "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
+	"ChangeKindCommit":                         "§6.1 change-ref kind enum: commit (M1.5 tight enum, migration 0015)",
+	"ChangeKindPullRequest":                    "§6.1 change-ref kind enum: pull_request (M1.5 tight enum, migration 0015)",
+	"ValidChangeKinds":                         "§6.1 closed change-ref kind set (widening is a forward migration)",
+	"ErrInvalidChangeRef":                      "§6.1 guard: change-report kind/ref malformed (→400)",
+	"ChangeRef":                                "§6.1 one append-only provenanced change ref on a card (read projection)",
+	"AppendChangeRef":                          "§6.1 append a provenanced coord.change_ref + §6.5 audit (sanctioned M1.5 report half, author server-supplied)",
+	"BoardItem":                                "§13 one board card projection (state/holder/thread counts, read-only)",
+	"StatusChange":                             "§6.5 one state_transition audit row projected for the thread (read-only)",
+	"WorkItemThread":                           "§6.1/§6.5 ticket thread read: detail + recent status history (read-only)",
+	"WorkItemReadStore":                        "§13 board read store (card list + ticket thread) bound to the prod schema",
+	"NewWorkItemReadStore":                     "§13 constructor",
+	"WorkItemReadStore.ListWorkItems":          "§13 per-Project card list, Team-scoped (404 existence-hiding)",
+	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
+	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
+	"StatusSnapshot":                           "§6.5 one day's point-in-time per-status count for the overview stacked-area chart (read-only, ISI-4509)",
 
 	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
 	// (Stories 7.4+7.6 / ISI-2898, gap ISI-2876). Reuses the 2.11/3.7 resume

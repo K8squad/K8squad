@@ -91,6 +91,11 @@ type Options struct {
 	// Dashboard is the 8.8a per-Project dashboard read model (ISI-2906). When nil the dashboard
 	// route keeps answering the documented 501 (dev run without an informer cache wired).
 	Dashboard *DashboardService
+	// ProjectOverview is the project-overview time-series read model (ISI-4509 / ISI-4505 S4):
+	// the window-parameterized tickets-by-status-over-time + runs-by-status + token-sum backing.
+	// When nil the /overview route keeps the documented 501 (dev run without an informer cache).
+	// (Distinct from Overview above, which is the 8.1 squad-overview reader.)
+	ProjectOverview *OverviewService
 	// GithubStatus is the S5b GitHub-status read model over the scm mirror (ISI-3956). When nil
 	// the /github route keeps answering the documented 501 (dev run without the mirror reader
 	// wired) so the S5c tab renders "not available yet".
@@ -602,6 +607,22 @@ func (s *Server) routes(opts Options) {
 			dash.HandleFunc("", s.projectDashboard(opts.Dashboard)).Methods(http.MethodGet)
 		} else {
 			dash.HandleFunc("", notImplemented("project-dashboard read model", "ISI-2906: wire a DashboardService (informer cache) to enable")).
+				Methods(http.MethodGet)
+		}
+
+		// Project-overview time-series (ISI-4509 / ISI-4505 S4): the window-parameterized
+		// tickets-by-status-over-time + runs-by-status + token-sum backing, behind the SAME
+		// choke point + viewer-or-admin RBAC as the dashboard (it is a sibling project-scoped
+		// read). Nil service keeps the documented 501.
+		ovw := s.router.Path("/api/projects/{projectId}/overview").Subrouter()
+		ovw.Use(authz)
+		if opts.ProjectRoles != nil {
+			ovw.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.ProjectOverview != nil {
+			ovw.HandleFunc("", s.projectOverview(opts.ProjectOverview)).Methods(http.MethodGet)
+		} else {
+			ovw.HandleFunc("", notImplemented("project-overview read model", "ISI-4509: wire an OverviewService (informer cache + coord status source) to enable")).
 				Methods(http.MethodGet)
 		}
 
