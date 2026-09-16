@@ -23,6 +23,8 @@ function thread(over: Partial<NormalizedThread>): NormalizedThread {
     statusHistory: [],
     holder: "",
     runId: "",
+    requestedAgent: null,
+    assignee: null,
     ...over,
   };
 }

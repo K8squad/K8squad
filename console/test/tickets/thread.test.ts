@@ -25,6 +25,8 @@ describe("normalizeThread", () => {
       ChangeRefs: [{ kind: "commit", ref: "deadbeef", author: "agent:builder", createdAt: "2026-09-14T10:01:00Z" }],
       Holder: "agent:builder",
       RunID: "run-9",
+      RequestedAgent: "agent:builder",
+      Assignee: "agent:builder",
       statusHistory: [
         { fromState: "in_progress", toState: "in_review", principal: "agent:builder", occurredAt: "2026-09-14T10:02:00Z" },
       ],
@@ -34,6 +36,8 @@ describe("normalizeThread", () => {
     expect(t.state).toBe("in_review");
     expect(t.holder).toBe("agent:builder");
     expect(t.runId).toBe("run-9");
+    expect(t.requestedAgent).toBe("agent:builder");
+    expect(t.assignee).toBe("agent:builder");
     expect(t.comments).toHaveLength(1);
     expect(t.changeRefs[0].ref).toBe("deadbeef");
     expect(t.statusHistory[0].toState).toBe("in_review");
@@ -46,10 +50,14 @@ describe("normalizeThread", () => {
       description: "d",
       state: "todo",
       comments: [{ author: "user:alice", body: "hi", createdAt: "2026-09-14T09:00:00Z" }],
+      requestedAgent: "agent:reviewer",
+      assignee: "agent:builder",
     });
     expect(t.workItemId).toBe("wi-2");
     expect(t.title).toBe("camel");
     expect(t.comments[0].author).toBe("user:alice");
+    expect(t.requestedAgent).toBe("agent:reviewer");
+    expect(t.assignee).toBe("agent:builder");
   });
 
   it("degrades a null/empty payload to safe empties, never throwing", () => {
@@ -58,6 +66,16 @@ describe("normalizeThread", () => {
     expect(t.comments).toEqual([]);
     expect(t.changeRefs).toEqual([]);
     expect(t.statusHistory).toEqual([]);
+  });
+
+  it("normalizes requestedAgent/assignee to null when the wire omits them (ISI-4567 §2.1)", () => {
+    const t = normalizeThread({ workItemId: "wi-3", title: "t", state: "backlog" });
+    expect(t.requestedAgent).toBeNull();
+    expect(t.assignee).toBeNull();
+    // An empty-string stamp (sql NULL → "" on an older wire) also reads as null.
+    const blank = normalizeThread({ RequestedAgent: "", Assignee: "" });
+    expect(blank.requestedAgent).toBeNull();
+    expect(blank.assignee).toBeNull();
   });
 });
 
@@ -81,6 +99,8 @@ function thread(partial: Partial<NormalizedThread>): NormalizedThread {
     statusHistory: [],
     holder: "",
     runId: "",
+    requestedAgent: null,
+    assignee: null,
     ...partial,
   };
 }

@@ -236,23 +236,28 @@ function StatusControl({
 }
 
 /**
- * Rail ASSIGNEE control (ISI-4495 board ask): on a BACKLOG ticket, contributor+
- * gets the squad roster dropdown whose pick chains POST /work-items/{id}/dispatch
- * {agentId} — the ADR-0022 "assign == start" verb that stamps requested_agent and
- * advances backlog→todo so Intake mints the Run (the exact create-sheet
- * semantics, ISI-4501, surfaced where the board asked for it). Off backlog the
- * ticket already carries custody: the current holder renders read-only with a
- * hint pointing at the comment nudge / kanban for re-entry.
+ * Rail ASSIGNEE control (ISI-4495 board ask, extended ISI-4567 §2.2): on a
+ * BACKLOG **or unclaimed TODO** ticket, contributor+ gets the squad roster
+ * dropdown whose pick chains POST /work-items/{id}/dispatch {agentId} — the
+ * ADR-0022 "assign == start" verb that stamps requested_agent (backlog also
+ * advances →todo so Intake mints the Run; todo re-assigns in place pre-claim).
+ * The select's VALUE reflects reality: the current requestedAgent shows as
+ * "Requested: <name>" when set, else the "Assign agent…" placeholder. Off the
+ * assignable lanes the ticket already carries custody: the current holder
+ * renders read-only with a hint pointing at the Kill / re-dispatch flow, and an
+ * unclaimed todo surfaces "Requested: <agent> · dispatch pending" (§2.4).
  */
 function AssigneeControl({
   state,
   holder,
+  requestedAgent,
   workItemId,
   canEdit,
   onAssigned,
 }: {
   state: string;
   holder: string;
+  requestedAgent: string | null;
   workItemId: string;
   canEdit: boolean;
   onAssigned: () => void;
@@ -260,10 +265,10 @@ function AssigneeControl({
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const dispatchable = canEdit && state === "backlog";
+  const assignable = canEdit && (state === "backlog" || state === "todo");
 
   useEffect(() => {
-    if (!dispatchable) return;
+    if (!assignable) return;
     let alive = true;
     void listSquadAgents().then((list) => {
       if (alive) setAgents(list);
@@ -271,15 +276,26 @@ function AssigneeControl({
     return () => {
       alive = false;
     };
-  }, [dispatchable]);
+  }, [assignable]);
 
-  if (!dispatchable) {
+  if (!assignable) {
     return (
       <div data-testid="detail-holder">
         {holder ? (
-          <code className="ksq-ticket-id">{holder}</code>
+          <>
+            <code className="ksq-ticket-id">{holder}</code>
+            <span className="ksq-field__hint muted">
+              Agent changes use the Kill + re-dispatch flow.
+            </span>
+          </>
         ) : state === "todo" ? (
-          <span className="muted">dispatch pending</span>
+          requestedAgent ? (
+            <span className="muted" data-testid="detail-requested">
+              Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
+            </span>
+          ) : (
+            <span className="muted">dispatch pending</span>
+          )
         ) : (
           <span className="muted">unassigned</span>
         )}
@@ -293,14 +309,14 @@ function AssigneeControl({
     setErr(null);
     try {
       await dispatchWorkItem(workItemId, name);
-      onAssigned(); // re-fetch — the lane advance (backlog→todo) + holder follow
+      onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
       setErr(
         code === 403
           ? "That agent isn't a member of this project's team."
           : code === 409
-            ? "The ticket already left the backlog — re-synced."
+            ? "The ticket moved underneath you — re-synced from the server."
             : code === 501
               ? "Assigning agents isn't hosted on this deployment yet."
               : "Couldn't assign the agent. Try again.",
@@ -316,22 +332,37 @@ function AssigneeControl({
       <select
         data-testid="detail-assignee-select"
         aria-label="Assign to agent"
-        value=""
+        value={requestedAgent ?? ""}
         disabled={busy}
         onChange={(e) => {
           const name = e.target.value;
-          if (name) void assign(name);
+          if (name && name !== requestedAgent) void assign(name);
         }}
       >
-        <option value="">{agents.length > 0 ? "Assign agent…" : "Loading squad…"}</option>
+        {!requestedAgent && (
+          <option value="">{agents.length > 0 ? "Assign agent…" : "Loading squad…"}</option>
+        )}
+        {/* The requested name may predate this roster load (or have left the
+            team) — keep a matching option so the select never silently shows
+            a blank value for a ticket that HAS a requested agent. */}
+        {requestedAgent && !agents.some((a) => a.name === requestedAgent) && (
+          <option value={requestedAgent}>Requested: {requestedAgent}</option>
+        )}
         {agents.map((a) => (
           <option key={a.id} value={a.name}>
-            {a.name}
+            {a.name === requestedAgent ? `Requested: ${a.name}` : a.name}
           </option>
         ))}
       </select>
+      {state === "todo" && requestedAgent && (
+        <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
+          dispatch pending
+        </span>
+      )}
       <span className="ksq-field__hint muted">
-        Assigning dispatches the agent to start this ticket.
+        {state === "todo"
+          ? "Assignment applies before the agent starts."
+          : "Assigning dispatches the agent to start this ticket."}
       </span>
       {err && (
         <p className="ksq-composer__error" role="alert" data-testid="detail-assignee-error">
@@ -932,12 +963,15 @@ function TicketBody({
 
             <dt className="muted">Assignee</dt>
             <dd>
-              {/* ISI-4495 board ask: on a backlog ticket the squad roster dropdown
-                  chains the dispatch verb (assign == start, ADR-0022 / ISI-4501
-                  semantics); off backlog the holder renders read-only. */}
+              {/* ISI-4495 board ask / ISI-4567 §2.2: on a backlog OR unclaimed
+                  todo ticket the squad roster dropdown chains the dispatch verb
+                  (assign == start, ADR-0022 / ISI-4501 semantics — todo re-assigns
+                  in place, pre-claim); elsewhere the holder renders read-only with
+                  the requested agent surfaced pre-claim (§2.4). */}
               <AssigneeControl
                 state={thread.state}
                 holder={thread.holder}
+                requestedAgent={thread.requestedAgent}
                 workItemId={thread.workItemId}
                 canEdit={canComment(role)}
                 onAssigned={onCommentPosted}

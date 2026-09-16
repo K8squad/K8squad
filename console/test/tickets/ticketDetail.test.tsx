@@ -26,7 +26,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-const THREAD = {
+const THREAD: Record<string, unknown> = {
   WorkItemID: "wi-1",
   Title: "ship the thing",
   Description: "the full description",
@@ -51,6 +51,27 @@ const CHILDREN = [
   { id: "wi-3", projectId: "ns/demo", parentId: "wi-1", title: "sub b", state: "todo", blockedReason: null, updatedAt: "2026-09-14T00:00:00Z" },
 ];
 
+/** Squad roster (fleetlist.go FleetAgentList shape) for the rail AssigneeControl. */
+const SQUAD = [
+  { id: "ag-1", name: "agent:builder" },
+  { id: "ag-2", name: "agent:reviewer" },
+];
+
+/** A backlog ticket — unheld, never dispatched. */
+const BACKLOG_THREAD = { ...THREAD, State: "backlog", Holder: "", RunID: "" };
+
+/** An unclaimed todo ticket already carrying a requested agent (ISI-4567 §1/§2.2). */
+const TODO_THREAD = {
+  ...THREAD,
+  State: "todo",
+  Holder: "",
+  RunID: "",
+  RequestedAgent: "agent:builder",
+};
+
+/** A mid-flight ticket — custody held, rail must stay read-only. */
+const IN_PROGRESS_THREAD = { ...THREAD, State: "in_progress" };
+
 const POSTED_COMMENT = {
   author: "user:me",
   body: "hello agents",
@@ -60,24 +81,33 @@ const POSTED_COMMENT = {
 /**
  * Route the stubbed fetch. `role` drives /api/session (fetchViewerRole); a POST to
  * …/comments returns `postStatus` (default 201 POSTED_COMMENT). The thread GET is
- * STATEFUL: once a 201 post lands it returns THREAD + the posted comment, mirroring
- * the real backend so the reconciling re-fetch keeps (not drops) the new comment.
+ * STATEFUL: once a 201 post lands it returns THREAD + the posted comment, and once
+ * a dispatch POST lands it returns the swapped RequestedAgent — mirroring the real
+ * backend so the reconciling re-fetch keeps (not drops) server truth.
  */
 function routeFetch(opts?: {
+  thread?: Record<string, unknown>;
   threadStatus?: number;
   role?: string;
   postStatus?: number;
 }) {
+  const threadBody = opts?.thread ?? THREAD;
+  const baseComments = Array.isArray(threadBody.Comments) ? threadBody.Comments : [];
   const threadStatus = opts?.threadStatus ?? 200;
   const role = opts?.role ?? "viewer";
   const postStatus = opts?.postStatus ?? 201;
   let posted = false;
+  let requestedAgent =
+    typeof threadBody.RequestedAgent === "string" ? threadBody.RequestedAgent : null;
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
     if (u.includes("/api/session")) {
       // /auth/me carries the caller's role as `globalRole` (ISI-4496), not `role`.
       return Promise.resolve(jsonResponse({ globalRole: role }));
+    }
+    if (u.includes("/api/squad/agents")) {
+      return Promise.resolve(jsonResponse({ agents: SQUAD }));
     }
     if (u.includes("/api/work-items/") && u.includes("/comments") && method === "POST") {
       if (postStatus === 201) posted = true;
@@ -87,14 +117,28 @@ function routeFetch(opts?: {
           : jsonResponse({ error: "x" }, postStatus),
       );
     }
+    if (u.includes("/api/work-items/") && u.includes("/dispatch") && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { agentId?: string };
+      if (typeof body.agentId === "string") requestedAgent = body.agentId;
+      return Promise.resolve(
+        jsonResponse({
+          workItemId: threadBody.WorkItemID,
+          fromState: threadBody.State,
+          toState: threadBody.State,
+          requestedAgent,
+        }),
+      );
+    }
     if (u.includes("/api/work-items/")) {
       if (threadStatus !== 200) {
         return Promise.resolve(jsonResponse({ error: "x" }, threadStatus));
       }
       const body = posted
-        ? { ...THREAD, Comments: [...THREAD.Comments, POSTED_COMMENT] }
-        : THREAD;
-      return Promise.resolve(jsonResponse(body));
+        ? { ...threadBody, Comments: [...baseComments, POSTED_COMMENT] }
+        : threadBody;
+      return Promise.resolve(
+        jsonResponse(requestedAgent ? { ...body, RequestedAgent: requestedAgent } : body),
+      );
     }
     if (u.includes("/work-items")) return Promise.resolve(jsonResponse(CHILDREN));
     return Promise.resolve(jsonResponse([], 200));
@@ -259,5 +303,96 @@ describe("TicketDetail", () => {
     // Composer stays live so the caller can retry (not swapped to read-only).
     expect(screen.getByTestId("detail-composer")).toBeTruthy();
     expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
+  });
+
+  // ---- Rail AssigneeControl (ISI-4567 §2.2 assign-where-legal + §2.4 display) ----
+
+  it("renders the assignee select for a contributor on a BACKLOG ticket", async () => {
+    routeFetch({ role: "contributor", thread: BACKLOG_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    expect(screen.queryByTestId("detail-holder")).toBeNull();
+    // No requested agent yet → the honest placeholder, never a fabricated name.
+    await screen.findByText("Assign agent…");
+    expect((select as HTMLSelectElement).value).toBe("");
+    // Backlog hint copy (§2.2): assign == dispatch == start.
+    expect(
+      screen.getByText("Assigning dispatches the agent to start this ticket."),
+    ).toBeTruthy();
+    // The roster options come from GET /api/squad/agents.
+    expect(await screen.findByRole("option", { name: "agent:reviewer" })).toBeTruthy();
+  });
+
+  it("renders the assignee select for a contributor on a TODO ticket, value = the requested agent", async () => {
+    routeFetch({ role: "contributor", thread: TODO_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    // The select's VALUE reflects reality: the pre-claim requested agent…
+    await waitFor(() =>
+      expect((select as HTMLSelectElement).value).toBe("agent:builder"),
+    );
+    // …labelled honestly as a request, not a claim.
+    expect(screen.getByText("Requested: agent:builder")).toBeTruthy();
+    // Todo hint copy (§2.2) + the dispatch-pending marker (§2.4).
+    expect(screen.getByText("Assignment applies before the agent starts.")).toBeTruthy();
+    expect(screen.getByTestId("detail-requested-pending").textContent).toContain(
+      "dispatch pending",
+    );
+  });
+
+  it("keeps in_progress read-only: holder display + Kill/re-dispatch hint, no select", async () => {
+    routeFetch({ role: "contributor", thread: IN_PROGRESS_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-holder")).toBeTruthy());
+    expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
+    expect(
+      within(screen.getByTestId("detail-holder")).getByText("agent:builder"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Agent changes use the Kill + re-dispatch flow."),
+    ).toBeTruthy();
+  });
+
+  it("re-assigns a todo ticket: the pick POSTs dispatch and the re-fetch shows the swap", async () => {
+    routeFetch({ role: "contributor", thread: TODO_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    await waitFor(() =>
+      expect((select as HTMLSelectElement).value).toBe("agent:builder"),
+    );
+
+    fireEvent.change(select, { target: { value: "agent:reviewer" } });
+
+    // The dispatch verb fired exactly once, with the picked agent NAME.
+    const dispatchCalls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).includes("/dispatch"),
+    );
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0][1]?.body).toBe(JSON.stringify({ agentId: "agent:reviewer" }));
+    // …and the reconciling thread re-fetch surfaces the swapped requested agent —
+    // the select's value can only become agent:reviewer via server truth.
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement).value,
+      ).toBe("agent:reviewer"),
+    );
+    expect(screen.getByText("Requested: agent:reviewer")).toBeTruthy();
+  });
+
+  it("keeps a viewer read-only: neither the assignee select nor the status select renders", async () => {
+    routeFetch({ role: "viewer", thread: TODO_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    // Viewer on an unclaimed todo with a requested agent → §2.4 read-only display.
+    const requested = await screen.findByTestId("detail-requested");
+    expect(requested.textContent).toContain("Requested: agent:builder");
+    expect(requested.textContent).toContain("dispatch pending");
+    // Neither rail write control renders for a viewer (fail-closed, §12.3).
+    expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
+    expect(screen.queryByTestId("detail-status-select")).toBeNull();
   });
 });
