@@ -472,6 +472,14 @@ func (p *GitHubProvider) UpdateIssue(ctx context.Context, repoURL string, extern
 	if update.State != "" && update.State != IssueStateOpen && update.State != IssueStateClosed {
 		return fmt.Errorf("github UpdateIssue: unsupported state %q (want open|closed)", update.State)
 	}
+	if update.StateReason != "" {
+		if update.State != IssueStateClosed {
+			return fmt.Errorf("github UpdateIssue: state_reason %q only valid on a closed transition", update.StateReason)
+		}
+		if update.StateReason != StateReasonCompleted && update.StateReason != StateReasonNotPlanned {
+			return fmt.Errorf("github UpdateIssue: unsupported state_reason %q (want completed|not_planned)", update.StateReason)
+		}
+	}
 	repoOwner, repoName, err := parseRepoURL(repoURL)
 	if err != nil {
 		return fmt.Errorf("invalid repo URL: %w", err)
@@ -484,6 +492,9 @@ func (p *GitHubProvider) UpdateIssue(ctx context.Context, repoURL string, extern
 	req := &github.IssueRequest{}
 	if update.State != "" {
 		req.State = &update.State
+	}
+	if update.StateReason != "" {
+		req.StateReason = &update.StateReason
 	}
 	if update.Labels != nil {
 		req.Labels = &update.Labels

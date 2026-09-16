@@ -81,11 +81,15 @@ const (
 // writes — a reserved system identity, never a human or agent principal.
 const SyncPrincipal = "scm-issue-sync"
 
-// Board lanes the engine commands (the 0001 work_item.state enum subset
-// the open/closed projection can express).
+// Board lanes the engine commands (the 0001 work_item.state enum subset,
+// extended to the 10-phase lifecycle by migration 0019 / ISI-4455). The
+// open/closed projection collapses the ten human lanes onto the two states
+// SCM can express: the two TERMINAL lanes (done, cancelled) close the issue;
+// every other lane — backlog, todo, and the six working phases — is "open".
 const (
-	laneDone = "done"
-	laneTodo = "todo"
+	laneDone      = "done"
+	laneTodo      = "todo"
+	laneCancelled = "cancelled"
 )
 
 // Link is the Go view of one scm.issue_link row (story 11.2 AC2): the
@@ -332,23 +336,25 @@ func (s *Syncer) syncOne(ctx context.Context, link Link, provider scm.SourceProv
 		// BEFORE any bookkeeping write — a failed edit leaves the link
 		// untouched and the next pass retries (level-triggered).
 		commanded := ExternalStateForLane(item.State)
-		if err := provider.UpdateIssue(ctx, repoURL, link.ExternalID, scm.IssueUpdate{State: commanded}); err != nil {
+		commandedReason := StateReasonForLane(item.State)
+		if err := provider.UpdateIssue(ctx, repoURL, link.ExternalID, scm.IssueUpdate{State: commanded, StateReason: commandedReason}); err != nil {
 			return stats, fmt.Errorf("outbound reflect: %w", err)
 		}
 		obs.LastWriter = WriterKSquad
 		obs.ExternalState = commanded
 		audit, err := auditPayload(map[string]any{
-			"initiator":     "issue-sync",
-			"direction":     direction,
-			"winner":        WriterKSquad,
-			"conflict":      conflict,
-			"from_state":    item.State,
-			"to_state":      item.State,
-			"external_from": externalState,
-			"external_to":   commanded,
-			"provider":      link.Provider,
-			"repo":          link.Repo,
-			"external_id":   link.ExternalID,
+			"initiator":       "issue-sync",
+			"direction":       direction,
+			"winner":          WriterKSquad,
+			"conflict":        conflict,
+			"from_state":      item.State,
+			"to_state":        item.State,
+			"external_from":   externalState,
+			"external_to":     commanded,
+			"external_reason": commandedReason,
+			"provider":        link.Provider,
+			"repo":            link.Repo,
+			"external_id":     link.ExternalID,
 		})
 		if err != nil {
 			return stats, err
@@ -450,12 +456,34 @@ func LaneForExternalState(externalState, currentLane string) string {
 }
 
 // ExternalStateForLane projects a board lane onto the normalized external
-// issue state (the outbound half): done → closed, every live lane → open.
+// issue state (the outbound half, ISI-4490 / NFR-4): the two terminal lanes
+// (done, cancelled) → closed; every other lane — backlog, todo, and the six
+// working phases (design · planning · implementation · code_review · testing ·
+// documentation) → open. Mapping cancelled → closed is the fix for the silent
+// break the 10-phase enum introduced: before migration 0019 the only terminal
+// was done, so an unhandled cancelled lane projected as "open" and left the
+// upstream issue open forever.
 func ExternalStateForLane(lane string) string {
-	if lane == laneDone {
+	if lane == laneDone || lane == laneCancelled {
 		return scm.IssueStateClosed
 	}
 	return scm.IssueStateOpen
+}
+
+// StateReasonForLane refines a close projection so the two terminal lanes
+// carry the right upstream disposition (ISI-4490 / NFR-4): done → completed
+// (a successful close), cancelled → not_planned. Every non-terminal lane
+// returns "" — an open transition never carries a close reason. Providers
+// that cannot model a close reason (GitLab) ignore it at the seam.
+func StateReasonForLane(lane string) string {
+	switch lane {
+	case laneDone:
+		return scm.StateReasonCompleted
+	case laneCancelled:
+		return scm.StateReasonNotPlanned
+	default:
+		return ""
+	}
 }
 
 // auditPayload renders the §6.5 audit payload deterministically (sorted

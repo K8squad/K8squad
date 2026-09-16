@@ -489,16 +489,31 @@ func TestStateProjections(t *testing.T) {
 			t.Errorf("LaneForExternalState(%q,%q) = %q, want %q", c.external, c.current, got, c.wantLane)
 		}
 	}
-	lanes := []struct{ lane, want string }{
-		{"done", scm.IssueStateClosed},
-		{"todo", scm.IssueStateOpen},
-		{"in_progress", scm.IssueStateOpen},
-		{"in_review", scm.IssueStateOpen},
-		{"backlog", scm.IssueStateOpen},
+	// Every one of the 10 lifecycle lanes (migration 0019 / ISI-4455) must
+	// project cleanly — the ISI-4490 AC "no silent break". The two terminal
+	// lanes close; every other lane (backlog, todo, the six working phases) is
+	// open. `cancelled → closed` is the fix: pre-4490 it fell through to open.
+	lanes := []struct{ lane, wantState, wantReason string }{
+		{"backlog", scm.IssueStateOpen, ""},
+		{"todo", scm.IssueStateOpen, ""},
+		{"design", scm.IssueStateOpen, ""},
+		{"planning", scm.IssueStateOpen, ""},
+		{"implementation", scm.IssueStateOpen, ""},
+		{"code_review", scm.IssueStateOpen, ""},
+		{"testing", scm.IssueStateOpen, ""},
+		{"documentation", scm.IssueStateOpen, ""},
+		{"done", scm.IssueStateClosed, scm.StateReasonCompleted},
+		{"cancelled", scm.IssueStateClosed, scm.StateReasonNotPlanned},
+		// retained transitional engine lanes stay "open"
+		{"in_progress", scm.IssueStateOpen, ""},
+		{"in_review", scm.IssueStateOpen, ""},
 	}
 	for _, c := range lanes {
-		if got := ExternalStateForLane(c.lane); got != c.want {
-			t.Errorf("ExternalStateForLane(%q) = %q, want %q", c.lane, got, c.want)
+		if got := ExternalStateForLane(c.lane); got != c.wantState {
+			t.Errorf("ExternalStateForLane(%q) = %q, want %q", c.lane, got, c.wantState)
+		}
+		if got := StateReasonForLane(c.lane); got != c.wantReason {
+			t.Errorf("StateReasonForLane(%q) = %q, want %q", c.lane, got, c.wantReason)
 		}
 	}
 }

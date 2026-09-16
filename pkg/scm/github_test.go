@@ -427,6 +427,38 @@ func TestUpdateIssueRefusesEmptyAndBadState(t *testing.T) {
 		IssueUpdate{State: "half-open"}); err == nil {
 		t.Fatal("non-normalized state accepted")
 	}
+	// state_reason (ISI-4490) is only valid alongside a close and only for the
+	// two known reasons.
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{State: IssueStateOpen, StateReason: StateReasonNotPlanned}); err == nil {
+		t.Fatal("state_reason on an open transition accepted")
+	}
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{State: IssueStateClosed, StateReason: "abandoned"}); err == nil {
+		t.Fatal("unknown state_reason accepted")
+	}
+}
+
+// A close projected from a terminal lane carries state_reason on the wire
+// (ISI-4490 / NFR-4): done → completed, cancelled → not_planned.
+func TestUpdateIssueSendsStateReason(t *testing.T) {
+	var gotBody map[string]interface{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/7", func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode PATCH body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, issueJSON(7, "closed", "t", "dev", false))
+	})
+	p, _ := newTestGitHubProvider(t, mux)
+	if err := p.UpdateIssue(context.Background(), "https://github.com/acme/app", "7",
+		IssueUpdate{State: IssueStateClosed, StateReason: StateReasonNotPlanned}); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["state"] != "closed" || gotBody["state_reason"] != "not_planned" {
+		t.Fatalf("wire body = %v, want state=closed state_reason=not_planned", gotBody)
+	}
 }
 
 // fetchReleases normalizes GitHub releases into RecordTypeRelease with the
