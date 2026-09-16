@@ -1,8 +1,9 @@
 // test/nav/ProjectsNavTree.test.tsx — the Projects rail sub-tree island (ISI-4090).
 //
 // Component-boundary coverage: expandable + collapsed by default (label → /projects, chevron a
-// separate toggle); sorted project enumeration; static Landing/Issues/Runs/Discussion/File
-// Explorer/GitHub sections (ISI-3957 vocabulary, shared via lib/nav PROJECT_SECTIONS) with correct
+// separate toggle); sorted project enumeration; static Overview/Issues/Runs/Discussion/File
+// Explorer/GitHub sections (ISI-3957 vocabulary, shared via lib/nav PROJECT_SECTIONS; label
+// renamed Landing → Overview by ISI-4505) with correct
 // hrefs on project expand; deep-link → active project auto-expanded + active
 // section highlighted; honest states (loading / empty / error + retry); a11y disclosure semantics.
 
@@ -67,7 +68,7 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     const sections = screen.getByRole("group", { name: "alpha sections" });
     const links = within(sections).getAllByRole("link");
     expect(links.map((a) => a.textContent)).toEqual([
-      "Landing",
+      "Overview",
       "Issues",
       "Runs",
       "Discussion",
@@ -75,8 +76,8 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
       "GitHub",
       "Settings",
     ]);
-    // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha". Landing is the bare project
-    // root (the workspace default), not a /landing sub-path (ISI-3957 AC2).
+    // "squad-a/alpha" is encoded exactly once → "squad-a%2Falpha". Overview (id "landing") is the
+    // bare project root (the workspace default), not a /landing sub-path (ISI-3957 AC2).
     expect(links[0]).toHaveAttribute("href", "/projects/squad-a%2Falpha");
     expect(links[1]).toHaveAttribute("href", "/projects/squad-a%2Falpha/issues");
     expect(links[4]).toHaveAttribute("href", "/projects/squad-a%2Falpha/files");

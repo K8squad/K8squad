@@ -284,8 +284,8 @@ const SECTION_LABEL: Record<string, string> = {
   tickets: "Tickets",
   discussion: "Discussion",
   users: "Users & Roles",
-  // Project-Detail Workspace sections (ISI-3957 S1).
-  landing: "Landing",
+  // Project-Detail Workspace sections (ISI-3957 S1). Label renamed Landing → Overview (ISI-4505).
+  landing: "Overview",
   issues: "Issues",
   files: "File Explorer",
   github: "GitHub",
