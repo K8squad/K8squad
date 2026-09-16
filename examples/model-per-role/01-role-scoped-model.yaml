@@ -1,0 +1,28 @@
+# Role-scoped model recipe (Model-Per-Role, ISI-4430): set the model ONCE on the
+# Role, and every Agent that assumes this Role and leaves its own spec.model
+# empty resolves to this model (the "role" tier). Change it here and the whole
+# squad follows — no per-Agent edits.
+#
+# Pair this with 02-agent-role-scoped.yaml (an Agent with spec.model empty).
+apiVersion: ksquad.io/v1alpha1
+kind: Role
+metadata:
+  name: squad-coder
+  namespace: model-per-role-demo
+  labels:
+    ksquad.io/example: model-per-role
+spec:
+  promptRef:
+    name: squad-coder-prompt   # your behavior ConfigMap (not shipped by this example)
+
+  # Role-tier model: applied to every Agent assuming this Role that does not set
+  # its own Agent.spec.model. Empty here would fall through to the system-default
+  # ModelConfig instead.
+  model: claude-sonnet-4
+
+  # Optional role-tier rate-limit fallback (tier-as-a-unit: used only when the
+  # effective model comes from the role tier). A role-tier fallback MAY carry its
+  # own endpoint Secret; the role-tier PRIMARY uses the provider/operator default
+  # endpoint (role-level primary endpointRef is deferred in v1).
+  fallbackModel:
+    model: claude-haiku-4

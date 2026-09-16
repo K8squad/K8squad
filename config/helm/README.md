@@ -122,6 +122,11 @@ The `ModelConfig` **CRD** ships in the separate `config/helm-crds` chart
 (ADR-0002 Option B) — install it first (see *Install* above) so the CRD exists
 before this CR is applied.
 
+For the full three-tier resolution model (agent → role → default), the
+tier-as-a-unit rule, fail-closed admission, and worked example CRs, see the
+[Model Per Role operator docs](../../docs/model-per-role.md) and
+[`examples/model-per-role/`](../../examples/model-per-role/).
+
 ## Exposure (Gateway API)
 
 By default the control-plane workloads are `ClusterIP` Services — a bare

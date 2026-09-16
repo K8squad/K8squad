@@ -1,0 +1,26 @@
+# An Agent that INHERITS its model from its Role (Model-Per-Role, ISI-4430).
+# spec.model is intentionally OMITTED, so resolution falls through the agent tier
+# to the role tier: this Agent runs squad-coder's model (claude-sonnet-4 in
+# 01-role-scoped-model.yaml). Give a dozen Agents this same shape and they all
+# follow the Role — one place to change the model.
+#
+# To pin THIS Agent to a different model regardless of its Role, set spec.model
+# here (the agent tier wins); tier-as-a-unit means you'd then also set any
+# fallbackModel you want ON THIS AGENT.
+apiVersion: ksquad.io/v1alpha1
+kind: Agent
+metadata:
+  name: coder-1
+  namespace: model-per-role-demo
+  labels:
+    ksquad.io/example: model-per-role
+spec:
+  # No `model:` — resolution falls through to the Role's spec.model (role tier).
+  roleRef:
+    name: squad-coder
+  runtimeRef:
+    name: claude-code           # your AgentRuntime (not shipped by this example)
+  credentialSecretRef:
+    name: claude-credentials     # your BYO credential Secret (not shipped by this example)
+    key: token
+  credentialClass: service-account
