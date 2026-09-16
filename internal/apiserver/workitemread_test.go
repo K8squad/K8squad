@@ -23,6 +23,7 @@ type fakeWorkItemReader struct {
 	listCalled bool
 	gotTeam    string
 	gotProject string
+	gotParent  string
 	list       []coord.BoardItem
 
 	threadCalled bool
@@ -33,9 +34,9 @@ type fakeWorkItemReader struct {
 	threadErr error
 }
 
-func (f *fakeWorkItemReader) ListWorkItems(_ context.Context, teamID, projectID string) ([]coord.BoardItem, error) {
+func (f *fakeWorkItemReader) ListWorkItems(_ context.Context, teamID, projectID, parentID string) ([]coord.BoardItem, error) {
 	f.listCalled = true
-	f.gotTeam, f.gotProject = teamID, projectID
+	f.gotTeam, f.gotProject, f.gotParent = teamID, projectID, parentID
 	return f.list, f.listErr
 }
 
@@ -79,6 +80,42 @@ func TestWorkItemListOK(t *testing.T) {
 	var got []coord.BoardItem
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || len(got) != 1 || got[0].ID != "wi-1" {
 		t.Fatalf("body: %v %+v", err, got)
+	}
+}
+
+// TestWorkItemListForwardsParentID — ISI-4536: the 8.17 lazy-load's
+// ?parentId={id} reaches the store so the console's sub-ticket card gets
+// DIRECT children, never the whole-Project card list.
+func TestWorkItemListForwardsParentID(t *testing.T) {
+	parent := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	store := &fakeWorkItemReader{list: []coord.BoardItem{}}
+	h := testReadServer(t, uuid.New(), store)
+
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/proj-ok/work-items?parentId="+parent.String(), nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !store.listCalled || store.gotParent != parent.String() {
+		t.Fatalf("store call: called=%v parent=%q", store.listCalled, store.gotParent)
+	}
+}
+
+// TestWorkItemListRejectsBadParentID — a malformed parentId is a client error
+// (400), never a 502 "read unavailable" from a failed SQL cast.
+func TestWorkItemListRejectsBadParentID(t *testing.T) {
+	store := &fakeWorkItemReader{}
+	h := testReadServer(t, uuid.New(), store)
+
+	rec := httptest.NewRecorder()
+	req := withSession(httptest.NewRequest(http.MethodGet, "/api/projects/proj-ok/work-items?parentId=not-a-uuid", nil), devToken)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400 (body %s)", rec.Code, rec.Body.String())
+	}
+	if store.listCalled {
+		t.Fatal("store must not be called on a malformed parentId")
 	}
 }
 
