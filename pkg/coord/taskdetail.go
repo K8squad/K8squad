@@ -50,6 +50,12 @@ type TaskDetail struct {
 	Priority string
 	WorkMode string
 	Labels   []string
+	// RequestedAgent is the human's pre-run agent choice (requested_agent,
+	// ADR-0022 §3 D2 / mig 0021 — ISI-4574): "" when the item was never
+	// dispatched or re-assigned. It is the only "who" the detail can answer
+	// with BEFORE a claim exists; once a run claims, Holder/RunID/Assignee
+	// take over.
+	RequestedAgent string
 	// AcceptanceCriteria / Goals: agreed shape, not yet backed by a column
 	// (nil today). See file header — one wiring site when the surface lands.
 	AcceptanceCriteria []string
@@ -81,15 +87,16 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	}
 
 	var (
-		td            TaskDetail
-		body          sql.NullString
-		blockedReason sql.NullString
-		priority      sql.NullString
-		workMode      sql.NullString
-		holder        sql.NullString
-		runID         sql.NullString
-		assignee      sql.NullString
-		fence         sql.NullInt64
+		td             TaskDetail
+		body           sql.NullString
+		blockedReason  sql.NullString
+		priority       sql.NullString
+		workMode       sql.NullString
+		requestedAgent sql.NullString
+		holder         sql.NullString
+		runID          sql.NullString
+		assignee       sql.NullString
+		fence          sql.NullInt64
 	)
 	// One row: the item joined to its (always-present, 0001 trigger-provisioned)
 	// claim row. LEFT JOIN keeps the read robust even if a claim row were ever
@@ -100,15 +107,18 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	// convertAssign cannot put into a []string (a direct &td.Labels scan errors at
 	// runtime → 500). pq.Array's sql.Scanner parses that literal. Do not "simplify"
 	// it back to &td.Labels. (ISI-4409.)
+	//
+	// requested_agent (mig 0021) sits between the create-time attributes and the
+	// claim columns — the pre-run intent the console detail renders (ISI-4574).
 	err := db.QueryRowContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.body, wi.state, wi.blocked_reason,
-		       wi.priority, wi.work_mode, wi.labels,
+		       wi.priority, wi.work_mode, wi.labels, wi.requested_agent,
 		       c.holder_principal, c.run_id::text, c.fence_token, c.assignee_agent
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid`, workItemID).
 		Scan(&td.WorkItemID, &td.Title, &body, &td.State, &blockedReason,
-			&priority, &workMode, pq.Array(&td.Labels),
+			&priority, &workMode, pq.Array(&td.Labels), &requestedAgent,
 			&holder, &runID, &fence, &assignee)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -123,6 +133,7 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 	if td.Labels == nil {
 		td.Labels = []string{}
 	}
+	td.RequestedAgent = requestedAgent.String
 	td.Holder = holder.String
 	td.RunID = runID.String
 	td.FenceToken = fence.Int64
