@@ -146,11 +146,23 @@ export async function fetchWorkItemThread(
  * before the reconciling re-fetch lands. Non-2xx throws ApiError (status + body):
  * the composer surfaces 400/401/403 inline and treats 404/501 as the honest
  * "endpoint not wired on this deployment" gap (FR-I3).
+ *
+ * ISI-4495: the 201 body ALSO carries the comment-triggered re-dispatch outcome
+ * (reTriggered/fromState/toState) when the comment nudged a parked ticket back
+ * to the dispatch lane — additive fields an older apiserver simply omits, so a
+ * mixed-version deploy degrades to "no feedback line", never a crash.
  */
+export interface PostedComment extends ThreadComment {
+  /** True when this comment re-dispatched the ticket (parked → todo, ISI-4495). */
+  reTriggered?: boolean;
+  fromState?: string;
+  toState?: string;
+}
+
 export async function postWorkItemComment(
   workItemId: string,
   body: string,
-): Promise<ThreadComment> {
+): Promise<PostedComment> {
   const res = await fetch(
     `/api/work-items/${encodeURIComponent(workItemId)}/comments`,
     {
@@ -173,6 +185,9 @@ export async function postWorkItemComment(
     author: str(o, "author", "Author"),
     body: str(o, "body", "Body"),
     createdAt: str(o, "createdAt", "CreatedAt"),
+    reTriggered: o.reTriggered === true || o.ReTriggered === true || undefined,
+    fromState: str(o, "fromState", "FromState") || undefined,
+    toState: str(o, "toState", "ToState") || undefined,
   };
 }
 
