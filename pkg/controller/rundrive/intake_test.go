@@ -18,6 +18,7 @@ package rundrive
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"regexp"
@@ -47,6 +48,12 @@ type fakeIntakeSource struct {
 	items []IntakeItem
 	err   error
 	calls []int
+	// rearmed records the work-item ids RearmSettled was called for, in order
+	// (ISI-4556): the mint must re-arm a settled claim BEFORE creating the Run.
+	rearmed []string
+	// rearmErr, when set, makes RearmSettled fail (the fail-closed path must
+	// skip the mint entirely, leaving the item on todo for the next tick).
+	rearmErr error
 }
 
 func (f *fakeIntakeSource) DueWorkItems(_ context.Context, limit int) ([]IntakeItem, error) {
@@ -55,6 +62,11 @@ func (f *fakeIntakeSource) DueWorkItems(_ context.Context, limit int) ([]IntakeI
 		return nil, f.err
 	}
 	return f.items, nil
+}
+
+func (f *fakeIntakeSource) RearmSettled(_ context.Context, workItemID string) error {
+	f.rearmed = append(f.rearmed, workItemID)
+	return f.rearmErr
 }
 
 // squadGraph builds the minimal resolvable world: a Team (uid teamUID, squad
@@ -611,5 +623,208 @@ func TestIntakeStartStopsOnContextCancel(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Start did not honor cancellation")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-4556: the generation re-arm — a settled claim re-armed BEFORE the mint
+// ---------------------------------------------------------------------------
+
+// The ISI-4556 contract: a ticket whose only Runs are terminal (settled
+// generation 1) gets its claim re-armed and exactly ONE next-generation Run
+// minted. The re-arm must precede the mint — a Run born over a terminal
+// durable step absorbs (AC5), the projector stamps it 'Succeeded', and the
+// next tick mints again: the runaway mint loop. Here the rearm-error arm
+// below proves the ordering structurally: no re-arm, no mint.
+func TestIntakeSweepRearmsSettledClaimBeforeMint(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}
+	in, cl, _ := newIntake(t, src, objs...)
+
+	in.sweep(context.Background())
+
+	if len(src.rearmed) != 1 || src.rearmed[0] != itemID {
+		t.Fatalf("the minted item must be re-armed exactly once first: rearmed=%v", src.rearmed)
+	}
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("want terminal gen-1 + exactly one re-mint, got %d Runs", len(runs.Items))
+	}
+	want := "intake-" + itemID + "-r2"
+	found := false
+	for _, r := range runs.Items {
+		if r.Name == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("re-mint %q missing; got runs: %+v", want, runs.Items)
+	}
+
+	// Stability across ticks (the operator-restart shape: a todo item whose
+	// only Runs are terminal must not re-mint a generation every tick): the
+	// second sweep sees the re-mint (phase unset ⇒ live) and mints nothing.
+	src.rearmed = nil
+	in.sweep(context.Background())
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("re-list runs: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("re-sweep must not over-mint: got %d Runs", len(runs.Items))
+	}
+	if len(src.rearmed) != 0 {
+		t.Fatalf("a live (suppressed) item must not be re-armed: rearmed=%v", src.rearmed)
+	}
+}
+
+// A ticket whose run is actively working (non-terminal) is suppressed BEFORE
+// the re-arm: a live Run's claim must never be touched, not even as a no-op.
+func TestIntakeSweepDoesNotRearmLiveRunItems(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseRunning},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}
+	in, cl, _ := newIntake(t, src, objs...)
+
+	in.sweep(context.Background())
+
+	if len(src.rearmed) != 0 {
+		t.Fatalf("live item must not be re-armed: rearmed=%v", src.rearmed)
+	}
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("live Run must suppress mint + re-arm: got %d Runs", len(runs.Items))
+	}
+}
+
+// Fail-closed: a re-arm infrastructure error must skip the mint entirely —
+// minting over an unre-armed terminal step is exactly the ISI-4556 loop — and
+// say so in the log, leaving the item on todo for the next tick.
+func TestIntakeSweepRearmFailureSkipsMint(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	src := &fakeIntakeSource{
+		items:    []IntakeItem{{ID: itemID, TeamID: teamUID, ProjectID: "proj"}},
+		rearmErr: errors.New("coord db: connection refused"),
+	}
+	in, cl, logs := newIntake(t, src, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 0 {
+		t.Fatalf("re-arm failure must skip the mint: got %d Runs", len(runs.Items))
+	}
+	found := false
+	for _, l := range *logs {
+		if strings.Contains(l, "not re-armed") && strings.Contains(l, itemID) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a not-re-armed log naming the item; logs=%v", *logs)
+	}
+}
+
+// TestSQLIntakeSourceRearmSettled pins the shipped re-arm transaction shape
+// (ISI-4556): ONE transaction — the guarded step reset (terminal step +
+// released checkout + todo lane, fence bump), the §6.5 'reconcile_rearmed'
+// audit row and the §6.6 outbox event — or, on a zero-row guard match, a
+// committed no-op with NO audit/outbox rows.
+func TestSQLIntakeSourceRearmSettled(t *testing.T) {
+	const itemID = "11111111-1111-1111-1111-111111111111"
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	src, err := NewSQLIntakeSource(db)
+	if err != nil {
+		t.Fatalf("NewSQLIntakeSource: %v", err)
+	}
+
+	rearmQ := regexp.QuoteMeta(`UPDATE coord.claim
+		   SET reconcile_step    = 'pending',
+		       fence_token       = fence_token + 1,
+		       reclaim_fenced_at = clock_timestamp()
+		 WHERE work_item_id = $1::uuid
+		   AND holder_principal IS NULL
+		   AND reconcile_step IN ('succeeded','failed','cancelled')
+		   AND EXISTS (
+		         SELECT 1 FROM coord.work_item wi
+		          WHERE wi.id = coord.claim.work_item_id
+		            AND wi.state = 'todo')
+		 RETURNING fence_token`)
+	auditQ := regexp.QuoteMeta(`INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, fence_token, to_state)
+		VALUES ($1::uuid, NULL, 'reconcile_rearmed', $2, $3, 'pending')`)
+	outboxQ := regexp.QuoteMeta(`INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'reconcile_rearmed',
+		       wi.id, NULL,
+		       jsonb_build_object('to_step', 'pending'::text, 'fence_token', $2::bigint)
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`)
+
+	// The re-armed path: guard matches → audit + outbox co-commit.
+	mock.ExpectBegin()
+	mock.ExpectQuery(rearmQ).
+		WithArgs(itemID).
+		WillReturnRows(sqlmock.NewRows([]string{"fence_token"}).AddRow(7))
+	mock.ExpectExec(auditQ).
+		WithArgs(itemID, "ksquad-operator", int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(outboxQ).
+		WithArgs(itemID, int64(7)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := src.RearmSettled(context.Background(), itemID); err != nil {
+		t.Fatalf("RearmSettled (re-armed): %v", err)
+	}
+
+	// The no-op path: guard matches zero rows (fresh item, live claim, or the
+	// lane moved on) → committed empty transaction, no audit/outbox rows.
+	mock.ExpectBegin()
+	mock.ExpectQuery(rearmQ).
+		WithArgs(itemID).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectCommit()
+	if err := src.RearmSettled(context.Background(), itemID); err != nil {
+		t.Fatalf("RearmSettled (no-op): %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
