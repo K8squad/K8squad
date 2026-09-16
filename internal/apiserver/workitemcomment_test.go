@@ -23,11 +23,11 @@ type fakeWorkItemCommenter struct {
 	gotTeam   string
 	gotAuthor string
 	gotBody   string
-	result    coord.TaskComment
+	result    coord.HumanCommentOutcome
 	err       error
 }
 
-func (f *fakeWorkItemCommenter) AppendHumanComment(_ context.Context, id, teamID, principal, body string) (coord.TaskComment, error) {
+func (f *fakeWorkItemCommenter) AppendHumanComment(_ context.Context, id, teamID, principal, body string) (coord.HumanCommentOutcome, error) {
 	f.called = true
 	f.gotID, f.gotTeam, f.gotAuthor, f.gotBody = id, teamID, principal, body
 	return f.result, f.err
@@ -66,7 +66,7 @@ func postComment(id, body, token string) *http.Request {
 func TestWorkItemCommentOK(t *testing.T) {
 	teamID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
 	created := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
-	store := &fakeWorkItemCommenter{result: coord.TaskComment{Author: "user:alice", Body: "looks good", CreatedAt: created}}
+	store := &fakeWorkItemCommenter{result: coord.HumanCommentOutcome{TaskComment: coord.TaskComment{Author: "user:alice", Body: "looks good", CreatedAt: created}}}
 	h := testCommentServer(t, teamID, store)
 
 	rec := httptest.NewRecorder()

@@ -355,7 +355,8 @@ var allowedSurface = map[string]string{
 	"NewWorkItemWriteStore":                 "§6.1 constructor",
 	"WorkItemWriteStore.CreateWorkItem":     "§6.1/§6.5 insert in default entry lane + audit, no-fence, Team-scoped",
 	"WorkItemWriteStore.UpdateWorkItem":     "§6.1/§6.5 conditional field CAS (expectedUpdatedAt) + audit, Team-scoped",
-	"WorkItemWriteStore.AppendHumanComment": "§6.1/§6.5 human comment append + audit, Team-scoped (ISI-4406); server-stamped author, existence-hiding 404",
+	"WorkItemWriteStore.AppendHumanComment": "§6.1/§6.5 human comment append + audit, Team-scoped (ISI-4406); server-stamped author, existence-hiding 404; ISI-4495 comment-triggered re-dispatch — parked+unheld lane advance to todo in the same txn (never backlog/terminal/live-run)",
+	"HumanCommentOutcome":                   "§6.1/§6.5 the ISI-4406 comment result (embedded TaskComment) + the ISI-4495 re-dispatch outcome (ReTriggered/fromState/toState) — a read-only result value, not a channel",
 
 	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
 	// custody op. Records the human's pre-run agent choice as durable INTENT on

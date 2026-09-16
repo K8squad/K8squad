@@ -215,17 +215,29 @@ func (i *Intake) sweep(ctx context.Context) {
 		teamByUID[string(teams.Items[idx].UID)] = teams.Items[idx]
 	}
 
-	// Resolve the existing Run index once per pass: workItemRef → exists.
-	// Any Run already owning the ticket — intake-authored or not — suppresses
-	// intake (the drive loop owns everything from here).
+	// Resolve the existing Run index once per pass: workItemRef → live-run flag
+	// + minted generation count. A NON-TERMINAL Run owning the ticket —
+	// intake-authored or not — suppresses intake (the drive loop owns everything
+	// from here). A TERMINAL Run (Succeeded/Failed/Cancelled) no longer does:
+	// the ticket re-entered 'todo' (a human lane move, or the ISI-4495
+	// comment-triggered re-dispatch — a settled/succeeded run parks the item
+	// with the checkout RELEASED, settle.go), which is the board explicitly
+	// asking for the NEXT Run. Intake mints a fresh, deterministically-suffixed
+	// Run CR; the released claim row accepts the new acquisition exactly like a
+	// reroute re-claim (§6.2 fenced release → claim).
 	var runs api.RunList
 	if err := i.Client.List(ctx, &runs); err != nil {
 		i.logf("rundrive.intake: list runs: %v", err)
 		return
 	}
-	hasRun := make(map[string]bool, len(runs.Items))
+	liveRun := make(map[string]bool, len(runs.Items))
+	generation := make(map[string]int, len(runs.Items))
 	for idx := range runs.Items {
-		hasRun[runs.Items[idx].Spec.WorkItemRef] = true
+		r := runs.Items[idx]
+		generation[r.Spec.WorkItemRef]++
+		if !runPhaseTerminal(r.Status.Phase) {
+			liveRun[r.Spec.WorkItemRef] = true
+		}
 	}
 
 	created := 0
@@ -235,10 +247,10 @@ func (i *Intake) sweep(ctx context.Context) {
 			break // a source that ignored its LIMIT must not stampede the pass
 		}
 		dispatched++
-		if hasRun[item.ID] {
+		if liveRun[item.ID] {
 			continue
 		}
-		run, err := i.buildRun(ctx, item, teamByUID)
+		run, err := i.buildRun(ctx, item, teamByUID, generation[item.ID])
 		if err != nil {
 			// Honest degraded: log and leave the item in todo for the next
 			// tick — a not-yet-reconciled Team or a dangling reference is a
@@ -267,8 +279,12 @@ func (i *Intake) sweep(ctx context.Context) {
 
 // buildRun resolves one ticket's squad graph and renders its Run CR. It errors
 // (never panics, never half-builds) when the graph does not resolve, so sweep
-// can log-and-retry the item.
-func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[string]api.Team) (*api.Run, error) {
+// can log-and-retry the item. generation is the number of Run CRs this work
+// item has already minted (0 on first mint): the deterministic name suffixes
+// -r<generation+1> from the second mint on, so a re-entered 'todo' ticket (a
+// human reopen, or the ISI-4495 comment re-dispatch) gets a FRESH Run CR beside
+// the terminal one instead of colliding on the first-born name (intake-<id>).
+func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[string]api.Team, generation int) (*api.Run, error) {
 	team, ok := teamByUID[item.TeamID]
 	if !ok {
 		return nil, fmt.Errorf("team uid %s resolves to no Team CR", item.TeamID)
@@ -325,7 +341,7 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 	}
 
 	return &api.Run{
-		ObjectMeta: runObjectMeta(item.ID, ns),
+		ObjectMeta: runObjectMeta(item.ID, ns, generation),
 		Spec: api.RunSpec{
 			// M1.2 (ISI-4128): like projectRef — a Team CR living outside the
 			// squad namespace must be referenced by namespace or later
@@ -379,16 +395,36 @@ func (i *Intake) resolveProject(ctx context.Context, ns, projectID string) (*api
 }
 
 // runObjectMeta renders the deterministic Run identity: name intake-<work
-// item id> (a uuid is already DNS-1123-safe), in the squad namespace. The
-// deterministic name IS the create idempotency: two racing sweeps converge on
-// AlreadyExists instead of duplicate Runs.
-func runObjectMeta(workItemID, ns string) metav1.ObjectMeta {
+// item id> (a uuid is already DNS-1123-safe) for the first mint, then
+// intake-<work item id>-r<N> for the Nth RE-mint (N = generation+1 ≥ 2), in the
+// squad namespace. The deterministic name IS the create idempotency: two racing
+// sweeps compute the same generation and converge on AlreadyExists instead of
+// duplicate Runs.
+func runObjectMeta(workItemID, ns string, generation int) metav1.ObjectMeta {
+	name := "intake-" + workItemID
+	if generation > 0 {
+		name = fmt.Sprintf("intake-%s-r%d", workItemID, generation+1)
+	}
 	return metav1.ObjectMeta{
-		Name:      "intake-" + workItemID,
+		Name:      name,
 		Namespace: ns,
 		Labels: map[string]string{
 			"ksquad.io/created-by": "intake",
 		},
+	}
+}
+
+// runPhaseTerminal reports whether a Run phase is terminal (§8): Succeeded,
+// Failed, Cancelled. A terminal Run no longer owns the ticket — the checkout
+// was released — so a ticket re-entering 'todo' may mint the next generation.
+// An unset phase (not yet reconciled) is NOT terminal: a just-created Run
+// suppresses intake exactly like a live one (fail-closed against double-mint).
+func runPhaseTerminal(phase api.RunPhase) bool {
+	switch phase {
+	case api.RunPhaseSucceeded, api.RunPhaseFailed, api.RunPhaseCancelled:
+		return true
+	default:
+		return false
 	}
 }
 

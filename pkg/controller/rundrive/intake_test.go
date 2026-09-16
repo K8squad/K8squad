@@ -356,6 +356,94 @@ func TestIntakeSweepIdempotentAcrossPasses(t *testing.T) {
 	}
 }
 
+// ISI-4495 (comment-triggered re-dispatch): a TERMINAL Run no longer suppresses
+// intake. A ticket that re-entered 'todo' (a human reopen, or a human comment
+// nudging a parked lane) gets the NEXT generation Run, deterministically
+// suffixed -r2, so it coexists with the terminal first-born instead of
+// colliding on intake-<id>.
+func TestIntakeSweepRemintsAfterTerminalRun(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
+	})
+	in, cl, _ := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("want the terminal Run + one re-mint, got %d", len(runs.Items))
+	}
+	for _, r := range runs.Items {
+		if r.Name == "intake-"+itemID && r.Status.Phase != api.RunPhaseSucceeded {
+			t.Fatalf("first-born Run must be untouched, got phase %q", r.Status.Phase)
+		}
+	}
+	want := "intake-" + itemID + "-r2"
+	found := false
+	for _, r := range runs.Items {
+		if r.Name == want {
+			found = true
+			if r.Spec.WorkItemRef != itemID {
+				t.Fatalf("re-mint workItemRef: got %q", r.Spec.WorkItemRef)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("re-mint %q not created; got %+v", want, runs.Items)
+	}
+
+	// Idempotency: a second sweep sees the re-mint (phase unset ⇒ live) and
+	// must not mint a third generation.
+	in.sweep(context.Background())
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("re-list runs: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("re-sweep must not over-mint: got %d Runs", len(runs.Items))
+	}
+}
+
+// The live half of the guard: a Running (non-terminal) Run still suppresses
+// intake — a comment on a ticket whose run is actively working must never mint
+// a racing second Run (§6.2 custody).
+func TestIntakeSweepStillSuppressesLiveRun(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseRunning},
+	})
+	in, cl, _ := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("live Run must suppress re-mint: got %d Runs", len(runs.Items))
+	}
+}
+
 // A create racing to AlreadyExists is a dispatched ticket, not an error.
 func TestIntakeSweepAlreadyExistsTolerated(t *testing.T) {
 	const (
