@@ -63,11 +63,15 @@ describe("deriveColumns — §13 board-derivation is a PURE projection of state"
   });
 });
 
-describe("canDrag — UI RBAC gate mirrors the §6.7.2 server wall", () => {
-  it.each(["viewer", undefined, null, "unknown", ""])("role %p ⇒ NO drag", (role) => {
+describe("canDrag — UI RBAC gate mirrors the §6.7.2 server wall (global role)", () => {
+  // The gate receives the GLOBAL role from fetchViewerRole ("admin" | "user"), or the
+  // "viewer" sentinel when unresolved — NOT a per-Project role. Only the fail-closed
+  // sentinel (and the empty/absent session) is denied; any signed-in caller may drag,
+  // mirroring canCreate and the human-only server wall (ISI-4502).
+  it.each(["viewer", undefined, null, ""])("unresolved role %p ⇒ NO drag", (role) => {
     expect(canDrag(role as string)).toBe(false);
   });
-  it.each(["contributor", "maintainer"])("role %p ⇒ drag enabled", (role) => {
+  it.each(["admin", "user"])("signed-in global role %p ⇒ drag enabled", (role) => {
     expect(canDrag(role)).toBe(true);
   });
 });

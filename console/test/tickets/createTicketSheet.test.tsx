@@ -375,6 +375,52 @@ describe("CreateTicketSheet", () => {
     );
   });
 
+  it("locks the parent and files a CHILD without touching any control in fixedParent mode", async () => {
+    // Gap A regression: an untouched sub-ticket form must POST parentId, never a
+    // silent top-level item.
+    const created: WorkItem = {
+      id: "ISI-9003",
+      projectId: PROJECT,
+      parentId: "ISI-7",
+      title: "child",
+      state: "backlog",
+      blockedReason: null,
+      updatedAt: "2026-09-16T00:00:00Z",
+    };
+    fetchMock.mockResolvedValue(jsonResponse(created, 201));
+    const onCreated = vi.fn();
+
+    render(
+      <CreateTicketSheet
+        projectId={PROJECT}
+        parents={[]}
+        fixedParent={parent("ISI-7", "Umbrella epic")}
+        onCreated={onCreated}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // Header + locked parent line; the editable dropdown is gone.
+    expect(screen.getByText("New sub-ticket")).toBeTruthy();
+    expect(
+      screen.getByTestId("create-ticket-parent-fixed").textContent,
+    ).toContain("Umbrella epic");
+    expect(screen.queryByTestId("create-ticket-parent")).toBeNull();
+
+    // Only the title is set — the parent is never touched.
+    fireEvent.change(screen.getByTestId("create-ticket-title"), {
+      target: { value: "child" },
+    });
+    fireEvent.click(screen.getByTestId("create-ticket-submit"));
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(created));
+    const [, opts] = fetchMock.mock.calls[0];
+    expect(JSON.parse(opts.body as string)).toEqual({
+      title: "child",
+      parentId: "ISI-7",
+    });
+  });
+
   it("closes on scrim click and the × button", () => {
     route({});
     const onClose = vi.fn();
