@@ -40,7 +40,13 @@ type BoardItem struct {
 	// WorkMode is detail-only, so it is NOT on the card (see TaskDetail).
 	Priority string   `json:"priority,omitempty"`
 	Labels   []string `json:"labels"`
-	Holder   string   `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
+	// ParentID is the adjacency-list up-edge (§6.1): the work item this one is
+	// a direct sub-ticket of, "" for a root. Carried on the card so the
+	// console can defend the sub-ticket list against mixed-version deploys
+	// (an old apiserver ignoring ?parentId= becomes client-detectable,
+	// ISI-4536 hardening) instead of trusting the filter silently.
+	ParentID string `json:"parentId,omitempty"`
+	Holder   string `json:"holder,omitempty"` // claim holder principal; "" ⇒ unclaimed
 	// Assignee is the AGENT name the dispatched run works this ticket as
 	// (coord.claim.assignee_agent, ISI-4237) — the board's "who is working
 	// this". Unlike Holder it survives the terminal checkout release, so a
@@ -113,6 +119,7 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT wi.id::text, wi.title, wi.state, wi.blocked_reason, wi.priority, wi.labels,
+		       wi.parent_id::text,
 		       c.holder_principal, c.assignee_agent, c.run_id::text, wi.updated_at,
 		       (SELECT count(*) FROM coord.comment k WHERE k.work_item_id = wi.id),
 		       (SELECT count(*) FROM coord.change_ref r WHERE r.work_item_id = wi.id)
@@ -131,16 +138,18 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 	var out []BoardItem
 	for rows.Next() {
 		var it BoardItem
-		var blocked, priority, holder, assignee, run sql.NullString
+		var blocked, priority, parent, holder, assignee, run sql.NullString
 		// labels via pq.Array — pgx stdlib returns text[] as a *string* on Go < 1.27
 		// (see coord.ReadTaskDetail); a direct &it.Labels scan 500s. ISI-4409.
 		if err := rows.Scan(&it.ID, &it.Title, &it.State, &blocked, &priority, pq.Array(&it.Labels),
+			&parent,
 			&holder, &assignee, &run,
 			&it.UpdatedAt, &it.CommentCount, &it.ChangeCount); err != nil {
 			return nil, fmt.Errorf("coord.ListWorkItems: scan: %w", err)
 		}
 		it.BlockedReason = blocked.String
 		it.Priority = priority.String
+		it.ParentID = parent.String
 		if it.Labels == nil {
 			it.Labels = []string{}
 		}

@@ -87,6 +87,7 @@ func TestListWorkItemsParentFilter(t *testing.T) {
 		"0002_coord_dispatch.sql",
 		"0015_work_item_change_ref.sql",
 		"0018_claim_assignee.sql",
+		"0020_work_item_create_fields.sql", // work_item.priority/labels — the card SELECT reads them
 	} {
 		if _, err := db.ExecContext(ctx, migrationFile(t, name)); err != nil {
 			t.Fatalf("apply %s: %v", name, err)
@@ -122,13 +123,27 @@ func TestListWorkItemsParentFilter(t *testing.T) {
 			t.Fatalf("non-direct-child %q leaked into the ?parentId= list", leak)
 		}
 	}
+	for _, it := range kids {
+		if it.ParentID != parent {
+			t.Fatalf("card %s parentId = %q, want the queried parent", it.ID, it.ParentID)
+		}
+	}
 
-	// (2) No param ⇒ the full-Project card set, unchanged (board/kanban AC).
+	// (2) No param ⇒ the full-Project card set, unchanged (board/kanban AC),
+	// and roots carry an empty up-edge on the card.
 	all, err := rd.ListWorkItems(ctx, "", project, "")
 	if err != nil {
 		t.Fatalf("ListWorkItems(all): %v", err)
 	}
 	if len(all) != 6 {
 		t.Fatalf("unfiltered list returned %d cards, want all 6 (board/kanban behavior must not change)", len(all))
+	}
+	byTitle := map[string]coord.BoardItem{}
+	for _, it := range all {
+		byTitle[it.Title] = it
+	}
+	if byTitle["child-a"].ParentID != ids["parent"] || byTitle["unrelated-1"].ParentID != "" {
+		t.Fatalf("card up-edges wrong: child-a→%q (want parent), unrelated-1→%q (want \"\")",
+			byTitle["child-a"].ParentID, byTitle["unrelated-1"].ParentID)
 	}
 }
