@@ -135,6 +135,44 @@ func TestWSAIdentityAttrsRideSpans(t *testing.T) {
 	}
 }
 
+// TestModelTierOnRunStartOnly covers ISI-4430 S5: the resolved model-tier
+// origin is stamped as ksquad.model.tier on the run.start root ONLY — it is a
+// run-level dispatch fact, so it must not ride the per-step llm.call/tool.call
+// spans (whose serving model is carried by gen_ai.response.model instead).
+func TestModelTierOnRunStartOnly(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "run-tier", Agent: "coder", ModelTier: "role"}
+
+	runCtx, _ := m.RunStart(ctx, labels, "task-1")
+	m.UsageEvent(runCtx, labels, "task-1", a2a.UsagePayload{Model: "sonnet", Input: 3, Output: 5})
+	m.ToolEvent(runCtx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.RunEnd(runCtx, "task-1", "completed", "")
+
+	if got := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.model.tier"]; got != "role" {
+		t.Errorf("run.start ksquad.model.tier = %q, want %q", got, "role")
+	}
+	for _, name := range []string{SpanLLMCall, SpanToolCall} {
+		if _, ok := attrMap(findSpan(t, sr, name).Attributes())["ksquad.model.tier"]; ok {
+			t.Errorf("span %s carries ksquad.model.tier; it must ride run.start only", name)
+		}
+	}
+}
+
+// TestModelTierEmptyOmitted covers the runtime-default path: an unresolved
+// tier (empty ModelTier) must omit the attribute rather than emit "" (matching
+// the Recommended semconv posture — never fabricate an origin).
+func TestModelTierEmptyOmitted(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	runCtx, _ := m.RunStart(ctx, Labels{RunID: "run-nodefault", Agent: "coder"}, "task-1")
+	m.RunEnd(runCtx, "task-1", "completed", "")
+
+	if _, ok := attrMap(findSpan(t, sr, SpanRunStart).Attributes())["ksquad.model.tier"]; ok {
+		t.Error("run.start emitted ksquad.model.tier for an empty tier; it must be omitted")
+	}
+}
+
 // TestWSAIdentityNeverMetricLabels covers the ADR-0021 D1 cardinality note:
 // the WS-A identity fields are span attributes ONLY — they must never leak
 // into a metric label set (only agent does), or per-ticket/per-pod series
