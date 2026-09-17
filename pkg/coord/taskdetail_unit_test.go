@@ -132,7 +132,7 @@ func TestWorkItemThreadJSONExposesRequestedAgent(t *testing.T) {
 	}
 
 	// Never dispatched: the key still renders as "" — stable shape for the console.
-	thread.TaskDetail.RequestedAgent = ""
+	thread.RequestedAgent = ""
 	raw, err = json.Marshal(thread)
 	if err != nil {
 		t.Fatalf("marshal empty thread: %v", err)
