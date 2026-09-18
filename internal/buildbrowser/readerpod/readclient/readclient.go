@@ -98,6 +98,18 @@ func (c *Client) Read(ctx context.Context, path string, offset, length int64) (r
 	return out, nil
 }
 
+// Stat calls GET /stat?path= and returns the pod's FileStat wire value (ISI-4649). A nil Git
+// field is the pod's graceful "no git data" fallback, not an error.
+func (c *Client) Stat(ctx context.Context, path string) (readserver.FileStat, error) {
+	q := url.Values{}
+	q.Set("path", path)
+	var out readserver.FileStat
+	if err := c.getJSON(ctx, "/stat", q, &out); err != nil {
+		return readserver.FileStat{}, err
+	}
+	return out, nil
+}
+
 // getJSON performs a bounded GET against the reader pod and decodes a JSON body into out. A non-2xx
 // status is turned into an error carrying the status code so the caller can map 404→not-found etc.
 func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any) error {

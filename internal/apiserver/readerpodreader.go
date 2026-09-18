@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +53,7 @@ type ReaderSpecResolver interface {
 type readClient interface {
 	List(ctx context.Context, path string, page int) (readserver.DirListing, error)
 	Read(ctx context.Context, path string, offset, length int64) (readserver.FileContent, error)
+	Stat(ctx context.Context, path string) (readserver.FileStat, error)
 }
 
 // readerSession is one project's live reader pod: its teardown Handle, the bound protocol client, and
@@ -137,6 +139,35 @@ func (r *ReaderPodWorkspaceReader) ReadFile(ctx context.Context, projectID, file
 		Offset:      wire.Offset,
 		Length:      wire.Length,
 	}, nil
+}
+
+// StatFile launches-or-reuses the project's reader pod and returns change metadata for filePath
+// (ISI-4649), mapped to the apiserver wire type. A nil Git in the pod response is the graceful
+// no-git fallback and flows through as-is. A busy workspace surfaces as ErrWorkspaceBusy.
+func (r *ReaderPodWorkspaceReader) StatFile(ctx context.Context, projectID, filePath string) (*FileStat, error) {
+	sess, err := r.session(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	wire, err := sess.client.Stat(ctx, filePath)
+	if err != nil {
+		return nil, mapReadErr(err)
+	}
+	st := &FileStat{
+		Name:    wire.Name,
+		Type:    wire.Type,
+		Size:    wire.Size,
+		ModTime: wire.ModTime,
+	}
+	if wire.Git != nil {
+		st.Git = &GitChange{
+			CommitHash: wire.Git.CommitHash,
+			Author:     wire.Git.Author,
+			Message:    wire.Git.Message,
+			Timestamp:  wire.Git.Timestamp,
+		}
+	}
+	return st, nil
 }
 
 // session returns the live reader session for projectID, launching one on first use. It touches
@@ -242,6 +273,12 @@ func mapReadErr(err error) error {
 		case http.StatusNotFound:
 			return fmt.Errorf("workspace path not found: %w", err)
 		case http.StatusBadRequest:
+			// The readserver answers 400 "not a directory" when /list targets a regular
+			// file — the download route (ISI-4650) relies on this to fall back to the
+			// file path. Other 400s stay a generic invalid-path.
+			if strings.Contains(se.Body, "not a directory") {
+				return ErrNotDirectory
+			}
 			return fmt.Errorf("invalid workspace path: %w", err)
 		}
 	}

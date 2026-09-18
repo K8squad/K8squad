@@ -44,6 +44,34 @@
   background: var(--surface-active, rgba(120, 160, 255, 0.18));
 }
 
+/* ISI-4652: per-row download affordance. The row button flexes to fill; the
+   download anchor is a quiet glyph that brightens on hover/focus. */
+.file-explorer__rowwrap {
+  display: flex;
+  align-items: center;
+}
+
+.file-explorer__rowwrap .file-explorer__row {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-explorer__download {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--muted, #8b949e);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.file-explorer__download:hover,
+.file-explorer__download:focus-visible {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+  color: inherit;
+}
+
 .file-explorer__preview {
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 8px;

@@ -151,6 +151,17 @@ export async function statProjectFile(
   return classifyFilesStatus<FileStat>(res.status);
 }
 
+/** Build the BFF download URL for a workspace path (ISI-4652). A file path
+ * streams an octet-stream attachment; a directory path streams a server-built
+ * tar.gz archive (ISI-4650). Used as a plain `<a href download>` — the session
+ * cookie rides the same-origin request, so no fetch/blob handling is needed and
+ * upstream errors (404/413/501/503) surface as the browser's native download
+ * failure rather than fabricated UI state. Read-only: this is a GET, no write
+ * path into the volume (§D3). */
+export function downloadProjectFileUrl(projectId: string, path: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/files/download?path=${encodeURIComponent(path)}`;
+}
+
 /** Decode a base64 text payload to a UTF-8 string. Goes through bytes (not a
  * bare `atob`) so multibyte UTF-8 survives — `atob` yields latin1 code units,
  * which would mojibake any non-ASCII source file. Callers guard on

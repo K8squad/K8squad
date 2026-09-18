@@ -31,6 +31,7 @@ import {
   listProjectFiles,
   readProjectFile,
   statProjectFile,
+  downloadProjectFileUrl,
   decodeTextContent,
   humanBytes,
   rawBytesDataUrl,
@@ -197,6 +198,7 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
               {sortEntries(rootEntries).map((e) => (
                 <TreeNode
                   key={e.path}
+                  projectId={projectId}
                   entry={e}
                   depth={0}
                   open={open}
@@ -209,7 +211,7 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
             </ul>
           </nav>
           <div className="file-explorer__preview" data-testid="files-preview">
-            <PreviewPane path={selected} state={preview} />
+            <PreviewPane projectId={projectId} path={selected} state={preview} />
           </div>
           <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
             <DetailsPane path={selected} state={stat} />
@@ -222,8 +224,12 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
 
 /** One tree row. A directory toggles a lazy-loaded child listing; a file selects
  * itself into the preview. Directories render their loaded children recursively
- * once open. There is NO context menu / action affordance — read-only (§D3). */
+ * once open. The only action affordance is the ISI-4652 download anchor beside
+ * each row — a file downloads as an attachment, a directory as a tar.gz archive
+ * (GET /files/download via the BFF). Still read-only: no edit/save/delete/
+ * rename/run affordance, no context menu (§D3). */
 function TreeNode({
+  projectId,
   entry,
   depth,
   open,
@@ -232,6 +238,7 @@ function TreeNode({
   onToggle,
   onSelect,
 }: {
+  projectId: string;
   entry: FileEntry;
   depth: number;
   open: Set<string>;
@@ -244,19 +251,37 @@ function TreeNode({
   const isOpen = open.has(entry.path);
   const pad = { paddingLeft: 8 + depth * 14 };
 
+  // ISI-4652: per-row download. A sibling anchor (not nested in the row button —
+  // interactive elements cannot nest), so a download click never toggles/selects.
+  const download = (
+    <a
+      className="file-explorer__download"
+      href={downloadProjectFileUrl(projectId, entry.path)}
+      download
+      aria-label={isDir ? `Download ${entry.name} as archive` : `Download ${entry.name}`}
+      title={isDir ? "Download folder (.tar.gz)" : "Download file"}
+      data-testid={isDir ? "files-download-dir" : "files-download-file"}
+    >
+      <span aria-hidden="true">⬇</span>
+    </a>
+  );
+
   if (!isDir) {
     return (
       <li>
-        <button
-          type="button"
-          className="file-explorer__row file-explorer__file"
-          style={pad}
-          aria-current={selected === entry.path ? "true" : undefined}
-          data-testid="files-file"
-          onClick={() => onSelect(entry.path)}
-        >
-          <span aria-hidden="true">📄</span> {entry.name}
-        </button>
+        <div className="file-explorer__rowwrap">
+          <button
+            type="button"
+            className="file-explorer__row file-explorer__file"
+            style={pad}
+            aria-current={selected === entry.path ? "true" : undefined}
+            data-testid="files-file"
+            onClick={() => onSelect(entry.path)}
+          >
+            <span aria-hidden="true">📄</span> {entry.name}
+          </button>
+          {download}
+        </div>
       </li>
     );
   }
@@ -264,16 +289,19 @@ function TreeNode({
   const childState = dirs[entry.path];
   return (
     <li>
-      <button
-        type="button"
-        className="file-explorer__row file-explorer__dir"
-        style={pad}
-        aria-expanded={isOpen}
-        data-testid="files-dir"
-        onClick={() => onToggle(entry.path)}
-      >
-        <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
-      </button>
+      <div className="file-explorer__rowwrap">
+        <button
+          type="button"
+          className="file-explorer__row file-explorer__dir"
+          style={pad}
+          aria-expanded={isOpen}
+          data-testid="files-dir"
+          onClick={() => onToggle(entry.path)}
+        >
+          <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
+        </button>
+        {download}
+      </div>
       {isOpen && (
         <ul>
           {!childState || childState.kind === "loading" ? (
@@ -289,6 +317,7 @@ function TreeNode({
               sortEntries(childState.data.entries).map((c) => (
                 <TreeNode
                   key={c.path}
+                  projectId={projectId}
                   entry={c}
                   depth={depth + 1}
                   open={open}
@@ -425,9 +454,11 @@ function formatTimestamp(ts: string): string {
  * (AC2, never garbled text), a per-file degraded hint (AC4), and honest fetch
  * failures — never an edit surface (§D3). */
 function PreviewPane({
+  projectId,
   path,
   state,
 }: {
+  projectId: string;
   path: string | null;
   state: FilesState<FileContent>;
 }) {
@@ -469,6 +500,14 @@ function PreviewPane({
         {c.truncated && (
           <span className="muted" data-testid="files-preview-truncated"> · preview truncated (size cap)</span>
         )}
+        {" · "}
+        <a
+          href={downloadProjectFileUrl(projectId, c.path)}
+          download
+          data-testid="files-preview-download"
+        >
+          Download
+        </a>
       </div>
 
       {c.degraded && (

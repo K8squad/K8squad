@@ -254,6 +254,63 @@ describe("FileExplorerTab", () => {
     expect(screen.getByTestId("files-text").textContent).toBe("hello");
   });
 
+  it("offers a per-file download on the row and in the preview head (ISI-4652)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 30 }] } },
+      contents: {
+        "README.md": { path: "README.md", size: 30, contentType: "text", data: b64("# Hello"), offset: 0, length: 30 },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // Per-row file download: a plain <a download> against the BFF download route.
+    const rowDownload = screen.getByTestId("files-download-file");
+    expect(rowDownload.getAttribute("href")).toBe("/api/projects/web/files/download?path=README.md");
+    expect(rowDownload.getAttribute("download")).not.toBeNull();
+    expect(rowDownload.getAttribute("aria-label")).toBe("Download README.md");
+
+    // The preview head carries the same server-side download for the selected file.
+    fireEvent.click(screen.getByText("README.md"));
+    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
+    expect(screen.getByTestId("files-preview-download").getAttribute("href")).toBe(
+      "/api/projects/web/files/download?path=README.md",
+    );
+  });
+
+  it("offers a per-folder archive download with an encoded path (ISI-4652)", async () => {
+    routeFetch({
+      listings: {
+        "": { path: "", entries: [{ name: "my dir", path: "my dir", type: "dir" }] },
+        "my dir": { path: "my dir", entries: [{ name: "a file.txt", path: "my dir/a file.txt", type: "file", size: 5 }] },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // Folder archive download on the dir row, paths URL-encoded.
+    const dirDownload = screen.getByTestId("files-download-dir");
+    expect(dirDownload.getAttribute("href")).toBe("/api/projects/web/files/download?path=my%20dir");
+    expect(dirDownload.getAttribute("aria-label")).toBe("Download my dir as archive");
+
+    // Nested rows get the same affordance after lazy expand.
+    fireEvent.click(screen.getByText("my dir"));
+    await waitFor(() => expect(screen.getByText("a file.txt")).toBeTruthy());
+    expect(screen.getByTestId("files-download-file").getAttribute("href")).toBe(
+      "/api/projects/web/files/download?path=my%20dir%2Fa%20file.txt",
+    );
+  });
+
+  it("never downloads through the JSON fetchers — the download anchor is a plain href (ISI-4652)", async () => {
+    const spy = routeFetch({
+      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    // The download route is only ever referenced as an href, never fetched as JSON.
+    expect(spy.mock.calls.some(([url]) => String(url).includes("/files/download"))).toBe(false);
+  });
+
   it("renders a loading state while the root tree is fetching (AC3)", async () => {
     // A fetch that never resolves keeps the tab in its loading state.
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
