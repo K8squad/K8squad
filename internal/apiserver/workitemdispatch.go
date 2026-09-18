@@ -32,6 +32,10 @@ import (
 // board); keyed by item id (no {projectId}), so tenancy is the store's Team
 // fence (cross-tenant → 404); Team scope is server-derived (authTeamScope), never
 // trusted from the body.
+//
+// ISI-4573: the SAME verb also serves todo re-assign (store-internal branch on
+// the locked lane) — success stays 200 with the result body naming the states
+// (a re-assign reports fromState==toState=="todo"); no separate /assign route.
 
 // WorkItemDispatcher is the coord custody op this endpoint drives. The interface
 // (not the concrete *coord.WorkItemDispatchStore) is the seam so the host can

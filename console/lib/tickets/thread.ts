@@ -52,6 +52,17 @@ export interface NormalizedThread {
   /** Current claim holder principal ("" ⇒ unclaimed) + holding run, for the sidebar. */
   holder: string;
   runId: string;
+  /**
+   * The human-requested agent (dispatch stamp, ISI-4567 §2.1): set the moment a
+   * dispatch/re-assign picks a name, BEFORE any run claims the ticket. null ⇒
+   * nobody requested yet — the rail renders the honest placeholder, never a guess.
+   */
+  requestedAgent: string | null;
+  /**
+   * The claim assignee (coord.claim's agent attribution of the current/last
+   * attempt, taskdetail.go Assignee). null ⇒ no attribution on the wire.
+   */
+  assignee: string | null;
 }
 
 // Casing-tolerant readers — accept the server's PascalCase OR a future camelCase.
@@ -115,6 +126,8 @@ export function normalizeThread(raw: unknown): NormalizedThread {
     statusHistory,
     holder: str(r, "Holder", "holder"),
     runId: str(r, "RunID", "runId"),
+    requestedAgent: str(r, "RequestedAgent", "requestedAgent") || null,
+    assignee: str(r, "Assignee", "assignee") || null,
   };
 }
 
