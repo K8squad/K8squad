@@ -1,0 +1,334 @@
+/* components/github/github-screens.css — styling for the GitHub integration
+ * screens (ISI-4662 children). Layout, palette and typography follow the
+ * board-approved "Releases & Branches" mockup (Releases & Branches Management):
+ * dark surfaces, monospace technical labels, sans-serif descriptions, and the
+ * mockup accent set (teal #00bcd4, orange #ff6b35, green #4caf50, purple #9c27b0).
+ *
+ * Base surfaces / borders / status tones resolve to the existing globals.css
+ * custom properties; the mockup-only accent hues are declared HERE, scoped to
+ * `.gh-screen`, so the shared token system is untouched. */
+
+.gh-screen {
+  --gh-teal: #00bcd4;
+  --gh-orange: #ff6b35;
+  --gh-green: #4caf50;
+  --gh-purple: #9c27b0;
+  --gh-panel: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+/* ---- header ------------------------------------------------------------------------------- */
+.gh-screen__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.gh-screen__heading {
+  min-width: 0;
+  margin-right: auto;
+}
+.gh-screen__title {
+  margin: 0 0 4px;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-hi);
+}
+.gh-screen__sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+.gh-screen__repo {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+
+/* ---- action row --------------------------------------------------------------------------- */
+.gh-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--surface) 80%, var(--gh-teal) 4%);
+}
+.gh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 0.82rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.gh-btn:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
+.gh-btn--green {
+  background: var(--gh-green);
+  border-color: var(--gh-green);
+  color: #04140a;
+}
+.gh-btn--green:hover { filter: brightness(1.08); color: #04140a; border-color: var(--gh-green); }
+.gh-btn--blue {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.gh-btn--blue:hover { filter: brightness(1.08); color: #fff; border-color: var(--accent); }
+
+/* ---- two-column layout -------------------------------------------------------------------- */
+.gh-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .gh-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- panel -------------------------------------------------------------------------------- */
+.gh-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--gh-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  min-width: 0;
+}
+.gh-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.gh-panel__title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+.gh-panel__action {
+  font-size: 0.8rem;
+  color: var(--gh-teal);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.gh-panel__action:hover { text-decoration: underline; }
+.gh-panel__body { padding: 14px 16px; }
+.gh-panel__empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-2);
+  font-size: 0.85rem;
+}
+
+/* ---- release timeline --------------------------------------------------------------------- */
+.gh-releases {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.gh-release {
+  position: relative;
+  padding: 14px 16px 14px 20px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-idle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+.gh-release--published { border-left-color: var(--gh-green); }
+.gh-release--prerelease { border-left-color: var(--status-paused); }
+.gh-release--draft { border-left-color: var(--status-idle); }
+.gh-release__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.gh-release__tag {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+.gh-release__notes {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-1);
+}
+.gh-release__meta {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.gh-release__side {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.gh-release__download {
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.gh-release__download:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+
+/* ---- status badge ------------------------------------------------------------------------- */
+.gh-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: var(--radius-chip);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid var(--border);
+}
+.gh-badge--published {
+  color: var(--gh-green);
+  border-color: color-mix(in srgb, var(--gh-green) 55%, transparent);
+  background: color-mix(in srgb, var(--gh-green) 14%, transparent);
+}
+.gh-badge--prerelease {
+  color: var(--status-paused);
+  border-color: color-mix(in srgb, var(--status-paused) 55%, transparent);
+  background: color-mix(in srgb, var(--status-paused) 14%, transparent);
+}
+.gh-badge--draft {
+  color: var(--text-2);
+  background: color-mix(in srgb, var(--text-2) 12%, transparent);
+}
+
+/* ---- external-link glyph (teal ↗ on every actionable title) ------------------------------- */
+.gh-ext {
+  color: var(--gh-teal);
+  font-size: 0.8em;
+  text-decoration: none;
+}
+.gh-ext:hover { text-decoration: none; filter: brightness(1.15); }
+
+/* ---- release statistics ------------------------------------------------------------------- */
+.gh-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 10px;
+}
+.gh-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+.gh-stat__value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-hi);
+}
+.gh-stat__label { font-size: 0.75rem; color: var(--text-2); }
+.gh-stat--green .gh-stat__value { color: var(--gh-green); }
+.gh-stat--amber .gh-stat__value { color: var(--status-paused); }
+.gh-stat--blue .gh-stat__value { color: var(--accent); }
+.gh-stat--muted .gh-stat__value { color: var(--text-2); }
+
+/* ---- release-notes generator -------------------------------------------------------------- */
+.gh-notes {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.gh-notes__text { min-width: 0; margin-right: auto; }
+.gh-notes__title { margin: 0 0 4px; font-size: 0.9rem; font-weight: 600; color: var(--text-hi); }
+.gh-notes__desc { margin: 0; font-size: 0.8rem; color: var(--text-2); }
+.gh-notes__hint { margin: 8px 0 0; font-size: 0.72rem; color: var(--text-2); }
+
+/* ---- branch network ----------------------------------------------------------------------- */
+.gh-branches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gh-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 150px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+.gh-branch--default {
+  border-color: color-mix(in srgb, var(--gh-green) 60%, transparent);
+  background: color-mix(in srgb, var(--gh-green) 10%, var(--surface));
+}
+.gh-branch__name {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-hi);
+}
+.gh-branch__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+.gh-branch__badge {
+  padding: 1px 7px;
+  border-radius: var(--radius-chip);
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--gh-green);
+  border: 1px solid color-mix(in srgb, var(--gh-green) 55%, transparent);
+}
+.gh-branch__sha {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-2);
+}
+.gh-caption {
+  margin: 10px 0 0;
+  font-size: 0.72rem;
+  color: var(--text-2);
+}
+
+/* Degrade, don't blank: on a stale/errored mirror the screen keeps its last-good
+ * data visible but ghosted, matching the existing github-status panels. */
+.gh-screen--ghost {
+  opacity: 0.45;
+  filter: grayscale(0.35);
+  pointer-events: none;
+}

@@ -3,7 +3,7 @@
 // AC5 loading/empty/501 honest states, and no-credential-in-DOM (AC6).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import { GitHubStatusTab } from "@/components/GitHubStatusTab";
 import type { GithubStatus } from "@/lib/github-status";
 
@@ -197,5 +197,103 @@ describe("GitHubStatusTab", () => {
     render(<GitHubStatusTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("github-honest")).toBeTruthy());
     expect(screen.getByText(/No GitHub status/)).toBeTruthy();
+  });
+
+  // ---------------------------------------------------------------------------
+  // ISI-4675 — Releases & Branches screen.
+  // ---------------------------------------------------------------------------
+
+  it("renders the Releases & Branches screen with tags, notes and stats (ISI-4675)", async () => {
+    stub(200, {
+      ...projection,
+      releases: [
+        {
+          name: "Performance improvements & bug fixes",
+          tag: "v2.1.0",
+          state: "published",
+          actor: "mikelee",
+          publishedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+        },
+        { name: "v2.0.8", tag: "v2.0.8", state: "prerelease" },
+      ],
+      branches: [
+        { name: "main", default: true, headSha: "abc1234def5678" },
+        { name: "feat/x", headSha: "fff2345fff5678" },
+      ],
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
+
+    // Defaults to the sync-health view; the releases screen is behind its tab.
+    expect(screen.getByTestId("github-tab-status").getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByTestId("github-tab-releases"));
+
+    expect(screen.getByTestId("gh-releases-branches")).toBeTruthy();
+    expect(screen.getByTestId("github-tab-releases").getAttribute("aria-selected")).toBe("true");
+
+    // Release timeline: tag + notes + honest recency, state badge.
+    expect(screen.getAllByTestId("gh-release-row")).toHaveLength(2);
+    const firstTag = screen.getAllByTestId("gh-release-link")[0];
+    expect(firstTag.textContent).toMatch(/v2\.1\.0/);
+    expect(screen.getByText("Performance improvements & bug fixes")).toBeTruthy();
+    expect(screen.getByText(/Released .* ago by @mikelee/)).toBeTruthy();
+
+    // Honest stats from the mirror (no fabricated contributor counts).
+    expect(screen.getByTestId("gh-stat-total-releases").textContent).toMatch(/2/);
+    expect(screen.getByTestId("gh-stat-published").textContent).toMatch(/1/);
+
+    // Honest freshness, never a fabricated "live" badge.
+    expect(screen.getByTestId("gh-freshness").textContent).toMatch(/synced/);
+    expect(screen.queryByText(/live/i)).toBeNull();
+  });
+
+  it("deep-links releases via releases/tag/{tag} and branches via tree/{branch}", async () => {
+    stub(200, {
+      ...projection,
+      // No mirrored url ⇒ the href must be reconstructed from the identifier.
+      releases: [{ name: "v2.1.0", tag: "v2.1.0", state: "published" }],
+      branches: [
+        { name: "main", default: true, headSha: "abc1234def5678" },
+        { name: "feat/x", headSha: "fff2345fff5678" },
+      ],
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("github-tab-releases"));
+
+    expect(screen.getByTestId("gh-release-link").getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad/releases/tag/v2.1.0",
+    );
+
+    const branchHrefs = screen
+      .getAllByTestId("gh-branch-link")
+      .map((a) => a.getAttribute("href"));
+    expect(branchHrefs).toContain("https://github.com/K8squad/K8squad/tree/main");
+    expect(branchHrefs).toContain("https://github.com/K8squad/K8squad/tree/feat/x");
+
+    // Header deep-links to the repo.
+    expect(screen.getByTestId("gh-open-github").getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad",
+    );
+  });
+
+  it("keeps last-good release/branch data ghosted when the mirror is paused", async () => {
+    stub(200, {
+      ...projection,
+      sync: { reason: "CredentialMissing", trigger: "poll", ageSeconds: 900 },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("github-tab-releases"));
+    expect(screen.getByTestId("gh-releases-branches").getAttribute("data-ghost")).toBe("true");
+  });
+
+  it("shows honest empty states on the releases screen", async () => {
+    stub(200, { ...projection, releases: [], branches: [] });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-tabs")).toBeTruthy());
+    fireEvent.click(screen.getByTestId("github-tab-releases"));
+    expect(screen.getByTestId("gh-releases-empty")).toBeTruthy();
+    expect(screen.getByTestId("gh-branches-empty")).toBeTruthy();
   });
 });
