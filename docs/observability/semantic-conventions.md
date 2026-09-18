@@ -87,6 +87,7 @@ A local/CLI tool call. Follows OTel gen-AI tool-call conventions; raw arguments 
 | `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
 | `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked. |
+| `ksquad.tool.type` | string | required | stable | WS-C | Tool category (bash|git|docker|kubectl|helm|node|python|mcp|system) so traces group by tool kind (ISI-4540). |
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments (the hash IS the argument surface; raw args never leave the process). |
 | `ksquad.skill.name` | string | conditional | stable |  | The skill this tool call belongs to, when the call is skill-scoped. |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |
@@ -105,6 +106,7 @@ A tool call served by an MCPServer. Same shape as gen_ai.tool.call plus the serv
 | `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
 | `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked via MCP. |
+| `ksquad.tool.type` | string | required | stable | WS-C | Tool category; always "mcp" on this span (ISI-4540). |
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments. |
 | `ksquad.mcp.server` | string | required | stable |  | The MCPServer that served the call. |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |

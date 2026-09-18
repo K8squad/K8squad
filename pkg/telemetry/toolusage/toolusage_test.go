@@ -768,3 +768,51 @@ func TestFinishTaskSweepsOrphanRunRoot(t *testing.T) {
 	}
 	_ = root
 }
+
+// TestCategorizeTool (ISI-4540): the ksquad.tool.type attribute buckets tool
+// events into their real category so traces show git/mcp/docker/etc. instead
+// of everything reading as an uncategorized bare name.
+func TestCategorizeTool(t *testing.T) {
+	tests := []struct {
+		name   string
+		tool   string
+		server string
+		want   string
+	}{
+		{"bash prefix", "bash.execute", "", "bash"},
+		{"sh alias", "sh.run", "", "bash"},
+		{"git prefix", "git.clone", "", "git"},
+		{"docker prefix", "docker.build", "", "docker"},
+		{"kubectl prefix", "kubectl.apply", "", "kubectl"},
+		{"helm prefix", "helm.install", "", "helm"},
+		{"npm bucketed as node", "npm.install", "", "node"},
+		{"node prefix", "node.run", "", "node"},
+		{"pip bucketed as python", "pip.install", "", "python"},
+		{"python prefix", "python.script", "", "python"},
+		{"mcp prefix", "mcp.server.tool", "", "mcp"},
+		{"dotted server.tool form", "github.create_issue", "", "mcp"},
+		{"explicit MCP server wins", "whatever", "github", "mcp"},
+		{"path-like name is system", "system/exec", "", "system"},
+		{"plain unknown is system", "system.execute", "", "system"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := categorizeTool(tt.tool, tt.server); got != tt.want {
+				t.Errorf("categorizeTool(%q, %q) = %q, want %q", tt.tool, tt.server, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestToolEventCarriesToolType (ISI-4540): the mapped tool.call span carries
+// the ksquad.tool.type attribute.
+func TestToolEventCarriesToolType(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", a2a.ToolPayload{Name: "git.clone", Phase: "start"})
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", a2a.ToolPayload{Name: "git.clone", Phase: "result", OK: boolPtr(true)})
+	span := findSpan(t, sr, SpanToolCall)
+	if got := attrMap(span.Attributes())["ksquad.tool.type"]; got != "git" {
+		t.Errorf("ksquad.tool.type = %v, want git", got)
+	}
+}
