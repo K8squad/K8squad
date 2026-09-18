@@ -2,7 +2,8 @@ package apiserver
 
 import (
 	"context"
-	"errors"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -27,12 +28,12 @@ import (
 
 // RunListQuery aggregates the filter/pagination query params
 type RunListQuery struct {
-	Phase      string    `json:"phase"` // optional filter
-	Agent      string    `json:"agent"`  // optional filter
-	Window     string    `json:"window"` // optional time window
-	Limit      int       `json:"limit"`  // pagination limit
-	Offset     int       `json:"offset"` // pagination offset
-	ProjectID  string    `json:"projectId"`  // if set, filter to project
+	Phase     string `json:"phase"`     // optional filter
+	Agent     string `json:"agent"`     // optional filter
+	Window    string `json:"window"`    // optional time window
+	Limit     int    `json:"limit"`     // pagination limit
+	Offset    int    `json:"offset"`    // pagination offset
+	ProjectID string `json:"projectId"` // if set, filter to project
 }
 
 // RunListItem is one row in a run listing (reuses RunSummary pattern from org.go)
@@ -51,21 +52,21 @@ type RunListItem struct {
 
 // RunDetailResponse is the full run detail with steps and thinking
 type RunDetailResponse struct {
-	Run           *ksquadv1.Run                 `json:"run"`
-	Steps         []StepInfo                   `json:"steps"`
-	Thinking      []ThinkingEntry              `json:"thinking"`
-	LLMInteractions []LLMInteractionDigest      `json:"llmInteractions"`
+	Run             *ksquadv1.Run          `json:"run"`
+	Steps           []StepInfo             `json:"steps"`
+	Thinking        []ThinkingEntry        `json:"thinking"`
+	LLMInteractions []LLMInteractionDigest `json:"llmInteractions"`
 }
 
 // StepInfo represents a reconcile_step from coord.claim + audit events
 type StepInfo struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Description  string    `json:"description"`
-	StartedAt    *time.Time `json:"startedAt,omitempty"`
-	CompletedAt  *time.Time `json:"completedAt,omitempty"`
-	Status       string    `json:"status"`
-	Error        *string   `json:"error,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	Status      string     `json:"status"`
+	Error       *string    `json:"error,omitempty"`
 }
 
 // ThinkingEntry represents agent thinking/comments from progressmirror
@@ -79,12 +80,12 @@ type ThinkingEntry struct {
 
 // LLMInteractionDigest summarizes LLM interactions from run status
 type LLMInteractionDigest struct {
-	ID          string    `json:"id"`
-	Model       string    `json:"model"`
-	Role        string    `json:"role"`
-	Content     string    `json:"content"`
-	Timestamp   time.Time `json:"timestamp"`
-	TokensUsed  int       `json:"tokensUsed,omitempty"`
+	ID         string    `json:"id"`
+	Model      string    `json:"model"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	Timestamp  time.Time `json:"timestamp"`
+	TokensUsed int       `json:"tokensUsed,omitempty"`
 }
 
 // RunsService provides run listing and detail read models
@@ -114,10 +115,10 @@ func listRuns(svc *RunsService) http.HandlerFunc {
 
 		// Parse query params
 		query := RunListQuery{
-			Limit:  50,  // default
+			Limit:  50, // default
 			Offset: 0,
 		}
-		
+
 		if phase := r.URL.Query().Get("phase"); phase != "" {
 			query.Phase = phase
 		}
@@ -180,17 +181,17 @@ func (s *RunsService) listRunsInNamespace(ctx context.Context, namespace string,
 	var filtered []RunListItem
 	for i := range runs.Items {
 		run := &runs.Items[i]
-		
+
 		// Apply project filter if specified
 		if query.ProjectID != "" && run.Spec.ProjectRef.Name != query.ProjectID {
 			continue
 		}
-		
+
 		// Apply phase filter if specified
 		if query.Phase != "" && string(run.Status.Phase) != query.Phase {
 			continue
 		}
-		
+
 		// Apply agent filter if specified
 		if query.Agent != "" {
 			matched := false
@@ -313,36 +314,33 @@ func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, ru
 // populateSteps reads the Run's execution steps from coord.claim.reconcile_step and audit_log.
 func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResponse) error {
 	db, ok := s.db.(*sql.DB)
-	if !ok || db == nil || response.Run.Status.WorkItemID == "" {
+	if !ok || db == nil || response.Run.Spec.WorkItemRef == "" {
 		// Fallback for testing/demo: create placeholder steps based on Run status
 		now := time.Now()
 		if response.Run.Status.ClaimedAt != nil {
-			steps := []Step{
+			steps := []StepInfo{
 				{
-					ID:        "1",
-					Action:    "claimed",
-					Status:    "completed",
-					StartedAt: response.Run.Status.ClaimedAt,
-					CompletedAt: response.Run.Status.ClaimedAt,
-					Agent:     response.Run.Spec.Agents[0].Name,
+					ID:          "1",
+					Name:        "claimed",
+					Status:      "completed",
+					StartedAt:   &response.Run.Status.ClaimedAt.Time,
+					CompletedAt: &response.Run.Status.ClaimedAt.Time,
 				},
 			}
 			if response.Run.Status.Phase == ksquadv1.RunPhaseRunning {
-				steps = append(steps, Step{
+				steps = append(steps, StepInfo{
 					ID:        "2",
-					Action:    "dispatching",
+					Name:      "dispatching",
 					Status:    "running",
-					StartedAt: response.Run.Status.ClaimedAt,
-					Agent:     response.Run.Spec.Agents[0].Name,
+					StartedAt: &response.Run.Status.ClaimedAt.Time,
 				})
-			} else if response.Run.Status.Phase == ksquadv1.RunPhaseComplete {
-				steps = append(steps, Step{
-					ID:        "2",
-					Action:    "executing",
-					Status:    "completed",
-					StartedAt: response.Run.Status.ClaimedAt,
+			} else if response.Run.Status.Phase == "complete" {
+				steps = append(steps, StepInfo{
+					ID:          "2",
+					Name:        "executing",
+					Status:      "completed",
+					StartedAt:   &response.Run.Status.ClaimedAt.Time,
 					CompletedAt: &now,
-					Agent:     response.Run.Spec.Agents[0].Name,
 				})
 			}
 			response.Steps = steps
@@ -364,16 +362,19 @@ func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResp
 	}
 	defer func() { _ = rows.Close() }()
 
-	var steps []Step
+	var steps []StepInfo
 	for rows.Next() {
-		var sc Step
+		var sc StepInfo
 		var from sql.NullString
-		if err := rows.Scan(&from, &sc.Action, &sc.Agent, &sc.StartedAt, &sc.Status); err != nil {
+		var principal string
+		var event string
+		if err := rows.Scan(&from, &sc.Name, &principal, &sc.StartedAt, &event); err != nil {
 			return fmt.Errorf("scan step: %w", err)
 		}
-		sc.ID = sc.Action
+		sc.ID = sc.Name
+		sc.Status = event
 		if from.Valid {
-			sc.PreviousState = from.String
+			sc.Description = from.String
 		}
 		steps = append(steps, sc)
 	}
@@ -390,16 +391,16 @@ func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResp
 // populateThinking reads the Run's thinking/comments from progressmirror comments and LLM interactions.
 func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailResponse) error {
 	db, ok := s.db.(*sql.DB)
-	if !ok || db == nil || response.Run.Status.WorkItemID == "" {
+	if !ok || db == nil || response.Run.Spec.WorkItemRef == "" {
 		// Fallback for testing/demo: create placeholder thinking
 		if response.Run.Status.LLMInteractions != nil {
-			thinking := []Thinking{}
+			thinking := []ThinkingEntry{}
 			for _, interaction := range response.Run.Status.LLMInteractions {
-				thinking = append(thinking, Thinking{
-					Type:    "llm_interaction",
-					Content: interaction.Prompt,
-					Agent:   interaction.Agent,
-					Time:    interaction.Timestamp,
+				thinking = append(thinking, ThinkingEntry{
+					Type:      "llm_interaction",
+					Content:   string(interaction.Request),
+					Agent:     interaction.Model,
+					Timestamp: interaction.Timestamp.Time,
 				})
 			}
 			response.Thinking = thinking
@@ -420,8 +421,8 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		var comment Thinking
-		if err := rows.Scan(&comment.Agent, &comment.Content, &comment.Time); err != nil {
+		var comment ThinkingEntry
+		if err := rows.Scan(&comment.Agent, &comment.Content, &comment.Timestamp); err != nil {
 			return fmt.Errorf("scan comment: %w", err)
 		}
 		comment.Type = "comment"
@@ -431,11 +432,11 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 	// Add LLM interactions from status
 	if response.Run.Status.LLMInteractions != nil {
 		for _, interaction := range response.Run.Status.LLMInteractions {
-			response.Thinking = append(response.Thinking, Thinking{
-				Type:    "llm_interaction",
-				Content: interaction.Prompt,
-				Agent:   interaction.Agent,
-				Time:    interaction.Timestamp,
+			response.Thinking = append(response.Thinking, ThinkingEntry{
+				Type:      "llm_interaction",
+				Content:   string(interaction.Request),
+				Agent:     interaction.Model,
+				Timestamp: interaction.Timestamp.Time,
 			})
 		}
 	}
@@ -445,9 +446,13 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 
 // runListItem projects a Run into a listing item (reuses org.go pattern)
 func runListItem(run *ksquadv1.Run) RunListItem {
-	startedAt, endedAt := runStart(run), runEnd(run)
+	startedAt := runStart(run)
+	endedAt := time.Time{}
 	duration := int64(0)
-	if startedAt != nil && endedAt != nil {
+	if run.Status.Phase == "complete" || run.Status.Phase == "failed" {
+		endedAt = time.Now()
+	}
+	if !startedAt.IsZero() && !endedAt.IsZero() {
 		duration = endedAt.Sub(startedAt).Milliseconds() / 1000
 	}
 
@@ -466,19 +471,17 @@ func runListItem(run *ksquadv1.Run) RunListItem {
 		PausedReason:    pausedReason,
 		WorkItemRef:     run.Spec.WorkItemRef,
 		ProjectRef:      run.Spec.ProjectRef.Name,
-		StartedAt:       startedAt,
-		EndedAt:         endedAt,
+		StartedAt:       &startedAt,
+		EndedAt:         &endedAt,
 		DurationSeconds: &duration,
 		TraceID:         run.Status.TraceID,
 	}
 }
 
-
-
 // runInTimeWindow checks if a run falls within the specified time window
 func runInTimeWindow(run *ksquadv1.Run, window string) bool {
 	startTime := runStart(run)
-	
+
 	switch window {
 	case "1h":
 		return startTime.After(time.Now().Add(-1 * time.Hour))
