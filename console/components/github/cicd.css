@@ -1,0 +1,156 @@
+/* components/github/cicd.css — CI/CD Pipeline Status screen (ISI-4674).
+ *
+ * Companions the shared components/github/github-screens.css (base surfaces,
+ * .gh-panel, .gh-stats, .gh-ext) with the pipeline-specific pieces: the stage
+ * flow, the check-run history rows, and their per-status colors. All colors are
+ * existing tokens (globals.css) or the shared `.gh-screen` accent set — no new
+ * global palette is introduced. */
+
+/* The shared stat band only defines green/amber/blue/muted; CI/CD needs a red
+ * "failed" value tone too. Scoped to the screen, same shape as the others. */
+.gh-cicd .gh-stat--red .gh-stat__value {
+  color: var(--status-blocked);
+}
+
+/* ---- pipeline stage flow ------------------------------------------------------------------ */
+.gh-cicd-stages {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-x: auto;
+}
+
+.gh-cicd-stage {
+  position: relative;
+  flex: 1 0 auto;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-idle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+
+.gh-cicd-stage--passed { border-left-color: var(--gh-green); }
+.gh-cicd-stage--failed { border-left-color: var(--status-blocked); }
+.gh-cicd-stage--running { border-left-color: var(--accent); }
+.gh-cicd-stage--pending { border-left-color: var(--status-paused); }
+
+.gh-cicd-stage__name {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-hi);
+  text-decoration: none;
+}
+.gh-cicd-stage__name:hover { text-decoration: none; color: var(--gh-teal); }
+
+.gh-cicd-stage__status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: lowercase;
+}
+.gh-cicd-stage--passed .gh-cicd-stage__status { color: var(--gh-green); }
+.gh-cicd-stage--failed .gh-cicd-stage__status { color: var(--status-blocked); }
+.gh-cicd-stage--running .gh-cicd-stage__status { color: var(--accent); }
+.gh-cicd-stage--pending .gh-cicd-stage__status { color: var(--status-paused); }
+
+/* The connector takes the color of the stage it leaves, so the flow reads as a
+ * colored pipeline rather than a row of disconnected cards. */
+.gh-cicd-stage__connector {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--status-idle);
+  transform: translateY(-50%);
+  z-index: 1;
+}
+.gh-cicd-stage--passed .gh-cicd-stage__connector { border-left-color: var(--gh-green); }
+.gh-cicd-stage--failed .gh-cicd-stage__connector { border-left-color: var(--status-blocked); }
+.gh-cicd-stage--running .gh-cicd-stage__connector { border-left-color: var(--accent); }
+.gh-cicd-stage--pending .gh-cicd-stage__connector { border-left-color: var(--status-paused); }
+
+/* ---- recent check-run history ------------------------------------------------------------- */
+.gh-cicd-runs,
+.gh-cicd-artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.gh-cicd-run,
+.gh-cicd-artifact {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+
+.gh-cicd-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--status-idle);
+}
+.gh-cicd-dot--passed { background: var(--gh-green); }
+.gh-cicd-dot--failed { background: var(--status-blocked); }
+.gh-cicd-dot--running { background: var(--accent); }
+.gh-cicd-dot--pending { background: var(--status-paused); }
+
+.gh-cicd-run__name,
+.gh-cicd-artifact__name {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-hi);
+  text-decoration: none;
+}
+.gh-cicd-run__name:hover,
+.gh-cicd-artifact__name:hover { text-decoration: none; color: var(--gh-teal); }
+
+.gh-cicd-run__verdict {
+  font-size: 0.75rem;
+  text-transform: lowercase;
+}
+.gh-cicd-run .gh-badge { margin-left: auto; }
+.gh-cicd-artifact__size { margin-left: auto; font-size: 0.75rem; }
+.gh-cicd-artifact__meta { font-size: 0.72rem; }
+
+/* ---- status badge (mirrors the shared .gh-badge shape) ------------------------------------ */
+.gh-cicd-badge--passed {
+  color: var(--gh-green);
+  border-color: color-mix(in srgb, var(--gh-green) 55%, transparent);
+  background: color-mix(in srgb, var(--gh-green) 14%, transparent);
+}
+.gh-cicd-badge--failed {
+  color: var(--status-blocked);
+  border-color: color-mix(in srgb, var(--status-blocked) 55%, transparent);
+  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
+}
+.gh-cicd-badge--running {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.gh-cicd-badge--pending {
+  color: var(--status-paused);
+  border-color: color-mix(in srgb, var(--status-paused) 55%, transparent);
+  background: color-mix(in srgb, var(--status-paused) 14%, transparent);
+}

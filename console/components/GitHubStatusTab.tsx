@@ -18,8 +18,11 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
+import { CiCdPipelineStatus } from "@/components/github/CiCdPipelineStatus";
+import { PullRequestManagement } from "@/components/github/PullRequestManagement";
 import { ReleasesBranchesScreen } from "@/components/github/ReleasesBranchesScreen";
 import {
+  ageLabel,
   chipState,
   fetchGithubStatus,
   triggerGithubSync,
@@ -33,6 +36,14 @@ import {
 const AUTO_REFRESH_MS = 30_000;
 // Client-side debounce matches the server-side 30 s window.
 const SYNC_DEBOUNCE_MS = 30_000;
+
+// The repo the GitHub screen deep-links to (ISI-4671). The mirror read model does
+// not expose the repo slug, so the screen uses the known k8squad repo target from
+// the approved mockup; entity-level links use the normalized mirror URLs.
+const GITHUB_REPO_URL = "https://github.com/K8squad/K8squad";
+const REPO_SLUG = "K8squad/K8squad";
+// Timeline is capped so the overview stays a dashboard, not an infinite list.
+const TIMELINE_LIMIT = 6;
 
 export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const [state, setState] = useState<GithubStatusState>({ kind: "loading" });
@@ -82,7 +93,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
 
   if (state.kind === "loading") {
     return (
-      <section aria-busy="true" data-testid="github-loading">
+      <section className="github-status" aria-busy="true" data-testid="github-loading">
         <h1>GitHub status</h1>
         <p className="muted">Loading repo status from the mirror…</p>
       </section>
@@ -126,9 +137,24 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const ghost = card?.ghost === true && !empty;
 
   return (
-    <section data-testid="github-status">
+    <section className="github-status" data-testid="github-status">
       <header className="github-status__head">
-        <h1>GitHub status</h1>
+        <div className="github-status__title">
+          <h1>{data.project.name}</h1>
+          <a
+            className="github-repo-slug"
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            data-testid="github-repo-link"
+            title="Open the repository on GitHub"
+          >
+            {REPO_SLUG}
+            <span className="github-ext" aria-hidden="true">
+              ↗
+            </span>
+          </a>
+        </div>
         {chip.tone !== "neutral" && (
           <span
             className={`github-chip github-chip--${chip.tone}`}
@@ -156,6 +182,18 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
         >
           {syncing ? "Refreshing…" : "↻ Refresh"}
         </button>
+        <a
+          className="github-open-github"
+          href={GITHUB_REPO_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          data-testid="github-open-github"
+        >
+          Open on GitHub
+          <span className="github-ext" aria-hidden="true">
+            ↗
+          </span>
+        </a>
       </header>
 
       {chip.tone === "running" && (
@@ -218,7 +256,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
           aria-labelledby="github-tab-status"
           className="github-view"
         >
-          {!empty && <StatTiles data={data} />}
+          {!empty && <OverviewDashboard data={data} />}
 
           {empty ? (
             card ? null : (
@@ -235,10 +273,9 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
               data-ghost={ghost ? "true" : "false"}
               aria-hidden={ghost ? "true" : undefined}
             >
-              <PRPanel prs={data.pullRequests} />
+              <PullRequestManagement data={data} ghost={ghost} />
               <IssuePanel issues={data.issues} />
-              <CheckPanel checks={data.checkRuns} />
-              <ArtifactPanel artifacts={data.artifacts} />
+              <CiCdPipelineStatus data={data} />
               <ReleasePanel releases={data.releases} />
               <BranchPanel branches={data.branches} />
             </div>
@@ -365,31 +402,314 @@ function StateCard({
 }
 
 // ============================================================================
-// Stat tiles (DESIGN-SPEC §2) — snapshot counts from the mirror projection.
+// Overview Dashboard (ISI-4671) — activity metrics, recent-activity timeline and
+// repo-health indicators, derived from the mirror projection. The layout matches
+// the approved mockup: a 5-up metric band, a timeline, and a health sidebar.
+//
+// Fabrication discipline (FR-I3): every number comes from a real mirror row. A
+// rate with no denominator renders "—", never a fake 0, and the composite health
+// score is the mean of only the signals that actually had data.
 // ============================================================================
 
-function StatTiles({ data }: { data: GithubStatus }) {
-  const tiles: Array<{ label: string; value: number }> = [
-    { label: "Branches", value: data.branches.length },
-    { label: "Pull requests", value: data.pullRequests.length },
-    { label: "Issues", value: data.issues.length },
-    { label: "Checks", value: data.checkRuns.length },
+type MetricTone = "teal" | "green" | "orange" | "purple";
+type EventTone = "green" | "red" | "blue";
+
+type PrCounts = { open: number; merged: number; closed: number };
+
+function prCounts(prs: GithubStatus["pullRequests"]): PrCounts {
+  const counts: PrCounts = { open: 0, merged: 0, closed: 0 };
+  for (const pr of prs) {
+    const state = (pr.state || "").toLowerCase();
+    if (pr.merged || state === "merged") counts.merged += 1;
+    else if (state === "closed") counts.closed += 1;
+    else if (state === "open") counts.open += 1;
+  }
+  return counts;
+}
+
+function checkCounts(checks: GithubStatus["checkRuns"]) {
+  const completed = checks.filter(
+    (c) => (c.conclusion && c.conclusion.length > 0) || (c.state || "").toLowerCase() === "completed",
+  );
+  const passed = completed.filter((c) => (c.conclusion || "").toLowerCase() === "success");
+  return { total: checks.length, completed: completed.length, passed: passed.length };
+}
+
+/** A rate in [0,1], or null when there is no denominator — the honest absence. */
+function rate(numerator: number, denominator: number): number | null {
+  if (denominator <= 0) return null;
+  return numerator / denominator;
+}
+
+function pct(r: number | null): string {
+  return r === null ? "—" : `${Math.round(r * 100)}%`;
+}
+
+type HealthSignal = { label: string; value: string; tone: MetricTone };
+
+function healthTier(score: number | null): string {
+  if (score === null) return "Not enough data";
+  if (score >= 0.9) return "Excellent";
+  if (score >= 0.75) return "Good";
+  if (score >= 0.5) return "Fair";
+  return "Needs attention";
+}
+
+/** Repo health from the signals the mirror can actually prove: PR merge rate,
+ * CI success rate and issue close rate. The composite score is their mean. */
+function repoHealth(data: GithubStatus): {
+  score: number | null;
+  tier: string;
+  signals: HealthSignal[];
+} {
+  const prs = prCounts(data.pullRequests);
+  const checks = checkCounts(data.checkRuns);
+  const openIssues = data.issues.filter((i) => (i.state || "").toLowerCase() === "open").length;
+
+  const mergeRate = rate(prs.merged, prs.merged + prs.closed);
+  const ciRate = rate(checks.passed, checks.completed);
+  const issueRate = rate(data.issues.length - openIssues, data.issues.length);
+
+  const signals: HealthSignal[] = [
+    { label: "PR merge rate", value: pct(mergeRate), tone: "green" },
+    { label: "CI success rate", value: pct(ciRate), tone: "green" },
+    { label: "Issue close rate", value: pct(issueRate), tone: "green" },
   ];
+  const available = [mergeRate, ciRate, issueRate].filter((r): r is number => r !== null);
+  const score =
+    available.length === 0 ? null : available.reduce((a, b) => a + b, 0) / available.length;
+  return { score, tier: healthTier(score), signals };
+}
+
+type ActivityEvent = {
+  key: string;
+  kind: "pr" | "issue" | "release";
+  action: "opened" | "merged" | "closed" | "published";
+  title: string;
+  url?: string;
+  actor?: string;
+  at?: string;
+  tone: EventTone;
+};
+
+/** Flatten the mirror rows into a single newest-first activity feed. Rows with a
+ * mirror timestamp sort by it; rows without one keep projection order at the
+ * tail and render "time unknown" rather than an invented time. */
+function activityEvents(data: GithubStatus): ActivityEvent[] {
+  const events: ActivityEvent[] = [];
+
+  for (const pr of data.pullRequests) {
+    const state = (pr.state || "").toLowerCase();
+    const merged = pr.merged || state === "merged";
+    events.push({
+      key: `pr-${pr.number}`,
+      kind: "pr",
+      action: merged ? "merged" : state === "closed" ? "closed" : "opened",
+      title: `PR #${pr.number}: ${pr.title}`,
+      url: pr.url,
+      actor: pr.actor,
+      at: pr.updatedAt,
+      tone: merged ? "green" : state === "closed" ? "red" : "blue",
+    });
+  }
+
+  for (const it of data.issues) {
+    const closed = (it.state || "").toLowerCase() === "closed";
+    events.push({
+      key: `issue-${it.number}`,
+      kind: "issue",
+      action: closed ? "closed" : "opened",
+      title: `Issue #${it.number}: ${it.title}`,
+      url: it.url,
+      actor: it.actor,
+      at: it.updatedAt,
+      tone: closed ? "red" : "blue",
+    });
+  }
+
+  for (const r of data.releases) {
+    events.push({
+      key: `release-${r.tag || r.name}`,
+      kind: "release",
+      action: "published",
+      title: r.tag && r.name && r.tag !== r.name ? `${r.name} · ${r.tag}` : r.tag || r.name,
+      url: r.url,
+      actor: r.actor,
+      at: r.publishedAt,
+      tone: "green",
+    });
+  }
+
+  return events
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => {
+      const ta = a.e.at ? Date.parse(a.e.at) : Number.NaN;
+      const tb = b.e.at ? Date.parse(b.e.at) : Number.NaN;
+      const va = Number.isNaN(ta) ? Number.NEGATIVE_INFINITY : ta;
+      const vb = Number.isNaN(tb) ? Number.NEGATIVE_INFINITY : tb;
+      return vb - va || a.i - b.i;
+    })
+    .map(({ e }) => e);
+}
+
+function agoFrom(iso: string | undefined): string {
+  if (!iso) return "time unknown";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "time unknown";
+  return ageLabel((Date.now() - then) / 1000);
+}
+
+function OverviewDashboard({ data }: { data: GithubStatus }) {
+  const prs = prCounts(data.pullRequests);
+  const checks = checkCounts(data.checkRuns);
+  const openIssues = data.issues.filter((i) => (i.state || "").toLowerCase() === "open").length;
+  const closedIssues = data.issues.length - openIssues;
+  const defaultBranch = data.branches.find((b) => b.default);
+  const latestRelease = data.releases[0];
+  const health = repoHealth(data);
+  const events = activityEvents(data).slice(0, TIMELINE_LIMIT);
+
+  const metrics: Array<{
+    label: string;
+    value: number;
+    tone: MetricTone;
+    sub: string;
+    testId: string;
+  }> = [
+    {
+      label: "Branches",
+      value: data.branches.length,
+      tone: "teal",
+      sub: defaultBranch ? `${defaultBranch.name} default` : "no default branch",
+      testId: "stat-branches",
+    },
+    {
+      label: "Open PRs",
+      value: prs.open,
+      tone: "green",
+      sub: `${prs.merged} merged · ${prs.closed} closed`,
+      testId: "stat-open-prs",
+    },
+    {
+      label: "Open Issues",
+      value: openIssues,
+      tone: "orange",
+      sub: `${closedIssues} closed`,
+      testId: "stat-open-issues",
+    },
+    {
+      label: "Check Runs",
+      value: checks.total,
+      tone: "purple",
+      sub: checks.completed > 0 ? `${checks.passed} passing` : "no completed runs",
+      testId: "stat-check-runs",
+    },
+    {
+      label: "Releases",
+      value: data.releases.length,
+      tone: "orange",
+      sub: latestRelease ? latestRelease.tag || latestRelease.name : "none published",
+      testId: "stat-releases",
+    },
+  ];
+
   return (
-    <div className="github-stat-tiles" data-testid="github-stat-tiles">
-      {tiles.map((t) => (
-        <div className="github-stat-tile" key={t.label} data-testid={`stat-${t.label.toLowerCase().replace(/\s+/g, "-")}`}>
-          <span className="github-stat-tile__value">{t.value}</span>
-          <span className="github-stat-tile__label muted">{t.label}</span>
-        </div>
-      ))}
+    <div className="github-overview" data-testid="github-overview">
+      <div className="github-stat-tiles" data-testid="github-stat-tiles">
+        {metrics.map((m) => (
+          <div className="github-stat-tile" key={m.label} data-testid={m.testId}>
+            <span className={`github-stat-tile__value github-tone--${m.tone}`}>{m.value}</span>
+            <span className="github-stat-tile__label muted">{m.label}</span>
+            <span className="github-stat-tile__sub muted">{m.sub}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="github-overview__grid">
+        <section className="card github-timeline" data-testid="github-timeline">
+          <header className="github-timeline__head">
+            <h2>Recent Activity</h2>
+            <span className="muted">Newest first</span>
+          </header>
+          {events.length === 0 ? (
+            <p className="muted" data-testid="github-timeline-empty">
+              No activity recorded in the mirror yet.
+            </p>
+          ) : (
+            <ul className="github-timeline__list">
+              {events.map((e) => (
+                <li
+                  className="github-timeline__row"
+                  key={e.key}
+                  data-testid="github-timeline-row"
+                  data-kind={e.kind}
+                >
+                  <span
+                    className={`github-timeline__dot github-tone--bg-${e.tone}`}
+                    aria-hidden="true"
+                  />
+                  <div className="github-timeline__body">
+                    <EntityLink url={e.url}>{e.title}</EntityLink>
+                    <span className="github-timeline__meta muted">
+                      {e.action}
+                      {e.actor ? ` by @${e.actor}` : ""} · {agoFrom(e.at)}
+                    </span>
+                  </div>
+                  <span className={`github-timeline__badge github-tone--bg-${e.tone}`}>
+                    {e.action}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <aside className="card github-health" data-testid="github-health">
+          <h2 className="github-health__title">Repository Health</h2>
+          <div className="github-health__score">
+            <span className="github-health__value" data-testid="health-score">
+              {health.score === null ? "—" : `${Math.round(health.score * 100)}%`}
+            </span>
+            <span className="github-health__tier muted" data-testid="health-tier">
+              {health.tier}
+            </span>
+          </div>
+          <dl className="github-health__signals">
+            {health.signals.map((s) => (
+              <div className="github-health__signal" key={s.label}>
+                <dt className="muted">{s.label}</dt>
+                <dd className={`github-health__signal-value github-tone--${s.tone}`}>{s.value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="github-health__note muted">
+            Derived from mirrored PRs, checks and issues — no external calls.
+          </p>
+        </aside>
+      </div>
     </div>
+  );
+}
+
+/** A GitHub deep-link with the teal external-link glyph, or plain text when the
+ * normalized mirror url is absent (never a link to nowhere). */
+function EntityLink({ url, children }: { url?: string; children: ReactNode }) {
+  return (
+    <Link url={url}>
+      {children}
+      {url && (
+        <span className="github-ext" aria-hidden="true">
+          {" "}
+          ↗
+        </span>
+      )}
+    </Link>
   );
 }
 
 function honest(title: string, why: string) {
   return (
-    <section data-testid="github-status">
+    <section className="github-status" data-testid="github-status">
       <h1>GitHub status</h1>
       <EmptyState testId="github-honest" title={title} why={why} />
     </section>
@@ -406,26 +726,6 @@ function Link({ url, children }: { url?: string; children: ReactNode }) {
   );
 }
 
-function PRPanel({ prs }: { prs: GithubStatus["pullRequests"] }) {
-  if (prs.length === 0) return null;
-  return (
-    <div className="card" data-testid="panel-prs">
-      <h2>Pull requests</h2>
-      <ul>
-        {prs.map((pr) => (
-          <li key={`pr-${pr.number}`} data-testid="pr-row">
-            <Link url={pr.url}>#{pr.number} {pr.title}</Link>{" "}
-            <span className="muted">
-              {pr.reviewState || pr.state}
-              {pr.branch ? ` · ${pr.branch}` : ""}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 function IssuePanel({ issues }: { issues: GithubStatus["issues"] }) {
   if (issues.length === 0) return null;
   return (
@@ -436,39 +736,6 @@ function IssuePanel({ issues }: { issues: GithubStatus["issues"] }) {
           <li key={`issue-${it.number}`} data-testid="issue-row">
             <Link url={it.url}>#{it.number} {it.title}</Link>{" "}
             <span className="muted">{it.state}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function CheckPanel({ checks }: { checks: GithubStatus["checkRuns"] }) {
-  if (checks.length === 0) return null;
-  return (
-    <div className="card" data-testid="panel-checks">
-      <h2>Checks</h2>
-      <ul>
-        {checks.map((c, i) => (
-          <li key={`check-${c.name}-${i}`} data-testid="check-row">
-            <Link url={c.url}>{c.name}</Link>{" "}
-            <span className="muted">{c.conclusion || c.state}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function ArtifactPanel({ artifacts }: { artifacts: GithubStatus["artifacts"] }) {
-  if (artifacts.length === 0) return null;
-  return (
-    <div className="card" data-testid="panel-artifacts">
-      <h2>Artifacts</h2>
-      <ul>
-        {artifacts.map((a, i) => (
-          <li key={`artifact-${a.name}-${i}`} data-testid="artifact-row">
-            <Link url={a.url}>{a.name}</Link>
           </li>
         ))}
       </ul>
