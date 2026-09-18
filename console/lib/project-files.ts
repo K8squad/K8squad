@@ -142,3 +142,61 @@ export function humanBytes(n: number | undefined): string {
 export function rawBytesDataUrl(content: FileContent): string {
   return `data:application/octet-stream;base64,${content.data}`;
 }
+
+/** Preview classification for the type-aware viewer (ISI-4648, per the validated
+ * ISI-4602 mocks: go/node/md/json/yaml highlighted, md rendered, svg/png shown
+ * as pictures, everything else binary gets the honest placeholder). The
+ * classification is EXTENSION-FIRST: the S4b `contentType` binary hint alone
+ * cannot tell a renderable PNG from a `.so`, nor markdown from plain text. */
+export type FilePreviewKind = "image" | "markdown" | "code" | "text" | "binary";
+
+/** Classify a fetched file for the preview pane. Extension decides image vs
+ * markdown vs code; the wire binary hint then guards everything else (AC2 —
+ * never UTF-8-decode binary bytes). */
+export function previewKind(path: string, contentType: "text" | "binary"): FilePreviewKind {
+  const ext = fileExt(path);
+  if (ext === "png" || ext === "svg") return "image";
+  if (contentType === "binary") return "binary";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (codeLanguage(path) !== null) return "code";
+  return "text";
+}
+
+/** The highlight.js language id for a path, or null when the file previews as
+ * plain text. Covers the mock set: go, node (js/ts), json, yaml. */
+export function codeLanguage(path: string): string | null {
+  switch (fileExt(path)) {
+    case "go":
+      return "go";
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return "javascript";
+    case "json":
+      return "json";
+    case "yaml":
+    case "yml":
+      return "yaml";
+    default:
+      return null;
+  }
+}
+
+/** A `data:` URL that renders an image preview (svg/png) from the bytes S4b
+ * served. Works whether the server hinted the payload text or binary — `data`
+ * is base64 on the wire either way. Read-only: hands back exactly the served
+ * bytes, no write path into the volume. */
+export function imageDataUrl(content: FileContent): string {
+  const mime = fileExt(content.path) === "svg" ? "image/svg+xml" : "image/png";
+  return `data:${mime};base64,${content.data}`;
+}
+
+function fileExt(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
