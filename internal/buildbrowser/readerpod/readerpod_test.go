@@ -244,3 +244,26 @@ func TestHandle_BaseURL_ZeroHandle(t *testing.T) {
 var _ Launcher = DisabledLauncher{}
 var _ Launcher = (*KubeLauncher)(nil)
 var _ client.Client = (client.Client)(nil)
+
+// TestBuildPodAndService_SpecNamespaceOverride (ISI-4079): a Spec carrying its own Namespace lands
+// the reader pod AND its paired Service in that namespace (the Team sandbox namespace where the
+// Project PVC lives); an empty Spec.Namespace keeps the configured default.
+func TestBuildPodAndService_SpecNamespaceOverride(t *testing.T) {
+	spec := validSpec()
+	spec.Namespace = "squad-sandbox"
+
+	if ns := BuildPod(spec, Config{ReaderImage: "img"}).Namespace; ns != "squad-sandbox" {
+		t.Errorf("pod namespace = %q, want spec override %q", ns, "squad-sandbox")
+	}
+	if ns := BuildService(spec, Config{}).Namespace; ns != "squad-sandbox" {
+		t.Errorf("service namespace = %q, want spec override %q", ns, "squad-sandbox")
+	}
+
+	// No override ⇒ the configured namespace wins (the 8.7f single-namespace default).
+	if ns := BuildPod(validSpec(), Config{ReaderImage: "img", Namespace: "readers"}).Namespace; ns != "readers" {
+		t.Errorf("pod namespace = %q, want configured %q", ns, "readers")
+	}
+	if ns := BuildService(validSpec(), Config{Namespace: "readers"}).Namespace; ns != "readers" {
+		t.Errorf("service namespace = %q, want configured %q", ns, "readers")
+	}
+}
