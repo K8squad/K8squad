@@ -2978,3 +2978,41 @@ a:hover {
   filter: grayscale(0.35);
   pointer-events: none;
 }
+
+/* ============================================================================
+ * GitHub screen view switch (ISI-4675) — the Sync-status tab hosts both the S5c
+ * sync-health view and the Releases & Branches screen. Plain underline tabs,
+ * locked tokens only (--accent + status tones).
+ * ==========================================================================*/
+.github-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 6px 0 2px;
+  border-bottom: 1px solid var(--border);
+}
+.github-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+  color: var(--text-2);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.github-tab:hover {
+  color: var(--text-1);
+}
+.github-tab--active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.github-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.github-view {
+  margin-top: 12px;
+}
