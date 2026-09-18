@@ -4,7 +4,7 @@
 
 .file-explorer {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) 1fr;
+  grid-template-columns: minmax(220px, 320px) 1fr minmax(200px, 280px);
   gap: 16px;
   align-items: start;
 }
@@ -147,6 +147,54 @@
 .banner--info {
   border: 1px solid var(--info-border, #3a5a8a);
   background: var(--info-bg, rgba(90, 130, 200, 0.12));
+}
+
+/* ISI-4651: right-hand details pane (name / path / type / size / modified /
+   git last change). Mirrors the preview pane framing. */
+
+.file-explorer__details {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-height: 120px;
+  overflow: auto;
+  max-height: 70vh;
+}
+
+.file-explorer__details-name {
+  margin: 0 0 8px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.file-explorer__details-change-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+
+.file-explorer__details-list {
+  margin: 0;
+  font-size: 13px;
+}
+
+.file-explorer__details-list > div {
+  margin-bottom: 8px;
+}
+
+.file-explorer__details-list dt {
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+}
+
+.file-explorer__details-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1000px) {
+  .file-explorer {
+    grid-template-columns: minmax(220px, 320px) 1fr;
+  }
 }
 
 @media (max-width: 720px) {

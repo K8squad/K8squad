@@ -30,6 +30,7 @@ import { EmptyState } from "@/components/forms/EmptyState";
 import {
   listProjectFiles,
   readProjectFile,
+  statProjectFile,
   decodeTextContent,
   humanBytes,
   rawBytesDataUrl,
@@ -38,6 +39,7 @@ import {
   imageDataUrl,
   type FileEntry,
   type FileContent,
+  type FileStat,
   type FilesState,
 } from "@/lib/project-files";
 
@@ -65,6 +67,8 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
   // The selected file preview (path + fetched content state).
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilesState<FileContent>>({ kind: "loading" });
+  // ISI-4651: the selected file's stat / change metadata (details pane).
+  const [stat, setStat] = useState<FilesState<FileStat>>({ kind: "loading" });
 
   const loadDir = useCallback(
     async (path: string): Promise<DirState> => {
@@ -127,6 +131,10 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
       readProjectFile(projectId, path)
         .then(setPreview)
         .catch(() => setPreview({ kind: "error", status: 0 }));
+      setStat({ kind: "loading" });
+      statProjectFile(projectId, path)
+        .then(setStat)
+        .catch(() => setStat({ kind: "error", status: 0 }));
     },
     [projectId],
   );
@@ -203,6 +211,9 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
           <div className="file-explorer__preview" data-testid="files-preview">
             <PreviewPane path={selected} state={preview} />
           </div>
+          <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
+            <DetailsPane path={selected} state={stat} />
+          </aside>
         </div>
       )}
     </section>
@@ -297,6 +308,117 @@ function TreeNode({
       )}
     </li>
   );
+}
+
+/** The right-hand details pane (ISI-4651, per the validated ISI-4602 mock): name,
+ * path, type, size, modified, and the git last change (author / message / short
+ * hash / commit time). Read-only — no action affordances (§D3). Stat failures are
+ * honest notes, never fabricated metadata; the preview pane is unaffected. */
+function DetailsPane({
+  path,
+  state,
+}: {
+  path: string | null;
+  state: FilesState<FileStat>;
+}) {
+  if (!path) {
+    return <p className="muted">Select a file to see its details.</p>;
+  }
+  if (state.kind === "loading") {
+    return (
+      <p className="muted" aria-busy="true" data-testid="files-details-loading">
+        Loading details…
+      </p>
+    );
+  }
+  if (state.kind === "not-wired") {
+    return <p className="muted">File details are not available in this deployment yet.</p>;
+  }
+  if (state.kind === "unauthenticated") {
+    return <p className="muted">Your session has expired — sign in to see file details.</p>;
+  }
+  if (state.kind === "not-found" || state.kind === "error") {
+    return (
+      <p className="muted" data-testid="files-details-unavailable">
+        Couldn&apos;t load details for <code>{path}</code>.
+      </p>
+    );
+  }
+
+  const s = state.data;
+  return (
+    <div>
+      <h2 className="file-explorer__details-name" data-testid="files-details-name">
+        {s.name}
+      </h2>
+      <dl className="file-explorer__details-list">
+        <div>
+          <dt>Path</dt>
+          <dd>
+            <code data-testid="files-details-path">{path}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Type</dt>
+          <dd>{s.type === "dir" ? "Directory" : "File"}</dd>
+        </div>
+        <div>
+          <dt>Size</dt>
+          <dd data-testid="files-details-size">{humanBytes(s.size)}</dd>
+        </div>
+        <div>
+          <dt>Modified</dt>
+          <dd>{formatTimestamp(s.modTime)}</dd>
+        </div>
+      </dl>
+
+      {s.degraded && (
+        <div className="banner banner--info" role="status" data-testid="files-details-busy">
+          Workspace busy — details reflect the last-committed snapshot.
+        </div>
+      )}
+
+      <h3 className="file-explorer__details-change-title">Last change</h3>
+      {s.git ? (
+        <dl className="file-explorer__details-list" data-testid="files-details-change">
+          <div>
+            <dt>Author</dt>
+            <dd data-testid="files-details-author">{s.git.author}</dd>
+          </div>
+          <div>
+            <dt>Message</dt>
+            <dd data-testid="files-details-message">{s.git.message}</dd>
+          </div>
+          <div>
+            <dt>Commit</dt>
+            <dd>
+              <code data-testid="files-details-hash">{shortHash(s.git.commitHash)}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Committed</dt>
+            <dd>{formatTimestamp(s.git.timestamp)}</dd>
+          </div>
+        </dl>
+      ) : (
+        <p className="muted" data-testid="files-details-nogit">
+          No git history available for this file.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The first 8 chars of a commit hash — the conventional short form. */
+function shortHash(hash: string): string {
+  return hash.length > 8 ? hash.slice(0, 8) : hash;
+}
+
+/** Render an RFC3339 timestamp for the details pane; falls back to the raw
+ * string when it doesn't parse (never blanks the row). */
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
 }
 
 /** The read-only preview pane. Renders loading (AC3), the binary placeholder

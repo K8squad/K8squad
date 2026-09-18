@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
 import { FileExplorerTab } from "@/components/FileExplorerTab";
-import type { FileContent, FileListing } from "@/lib/project-files";
+import type { FileContent, FileListing, FileStat } from "@/lib/project-files";
 
 afterEach(() => {
   cleanup();
@@ -17,20 +17,23 @@ afterEach(() => {
 /** base64 of a UTF-8 string (jsdom has Buffer). */
 const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
 
-/** Route the two BFF endpoints to per-path canned responses. `listings` is keyed
- * by the `path` query (root = ""); `contents` by the file path. A key that maps
- * to a number is returned as that HTTP status with a null body. */
+/** Route the BFF endpoints to per-path canned responses. `listings` is keyed
+ * by the `path` query (root = ""); `contents` and `stats` by the file path.
+ * A key that maps to a number is returned as that HTTP status with a null body. */
 function routeFetch(opts: {
   listings?: Record<string, FileListing | number>;
   contents?: Record<string, FileContent | number>;
+  stats?: Record<string, FileStat | number>;
   status?: number;
 }) {
   const spy = vi.fn((url: string) => {
     const u = new URL(url, "http://localhost");
     const isContent = u.pathname.endsWith("/files/content");
+    const isStat = u.pathname.endsWith("/files/stat");
     const path = u.searchParams.get("path") ?? "";
     let entry: unknown = opts.status;
     if (isContent) entry = opts.contents?.[path];
+    else if (isStat) entry = opts.stats?.[path];
     else entry = opts.listings?.[path];
     if (entry === undefined) entry = 404;
     const status = typeof entry === "number" ? entry : 200;
@@ -172,7 +175,86 @@ describe("FileExplorerTab", () => {
     expect(screen.getByTestId("files-binary-download").getAttribute("href")).toMatch(/^data:application\/octet-stream;base64,/);
   });
 
-  it("renders a loading state while the root tree is fetching (AC3)", () => {
+  it("shows the details pane with size, modified, and git last change (ISI-4651)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "main.go", path: "main.go", type: "file", size: 30 }] } },
+      contents: {
+        "main.go": { path: "main.go", size: 30, contentType: "text", data: b64("package main"), offset: 0, length: 30 },
+      },
+      stats: {
+        "main.go": {
+          name: "main.go",
+          type: "file",
+          size: 30,
+          modTime: "2026-09-17T10:00:00Z",
+          git: {
+            commitHash: "abcdef1234567890",
+            author: "Agent Amelia",
+            message: "wire the reader pod",
+            timestamp: "2026-09-17T09:00:00Z",
+          },
+        },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // No selection yet — the pane prompts instead of fabricating metadata.
+    expect(screen.getByText(/Select a file to see its details/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText("main.go"));
+    await waitFor(() => expect(screen.getByTestId("files-details-change")).toBeTruthy());
+    const details = screen.getByTestId("files-details");
+    expect(within(details).getByTestId("files-details-name").textContent).toBe("main.go");
+    expect(within(details).getByTestId("files-details-path").textContent).toBe("main.go");
+    expect(within(details).getByTestId("files-details-size").textContent).toBe("30 B");
+    expect(within(details).getByText("Modified")).toBeTruthy();
+    expect(within(details).getByTestId("files-details-author").textContent).toBe("Agent Amelia");
+    expect(within(details).getByTestId("files-details-message").textContent).toBe("wire the reader pod");
+    expect(within(details).getByTestId("files-details-hash").textContent).toBe("abcdef12");
+    // Read-only (§D3): the details pane carries no action affordances.
+    for (const forbidden of [/save/i, /delete/i, /rename/i, /edit/i]) {
+      expect(within(details).queryByText(forbidden)).toBeNull();
+    }
+  });
+
+  it("shows an honest no-git note when the workspace has no git history (ISI-4651)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      contents: {
+        "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 },
+      },
+      stats: {
+        "notes.txt": { name: "notes.txt", type: "file", size: 5, modTime: "2026-09-17T10:00:00Z" },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("notes.txt"));
+    await waitFor(() => expect(screen.getByTestId("files-details-nogit")).toBeTruthy());
+    expect(screen.getByText(/No git history available/)).toBeTruthy();
+    // The base metadata still renders — no-git is a fallback, not an error.
+    expect(screen.getByTestId("files-details-size").textContent).toBe("5 B");
+  });
+
+  it("keeps the preview working when the stat fetch fails (ISI-4651)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      contents: {
+        "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 },
+      },
+      stats: { "notes.txt": 500 },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("notes.txt"));
+    await waitFor(() => expect(screen.getByTestId("files-details-unavailable")).toBeTruthy());
+    // Preview is unaffected by the stat failure.
+    await waitFor(() => expect(screen.getByTestId("files-text")).toBeTruthy());
+    expect(screen.getByTestId("files-text").textContent).toBe("hello");
+  });
+
+  it("renders a loading state while the root tree is fetching (AC3)", async () => {
     // A fetch that never resolves keeps the tab in its loading state.
     vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
     render(<FileExplorerTab projectId="web" />);
