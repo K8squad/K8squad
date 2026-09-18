@@ -1,27 +1,16 @@
-// app/projects/[projectId]/runs/page.tsx — Project → Runs mount (stories 8.2/8.13).
-//
-// Project-scoped Run list. Run DETAIL (live SSE stream) stays at the existing global route
-// /runs/[runId] (story 8.2) — re-parented unchanged per the 8.13 scope guard; only this
-// project-scoped listing route is new. The Run list read model arrives with the Run-history
-// work under ISI-2907/ISI-2904.
+// app/projects/[projectId]/runs/page.tsx — the project-scoped runs list (ISI-4575), replacing
+// the stories 8.2/8.13 placeholder now that the ISI-4571 project run-list read model exists.
+// Run DETAIL (live SSE stream) stays at the global /runs/[runId] route — rows deep-link there.
 
+import { RunsList } from "@/components/runs/RunsList";
 import { decodeProjectId } from "@/lib/projectId";
 
-export default async function RunsPage({
+export default async function ProjectRunsPage({
   params,
 }: {
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  return (
-    <div>
-      <h1>Runs</h1>
-      <p className="muted">
-        Run history for{" "}
-        <strong>{decodeProjectId(projectId)}</strong>. Open a run at{" "}
-        <code>/runs/&lt;runId&gt;</code> to watch its coordination events stream
-        live through the BFF.
-      </p>
-    </div>
-  );
+  const name = decodeProjectId(projectId);
+  return <RunsList projectId={name} projectName={name} />;
 }

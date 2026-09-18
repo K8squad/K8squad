@@ -10,18 +10,29 @@
 // The browser's native EventSource auto-reconnects and sends Last-Event-ID; the apiserver
 // replays the durable coord-record tail (AC5) — the client does not implement its own retry loop.
 // Read-only: this hook exposes events for rendering only; no mutate/claim/kill affordance (AC6).
+//
+// Event vocabulary (ISI-4576): the backend emits NAMED SSE events off coord.outbox
+// (internal/apiserver/runevents.go runEventToSSE — `event:` = the outbox event_type):
+//   - `reconcile_advanced` — coarse step advance, payload {from_step, to_step, fence_token}
+//   - lifecycle milestones (ADR-0021 D4, pkg/coord/prodreconcile.go): `assigned`,
+//     `scheduled`, `sandbox_bound`, `started`, `ended` — payload
+//     {schema, event, from_step, to_step, fence_token, run_id, agent, project, team, …}
+// Named events never fire `onmessage`, so each type gets its own listener. The legacy
+// kind-stamped payloads (CHECKOUT/COMMENT/HANDOFF/MEMORY/ARTIFACT on the default message
+// channel) stay accepted for backwards compatibility.
 
 import { useEffect, useRef, useState } from "react";
 
-/** Server-stamped coordination-event kinds (AC7). */
+/** Server-stamped coordination-event kinds (AC7), plus the reconcile/lifecycle vocabulary. */
 export type RunEventKind =
-  "CHECKOUT" | "COMMENT" | "HANDOFF" | "MEMORY" | "ARTIFACT";
+  | "CHECKOUT" | "COMMENT" | "HANDOFF" | "MEMORY" | "ARTIFACT"
+  | "STEP" | "LIFECYCLE";
 
 export type RunEvent = {
   id: string;
   kind: RunEventKind;
   actor: string; // agent·role, server-stamped
-  ts: string; // server timestamp
+  ts: string; // server timestamp (client-stamped for outbox events, which carry no ts)
   summary?: string;
 };
 
@@ -34,6 +45,10 @@ const KINDS: ReadonlySet<string> = new Set([
   "MEMORY",
   "ARTIFACT",
 ]);
+
+/** Named SSE event types emitted by the outbox projector (event: line = outbox event_type). */
+const RECONCILE_EVENT = "reconcile_advanced";
+const LIFECYCLE_EVENTS = ["assigned", "scheduled", "sandbox_bound", "started", "ended"] as const;
 
 function coerceEvent(id: string, raw: unknown): RunEvent | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -49,6 +64,21 @@ function coerceEvent(id: string, raw: unknown): RunEvent | null {
   };
 }
 
+function stepSummary(raw: unknown): string | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const from = typeof r.from_step === "string" ? r.from_step : "";
+  const to = typeof r.to_step === "string" ? r.to_step : "";
+  if (!from && !to) return undefined;
+  return from ? `${from} → ${to}` : to;
+}
+
+function lifecycleActor(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return "reconciler";
+  const r = raw as Record<string, unknown>;
+  return typeof r.agent === "string" && r.agent ? r.agent : "reconciler";
+}
+
 export function useRunStream(runId: string) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [status, setStatus] = useState<StreamStatus>("connecting");
@@ -62,18 +92,61 @@ export function useRunStream(runId: string) {
 
     es.onopen = () => setStatus("open");
     es.onerror = () => setStatus("error"); // native EventSource auto-reconnects w/ Last-Event-ID
-    es.onmessage = (msg: MessageEvent) => {
-      let parsed: unknown;
+
+    const parse = (msg: MessageEvent): unknown | null => {
       try {
-        parsed = JSON.parse(msg.data);
+        return JSON.parse(msg.data);
       } catch {
-        return; // ignore non-JSON keepalives
+        return null; // ignore non-JSON keepalives
       }
-      const ev = coerceEvent(msg.lastEventId || "", parsed);
+    };
+    const push = (ev: RunEvent | null) => {
       if (ev) setEvents((prev) => [...prev, ev]);
     };
 
+    // Legacy kind-stamped payloads on the default message channel.
+    es.onmessage = (msg: MessageEvent) => {
+      const parsed = parse(msg);
+      if (parsed !== null) push(coerceEvent(msg.lastEventId || "", parsed));
+    };
+
+    // Coarse step advance: `event: reconcile_advanced`.
+    const onAdvanced = (msg: MessageEvent) => {
+      const parsed = parse(msg);
+      if (parsed === null) return;
+      push({
+        id: msg.lastEventId || "",
+        kind: "STEP",
+        actor: "reconciler",
+        ts: new Date().toISOString(),
+        summary: stepSummary(parsed),
+      });
+    };
+    es.addEventListener(RECONCILE_EVENT, onAdvanced);
+
+    // Discrete lifecycle milestones (ADR-0021 D4): assigned/scheduled/sandbox_bound/started/ended.
+    const lifecycleListeners = LIFECYCLE_EVENTS.map((name) => {
+      const listener = (msg: MessageEvent) => {
+        const parsed = parse(msg);
+        if (parsed === null) return;
+        const step = stepSummary(parsed);
+        push({
+          id: msg.lastEventId || "",
+          kind: "LIFECYCLE",
+          actor: lifecycleActor(parsed),
+          ts: new Date().toISOString(),
+          summary: step ? `${name}: ${step}` : name,
+        });
+      };
+      es.addEventListener(name, listener);
+      return [name, listener] as const;
+    });
+
     return () => {
+      es.removeEventListener(RECONCILE_EVENT, onAdvanced);
+      for (const [name, listener] of lifecycleListeners) {
+        es.removeEventListener(name, listener);
+      }
       es.close();
       esRef.current = null;
     };
