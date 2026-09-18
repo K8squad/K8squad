@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { EmptyState } from "@/components/forms/EmptyState";
 import { CiCdPipelineStatus } from "@/components/github/CiCdPipelineStatus";
 import { PullRequestManagement } from "@/components/github/PullRequestManagement";
+import { ReleasesBranchesScreen } from "@/components/github/ReleasesBranchesScreen";
 import {
   ageLabel,
   chipState,
@@ -47,6 +48,10 @@ const TIMELINE_LIMIT = 6;
 export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const [state, setState] = useState<GithubStatusState>({ kind: "loading" });
   const [syncing, setSyncing] = useState(false);
+  // Which GitHub screen is shown inside this tab: "status" is the S5c sync-health
+  // view, "releases" is the ISI-4675 Releases & Branches screen. Both read the
+  // same mirror projection; the shared chip/banner stays above the view switch.
+  const [view, setView] = useState<"status" | "releases">("status");
   // Unix ms of the last successful sync trigger; controls button disable.
   const lastSyncRef = useRef<number>(0);
 
@@ -197,32 +202,84 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
         </p>
       )}
 
+      {/* Global sync-health banner: stays above the view switch so a stale or
+         errored mirror is visible on every GitHub screen, not just Sync status. */}
       {card && (
         <StateCard card={card} syncing={syncing} onRetry={() => void handleSync()} projectId={projectId} />
       )}
 
-      {!empty && <OverviewDashboard data={data} />}
+      <nav
+        className="github-tabs"
+        role="tablist"
+        aria-label="GitHub views"
+        data-testid="github-tabs"
+      >
+        <button
+          type="button"
+          role="tab"
+          id="github-tab-status"
+          aria-selected={view === "status"}
+          aria-controls="github-view-status"
+          className={`github-tab${view === "status" ? " github-tab--active" : ""}`}
+          onClick={() => setView("status")}
+          data-testid="github-tab-status"
+        >
+          Sync status
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="github-tab-releases"
+          aria-selected={view === "releases"}
+          aria-controls="github-view-releases"
+          className={`github-tab${view === "releases" ? " github-tab--active" : ""}`}
+          onClick={() => setView("releases")}
+          data-testid="github-tab-releases"
+        >
+          Releases &amp; Branches
+        </button>
+      </nav>
 
-      {empty ? (
-        card ? null : (
-          <EmptyState
-            testId="github-empty"
-            title="No GitHub activity yet"
-            why="The mirror has no PRs, issues, checks, artifacts, releases or branches for this project's repo yet."
-          />
-        )
+      {view === "releases" ? (
+        <div
+          id="github-view-releases"
+          role="tabpanel"
+          aria-labelledby="github-tab-releases"
+          className="github-view"
+        >
+          <ReleasesBranchesScreen data={data} ghost={ghost} />
+        </div>
       ) : (
         <div
-          className={`github-status__panels${ghost ? " github-status__panels--ghost" : ""}`}
-          data-testid="github-panels"
-          data-ghost={ghost ? "true" : "false"}
-          aria-hidden={ghost ? "true" : undefined}
+          id="github-view-status"
+          role="tabpanel"
+          aria-labelledby="github-tab-status"
+          className="github-view"
         >
-          <PullRequestManagement data={data} ghost={ghost} />
-          <IssuePanel issues={data.issues} />
-          <CiCdPipelineStatus data={data} />
-          <ReleasePanel releases={data.releases} />
-          <BranchPanel branches={data.branches} />
+          {!empty && <OverviewDashboard data={data} />}
+
+          {empty ? (
+            card ? null : (
+              <EmptyState
+                testId="github-empty"
+                title="No GitHub activity yet"
+                why="The mirror has no PRs, issues, checks, artifacts, releases or branches for this project's repo yet."
+              />
+            )
+          ) : (
+            <div
+              className={`github-status__panels${ghost ? " github-status__panels--ghost" : ""}`}
+              data-testid="github-panels"
+              data-ghost={ghost ? "true" : "false"}
+              aria-hidden={ghost ? "true" : undefined}
+            >
+              <PullRequestManagement data={data} ghost={ghost} />
+              <IssuePanel issues={data.issues} />
+              <CiCdPipelineStatus data={data} />
+              <ReleasePanel releases={data.releases} />
+              <BranchPanel branches={data.branches} />
+            </div>
+          )}
         </div>
       )}
     </section>

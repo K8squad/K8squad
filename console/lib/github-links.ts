@@ -11,16 +11,22 @@ export const GITHUB_REPO = "K8squad/K8squad";
 export const GITHUB_REPO_URL = `https://github.com/${GITHUB_REPO}`;
 export const GITHUB_REPO_LABEL = "k8squad/k8squad";
 
+/** Percent-encode a path-like identifier while preserving `/` separators, so
+ * branch names such as `feat/x` produce the canonical `tree/feat/x` path. */
+function encodePath(value: string): string {
+  return value.split("/").map(encodeURIComponent).join("/");
+}
+
 /** `releases/tag/{tag}` — prefers the mirror-normalized release URL. */
 export function githubReleaseHref(tag: string, mirrored?: string): string {
   if (mirrored) return mirrored;
-  return `${GITHUB_REPO_URL}/releases/tag/${encodeURIComponent(tag)}`;
+  return `${GITHUB_REPO_URL}/releases/tag/${encodePath(tag)}`;
 }
 
 /** `tree/{branch}` — the branch's tree view. The mirrored branch URL points at
  * the head commit, so the tree path is always reconstructed from the name. */
 export function githubBranchHref(branch: string): string {
-  return `${GITHUB_REPO_URL}/tree/${encodeURIComponent(branch)}`;
+  return `${GITHUB_REPO_URL}/tree/${encodePath(branch)}`;
 }
 
 /** `pull/{n}` — prefers the mirror-normalized PR URL. */
