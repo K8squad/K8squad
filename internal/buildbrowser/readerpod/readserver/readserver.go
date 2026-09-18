@@ -200,6 +200,14 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
 
 	page := parseNonNegInt(r.URL.Query().Get("page"))
+	// Clamp page BEFORE multiplying: page is client-controlled and page*pageSize can overflow
+	// int64 (e.g. page=math.MaxInt64), wrapping start negative and panicking the slice below
+	// (ISI-4076 / PR #359 F1). One page past the end is enough to cover the "empty tail page"
+	// case, so anything larger is equivalent.
+	maxPage := len(des)/s.pageSize + 1
+	if page > maxPage {
+		page = maxPage
+	}
 	start := page * s.pageSize
 	if start > len(des) {
 		start = len(des)
