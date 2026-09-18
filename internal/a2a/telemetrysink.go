@@ -56,6 +56,8 @@ func (s *TelemetrySink) Event(ctx context.Context, ev wire.Event) error {
 		switch ev.Type {
 		case wire.EventTool:
 			if p, ok := toolPayload(ev.Payload); ok {
+				// Tool categorization lives in the mapper (ksquad.tool.type
+				// span attribute, ISI-4540) — the sink just forwards.
 				s.mapper.ToolEvent(ctx, s.labels, ev.A2ATaskID, p)
 			}
 		case wire.EventSkillLoad:

@@ -63,8 +63,10 @@ package toolusage
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,6 +112,10 @@ const (
 	attrSkillName   = attribute.Key("ksquad.skill.name")
 	attrSkillSHA    = attribute.Key("ksquad.skill.source.sha")
 	attrMCPServer   = attribute.Key("ksquad.mcp.server")
+	// attrToolType categorizes the tool (git|mcp|docker|npm|bash|…) so the
+	// trace answers "which KIND of tool ran" without parsing gen_ai.tool.name
+	// (ISI-4540: tools were all surfacing as bare names with no category).
+	attrToolType = attribute.Key("ksquad.tool.type")
 	// attrOutcome records the mapped outcome ("success" | "error" |
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
@@ -401,7 +407,15 @@ func (m *Mapper) measureStepMS(taskID string) int64 {
 	if stepSecs <= 0 {
 		return 0
 	}
-	return int64(stepSecs * 1000)
+
+	// Validate timing is realistic - local LLM should not respond in microseconds
+	ms := int64(stepSecs * 1000)
+	if ms > 0 && ms < 10 {
+		// Log unrealistic timing for debugging but still return the measured value
+		fmt.Fprintf(os.Stderr, "WARNING: Unrealistic LLM step timing detected: %dms for task %s\n", ms, taskID)
+	}
+
+	return ms
 }
 
 // NewMapper builds a Mapper over tracer. reg non-nil registers the metric
@@ -431,6 +445,44 @@ func (m *Mapper) Instruments() *Instruments { return m.ins }
 
 func spanKey(taskID, tool string) string { return taskID + "\x00" + tool }
 
+// categorizeTool maps a tool event onto its category for the ksquad.tool.type
+// span attribute (ISI-4540). An MCP-served tool (Server set) is always "mcp";
+// otherwise the head token (up to the first dot) decides, with the dotted
+// server.tool form as the MCP fallback for emitters that don't set Server.
+func categorizeTool(name, server string) string {
+	if server != "" {
+		return "mcp"
+	}
+	head := name
+	if i := strings.IndexByte(name, '.'); i >= 0 {
+		head = name[:i]
+	}
+	switch head {
+	case "bash", "sh":
+		return "bash"
+	case "git":
+		return "git"
+	case "docker":
+		return "docker"
+	case "kubectl":
+		return "kubectl"
+	case "helm":
+		return "helm"
+	case "npm", "node":
+		return "node"
+	case "pip", "python", "python3":
+		return "python"
+	case "mcp":
+		return "mcp"
+	case "system", "internal":
+		return "system"
+	}
+	if strings.Contains(name, ".") && !strings.Contains(name, "/") {
+		return "mcp"
+	}
+	return "system"
+}
+
 // ToolEvent maps one EventTool payload for taskID under the given labels.
 // Phase "start" opens the span; phase "result" settles it. Any other phase
 // is mapped safely as a standalone unknown-outcome span (D1 AC: unknown
@@ -446,7 +498,10 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 	}
 
 	attrs := labels.spanAttrs()
-	attrs = append(attrs, semconv.GenAIToolName(p.Name))
+	attrs = append(attrs,
+		semconv.GenAIToolName(p.Name),
+		attrToolType.String(categorizeTool(p.Name, p.Server)),
+	)
 	if p.ArgsSHA256 != "" {
 		// The hash IS the argument surface — raw args never reach this
 		// package (emitters hash before the event leaves the process). The
@@ -462,7 +517,13 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 
 	switch p.Phase {
 	case "start":
-		_, span := m.start(ctx, name, attrs)
+		// ISI-4540: mcp.call is an outbound request to the MCP server —
+		// SpanKindClient; local tool.call stays internal (in-process exec).
+		opts := []trace.SpanStartOption{trace.WithAttributes(attrs...)}
+		if isMCP {
+			opts = append(opts, trace.WithSpanKind(trace.SpanKindClient))
+		}
+		_, span := m.startWithOptions(ctx, name, opts)
 		elapsed := m.now()
 		m.mu.Lock()
 		m.pending[spanKey(taskID, p.Name)] = pendingSpan{span: span, start: elapsed}
@@ -692,7 +753,12 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	if measured {
 		attrs = append(attrs, attrLLMDurationMeasured.Bool(true))
 	}
-	opts = append(opts, trace.WithAttributes(attrs...))
+	// ISI-4540: llm.call is an outbound request to the model endpoint — emit it
+	// as SpanKindClient so backends (Dynatrace) model it as a service call
+	// instead of collapsing the run into internal-only spans.
+	opts = append(opts,
+		trace.WithAttributes(attrs...),
+		trace.WithSpanKind(trace.SpanKindClient))
 	_, span := m.startWithOptions(ctx, SpanLLMCall, opts)
 	// D3: prompt/response bodies ride as gated span events, never as
 	// attributes, and only when the content gate is on AND the payload
