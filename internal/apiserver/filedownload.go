@@ -116,7 +116,12 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, reader Works
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 	w.Header().Set("Content-Length", strconv.Itoa(len(fc.Data)))
+	// Defence in depth against MIME sniffing of attacker-controlled workspace bytes.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- the payload is written with an explicit application/octet-stream
+	// Content-Type and attachment Content-Disposition (set above) plus nosniff, so the
+	// browser downloads it and never renders it as active content. Filename is sanitised.
 	_, _ = w.Write(fc.Data)
 }
 
