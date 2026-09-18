@@ -308,6 +308,24 @@ func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, ru
 		}
 	}
 
+	// LLM interaction digests from run status
+	for _, interaction := range run.Status.LLMInteractions {
+		digest := LLMInteractionDigest{
+			ID:        interaction.ID,
+			Model:     interaction.Model,
+			Role:      interaction.Type,
+			Content:   string(interaction.Request),
+			Timestamp: interaction.Timestamp.Time,
+		}
+		if digest.Content == "" {
+			digest.Content = string(interaction.Response)
+		}
+		if interaction.TokenUsage != nil {
+			digest.TokensUsed = int(interaction.TokenUsage.TotalTokens)
+		}
+		response.LLMInteractions = append(response.LLMInteractions, digest)
+	}
+
 	return response, nil
 }
 
