@@ -234,6 +234,43 @@ export async function proxyAuth(
 }
 
 /**
+ * Proxy a binary DOWNLOAD stream from the apiserver to the browser (ISI-4650).
+ *
+ * Unlike proxyJson, the body is streamed through UNBUFFERED (a folder archive can be
+ * tens of MiB — arrayBuffer() would double the memory) and the apiserver's
+ * Content-Disposition / Content-Type / Content-Length are relayed verbatim so the
+ * browser saves the attachment with the apiserver-chosen filename. Status is surfaced
+ * verbatim: a 404 stays existence-hiding, a 413/503 reaches the console as-is. The BFF
+ * adds NO second authz path (§13 / ADR-013).
+ */
+export async function proxyDownload(
+  req: NextRequest,
+  upstreamPath: string,
+): Promise<Response> {
+  const url = apiserverBaseUrl() + upstreamPath;
+  const upstream = await fetch(url, {
+    method: "GET",
+    headers: upstreamHeaders(req, { accept: "application/octet-stream" }),
+    cache: "no-store",
+    signal: req.signal,
+  });
+
+  const headers = new Headers({ "cache-control": "no-store" });
+  for (const name of ["content-type", "content-disposition", "content-length"]) {
+    const value = upstream.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "application/json");
+  }
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers,
+  });
+}
+
+/**
  * Proxy a JSON *mutation* (POST/PUT/PATCH/DELETE) to the apiserver, surfacing status VERBATIM.
  *
  * Used by write surfaces that must still traverse the ONE authz choke point (arch §13 / ADR-013):

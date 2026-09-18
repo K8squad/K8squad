@@ -129,6 +129,32 @@ func NewSecretWriter() (SecretWriteClient, error) {
 	return c, nil
 }
 
+// NewReaderPodClient builds the DIRECT (uncached) client the S4a reader-pod
+// launcher + reaper use (ISI-4079). The launcher creates/deletes reader pods and
+// their paired ClusterIP Services, and the reaper's orphan sweep lists pods — a
+// just-launched reader must be immediately visible to its teardown path, so this
+// hits the API server live, same discipline as the write surfaces above. The
+// scheme carries corev1 only (Pod + Service are the whole surface); the client
+// is cluster-scoped because a reader launches into the consuming Team's sandbox
+// namespace (Spec.Namespace), not a fixed one. It resolves rest.Config the
+// standard way and fails rather than degrading silently; the caller decides
+// whether that is fatal or a fall-back to the documented 501.
+func NewReaderPodClient() (client.Client, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build reader-pod client: %w", err)
+	}
+	return c, nil
+}
+
 // NewCredentialTester builds the DIRECT (uncached) client the E3-S2
 // test-connection surface (ISI-3680, AD-7) uses. The Secret read must see
 // just-written material (a create-then-test flow in the credential sheet),

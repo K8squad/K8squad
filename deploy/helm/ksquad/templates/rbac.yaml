@@ -138,6 +138,12 @@ rules:
   - apiGroups: ["ksquad.io"]
     resources: ["teams", "projects", "agents", "roles", "skills", "egresspolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # ISI-4079 (S4a-wire): the apiserver's reader-pod launcher creates/deletes
+  # short-lived RO reader pods + paired ClusterIP Services in team sandbox
+  # namespaces; the AC6 reaper's orphan sweep lists reader pods cluster-wide.
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -4,6 +4,7 @@ package apiserver
 //
 // GET /api/projects/{projectId}/files          — list a directory
 // GET /api/projects/{projectId}/files/content  — read a file (byte-range supported)
+// GET /api/projects/{projectId}/files/stat     — file metadata + git last-change (ISI-4649)
 //
 // Both routes sit behind the §13 authz choke point and requireProjectRole(Viewer).
 // A nil WorkspaceReader answers the documented 501 so S4c can render "not available
@@ -43,6 +44,12 @@ type WorkspaceReader interface {
 	// ReadFile returns content of filePath. If length == 0 the reader returns from
 	// offset to the configured size cap. Callers that need byte ranges supply both.
 	ReadFile(ctx context.Context, projectID, filePath string, offset, length int64) (*FileContent, error)
+
+	// StatFile returns change metadata for filePath (ISI-4649): mtime always, plus
+	// git last-change when the workspace is a git checkout. When git data is
+	// unavailable the reader returns a FileStat with Git == nil — that is the
+	// documented graceful fallback, not an error.
+	StatFile(ctx context.Context, projectID, filePath string) (*FileStat, error)
 }
 
 // DirEntry is a single row in a directory listing.
@@ -74,6 +81,29 @@ type FileContent struct {
 	Length int64 `json:"length"`
 	// Degraded mirrors DirListing.Degraded — snapshot vs live workspace.
 	Degraded bool `json:"degraded,omitempty"`
+}
+
+// FileStat is the response body for StatFile (ISI-4649).
+type FileStat struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // "file" or "dir"
+	Size int64  `json:"size"` // bytes; 0 for dirs
+	// ModTime is the filesystem mtime (RFC3339 on the wire).
+	ModTime string `json:"modTime"`
+	// Git is the last-change commit for this path when the workspace is a git
+	// checkout; nil when git data is unavailable (graceful fallback).
+	Git *GitChange `json:"git,omitempty"`
+	// Degraded mirrors DirListing.Degraded — snapshot vs live workspace.
+	Degraded bool `json:"degraded,omitempty"`
+}
+
+// GitChange describes the most recent commit that touched a path.
+type GitChange struct {
+	CommitHash string `json:"commitHash"`
+	Author     string `json:"author"`
+	Message    string `json:"message"`
+	// Timestamp is the commit time (RFC3339 on the wire).
+	Timestamp string `json:"timestamp"`
 }
 
 // ErrWorkspaceBusy is returned by a WorkspaceReader when the workspace PVC is held
@@ -130,10 +160,16 @@ func (s *Server) projectFiles(reader WorkspaceReader) http.HandlerFunc {
 
 		listing, err := reader.ListDir(r.Context(), projectID, cleanPath, page)
 		if err != nil {
-			if errors.Is(err, ErrWorkspaceBusy) {
-				// Busy is a first-class degraded state, not an error (AC7/S4c AC4).
+			switch {
+			case errors.Is(err, ErrProjectNotFound):
+				// Unknown projectId: existence-hiding 404, same as the dashboard spine.
+				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrWorkspaceBusy), errors.Is(err, ErrNoBrowseTarget):
+				// Busy / nothing-to-browse-yet are first-class degraded states, not
+				// errors (AC7/S4c AC4): answer an empty listing with degraded=true.
 				listing = &DirListing{Entries: []DirEntry{}, Degraded: true}
-			} else {
+			default:
 				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
 				return
 			}
@@ -184,10 +220,15 @@ func (s *Server) projectFilesContent(reader WorkspaceReader) http.HandlerFunc {
 
 		fc, err := reader.ReadFile(r.Context(), projectID, cleanPath, offset, length)
 		if err != nil {
-			if errors.Is(err, ErrWorkspaceBusy) {
-				// Surface busy as a degraded response with empty data (S4c renders the banner).
+			switch {
+			case errors.Is(err, ErrProjectNotFound):
+				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrWorkspaceBusy), errors.Is(err, ErrNoBrowseTarget):
+				// Surface busy / nothing-to-browse-yet as a degraded response with
+				// empty data (S4c renders the banner).
 				fc = &FileContent{Data: []byte{}, ContentType: "text", Degraded: true}
-			} else {
+			default:
 				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
 				return
 			}
@@ -214,6 +255,51 @@ func (s *Server) projectFilesContent(reader WorkspaceReader) http.HandlerFunc {
 			Data:        fc.Data,
 		}
 		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// projectFilesStat returns the handler for GET /api/projects/{projectId}/files/stat
+// (ISI-4649). When reader is nil the handler answers 501. Git metadata is optional
+// in the response — a nil Git field is the graceful no-git fallback, not an error.
+func (s *Server) projectFilesStat(reader WorkspaceReader) http.HandlerFunc {
+	if reader == nil {
+		return notImplemented("project file-explorer stat", "ISI-4649: wire a WorkspaceReader (S4a reader-pod client) to enable")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := mux.Vars(r)["projectId"]
+
+		rawPath := r.URL.Query().Get("path")
+		if rawPath == "" {
+			writeJSONError(w, http.StatusBadRequest, "path query param required")
+			return
+		}
+		cleanPath, err := workspaceJailPath(rawPath)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid path: "+err.Error())
+			return
+		}
+		// Stat on the jail root is meaningless for change metadata.
+		if cleanPath == "." {
+			writeJSONError(w, http.StatusBadRequest, "path must name a file, not the workspace root")
+			return
+		}
+
+		st, err := reader.StatFile(r.Context(), projectID, cleanPath)
+		if err != nil {
+			switch {
+			case errors.Is(err, ErrProjectNotFound):
+				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrWorkspaceBusy), errors.Is(err, ErrNoBrowseTarget):
+				// Busy / nothing-to-browse-yet are first-class degraded states, not errors.
+				st = &FileStat{Name: path.Base(cleanPath), Type: "file", Degraded: true}
+			default:
+				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, st)
 	}
 }
 

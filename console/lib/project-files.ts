@@ -51,6 +51,29 @@ export type FileContent = {
   truncated?: boolean;
 };
 
+/** GET /api/projects/{id}/files/stat?path=<file> response (ISI-4649). `git` is the
+ * last-change commit for the path — ABSENT (omitempty) when the workspace is not a
+ * git checkout or git is unavailable in the reader pod; that is a graceful no-git
+ * fallback, never an error. `degraded` ⇒ snapshot vs live workspace (§RWO). */
+export type FileStat = {
+  name: string;
+  type: "file" | "dir";
+  size: number;
+  /** RFC3339 filesystem mtime. */
+  modTime: string;
+  git?: FileGitChange;
+  degraded?: boolean;
+};
+
+/** The most recent commit that touched a path (ISI-4649 GitChange). */
+export type FileGitChange = {
+  commitHash: string;
+  author: string;
+  message: string;
+  /** RFC3339 commit time. */
+  timestamp: string;
+};
+
 /** The distinct honest state an HTTP status carries (mirrors SquadOverview /
  * GitHubStatusTab). 404 ⇒ existence-hiding not-found; 501 ⇒ the reader is not
  * wired in this deployment (S4a/S4b pending) → "File Explorer not available yet",
@@ -111,6 +134,34 @@ export async function readProjectFile(
   return classifyFilesStatus<FileContent>(res.status);
 }
 
+/** Fetch a file's stat / change metadata through the BFF choke point (ISI-4651).
+ * Read-only, same classified-state contract as list/read — a stat failure never
+ * fabricates details. */
+export async function statProjectFile(
+  projectId: string,
+  path: string,
+): Promise<FilesState<FileStat>> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/files/stat?path=${encodeURIComponent(path)}`,
+    { cache: "no-store" },
+  );
+  if (res.ok) {
+    return { kind: "ready", data: (await res.json()) as FileStat };
+  }
+  return classifyFilesStatus<FileStat>(res.status);
+}
+
+/** Build the BFF download URL for a workspace path (ISI-4652). A file path
+ * streams an octet-stream attachment; a directory path streams a server-built
+ * tar.gz archive (ISI-4650). Used as a plain `<a href download>` — the session
+ * cookie rides the same-origin request, so no fetch/blob handling is needed and
+ * upstream errors (404/413/501/503) surface as the browser's native download
+ * failure rather than fabricated UI state. Read-only: this is a GET, no write
+ * path into the volume (§D3). */
+export function downloadProjectFileUrl(projectId: string, path: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/files/download?path=${encodeURIComponent(path)}`;
+}
+
 /** Decode a base64 text payload to a UTF-8 string. Goes through bytes (not a
  * bare `atob`) so multibyte UTF-8 survives — `atob` yields latin1 code units,
  * which would mojibake any non-ASCII source file. Callers guard on
@@ -141,4 +192,62 @@ export function humanBytes(n: number | undefined): string {
  * path into the volume. */
 export function rawBytesDataUrl(content: FileContent): string {
   return `data:application/octet-stream;base64,${content.data}`;
+}
+
+/** Preview classification for the type-aware viewer (ISI-4648, per the validated
+ * ISI-4602 mocks: go/node/md/json/yaml highlighted, md rendered, svg/png shown
+ * as pictures, everything else binary gets the honest placeholder). The
+ * classification is EXTENSION-FIRST: the S4b `contentType` binary hint alone
+ * cannot tell a renderable PNG from a `.so`, nor markdown from plain text. */
+export type FilePreviewKind = "image" | "markdown" | "code" | "text" | "binary";
+
+/** Classify a fetched file for the preview pane. Extension decides image vs
+ * markdown vs code; the wire binary hint then guards everything else (AC2 —
+ * never UTF-8-decode binary bytes). */
+export function previewKind(path: string, contentType: "text" | "binary"): FilePreviewKind {
+  const ext = fileExt(path);
+  if (ext === "png" || ext === "svg") return "image";
+  if (contentType === "binary") return "binary";
+  if (ext === "md" || ext === "markdown") return "markdown";
+  if (codeLanguage(path) !== null) return "code";
+  return "text";
+}
+
+/** The highlight.js language id for a path, or null when the file previews as
+ * plain text. Covers the mock set: go, node (js/ts), json, yaml. */
+export function codeLanguage(path: string): string | null {
+  switch (fileExt(path)) {
+    case "go":
+      return "go";
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+    case "mjs":
+    case "cjs":
+      return "javascript";
+    case "json":
+      return "json";
+    case "yaml":
+    case "yml":
+      return "yaml";
+    default:
+      return null;
+  }
+}
+
+/** A `data:` URL that renders an image preview (svg/png) from the bytes S4b
+ * served. Works whether the server hinted the payload text or binary — `data`
+ * is base64 on the wire either way. Read-only: hands back exactly the served
+ * bytes, no write path into the volume. */
+export function imageDataUrl(content: FileContent): string {
+  const mime = fileExt(content.path) === "svg" ? "image/svg+xml" : "image/png";
+  return `data:${mime};base64,${content.data}`;
+}
+
+function fileExt(path: string): string {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }

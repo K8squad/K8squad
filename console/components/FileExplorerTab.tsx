@@ -17,18 +17,41 @@
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
 import { useCallback, useEffect, useState } from "react";
+import hljs from "highlight.js/lib/core";
+import hlGo from "highlight.js/lib/languages/go";
+import hlTypescript from "highlight.js/lib/languages/typescript";
+import hlJavascript from "highlight.js/lib/languages/javascript";
+import hlJson from "highlight.js/lib/languages/json";
+import hlYaml from "highlight.js/lib/languages/yaml";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./file-explorer.css";
 import { EmptyState } from "@/components/forms/EmptyState";
 import {
   listProjectFiles,
   readProjectFile,
+  statProjectFile,
+  downloadProjectFileUrl,
   decodeTextContent,
   humanBytes,
   rawBytesDataUrl,
+  previewKind,
+  codeLanguage,
+  imageDataUrl,
   type FileEntry,
   type FileContent,
+  type FileStat,
   type FilesState,
 } from "@/lib/project-files";
+
+// ISI-4648: type-aware viewer grammars, registered once on the core build so
+// the bundle carries only the mock set (go/node/json/yaml), not every hljs
+// language.
+hljs.registerLanguage("go", hlGo);
+hljs.registerLanguage("typescript", hlTypescript);
+hljs.registerLanguage("javascript", hlJavascript);
+hljs.registerLanguage("json", hlJson);
+hljs.registerLanguage("yaml", hlYaml);
 
 /** Per-directory lazy-load state, keyed by the directory's workspace-relative
  * path ("" = root). A directory is fetched the first time it is expanded. */
@@ -45,6 +68,8 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
   // The selected file preview (path + fetched content state).
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<FilesState<FileContent>>({ kind: "loading" });
+  // ISI-4651: the selected file's stat / change metadata (details pane).
+  const [stat, setStat] = useState<FilesState<FileStat>>({ kind: "loading" });
 
   const loadDir = useCallback(
     async (path: string): Promise<DirState> => {
@@ -107,6 +132,10 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
       readProjectFile(projectId, path)
         .then(setPreview)
         .catch(() => setPreview({ kind: "error", status: 0 }));
+      setStat({ kind: "loading" });
+      statProjectFile(projectId, path)
+        .then(setStat)
+        .catch(() => setStat({ kind: "error", status: 0 }));
     },
     [projectId],
   );
@@ -169,6 +198,7 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
               {sortEntries(rootEntries).map((e) => (
                 <TreeNode
                   key={e.path}
+                  projectId={projectId}
                   entry={e}
                   depth={0}
                   open={open}
@@ -181,8 +211,11 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
             </ul>
           </nav>
           <div className="file-explorer__preview" data-testid="files-preview">
-            <PreviewPane path={selected} state={preview} />
+            <PreviewPane projectId={projectId} path={selected} state={preview} />
           </div>
+          <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
+            <DetailsPane path={selected} state={stat} />
+          </aside>
         </div>
       )}
     </section>
@@ -191,8 +224,12 @@ export function FileExplorerTab({ projectId }: { projectId: string }) {
 
 /** One tree row. A directory toggles a lazy-loaded child listing; a file selects
  * itself into the preview. Directories render their loaded children recursively
- * once open. There is NO context menu / action affordance — read-only (§D3). */
+ * once open. The only action affordance is the ISI-4652 download anchor beside
+ * each row — a file downloads as an attachment, a directory as a tar.gz archive
+ * (GET /files/download via the BFF). Still read-only: no edit/save/delete/
+ * rename/run affordance, no context menu (§D3). */
 function TreeNode({
+  projectId,
   entry,
   depth,
   open,
@@ -201,6 +238,7 @@ function TreeNode({
   onToggle,
   onSelect,
 }: {
+  projectId: string;
   entry: FileEntry;
   depth: number;
   open: Set<string>;
@@ -213,19 +251,37 @@ function TreeNode({
   const isOpen = open.has(entry.path);
   const pad = { paddingLeft: 8 + depth * 14 };
 
+  // ISI-4652: per-row download. A sibling anchor (not nested in the row button —
+  // interactive elements cannot nest), so a download click never toggles/selects.
+  const download = (
+    <a
+      className="file-explorer__download"
+      href={downloadProjectFileUrl(projectId, entry.path)}
+      download
+      aria-label={isDir ? `Download ${entry.name} as archive` : `Download ${entry.name}`}
+      title={isDir ? "Download folder (.tar.gz)" : "Download file"}
+      data-testid={isDir ? "files-download-dir" : "files-download-file"}
+    >
+      <span aria-hidden="true">⬇</span>
+    </a>
+  );
+
   if (!isDir) {
     return (
       <li>
-        <button
-          type="button"
-          className="file-explorer__row file-explorer__file"
-          style={pad}
-          aria-current={selected === entry.path ? "true" : undefined}
-          data-testid="files-file"
-          onClick={() => onSelect(entry.path)}
-        >
-          <span aria-hidden="true">📄</span> {entry.name}
-        </button>
+        <div className="file-explorer__rowwrap">
+          <button
+            type="button"
+            className="file-explorer__row file-explorer__file"
+            style={pad}
+            aria-current={selected === entry.path ? "true" : undefined}
+            data-testid="files-file"
+            onClick={() => onSelect(entry.path)}
+          >
+            <span aria-hidden="true">📄</span> {entry.name}
+          </button>
+          {download}
+        </div>
       </li>
     );
   }
@@ -233,16 +289,19 @@ function TreeNode({
   const childState = dirs[entry.path];
   return (
     <li>
-      <button
-        type="button"
-        className="file-explorer__row file-explorer__dir"
-        style={pad}
-        aria-expanded={isOpen}
-        data-testid="files-dir"
-        onClick={() => onToggle(entry.path)}
-      >
-        <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
-      </button>
+      <div className="file-explorer__rowwrap">
+        <button
+          type="button"
+          className="file-explorer__row file-explorer__dir"
+          style={pad}
+          aria-expanded={isOpen}
+          data-testid="files-dir"
+          onClick={() => onToggle(entry.path)}
+        >
+          <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
+        </button>
+        {download}
+      </div>
       {isOpen && (
         <ul>
           {!childState || childState.kind === "loading" ? (
@@ -258,6 +317,7 @@ function TreeNode({
               sortEntries(childState.data.entries).map((c) => (
                 <TreeNode
                   key={c.path}
+                  projectId={projectId}
                   entry={c}
                   depth={depth + 1}
                   open={open}
@@ -279,13 +339,126 @@ function TreeNode({
   );
 }
 
+/** The right-hand details pane (ISI-4651, per the validated ISI-4602 mock): name,
+ * path, type, size, modified, and the git last change (author / message / short
+ * hash / commit time). Read-only — no action affordances (§D3). Stat failures are
+ * honest notes, never fabricated metadata; the preview pane is unaffected. */
+function DetailsPane({
+  path,
+  state,
+}: {
+  path: string | null;
+  state: FilesState<FileStat>;
+}) {
+  if (!path) {
+    return <p className="muted">Select a file to see its details.</p>;
+  }
+  if (state.kind === "loading") {
+    return (
+      <p className="muted" aria-busy="true" data-testid="files-details-loading">
+        Loading details…
+      </p>
+    );
+  }
+  if (state.kind === "not-wired") {
+    return <p className="muted">File details are not available in this deployment yet.</p>;
+  }
+  if (state.kind === "unauthenticated") {
+    return <p className="muted">Your session has expired — sign in to see file details.</p>;
+  }
+  if (state.kind === "not-found" || state.kind === "error") {
+    return (
+      <p className="muted" data-testid="files-details-unavailable">
+        Couldn&apos;t load details for <code>{path}</code>.
+      </p>
+    );
+  }
+
+  const s = state.data;
+  return (
+    <div>
+      <h2 className="file-explorer__details-name" data-testid="files-details-name">
+        {s.name}
+      </h2>
+      <dl className="file-explorer__details-list">
+        <div>
+          <dt>Path</dt>
+          <dd>
+            <code data-testid="files-details-path">{path}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Type</dt>
+          <dd>{s.type === "dir" ? "Directory" : "File"}</dd>
+        </div>
+        <div>
+          <dt>Size</dt>
+          <dd data-testid="files-details-size">{humanBytes(s.size)}</dd>
+        </div>
+        <div>
+          <dt>Modified</dt>
+          <dd>{formatTimestamp(s.modTime)}</dd>
+        </div>
+      </dl>
+
+      {s.degraded && (
+        <div className="banner banner--info" role="status" data-testid="files-details-busy">
+          Workspace busy — details reflect the last-committed snapshot.
+        </div>
+      )}
+
+      <h3 className="file-explorer__details-change-title">Last change</h3>
+      {s.git ? (
+        <dl className="file-explorer__details-list" data-testid="files-details-change">
+          <div>
+            <dt>Author</dt>
+            <dd data-testid="files-details-author">{s.git.author}</dd>
+          </div>
+          <div>
+            <dt>Message</dt>
+            <dd data-testid="files-details-message">{s.git.message}</dd>
+          </div>
+          <div>
+            <dt>Commit</dt>
+            <dd>
+              <code data-testid="files-details-hash">{shortHash(s.git.commitHash)}</code>
+            </dd>
+          </div>
+          <div>
+            <dt>Committed</dt>
+            <dd>{formatTimestamp(s.git.timestamp)}</dd>
+          </div>
+        </dl>
+      ) : (
+        <p className="muted" data-testid="files-details-nogit">
+          No git history available for this file.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The first 8 chars of a commit hash — the conventional short form. */
+function shortHash(hash: string): string {
+  return hash.length > 8 ? hash.slice(0, 8) : hash;
+}
+
+/** Render an RFC3339 timestamp for the details pane; falls back to the raw
+ * string when it doesn't parse (never blanks the row). */
+function formatTimestamp(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
+}
+
 /** The read-only preview pane. Renders loading (AC3), the binary placeholder
  * (AC2, never garbled text), a per-file degraded hint (AC4), and honest fetch
  * failures — never an edit surface (§D3). */
 function PreviewPane({
+  projectId,
   path,
   state,
 }: {
+  projectId: string;
   path: string | null;
   state: FilesState<FileContent>;
 }) {
@@ -318,6 +491,7 @@ function PreviewPane({
   }
 
   const c = state.data;
+  const kind = previewKind(c.path, c.contentType);
   return (
     <div>
       <div className="file-explorer__preview-head">
@@ -326,6 +500,14 @@ function PreviewPane({
         {c.truncated && (
           <span className="muted" data-testid="files-preview-truncated"> · preview truncated (size cap)</span>
         )}
+        {" · "}
+        <a
+          href={downloadProjectFileUrl(projectId, c.path)}
+          download
+          data-testid="files-preview-download"
+        >
+          Download
+        </a>
       </div>
 
       {c.degraded && (
@@ -334,13 +516,27 @@ function PreviewPane({
         </div>
       )}
 
-      {c.contentType === "binary" ? (
+      {kind === "binary" ? (
         <div data-testid="files-binary">
           <p className="muted">Binary file — {humanBytes(c.size)}. Not shown as text.</p>
           <a href={rawBytesDataUrl(c)} download={fileName(c.path)} data-testid="files-binary-download">
             Download raw bytes
           </a>
         </div>
+      ) : kind === "image" ? (
+        <div data-testid="files-image">
+          <img className="file-explorer__image" src={imageDataUrl(c)} alt={fileName(c.path)} />
+        </div>
+      ) : kind === "markdown" ? (
+        <div className="file-explorer__markdown" data-testid="files-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{decodeTextContent(c.data)}</ReactMarkdown>
+        </div>
+      ) : kind === "code" ? (
+        <pre className="file-explorer__code" data-testid="files-code">
+          <code
+            dangerouslySetInnerHTML={{ __html: highlightCode(decodeTextContent(c.data), codeLanguage(c.path)) }}
+          />
+        </pre>
       ) : (
         <pre className="file-explorer__code" data-testid="files-text">
           {decodeTextContent(c.data)}
@@ -348,6 +544,26 @@ function PreviewPane({
       )}
     </div>
   );
+}
+
+/** Highlight a decoded source file with the grammar for its extension.
+ * highlight.js escapes markup in its output, so the emitted HTML is safe to
+ * inject. Falls back to HTML-escaped plain text if highlighting itself fails —
+ * the preview never goes blank over a grammar edge case. */
+function highlightCode(source: string, language: string | null): string {
+  if (!language) return escapeHtml(source);
+  try {
+    return hljs.highlight(source, { language }).value;
+  } catch {
+    return escapeHtml(source);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function honest(title: string, why: string) {

@@ -4,7 +4,7 @@
 
 .file-explorer {
   display: grid;
-  grid-template-columns: minmax(220px, 320px) 1fr;
+  grid-template-columns: minmax(220px, 320px) 1fr minmax(200px, 280px);
   gap: 16px;
   align-items: start;
 }
@@ -44,6 +44,34 @@
   background: var(--surface-active, rgba(120, 160, 255, 0.18));
 }
 
+/* ISI-4652: per-row download affordance. The row button flexes to fill; the
+   download anchor is a quiet glyph that brightens on hover/focus. */
+.file-explorer__rowwrap {
+  display: flex;
+  align-items: center;
+}
+
+.file-explorer__rowwrap .file-explorer__row {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-explorer__download {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: var(--muted, #8b949e);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.file-explorer__download:hover,
+.file-explorer__download:focus-visible {
+  background: var(--surface-hover, rgba(255, 255, 255, 0.06));
+  color: inherit;
+}
+
 .file-explorer__preview {
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 8px;
@@ -65,6 +93,76 @@
   line-height: 1.5;
 }
 
+/* ISI-4648 type-aware viewer: image render (svg/png), markdown render, and a
+   minimal hljs token theme for the mock grammar set (go/ts/js/json/yaml). */
+
+.file-explorer__image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 8px auto;
+  background: var(--surface, #fff);
+}
+
+.file-explorer__markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow: auto;
+}
+
+.file-explorer__markdown pre {
+  overflow: auto;
+  font-size: 13px;
+}
+
+.file-explorer__markdown code {
+  font-size: 13px;
+}
+
+.file-explorer__markdown table {
+  border-collapse: collapse;
+}
+
+.file-explorer__markdown th,
+.file-explorer__markdown td {
+  border: 1px solid var(--border, #2a2a2a);
+  padding: 4px 10px;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in {
+  color: var(--hljs-keyword, #c678dd);
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-template-variable {
+  color: var(--hljs-string, #98c379);
+}
+
+.hljs-number,
+.hljs-literal {
+  color: var(--hljs-literal, #d19a66);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment, #7f848e);
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-function_,
+.hljs-name {
+  color: var(--hljs-title, #61afef);
+}
+
+.hljs-type,
+.hljs-class {
+  color: var(--hljs-type, #e5c07b);
+}
+
 /* Informational banner — the workspace-busy / degraded state (AC4). Info tone,
    never an error hue: busy is expected, not a failure. */
 .banner {
@@ -77,6 +175,54 @@
 .banner--info {
   border: 1px solid var(--info-border, #3a5a8a);
   background: var(--info-bg, rgba(90, 130, 200, 0.12));
+}
+
+/* ISI-4651: right-hand details pane (name / path / type / size / modified /
+   git last change). Mirrors the preview pane framing. */
+
+.file-explorer__details {
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-height: 120px;
+  overflow: auto;
+  max-height: 70vh;
+}
+
+.file-explorer__details-name {
+  margin: 0 0 8px;
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.file-explorer__details-change-title {
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+
+.file-explorer__details-list {
+  margin: 0;
+  font-size: 13px;
+}
+
+.file-explorer__details-list > div {
+  margin-bottom: 8px;
+}
+
+.file-explorer__details-list dt {
+  color: var(--muted, #8b949e);
+  font-size: 12px;
+}
+
+.file-explorer__details-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1000px) {
+  .file-explorer {
+    grid-template-columns: minmax(220px, 320px) 1fr;
+  }
 }
 
 @media (max-width: 720px) {
