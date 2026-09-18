@@ -43,6 +43,7 @@ import (
 	"github.com/K8squad/K8squad/internal/apiserver"
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
+	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/internal/runsource"
 	"github.com/K8squad/K8squad/pkg/auth"
@@ -229,6 +230,30 @@ func main() {
 		dashboardReader = cacheReader
 		projectRefs = apiserver.NewClientProjectRefResolver(cacheReader)
 		log.Printf("ksquad-apiserver: squad-overview + credential + agents-org read models ready (informer cache synced)")
+	}
+
+	// S4a-wire host-flip (ISI-4079, ADR-0012 §D): the project file-explorer WorkspaceReader backed
+	// by on-demand reader pods. Constructed ONLY when the 8.7f flag is on AND both collaborators
+	// exist — the coord store (browse-target + busy derivation) and the informer cache (Project/Team
+	// tenancy resolution). The launcher itself needs a DIRECT controller-runtime client (pods +
+	// services create/delete in the consuming Team's sandbox namespace); without any of these the
+	// files routes keep the documented 501. The idle-sweep goroutine is the AC6 metering teardown
+	// loop; the pod's 900s ActiveDeadline stays the kubelet backstop.
+	var workspaceReader apiserver.WorkspaceReader
+	if cfg.BuildReaderPodEnabled && dashboardReader != nil {
+		if rpClient, rerr := apiserver.NewReaderPodClient(); rerr != nil {
+			log.Printf("ksquad-apiserver: reader-pod client unavailable — project file-explorer keeps the documented 501: %v", rerr)
+		} else if resolver, serr := apiserver.NewCoordReaderSpecResolver(db, dashboardReader); serr != nil {
+			log.Printf("ksquad-apiserver: reader-spec resolver unavailable — project file-explorer keeps the documented 501: %v", serr)
+		} else {
+			rpCfg := cfg.ReaderPodConfig()
+			launcher := readerpod.NewLauncher(rpCfg, rpClient)
+			reaper := readerpod.NewReaper(rpClient, launcher, readerpod.NamespaceAll, 0)
+			rpReader := apiserver.NewReaderPodWorkspaceReader(resolver, launcher, reaper, 0)
+			workspaceReader = rpReader
+			go rpReader.Run(ctx, 0) // idle sweeps on the reader's idle window
+			log.Printf("ksquad-apiserver: S4a reader-pod file explorer wired (image %s, idle-teardown sweep running)", rpCfg.ReaderImage)
+		}
 	}
 
 	// 11.2 issue⇄work-item linkage API (ISI-2738): GET/POST/DELETE
@@ -548,6 +573,7 @@ func main() {
 		OTelConfigWriter: otelConfigWriter,
 		Builds:           builds,
 		Artifacts:        artifacts,
+		WorkspaceReader:  workspaceReader,
 		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:    workItemState,
 		WorkItemWrites:   workItemWrites,

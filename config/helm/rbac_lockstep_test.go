@@ -203,6 +203,9 @@ func clusterRoleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyR
 // skills adds `list` (ISI-3963) for the same reason: the fleet-aware skill list
 // read model (fleetlist.go Skills()) Lists Skills through the shared informer
 // cache, so GET /api/squad/skills needs the cluster-scoped LIST to unblock it.
+// pods + services (ISI-4079) are the S4a reader-pod launcher grant: the
+// apiserver creates/deletes reader pods + paired ClusterIP Services in team
+// sandbox namespaces and the AC6 orphan sweep Lists pods cluster-wide.
 func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
 	if err != nil {
@@ -219,6 +222,8 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "create", "delete"}},
+		{APIGroups: []string{""}, Resources: []string{"services"}, Verbs: []string{"get", "list", "create", "delete"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+

@@ -76,6 +76,15 @@ func (c *fakeReadClient) Read(_ context.Context, path string, offset, length int
 	return readserver.FileContent{Size: 3, ContentType: "text", Offset: offset, Length: 3, Data: []byte("abc")}, nil
 }
 
+func (c *fakeReadClient) Stat(_ context.Context, path string) (readserver.FileStat, error) {
+	return readserver.FileStat{
+		Name: path, Type: "file", Size: 3, ModTime: "2026-09-18T00:00:00Z",
+		Git: &readserver.GitChange{
+			CommitHash: "cafe", Author: "alice", Message: "touch", Timestamp: "2026-09-17T00:00:00Z",
+		},
+	}, nil
+}
+
 func newFakeReaper(t *testing.T, l readerpod.Launcher) *readerpod.Reaper {
 	t.Helper()
 	s := runtime.NewScheme()

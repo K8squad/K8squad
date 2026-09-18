@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -241,6 +242,21 @@ func TestPagination(t *testing.T) {
 	}
 }
 
+// ISI-4076 (PR #359 F1): a huge page value must not overflow page*pageSize into a negative
+// start and panic the entries slice; it clamps to the empty tail page instead.
+func TestListPageOverflowClamp(t *testing.T) {
+	s, _ := newTestServer(t)
+	for _, page := range []string{"9223372036854775807", "4611686018427387904"} {
+		rr, dl := doList(t, s, "sub", page)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("page=%s: want 200, got %d", page, rr.Code)
+		}
+		if len(dl.Entries) != 0 || dl.NextPage != 0 {
+			t.Fatalf("page=%s: want empty tail page, got n=%d next=%d", page, len(dl.Entries), dl.NextPage)
+		}
+	}
+}
+
 // AC5-adjacent: only GET list/read/healthz exist — there is no mutating verb surface.
 func TestNoMutatingVerbs(t *testing.T) {
 	s, _ := newTestServer(t)
@@ -255,6 +271,89 @@ func TestNoMutatingVerbs(t *testing.T) {
 	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("healthz → %d", rr.Code)
+	}
+}
+
+// ISI-4649: /stat returns mtime and size; without a .git checkout the git field is
+// omitted (graceful fallback), and the route still answers 200.
+func TestStatNoGitFallback(t *testing.T) {
+	s, _ := newTestServer(t)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/stat?path=a.txt", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("stat → %d (%s)", rr.Code, rr.Body.String())
+	}
+	var st FileStat
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode stat: %v", err)
+	}
+	if st.Name != "a.txt" || st.Type != "file" || st.Size != 11 {
+		t.Errorf("unexpected stat: %+v", st)
+	}
+	if st.ModTime == "" {
+		t.Error("modTime must be set")
+	}
+	if st.Git != nil {
+		t.Errorf("no .git in jail: git must be nil, got %+v", st.Git)
+	}
+}
+
+// ISI-4649: /stat rejects traversal and a missing path param like the other routes.
+func TestStatRejectsTraversalAndMissingPath(t *testing.T) {
+	s, _ := newTestServer(t)
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/stat?path=../etc", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("traversal → %d, want 400", rr.Code)
+	}
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/stat", nil))
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("missing path → %d, want 400", rr.Code)
+	}
+}
+
+// ISI-4649: when the jail IS a git checkout and a git binary is available, /stat
+// returns the last-change commit for the path. Skipped without git.
+func TestStatGitLastChange(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not available")
+	}
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "tracked.txt"), []byte("v1"))
+	runGit(t, root, "init")
+	runGit(t, root, "add", "tracked.txt")
+	runGit(t, root, "-c", "user.email=t@t", "-c", "user.name=tester", "commit", "-m", "add tracked")
+
+	s, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/stat?path=tracked.txt", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("stat → %d (%s)", rr.Code, rr.Body.String())
+	}
+	var st FileStat
+	if err := json.Unmarshal(rr.Body.Bytes(), &st); err != nil {
+		t.Fatalf("decode stat: %v", err)
+	}
+	if st.Git == nil {
+		t.Fatal("git checkout: expected last-change metadata")
+	}
+	if len(st.Git.CommitHash) != 40 || st.Git.Author != "tester" || st.Git.Message != "add tracked" || st.Git.Timestamp == "" {
+		t.Errorf("unexpected git change: %+v", st.Git)
+	}
+}
+
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
 	}
 }
 

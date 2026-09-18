@@ -699,6 +699,25 @@ func (s *Server) routes(opts Options) {
 		}
 		filesContent.HandleFunc("", s.projectFilesContent(opts.WorkspaceReader)).Methods(http.MethodGet)
 
+		// S4b — download (ISI-4650): file → attachment stream; directory → server-built
+		// tar.gz archive. Same choke point + requireProjectRole(Viewer), same jail, same
+		// nil-reader 501. Size caps enforced route-side (filedownload.go).
+		filesDownload := s.router.Path("/api/projects/{projectId}/files/download").Subrouter()
+		filesDownload.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesDownload.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesDownload.HandleFunc("", s.projectFilesDownload(opts.WorkspaceReader)).Methods(http.MethodGet)
+
+		// ISI-4649: file change metadata (mtime + git last-change), same choke point,
+		// same Viewer gate, same nil-reader 501 as the other explorer routes.
+		filesStat := s.router.Path("/api/projects/{projectId}/files/stat").Subrouter()
+		filesStat.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesStat.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesStat.HandleFunc("", s.projectFilesStat(opts.WorkspaceReader)).Methods(http.MethodGet)
+
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7

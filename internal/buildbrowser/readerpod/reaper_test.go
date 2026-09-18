@@ -108,3 +108,41 @@ func readerPodFor(runID string, created time.Time) *corev1.Pod {
 	p.CreationTimestamp = metav1.NewTime(created)
 	return p
 }
+
+// TestReaper_ReapIdle_AllNamespaces (ISI-4079): with NamespaceAll the orphan sweep finds aged
+// readers in EVERY namespace (the S4a resolver launches into per-Team sandbox namespaces), not
+// just the configured one.
+func TestReaper_ReapIdle_AllNamespaces(t *testing.T) {
+	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
+
+	aged := func(runID, ns string) (*corev1.Pod, *corev1.Service) {
+		p := readerPodFor(runID, now.Add(-20*time.Minute))
+		p.Namespace = ns
+		s := BuildService(Spec{RunID: runID}, Config{})
+		s.Namespace = ns
+		return p, s
+	}
+	p1, s1 := aged("run-a", "team-one")
+	p2, s2 := aged("run-b", "team-two")
+
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(p1, s1, p2, s2).Build()
+	l := NewLauncher(Config{Enabled: true, ReaderImage: "img"}, c)
+	r := NewReaper(c, l, NamespaceAll, DefaultMaxLifetime)
+	r.now = func() time.Time { return now }
+
+	n, err := r.ReapIdle(context.Background())
+	if err != nil {
+		t.Fatalf("ReapIdle: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("reaped %d, want 2 (aged readers across both namespaces)", n)
+	}
+	for _, nn := range []types.NamespacedName{
+		{Name: PodName("run-a"), Namespace: "team-one"},
+		{Name: PodName("run-b"), Namespace: "team-two"},
+	} {
+		if err := c.Get(context.Background(), nn, &corev1.Pod{}); err == nil {
+			t.Errorf("aged reader %s/%s survived the all-namespaces sweep", nn.Namespace, nn.Name)
+		}
+	}
+}

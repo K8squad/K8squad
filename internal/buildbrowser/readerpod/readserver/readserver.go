@@ -23,7 +23,12 @@ limitations under the License.
 //
 //	GET /list?path=<rel>&page=<n>          → 200 DirListing{entries[{name,type,size}], nextPage}
 //	GET /read?path=<rel>&offset=<o>&length=<l> → 200 FileContent{size,contentType,offset,length,data}
+//	GET /stat?path=<rel>                   → 200 FileStat{name,type,size,modTime,git?} (ISI-4649)
 //	GET /healthz                            → 200
+//
+// /stat is read-only like the others: git last-change is resolved with `git log -1` when a git
+// binary and a .git checkout are present, and omitted (git: null) otherwise — the graceful
+// fallback the apiserver contract documents.
 //
 // The apiserver (S4b) reaches this ONLY over an in-cluster ClusterIP HTTP call — there is NO
 // pods/exec, NO kubectl cp, NO apiserver PVC mount (all rejected in ADR-0012 §Decision). There are
@@ -40,16 +45,19 @@ package readserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -95,6 +103,27 @@ type FileContent struct {
 	Data        []byte `json:"data"`        // the (range-limited, size-capped) bytes
 }
 
+// FileStat is the /stat response body (ISI-4649; mirrors the apiserver FileStat wire shape).
+type FileStat struct {
+	Name string `json:"name"`
+	Type string `json:"type"` // "file" or "dir"
+	Size int64  `json:"size"` // bytes; 0 for dirs
+	// ModTime is the filesystem mtime, RFC3339.
+	ModTime string `json:"modTime"`
+	// Git is the last-change commit for the path when the jail is a git checkout and a
+	// git binary is available; nil otherwise (graceful fallback, not an error).
+	Git *GitChange `json:"git,omitempty"`
+}
+
+// GitChange describes the most recent commit that touched a path.
+type GitChange struct {
+	CommitHash string `json:"commitHash"`
+	Author     string `json:"author"`
+	Message    string `json:"message"`
+	// Timestamp is the author date, RFC3339.
+	Timestamp string `json:"timestamp"`
+}
+
 // Server serves the jailed RO list/read protocol over an already-resolved real jail root.
 type Server struct {
 	realRoot string // filepath.EvalSymlinks(root): the canonical jail root every path must stay under
@@ -128,6 +157,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("/list", s.handleList)
 	mux.HandleFunc("/read", s.handleRead)
+	mux.HandleFunc("/stat", s.handleStat)
 	return mux
 }
 
@@ -200,6 +230,14 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
 
 	page := parseNonNegInt(r.URL.Query().Get("page"))
+	// Clamp page BEFORE multiplying: page is client-controlled and page*pageSize can overflow
+	// int64 (e.g. page=math.MaxInt64), wrapping start negative and panicking the slice below
+	// (ISI-4076 / PR #359 F1). One page past the end is enough to cover the "empty tail page"
+	// case, so anything larger is equivalent.
+	maxPage := len(des)/s.pageSize + 1
+	if page > maxPage {
+		page = maxPage
+	}
 	start := page * s.pageSize
 	if start > len(des) {
 		start = len(des)
@@ -288,6 +326,82 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		Length:      int64(len(data)),
 		Data:        data,
 	})
+}
+
+// handleStat serves GET /stat (ISI-4649): filesystem mtime plus, when the jail is a git checkout
+// and a git binary is available, the last commit that touched the path. Git failure of any kind
+// (no binary, not a repo, no commits) degrades to git: null — never an error status.
+func (s *Server) handleStat(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	if strings.TrimSpace(q.Get("path")) == "" {
+		http.Error(w, "path query param required", http.StatusBadRequest)
+		return
+	}
+	rel, err := cleanRel(q.Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	real, err := s.jail(rel)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	fi, err := os.Stat(real)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+
+	st := FileStat{
+		Name:    fi.Name(),
+		Type:    "file",
+		Size:    fi.Size(),
+		ModTime: fi.ModTime().UTC().Format(time.RFC3339),
+	}
+	if fi.IsDir() {
+		st.Type = "dir"
+		st.Size = 0
+	}
+	st.Git = s.gitLastChange(r.Context(), rel)
+	writeJSON(w, st)
+}
+
+// gitLastChange runs `git log -1` for rel inside the jail root. It returns nil on any failure —
+// the image may not carry a git binary (distroless) and the workspace may not be a checkout;
+// both are first-class "no git data" states, not errors.
+func (s *Server) gitLastChange(ctx context.Context, rel string) *GitChange {
+	if rel == "." {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// #nosec G204 -- fixed `git` binary; rel is already jail-canonicalised by cleanRel and passed
+	// after `--` as a data operand, never a flag. No shell is involved.
+	cmd := exec.CommandContext(ctx, "git", "-C", s.realRoot,
+		"log", "-1", "--format=%H%x00%an%x00%s%x00%aI", "--", rel)
+	cmd.Env = append([]string{},
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_OPTIONAL_LOCKS=0",
+		"HOME=/nonexistent",
+		"LC_ALL=C",
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	fields := strings.SplitN(strings.TrimRight(string(out), "\n"), "\x00", 4)
+	if len(fields) != 4 || fields[0] == "" {
+		return nil
+	}
+	return &GitChange{
+		CommitHash: fields[0],
+		Author:     fields[1],
+		Message:    fields[2],
+		Timestamp:  fields[3],
+	}
 }
 
 // looksBinary flags content the apiserver must not render as text: a NUL byte in the sniff window, or
