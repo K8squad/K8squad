@@ -32,7 +32,16 @@ const projection: GithubStatus = {
     { number: 7, title: "add feature", state: "open", reviewState: "ready-for-review", branch: "feat/x", url: "https://gh/pull/7" },
     { number: 8, title: "shipped", state: "closed", reviewState: "merged", merged: true, url: "https://gh/pull/8" },
   ],
-  issues: [{ number: 3, title: "a bug", state: "open", url: "https://gh/issues/3" }],
+  issues: [
+    {
+      number: 3,
+      title: "a bug",
+      state: "open",
+      url: "https://gh/issues/3",
+      labels: ["priority: high", "bug"],
+      assignees: ["dev"],
+    },
+  ],
   checkRuns: [{ name: "ci", state: "completed", conclusion: "success", url: "https://gh/runs/101" }],
   artifacts: [{ name: "logs", url: "https://gh/artifact/55", sizeBytes: 4096 }],
   releases: [{ name: "v1.0.0", tag: "v1.0.0", state: "published", url: "https://gh/releases/v1.0.0" }],
@@ -57,6 +66,9 @@ describe("GitHubStatusTab", () => {
     expect(screen.getByTestId("panel-prs")).toBeTruthy();
     // The issues panel lists the mirror's issues, each deep-linked.
     expect(screen.getByTestId("panel-issues")).toBeTruthy();
+    // ISI-4673: issues render as a Kanban board with the label-derived priority.
+    expect(screen.getByTestId("gh-issues-kanban")).toBeTruthy();
+    expect(screen.getByTestId("gh-issue-priority").textContent).toBe("High");
     expect(screen.getByTestId("panel-checks")).toBeTruthy();
     expect(screen.getByTestId("panel-artifacts")).toBeTruthy();
     expect(screen.getByTestId("panel-releases")).toBeTruthy();

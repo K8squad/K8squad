@@ -97,13 +97,18 @@ type GithubPR struct {
 	UpdatedAt   *time.Time `json:"updatedAt,omitempty"`
 }
 
-// GithubIssue is one mirrored issue.
+// GithubIssue is one mirrored issue. Labels + Assignees are the provider's own
+// normalized values (MirrorPayload.Labels/Assignees) projected verbatim so the
+// Issues Kanban board (ISI-4673) can render the real label set + assignees —
+// never fabricated: an issue with no labels/assignees marshals as absent.
 type GithubIssue struct {
 	Number    int        `json:"number"`
 	Title     string     `json:"title"`
 	State     string     `json:"state"`
 	URL       string     `json:"url,omitempty"`
 	Actor     string     `json:"actor,omitempty"`
+	Labels    []string   `json:"labels,omitempty"`
+	Assignees []string   `json:"assignees,omitempty"`
 	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
 }
 
@@ -333,6 +338,8 @@ func projectRow(out *GithubStatus, row *scm.MirrorRow) {
 			State:     row.State,
 			URL:       p.URL,
 			Actor:     row.Actor,
+			Labels:    p.Labels,
+			Assignees: p.Assignees,
 			UpdatedAt: nonZeroTime(p.UpdatedAt),
 		})
 	case scm.RecordTypeCheckRun:

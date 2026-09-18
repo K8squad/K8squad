@@ -3537,3 +3537,249 @@ a:hover {
 .github-view {
   margin-top: 12px;
 }
+/* ==========================================================================
+ * GitHub Issues Kanban board (ISI-4673) — priority-ordered columns derived
+ * purely from the mirror's issue state + its own labels. Brand accents from the
+ * ISI-4662 design system (teal #00bcd4 · orange #ff6b35 · green #4caf50 ·
+ * purple #9c27b0) layer over the console's surface/border/text tokens so the
+ * board stays legible in both themes.
+ * ==========================================================================*/
+.gh-issues {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+}
+.gh-issues__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.gh-issues__head h2 {
+  margin: 0;
+  margin-right: auto;
+}
+.gh-issues__summary {
+  font-size: 0.85rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.gh-issues__repo {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--radius-control, 8px);
+  border: 1px solid #00bcd4;
+  color: #00bcd4;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.gh-issues__repo:hover {
+  background: color-mix(in srgb, #00bcd4 14%, transparent);
+}
+
+.gh-issues__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 8px);
+}
+.gh-issues__stats li {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+.gh-issues__stat-value {
+  font-size: 1.05rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Priority queue — only issues that carry a REAL priority label appear. */
+.gh-priority-queue {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #ff6b35 45%, var(--border));
+  border-radius: var(--radius-control, 8px);
+  background: color-mix(in srgb, #ff6b35 6%, transparent);
+}
+.gh-priority-queue__title {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gh-priority-queue ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.gh-priority-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.85rem;
+}
+
+.gh-kanban {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 12px;
+}
+.gh-kanban-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--border);
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--surface) 88%, var(--text-2) 12%);
+}
+.gh-kanban-col--backlog {
+  border-top-color: #64748b;
+}
+.gh-kanban-col--todo {
+  border-top-color: #00bcd4;
+}
+.gh-kanban-col--in-progress {
+  border-top-color: #ff6b35;
+}
+.gh-kanban-col--done {
+  border-top-color: #4caf50;
+}
+.gh-kanban-col__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.gh-kanban-col__name {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.gh-kanban-col__count {
+  font-size: 11px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-2) 16%, transparent);
+  font-variant-numeric: tabular-nums;
+}
+.gh-kanban-col__cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+}
+.gh-kanban-col__empty {
+  margin: 0;
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+.gh-kanban-card {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 8px);
+  background: var(--surface);
+}
+.gh-kanban-card--blocked {
+  border-color: color-mix(in srgb, #fb7185 60%, var(--border));
+}
+.gh-kanban-card__title {
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.gh-issue-title {
+  color: var(--text-hi);
+  text-decoration: none;
+}
+.gh-issue-title:hover {
+  text-decoration: underline;
+}
+.gh-issue-num {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-2);
+}
+.gh-issue-ext {
+  color: #00bcd4;
+  margin-left: 3px;
+}
+.gh-issue-updated,
+.gh-kanban-col__empty {
+  font-size: 0.72rem;
+}
+.gh-kanban-card__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 8px;
+}
+.gh-label-chip {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.gh-kanban-card__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+.gh-issue-assignee {
+  font-weight: 500;
+  color: #9c27b0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Priority badges — the provider-label-derived level (no label ⇒ no badge). */
+.gh-priority-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: #fff;
+  white-space: nowrap;
+}
+.gh-priority-badge--critical {
+  background: #ef4444;
+}
+.gh-priority-badge--high {
+  background: #ff6b35;
+}
+.gh-priority-badge--medium {
+  background: #b45309;
+}
+.gh-priority-badge--low {
+  background: #64748b;
+}
+.gh-priority-badge--blocked {
+  background: #fb7185;
+}
+
+@media (max-width: 900px) {
+  .gh-kanban {
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+}

@@ -100,7 +100,7 @@ func TestGithubStatusProjection(t *testing.T) {
 		mirrorRow(scm.RecordTypePR, "8", "closed", "merged one", "dev",
 			scm.MirrorPayload{Number: 8, URL: "https://github.com/acme/web/pull/8", Merged: true}),
 		mirrorRow(scm.RecordTypeIssue, "3", "open", "a bug", "dev",
-			scm.MirrorPayload{Number: 3, URL: "https://github.com/acme/web/issues/3"}),
+			scm.MirrorPayload{Number: 3, URL: "https://github.com/acme/web/issues/3", Labels: []string{"priority: high", "bug"}, Assignees: []string{"alice"}}),
 		mirrorRow(scm.RecordTypeCheckRun, "101", "completed", "ci", "",
 			scm.MirrorPayload{URL: "https://github.com/acme/web/runs/101", Conclusion: "success"}),
 		mirrorRow(scm.RecordTypeArtifact, "55", "", "logs", "",
@@ -136,9 +136,12 @@ func TestGithubStatusProjection(t *testing.T) {
 	if got := prByNum[8]; got.ReviewState != PRMerged || !got.Merged {
 		t.Errorf("merged PR projected wrong: %+v", got)
 	}
-	// Issue.
+	// Issue: labels + assignees projected verbatim for the Kanban board (ISI-4673).
 	if len(st.Issues) != 1 || st.Issues[0].Number != 3 || st.Issues[0].State != "open" {
 		t.Errorf("issue projected wrong: %+v", st.Issues)
+	}
+	if got := st.Issues[0]; len(got.Labels) != 2 || got.Labels[0] != "priority: high" || len(got.Assignees) != 1 || got.Assignees[0] != "alice" {
+		t.Errorf("issue labels/assignees projected wrong: %+v", got)
 	}
 	// Check-run conclusion.
 	if len(st.CheckRuns) != 1 || st.CheckRuns[0].Conclusion != "success" || st.CheckRuns[0].Name != "ci" {

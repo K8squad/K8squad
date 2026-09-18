@@ -18,6 +18,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
+import { GitHubIssuesKanban } from "@/components/GitHubIssuesKanban";
 import { CiCdPipelineStatus } from "@/components/github/CiCdPipelineStatus";
 import { PullRequestManagement } from "@/components/github/PullRequestManagement";
 import { ReleasesBranchesScreen } from "@/components/github/ReleasesBranchesScreen";
@@ -274,7 +275,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
               aria-hidden={ghost ? "true" : undefined}
             >
               <PullRequestManagement data={data} ghost={ghost} />
-              <IssuePanel issues={data.issues} />
+              <GitHubIssuesKanban issues={data.issues} />
               <CiCdPipelineStatus data={data} />
               <ReleasePanel releases={data.releases} />
               <BranchPanel branches={data.branches} />
@@ -723,23 +724,6 @@ function Link({ url, children }: { url?: string; children: ReactNode }) {
     <a href={url} target="_blank" rel="noreferrer noopener">
       {children}
     </a>
-  );
-}
-
-function IssuePanel({ issues }: { issues: GithubStatus["issues"] }) {
-  if (issues.length === 0) return null;
-  return (
-    <div className="card" data-testid="panel-issues">
-      <h2>Issues</h2>
-      <ul>
-        {issues.map((it) => (
-          <li key={`issue-${it.number}`} data-testid="issue-row">
-            <Link url={it.url}>#{it.number} {it.title}</Link>{" "}
-            <span className="muted">{it.state}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
   );
 }
 
