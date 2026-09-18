@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   classifyOverviewStatus,
   phaseTone,
+  UNASSIGNED_PROJECT_BUCKET,
   type SquadOverviewData,
 } from "@/components/SquadOverview";
 import {
@@ -95,6 +96,20 @@ export function formatWhen(iso: string | null): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "—";
   return new Date(t).toISOString().slice(0, 16).replace("T", " ");
+}
+
+/** Split the fixed overview projection (ISI-4570) into real projects and the synthetic
+ * "Unassigned/other" bucket. The bucket is not a project: no card, no fan-out reads — its
+ * runs surface as a count on the Live Agent Runs panel (plan OQ1). */
+export function partitionProjects(projects: OverviewProject[] | null): {
+  projects: OverviewProject[];
+  unassigned: OverviewProject | null;
+} {
+  const all = projects ?? [];
+  return {
+    projects: all.filter((p) => p.name !== UNASSIGNED_PROJECT_BUCKET),
+    unassigned: all.find((p) => p.name === UNASSIGNED_PROJECT_BUCKET) ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -348,13 +363,26 @@ function RecentTicketWorkPanel({ state }: { state: WorkItemsState }) {
   );
 }
 
-function LiveRunsPanel({ projects }: { projects: OverviewProject[] | null }) {
+function LiveRunsPanel({
+  projects,
+  unassigned,
+}: {
+  projects: OverviewProject[] | null;
+  unassigned: OverviewProject | null;
+}) {
   const runs = fleetRuns(projects, PANEL_ROWS_LIMIT);
+  const unassignedCount = (unassigned?.runs ?? []).length;
   return (
     <PanelCard
       title="Live Agent Runs"
       action={{ label: "View all runs →", href: "/runs" }}
-      state={projects === null ? "loading" : runs.length === 0 ? "empty" : "ready"}
+      state={
+        projects === null
+          ? "loading"
+          : runs.length === 0 && unassignedCount === 0
+            ? "empty"
+            : "ready"
+      }
       emptyLabel="No agent runs."
     >
       <ul className="ov-thinking" data-testid="fleet-live-runs">
@@ -372,6 +400,11 @@ function LiveRunsPanel({ projects }: { projects: OverviewProject[] | null }) {
           </li>
         ))}
       </ul>
+      {unassignedCount > 0 && (
+        <p className="muted" style={{ fontSize: 12, margin: "8px 0 0" }} data-testid="fleet-unassigned-runs">
+          + {unassignedCount} unassigned {unassignedCount === 1 ? "run" : "runs"} (no resolvable project)
+        </p>
+      )}
     </PanelCard>
   );
 }
@@ -383,9 +416,13 @@ function LiveRunsPanel({ projects }: { projects: OverviewProject[] | null }) {
 export function FleetOverview() {
   const overview = useSquadOverview();
   const agents = useSquadAgents();
-  // Stable identity while the overview fetch doesn't change — the fan-out hooks key on it.
-  const projects = useMemo(
-    () => (overview.kind === "ready" ? (overview.data.projects ?? []) : []),
+  // Split the synthetic unassigned bucket out of the project list (ISI-4570): cards, the
+  // Projects tile, and the per-project fan-out reads only ever see REAL projects; the bucket's
+  // runs surface as a count on the Live Agent Runs panel. Stable identity per overview fetch —
+  // the fan-out hooks key on it.
+  const { projects, unassigned } = useMemo(
+    () =>
+      partitionProjects(overview.kind === "ready" ? overview.data.projects : null),
     [overview],
   );
   const workItems = useFleetWorkItems(projects);
@@ -444,7 +481,7 @@ export function FleetOverview() {
         />
         <StatTile
           label="Projects"
-          value={overview.data.projects?.length ?? 0}
+          value={projects.length}
           sub={overview.data.fleet ? "all squads" : overview.data.team.name}
         />
         <StatTile
@@ -468,21 +505,21 @@ export function FleetOverview() {
       </StatBand>
 
       <div className="ov-fleet-grid" data-testid="fleet-projects">
-        {overview.data.projects?.map((p) => (
+        {projects.map((p) => (
           <ProjectCard
             key={`${p.namespace}/${p.name}`}
             project={p}
             items={workItems.kind === "ready" ? (workItems.byProject.get(p.name) ?? []) : null}
           />
         ))}
-        {(overview.data.projects?.length ?? 0) === 0 && (
+        {projects.length === 0 && (
           <p className="muted">No projects yet.</p>
         )}
       </div>
 
       <div className="ov-bottom-row">
         <RecentTicketWorkPanel state={workItems} />
-        <LiveRunsPanel projects={overview.data.projects} />
+        <LiveRunsPanel projects={projects} unassigned={unassigned} />
       </div>
     </div>
   );

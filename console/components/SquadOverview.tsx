@@ -38,6 +38,11 @@ export interface ProjectOverview {
   phaseCounts: Record<string, number>;
 }
 
+/** Synthetic bucket name the apiserver uses for runs whose projectRef doesn't resolve to a
+ * listed Project (ISI-4570, overview.go). It is NOT a real project: overviews must never render
+ * it as a project card/link — surface its runs as a count bucket instead (plan OQ1). */
+export const UNASSIGNED_PROJECT_BUCKET = "Unassigned/other";
+
 export interface SquadOverviewData {
   team: { name: string; namespace: string; uid: string };
   projects: ProjectOverview[] | null;
