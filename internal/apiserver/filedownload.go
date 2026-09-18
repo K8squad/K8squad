@@ -117,6 +117,9 @@ func (s *Server) streamFile(w http.ResponseWriter, r *http.Request, reader Works
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
 	w.Header().Set("Content-Length", strconv.Itoa(len(fc.Data)))
 	w.WriteHeader(http.StatusOK)
+	// #nosec G705 -- workspace file bytes streamed as application/octet-stream with
+	// Content-Disposition: attachment; the route never emits text/html, so the tainted
+	// file content cannot reach an HTML rendering sink.
 	_, _ = w.Write(fc.Data)
 }
 

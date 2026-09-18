@@ -376,8 +376,9 @@ func (s *Server) gitLastChange(ctx context.Context, rel string) *GitChange {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	// #nosec G204 -- fixed `git` binary; rel is already jail-canonicalised by cleanRel and passed
-	// after `--` as a data operand, never a flag. No shell is involved.
+	// #nosec G204 G702 -- fixed `git` binary; rel is already jail-canonicalised by cleanRel
+	// and passed after `--` as a data operand, never a flag. No shell is involved, so a
+	// jail-relative path cannot inject a command or an option.
 	cmd := exec.CommandContext(ctx, "git", "-C", s.realRoot,
 		"log", "-1", "--format=%H%x00%an%x00%s%x00%aI", "--", rel)
 	cmd.Env = append([]string{},
