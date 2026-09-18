@@ -2963,12 +2963,229 @@ a:hover {
   background: var(--surface);
 }
 .github-stat-tile__value {
-  font-size: 1.5rem;
+  font-size: 1.75rem;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  line-height: 1.1;
 }
 .github-stat-tile__label {
   font-size: 0.8rem;
+}
+.github-stat-tile__sub {
+  font-size: 0.72rem;
+}
+
+/* ============================================================================
+ * GitHub Overview Dashboard (ISI-4671) — repo header, metric band, activity
+ * timeline and repo-health sidebar. Layout + accent palette match the approved
+ * mockup; surfaces/text reuse the locked tokens so dark ⇄ light both work. The
+ * mockup accent hues are theme-invariant and scoped here.
+ * ==========================================================================*/
+.github-status__title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-right: auto;
+  min-width: 0;
+}
+.github-status__title h1 {
+  margin-right: 0;
+}
+.github-repo-slug {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-2);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.github-repo-slug:hover {
+  color: #00bcd4;
+}
+.github-ext {
+  color: #00bcd4;
+  font-size: 0.85em;
+}
+.github-open-github {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, #00bcd4 55%, transparent);
+  border-radius: var(--radius-control, 8px);
+  color: #00bcd4;
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.github-open-github:hover {
+  background: color-mix(in srgb, #00bcd4 12%, transparent);
+}
+
+/* Metric accent hues (theme-invariant, from the approved mockup). */
+.github-tone--teal {
+  color: #00bcd4;
+}
+.github-tone--green {
+  color: #4caf50;
+}
+.github-tone--orange {
+  color: #ff6b35;
+}
+.github-tone--purple {
+  color: #9c27b0;
+}
+.github-tone--bg-green {
+  background: #4caf50;
+  color: #fff;
+}
+.github-tone--bg-red {
+  background: #fb7185;
+  color: #fff;
+}
+.github-tone--bg-blue {
+  background: #3d7dff;
+  color: #fff;
+}
+
+.github-overview {
+  margin-top: 16px;
+}
+.github-overview__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(240px, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .github-overview__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Activity timeline. */
+.github-timeline {
+  padding: 0;
+  overflow: hidden;
+}
+.github-timeline__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--inset);
+}
+.github-timeline__head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.github-timeline__list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+}
+.github-timeline__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius-control);
+}
+.github-timeline__row + .github-timeline__row {
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.github-timeline__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  flex: none;
+}
+.github-timeline__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  margin-right: auto;
+}
+.github-timeline__body a {
+  color: var(--text-hi);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.github-timeline__body a:hover {
+  text-decoration: underline;
+}
+.github-timeline__meta {
+  font-size: 0.74rem;
+}
+.github-timeline__badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+/* Repo-health sidebar. */
+.github-health {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.github-health__title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.github-health__score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 12px;
+  border-radius: var(--radius-control);
+  background: var(--inset);
+}
+.github-health__value {
+  font-size: 2.25rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: #4caf50;
+  font-variant-numeric: tabular-nums;
+}
+.github-health__tier {
+  font-size: 0.8rem;
+}
+.github-health__signals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+.github-health__signal {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.github-health__signal dt {
+  font-size: 0.8rem;
+}
+.github-health__signal dd {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.github-health__note {
+  margin: 0;
+  font-size: 0.72rem;
 }
 
 /* Degrade, don't blank: last-good data stays visible but ghosted behind the
@@ -2977,4 +3194,308 @@ a:hover {
   opacity: 0.45;
   filter: grayscale(0.35);
   pointer-events: none;
+}
+
+/* ============================================================================
+ * GitHub Mobile Responsive View (ISI-4676) — touch-optimized layout for <768px.
+ *
+ * Matches the board-approved mobile mockup: full-width sync bar, a 2-up quick
+ * stats grid, and stacked activity cards with large (~44px) tap targets.
+ * Everything is scoped under `.github-status` so the mobile rules can only ever
+ * touch the GitHub screen — never other `.card`/`ul`/`li` surfaces app-wide.
+ * Deep links (`↗`) and the honest "synced … ago" chip are pure content and stay
+ * untouched; only presentation changes.
+ * ========================================================================== */
+@media (max-width: 768px) {
+  /* Never let a wide child push the page into horizontal scroll. */
+  .github-status {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* ---- header: title / sync bar / actions, each on its own row ------------ */
+  .github-status .github-status__head {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+  }
+  .github-status .github-status__title {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  /* Full-width sync bar (mockup: dot + "Synced · N ago" + refresh affordance). */
+  .github-status .github-chip {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+    border-radius: var(--radius-control);
+  }
+  .github-status .github-chip__dot {
+    width: 10px;
+    height: 10px;
+  }
+  /* Refresh + Open-on-GitHub share the third row, both large tap targets. */
+  .github-status .github-refresh,
+  .github-status .github-open-github {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 auto;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+  .github-status .github-repo-slug {
+    min-height: 32px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .github-status .github-status__autoline {
+    text-align: center;
+  }
+
+  /* ---- state cards: full-width, comfortable CTA --------------------------- */
+  .github-status .github-state-card {
+    border-left-width: 3px;
+    border-radius: var(--radius-card);
+    padding: 16px;
+  }
+  .github-status .github-state-card__headline {
+    font-size: 1.05rem;
+  }
+  .github-status .github-state-card__cta {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    width: 100%;
+    padding: 12px 18px;
+    font-size: 0.95rem;
+  }
+
+  /* ---- quick stats: 2-up grid (mockup shows Branches/PRs/Issues/Checks) -- */
+  .github-status .github-stat-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 16px 0;
+  }
+  .github-status .github-stat-tile {
+    min-height: 84px;
+    justify-content: center;
+    padding: 14px;
+  }
+  .github-status .github-stat-tile__value {
+    font-size: 1.6rem;
+    line-height: 1.15;
+  }
+  .github-status .github-stat-tile__label {
+    font-size: 0.82rem;
+  }
+  .github-status .github-stat-tile__sub {
+    font-size: 0.74rem;
+  }
+
+  /* ---- overview grid stacks (grid already collapses ≤900, keep spacing) -- */
+  .github-status .github-overview {
+    margin-top: 16px;
+  }
+  .github-status .github-overview__grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+    margin-top: 16px;
+  }
+
+  /* ---- activity timeline: roomy rows + wrapping titles ------------------- */
+  .github-status .github-timeline__head {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+  }
+  .github-status .github-timeline__list {
+    padding: 4px;
+  }
+  .github-status .github-timeline__row {
+    align-items: flex-start;
+    gap: 12px;
+    min-height: 64px;
+    padding: 14px 12px;
+  }
+  .github-status .github-timeline__dot {
+    width: 11px;
+    height: 11px;
+    margin-top: 3px;
+  }
+  .github-status .github-timeline__body {
+    gap: 4px;
+  }
+  .github-status .github-timeline__body a {
+    font-size: 0.98rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .github-status .github-timeline__meta {
+    font-size: 0.78rem;
+  }
+  .github-status .github-timeline__badge {
+    padding: 4px 10px;
+    font-size: 0.74rem;
+  }
+
+  /* ---- repo health: full-width card, larger score ------------------------ */
+  .github-status .github-health {
+    gap: 10px;
+  }
+  .github-status .github-health__value {
+    font-size: 2.4rem;
+  }
+  .github-status .github-health__signal {
+    padding: 8px 0;
+  }
+  .github-status .github-health__signal dd {
+    font-size: 1rem;
+  }
+
+  /* ---- entity panels: single-column stack, touch-sized rows -------------- */
+  .github-status .github-status__panels {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .github-status .github-status__panels .card {
+    border-radius: var(--radius-card);
+    overflow: hidden;
+  }
+  .github-status .github-status__panels .card h2 {
+    margin: 0;
+    padding: 14px 16px;
+    background: var(--inset);
+    border-bottom: 1px solid var(--border);
+    font-size: 1rem;
+  }
+  .github-status .github-status__panels .card ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .github-status .github-status__panels .card li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    min-height: 52px;
+    padding: 12px 16px;
+  }
+  .github-status .github-status__panels .card li + li {
+    border-top: 1px solid var(--border);
+  }
+  .github-status .github-status__panels .card li a {
+    font-size: 0.98rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .github-status .github-status__panels .card li .muted {
+    font-size: 0.82rem;
+  }
+
+  /* ---- shared GitHub screens (.gh-*): stack grids, enlarge controls ------ */
+  .github-status .gh-screen__head {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .github-status .gh-actions .gh-btn {
+    flex: 1 1 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .github-status .gh-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .github-status .gh-panel__head {
+    flex-wrap: wrap;
+  }
+  .github-status .gh-panel__action {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  /* Pull requests: one card per row; keep the stage flow scrollable in-place. */
+  .github-status .gh-pr-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .github-status .gh-pr-card__meta {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .github-status .gh-pr-card__detail {
+    min-height: 40px;
+    padding: 8px 14px;
+  }
+  .github-status .gh-pr-detail__fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .github-status .gh-pr-flow,
+  .github-status .gh-cicd-stages {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* CI/CD: history rows wrap so long run names never force horizontal scroll. */
+  .github-status .gh-cicd-run,
+  .github-status .gh-cicd-artifact {
+    flex-wrap: wrap;
+  }
+  .github-status .gh-cicd-run__name,
+  .github-status .gh-cicd-artifact__name {
+    flex: 1 1 100%;
+    overflow-wrap: anywhere;
+  }
+  .github-status .gh-cicd-run .gh-badge {
+    margin-left: 0;
+  }
+
+  /* Releases: side actions drop under the notes instead of squeezing them. */
+  .github-status .gh-release__row {
+    align-items: flex-start;
+  }
+  .github-status .gh-release__side {
+    margin-left: 0;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .github-status .gh-release__download {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    padding: 8px 14px;
+  }
+
+  /* Releases stats + branches: 2-up stats, single-column branch cards. */
+  .github-status .gh-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .github-status .gh-branches {
+    flex-direction: column;
+  }
+  .github-status .gh-branch {
+    width: 100%;
+    min-width: 0;
+    padding: 12px 14px;
+  }
+  .github-status .gh-notes {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .github-status .gh-notes__text {
+    margin-right: 0;
+  }
+  .github-status .gh-notes .gh-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
 }

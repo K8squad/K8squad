@@ -3,7 +3,7 @@
 // AC5 loading/empty/501 honest states, and no-credential-in-DOM (AC6).
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import { GitHubStatusTab } from "@/components/GitHubStatusTab";
 import type { GithubStatus } from "@/lib/github-status";
 
@@ -55,29 +55,121 @@ describe("GitHubStatusTab", () => {
 
     await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
     expect(screen.getByTestId("panel-prs")).toBeTruthy();
+    // The issues panel lists the mirror's issues, each deep-linked.
     expect(screen.getByTestId("panel-issues")).toBeTruthy();
     expect(screen.getByTestId("panel-checks")).toBeTruthy();
     expect(screen.getByTestId("panel-artifacts")).toBeTruthy();
     expect(screen.getByTestId("panel-releases")).toBeTruthy();
     expect(screen.getByTestId("panel-branches")).toBeTruthy();
 
-    // PRs both rendered; open shows review state, merged shows merged.
+    // PRs both rendered; the Pull Request Management screen shows the raw
+    // review state on each card (ISI-4672).
     expect(screen.getAllByTestId("pr-row")).toHaveLength(2);
-    expect(screen.getByText(/ready-for-review/)).toBeTruthy();
-    expect(screen.getByText(/merged/)).toBeTruthy();
-    // Check conclusion surfaced.
-    expect(screen.getByText(/success/)).toBeTruthy();
+    // Scoped to the PR panel so it can't collide with the overview timeline/badges.
+    const prPanel = within(screen.getByTestId("panel-prs"));
+    expect(prPanel.getByText(/ready-for-review/)).toBeTruthy();
+    expect(prPanel.getByText(/merged/)).toBeTruthy();
+    // Check conclusion surfaced (scoped to the CI/CD panel: the overview's
+    // "CI success rate" label also matches an unscoped /success/ query).
+    expect(within(screen.getByTestId("panel-checks")).getByText(/success/)).toBeTruthy();
 
-    // Links point at the normalized GitHub url.
-    const pr7 = screen.getByText(/#7 add feature/).closest("a");
-    expect(pr7?.getAttribute("href")).toBe("https://gh/pull/7");
+    // Each PR title deep-links to the normalized GitHub url via `pull/{n}`.
+    const pr7 = screen.getAllByTestId("gh-pr-link")[0];
+    expect(pr7.getAttribute("href")).toBe("https://gh/pull/7");
+    expect(pr7.textContent).toMatch(/#7: add feature/);
 
     // Branches: default badge + short head SHA, default branch links out.
-    expect(screen.getAllByTestId("branch-row")).toHaveLength(2);
-    const main = screen.getByText(/main/).closest("a");
+    // Scoped to the branch panel (other screens also mention "main"/"default").
+    const branchPanel = within(screen.getByTestId("panel-branches"));
+    expect(branchPanel.getAllByTestId("branch-row")).toHaveLength(2);
+    const main = branchPanel.getByText(/main/).closest("a");
     expect(main?.getAttribute("href")).toBe("https://gh/tree/main");
-    expect(screen.getByText(/default/)).toBeTruthy();
-    expect(screen.getByText(/abc1234/)).toBeTruthy();
+    expect(branchPanel.getByText(/default/)).toBeTruthy();
+    expect(branchPanel.getByText(/abc1234/)).toBeTruthy();
+  });
+
+  it("renders the CI/CD Pipeline Status screen with linked check runs (ISI-4674)", async () => {
+    stub(200, projection);
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("gh-cicd")).toBeTruthy());
+
+    // Summary band + stage flow derived from the one mirrored check run.
+    expect(screen.getByTestId("gh-cicd-summary").textContent).toMatch(/Success rate/);
+    const stage = screen.getByTestId("gh-cicd-stage");
+    expect(stage.getAttribute("data-status")).toBe("passed");
+    expect(stage.textContent).toMatch(/ci/);
+
+    // The run title deep-links back to GitHub (mirror-normalized url).
+    const link = screen.getByTestId("gh-cicd-run-link");
+    expect(link.getAttribute("href")).toBe("https://gh/runs/101");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.textContent).toMatch(/↗/);
+  });
+
+  it("renders the Overview Dashboard: metrics, timeline, repo health (ISI-4671)", async () => {
+    stub(200, projection);
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-overview")).toBeTruthy());
+
+    // 5-up activity metric band derived from the mirror rows.
+    expect(screen.getByTestId("stat-branches").textContent).toContain("2");
+    expect(screen.getByTestId("stat-open-prs").textContent).toContain("1");
+    expect(screen.getByTestId("stat-open-issues").textContent).toContain("1");
+    expect(screen.getByTestId("stat-check-runs").textContent).toContain("1");
+    expect(screen.getByTestId("stat-releases").textContent).toContain("1");
+    // Open/merged/closed breakdown on the PR tile.
+    expect(screen.getByTestId("stat-open-prs").textContent).toMatch(/1 merged · 0 closed/);
+
+    // Recent-activity timeline: one row per PR/issue/release, each deep-linked.
+    // Scoped to the timeline so it can't collide with the entity panels below.
+    const timeline = within(screen.getByTestId("github-timeline"));
+    expect(timeline.getAllByTestId("github-timeline-row")).toHaveLength(4);
+    expect(timeline.getByText(/PR #8: shipped/).closest("a")?.getAttribute("href")).toBe(
+      "https://gh/pull/8",
+    );
+    expect(timeline.getByText(/Issue #3: a bug/).closest("a")?.getAttribute("href")).toBe(
+      "https://gh/issues/3",
+    );
+    expect(timeline.getByText(/v1\.0\.0/).closest("a")?.getAttribute("href")).toBe(
+      "https://gh/releases/v1.0.0",
+    );
+
+    // Repo health is derived honestly: merged/closed (100%), checks (100%), issue close (0%).
+    expect(screen.getByTestId("github-health")).toBeTruthy();
+    expect(screen.getByTestId("health-score").textContent).toBe("67%");
+    expect(screen.getByTestId("health-tier").textContent).toBe("Fair");
+  });
+
+  it("header + repo slug deep-link to GitHub (ISI-4671)", async () => {
+    stub(200, projection);
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-repo-link")).toBeTruthy());
+    expect(screen.getByTestId("github-repo-link").getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad",
+    );
+    expect(screen.getByTestId("github-open-github").getAttribute("href")).toBe(
+      "https://github.com/K8squad/K8squad",
+    );
+    // The repo slug is rendered, and the external-link glyph is decorative.
+    expect(screen.getByTestId("github-repo-link").textContent).toMatch(/K8squad\/K8squad/);
+  });
+
+  it("degrades repo health to — (never a fabricated 0) when no signal is derivable", async () => {
+    stub(200, {
+      ...projection,
+      // A single open PR, no issues, no completed checks: no denominator anywhere.
+      pullRequests: [
+        { number: 1, title: "wip", state: "open", url: "https://gh/pull/1" },
+      ],
+      issues: [],
+      checkRuns: [],
+      releases: [],
+      branches: [],
+    });
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-health")).toBeTruthy());
+    expect(screen.getByTestId("health-score").textContent).toBe("—");
+    expect(screen.getByTestId("health-tier").textContent).toBe("Not enough data");
   });
 
   it("hides the branch panel when the mirror has no branch rows", async () => {

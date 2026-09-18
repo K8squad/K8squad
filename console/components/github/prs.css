@@ -1,0 +1,243 @@
+/* components/github/prs.css — Pull Request Management screen (ISI-4672).
+ *
+ * Companions the shared components/github/github-screens.css (base surfaces,
+ * .gh-panel, .gh-actions, .gh-btn, .gh-badge, .gh-ext) with the PR-specific
+ * pieces: the merge-pipeline flow, the PR card grid, the repo-check strip and
+ * the selected-PR detail panel. Colors are existing globals.css tokens or the
+ * shared `.gh-screen` accent set — no new global palette is introduced. */
+
+/* ---- merge-pipeline flow (PR Status Overview) --------------------------------------------- */
+.gh-pr-flow {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-x: auto;
+}
+.gh-pr-flow__node {
+  position: relative;
+  flex: 1 0 auto;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--status-idle);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+}
+.gh-pr-flow__node--blue { border-left-color: var(--accent); }
+.gh-pr-flow__node--amber { border-left-color: var(--status-paused); }
+.gh-pr-flow__node--green { border-left-color: var(--gh-green); }
+.gh-pr-flow__node--red { border-left-color: var(--status-blocked); }
+
+.gh-pr-flow__count {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-hi);
+}
+.gh-pr-flow__node--blue .gh-pr-flow__count { color: var(--accent); }
+.gh-pr-flow__node--amber .gh-pr-flow__count { color: var(--status-paused); }
+.gh-pr-flow__node--green .gh-pr-flow__count { color: var(--gh-green); }
+.gh-pr-flow__node--red .gh-pr-flow__count { color: var(--status-blocked); }
+
+.gh-pr-flow__label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.gh-pr-flow__connector {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid var(--status-idle);
+  transform: translateY(-50%);
+  z-index: 1;
+}
+.gh-pr-flow__node--blue .gh-pr-flow__connector { border-left-color: var(--accent); }
+.gh-pr-flow__node--amber .gh-pr-flow__connector { border-left-color: var(--status-paused); }
+.gh-pr-flow__node--green .gh-pr-flow__connector { border-left-color: var(--gh-green); }
+.gh-pr-flow__node--red .gh-pr-flow__connector { border-left-color: var(--status-blocked); }
+
+/* ---- status badge tones (PR stages) -------------------------------------------------------- */
+.gh-badge--open {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.gh-badge--review {
+  color: var(--status-paused);
+  border-color: color-mix(in srgb, var(--status-paused) 55%, transparent);
+  background: color-mix(in srgb, var(--status-paused) 14%, transparent);
+}
+.gh-badge--merged {
+  color: var(--gh-green);
+  border-color: color-mix(in srgb, var(--gh-green) 55%, transparent);
+  background: color-mix(in srgb, var(--gh-green) 14%, transparent);
+}
+.gh-badge--closed {
+  color: var(--status-blocked);
+  border-color: color-mix(in srgb, var(--status-blocked) 55%, transparent);
+  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
+}
+
+/* ---- PR card grid -------------------------------------------------------------------------- */
+.gh-pr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+.gh-pr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--gh-panel);
+  min-width: 0;
+}
+.gh-pr-card--selected {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+}
+.gh-pr-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.gh-pr-card__title {
+  min-width: 0;
+  font-size: 0.94rem;
+  font-weight: 600;
+  color: var(--text-hi);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+.gh-pr-card__title:hover { color: var(--gh-teal); text-decoration: none; }
+.gh-pr-card__head .gh-badge { margin-left: auto; flex: none; }
+
+.gh-pr-card__meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+}
+.gh-pr-card__field { min-width: 0; }
+.gh-pr-card__field dt {
+  margin: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gh-pr-card__field dd {
+  margin: 2px 0 0;
+  font-size: 0.82rem;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.gh-pr-card__branch {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-hi);
+}
+
+/* ---- repo-check strip (mockup "CI Status") ------------------------------------------------- */
+.gh-pr-card__checks {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+}
+.gh-pr-card__checks-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gh-pr-card__check-list {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.gh-pr-card__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-1);
+}
+.gh-pr-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--status-idle);
+}
+.gh-pr-dot--passed { background: var(--gh-green); }
+.gh-pr-dot--failed { background: var(--status-blocked); }
+.gh-pr-dot--running { background: var(--accent); }
+.gh-pr-dot--pending { background: var(--status-paused); }
+
+.gh-pr-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.gh-pr-card__foot .muted { margin-right: auto; }
+.gh-pr-card__detail {
+  padding: 4px 12px;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.gh-pr-card__detail[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.gh-pr-card__detail:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- selected-PR detail panel -------------------------------------------------------------- */
+.gh-pr-detail__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 0 0 14px;
+}
+.gh-pr-detail__fields dt {
+  margin: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gh-pr-detail__fields dd {
+  margin: 3px 0 0;
+  font-size: 0.85rem;
+  color: var(--text-hi);
+  overflow-wrap: anywhere;
+}
+.gh-pr-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
