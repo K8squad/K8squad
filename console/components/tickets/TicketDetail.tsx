@@ -312,15 +312,7 @@ function AssigneeControl({
       onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
-      setErr(
-        code === 403
-          ? "That agent isn't a member of this project's team."
-          : code === 409
-            ? "The ticket moved underneath you — re-synced from the server."
-            : code === 501
-              ? "Assigning agents isn't hosted on this deployment yet."
-              : "Couldn't assign the agent. Try again.",
-      );
+      setErr(assignErrorMessage(code));
       onAssigned(); // a 409 means the lane moved under us — re-sync
     } finally {
       setBusy(false);
@@ -548,6 +540,21 @@ function canComment(role: string): boolean {
   return role !== "viewer";
 }
 
+/**
+ * Assign-half error copy (403/409/501/other) — ONE map shared by the rail
+ * AssigneeControl and the composer's Comment-&-assign (ISI-4567 §2.3 "copy
+ * mirrors the rail"), so the two surfaces can never drift apart.
+ */
+function assignErrorMessage(code: number): string {
+  return code === 403
+    ? "That agent isn't a member of this project's team."
+    : code === 409
+      ? "The ticket moved underneath you — re-synced from the server."
+      : code === 501
+        ? "Assigning agents isn't hosted on this deployment yet."
+        : "Couldn't assign the agent. Try again.";
+}
+
 type ComposerStatus =
   | { kind: "idle" }
   | { kind: "posting" }
@@ -560,8 +567,16 @@ type ComposerStatus =
  * comment optimistically before asking the parent to re-fetch the thread. A viewer
  * (or an unresolved-role caller, fail-closed) sees the read-only surface; a 404/501
  * from the endpoint degrades to the honest "not wired on this deployment" gap
- * rather than a broken control (FR-I3). Plain Comment only — Comment-&-assign
- * (assign-half) waits on backend child f72cb481.
+ * rather than a broken control (FR-I3).
+ *
+ * ISI-4579 (ISI-4567 §2.3): beside **Comment** sits the Comment-&-assign pair —
+ * the squad-roster `<select>` + a secondary submit that SEQUENTIALLY chains the
+ * comment POST with `dispatchWorkItem` (todo re-assign now rides the same verb,
+ * ISI-4573). NOT atomic: the comment half owns the composer's own error/degrade
+ * states, and once it lands the text is kept as a posted comment no matter what
+ * the assign half does — an assign 403/409 shows the rail's error copy inline
+ * (assignErrorMessage) with the composer still usable, and an assign 501 disables
+ * just the assign button with honest copy. ⌘/Ctrl+Enter stays a plain Comment.
  */
 function Composer({
   workItemId,
@@ -576,6 +591,26 @@ function Composer({
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
+  // Comment-&-assign state: the roster pick, the assign-half inline error, and
+  // the 501 latch (assignment not hosted — the assign button alone goes away).
+  const [agents, setAgents] = useState<AgentOption[]>([]);
+  const [assignee, setAssignee] = useState("");
+  const [assignErr, setAssignErr] = useState<string | null>(null);
+  const [assignUnavailable, setAssignUnavailable] = useState(false);
+  const [assigning, setAssigning] = useState(false);
+
+  // Same best-effort roster the rail AssigneeControl loads; an empty list just
+  // leaves the placeholder ("Loading squad…") — the plain Comment path is unaffected.
+  useEffect(() => {
+    if (!canComment) return;
+    let alive = true;
+    void listSquadAgents().then((list) => {
+      if (alive) setAgents(list);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [canComment]);
 
   if (!canComment) {
     return (
@@ -610,23 +645,26 @@ function Composer({
   }
 
   const posting = status.kind === "posting";
+  const assigningBusy = posting || assigning;
   const submitDisabled = posting || text.trim() === "";
+  const submitAssignDisabled =
+    assigningBusy || text.trim() === "" || assignee === "" || assignUnavailable;
 
-  async function submit() {
-    const value = text.trim();
-    if (value === "" || posting) return;
+  /**
+   * The comment half — shared by plain Comment and Comment-&-assign. Returns the
+   * persisted comment on 201; on failure it has already applied the composer's
+   * own error/degrade state (404/501 ⇒ not-wired, else inline copy) and returns
+   * null, so callers never chain an assign behind a comment that didn't land.
+   */
+  async function postComment(value: string): Promise<PostedComment | null> {
     setStatus({ kind: "posting" });
     try {
-      const comment = await postWorkItemComment(workItemId, value);
-      onOptimisticAppend(comment);
-      setText("");
-      setStatus({ kind: "idle" });
-      onPosted(comment);
+      return await postWorkItemComment(workItemId, value);
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
       if (code === 404 || code === 501) {
         setStatus({ kind: "not-wired" });
-        return;
+        return null;
       }
       setStatus({
         kind: "error",
@@ -639,6 +677,56 @@ function Composer({
                 ? "That comment couldn’t be posted. Check the text and try again."
                 : "Couldn’t reach the server. Try again.",
       });
+      return null;
+    }
+  }
+
+  async function submit() {
+    const value = text.trim();
+    if (value === "" || assigningBusy) return;
+    const comment = await postComment(value);
+    if (!comment) return;
+    onOptimisticAppend(comment);
+    setText("");
+    setStatus({ kind: "idle" });
+    onPosted(comment);
+  }
+
+  /**
+   * Comment-&-assign (ISI-4567 §2.3): SEQUENTIAL, not atomic — comment first,
+   * then `dispatchWorkItem`. The moment the comment lands it is kept (optimistic
+   * append + text cleared into the thread) no matter what the assign half does:
+   * the human's words are never lost to an assign 403/409/501. An assign failure
+   * shows the rail's copy inline (assignErrorMessage) and the composer stays
+   * usable; a 501 additionally latches the assign button off. Either way the
+   * parent re-fetches — the comment reconciles, and a 409 re-syncs lane truth.
+   */
+  async function submitAssign() {
+    const value = text.trim();
+    if (value === "" || assignee === "" || assigningBusy || assignUnavailable) {
+      return;
+    }
+    setAssignErr(null);
+    setAssigning(true);
+    const comment = await postComment(value);
+    if (!comment) {
+      setAssigning(false);
+      return;
+    }
+    // Comment landed — keep it before the assign half even fires.
+    onOptimisticAppend(comment);
+    setText("");
+    setStatus({ kind: "idle" });
+    try {
+      await dispatchWorkItem(workItemId, assignee);
+      setAssignee("");
+    } catch (err) {
+      const code = err instanceof ApiError ? err.status : 0;
+      setAssignErr(assignErrorMessage(code));
+      if (code === 501) setAssignUnavailable(true);
+    } finally {
+      setAssigning(false);
+      onPosted(comment);
     }
   }
 
@@ -684,7 +772,46 @@ function Composer({
         >
           {posting ? "Posting…" : "Comment"}
         </button>
+        {/* ISI-4567 §2.3: the assign pair beside Comment — same roster the rail
+            loads; the pick only arms the secondary submit, never dispatches on
+            its own (a comment always precedes the assign). */}
+        <select
+          data-testid="detail-composer-assignee"
+          aria-label="Assign to agent"
+          value={assignee}
+          disabled={assigningBusy}
+          onChange={(e) => setAssignee(e.target.value)}
+        >
+          <option value="">
+            {agents.length > 0 ? "Assign to…" : "Loading squad…"}
+          </option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.name}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="ksq-btn"
+          data-testid="detail-composer-submit-assign"
+          disabled={submitAssignDisabled}
+          onClick={() => {
+            void submitAssign();
+          }}
+        >
+          {assigning ? "Posting…" : "Comment & assign"}
+        </button>
       </div>
+      {assignErr && (
+        <p
+          className="ksq-composer__error"
+          role="alert"
+          data-testid="detail-composer-assign-error"
+        >
+          {assignErr}
+        </p>
+      )}
     </form>
   );
 }
