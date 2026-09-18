@@ -25,6 +25,13 @@ export type GithubIssue = {
   state: string;
   url?: string;
   actor?: string;
+  /** The provider's own label set (MirrorPayload.Labels), projected verbatim.
+   * The Issues Kanban board derives its priority badge from these — absent
+   * means "no label", never a fabricated one. */
+  labels?: string[];
+  /** The provider's own assignees (MirrorPayload.Assignees), projected verbatim.
+   * Absent means "unassigned", never a fabricated agent. */
+  assignees?: string[];
   updatedAt?: string;
 };
 
