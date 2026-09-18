@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // TestTraceValidator validates trace completeness checking
@@ -57,7 +57,7 @@ func TestTraceAnalyzer(t *testing.T) {
 	analyzer := NewTraceAnalyzer()
 
 	ctx := context.Background()
-	tracer := trace.NewNoopTracerProvider().Tracer("test")
+	tracer := noop.NewTracerProvider().Tracer("test")
 	_, span := tracer.Start(ctx, "run.start")
 
 	analysis := analyzer.AnalyzeTrace(ctx, "run.start", span)
@@ -71,7 +71,7 @@ func TestTraceAnalyzer(t *testing.T) {
 // TestAnalyzeSpanGlobal exercises the global-analyzer convenience wrapper.
 func TestAnalyzeSpanGlobal(t *testing.T) {
 	ctx := context.Background()
-	tracer := trace.NewNoopTracerProvider().Tracer("test")
+	tracer := noop.NewTracerProvider().Tracer("test")
 	_, span := tracer.Start(ctx, "llm.call")
 
 	analysis := AnalyzeSpan(ctx, "llm.call", span)
@@ -83,7 +83,7 @@ func TestClearOldTraces(t *testing.T) {
 	analyzer := NewTraceAnalyzer()
 
 	ctx := context.Background()
-	tracer := trace.NewNoopTracerProvider().Tracer("test")
+	tracer := noop.NewTracerProvider().Tracer("test")
 	_, span := tracer.Start(ctx, "run.start")
 	_ = analyzer.AnalyzeTrace(ctx, "run.start", span)
 

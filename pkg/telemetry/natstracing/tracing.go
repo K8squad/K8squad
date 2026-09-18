@@ -104,7 +104,7 @@ func (w *WrappedConn) PublishWithContext(ctx context.Context, subject string, da
 	msg := &nats.Msg{Subject: subject, Data: data, Header: make(nats.Header)}
 	InjectTraceContext(ctx, msg)
 
-	err := w.Conn.PublishMsg(msg)
+	err := w.PublishMsg(msg)
 
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("publish failed: %v", err))
@@ -116,7 +116,7 @@ func (w *WrappedConn) PublishWithContext(ctx context.Context, subject string, da
 
 // SubscribeWithContext creates a subscription with tracing
 func (w *WrappedConn) SubscribeWithContext(ctx context.Context, subject string, handler nats.MsgHandler) (*nats.Subscription, error) {
-	ctx, span := w.tracer.Start(ctx, spanNATSSubscribe,
+	_, span := w.tracer.Start(ctx, spanNATSSubscribe,
 		trace.WithAttributes(
 			attribute.String(keyMessagingSystem, messagingSystemNATS),
 			attribute.String(keyMessagingDestination, subject),
@@ -127,7 +127,7 @@ func (w *WrappedConn) SubscribeWithContext(ctx context.Context, subject string, 
 	)
 	defer span.End()
 
-	sub, err := w.Conn.Subscribe(subject, func(msg *nats.Msg) {
+	sub, err := w.Subscribe(subject, func(msg *nats.Msg) {
 		// ISI-4540: continue the producer's trace from the message headers so
 		// the receive span is a child of the publish span, not a new root.
 		msgCtx, msgSpan := w.tracer.Start(ExtractTraceContext(msg), spanNATSMessage,
@@ -189,7 +189,7 @@ func (j *JetStreamContext) PublishStream(ctx context.Context, stream string, sub
 	msg := &nats.Msg{Subject: subject, Data: data, Header: make(nats.Header)}
 	InjectTraceContext(ctx, msg)
 
-	ack, err := j.JetStreamContext.PublishMsg(msg)
+	ack, err := j.PublishMsg(msg)
 
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("stream publish failed: %v", err))
@@ -207,7 +207,7 @@ func (j *JetStreamContext) CreateConsumer(ctx context.Context, stream string, co
 	if config != nil {
 		consumerName = config.Name
 	}
-	ctx, span := j.tracer.Start(ctx, spanNATSConsumer,
+	_, span := j.tracer.Start(ctx, spanNATSConsumer,
 		trace.WithAttributes(
 			attribute.String(keyMessagingSystem, messagingSystemNATS),
 			attribute.String(keyMessagingDestination, stream),
@@ -219,7 +219,7 @@ func (j *JetStreamContext) CreateConsumer(ctx context.Context, stream string, co
 	)
 	defer span.End()
 
-	info, err := j.JetStreamContext.AddConsumer(stream, config)
+	info, err := j.AddConsumer(stream, config)
 
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("consumer create failed: %v", err))
