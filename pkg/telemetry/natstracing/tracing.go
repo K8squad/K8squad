@@ -22,6 +22,7 @@ package natstracing
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,21 +31,30 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 )
 
 const (
 	// Instrumentation name for NATS spans
 	instrumentationName = "github.com/K8squad/K8squad/pkg/telemetry/natstracing"
-	
+
 	// Span names
-	spanNATSConnect      = "nats.connect"
-	spanNATSPublish      = "nats.publish"
-	spanNATSSubscribe    = "nats.subscribe"
-	spanNATSStream       = "nats.stream"
-	spanNATSConsumer     = "nats.consumer"
-	spanNATSMessage      = "nats.message"
-	
+	spanNATSConnect   = "nats.connect"
+	spanNATSPublish   = "nats.publish"
+	spanNATSSubscribe = "nats.subscribe"
+	spanNATSStream    = "nats.stream"
+	spanNATSConsumer  = "nats.consumer"
+	spanNATSMessage   = "nats.message"
+
+	// Messaging semantic-convention attribute keys (matching
+	// pkg/events/jetstream/subscriber.go so both sides of the bus render
+	// identically in the backend).
+	keyMessagingSystem      = "messaging.system"
+	keyMessagingOperation   = "messaging.operation"
+	keyMessagingDestination = "messaging.destination.name"
+	keyMessagingMessageID   = "messaging.message.id"
+
+	messagingSystemNATS = "nats"
+
 	// K8squad-specific attributes
 	attrComponent     = attribute.Key("ksquad.component")
 	attrMessageType   = attribute.Key("ksquad.message.type")
@@ -52,7 +62,7 @@ const (
 	attrMessageTarget = attribute.Key("ksquad.message.target")
 	attrSubject       = attribute.Key("ksquad.subject")
 	attrStreamName    = attribute.Key("ksquad.stream.name")
-	attrConsumerName   = attribute.Key("ksquad.consumer.name")
+	attrConsumerName  = attribute.Key("ksquad.consumer.name")
 )
 
 // Tracer returns the NATS tracer
@@ -74,78 +84,75 @@ func WrapConn(nc *nats.Conn) *WrappedConn {
 	}
 }
 
-// PublishWithContext publishes a message with tracing
+// PublishWithContext publishes a message with tracing. ISI-4540: the publish
+// is a producer span AND the trace context is injected into the message
+// headers, so the consumer side can continue the same distributed trace.
 func (w *WrappedConn) PublishWithContext(ctx context.Context, subject string, data []byte) error {
 	ctx, span := w.tracer.Start(ctx, spanNATSPublish,
+		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(
-			semconv.MessagingSystemNATS,
-			semconv.MessagingDestinationKindTopic.String(subject),
+			attribute.String(keyMessagingSystem, messagingSystemNATS),
+			attribute.String(keyMessagingOperation, "publish"),
+			attribute.String(keyMessagingDestination, subject),
 			attrSubject.String(subject),
+			attrComponent.String("nats"),
 		),
 		trace.WithTimestamp(time.Now()),
 	)
 	defer span.End()
-	
-	err := w.Conn.Publish(subject, data)
-	
+
+	msg := &nats.Msg{Subject: subject, Data: data, Header: make(nats.Header)}
+	InjectTraceContext(ctx, msg)
+
+	err := w.PublishMsg(msg)
+
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("publish failed: %v", err))
 		span.RecordError(err)
 	}
-	
-	span.SetAttributes(attrComponent.String("nats"))
-	span.SetAttributes(attrMessageSource.String("operator"))
-	
+
 	return err
 }
 
 // SubscribeWithContext creates a subscription with tracing
 func (w *WrappedConn) SubscribeWithContext(ctx context.Context, subject string, handler nats.MsgHandler) (*nats.Subscription, error) {
-	ctx, span := w.tracer.Start(ctx, spanNATSSubscribe,
+	_, span := w.tracer.Start(ctx, spanNATSSubscribe,
 		trace.WithAttributes(
-			semconv.MessagingSystemNATS,
-			semconv.MessagingDestinationKindTopic.String(subject),
+			attribute.String(keyMessagingSystem, messagingSystemNATS),
+			attribute.String(keyMessagingDestination, subject),
 			attrSubject.String(subject),
+			attrComponent.String("nats"),
 		),
 		trace.WithTimestamp(time.Now()),
 	)
 	defer span.End()
-	
-	sub, err := w.Conn.Subscribe(subject, func(msg *nats.Msg) {
-		// Create a span for each message received
-		msgCtx, msgSpan := w.tracer.Start(msg.Context, spanNATSMessage,
+
+	sub, err := w.Subscribe(subject, func(msg *nats.Msg) {
+		// ISI-4540: continue the producer's trace from the message headers so
+		// the receive span is a child of the publish span, not a new root.
+		msgCtx, msgSpan := w.tracer.Start(ExtractTraceContext(msg), spanNATSMessage,
+			trace.WithSpanKind(trace.SpanKindConsumer),
 			trace.WithAttributes(
-				semconv.MessagingSystemNATS,
-				semconv.MessagingDestinationKindTopic.String(msg.Subject),
-				semconv.MessagingMessageID.String(msg.Reply),
+				attribute.String(keyMessagingSystem, messagingSystemNATS),
+				attribute.String(keyMessagingOperation, "receive"),
+				attribute.String(keyMessagingDestination, msg.Subject),
 				attrSubject.String(msg.Subject),
 				attrMessageType.String("a2a.event"),
-				attrMessageSource.String("operator"),
-				attrMessageTarget.String("supervisor"),
 			),
 		)
-		
-		// Attach trace context to the message if not already present
-		if msg.Header == nil {
-			msg.Header = make(nats.Header)
-		}
-		otel.GetTextMapPropagator().Inject(msgCtx, nats.HeaderCarrier(msg.Header))
-		
-		// Call the original handler with traced context
+		_ = msgCtx
+
 		handler(msg)
-		
+
 		msgSpan.End()
 	})
-	
+
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("subscribe failed: %v", err))
 		span.RecordError(err)
 		return nil, err
 	}
-	
-	span.SetAttributes(attrComponent.String("nats"))
-	span.SetAttributes(attrMessageTarget.String("supervisor"))
-	
+
 	return sub, nil
 }
 
@@ -159,63 +166,68 @@ type JetStreamContext struct {
 func WrapJetStream(jsc nats.JetStreamContext, tracer trace.Tracer) *JetStreamContext {
 	return &JetStreamContext{
 		JetStreamContext: jsc,
-		tracer:          tracer,
+		tracer:           tracer,
 	}
 }
 
 // PublishStream publishes to a JetStream stream with tracing
 func (j *JetStreamContext) PublishStream(ctx context.Context, stream string, subject string, data []byte) (*nats.PubAck, error) {
 	ctx, span := j.tracer.Start(ctx, spanNATSStream,
+		trace.WithSpanKind(trace.SpanKindProducer),
 		trace.WithAttributes(
-			semconv.MessagingSystemNATS,
-			semconv.MessagingDestinationKindTopic.String(stream),
+			attribute.String(keyMessagingSystem, messagingSystemNATS),
+			attribute.String(keyMessagingOperation, "publish"),
+			attribute.String(keyMessagingDestination, subject),
 			attrStreamName.String(stream),
 			attrSubject.String(subject),
+			attrComponent.String("jetstream"),
 		),
 		trace.WithTimestamp(time.Now()),
 	)
 	defer span.End()
-	
-	ack, err := j.JetStreamContext.Publish(subject, data)
-	
+
+	msg := &nats.Msg{Subject: subject, Data: data, Header: make(nats.Header)}
+	InjectTraceContext(ctx, msg)
+
+	ack, err := j.PublishMsg(msg)
+
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("stream publish failed: %v", err))
 		span.RecordError(err)
 	} else {
-		span.SetAttributes(semconv.MessagingMessageID.String(ack.StreamSequence))
+		span.SetAttributes(attribute.String(keyMessagingMessageID, strconv.FormatUint(ack.Sequence, 10)))
 	}
-	
-	span.SetAttributes(attrComponent.String("jetstream"))
-	span.SetAttributes(attrMessageSource.String("operator"))
-	
+
 	return ack, err
 }
 
 // CreateConsumer creates a JetStream consumer with tracing
 func (j *JetStreamContext) CreateConsumer(ctx context.Context, stream string, config *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
-	ctx, span := j.tracer.Start(ctx, spanNATSConsumer,
+	consumerName := ""
+	if config != nil {
+		consumerName = config.Name
+	}
+	_, span := j.tracer.Start(ctx, spanNATSConsumer,
 		trace.WithAttributes(
-			semconv.MessagingSystemNATS,
-			semconv.MessagingDestinationKindTopic.String(stream),
+			attribute.String(keyMessagingSystem, messagingSystemNATS),
+			attribute.String(keyMessagingDestination, stream),
 			attrStreamName.String(stream),
-			attrConsumerName.String(config.Name),
+			attrConsumerName.String(consumerName),
+			attrComponent.String("jetstream"),
 		),
 		trace.WithTimestamp(time.Now()),
 	)
 	defer span.End()
-	
-	info, err := j.JetStreamContext.AddConsumer(stream, config)
-	
+
+	info, err := j.AddConsumer(stream, config)
+
 	if err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("consumer create failed: %v", err))
 		span.RecordError(err)
 	} else {
 		span.SetAttributes(attrConsumerName.String(info.Name))
 	}
-	
-	span.SetAttributes(attrComponent.String("jetstream"))
-	span.SetAttributes(attrMessageTarget.String("supervisor"))
-	
+
 	return info, err
 }
 
@@ -224,12 +236,12 @@ type HeaderCarrier nats.Header
 
 // Get implements TextMapCarrier
 func (hc HeaderCarrier) Get(key string) string {
-	return string(hc[key])
+	return nats.Header(hc).Get(key)
 }
 
 // Set implements TextMapCarrier
 func (hc HeaderCarrier) Set(key string, value string) {
-	hc[key] = []byte(value)
+	nats.Header(hc).Set(key, value)
 }
 
 // Keys implements TextMapCarrier
@@ -246,7 +258,7 @@ func ExtractTraceContext(msg *nats.Msg) context.Context {
 	if msg.Header == nil {
 		return context.Background()
 	}
-	return otel.GetTextMapPropagator().Extract(msg.Context, HeaderCarrier(msg.Header))
+	return otel.GetTextMapPropagator().Extract(context.Background(), HeaderCarrier(msg.Header))
 }
 
 // InjectTraceContext injects trace context into NATS message headers
@@ -260,9 +272,9 @@ func InjectTraceContext(ctx context.Context, msg *nats.Msg) {
 // IsA2AMessage checks if a NATS message appears to be an A2A event
 func IsA2AMessage(msg *nats.Msg) bool {
 	subject := msg.Subject
-	return strings.HasPrefix(subject, "a2a.") || 
-		   strings.Contains(subject, ".event") || 
-		   strings.Contains(subject, ".task")
+	return strings.HasPrefix(subject, "a2a.") ||
+		strings.Contains(subject, ".event") ||
+		strings.Contains(subject, ".task")
 }
 
 // GetA2AMessageType extracts the A2A message type from subject

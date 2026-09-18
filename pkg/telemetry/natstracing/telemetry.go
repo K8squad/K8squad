@@ -14,8 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package telemetry integrates NATS tracing with the existing telemetry system
-package telemetry
+package natstracing
 
 import (
 	"context"
@@ -25,26 +24,30 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/K8squad/K8squad/internal/a2a"
-	"github.com/K8squad/K8squad/pkg/telemetry/natstracing"
+	wire "github.com/K8squad/K8squad/pkg/a2a"
 )
+
+// SpanNATSConnect is the span name for establishing a NATS connection.
+const SpanNATSConnect = "nats.connect"
+
+// EventHandler handles one decoded A2A wire event with its traced context.
+type EventHandler func(ctx context.Context, event wire.Event)
 
 // NATSTelemetry provides NATS tracing integration with A2A events
 type NATSTelemetry struct {
-	tracer trace.Tracer
+	tracer   trace.Tracer
 	natsConn *nats.Conn
-	mu sync.RWMutex
+	mu       sync.RWMutex
 }
 
 // NewNATSTelemetry creates a new NATS telemetry instance
 func NewNATSTelemetry() *NATSTelemetry {
 	return &NATSTelemetry{
-		tracer: natstracing.Tracer(),
+		tracer: Tracer(),
 	}
 }
 
@@ -52,100 +55,86 @@ func NewNATSTelemetry() *NATSTelemetry {
 func (nt *NATSTelemetry) ConnectToNATS(ctx context.Context, url string) error {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
-	
+
 	var err error
 	nt.natsConn, err = nats.Connect(url,
-		nats.Traced(), // Enable NATS built-in tracing
 		nats.ReconnectWait(2*time.Second),
 		nats.MaxReconnects(5),
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to connect to NATS: %w", err)
 	}
-	
-	// Wrap connection with our tracing
-	wrappedConn := natstracing.WrapConn(nt.natsConn)
-	
-	// Create a span for the connection
-	ctx, span := nt.tracer.Start(ctx, natstracing.SpanNATSConnect,
+
+	ctx, span := nt.tracer.Start(ctx, SpanNATSConnect,
+		trace.WithSpanKind(trace.SpanKindClient),
 		trace.WithAttributes(
-			natstracing.MessagingSystemNATS,
-			natstracing.MessagingDestinationKindTopic.String(url),
+			attribute.String(keyMessagingSystem, messagingSystemNATS),
+			attribute.String(keyMessagingDestination, url),
+			attrComponent.String("nats"),
 		),
 	)
 	defer span.End()
-	
-	if err := wrappedConn.Ping(); err != nil {
+
+	if _, err := nt.natsConn.RTT(); err != nil {
 		span.SetStatus(codes.Error, fmt.Sprintf("ping failed: %v", err))
 		span.RecordError(err)
 		return err
 	}
-	
+
 	span.SetStatus(codes.Ok, "")
+	_ = ctx
 	return nil
 }
 
 // WrapConnection wraps an existing NATS connection with tracing
-func (nt *NATSTelemetry) WrapConnection(nc *nats.Conn) *natstracing.WrappedConn {
-	return natstracing.WrapConn(nc)
+func (nt *NATSTelemetry) WrapConnection(nc *nats.Conn) *WrappedConn {
+	return WrapConn(nc)
 }
 
 // PublishA2AEvent publishes an A2A event with tracing
-func (nt *NATSTelemetry) PublishA2AEvent(ctx context.Context, subject string, event a2a.Event) error {
+func (nt *NATSTelemetry) PublishA2AEvent(ctx context.Context, subject string, event wire.Event) error {
 	nt.mu.RLock()
 	if nt.natsConn == nil {
 		nt.mu.RUnlock()
 		return fmt.Errorf("NATS connection not established")
 	}
 	nt.mu.RUnlock()
-	
+
 	wrappedConn := nt.WrapConnection(nt.natsConn)
-	
-	// Add trace context to the event if not already present
-	eventCtx := ctx
-	if event.A2ATaskID != "" {
-		// Create a context with the task ID for correlation
-		eventCtx = context.WithValue(ctx, "a2a_task_id", event.A2ATaskID)
-	}
-	
+
 	data, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
-	
-	return wrappedConn.PublishWithContext(eventCtx, subject, data)
+
+	return wrappedConn.PublishWithContext(ctx, subject, data)
 }
 
 // SubscribeToA2AEvents subscribes to A2A events with tracing
-func (nt *NATSTelemetry) SubscribeToA2AEvents(ctx context.Context, subject string, handler a2a.EventHandler) (*nats.Subscription, error) {
+func (nt *NATSTelemetry) SubscribeToA2AEvents(ctx context.Context, subject string, handler EventHandler) (*nats.Subscription, error) {
 	nt.mu.RLock()
 	if nt.natsConn == nil {
 		nt.mu.RUnlock()
 		return nil, fmt.Errorf("NATS connection not established")
 	}
 	nt.mu.RUnlock()
-	
+
 	wrappedConn := nt.WrapConnection(nt.natsConn)
-	
+
 	return wrappedConn.SubscribeWithContext(ctx, subject, func(msg *nats.Msg) {
-		// Extract trace context from the message
-		msgCtx := natstracing.ExtractTraceContext(msg)
-		
-		// Only process A2A events
-		if !natstracing.IsA2AMessage(msg) {
+		msgCtx := ExtractTraceContext(msg)
+
+		if !IsA2AMessage(msg) {
 			return
 		}
-		
-		// Parse the event
-		var event a2a.Event
+
+		var event wire.Event
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			// Log but don't fail the subscription
 			fmt.Printf("Failed to unmarshal A2A event: %v\n", err)
 			return
 		}
-		
-		// Call the handler with traced context
+
 		handler(msgCtx, event)
 	})
 }
@@ -154,11 +143,10 @@ func (nt *NATSTelemetry) SubscribeToA2AEvents(ctx context.Context, subject strin
 func (nt *NATSTelemetry) Close() error {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
-	
+
 	if nt.natsConn != nil {
-		err := nt.natsConn.Close()
+		nt.natsConn.Close()
 		nt.natsConn = nil
-		return err
 	}
 	return nil
 }
@@ -167,7 +155,7 @@ func (nt *NATSTelemetry) Close() error {
 func (nt *NATSTelemetry) IsConnected() bool {
 	nt.mu.RLock()
 	defer nt.mu.RUnlock()
-	
+
 	return nt.natsConn != nil && nt.natsConn.Status() == nats.CONNECTED
 }
 
@@ -175,7 +163,7 @@ func (nt *NATSTelemetry) IsConnected() bool {
 func (nt *NATSTelemetry) GetStatus() string {
 	nt.mu.RLock()
 	defer nt.mu.RUnlock()
-	
+
 	if nt.natsConn == nil {
 		return "disconnected"
 	}
