@@ -135,7 +135,11 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 	if team == nil {
 		return SquadOverview{}, ErrTeamNotFound
 	}
-	ns := team.Namespace
+	// Use the reconciled squad namespace (Status.Namespace) with fallback to the CR namespace
+	ns := team.Status.Namespace
+	if ns == "" {
+		ns = team.Namespace
+	}
 
 	// Projects and Runs in the Team's namespace. Scoping by namespace (not by listing every
 	// Project cluster-wide and filtering) keeps the read cheap and the tenancy boundary crisp.
@@ -149,15 +153,36 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 	}
 
 	// Group Runs by the Project name they reference so each Project row carries its own Runs.
+	// Runs with unresolvable projectRef appear in an "Unassigned/other" bucket keyed by workItemRef.
 	runsByProject := make(map[string][]RunStatus, len(projects.Items))
+	unassignedRuns := make([]RunStatus, 0)
+
 	for i := range runs.Items {
 		run := &runs.Items[i]
-		runsByProject[run.Spec.ProjectRef.Name] = append(runsByProject[run.Spec.ProjectRef.Name], projectRunStatus(run))
+		projectRefName := run.Spec.ProjectRef.Name
+
+		// Check if there's a Project with this name in the namespace
+		projectExists := false
+		for _, p := range projects.Items {
+			if p.Name == projectRefName {
+				projectExists = true
+				break
+			}
+		}
+
+		if projectExists {
+			runsByProject[projectRefName] = append(runsByProject[projectRefName], projectRunStatus(run))
+		} else {
+			// Include unassigned runs under a bucket keyed by workItemRef
+			unassignedRuns = append(unassignedRuns, projectRunStatus(run))
+		}
 	}
 
 	out := SquadOverview{
 		Team: TeamRef{Name: team.Name, Namespace: ns, UID: string(team.UID)},
 	}
+
+	// Add Projects with their assigned Runs
 	for i := range projects.Items {
 		p := &projects.Items[i]
 		rows := runsByProject[p.Name]
@@ -171,6 +196,22 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 			Namespace:   p.Namespace,
 			RepoURL:     p.Spec.Repo.URL,
 			Runs:        rows,
+			PhaseCounts: counts,
+		})
+	}
+
+	// Add "Unassigned/other" bucket for runs with unresolvable projectRef
+	if len(unassignedRuns) > 0 {
+		sort.Slice(unassignedRuns, func(a, b int) bool { return unassignedRuns[a].Name < unassignedRuns[b].Name })
+		counts := make(map[string]int, len(unassignedRuns))
+		for _, row := range unassignedRuns {
+			counts[row.Phase]++
+		}
+		out.Projects = append(out.Projects, ProjectOverview{
+			Name:        "Unassigned/other",
+			Namespace:   ns,
+			RepoURL:     "",
+			Runs:        unassignedRuns,
 			PhaseCounts: counts,
 		})
 	}

@@ -15,6 +15,8 @@ const KIND_LABEL: Record<RunEventKind, string> = {
   HANDOFF: "handoff",
   MEMORY: "memory",
   ARTIFACT: "artifact",
+  STEP: "step",
+  LIFECYCLE: "lifecycle",
 };
 
 export function RunStream({ runId }: { runId: string }) {

@@ -396,6 +396,14 @@ func main() {
 		projectOverview = apiserver.NewOverviewService(dashboardReader, workItemReads)
 	}
 
+	// ISI-4571 run listing/detail read model: listing from the same informer cache the
+	// dashboard uses, steps/thinking enrichment from coord.audit_log + coord.comment over
+	// the run's work item. Nil informer cache ⇒ nil service ⇒ documented 501.
+	var runsService *apiserver.RunsService
+	if dashboardReader != nil {
+		runsService = apiserver.NewRunsServiceWithDB(dashboardReader, db)
+	}
+
 	// 8.18 global search read path (ISI-2912): the FTS searcher over coord.work_item
 	// (migration 0012). The DB is a hard start dependency here, so the searcher is
 	// always bound (the documented-501 fallback exists only for a searcher-less host
@@ -561,6 +569,7 @@ func main() {
 		Ready:            dbReady{db},
 		Overview:         overview,
 		ProjectOverview:  projectOverview,
+		Runs:             runsService,
 		Teams:            teams,
 		FleetList:        fleetList,
 		Credentials:      credentials,

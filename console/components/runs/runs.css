@@ -1,0 +1,189 @@
+/* components/runs/runs.css — styling for the ISI-4575 runs list screen, built to the
+ * approved ISI-4569 mock (runs-list-mock.html). ZERO new tokens: every color/radius resolves
+ * to an existing globals.css custom property, same discipline as overview.css (ISI-4506).
+ * Status hues ride the .phase-chip data-tone system from globals.css (no redefinition here).
+ *
+ * Imported by RunsList.tsx itself so any route that mounts the component ships its CSS —
+ * avoids the "unstyled route" gap from ISI-4503. */
+
+.runs-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.runs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.runs-head h1 {
+  margin: 0;
+}
+.runs-head__count {
+  font-size: 13px;
+}
+
+/* ---- filter bar (mock: .filters-section) -------------------------------------------------- */
+.runs-filters {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 16px;
+}
+.runs-filters__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.runs-filters__title {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.runs-filters__clear {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.runs-filters__clear:hover {
+  color: var(--text-hi);
+}
+.runs-filters__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.runs-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.runs-filter__label {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.runs-filter__select {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--text-1);
+  font-size: 13px;
+}
+.runs-filter__select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* ---- run table (mock: .runs-table-container) ---------------------------------------------- */
+.runs-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+.runs-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.runs-table th {
+  background: var(--inset);
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-2);
+  border-bottom: 1px solid var(--border);
+}
+.runs-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-size: 13px;
+  color: var(--text-1);
+  vertical-align: top;
+}
+.runs-table tr:last-child td {
+  border-bottom: none;
+}
+.runs-row {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+.runs-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.runs-row__sub {
+  font-size: 11px;
+  margin-top: 2px;
+}
+.runs-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.runs-link:hover {
+  text-decoration: underline;
+}
+.runs-cell-dim {
+  color: var(--text-2);
+}
+.runs-tokens {
+  font-family: var(--font-mono, monospace);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* ---- pagination (mock: .pagination) -------------------------------------------------------- */
+.runs-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+.runs-pagination__controls {
+  display: flex;
+  gap: 8px;
+}
+.runs-pagination__btn {
+  background: var(--inset);
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  padding: 7px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.runs-pagination__btn:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.runs-pagination__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ---- full-width state cards ---------------------------------------------------------------- */
+.runs-state {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
