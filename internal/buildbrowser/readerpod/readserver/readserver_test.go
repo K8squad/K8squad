@@ -241,6 +241,21 @@ func TestPagination(t *testing.T) {
 	}
 }
 
+// ISI-4076 (PR #359 F1): a huge page value must not overflow page*pageSize into a negative
+// start and panic the entries slice; it clamps to the empty tail page instead.
+func TestListPageOverflowClamp(t *testing.T) {
+	s, _ := newTestServer(t)
+	for _, page := range []string{"9223372036854775807", "4611686018427387904"} {
+		rr, dl := doList(t, s, "sub", page)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("page=%s: want 200, got %d", page, rr.Code)
+		}
+		if len(dl.Entries) != 0 || dl.NextPage != 0 {
+			t.Fatalf("page=%s: want empty tail page, got n=%d next=%d", page, len(dl.Entries), dl.NextPage)
+		}
+	}
+}
+
 // AC5-adjacent: only GET list/read/healthz exist — there is no mutating verb surface.
 func TestNoMutatingVerbs(t *testing.T) {
 	s, _ := newTestServer(t)
