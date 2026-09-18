@@ -30,7 +30,8 @@ import (
 type TraceValidator struct {
 	expectedSpans map[string]bool
 	actualSpans   map[string]bool
-	mu           sync.RWMutex
+	createdAt     time.Time
+	mu            sync.RWMutex
 }
 
 // NewTraceValidator creates a new trace validator
@@ -38,6 +39,7 @@ func NewTraceValidator() *TraceValidator {
 	return &TraceValidator{
 		expectedSpans: make(map[string]bool),
 		actualSpans:   make(map[string]bool),
+		createdAt:     time.Now(),
 	}
 }
 
@@ -59,7 +61,7 @@ func (tv *TraceValidator) ActualSpan(spanType string) {
 func (tv *TraceValidator) GetMissingSpans() []string {
 	tv.mu.RLock()
 	defer tv.mu.RUnlock()
-	
+
 	var missing []string
 	for span := range tv.expectedSpans {
 		if !tv.actualSpans[span] {
@@ -73,7 +75,7 @@ func (tv *TraceValidator) GetMissingSpans() []string {
 func (tv *TraceValidator) IsComplete() bool {
 	tv.mu.RLock()
 	defer tv.mu.RUnlock()
-	
+
 	for span := range tv.expectedSpans {
 		if !tv.actualSpans[span] {
 			return false
@@ -86,7 +88,7 @@ func (tv *TraceValidator) IsComplete() bool {
 func (tv *TraceValidator) GetSummary() string {
 	tv.mu.RLock()
 	defer tv.mu.RUnlock()
-	
+
 	expected := len(tv.expectedSpans)
 	actual := 0
 	for span := range tv.expectedSpans {
@@ -94,17 +96,17 @@ func (tv *TraceValidator) GetSummary() string {
 			actual++
 		}
 	}
-	
-	missing := len(tv.GetMissingSpans())
-	
-	return fmt.Sprintf("Trace completeness: %d/%d spans (%.1f%% complete, %d missing)", 
+
+	missing := expected - actual
+
+	return fmt.Sprintf("Trace completeness: %d/%d spans (%.1f%% complete, %d missing)",
 		actual, expected, float64(actual)/float64(expected)*100, missing)
 }
 
 // TraceAnalyzer analyzes end-to-end traces for gaps
 type TraceAnalyzer struct {
 	validators map[string]*TraceValidator
-	mu        sync.RWMutex
+	mu         sync.RWMutex
 }
 
 // NewTraceAnalyzer creates a new trace analyzer
@@ -118,26 +120,27 @@ func NewTraceAnalyzer() *TraceAnalyzer {
 func (ta *TraceAnalyzer) GetTraceValidator(traceID string) *TraceValidator {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
-	
+
 	if validator, exists := ta.validators[traceID]; exists {
 		return validator
 	}
-	
+
 	validator := NewTraceValidator()
 	ta.validators[traceID] = validator
 	return validator
 }
 
-// AnalyzeTrace analyzes a trace for completeness
-func (ta *TraceAnalyzer) AnalyzeTrace(ctx context.Context, span trace.Span) *TraceAnalysis {
+// AnalyzeTrace analyzes a trace for completeness. The OTel Span API does not
+// expose a span's name, so the caller supplies it (the name the span was
+// started with).
+func (ta *TraceAnalyzer) AnalyzeTrace(ctx context.Context, spanName string, span trace.Span) *TraceAnalysis {
 	traceID := span.SpanContext().TraceID().String()
-	
+
 	validator := ta.GetTraceValidator(traceID)
-	
+
 	// Register the actual span
-	spanName := span.Name()
 	validator.ActualSpan(spanName)
-	
+
 	// Define expected spans for this trace type
 	if spanName == "run.start" {
 		validator.ExpectedSpan("run.start")
@@ -150,24 +153,24 @@ func (ta *TraceAnalyzer) AnalyzeTrace(ctx context.Context, span trace.Span) *Tra
 		validator.ExpectedSpan("gen_ai.tool.call")
 		validator.ExpectedSpan("run.end")
 	}
-	
+
 	return &TraceAnalysis{
-		TraceID:     traceID,
+		TraceID:      traceID,
 		Validator:    validator,
 		SpanName:     spanName,
-		Timestamp:   time.Now(),
-		IsComplete:  validator.IsComplete(),
+		Timestamp:    time.Now(),
+		IsComplete:   validator.IsComplete(),
 		MissingSpans: validator.GetMissingSpans(),
 	}
 }
 
 // TraceAnalysis represents the result of a trace analysis
 type TraceAnalysis struct {
-	TraceID     string
+	TraceID      string
 	Validator    *TraceValidator
-	SpanName    string
-	Timestamp   time.Time
-	IsComplete  bool
+	SpanName     string
+	Timestamp    time.Time
+	IsComplete   bool
 	MissingSpans []string
 }
 
@@ -175,13 +178,13 @@ type TraceAnalysis struct {
 func (ta *TraceAnalyzer) GenerateReport(ctx context.Context) string {
 	ta.mu.RLock()
 	defer ta.mu.RUnlock()
-	
+
 	report := "=== End-to-End Trace Analysis Report ===\n\n"
-	
+
 	for traceID, validator := range ta.validators {
 		report += fmt.Sprintf("Trace ID: %s\n", traceID)
 		report += fmt.Sprintf("  %s\n", validator.GetSummary())
-		
+
 		if len(validator.GetMissingSpans()) > 0 {
 			report += "  Missing spans:\n"
 			for _, missing := range validator.GetMissingSpans() {
@@ -192,7 +195,7 @@ func (ta *TraceAnalyzer) GenerateReport(ctx context.Context) string {
 		}
 		report += "\n"
 	}
-	
+
 	return report
 }
 
@@ -200,10 +203,10 @@ func (ta *TraceAnalyzer) GenerateReport(ctx context.Context) string {
 func (ta *TraceAnalyzer) ClearOldTraces(maxAge time.Duration) {
 	ta.mu.Lock()
 	defer ta.mu.Unlock()
-	
+
 	now := time.Now()
 	for traceID, validator := range ta.validators {
-		if now.Sub(validator.(*TraceValidator).Timestamp) > maxAge {
+		if now.Sub(validator.createdAt) > maxAge {
 			delete(ta.validators, traceID)
 		}
 	}
@@ -223,8 +226,8 @@ func GetGlobalAnalyzer() *TraceAnalyzer {
 }
 
 // AnalyzeSpan analyzes a span using the global analyzer
-func AnalyzeSpan(ctx context.Context, span trace.Span) *TraceAnalysis {
-	return GetGlobalAnalyzer().AnalyzeTrace(ctx, span)
+func AnalyzeSpan(ctx context.Context, spanName string, span trace.Span) *TraceAnalysis {
+	return GetGlobalAnalyzer().AnalyzeTrace(ctx, spanName, span)
 }
 
 // GenerateGlobalReport generates a report using the global analyzer
