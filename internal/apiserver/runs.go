@@ -44,6 +44,8 @@ type RunListItem struct {
 	PausedReason    *string    `json:"pausedReason,omitempty"`
 	WorkItemRef     string     `json:"workItemRef"`
 	ProjectRef      string     `json:"projectRef"`
+	Agents          []string   `json:"agents,omitempty"`
+	TotalTokens     *int64     `json:"totalTokens,omitempty"`
 	StartedAt       *time.Time `json:"startedAt,omitempty"`
 	EndedAt         *time.Time `json:"endedAt,omitempty"`
 	DurationSeconds *int64     `json:"durationSeconds,omitempty"`
@@ -482,6 +484,22 @@ func runListItem(run *ksquadv1.Run) RunListItem {
 		}
 	}
 
+	// ISI-4575: the runs list mock shows agent + token columns; surface spec.agents and the
+	// run-drive-maintained totalTokenUsage rollup so the console renders real data instead of
+	// placeholder dashes. Nil/absent stays absent on the wire (omitempty) — the console renders
+	// "—" per the fabrication discipline.
+	var agents []string
+	for _, a := range run.Spec.Agents {
+		if a.Name != "" {
+			agents = append(agents, a.Name)
+		}
+	}
+	var totalTokens *int64
+	if run.Status.TotalTokenUsage != nil {
+		t := run.Status.TotalTokenUsage.TotalTokens
+		totalTokens = &t
+	}
+
 	return RunListItem{
 		ID:              run.Name,
 		Name:            run.Name,
@@ -489,6 +507,8 @@ func runListItem(run *ksquadv1.Run) RunListItem {
 		PausedReason:    pausedReason,
 		WorkItemRef:     run.Spec.WorkItemRef,
 		ProjectRef:      run.Spec.ProjectRef.Name,
+		Agents:          agents,
+		TotalTokens:     totalTokens,
 		StartedAt:       &startedAt,
 		EndedAt:         &endedAt,
 		DurationSeconds: &duration,
