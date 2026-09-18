@@ -51,6 +51,29 @@ export type FileContent = {
   truncated?: boolean;
 };
 
+/** GET /api/projects/{id}/files/stat?path=<file> response (ISI-4649). `git` is the
+ * last-change commit for the path — ABSENT (omitempty) when the workspace is not a
+ * git checkout or git is unavailable in the reader pod; that is a graceful no-git
+ * fallback, never an error. `degraded` ⇒ snapshot vs live workspace (§RWO). */
+export type FileStat = {
+  name: string;
+  type: "file" | "dir";
+  size: number;
+  /** RFC3339 filesystem mtime. */
+  modTime: string;
+  git?: FileGitChange;
+  degraded?: boolean;
+};
+
+/** The most recent commit that touched a path (ISI-4649 GitChange). */
+export type FileGitChange = {
+  commitHash: string;
+  author: string;
+  message: string;
+  /** RFC3339 commit time. */
+  timestamp: string;
+};
+
 /** The distinct honest state an HTTP status carries (mirrors SquadOverview /
  * GitHubStatusTab). 404 ⇒ existence-hiding not-found; 501 ⇒ the reader is not
  * wired in this deployment (S4a/S4b pending) → "File Explorer not available yet",
@@ -109,6 +132,23 @@ export async function readProjectFile(
     return { kind: "ready", data: (await res.json()) as FileContent };
   }
   return classifyFilesStatus<FileContent>(res.status);
+}
+
+/** Fetch a file's stat / change metadata through the BFF choke point (ISI-4651).
+ * Read-only, same classified-state contract as list/read — a stat failure never
+ * fabricates details. */
+export async function statProjectFile(
+  projectId: string,
+  path: string,
+): Promise<FilesState<FileStat>> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/files/stat?path=${encodeURIComponent(path)}`,
+    { cache: "no-store" },
+  );
+  if (res.ok) {
+    return { kind: "ready", data: (await res.json()) as FileStat };
+  }
+  return classifyFilesStatus<FileStat>(res.status);
 }
 
 /** Decode a base64 text payload to a UTF-8 string. Goes through bytes (not a
