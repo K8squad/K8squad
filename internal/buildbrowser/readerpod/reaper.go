@@ -31,6 +31,13 @@ import (
 // the backstop — never the primary mechanism.
 const DefaultMaxLifetime = 12 * time.Minute
 
+// NamespaceAll makes the Reaper's orphan sweep enumerate reader pods across EVERY namespace
+// (ISI-4079): the S4a resolver launches a reader into the consuming Team's sandbox namespace —
+// where that Project's PVC lives — so reader pods are no longer confined to the single configured
+// namespace and a one-namespace sweep would miss orphans. ReapHandle is unaffected (a Handle
+// carries its own namespace).
+const NamespaceAll = "*"
+
 // Reaper is the AC6 idle-teardown controller. It is the ONE metering teardown path: both the
 // apiserver's in-memory idle manager (ReapHandle, called when a browse session goes idle) and the
 // periodic cluster-side orphan sweep (ReapIdle, called on a timer) funnel through it, so every reader
@@ -82,10 +89,11 @@ func (r *Reaper) ReapHandle(ctx context.Context, h Handle) error {
 // rest; the next sweep retries it.
 func (r *Reaper) ReapIdle(ctx context.Context) (int, error) {
 	var pods corev1.PodList
-	if err := r.client.List(ctx, &pods,
-		client.InNamespace(r.namespace),
-		client.MatchingLabels{"app": readerAppLabel},
-	); err != nil {
+	opts := []client.ListOption{client.MatchingLabels{"app": readerAppLabel}}
+	if r.namespace != NamespaceAll {
+		opts = append(opts, client.InNamespace(r.namespace))
+	}
+	if err := r.client.List(ctx, &pods, opts...); err != nil {
 		return 0, err
 	}
 	cutoff := r.now().Add(-r.maxLife)

@@ -255,6 +255,20 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [otelconfigs]
   verbs: [get, list, create, update]
+# pods + services (ISI-4079, S4a-wire): the apiserver's reader-pod launcher
+# (internal/buildbrowser/readerpod KubeLauncher, wired in cmd/apiserver when
+# buildReaderPod.enabled) creates/deletes short-lived READ-ONLY reader pods and
+# their paired ClusterIP Services in the consuming Team's sandbox namespace, and
+# the AC6 reaper's orphan sweep Lists reader pods cluster-wide (label-scoped).
+# Team namespaces are provisioned dynamically, so the grant is cluster-scoped.
+# get+list only (no watch — direct client, no informers); create+delete only
+# (no update/patch — Launch is all-or-nothing create, teardown is delete).
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, create, delete]
+- apiGroups: [""]
+  resources: [services]
+  verbs: [get, list, create, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

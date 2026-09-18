@@ -97,6 +97,10 @@ type Spec struct {
 	ProjectPVCName string // the Run's Project PVC, mounted ReadOnly
 	CommitSHA      string // the Run's commit the reader checks out (read-only)
 	ReaderSAName   string // the Run's OWN ServiceAccount — the reader's credential scope (never broader)
+	// Namespace overrides cfg.Namespace for THIS reader (ISI-4079): the per-Project workspace PVC
+	// lives in the consuming Team's sandbox namespace, and PVC mounts are namespace-scoped — the
+	// reader pod + Service must launch where the claim is. "" ⇒ cfg.Namespace (the 8.7f default).
+	Namespace string
 }
 
 // Validate rejects an under-specified request BEFORE any pod is created — a reader with no PVC, no
@@ -247,10 +251,14 @@ func ServiceName(runID string) string { return PodName(runID) }
 // reader app label so the idle-teardown reaper can enumerate reader Services alongside their pods.
 func BuildService(spec Spec, cfg Config) *corev1.Service {
 	cfg = withDefaults(cfg)
+	ns := spec.Namespace
+	if ns == "" {
+		ns = cfg.Namespace
+	}
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ServiceName(spec.RunID),
-			Namespace: cfg.Namespace,
+			Namespace: ns,
 			Labels: map[string]string{
 				"app":            readerAppLabel,
 				"k8squad.io/run": spec.RunID,
@@ -282,6 +290,10 @@ func BuildService(spec Spec, cfg Config) *corev1.Service {
 // (no cluster calls) so the invariants are unit-testable without a Kubernetes API.
 func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 	cfg = withDefaults(cfg)
+	ns := spec.Namespace
+	if ns == "" {
+		ns = cfg.Namespace
+	}
 	limits := corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse(cfg.CPULimit),
 		corev1.ResourceMemory: resource.MustParse(cfg.MemoryLimit),
@@ -293,7 +305,7 @@ func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      PodName(spec.RunID),
-			Namespace: cfg.Namespace,
+			Namespace: ns,
 			Labels: map[string]string{
 				"app":            readerAppLabel,
 				"k8squad.io/run": spec.RunID,
