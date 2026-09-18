@@ -549,9 +549,10 @@ func TestClientOverviewReader_Overview_SplitNamespaces(t *testing.T) {
 	var projectBucket *ProjectOverview
 	var unassignedBucket *ProjectOverview
 	for _, p := range overview.Projects {
-		if p.Name == "test-project" {
+		switch p.Name {
+		case "test-project":
 			projectBucket = &p
-		} else if p.Name == "Unassigned/other" {
+		case "Unassigned/other":
 			unassignedBucket = &p
 		}
 	}

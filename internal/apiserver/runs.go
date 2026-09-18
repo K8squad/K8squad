@@ -347,14 +347,15 @@ func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResp
 					CompletedAt: &response.Run.Status.ClaimedAt.Time,
 				},
 			}
-			if response.Run.Status.Phase == ksquadv1.RunPhaseRunning {
+			switch response.Run.Status.Phase {
+			case ksquadv1.RunPhaseRunning:
 				steps = append(steps, StepInfo{
 					ID:        "2",
 					Name:      "dispatching",
 					Status:    "running",
 					StartedAt: &response.Run.Status.ClaimedAt.Time,
 				})
-			} else if response.Run.Status.Phase == "complete" {
+			case "complete":
 				steps = append(steps, StepInfo{
 					ID:          "2",
 					Name:        "executing",
