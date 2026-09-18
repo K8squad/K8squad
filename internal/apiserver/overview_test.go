@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -195,9 +197,10 @@ func TestOverviewAdminFleetWide(t *testing.T) {
 	}
 }
 
-// TestOverviewOrphanRunDropped — a Run referencing a Project absent from the namespace is not
-// placed under any Project row (inconsistent reference, not a dashboard cell).
-func TestOverviewOrphanRunDropped(t *testing.T) {
+// TestOverviewOrphanRunBucketed — a Run referencing a Project absent from the namespace is NOT
+// dropped (ISI-4570: silent invisibility was the bug) but surfaces under the "Unassigned/other"
+// bucket — never under a real Project row.
+func TestOverviewOrphanRunBucketed(t *testing.T) {
 	const teamUID = "22222222-2222-2222-2222-222222222222"
 	r := newReader(t,
 		team("squad-a", "alpha", teamUID),
@@ -208,8 +211,15 @@ func TestOverviewOrphanRunDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Overview: %v", err)
 	}
-	if len(ov.Projects) != 1 || len(ov.Projects[0].Runs) != 0 {
-		t.Fatalf("orphan run must be dropped: %+v", ov.Projects)
+	if len(ov.Projects) != 2 {
+		t.Fatalf("orphan run must land in its own bucket: %+v", ov.Projects)
+	}
+	if ov.Projects[0].Name != "Unassigned/other" || len(ov.Projects[0].Runs) != 1 ||
+		ov.Projects[0].Runs[0].Name != "run-x" || ov.Projects[0].PhaseCounts["Running"] != 1 {
+		t.Fatalf("orphan bucket wrong: %+v", ov.Projects[0])
+	}
+	if ov.Projects[1].Name != "web" || len(ov.Projects[1].Runs) != 0 {
+		t.Fatalf("orphan run leaked under a real project: %+v", ov.Projects[1])
 	}
 }
 
@@ -457,7 +467,7 @@ func TestClientOverviewReader_Overview_SplitNamespaces(t *testing.T) {
 	team := &ksquadv1.Team{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "test-team",
-			UID:               teamID,
+			UID:               types.UID(teamID.String()),
 			Namespace:         teamCRNamespace,
 			CreationTimestamp: now,
 		},

@@ -202,7 +202,7 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 	
 	// Add "Unassigned/other" bucket for runs with unresolvable projectRef
 	if len(unassignedRuns) > 0 {
-		sort.Slice(unassignedRuns, func(a, b int) bool { return a.Name < b.Name })
+		sort.Slice(unassignedRuns, func(a, b int) bool { return unassignedRuns[a].Name < unassignedRuns[b].Name })
 		counts := make(map[string]int, len(unassignedRuns))
 		for _, row := range unassignedRuns {
 			counts[row.Phase]++

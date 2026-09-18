@@ -2,25 +2,21 @@ package apiserver
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
-	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 func TestRunsService(t *testing.T) {
-	ctx := context.Background()
-
 	// Create test Team
 	teamUID := uuid.New()
 	team := &ksquadv1.Team{
@@ -40,10 +36,7 @@ func TestRunsService(t *testing.T) {
 			Namespace: team.Status.Namespace,
 		},
 		Spec: ksquadv1.ProjectSpec{
-			TeamRef: ksquadv1.ObjectRef{
-				Name: "test-team",
-			},
-			Repo: "https://github.com/test/repo",
+			Repo: ksquadv1.RepoSpec{URL: "https://github.com/test/repo"},
 		},
 	}
 
@@ -68,7 +61,7 @@ func TestRunsService(t *testing.T) {
 				},
 			},
 			Status: ksquadv1.RunStatus{
-				Phase: ksquadv1.RunPhaseComplete,
+				Phase: ksquadv1.RunPhaseSucceeded,
 				ClaimedAt: &now,
 			},
 		},
@@ -101,20 +94,10 @@ func TestRunsService(t *testing.T) {
 	for _, run := range runs {
 		objs = append(objs, run)
 	}
-	k8sClient := fake.NewClientBuilder().WithObjects(objs...).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
 
 	// Create RunsService
 	svc := NewRunsService(k8sClient)
-
-	// Test helper function to make requests
-	makeRequest := func(method, path string, auth bool) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, nil)
-		if auth {
-			req = authRequest(req)
-		}
-		w := httptest.NewRecorder()
-		return w
-	}
 
 	// Test cases
 	t.Run("Global run listing", func(t *testing.T) {
@@ -244,7 +227,7 @@ func TestRunListItemProjection(t *testing.T) {
 		
 		assert.Equal(t, "test-run", item.ID)
 		assert.Equal(t, "test-run", item.Name)
-		assert.Equal(t, "running", item.Phase)
+		assert.Equal(t, "Running", item.Phase)
 		assert.Equal(t, &pausedReason, item.PausedReason)
 		assert.Equal(t, "work-item-1", item.WorkItemRef)
 		assert.Equal(t, "test-project", item.ProjectRef)
@@ -282,16 +265,13 @@ func TestRunsServiceNilDB(t *testing.T) {
 			Namespace: team.Status.Namespace,
 		},
 		Spec: ksquadv1.ProjectSpec{
-			TeamRef: ksquadv1.ObjectRef{
-				Name: "test-team",
-			},
-			Repo: "https://github.com/test/repo",
+			Repo: ksquadv1.RepoSpec{URL: "https://github.com/test/repo"},
 		},
 	}
 
 	// Create fake client with test objects
 	objs := []client.Object{team, project}
-	k8sClient := fake.NewClientBuilder().WithObjects(objs...).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
 
 	// Create RunsService with nil database (should fallback to placeholder logic)
 	svc := NewRunsService(k8sClient)
