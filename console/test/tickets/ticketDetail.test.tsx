@@ -4,6 +4,9 @@
 // (ISI-4454) hosts the LIVE human comment composer — contributor+ posts with an
 // optimistic append + reconciling re-fetch, a viewer stays read-only, and a
 // 404/501 from the endpoint keeps the honest "not wired here" gap (FR-I3).
+// ISI-4579 (ISI-4567 §2.3): the composer's Comment-&-assign chains the comment
+// POST with the dispatch POST sequentially — an assign 403 keeps the comment +
+// mirrors the rail error inline, an assign 501 latches just the assign button.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
@@ -80,7 +83,8 @@ const POSTED_COMMENT = {
 
 /**
  * Route the stubbed fetch. `role` drives /api/session (fetchViewerRole); a POST to
- * …/comments returns `postStatus` (default 201 POSTED_COMMENT). The thread GET is
+ * …/comments returns `postStatus` (default 201 POSTED_COMMENT) and a POST to
+ * …/dispatch returns `dispatchStatus` (default 200, ISI-4579). The thread GET is
  * STATEFUL: once a 201 post lands it returns THREAD + the posted comment, and once
  * a dispatch POST lands it returns the swapped RequestedAgent — mirroring the real
  * backend so the reconciling re-fetch keeps (not drops) server truth.
@@ -90,12 +94,14 @@ function routeFetch(opts?: {
   threadStatus?: number;
   role?: string;
   postStatus?: number;
+  dispatchStatus?: number;
 }) {
   const threadBody = opts?.thread ?? THREAD;
   const baseComments = Array.isArray(threadBody.Comments) ? threadBody.Comments : [];
   const threadStatus = opts?.threadStatus ?? 200;
   const role = opts?.role ?? "viewer";
   const postStatus = opts?.postStatus ?? 201;
+  const dispatchStatus = opts?.dispatchStatus ?? 200;
   let posted = false;
   let requestedAgent =
     typeof threadBody.RequestedAgent === "string" ? threadBody.RequestedAgent : null;
@@ -119,14 +125,18 @@ function routeFetch(opts?: {
     }
     if (u.includes("/api/work-items/") && u.includes("/dispatch") && method === "POST") {
       const body = JSON.parse(String(init?.body ?? "{}")) as { agentId?: string };
-      if (typeof body.agentId === "string") requestedAgent = body.agentId;
+      if (dispatchStatus === 200 && typeof body.agentId === "string") {
+        requestedAgent = body.agentId;
+      }
       return Promise.resolve(
-        jsonResponse({
-          workItemId: threadBody.WorkItemID,
-          fromState: threadBody.State,
-          toState: threadBody.State,
-          requestedAgent,
-        }),
+        dispatchStatus === 200
+          ? jsonResponse({
+              workItemId: threadBody.WorkItemID,
+              fromState: threadBody.State,
+              toState: threadBody.State,
+              requestedAgent,
+            })
+          : jsonResponse({ error: "x" }, dispatchStatus),
       );
     }
     if (u.includes("/api/work-items/")) {
@@ -305,6 +315,138 @@ describe("TicketDetail", () => {
     expect(screen.getAllByTestId("activity-comment")).toHaveLength(2);
   });
 
+  // ---- Composer Comment-&-assign (ISI-4567 §2.3 / ISI-4579) ----
+
+  it("Comment & assign chains the comment POST then the dispatch POST, in order", async () => {
+    routeFetch({ role: "contributor", thread: BACKLOG_THREAD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    // The composer's own roster select loads beside Comment (rail renders one
+    // too — both draw from GET /api/squad/agents, hence TWO reviewer options).
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "agent:reviewer" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit-assign"));
+
+    // The comment landed and survives the reconciling re-fetch (3 total).
+    await waitFor(() =>
+      expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
+    );
+    expect(screen.getByText("hello agents")).toBeTruthy();
+    // Sequential, in order: comments POST strictly BEFORE dispatch POST, and
+    // the dispatch carried the picked agent NAME (ISI-4501 wire contract).
+    const seq = fetchMock.mock.calls.map(([u, init]) => ({
+      u: String(u),
+      method: (init?.method ?? "GET").toUpperCase(),
+    }));
+    const commentIdx = seq.findIndex(
+      (c) => c.u.includes("/comments") && c.method === "POST",
+    );
+    const dispatchIdx = seq.findIndex(
+      (c) => c.u.includes("/dispatch") && c.method === "POST",
+    );
+    expect(commentIdx).toBeGreaterThanOrEqual(0);
+    expect(dispatchIdx).toBeGreaterThan(commentIdx);
+    expect(fetchMock.mock.calls[dispatchIdx][1]?.body).toBe(
+      JSON.stringify({ agentId: "agent:reviewer" }),
+    );
+    // The re-fetch surfaces the stamped requested agent on the rail select.
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("detail-assignee-select") as HTMLSelectElement).value,
+      ).toBe("agent:reviewer"),
+    );
+  });
+
+  it("keeps the comment + inline error when the assign half 403s (never loses the text)", async () => {
+    routeFetch({ role: "contributor", thread: BACKLOG_THREAD, dispatchStatus: 403 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "agent:reviewer" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit-assign"));
+
+    // The comment half LANDED — it stays in the thread (the human's text is
+    // kept as a posted comment, not rolled back with the failed assign).
+    await waitFor(() =>
+      expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
+    );
+    expect(screen.getByText("hello agents")).toBeTruthy();
+    // The assign error mirrors the rail's 403 copy inline…
+    const err = await screen.findByTestId("detail-composer-assign-error");
+    expect(err.textContent).toBe("That agent isn't a member of this project's team.");
+    // …and the assign button did NOT latch off (unlike the 501 arm): it is
+    // disabled here only because the posted comment cleared the textbox.
+    expect(screen.getByTestId("detail-composer")).toBeTruthy();
+    expect(
+      (screen.getByTestId("detail-composer-submit-assign") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    // Re-arm with fresh text → the assign control comes back (no latch).
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "retry assign" },
+    });
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("detail-composer-submit-assign") as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+  });
+
+  it("degrades honestly when the assign half 501s: assign button off, composer still posts", async () => {
+    routeFetch({ role: "contributor", thread: BACKLOG_THREAD, dispatchStatus: 501 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getAllByRole("option", { name: "agent:reviewer" })).toHaveLength(2),
+    );
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "hello agents" },
+    });
+    fireEvent.change(screen.getByTestId("detail-composer-assignee"), {
+      target: { value: "agent:reviewer" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit-assign"));
+
+    // Comment kept; honest not-hosted copy inline; JUST the assign button
+    // latches off — the plain Comment path still works afterwards.
+    await waitFor(() =>
+      expect(screen.getAllByTestId("activity-comment")).toHaveLength(3),
+    );
+    const err = await screen.findByTestId("detail-composer-assign-error");
+    expect(err.textContent).toBe("Assigning agents isn't hosted on this deployment yet.");
+    expect(
+      (screen.getByTestId("detail-composer-submit-assign") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "still here" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+    await waitFor(() =>
+      expect(
+        (screen.getByTestId("detail-composer-input") as HTMLTextAreaElement).value,
+      ).toBe(""),
+    );
+  });
+
   // ---- Rail AssigneeControl (ISI-4567 §2.2 assign-where-legal + §2.4 display) ----
 
   it("renders the assignee select for a contributor on a BACKLOG ticket", async () => {
@@ -320,8 +462,11 @@ describe("TicketDetail", () => {
     expect(
       screen.getByText("Assigning dispatches the agent to start this ticket."),
     ).toBeTruthy();
-    // The roster options come from GET /api/squad/agents.
-    expect(await screen.findByRole("option", { name: "agent:reviewer" })).toBeTruthy();
+    // The roster options come from GET /api/squad/agents. The composer renders
+    // its own select from the same roster (ISI-4579), so scope to the rail.
+    expect(
+      await within(select).findByRole("option", { name: "agent:reviewer" }),
+    ).toBeTruthy();
   });
 
   it("renders the assignee select for a contributor on a TODO ticket, value = the requested agent", async () => {
