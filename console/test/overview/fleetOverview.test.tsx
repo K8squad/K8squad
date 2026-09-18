@@ -13,6 +13,7 @@ import {
   activeRunCount,
   fleetRuns,
   formatWhen,
+  partitionProjects,
 } from "@/components/overview/FleetOverview";
 import type { SquadOverviewData } from "@/components/SquadOverview";
 
@@ -138,6 +139,23 @@ describe("pure projections", () => {
     expect(formatWhen(null)).toBe("—");
     expect(formatWhen("not-a-date")).toBe("—");
   });
+
+  it("partitionProjects splits the synthetic Unassigned/other bucket out (ISI-4570)", () => {
+    const withBucket = [
+      ...overview.projects!,
+      {
+        name: "Unassigned/other",
+        namespace: "squad-alpha",
+        runs: [{ name: "run-orphan", phase: "Running", claimedAt: "2026-09-16T13:00:00Z" }],
+        phaseCounts: { Running: 1 },
+      },
+    ];
+    const { projects, unassigned } = partitionProjects(withBucket);
+    expect(projects.map((p) => p.name)).toEqual(["webapp", "infra"]);
+    expect(unassigned?.runs).toHaveLength(1);
+    expect(partitionProjects(null)).toEqual({ projects: [], unassigned: null });
+    expect(partitionProjects(overview.projects).unassigned).toBeNull();
+  });
 });
 
 describe("FleetOverview render", () => {
@@ -196,6 +214,49 @@ describe("FleetOverview render", () => {
     await waitFor(() =>
       expect(screen.getByTestId("fleet-not-wired")).toBeTruthy(),
     );
+  });
+
+  it("shows the unassigned bucket as a count, never as a project card (ISI-4570/ISI-4577)", async () => {
+    const withBucket: SquadOverviewData = {
+      ...overview,
+      projects: [
+        ...overview.projects!,
+        {
+          name: "Unassigned/other",
+          namespace: "squad-alpha",
+          runs: [
+            { name: "run-orphan-1", workItem: "wi-9", phase: "Running", claimedAt: "2026-09-16T13:00:00Z" },
+            { name: "run-orphan-2", workItem: "wi-10", phase: "Failed", claimedAt: "2026-09-16T12:30:00Z" },
+          ],
+          phaseCounts: { Running: 1, Failed: 1 },
+        },
+      ],
+    };
+    stubRoutes({
+      overview: { status: 200, body: withBucket },
+      agents: { status: 200, body: { agents: [] } },
+      workItems: () => ({ status: 200, body: [] }),
+      series: () => ({ status: 200, body: { tokens: { available: false } } }),
+    });
+    render(<FleetOverview />);
+
+    await waitFor(() => expect(screen.getByTestId("fleet-overview")).toBeTruthy());
+
+    // The bucket is not a project: still exactly 2 cards, Projects tile still 2.
+    expect(screen.getAllByTestId("fleet-project-card")).toHaveLength(2);
+    expect(screen.getByRole("group", { name: "Projects" }).textContent).toContain("2");
+    expect(screen.queryByText("Unassigned/other")).toBeNull();
+
+    // No work-items/series fan-out for the synthetic bucket.
+    const calls = (fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("Unassigned"))).toBe(false);
+
+    // Its runs surface as a count bucket on the Live Agent Runs panel, not as rows.
+    await waitFor(() =>
+      expect(screen.getByTestId("fleet-unassigned-runs").textContent).toContain("2 unassigned runs"),
+    );
+    const live = screen.getByTestId("fleet-live-runs");
+    expect(live.textContent).not.toContain("run-orphan-1");
   });
 
   it("renders tokens as an honest dash when no project reports them", async () => {
