@@ -65,6 +65,76 @@
   line-height: 1.5;
 }
 
+/* ISI-4648 type-aware viewer: image render (svg/png), markdown render, and a
+   minimal hljs token theme for the mock grammar set (go/ts/js/json/yaml). */
+
+.file-explorer__image {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  margin: 8px auto;
+  background: var(--surface, #fff);
+}
+
+.file-explorer__markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  overflow: auto;
+}
+
+.file-explorer__markdown pre {
+  overflow: auto;
+  font-size: 13px;
+}
+
+.file-explorer__markdown code {
+  font-size: 13px;
+}
+
+.file-explorer__markdown table {
+  border-collapse: collapse;
+}
+
+.file-explorer__markdown th,
+.file-explorer__markdown td {
+  border: 1px solid var(--border, #2a2a2a);
+  padding: 4px 10px;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in {
+  color: var(--hljs-keyword, #c678dd);
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-template-variable {
+  color: var(--hljs-string, #98c379);
+}
+
+.hljs-number,
+.hljs-literal {
+  color: var(--hljs-literal, #d19a66);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment, #7f848e);
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-function_,
+.hljs-name {
+  color: var(--hljs-title, #61afef);
+}
+
+.hljs-type,
+.hljs-class {
+  color: var(--hljs-type, #e5c07b);
+}
+
 /* Informational banner — the workspace-busy / degraded state (AC4). Info tone,
    never an error hue: busy is expected, not a failure. */
 .banner {

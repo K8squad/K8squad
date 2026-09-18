@@ -16,9 +16,12 @@
   },
   "dependencies": {
     "geist": "^1.7.2",
+    "highlight.js": "^11.12.0",
     "next": "15.5.24",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "server-only": "0.0.1"
   },
   "devDependencies": {

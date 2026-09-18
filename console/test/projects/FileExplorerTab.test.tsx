@@ -68,8 +68,10 @@ describe("FileExplorerTab", () => {
     await waitFor(() => expect(screen.getByText("main.ts")).toBeTruthy());
 
     fireEvent.click(screen.getByText("main.ts"));
-    await waitFor(() => expect(screen.getByTestId("files-text")).toBeTruthy());
-    expect(screen.getByTestId("files-text").textContent).toBe("export const x=1");
+    // ISI-4648: a .ts file previews as highlighted code — the source text is
+    // preserved verbatim inside the token spans.
+    await waitFor(() => expect(screen.getByTestId("files-code")).toBeTruthy());
+    expect(screen.getByTestId("files-code").textContent).toBe("export const x=1");
 
     // Read-only (§D3): no edit/save/delete/rename/run affordance anywhere.
     const root = screen.getByTestId("file-explorer");
@@ -78,7 +80,25 @@ describe("FileExplorerTab", () => {
     }
   });
 
-  it("shows a binary placeholder with byte count, never garbled text (AC2)", async () => {
+  it("renders a markdown file as formatted content, not raw source (ISI-4648)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 30 }] } },
+      contents: {
+        "README.md": { path: "README.md", size: 30, contentType: "text", data: b64("# Hello\n\nsome **bold** text"), offset: 0, length: 30 },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("README.md"));
+    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
+    const md = screen.getByTestId("files-markdown");
+    // Rendered: an <h1> and a <strong>, not the raw "# Hello" / "**bold**" source.
+    expect(within(md).getByRole("heading", { level: 1 }).textContent).toBe("Hello");
+    expect(md.querySelector("strong")?.textContent).toBe("bold");
+    expect(screen.queryByTestId("files-text")).toBeNull();
+  });
+
+  it("renders a png as an image even when the wire hint is binary (ISI-4648)", async () => {
     routeFetch({
       listings: { "": { path: "", entries: [{ name: "logo.png", path: "logo.png", type: "file", size: 2048 }] } },
       contents: { "logo.png": { path: "logo.png", size: 2048, contentType: "binary", data: b64("\x89PNG\r\n"), offset: 0, length: 2048 } },
@@ -86,6 +106,62 @@ describe("FileExplorerTab", () => {
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
     fireEvent.click(screen.getByText("logo.png"));
+    await waitFor(() => expect(screen.getByTestId("files-image")).toBeTruthy());
+    const img = screen.getByTestId("files-image").querySelector("img");
+    expect(img?.getAttribute("src")).toMatch(/^data:image\/png;base64,/);
+    // An image is never the binary placeholder nor garbled text.
+    expect(screen.queryByTestId("files-binary")).toBeNull();
+    expect(screen.queryByTestId("files-text")).toBeNull();
+  });
+
+  it("renders an svg as an image with the svg mime (ISI-4648)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "icon.svg", path: "icon.svg", type: "file", size: 40 }] } },
+      contents: { "icon.svg": { path: "icon.svg", size: 40, contentType: "text", data: b64("<svg xmlns='x'></svg>"), offset: 0, length: 40 } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("icon.svg"));
+    await waitFor(() => expect(screen.getByTestId("files-image")).toBeTruthy());
+    const img = screen.getByTestId("files-image").querySelector("img");
+    expect(img?.getAttribute("src")).toMatch(/^data:image\/svg\+xml;base64,/);
+  });
+
+  it("renders a go file with syntax-highlight token spans (ISI-4648)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "main.go", path: "main.go", type: "file", size: 30 }] } },
+      contents: { "main.go": { path: "main.go", size: 30, contentType: "text", data: b64('package main\n// hi\nvar s = "x"'), offset: 0, length: 30 } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("main.go"));
+    await waitFor(() => expect(screen.getByTestId("files-code")).toBeTruthy());
+    const code = screen.getByTestId("files-code");
+    expect(code.querySelector(".hljs-keyword")).toBeTruthy();
+    expect(code.querySelector(".hljs-string")).toBeTruthy();
+    expect(code.textContent).toBe('package main\n// hi\nvar s = "x"');
+  });
+
+  it("still shows plain text for an unknown text extension (ISI-4648)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "notes.txt", path: "notes.txt", type: "file", size: 5 }] } },
+      contents: { "notes.txt": { path: "notes.txt", size: 5, contentType: "text", data: b64("hello"), offset: 0, length: 5 } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("notes.txt"));
+    await waitFor(() => expect(screen.getByTestId("files-text")).toBeTruthy());
+    expect(screen.getByTestId("files-text").textContent).toBe("hello");
+  });
+
+  it("shows a binary placeholder with byte count, never garbled text (AC2)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "blob.so", path: "blob.so", type: "file", size: 2048 }] } },
+      contents: { "blob.so": { path: "blob.so", size: 2048, contentType: "binary", data: b64("\x7fELF\x00"), offset: 0, length: 2048 } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("blob.so"));
     await waitFor(() => expect(screen.getByTestId("files-binary")).toBeTruthy());
     const binary = screen.getByTestId("files-binary");
     expect(within(binary).getByText(/Binary file/)).toBeTruthy();

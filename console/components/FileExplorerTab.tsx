@@ -17,6 +17,14 @@
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
 import { useCallback, useEffect, useState } from "react";
+import hljs from "highlight.js/lib/core";
+import hlGo from "highlight.js/lib/languages/go";
+import hlTypescript from "highlight.js/lib/languages/typescript";
+import hlJavascript from "highlight.js/lib/languages/javascript";
+import hlJson from "highlight.js/lib/languages/json";
+import hlYaml from "highlight.js/lib/languages/yaml";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import "./file-explorer.css";
 import { EmptyState } from "@/components/forms/EmptyState";
 import {
@@ -25,10 +33,22 @@ import {
   decodeTextContent,
   humanBytes,
   rawBytesDataUrl,
+  previewKind,
+  codeLanguage,
+  imageDataUrl,
   type FileEntry,
   type FileContent,
   type FilesState,
 } from "@/lib/project-files";
+
+// ISI-4648: type-aware viewer grammars, registered once on the core build so
+// the bundle carries only the mock set (go/node/json/yaml), not every hljs
+// language.
+hljs.registerLanguage("go", hlGo);
+hljs.registerLanguage("typescript", hlTypescript);
+hljs.registerLanguage("javascript", hlJavascript);
+hljs.registerLanguage("json", hlJson);
+hljs.registerLanguage("yaml", hlYaml);
 
 /** Per-directory lazy-load state, keyed by the directory's workspace-relative
  * path ("" = root). A directory is fetched the first time it is expanded. */
@@ -318,6 +338,7 @@ function PreviewPane({
   }
 
   const c = state.data;
+  const kind = previewKind(c.path, c.contentType);
   return (
     <div>
       <div className="file-explorer__preview-head">
@@ -334,13 +355,27 @@ function PreviewPane({
         </div>
       )}
 
-      {c.contentType === "binary" ? (
+      {kind === "binary" ? (
         <div data-testid="files-binary">
           <p className="muted">Binary file — {humanBytes(c.size)}. Not shown as text.</p>
           <a href={rawBytesDataUrl(c)} download={fileName(c.path)} data-testid="files-binary-download">
             Download raw bytes
           </a>
         </div>
+      ) : kind === "image" ? (
+        <div data-testid="files-image">
+          <img className="file-explorer__image" src={imageDataUrl(c)} alt={fileName(c.path)} />
+        </div>
+      ) : kind === "markdown" ? (
+        <div className="file-explorer__markdown" data-testid="files-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{decodeTextContent(c.data)}</ReactMarkdown>
+        </div>
+      ) : kind === "code" ? (
+        <pre className="file-explorer__code" data-testid="files-code">
+          <code
+            dangerouslySetInnerHTML={{ __html: highlightCode(decodeTextContent(c.data), codeLanguage(c.path)) }}
+          />
+        </pre>
       ) : (
         <pre className="file-explorer__code" data-testid="files-text">
           {decodeTextContent(c.data)}
@@ -348,6 +383,26 @@ function PreviewPane({
       )}
     </div>
   );
+}
+
+/** Highlight a decoded source file with the grammar for its extension.
+ * highlight.js escapes markup in its output, so the emitted HTML is safe to
+ * inject. Falls back to HTML-escaped plain text if highlighting itself fails —
+ * the preview never goes blank over a grammar edge case. */
+function highlightCode(source: string, language: string | null): string {
+  if (!language) return escapeHtml(source);
+  try {
+    return hljs.highlight(source, { language }).value;
+  } catch {
+    return escapeHtml(source);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function honest(title: string, why: string) {
