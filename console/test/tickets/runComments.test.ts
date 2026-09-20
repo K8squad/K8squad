@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   avatarInitial,
   buildRunComments,
+  displayName,
   isRunningState,
 } from "@/lib/tickets/runComments";
 import type { NormalizedThread } from "@/lib/tickets/thread";
@@ -35,6 +36,16 @@ describe("avatarInitial", () => {
     expect(avatarInitial("agent/coder")).toBe("C");
     expect(avatarInitial("user:alice")).toBe("A");
     expect(avatarInitial("")).toBe("?");
+  });
+});
+
+describe("displayName", () => {
+  it("strips the agent:/user: role prefix so the bare name shows (ISI-4567)", () => {
+    expect(displayName("agent:Architect")).toBe("Architect");
+    expect(displayName("agent/builder")).toBe("builder");
+    expect(displayName("user:alice")).toBe("alice");
+    expect(displayName("Winston")).toBe("Winston");
+    expect(displayName("")).toBe("unknown");
   });
 });
 

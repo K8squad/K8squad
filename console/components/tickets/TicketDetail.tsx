@@ -61,6 +61,7 @@ import {
 } from "@/lib/tickets/thread";
 import {
   buildRunComments,
+  displayName,
   runCommentKey,
   type RunComment,
 } from "@/lib/tickets/runComments";
@@ -378,7 +379,8 @@ function ActivityRow({
       <li className="ksq-activity ksq-activity--event" data-testid="activity-event">
         <span className="ksq-activity__dot" aria-hidden="true" />
         <span className="muted">
-          {e.principal || "someone"} moved {stateLabel(e.fromState)} →{" "}
+          {e.principal ? displayName(e.principal) : "someone"} moved{" "}
+          {stateLabel(e.fromState)} →{" "}
           {stateLabel(e.toState)}
         </span>
         <time className="ksq-ticket-id">{fmt(item.at)}</time>
@@ -400,7 +402,7 @@ function ActivityRow({
             {c.summary || shortId(c.ref)}
           </code>
         )}
-        <span className="muted">· {c.author}</span>
+        <span className="muted">· {displayName(c.author)}</span>
         <time className="ksq-ticket-id">{fmt(item.at)}</time>
       </li>
     );
@@ -431,7 +433,7 @@ function RunCommentCard({
   meta?: RunComment;
 }) {
   const comment = item.comment!;
-  const author = comment.author || "unknown";
+  const author = displayName(comment.author);
   // Older agent runs collapse to a one-liner; the newest agent run and every
   // human reply start open (design "newest last; older runs collapse").
   const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
