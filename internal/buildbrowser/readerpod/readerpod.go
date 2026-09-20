@@ -15,9 +15,11 @@ limitations under the License.
 */
 
 // Package readerpod is the story 8.7f (ISI-2905, ISI-2276) on-demand read-only workspace-reader pod:
-// a short-lived pod that mounts a completed Run's Project PVC READ-ONLY at the Run's commit so an
-// operator can browse the FULL tree — including files the Run never changed — beyond the git-native
-// build-snapshot (8.7c), which only carries the changed set.
+// a short-lived pod that mounts a completed Run's Project PVC READ-ONLY and serves its filesystem
+// as-is so an operator can browse the FULL tree — including uncommitted/generated files the Run never
+// committed — beyond the git-native build-snapshot (8.7c), which only carries the changed set.
+// ISI-4693: the mount is served as-is (no git checkout); the Run's commit rides on the pod annotation
+// as advisory provenance only.
 //
 // The story is FLAGGED and fast-follow. Two invariants shape it, straight from design §4.2's
 // "ponytail: don't build until a full-tree need is proven":
@@ -93,8 +95,9 @@ type Config struct {
 // commit and reader ServiceAccount all come from the Run's coord record, so a caller can never widen
 // the mount or the credential scope. CommitSHA is advisory provenance only (ISI-4693): the Project
 // PVC is mounted READ-ONLY and served filesystem-as-is (no checkout), so the reader shows the live
-// workspace — the commit rides along on the pod label when a git-native run captured one, and is
-// empty otherwise.
+// workspace — the commit rides along on the pod ANNOTATION (k8squad.io/commit) + env when a git-native
+// run captured one, and is empty otherwise. It is deliberately NOT a label (label values are
+// length/DNS-constrained and the commit derives from unvalidated jsonb meta).
 type Spec struct {
 	RunID          string // the completed Run whose full tree is being read (label + pod name seed)
 	ProjectPVCName string // the Run's Project PVC, mounted ReadOnly
@@ -339,7 +342,15 @@ func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 						ClaimName: spec.ProjectPVCName,
-						ReadOnly:  true, // 8.7f/ISI-4693: the Project PVC is mounted READ-ONLY and served as-is (no checkout).
+						// 8.7f/ISI-4693: the Project PVC is mounted READ-ONLY and served as-is (no checkout).
+						// NOTE (ISI-4693 review F4): ReadOnly here does NOT make an RWO claim shareable — the
+						// default Project workspace is ReadWriteOnce (pkg/workspace/manager.go), so while a
+						// File Explorer tab holds the reader pod (up to the ActiveDeadlineSeconds backstop) a
+						// newly dispatched agent on another node can sit in Multi-Attach/Pending. The AC7 busy
+						// check (readerspec.projectBusy) gates reader launch on a live claim, but there is no
+						// reverse interlock once the reader is up. Enabling BuildReaderPod (child a296b6ff)
+						// must consciously accept this window or move the Project PVC to RWX on reader clusters.
+						ReadOnly: true,
 					},
 				},
 			}},

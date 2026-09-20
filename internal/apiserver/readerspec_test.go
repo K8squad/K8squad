@@ -57,7 +57,10 @@ func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery("FROM coord.audit_log").
+	// Pin the browse-target SEMANTICS, not just the table (ISI-4693 review F3): a matcher on the
+	// table alone survives mutating event_type/to_state/ORDER BY. These fragments assert the query
+	// selects the project's LATEST SUCCEEDED terminal run, deterministically.
+	mock.ExpectQuery(regexp.QuoteMeta("al.event_type = 'run_terminal'")).
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
@@ -190,6 +193,44 @@ func TestCoordReaderSpecResolver_CompletedRunNoSnapshot(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sql: %v", err)
+	}
+}
+
+// ISI-4693 review F3/F6: pin the browse-target query's correctness guards so a regression that
+// loosens them fails HERE, not silently in production. Each sub-case matches a distinct required
+// SQL fragment; sqlmock fails the query if the fragment is absent, so dropping any one guard breaks
+// the test.
+func TestCoordReaderSpecResolver_QueryGuardsPinned(t *testing.T) {
+	for _, frag := range []string{
+		"al.to_state = 'succeeded'",                                      // only SUCCEEDED terminals
+		"ORDER BY al.created_at DESC, al.id DESC",                        // deterministic latest (F6 tiebreaker)
+		"w.team_id IS NOT NULL",                                          // F2: skip team-less items, never 500
+		"a.work_item_id = al.work_item_id AND a.kind = 'build-snapshot'", // F6: correlated, no fan-out
+	} {
+		t.Run(frag, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock: %v", err)
+			}
+			defer db.Close()
+			mock.ExpectQuery("FROM coord.claim").
+				WithArgs(rsProjUID).
+				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+			mock.ExpectQuery(regexp.QuoteMeta(frag)).
+				WithArgs(rsProjUID).
+				WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+			r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			if _, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo"); err != nil {
+				t.Fatalf("resolve: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Errorf("query missing required guard %q: %v", frag, err)
+			}
+		})
 	}
 }
 

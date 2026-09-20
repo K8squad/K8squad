@@ -19,7 +19,9 @@ package apiserver
 //     git commit — the runtime (opencode) writes plain files, not git commits, and the board wants
 //     the live/uncommitted tree shown. When a build-snapshot artifact HAS been captured (git-native
 //     runs, pkg/coord/prodsnapshot.go) its meta->>'commit' is surfaced as advisory provenance on the
-//     pod label, but it is optional; File Explorer no longer blocks on it.
+//     pod ANNOTATION (k8squad.io/commit) + a KSQUAD_READ_COMMIT env — never a label (label values are
+//     length/DNS-constrained; the commit comes from unvalidated jsonb) and never a checkout — but it
+//     is optional; File Explorer no longer blocks on it.
 //   - PVC: workspace.ProjectPVCName(project) — the per-Project claim (ISI-4127) provisioned by
 //     pkg/controller/projectpvc in the consuming Team's SANDBOX namespace (Team.status.namespace).
 //     The reader pod must launch in that same namespace: PVC mounts are namespace-scoped.
@@ -30,7 +32,8 @@ package apiserver
 //   - ErrNoBrowseTarget: no completed (succeeded) Run for the Project yet.
 //   - ErrWorkspaceBusy (AC7): the Project's PVC is RWO and a running agent holds it — signalled
 //     when any of the Project's work items carries a live coord claim (holder + unexpired lease),
-//     so a read-only co-mount is impossible today. The route falls back to the snapshot reader.
+//     so a read-only co-mount is impossible while an agent runs. The route degrades to an empty
+//     listing with degraded=true (files.go) rather than launching a reader that would wedge Pending.
 
 import (
 	"context"
@@ -175,6 +178,18 @@ func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID st
 // The completed-Run signal is the run_terminal audit row (coord.audit_log, written once per committed
 // terminal advance by pkg/coord ProdEffects.Terminal) with to_state='succeeded', joined to its work
 // item for the Team scope. sql.ErrNoRows means the Project has no completed Run yet (ErrNoBrowseTarget).
+//
+// Query correctness (ISI-4693 review):
+//   - team_id is NULLABLE (coord.work_item, an item may have no team) — filtered with `w.team_id IS
+//     NOT NULL` so a team-less item is skipped (no sandbox namespace resolves for it anyway) rather
+//     than crashing the scan on NULL→string, which would surface as an un-degraded HTTP 500.
+//   - the build-snapshot LEFT JOIN correlates on BOTH work_item_id AND run_id: coord.artifact's
+//     uniqueness is UNIQUE(work_item_id, run_id, kind), so joining on run_id alone could fan out to
+//     multiple rows (a run with snapshots on two items) and pick an arbitrary commit.
+//   - ORDER BY carries an `al.id DESC` tiebreaker (bigserial, monotonic) so same-timestamp rows pick
+//     a deterministic latest run.
+//
+// The partial index db/migrations/0023_audit_log_run_terminal_index.sql serves these predicates.
 func (r *CoordReaderSpecResolver) latestBrowseTarget(ctx context.Context, projectUID string) (browseTarget, error) {
 	var t browseTarget
 	var commit sql.NullString
@@ -185,12 +200,13 @@ func (r *CoordReaderSpecResolver) latestBrowseTarget(ctx context.Context, projec
 		  FROM coord.audit_log al
 		  JOIN coord.work_item w ON w.id = al.work_item_id
 		  LEFT JOIN coord.artifact a
-		         ON a.run_id = al.run_id AND a.kind = 'build-snapshot'
+		         ON a.run_id = al.run_id AND a.work_item_id = al.work_item_id AND a.kind = 'build-snapshot'
 		 WHERE w.project_id = $1::uuid
 		   AND al.event_type = 'run_terminal'
 		   AND al.to_state = 'succeeded'
 		   AND al.run_id IS NOT NULL
-		 ORDER BY al.created_at DESC
+		   AND w.team_id IS NOT NULL
+		 ORDER BY al.created_at DESC, al.id DESC
 		 LIMIT 1`, projectUID).Scan(&t.runID, &commit, &t.teamID)
 	if err != nil {
 		return browseTarget{}, err
