@@ -12,10 +12,16 @@ package apiserver
 //   - Project: the route's {projectId} is resolved through the SAME tenancy spine the dashboard
 //     uses (projectresolve.go) — team-fenced for non-admins, UID-first fleet-wide for admins — so
 //     the file explorer can never address a Project the dashboard would hide.
-//   - Browse target: the project's LATEST completed Run, i.e. the newest coord.artifact row of
-//     kind 'build-snapshot' for a coord.work_item of this Project. Its run_id seeds the reader
-//     pod/Service names; its meta->>'commit' (captured at Collecting, pkg/coord/prodsnapshot.go)
-//     pins the read-only checkout.
+//   - Browse target: the project's LATEST completed (succeeded) Run — its run_terminal audit row
+//     (coord.audit_log) for a coord.work_item of this Project. Its run_id seeds the reader
+//     pod/Service names. ISI-4693: the reader pod mounts the Project PVC READ-ONLY and serves the
+//     workspace FILESYSTEM as-is (readserver os.ReadDir), so the browse target does NOT require a
+//     git commit — the runtime (opencode) writes plain files, not git commits, and the board wants
+//     the live/uncommitted tree shown. When a build-snapshot artifact HAS been captured (git-native
+//     runs, pkg/coord/prodsnapshot.go) its meta->>'commit' is surfaced as advisory provenance on the
+//     pod ANNOTATION (k8squad.io/commit) + a KSQUAD_READ_COMMIT env — never a label (label values are
+//     length/DNS-constrained; the commit comes from unvalidated jsonb) and never a checkout — but it
+//     is optional; File Explorer no longer blocks on it.
 //   - PVC: workspace.ProjectPVCName(project) — the per-Project claim (ISI-4127) provisioned by
 //     pkg/controller/projectpvc in the consuming Team's SANDBOX namespace (Team.status.namespace).
 //     The reader pod must launch in that same namespace: PVC mounts are namespace-scoped.
@@ -23,10 +29,11 @@ package apiserver
 //     — the same identity the Run's own agent pod ran under, never broader.
 //
 // First-class degradations (the route degrades rather than 5xx's):
-//   - ErrNoBrowseTarget: no completed Run (no build-snapshot artifact) for the Project yet.
+//   - ErrNoBrowseTarget: no completed (succeeded) Run for the Project yet.
 //   - ErrWorkspaceBusy (AC7): the Project's PVC is RWO and a running agent holds it — signalled
 //     when any of the Project's work items carries a live coord claim (holder + unexpired lease),
-//     so a read-only co-mount is impossible today. The route falls back to the snapshot reader.
+//     so a read-only co-mount is impossible while an agent runs. The route degrades to an empty
+//     listing with degraded=true (files.go) rather than launching a reader that would wedge Pending.
 
 import (
 	"context"
@@ -106,7 +113,9 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 		return readerpod.Spec{}, ErrWorkspaceBusy
 	}
 
-	// Browse target: newest build-snapshot artifact = latest completed Run with a pinned commit.
+	// Browse target: the project's latest completed (succeeded) Run. ISI-4693: the reader serves
+	// the live workspace filesystem RO, so a completed Run — not a git snapshot — is the target;
+	// the commit (if any snapshot captured one) rides along as advisory provenance.
 	target, err := r.latestBrowseTarget(ctx, uid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return readerpod.Spec{}, ErrNoBrowseTarget
@@ -125,13 +134,13 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 	spec := readerpod.Spec{
 		RunID:          target.runID,
 		ProjectPVCName: workspace.ProjectPVCName(name),
-		CommitSHA:      target.commit,
+		CommitSHA:      target.commit, // advisory (may be ""); the RO mount serves the live workspace, no checkout
 		ReaderSAName:   teamctrl.AgentServiceAccount,
 		Namespace:      sandboxNS,
 	}
 	if err := spec.Validate(); err != nil {
-		// A coord row that cannot form a valid Spec (e.g. empty commit meta) is a data problem,
-		// not a client problem — surface it as an error, never launch a half-specified reader.
+		// A coord row that cannot form a valid Spec (missing PVC/SA/run) is a data problem, not a
+		// client problem — surface it as an error, never launch a half-specified reader.
 		return readerpod.Spec{}, fmt.Errorf("readerspec: coord record for project %s yields invalid spec: %w", name, err)
 	}
 	return spec, nil
@@ -158,30 +167,53 @@ func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID st
 	return busy, nil
 }
 
-// latestBrowseTarget returns the newest completed Run with a captured commit for the Project: the
-// latest coord.artifact of kind 'build-snapshot' (written at Collecting, so its presence means the
-// Run reached a terminal-capture point) joined to its work item for the Team scope. sql.ErrNoRows
-// means the Project has nothing to browse yet (ErrNoBrowseTarget).
+// latestBrowseTarget returns the Project's latest completed (succeeded) Run — the target the reader
+// pod mounts the Project workspace for. ISI-4693: the target is a COMPLETED RUN, not a git snapshot.
+// The reader pod mounts the Project PVC read-only and serves its filesystem as-is (readserver
+// os.ReadDir), so the browse target does not require a git commit — the runtime writes plain files,
+// and the board wants the live/uncommitted tree shown. A build-snapshot artifact for the same run
+// (git-native runs only) is LEFT JOINed purely to surface its meta->>'commit' as advisory provenance
+// on the pod label; the commit is optional and never gates the browse.
+//
+// The completed-Run signal is the run_terminal audit row (coord.audit_log, written once per committed
+// terminal advance by pkg/coord ProdEffects.Terminal) with to_state='succeeded', joined to its work
+// item for the Team scope. sql.ErrNoRows means the Project has no completed Run yet (ErrNoBrowseTarget).
+//
+// Query correctness (ISI-4693 review):
+//   - team_id is NULLABLE (coord.work_item, an item may have no team) — filtered with `w.team_id IS
+//     NOT NULL` so a team-less item is skipped (no sandbox namespace resolves for it anyway) rather
+//     than crashing the scan on NULL→string, which would surface as an un-degraded HTTP 500.
+//   - the build-snapshot LEFT JOIN correlates on BOTH work_item_id AND run_id: coord.artifact's
+//     uniqueness is UNIQUE(work_item_id, run_id, kind), so joining on run_id alone could fan out to
+//     multiple rows (a run with snapshots on two items) and pick an arbitrary commit.
+//   - ORDER BY carries an `al.id DESC` tiebreaker (bigserial, monotonic) so same-timestamp rows pick
+//     a deterministic latest run.
+//
+// The partial index db/migrations/0023_audit_log_run_terminal_index.sql serves these predicates.
 func (r *CoordReaderSpecResolver) latestBrowseTarget(ctx context.Context, projectUID string) (browseTarget, error) {
 	var t browseTarget
+	var commit sql.NullString
 	err := r.db.QueryRowContext(ctx, `
-		SELECT a.run_id::text,
+		SELECT al.run_id::text,
 		       a.meta->>'commit',
 		       w.team_id::text
-		  FROM coord.artifact a
-		  JOIN coord.work_item w ON w.id = a.work_item_id
+		  FROM coord.audit_log al
+		  JOIN coord.work_item w ON w.id = al.work_item_id
+		  LEFT JOIN coord.artifact a
+		         ON a.run_id = al.run_id AND a.work_item_id = al.work_item_id AND a.kind = 'build-snapshot'
 		 WHERE w.project_id = $1::uuid
-		   AND a.kind = 'build-snapshot'
-		   AND a.meta->>'commit' IS NOT NULL
-		 ORDER BY a.created_at DESC
-		 LIMIT 1`, projectUID).Scan(&t.runID, &t.commit, &t.teamID)
+		   AND al.event_type = 'run_terminal'
+		   AND al.to_state = 'succeeded'
+		   AND al.run_id IS NOT NULL
+		   AND w.team_id IS NOT NULL
+		 ORDER BY al.created_at DESC, al.id DESC
+		 LIMIT 1`, projectUID).Scan(&t.runID, &commit, &t.teamID)
 	if err != nil {
 		return browseTarget{}, err
 	}
-	if t.commit == "" {
-		// meta->>'commit' IS NOT NULL but empty string is as useless as absent — treat as no target.
-		return browseTarget{}, sql.ErrNoRows
-	}
+	// commit is advisory: absent (no snapshot) or present (git-native run). Either way the reader
+	// serves the live workspace, so an empty commit is a valid target, not a degradation.
+	t.commit = commit.String
 	return t, nil
 }
 

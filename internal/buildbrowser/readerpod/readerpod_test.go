@@ -118,12 +118,20 @@ func TestKubeLauncher_RejectsBadSpec(t *testing.T) {
 	}{
 		{"no run", Spec{ProjectPVCName: "p", CommitSHA: "c", ReaderSAName: "sa"}},
 		{"no pvc", Spec{RunID: "r", CommitSHA: "c", ReaderSAName: "sa"}},
-		{"no commit", Spec{RunID: "r", ProjectPVCName: "p", ReaderSAName: "sa"}},
 		{"no sa", Spec{RunID: "r", ProjectPVCName: "p", CommitSHA: "c"}},
 	} {
 		if _, err := l.Launch(context.Background(), tc.spec); err == nil {
 			t.Errorf("%s: Launch accepted an invalid spec, want error", tc.name)
 		}
+	}
+}
+
+// ISI-4693: CommitSHA is advisory, not required — the RO mount serves the live workspace, so a
+// completed-Run browse with no captured commit is a valid spec (Validate must accept it).
+func TestSpec_CommitOptional(t *testing.T) {
+	s := Spec{RunID: "r", ProjectPVCName: "p", ReaderSAName: "sa"}
+	if err := s.Validate(); err != nil {
+		t.Errorf("Validate rejected a commit-less spec: %v (commit is advisory, ISI-4693)", err)
 	}
 }
 
