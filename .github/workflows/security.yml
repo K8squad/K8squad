@@ -80,7 +80,12 @@ jobs:
               sys.exit(1)
 
           today = dt.date.today()
+          # Fail-soft lead-time: warn (never fail) when an entry is within this many days
+          # of expiry, so the weekly Monday cron announces the deadline instead of the gate
+          # flipping red cold on a PR days later (ISI-4695). Tune here.
+          WARN_WINDOW = dt.timedelta(days=7)
           errors = []
+          warnings = []
           expires_re = re.compile(r"expires:(\d{4}-\d{2}-\d{2})")
           date_re = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -97,6 +102,8 @@ jobs:
                           errors.append(f"line {i}: malformed expiry date '{d}'")
                       elif dt.date.fromisoformat(d) < today:
                           errors.append(f"line {i}: entry expired on {d} — remove, renew, or re-justify")
+                      elif dt.date.fromisoformat(d) < today + WARN_WINDOW:
+                          warnings.append(f"line {i}: entry expires on {d} (within 7 days) — renew before it gates the fleet")
                   continue
               if not line:
                   continue
@@ -108,11 +115,16 @@ jobs:
               if prev_comment is None or not expires_re.search(prev_comment):
                   errors.append(f"line {i}: '{line}' lacks a preceding expires:YYYY-MM-DD date")
 
+          for w in warnings:
+              print(f"::warning::trivyignore: {w}")
           if errors:
               for e in errors:
                   print(f"::error::trivyignore: {e}")
               sys.exit(1)
-          print("trivyignore lint: no entries past expiry, every entry justified and dated.")
+          msg = "trivyignore lint: no entries past expiry, every entry justified and dated."
+          if warnings:
+              msg += f" ({len(warnings)} entr{'y' if len(warnings)==1 else 'ies'} expiring within 7 days — renew soon.)"
+          print(msg)
           PY
 
   no-softening-lint:
