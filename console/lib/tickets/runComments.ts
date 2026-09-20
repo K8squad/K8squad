@@ -39,22 +39,28 @@ export interface RunComment {
   running: boolean;
 }
 
+/** The principal minus its `agent:`/`user:` role prefix — the bare name, which
+ * may be empty. The single source both displayName and avatarInitial strip from,
+ * so neither has to know the other's empty-name fallback (a "" here, not the
+ * "unknown" sentinel). */
+function stripRolePrefix(author: string): string {
+  return author
+    .replace(/^agent[:/]/i, "")
+    .replace(/^user[:/]/i, "")
+    .trim();
+}
+
 /** The author name shown on a bubble header — the principal minus its
  * `agent:`/`user:` role prefix, so "agent:Architect" reads as "Architect"
  * (ISI-4567: "add the name of the agent that posted the response"). The
  * agent-vs-human colour distinction is carried by data-role, not the name. */
 export function displayName(author: string): string {
-  const name = author
-    .replace(/^agent[:/]/i, "")
-    .replace(/^user[:/]/i, "")
-    .trim();
-  return name || "unknown";
+  return stripRolePrefix(author) || "unknown";
 }
 
 /** Avatar glyph: first letter of the author, minus any agent:/user: prefix. */
 export function avatarInitial(author: string): string {
-  const name = displayName(author);
-  const ch = name === "unknown" ? "" : name.charAt(0);
+  const ch = stripRolePrefix(author).charAt(0);
   return ch ? ch.toUpperCase() : "?";
 }
 

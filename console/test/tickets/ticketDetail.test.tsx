@@ -209,6 +209,23 @@ describe("TicketDetail", () => {
     expect(screen.getAllByTestId("runcomment-meta")).toHaveLength(1);
   });
 
+  it("shows the poster's name with the agent:/user: prefix stripped (ISI-4567)", async () => {
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    // Every comment bubble headers the bare name — "builder"/"alice", never the
+    // raw principal "agent:builder"/"user:alice" (displayName strip, wired into
+    // the header, not just unit-tested on the helper).
+    const bubbles = screen.getAllByTestId("activity-comment");
+    const headers = bubbles.map((b) => b.querySelector("strong")?.textContent);
+    expect(headers).toContain("builder");
+    expect(headers).toContain("alice");
+    expect(headers).not.toContain("agent:builder");
+    expect(headers).not.toContain("user:alice");
+  });
+
   it("lays out the ISI-4447 redesign: header card + pinned rail with Properties and Sub-tickets status", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
