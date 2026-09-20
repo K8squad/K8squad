@@ -1247,6 +1247,10 @@
   border-color: var(--ksq-run);
   color: var(--ksq-run);
 }
+.ksq-chip[data-role="user"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
 
 .ksq-activity__dot {
   width: 8px;
@@ -1299,10 +1303,15 @@
   position: relative;
   z-index: 1;
 }
-/* An agent's avatar ring picks up the reserved Run hue so a run reads as a run. */
+/* An agent's avatar ring picks up the reserved Run hue so a run reads as a run;
+   a human's picks up the accent hue — the two never share a colour (ISI-4567). */
 .ksq-runcomment__avatar[data-kind="agent"] {
   border-color: var(--ksq-run);
   color: var(--ksq-run);
+}
+.ksq-runcomment__avatar[data-kind="user"] {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .ksq-runcomment__bubble {
@@ -1310,8 +1319,20 @@
   min-width: 0;
   background: var(--canvas);
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: var(--radius);
   padding: 10px 12px;
+}
+/* Agent vs human bubbles carry distinct tints so a glance separates who spoke
+   (ISI-4567 "distinguish each comment"): agents wear the Run hue, humans the
+   accent hue. The tint is subtle on the fill and firm on the left spine edge. */
+.ksq-runcomment[data-role="agent"] .ksq-runcomment__bubble {
+  border-left-color: var(--ksq-run);
+  background: color-mix(in srgb, var(--ksq-run) 7%, var(--canvas));
+}
+.ksq-runcomment[data-role="user"] .ksq-runcomment__bubble {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--canvas));
 }
 
 .ksq-runcomment__head {
