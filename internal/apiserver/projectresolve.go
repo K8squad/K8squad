@@ -71,8 +71,9 @@ func resolveProjectInTeamWithUID(ctx context.Context, reader client.Reader, team
 		return "", "", "", err
 	}
 	for i := range projects.Items {
-		if projects.Items[i].Name == projectID {
-			return ns, projects.Items[i].Name, string(projects.Items[i].UID), nil
+		p := &projects.Items[i]
+		if p.Name == projectID || p.Namespace+"/"+p.Name == projectID {
+			return ns, p.Name, string(p.UID), nil
 		}
 	}
 	return "", "", "", ErrProjectNotFound
@@ -111,6 +112,10 @@ func resolveProjectFleetWideWithUID(ctx context.Context, reader client.Reader, p
 		p := &projects.Items[i]
 		if string(p.UID) == projectID && projectID != "" {
 			return p.Namespace, p.Name, string(p.UID), nil // UID match is unique — wins over any name collision.
+		}
+		if p.Namespace+"/"+p.Name == projectID {
+			// Composite "namespace/name" match (the console's canonical id) — unique by construction.
+			return p.Namespace, p.Name, string(p.UID), nil
 		}
 		if p.Name == projectID {
 			nameNS, nameName, nameUID = p.Namespace, p.Name, string(p.UID)
