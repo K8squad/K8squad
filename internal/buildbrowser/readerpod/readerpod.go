@@ -336,6 +336,9 @@ func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 				RunAsUser:    ptrTo[int64](1000),
 				RunAsGroup:   ptrTo[int64](1000),
 				FSGroup:      ptrTo[int64](1000),
+				SeccompProfile: &corev1.SeccompProfile{
+					Type: corev1.SeccompProfileTypeRuntimeDefault,
+				},
 			},
 			Volumes: []corev1.Volume{{
 				Name: pvcVolume,
