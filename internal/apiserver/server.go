@@ -727,14 +727,14 @@ func (s *Server) routes(opts Options) {
 		// Tenancy: per-Project membership (rbac.go) + global_role=admin short-circuit.
 		// Route-side path jail: workspaceJailPath() rejects .. / absolute / symlink-escapes
 		// before delegating to the reader (defence-in-depth; S4a jails again inside the pod).
-		filesDir := s.router.Path("/api/projects/{projectId}/files").Subrouter()
+		filesDir := s.router.Path("/api/projects/{projectId:.+}/files").Subrouter()
 		filesDir.Use(authz)
 		if opts.ProjectRoles != nil {
 			filesDir.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
 		}
 		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader)).Methods(http.MethodGet)
 
-		filesContent := s.router.Path("/api/projects/{projectId}/files/content").Subrouter()
+		filesContent := s.router.Path("/api/projects/{projectId:.+}/files/content").Subrouter()
 		filesContent.Use(authz)
 		if opts.ProjectRoles != nil {
 			filesContent.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
@@ -744,7 +744,7 @@ func (s *Server) routes(opts Options) {
 		// S4b — download (ISI-4650): file → attachment stream; directory → server-built
 		// tar.gz archive. Same choke point + requireProjectRole(Viewer), same jail, same
 		// nil-reader 501. Size caps enforced route-side (filedownload.go).
-		filesDownload := s.router.Path("/api/projects/{projectId}/files/download").Subrouter()
+		filesDownload := s.router.Path("/api/projects/{projectId:.+}/files/download").Subrouter()
 		filesDownload.Use(authz)
 		if opts.ProjectRoles != nil {
 			filesDownload.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
@@ -753,7 +753,7 @@ func (s *Server) routes(opts Options) {
 
 		// ISI-4649: file change metadata (mtime + git last-change), same choke point,
 		// same Viewer gate, same nil-reader 501 as the other explorer routes.
-		filesStat := s.router.Path("/api/projects/{projectId}/files/stat").Subrouter()
+		filesStat := s.router.Path("/api/projects/{projectId:.+}/files/stat").Subrouter()
 		filesStat.Use(authz)
 		if opts.ProjectRoles != nil {
 			filesStat.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
