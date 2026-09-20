@@ -91,11 +91,14 @@ type Config struct {
 
 // Spec is a single reader-pod request. It is SERVER-DERIVED (never a request body): the PVC name,
 // commit and reader ServiceAccount all come from the Run's coord record, so a caller can never widen
-// the mount or the credential scope. CommitSHA pins the checkout to the Run's exact commit.
+// the mount or the credential scope. CommitSHA is advisory provenance only (ISI-4693): the Project
+// PVC is mounted READ-ONLY and served filesystem-as-is (no checkout), so the reader shows the live
+// workspace — the commit rides along on the pod label when a git-native run captured one, and is
+// empty otherwise.
 type Spec struct {
 	RunID          string // the completed Run whose full tree is being read (label + pod name seed)
 	ProjectPVCName string // the Run's Project PVC, mounted ReadOnly
-	CommitSHA      string // the Run's commit the reader checks out (read-only)
+	CommitSHA      string // advisory provenance (may be ""); the RO mount serves the live workspace, no checkout
 	ReaderSAName   string // the Run's OWN ServiceAccount — the reader's credential scope (never broader)
 	// Namespace overrides cfg.Namespace for THIS reader (ISI-4079): the per-Project workspace PVC
 	// lives in the consuming Team's sandbox namespace, and PVC mounts are namespace-scoped — the
@@ -104,15 +107,16 @@ type Spec struct {
 }
 
 // Validate rejects an under-specified request BEFORE any pod is created — a reader with no PVC, no
-// commit or no SA would be a privilege or correctness hole, so it fails closed.
+// run or no SA would be a privilege or correctness hole, so it fails closed. CommitSHA is NOT
+// required (ISI-4693): the PVC is mounted read-only and served filesystem-as-is, so an absent commit
+// is a valid live-workspace browse, never a privilege hole — the security-relevant fields (RunID,
+// ProjectPVCName, ReaderSAName) all remain mandatory.
 func (s Spec) Validate() error {
 	switch {
 	case s.RunID == "":
 		return errors.New("readerpod: Spec.RunID required")
 	case s.ProjectPVCName == "":
 		return errors.New("readerpod: Spec.ProjectPVCName required")
-	case s.CommitSHA == "":
-		return errors.New("readerpod: Spec.CommitSHA required")
 	case s.ReaderSAName == "":
 		return errors.New("readerpod: Spec.ReaderSAName required (least-privilege reader scope)")
 	}
@@ -335,7 +339,7 @@ func BuildPod(spec Spec, cfg Config) *corev1.Pod {
 				VolumeSource: corev1.VolumeSource{
 					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
 						ClaimName: spec.ProjectPVCName,
-						ReadOnly:  true, // 8.7f: the Project PVC is mounted READ-ONLY at the Run's commit.
+						ReadOnly:  true, // 8.7f/ISI-4693: the Project PVC is mounted READ-ONLY and served as-is (no checkout).
 					},
 				},
 			}},

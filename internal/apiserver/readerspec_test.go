@@ -57,7 +57,7 @@ func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery("FROM coord.artifact").
+	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
@@ -128,8 +128,8 @@ func TestCoordReaderSpecResolver_NoBrowseTarget(t *testing.T) {
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	// No build-snapshot artifact yet ⇒ nothing to browse.
-	mock.ExpectQuery("FROM coord.artifact").
+	// No completed (succeeded) Run yet ⇒ nothing to browse.
+	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}))
 
@@ -146,6 +146,53 @@ func TestCoordReaderSpecResolver_NoBrowseTarget(t *testing.T) {
 	}
 }
 
+// ISI-4693: a completed Run with NO build-snapshot (the common case — the runtime writes plain
+// files, not git commits) still resolves a valid browse target. The reader serves the live Project
+// workspace RO, so an absent commit is a valid target, not ErrNoBrowseTarget, and the resulting Spec
+// must still validate (CommitSHA is no longer required).
+func TestCoordReaderSpecResolver_CompletedRunNoSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	// Completed Run, LEFT JOIN yields NULL commit (no build-snapshot artifact captured).
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, nil, rsTeamUID))
+
+	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	spec, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if spec.RunID != rsRunID {
+		t.Errorf("RunID = %q, want %q", spec.RunID, rsRunID)
+	}
+	if spec.CommitSHA != "" {
+		t.Errorf("CommitSHA = %q, want empty (no snapshot captured)", spec.CommitSHA)
+	}
+	if spec.ProjectPVCName != workspace.ProjectPVCName("demo") {
+		t.Errorf("ProjectPVCName = %q, want %q", spec.ProjectPVCName, workspace.ProjectPVCName("demo"))
+	}
+	if spec.Namespace != "squad-sandbox" {
+		t.Errorf("Namespace = %q, want %q", spec.Namespace, "squad-sandbox")
+	}
+	if err := spec.Validate(); err != nil {
+		t.Errorf("a completed-Run spec with no commit must still validate: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
 func TestCoordReaderSpecResolver_TeamNamespacePending(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -156,7 +203,7 @@ func TestCoordReaderSpecResolver_TeamNamespacePending(t *testing.T) {
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery("FROM coord.artifact").
+	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
@@ -215,7 +262,7 @@ func TestCoordReaderSpecResolver_BusyQueryHonoursLeaseExpiry(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("c.lease_expires_at IS NULL OR c.lease_expires_at > now()")).
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
-	mock.ExpectQuery("FROM coord.artifact").
+	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}))
 
