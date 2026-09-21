@@ -373,6 +373,27 @@ var allowedSurface = map[string]string{
 	"NewWorkItemDispatchStore":              "§8.6 constructor (db + Team-agent resolver)",
 	"WorkItemDispatchStore.RequestDispatch": "§8.6/§6.5 agent-∈-Team check + intent write + backlog→todo CAS + audit, no-fence, Team-scoped",
 
+	// ADR-0024 (ISI-4734): the capability-gated, custody-scoped AGENT authoring
+	// lane. NOT an agent-to-agent channel — an agent may only author sub-tickets
+	// under a parent it holds in custody (I2), fan-out is bounded (I3/I4), and the
+	// handoff to another agent still lands as a coord dispatch (RequestDispatch),
+	// never a message. Every write is a §6.5 audit row stamped with the agent's
+	// run (honest provenance). The capability gate itself lives at the MCP edge.
+	"AgentAuthorStore":                  "ADR-0024 §5 coord binding of the agent authoring lane (create/update/assign)",
+	"NewAgentAuthorStore":               "ADR-0024 §5 constructor (db + write store + optional dispatch backend)",
+	"AgentAuthorStore.AgentCreateChild": "ADR-0024 §4.1 sub-ticket create under an in-custody parent; I1..I4 gates + run-stamped audit",
+	"AgentAuthorStore.AgentUpdate":      "ADR-0024 §O-3 field edit of an in-custody item or descendant (delegates to the human write path)",
+	"AgentAuthorStore.AgentAssign":      "ADR-0024 §5 PM→implementer handoff via RequestDispatch (initiator=agent); custody-guarded",
+	"AgentIdentity":                     "ADR-0024 §3 server-authenticated agent scope (principal/agent/run/team) — never a tool arg",
+	"AgentCreateChildInput":             "ADR-0024 §5 agent sub-ticket create input (parent required; state absent)",
+	"AgentAuthorDepthCap":               "ADR-0024 §4.3 I3 parent-chain depth cap (N=4)",
+	"AgentAuthorRunBudget":              "ADR-0024 §4.3 I4 per-run create budget (M=50)",
+	"ErrAgentRootForbidden":             "ADR-0024 §4.1 I1: agent authoring requires a parent (root items human-only)",
+	"ErrAgentNotInCustody":              "ADR-0024 §4.1 I2: agent holds no claim on the target/ancestor",
+	"ErrAgentDepthCapExceeded":          "ADR-0024 §4.3 I3: child would exceed the depth cap",
+	"ErrAgentRunBudgetExceeded":         "ADR-0024 §4.3 I4: run over its create budget",
+	"ErrAgentAssignUnavailable":         "ADR-0024 §5: assign refused where no dispatch backend is wired (deployment gap, honest refusal)",
+
 	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
 	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own
 	// content + claim/fence state; AppendComment is the SANCTIONED handoff half

@@ -142,8 +142,11 @@ func TestWorkItemCreateSubIssue(t *testing.T) {
 	}
 }
 
-// TestWorkItemCreateAgentForbidden — an agent-authored session is refused 403 before
-// the store is touched.
+// TestWorkItemCreateAgentForbidden — the CONSOLE/HTTP board write surface stays
+// human-only (ADR-0024 §6 A): an agent-authored session is refused 403 before the
+// store is touched. Agents never author via HTTP — the capability-gated authoring
+// lane (ISI-4734) is the MCP tools (internal/memory), not this handler, so this
+// invariant is unchanged by ADR-0024.
 func TestWorkItemCreateAgentForbidden(t *testing.T) {
 	store := &fakeWorkItemWriter{}
 	h := testWriteServer(t, uuid.New(), store)
@@ -234,7 +237,10 @@ func TestWorkItemEditOK(t *testing.T) {
 	}
 }
 
-// TestWorkItemEditAgentForbidden — agents cannot edit board fields.
+// TestWorkItemEditAgentForbidden — the CONSOLE/HTTP board edit surface stays
+// human-only (ADR-0024 §6 A): agents cannot edit board fields via HTTP. The
+// capability-gated agent edit path (ISI-4734) is the work_item_update MCP tool, not
+// this handler, so this human-only board invariant is unchanged by ADR-0024.
 func TestWorkItemEditAgentForbidden(t *testing.T) {
 	store := &fakeWorkItemWriter{}
 	h := testWriteServer(t, uuid.New(), store)
