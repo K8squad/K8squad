@@ -320,6 +320,81 @@ func assertApiserverBinding(t *testing.T, chart string) {
 	t.Fatal("no ClusterRoleBinding with metadata.name ending -apiserver found in rbac.yaml")
 }
 
+// TestMemoryClusterRoleLeastPrivilege pins the memory service's Team-agent
+// resolver grant (ISI-4743, ADR-0024 §8) to exactly the verbs the code exercises.
+// cmd/memory stands up a shared informer cache over Team CRs
+// (internal/memory/teamresolver.go NewTeamCacheReader → controller-runtime
+// cache.New) so work_item_assign can authorize the target implementer against the
+// item's Team composition (agent-∈-Team). A controller-runtime informer marks
+// HasSynced after its initial LIST and keeps a WATCH open, so the grant is
+// get+list+watch on teams — READ-ONLY (the operator owns Teams), cluster-scoped
+// (Team namespaces are provisioned dynamically). Without this guard the grant
+// could silently widen (e.g. to write verbs) or narrow (dropping watch, breaking
+// the informer). Kept in lockstep with the chart and teamresolver.go.
+func TestMemoryClusterRoleLeastPrivilege(t *testing.T) {
+	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
+	if err != nil {
+		t.Fatalf("read chart rbac.yaml: %v", err)
+	}
+	got := clusterRoleRulesByName(t, string(chartYAML), "memory")
+
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"teams"}, Verbs: []string{"get", "list", "watch"}},
+	}
+	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
+		t.Fatalf("memory ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+
+			"If the Team-agent resolver's read usage changed, update both the chart and this test in lockstep.\n"+
+			"want:\n%+v\n\ngot:\n%+v", w, g)
+	}
+
+	// The grant is useless without the binding to the memory ServiceAccount, and an
+	// EXTRA subject would be an unintended recipient of these cluster-wide Team
+	// reads — so require the binding's roleRef to point at the exact memory
+	// ClusterRole and its subjects to be exactly the ksquad-memory SA.
+	assertComponentBinding(t, string(chartYAML), "memory", "ksquad-memory")
+}
+
+// assertComponentBinding is the generalized form of assertApiserverBinding: it
+// finds the ClusterRoleBinding whose metadata.name ends in "-"+suffix and, within
+// that single document, requires roleRef to equal the ClusterRole of the same
+// suffix and subjects to be exactly one ServiceAccount subject named saName in the
+// chart namespace. Exact comparison catches a role-name typo, a wrong/blank
+// apiGroup or namespace, and any EXTRA (unintended) subject.
+func assertComponentBinding(t *testing.T, chart, suffix, saName string) {
+	t.Helper()
+	wantRoleRef := rbacv1.RoleRef{
+		APIGroup: "rbac.authorization.k8s.io",
+		Kind:     "ClusterRole",
+		Name:     clusterRoleName(t, chart, suffix),
+	}
+	wantSubjects := []rbacv1.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      saName,
+		Namespace: nsMarker, // the chart namespace {{ $ns }}
+	}}
+
+	for _, d := range splitChartDocs(chart) {
+		if d.kind != "ClusterRoleBinding" || !strings.HasSuffix(d.metaName, "-"+suffix) {
+			continue
+		}
+		var parsed struct {
+			RoleRef  rbacv1.RoleRef   `json:"roleRef"`
+			Subjects []rbacv1.Subject `json:"subjects"`
+		}
+		if err := yaml.Unmarshal([]byte(stripTemplates("roleRef:\n"+sectionAfter(d.body, "roleRef:")+"\nsubjects:\n"+sectionAfter(d.body, "subjects:"))), &parsed); err != nil {
+			t.Fatalf("parse %s binding: %v", suffix, err)
+		}
+		if !reflect.DeepEqual(parsed.RoleRef, wantRoleRef) {
+			t.Fatalf("%s ClusterRoleBinding roleRef mismatch.\nwant: %+v\ngot:  %+v", suffix, wantRoleRef, parsed.RoleRef)
+		}
+		if !reflect.DeepEqual(parsed.Subjects, wantSubjects) {
+			t.Fatalf("%s ClusterRoleBinding subjects mismatch (extra/altered subject = unintended grantee).\nwant: %+v\ngot:  %+v", suffix, wantSubjects, parsed.Subjects)
+		}
+		return
+	}
+	t.Fatalf("no ClusterRoleBinding with metadata.name ending -%s found in rbac.yaml", suffix)
+}
+
 // sectionAfter returns the lines from `header` up to (but excluding) the next
 // top-level (column-0) key, i.e. the value block belonging to that key.
 func sectionAfter(doc, header string) string {
