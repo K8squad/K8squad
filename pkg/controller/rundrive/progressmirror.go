@@ -83,6 +83,10 @@ type ProgressMirror struct {
 	// lookup resolves an a2a_task_id to its work item id (default: the
 	// coord.a2a_dispatch marker over db). Test seam.
 	lookup func(ctx context.Context, a2aTaskID string) (string, error)
+	// assignee resolves a work item id to the agent name that owns its
+	// checkout claim (coord.claim.assignee_agent — default over db). "" when
+	// unset/unresolvable. Test seam.
+	assignee func(ctx context.Context, workItemID string) string
 	// append appends one comment (default: coord.AppendComment over db).
 	// Test seam.
 	append func(ctx context.Context, workItemID, author, body string) error
@@ -97,7 +101,8 @@ type ProgressMirror struct {
 	lastSeq map[string]uint64    // a2aTaskID → last mirrored seq (at-least-once dedup, C4)
 	lastAt  map[string]time.Time // runID → last comment time (flood guard)
 
-	wiCache sync.Map // a2aTaskID → workItemID (resolved lookups only)
+	wiCache    sync.Map // a2aTaskID → workItemID (resolved lookups only)
+	agentCache sync.Map // workItemID → agentName (resolved non-empty only)
 }
 
 // NewProgressMirror returns the mirror bound to the coordination Postgres.
@@ -109,6 +114,7 @@ func NewProgressMirror(db *sql.DB) *ProgressMirror {
 		lastAt:      make(map[string]time.Time),
 	}
 	m.lookup = m.lookupDispatchMarker
+	m.assignee = m.lookupAssigneeAgent
 	m.append = func(ctx context.Context, workItemID, author, body string) error {
 		_, err := coord.AppendComment(ctx, m.db, workItemID, author, body)
 		return err
@@ -153,7 +159,16 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 	if err != nil || wi == "" {
 		return nil // marker not written yet, or transient DB failure — drop
 	}
-	_ = m.append(ctx, wi, "run/"+shortRunID(runID), body)
+	// Author with the agent identity (agent:<name>) so the console can render
+	// the agent NAME and hash a stable per-agent colour (ISI-4706); fall back
+	// to run/<shortRunID> only when the assignee can't be resolved. The
+	// [run <id>] body prefix carries the run id either way, so provenance is
+	// never lost.
+	author := "run/" + shortRunID(runID)
+	if name := m.agentName(ctx, wi); name != "" {
+		author = "agent:" + name
+	}
+	_ = m.append(ctx, wi, author, body)
 	return nil
 }
 
@@ -187,6 +202,41 @@ func (m *ProgressMirror) lookupDispatchMarker(ctx context.Context, a2aTaskID str
 		return "", fmt.Errorf("rundrive.ProgressMirror: lookup dispatch marker: %w", err)
 	}
 	return wi.String, nil
+}
+
+// agentName resolves the agent that owns work item wi, caching non-empty
+// results for the operator's lifetime of the task. The checkout claim's
+// assignee_agent is stamped at acquire and stable through the run (ISI-4237),
+// so one resolution serves every mirrored comment; empty results are never
+// cached, so a comment that raced the claim write re-resolves on the next event.
+func (m *ProgressMirror) agentName(ctx context.Context, workItemID string) string {
+	if v, ok := m.agentCache.Load(workItemID); ok {
+		return v.(string)
+	}
+	if m.assignee == nil {
+		return ""
+	}
+	name := m.assignee(ctx, workItemID)
+	if name != "" {
+		m.agentCache.Store(workItemID, name)
+	}
+	return name
+}
+
+// lookupAssigneeAgent is the production assignee resolver: it reads the agent
+// stamped on the work item's checkout claim (coord.claim.assignee_agent, the
+// exact lookup coord.SettleTerminalLane uses — ISI-4237). Empty on any miss
+// (no claim row, null assignee, transient DB error): the caller falls back to
+// run/<shortRunID>, so a lookup hiccup only downgrades attribution, never the
+// mirror.
+func (m *ProgressMirror) lookupAssigneeAgent(ctx context.Context, workItemID string) string {
+	var agent sql.NullString
+	if err := m.db.QueryRowContext(ctx,
+		`SELECT assignee_agent FROM coord.claim WHERE work_item_id = $1::uuid`,
+		workItemID).Scan(&agent); err != nil {
+		return "" // no claim row / released / transient — fall back to run/<id>
+	}
+	return agent.String
 }
 
 // isTerminalEvent reports whether ev is the task's terminal status event (the
