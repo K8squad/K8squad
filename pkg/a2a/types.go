@@ -306,11 +306,17 @@ func isEnvAssignment(tok string) bool {
 		return false
 	}
 	for _, r := range tok[:eq] {
-		if !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+		if !isIdentChar(r) {
 			return false
 		}
 	}
 	return true
+}
+
+// isIdentChar reports whether r is a shell identifier character
+// ([A-Za-z0-9_]) — the character class a `NAME=value` prefix's name is made of.
+func isIdentChar(r rune) bool {
+	return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 // SkillLoadPayload is the payload of an EventSkillLoad event (Epic D, plan
