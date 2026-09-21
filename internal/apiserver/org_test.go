@@ -642,3 +642,159 @@ func TestRunsForAgentIncludesDefaultedRuns(t *testing.T) {
 		}
 	}
 }
+
+// teamWithExec builds a Team CR living in its HOME namespace (metadata) but reconciled into a
+// distinct EXECUTION namespace (Status.Namespace) — the split-namespace layout (M1.2/ISI-4128).
+func teamWithExec(homeNS, execNS, name, uid string) *ksquadv1.Team {
+	tm := team(homeNS, name, uid)
+	tm.Status.Namespace = execNS
+	return tm
+}
+
+// TestOrgSplitNamespace (ISI-4737, the ISI-4565 class) — when a Team CR lives in a different
+// namespace than its reconciled execution namespace, the Agent CRs stay in the HOME namespace but
+// the operator mints Run CRs into the EXECUTION namespace. The org projection must list Agents from
+// home and Runs from exec, or every agent renders idle forever. Mirrors overview.go's ISI-4565
+// TestSquadOverviewSplitNamespace.
+func TestOrgSplitNamespace(t *testing.T) {
+	const teamUID = "55555555-5555-5555-5555-555555555555"
+	claimed := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	r := newOrgReader(t,
+		teamWithExec("bmad-squad", "ksquad-team-bmad-exec", "alpha", teamUID),
+		// Agents/Roles/Runtimes live in the HOME namespace (where the user sees them today).
+		agentRuntime("bmad-squad", "rt-claude", ksquadv1.RuntimeTypeClaudeCode),
+		role("bmad-squad", "dev", "role-dev-uid"),
+		orgAgent("bmad-squad", "worker", "ag-worker", "rt-claude", "dev", "claude-x"),
+		// The active Run is minted into the EXECUTION namespace (intake.go:410).
+		agentRun("ksquad-team-bmad-exec", "run-x", "worker", "ISI-7", ksquadv1.RunPhaseRunning, &claimed, ""),
+	)
+
+	org, err := r.Org(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("Org: %v", err)
+	}
+	if len(org.Agents) != 1 {
+		t.Fatalf("agents: got %d, want 1 (agent must still resolve from home namespace)", len(org.Agents))
+	}
+	a := org.Agents[0]
+	// The regression: before the fix the Run was read from the home namespace, found nothing, and
+	// the agent rendered idle. It must now be running with its exec-namespace Run joined.
+	if a.Status != AgentStatusRunning {
+		t.Fatalf("worker status: got %q, want %q (exec-namespace Run must join to the home-namespace Agent)", a.Status, AgentStatusRunning)
+	}
+	if a.CurrentRunID == nil || *a.CurrentRunID != "run-x" {
+		t.Fatalf("worker currentRunId: %+v, want run-x", a.CurrentRunID)
+	}
+}
+
+// TestAgentStatusesSplitNamespace — the SSE poll projection must apply the same home/exec bridge,
+// or the live status stream keeps reporting idle even after a run is dispatched (AC-B via SSE).
+func TestAgentStatusesSplitNamespace(t *testing.T) {
+	const teamUID = "66666666-6666-6666-6666-666666666666"
+	claimed := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	r := newOrgReader(t,
+		teamWithExec("bmad-squad", "ksquad-team-bmad-exec", "alpha", teamUID),
+		orgAgent("bmad-squad", "busy", "ag-busy", "rt", "", "m"),
+		orgAgent("bmad-squad", "free", "ag-free", "rt", "", "m"),
+		agentRun("ksquad-team-bmad-exec", "run-b", "busy", "ISI-1", ksquadv1.RunPhaseRunning, &claimed, ""),
+	)
+	deltas, err := r.AgentStatuses(context.Background(), teamUID)
+	if err != nil {
+		t.Fatalf("AgentStatuses: %v", err)
+	}
+	byID := map[string]AgentStatusDelta{}
+	for _, d := range deltas {
+		byID[d.AgentID] = d
+	}
+	if byID["ag-busy"].Status != AgentStatusRunning || byID["ag-busy"].CurrentRunID == nil {
+		t.Fatalf("busy: got %+v, want running with a current run (exec-ns Run must join)", byID["ag-busy"])
+	}
+	if byID["ag-free"].Status != AgentStatusIdle {
+		t.Fatalf("free: %+v, want idle", byID["ag-free"])
+	}
+}
+
+// TestAgentRunsSplitNamespace — the agent-detail run history must read Runs from the execution
+// namespace while the Agent is resolved from the home namespace (non-admin and admin fleet-wide).
+func TestAgentRunsSplitNamespace(t *testing.T) {
+	const teamUID = "77777777-7777-7777-7777-777777777777"
+	start := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	r := newOrgReader(t,
+		teamWithExec("bmad-squad", "ksquad-team-bmad-exec", "alpha", teamUID),
+		orgAgent("bmad-squad", "solo", "ag-solo", "rt", "", "m"),
+		agentRun("ksquad-team-bmad-exec", "run-1", "solo", "ISI-2", ksquadv1.RunPhaseRunning, &start, ""),
+	)
+
+	// Non-admin caller scoped to the team.
+	runs, err := r.AgentRuns(context.Background(), teamUID, "ag-solo", 0, 0, false)
+	if err != nil {
+		t.Fatalf("AgentRuns: %v", err)
+	}
+	if len(runs) != 1 || runs[0].ID != "run-1" {
+		t.Fatalf("non-admin runs: %+v, want [run-1] from exec namespace", runs)
+	}
+
+	// Admin fleet-wide: resolves the exec namespace via the owning Team's Status.Namespace.
+	adminRuns, err := r.AgentRuns(context.Background(), "deadbeef-0000-0000-0000-000000000000", "ag-solo", 0, 0, true)
+	if err != nil {
+		t.Fatalf("AgentRuns(admin): %v", err)
+	}
+	if len(adminRuns) != 1 || adminRuns[0].ID != "run-1" {
+		t.Fatalf("admin runs: %+v, want [run-1] from exec namespace", adminRuns)
+	}
+}
+
+// TestIndexRunsByAgentDefaultedFallback (ISI-4737 secondary) — indexRunsByAgent now mirrors
+// runsForAgent: a Run with no explicit spec.agents (reconciler-defaulted) attributes to every Agent
+// in the squad rather than vanishing from the org/status surfaces.
+func TestIndexRunsByAgentDefaultedFallback(t *testing.T) {
+	ns := "squad-a"
+	runs := []ksquadv1.Run{
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "explicit-run"},
+			Spec:       ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{{Name: "busy"}}},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "defaulted-run"},
+			Spec:       ksquadv1.RunSpec{}, // reconciler-defaulted: no explicit agents
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "other-ns", Name: "foreign-ns-run"},
+			Spec:       ksquadv1.RunSpec{Agents: []ksquadv1.ObjectRef{{Name: "busy", Namespace: "other-ns"}}},
+		},
+	}
+	byAgent := indexRunsByAgent(runs, ns, []string{"busy", "idle"})
+
+	// "busy" sees its explicit run + the defaulted run; the foreign-ns ref is excluded.
+	if got := runNames(byAgent["busy"]); !sameSet(got, []string{"explicit-run", "defaulted-run"}) {
+		t.Fatalf("busy runs = %v, want [explicit-run defaulted-run]", got)
+	}
+	// "idle" has no explicit run but still sees the defaulted run.
+	if got := runNames(byAgent["idle"]); !sameSet(got, []string{"defaulted-run"}) {
+		t.Fatalf("idle runs = %v, want [defaulted-run]", got)
+	}
+}
+
+func runNames(runs []*ksquadv1.Run) []string {
+	out := make([]string, len(runs))
+	for i, r := range runs {
+		out[i] = r.Name
+	}
+	return out
+}
+
+func sameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]bool{}
+	for _, g := range got {
+		seen[g] = true
+	}
+	for _, w := range want {
+		if !seen[w] {
+			return false
+		}
+	}
+	return true
+}
