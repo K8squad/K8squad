@@ -103,6 +103,40 @@ func TestGithubStatus_CompositeProjectId(t *testing.T) {
 	if len(st.Issues) != 1 {
 		t.Errorf("want the mirror issue projected via composite id, got %+v", st.Issues)
 	}
+
+	// The composite form is a NEW way to *name* a project, so pin its
+	// existence-hiding property directly rather than inheriting it from the
+	// bare-id tenancy test (Cursor review, ISI-4662): a foreign-namespace
+	// composite and an over-long composite both 404, they never leak the project.
+	for _, bad := range []string{"other-squad/web", "squad-a/web/extra"} {
+		badRec, _ := getGithubStatusAs(t, h, devToken, url.PathEscape(bad))
+		if badRec.Code != http.StatusNotFound {
+			t.Errorf("composite %q: got %d, want 404 (existence-hiding)", bad, badRec.Code)
+		}
+	}
+}
+
+// TestGithubStatusAdminCompositeProjectId pins that an admin — who takes the
+// resolveProjectFleetWide branch, not the team-scoped one — also resolves the
+// composite id (Cursor review, ISI-4662 finding 5).
+func TestGithubStatusAdminCompositeProjectId(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t,
+		team("squad-b", "beta", "cccccccc-cccc-cccc-cccc-cccccccccccc"),
+		project("squad-b", "web", "https://github.com/acme/web"),
+	)
+	store := scm.NewInMemoryMirrorStore()
+	seedMirror(t, store, "squad-b", "web",
+		mirrorRow(scm.RecordTypeIssue, "1", "open", "issue", "dev", scm.MirrorPayload{Number: 1}))
+	h := testGithubStatusServerAs(t, uuid.New(), admin, reader, store)
+
+	rec, st := getGithubStatusAs(t, h, adminDashToken, url.PathEscape("squad-b/web"))
+	if st == nil {
+		t.Fatalf("admin composite projectId: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if st.Project.Namespace != "squad-b" || len(st.Issues) != 1 {
+		t.Fatalf("admin composite projection wrong: %+v", st)
+	}
 }
 
 // --- AC1 + AC3: projection + freshness ----------------------------------------------------------

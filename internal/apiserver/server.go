@@ -696,6 +696,11 @@ func (s *Server) routes(opts Options) {
 		// (same gate as work-item creates). Nil service ⇒ documented 501.
 		ghSync := s.router.Path("/api/projects/{projectId:.+}/github/sync").Subrouter()
 		ghSync.Use(authz)
+		// CSRF defense for this cookie-authenticated mutation (SameSite=Lax alone is
+		// not sufficient — top-level cross-site POSTs ride Lax; PR #90 finding 6).
+		// Every other mutation subrouter has it; widening this route to the composite
+		// id is what makes the console's path here reachable, so guard it now.
+		ghSync.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
 		if opts.ProjectRoles != nil {
 			ghSync.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
 		}

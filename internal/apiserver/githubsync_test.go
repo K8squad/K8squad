@@ -108,6 +108,37 @@ func TestGithubSync_CompositeProjectId(t *testing.T) {
 	}
 }
 
+// TestGithubSync_CrossOriginRejected pins the sameOriginGuard on this mutation
+// (Cursor review, ISI-4662 finding 4): widening the route to the composite id is
+// what makes the console's path here reachable, so a top-level cross-site POST —
+// which rides SameSite=Lax — must be rejected before the annotation patch.
+func TestGithubSync_CrossOriginRejected(t *testing.T) {
+	teamID := uuid.New()
+	ns := teamID.String()
+	tm := team(ns, "my-team", teamID.String())
+	proj := project(ns, "myproject", "")
+	c := buildSyncClient(t, tm, proj)
+	svc := NewGithubSyncService(c, c)
+
+	srv := testGithubSyncServer(t, teamID, svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/myproject/github/sync", nil)
+	req.AddCookie(&http.Cookie{Name: "ksquad_session", Value: devToken})
+	req.Header.Set("Origin", "https://evil.example.com")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin POST: want 403, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Project
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "myproject"}, &got); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if got.Annotations[reposync.TriggerAnnotation] != "" {
+		t.Error("cross-origin POST must not set the scm-sync-trigger annotation")
+	}
+}
+
 func TestGithubSync_Debounce(t *testing.T) {
 	teamID := uuid.New()
 	ns := teamID.String()
