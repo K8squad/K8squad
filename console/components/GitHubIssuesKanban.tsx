@@ -30,6 +30,13 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { GithubIssue } from "@/lib/github-status";
 import { ageLabel } from "@/lib/github-status";
+import {
+  assignAndDispatch,
+  listSquadAgents,
+  type AgentOption,
+  type GithubAssignErrorCode,
+  type GithubAssignResult,
+} from "@/lib/tickets/api";
 
 /** Fallback repo base when a mirror row carries no normalized url. The issue's
  * own url is always preferred; this only keeps the deep-link affordance on a
@@ -130,7 +137,21 @@ function updatedLabel(issue: GithubIssue, now: number): string | null {
   return `updated ${ageLabel((now - then) / 1000)}`;
 }
 
-export function GitHubIssuesKanban({ issues }: { issues: GithubIssue[] }) {
+export function GitHubIssuesKanban({
+  issues,
+  projectId,
+  onAssigned,
+}: {
+  issues: GithubIssue[];
+  /** Project context for the Epic-3 assign-&-dispatch action. Absent (e.g. in the
+   * shell unit tests) ⇒ the popup renders without the assign control — honest: the
+   * bridge is project-scoped and cannot dispatch without it. */
+  projectId?: string;
+  /** Handed the whole Epic-2 bridge result on a successful dispatch so a parent
+   * (Epic 4, ISI-4760) can reflect the local assignment. Optional so the Epic-1
+   * shell compiles before Epic 4 lands. */
+  onAssigned?: (result: GithubAssignResult) => void;
+}) {
   // The card the operator clicked, if any — drives the per-issue popup (ISI-4758).
   const [selected, setSelected] = useState<GithubIssue | null>(null);
 
@@ -252,7 +273,12 @@ export function GitHubIssuesKanban({ issues }: { issues: GithubIssue[] }) {
       </div>
 
       {selected && (
-        <GitHubIssuePopup issue={selected} onClose={() => setSelected(null)} />
+        <GitHubIssuePopup
+          issue={selected}
+          projectId={projectId}
+          onClose={() => setSelected(null)}
+          onAssigned={onAssigned}
+        />
       )}
     </section>
   );
@@ -376,10 +402,14 @@ function IssueCard({
  */
 function GitHubIssuePopup({
   issue,
+  projectId,
   onClose,
+  onAssigned,
 }: {
   issue: GithubIssue;
+  projectId?: string;
   onClose: () => void;
+  onAssigned?: (result: GithubAssignResult) => void;
 }) {
   const href = issueHref(issue);
   const titleId = useId();
@@ -432,10 +462,20 @@ function GitHubIssuePopup({
         </header>
 
         <div className="gh-issue-popup__body">
-          {/* Epic 3 (ISI-4749) fills this slot with the agent-assign control. It is
-              intentionally empty in this shell — do not render placeholder copy that
-              could read as a fabricated affordance. */}
-          <div className="gh-issue-popup__assign" data-testid="gh-issue-assign-slot" />
+          {/* Epic 3 (ISI-4759) fills this slot with the agent-assign / dispatch
+              control. Rendered only with a project context — the bridge is
+              project-scoped, so without a projectId the slot stays empty rather
+              than showing a non-functional (fabricated) affordance (ADR-0013). */}
+          <div className="gh-issue-popup__assign" data-testid="gh-issue-assign-slot">
+            {projectId && (
+              <AssignAndDispatch
+                projectId={projectId}
+                issue={issue}
+                onClose={onClose}
+                onAssigned={onAssigned}
+              />
+            )}
+          </div>
 
           {href && (
             <a
@@ -450,6 +490,137 @@ function GitHubIssuePopup({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Map an Epic-2 status/error code to the operator-facing message (story §6).
+ * A 409 ("already assigned") is deliberately informational, not an alarm —
+ * idempotent re-assign is safe (the bridge dedupes on the issue label). */
+function assignErrorMessage(code: GithubAssignErrorCode): string {
+  switch (code) {
+    case "invalid-agent":
+      return "Pick a valid agent to assign.";
+    case "forbidden":
+      return "You can't dispatch this agent to this issue.";
+    case "already":
+      return "This issue is already assigned to an agent.";
+    case "not-found":
+      return "Couldn't find this issue to assign.";
+    case "not-hosted":
+      return "Agent assignment isn't available in this environment.";
+    case "failed":
+    default:
+      return "Assignment failed — try again.";
+  }
+}
+
+type RosterState =
+  | { kind: "loading" }
+  | { kind: "ready"; agents: AgentOption[] }
+  | { kind: "empty" };
+
+/**
+ * AssignAndDispatch — the Epic-3 control that fills the Epic-1 popup's assign slot
+ * (ISI-4759 / ISI-4749 epic 3). On mount it loads the squad roster
+ * (listSquadAgents, best-effort → []); the operator picks an agent by NAME and
+ * clicks "Assign & dispatch", which calls the Epic-2 bridge via its BFF
+ * (assignAndDispatch). Success hands the whole result up (onAssigned, for Epic 4)
+ * and closes the popup; a failure surfaces inline (story §6) and preserves the
+ * selection so the operator can retry. Human-only custody is honoured: the action
+ * is a human console click carrying the session cookie, and no GitHub assignee is
+ * ever written (ADR-0013).
+ */
+function AssignAndDispatch({
+  projectId,
+  issue,
+  onClose,
+  onAssigned,
+}: {
+  projectId: string;
+  issue: GithubIssue;
+  onClose: () => void;
+  onAssigned?: (result: GithubAssignResult) => void;
+}) {
+  const [roster, setRoster] = useState<RosterState>({ kind: "loading" });
+  const [agentName, setAgentName] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const selectId = useId();
+
+  useEffect(() => {
+    let alive = true;
+    void listSquadAgents().then((agents) => {
+      if (!alive) return;
+      setRoster(agents.length > 0 ? { kind: "ready", agents } : { kind: "empty" });
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const rosterReady = roster.kind === "ready";
+  const canSubmit = rosterReady && agentName !== "" && !submitting;
+
+  async function onSubmit() {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    const outcome = await assignAndDispatch(projectId, issue, agentName);
+    if (outcome.ok) {
+      onAssigned?.(outcome.result);
+      onClose();
+      return; // popup is unmounting — don't touch local state after close
+    }
+    setError(assignErrorMessage(outcome.code));
+    setSubmitting(false); // keep selection; let the operator retry
+  }
+
+  return (
+    <div className="gh-issue-assign" data-testid="gh-issue-assign">
+      <label className="gh-issue-assign__label" htmlFor={selectId}>
+        Assign to agent
+      </label>
+      <select
+        id={selectId}
+        className="gh-issue-assign__select"
+        data-testid="gh-issue-assign-select"
+        value={agentName}
+        disabled={!rosterReady || submitting}
+        onChange={(e) => {
+          setAgentName(e.target.value);
+          if (error) setError(null);
+        }}
+      >
+        {roster.kind === "loading" && <option value="">Loading agents…</option>}
+        {roster.kind === "empty" && <option value="">No agents available</option>}
+        {roster.kind === "ready" && (
+          <>
+            <option value="">Select an agent…</option>
+            {roster.agents.map((a) => (
+              <option key={a.id} value={a.name}>
+                {a.name}
+              </option>
+            ))}
+          </>
+        )}
+      </select>
+
+      <button
+        type="button"
+        className="gh-issue-assign__submit"
+        data-testid="gh-issue-assign-submit"
+        disabled={!canSubmit}
+        onClick={() => void onSubmit()}
+      >
+        {submitting ? "Assigning…" : "Assign & dispatch"}
+      </button>
+
+      {error && (
+        <p className="gh-issue-assign__error" role="alert" data-testid="gh-issue-assign-error">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
