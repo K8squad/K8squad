@@ -184,6 +184,42 @@ func TestExtractJoinsW3CTrace(t *testing.T) {
 	}
 }
 
+// TestExtractWorksBeforeSetup is the ISI-4540 regression proof. The sandbox
+// entrypoints (`shim run` / `shim supervisor`) call Extract to continue the
+// operator-injected run trace BEFORE Setup installs the global propagator. If
+// Extract read otel.GetTextMapPropagator() it would get the SDK-default no-op at
+// that point and silently drop the inbound traceparent, so every sandbox span
+// rooted its own trace — Henrik's "single-span / disconnected" traces. This
+// forces the global propagator to a no-op (the true pre-Setup state, which
+// installRecorder does NOT reproduce because it sets a TraceContext global) and
+// proves Extract still joins the caller's distributed trace.
+func TestExtractWorksBeforeSetup(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
+	otel.SetTracerProvider(tp)
+	// A composite with no delegates is a no-op propagator — exactly what the
+	// global is before Setup runs.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	carrier := map[string]string{"traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"}
+
+	ctx := Extract(context.Background(), carrier)
+	_, span := Tracer().Start(ctx, "child")
+	defer span.End()
+
+	if got := span.SpanContext().TraceID().String(); got != parentTrace {
+		t.Errorf("Extract before Setup: child trace id = %q, want joined %q "+
+			"(propagator-ordering regression: sandbox spans would root their own trace)", got, parentTrace)
+	}
+}
+
 // TestInjectWritesW3CTrace proves AC3 outbound: Inject serializes the current
 // span context into a carrier as a W3C traceparent for a downstream process.
 func TestInjectWritesW3CTrace(t *testing.T) {

@@ -75,6 +75,21 @@ const (
 	defaultServiceName = "ksquad-operator"
 )
 
+// propagator is the W3C trace-context + baggage propagator used by Extract and
+// Inject. It is initialized at package load — NOT inside Setup — because the
+// sandbox entrypoints (`shim run` / `shim supervisor`) call Extract to continue
+// the operator-injected run trace BEFORE they install the telemetry spine via
+// Setup (main.go / supervisor.go extract, then Setup with the extracted ctx so
+// the resource-detecting Setup does not lose the parent). When Extract/Inject
+// read otel.GetTextMapPropagator() they got the SDK-default *no-op* propagator
+// at that point, so the inbound traceparent was silently discarded and every
+// sandbox span rooted its own trace — the "single-span / disconnected" traces
+// Henrik reported (ISI-4540, ISI-4413). Using a package-level propagator makes
+// extraction independent of Setup ordering. Setup still registers this SAME
+// value as the OTel global so third-party instrumentation shares the format.
+var propagator propagation.TextMapPropagator = propagation.NewCompositeTextMapPropagator(
+	propagation.TraceContext{}, propagation.Baggage{})
+
 // SamplerSpec is a neutral, kube-free description of a head sampler (traces
 // only).
 type SamplerSpec struct {
@@ -210,9 +225,10 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	otel.SetTracerProvider(tp)
 
 	// W3C trace-context is the propagation format the ACs call for; baggage
-	// rides alongside so future cross-cutting labels propagate too.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, propagation.Baggage{}))
+	// rides alongside so future cross-cutting labels propagate too. Register the
+	// same package-level propagator Extract/Inject already use, so global-reading
+	// third-party instrumentation and this package's own helpers never disagree.
+	otel.SetTextMapPropagator(propagator)
 
 	// --- metrics ---
 	// A PeriodicReader wraps the stdout exporter so instrument values are
@@ -299,7 +315,10 @@ func Extract(ctx context.Context, carrier map[string]string) context.Context {
 	if len(carrier) == 0 {
 		return ctx
 	}
-	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(carrier))
+	// Use the package-level propagator, not otel.GetTextMapPropagator(): the
+	// sandbox entrypoints call Extract before Setup installs the global, and the
+	// default global is a no-op that would drop the inbound traceparent.
+	return propagator.Extract(ctx, propagation.MapCarrier(carrier))
 }
 
 // Inject writes ctx's current span context into carrier as W3C trace-context
@@ -307,5 +326,8 @@ func Extract(ctx context.Context, carrier map[string]string) context.Context {
 // runs the agent — can Extract it and continue the same trace. carrier must be
 // non-nil.
 func Inject(ctx context.Context, carrier map[string]string) {
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(carrier))
+	// Package-level propagator (see Extract): keeps Inject order-independent of
+	// Setup so an operator that injects before installing the global still emits
+	// a valid traceparent.
+	propagator.Inject(ctx, propagation.MapCarrier(carrier))
 }
