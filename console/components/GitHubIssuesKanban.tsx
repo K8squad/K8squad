@@ -18,7 +18,16 @@
 //
 // Every title deep-links to GitHub (normalized mirror url, else the repo base +
 // /issues/{n}) and carries the teal ↗ glyph (ISI-4662 v2 board feedback).
+//
+// ISI-4758 (ISI-4749 epic 1): a Kanban card is now a click target that opens a
+// per-issue popup (GitHubIssuePopup). The popup is a FE SHELL only — it shows the
+// issue identity, hosts the "Open on GitHub ↗" deep-link (moved off the card so
+// the card click no longer navigates away), and reserves an empty assign slot
+// (data-testid="gh-issue-assign-slot") that ISI-4749 epic 3 fills with the
+// agent-assign / dispatch control. No dispatch is wired here. The priority queue
+// keeps its direct GitHub deep-links (it is a list, not a card).
 
+import { useEffect, useId, useRef, useState } from "react";
 import type { GithubIssue } from "@/lib/github-status";
 import { ageLabel } from "@/lib/github-status";
 
@@ -122,6 +131,9 @@ function updatedLabel(issue: GithubIssue, now: number): string | null {
 }
 
 export function GitHubIssuesKanban({ issues }: { issues: GithubIssue[] }) {
+  // The card the operator clicked, if any — drives the per-issue popup (ISI-4758).
+  const [selected, setSelected] = useState<GithubIssue | null>(null);
+
   if (issues.length === 0) return null;
 
   const now = Date.now();
@@ -225,7 +237,12 @@ export function GitHubIssuesKanban({ issues }: { issues: GithubIssue[] }) {
                   <p className="gh-kanban-col__empty muted">None</p>
                 ) : (
                   items.map((issue) => (
-                    <IssueCard key={`issue-${issue.number}`} issue={issue} now={now} />
+                    <IssueCard
+                      key={`issue-${issue.number}`}
+                      issue={issue}
+                      now={now}
+                      onOpen={setSelected}
+                    />
                   ))
                 )}
               </div>
@@ -233,6 +250,10 @@ export function GitHubIssuesKanban({ issues }: { issues: GithubIssue[] }) {
           );
         })}
       </div>
+
+      {selected && (
+        <GitHubIssuePopup issue={selected} onClose={() => setSelected(null)} />
+      )}
     </section>
   );
 }
@@ -261,18 +282,43 @@ function IssueLink({ issue }: { issue: GithubIssue }) {
   );
 }
 
-function IssueCard({ issue, now }: { issue: GithubIssue; now: number }) {
+function IssueCard({
+  issue,
+  now,
+  onOpen,
+}: {
+  issue: GithubIssue;
+  now: number;
+  onOpen: (issue: GithubIssue) => void;
+}) {
   const priority = priorityFor(issue);
   const updated = updatedLabel(issue, now);
   const chips = labelsOf(issue).filter((l) => !isPriorityLabel(l));
+  // The whole card is the click target now (ISI-4758): clicking or pressing
+  // Enter/Space opens the popup. role="button" + tabIndex make it keyboard
+  // focusable; the GitHub deep-link lives inside the popup, not on the card, so a
+  // card click never navigates away.
+  const open = () => onOpen(issue);
   return (
     <article
-      className={`gh-kanban-card${isBlocked(issue) ? " gh-kanban-card--blocked" : ""}`}
+      className={`gh-kanban-card gh-kanban-card--clickable${isBlocked(issue) ? " gh-kanban-card--blocked" : ""}`}
       data-testid="gh-issue-card"
       data-issue-number={issue.number}
+      role="button"
+      tabIndex={0}
+      aria-haspopup="dialog"
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      }}
     >
       <div className="gh-kanban-card__title">
-        <IssueLink issue={issue} />
+        <span className="gh-issue-title" data-testid="gh-issue-title">
+          <span className="gh-issue-num">#{issue.number}</span> {issue.title}
+        </span>
       </div>
       <div className="gh-kanban-card__tags">
         {priority && (
@@ -309,5 +355,101 @@ function IssueCard({ issue, now }: { issue: GithubIssue; now: number }) {
         )}
       </div>
     </article>
+  );
+}
+
+/**
+ * GitHubIssuePopup — ISI-4758 (ISI-4749 epic 1). The FE shell opened by clicking a
+ * Kanban card. It reuses the tickets sheet's modal ergonomics (role="dialog",
+ * aria-modal, scrim-click + Escape to close, focus moved inside on open and
+ * restored to the trigger on close) but centres a compact popup rather than a
+ * slide-over.
+ *
+ * Contents are intentionally minimal — this epic ships the shell only:
+ *   • the issue identity (number + title) as the dialog's accessible name,
+ *   • an EMPTY assign slot (data-testid="gh-issue-assign-slot") that ISI-4749
+ *     epic 3 fills with the agent-assign / dispatch control, and
+ *   • the "Open on GitHub ↗" deep-link (reusing issueHref) that opens the issue
+ *     in a new tab — moved here off the card so a card click opens the popup
+ *     instead of navigating away.
+ * No dispatch is wired here.
+ */
+function GitHubIssuePopup({
+  issue,
+  onClose,
+}: {
+  issue: GithubIssue;
+  onClose: () => void;
+}) {
+  const href = issueHref(issue);
+  const titleId = useId();
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Move focus into the dialog on open (a11y), close on Escape, and restore focus
+  // to whatever opened it (the card) on unmount.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      opener?.focus?.();
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="gh-issue-popup-scrim"
+      data-testid="gh-issue-popup-scrim"
+      onClick={onClose}
+    >
+      <div
+        className="gh-issue-popup"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        data-testid="gh-issue-popup"
+        // Clicks inside the popup must not fall through to the scrim's close.
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="gh-issue-popup__head">
+          <h2 id={titleId} className="gh-issue-popup__title">
+            <span className="gh-issue-num">#{issue.number}</span> {issue.title}
+          </h2>
+          <button
+            ref={closeRef}
+            type="button"
+            className="gh-issue-popup__close"
+            aria-label="Close"
+            data-testid="gh-issue-popup-close"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="gh-issue-popup__body">
+          {/* Epic 3 (ISI-4749) fills this slot with the agent-assign control. It is
+              intentionally empty in this shell — do not render placeholder copy that
+              could read as a fabricated affordance. */}
+          <div className="gh-issue-popup__assign" data-testid="gh-issue-assign-slot" />
+
+          {href && (
+            <a
+              className="gh-issue-popup__gh-link"
+              href={href}
+              target="_blank"
+              rel="noreferrer noopener"
+              data-testid="gh-issue-popup-open-github"
+            >
+              Open on GitHub <span aria-hidden="true">↗</span>
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
