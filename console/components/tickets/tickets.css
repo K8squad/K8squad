@@ -1230,6 +1230,27 @@
   padding: 10px 12px;
 }
 
+/* Workflow rows (status moves + change refs) are context, not conversation
+   (ISI-4706: "the workflow should be in smaller fonts, in italic … the most
+   important part are the comments, the rest is just for info"). Render them
+   quieter than a comment bubble — smaller, italic, muted — so the eye lands on
+   what people and agents actually said, and the run's bookkeeping recedes. */
+.ksq-activity--event,
+.ksq-activity--change {
+  font-size: 0.82rem;
+  font-style: italic;
+  color: var(--text-2);
+  opacity: 0.9;
+}
+/* Links + mono ids inside a workflow row inherit the smaller scale but drop the
+   italic so refs/PR titles stay legible. */
+.ksq-activity--event a,
+.ksq-activity--change a,
+.ksq-activity--event .ksq-ticket-id,
+.ksq-activity--change .ksq-ticket-id {
+  font-style: normal;
+}
+
 .ksq-activity__head {
   display: flex;
   align-items: baseline;
@@ -1243,9 +1264,12 @@
   color: var(--text-1);
 }
 
+/* The agent role chip picks up THIS agent's own hue (ISI-4706 per-agent colour),
+   falling back to the shared Run hue when no per-agent var is set (e.g. an older
+   bundle, or a principal we couldn't classify). Humans keep the accent. */
 .ksq-chip[data-role="agent"] {
-  border-color: var(--ksq-run);
-  color: var(--ksq-run);
+  border-color: var(--ksq-author-accent, var(--ksq-run));
+  color: var(--ksq-author-accent, var(--ksq-run));
 }
 .ksq-chip[data-role="user"] {
   border-color: var(--accent);
@@ -1306,8 +1330,8 @@
 /* An agent's avatar ring picks up the reserved Run hue so a run reads as a run;
    a human's picks up the accent hue — the two never share a colour (ISI-4567). */
 .ksq-runcomment__avatar[data-kind="agent"] {
-  border-color: var(--ksq-run);
-  color: var(--ksq-run);
+  border-color: var(--ksq-author-accent, var(--ksq-run));
+  color: var(--ksq-author-accent, var(--ksq-run));
 }
 .ksq-runcomment__avatar[data-kind="user"] {
   border-color: var(--accent);
@@ -1327,8 +1351,12 @@
    (ISI-4567 "distinguish each comment"): agents wear the Run hue, humans the
    accent hue. The tint is subtle on the fill and firm on the left spine edge. */
 .ksq-runcomment[data-role="agent"] .ksq-runcomment__bubble {
-  border-left-color: var(--ksq-run);
-  background: color-mix(in srgb, var(--ksq-run) 7%, var(--canvas));
+  border-left-color: var(--ksq-author-accent, var(--ksq-run));
+  background: color-mix(
+    in srgb,
+    var(--ksq-author-accent, var(--ksq-run)) 7%,
+    var(--canvas)
+  );
 }
 .ksq-runcomment[data-role="user"] .ksq-runcomment__bubble {
   border-left-color: var(--accent);

@@ -39,14 +39,17 @@ export interface RunComment {
   running: boolean;
 }
 
-/** The principal minus its `agent:`/`user:` role prefix — the bare name, which
- * may be empty. The single source both displayName and avatarInitial strip from,
- * so neither has to know the other's empty-name fallback (a "" here, not the
- * "unknown" sentinel). */
+/** The principal minus its role prefix — the bare name, which may be empty. The
+ * single source displayName, avatarInitial and authorAccent strip from, so none
+ * has to know the others' empty-name fallback (a "" here, not the "unknown"
+ * sentinel). Covers every prefix the coord principal vocabulary emits —
+ * `agent:` / `agent/` for runs, and `user:` / `principal:` / `human:` for the
+ * people who post from the console (ISI-4706: "it should be admin or userx",
+ * i.e. the bare name, not the raw `principal:admin`). */
 function stripRolePrefix(author: string): string {
   return author
     .replace(/^agent[:/]/i, "")
-    .replace(/^user[:/]/i, "")
+    .replace(/^(?:user|principal|human)[:/]/i, "")
     .trim();
 }
 
@@ -62,6 +65,39 @@ export function displayName(author: string): string {
 export function avatarInitial(author: string): string {
   const ch = stripRolePrefix(author).charAt(0);
   return ch ? ch.toUpperCase() : "?";
+}
+
+/**
+ * Per-agent chat colour (ISI-4706: "a different set of colour for human and for
+ * each individual agent"). ISI-4567 only split the thread two ways — every agent
+ * shared one Run hue, every human shared the accent — so a board with five agents
+ * still read as one colour per side. This gives each distinct agent principal its
+ * OWN stable hue, so "Architect" and "Builder" never wear the same tint.
+ *
+ * Humans stay on the single accent hue (the recognizable "you / admin" colour) —
+ * returning `undefined` lets the existing `data-role="user"` CSS own them, so we
+ * never fabricate a per-person rainbow the ask didn't request. Agents get a hue
+ * picked from a curated, high-contrast categorical palette (taste-skill: no
+ * AI-purple wash, one firm accent per identity) by a stable hash of the bare
+ * name, so the SAME agent is the SAME colour on every visit and across reloads.
+ */
+const AGENT_HUES = [168, 40, 130, 5, 275, 315, 95] as const;
+
+/** djb2 — a tiny stable string hash (deterministic; no Math.random). */
+function hashName(name: string): number {
+  let h = 5381;
+  for (let i = 0; i < name.length; i++) {
+    h = ((h << 5) + h + name.charCodeAt(i)) >>> 0;
+  }
+  return h;
+}
+
+export function authorAccent(author: string): string | undefined {
+  // Humans share the accent — the CSS already owns data-role="user".
+  if (authorKind(author) !== "agent") return undefined;
+  const name = stripRolePrefix(author).toLowerCase();
+  const hue = AGENT_HUES[hashName(name) % AGENT_HUES.length];
+  return `hsl(${hue} 68% 52%)`;
 }
 
 /**

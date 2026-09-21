@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  authorAccent,
   avatarInitial,
   buildRunComments,
   displayName,
@@ -46,6 +47,32 @@ describe("displayName", () => {
     expect(displayName("user:alice")).toBe("alice");
     expect(displayName("Winston")).toBe("Winston");
     expect(displayName("")).toBe("unknown");
+  });
+
+  it("also strips principal:/human: so a person reads as their bare name (ISI-4706)", () => {
+    // "flagged under User" / "it should be admin or userx" — never the raw prefix.
+    expect(displayName("principal:admin")).toBe("admin");
+    expect(displayName("human:henrik")).toBe("henrik");
+  });
+});
+
+describe("authorAccent", () => {
+  it("gives each distinct agent its own stable hue (ISI-4706)", () => {
+    const architect = authorAccent("agent:Architect");
+    const builder = authorAccent("agent:Builder");
+    expect(architect).toMatch(/^hsl\(\d+ 68% 52%\)$/);
+    expect(builder).toMatch(/^hsl\(\d+ 68% 52%\)$/);
+    // Two different agents must not collapse to the same colour here.
+    expect(architect).not.toBe(builder);
+    // Stable + case/prefix-insensitive: same agent → same colour every render.
+    expect(authorAccent("agent:Architect")).toBe(architect);
+    expect(authorAccent("agent/architect")).toBe(architect);
+  });
+
+  it("returns undefined for humans so the accent CSS owns them", () => {
+    expect(authorAccent("user:alice")).toBeUndefined();
+    expect(authorAccent("principal:admin")).toBeUndefined();
+    expect(authorAccent("Winston")).toBeUndefined();
   });
 });
 

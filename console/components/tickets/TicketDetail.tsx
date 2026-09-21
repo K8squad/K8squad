@@ -60,11 +60,13 @@ import {
   type ThreadComment,
 } from "@/lib/tickets/thread";
 import {
+  authorAccent,
   buildRunComments,
   displayName,
   runCommentKey,
   type RunComment,
 } from "@/lib/tickets/runComments";
+import type { CSSProperties } from "react";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
 import { STATUS_META } from "@/lib/tickets/statusColor";
 import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
@@ -434,6 +436,14 @@ function RunCommentCard({
 }) {
   const comment = item.comment!;
   const author = displayName(comment.author);
+  // Per-agent chat colour (ISI-4706): each distinct agent principal carries its
+  // own stable hue via an inline custom property; humans return undefined and
+  // fall back to the accent the data-role="user" CSS already owns. Setting the
+  // var on the row cascades it to the bubble, avatar ring and role chip.
+  const accent = authorAccent(comment.author);
+  const accentStyle = accent
+    ? ({ "--ksq-author-accent": accent } as CSSProperties)
+    : undefined;
   // Older agent runs collapse to a one-liner; the newest agent run and every
   // human reply start open (design "newest last; older runs collapse").
   const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
@@ -445,6 +455,7 @@ function RunCommentCard({
         className="ksq-activity ksq-activity--comment ksq-runcomment ksq-runcomment--collapsed"
         data-testid="activity-comment"
         data-role={item.authorKind}
+        style={accentStyle}
       >
         <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
           {meta?.avatar ?? "?"}
@@ -472,6 +483,7 @@ function RunCommentCard({
       className="ksq-activity ksq-activity--comment ksq-runcomment"
       data-testid="activity-comment"
       data-role={item.authorKind}
+      style={accentStyle}
     >
       <span className="ksq-runcomment__avatar" data-kind={item.authorKind} aria-hidden="true">
         {meta?.avatar ?? "?"}
