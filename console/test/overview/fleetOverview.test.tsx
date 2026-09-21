@@ -199,7 +199,7 @@ describe("FleetOverview render", () => {
     // Recent ticket work: newest first, deep link into the issue route with the item id.
     const links = screen.getAllByTestId("fleet-recent-ticket-link");
     expect(links[0].textContent).toBe("Fix login"); // t1 updated 09-16 > t2's 09-14
-    expect(links[0].getAttribute("href")).toBe("/projects/webapp/issues?item=t1");
+    expect(links[0].getAttribute("href")).toBe("/projects/webapp/issues/t1");
     expect(links).toHaveLength(2);
 
     // Live runs: newest claim first (run-infra), phase chip present.

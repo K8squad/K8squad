@@ -114,16 +114,16 @@ describe("derivations", () => {
     expect(stateBadge("mystery")).toEqual({ label: "mystery", tone: "idle" });
   });
 
-  it("resultHref deep-links Project-scoped hits to Tickets and falls back to Overview", () => {
+  it("resultHref deep-links Project-scoped hits to the item detail and falls back to Overview", () => {
     expect(resultHref(result({ projectId: "p1", id: "w1" }))).toBe(
-      "/projects/p1/tickets?item=w1",
+      "/projects/p1/issues/w1",
     );
     expect(resultHref(result({ projectId: "", id: "w1" }))).toBe("/overview");
   });
 
-  it("resultHref percent-encodes ids into the path/query", () => {
+  it("resultHref percent-encodes ids into the path", () => {
     expect(resultHref(result({ projectId: "a/b", id: "c d" }))).toBe(
-      "/projects/a%2Fb/tickets?item=c%20d",
+      "/projects/a%2Fb/issues/c%20d",
     );
   });
 });

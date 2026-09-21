@@ -342,7 +342,7 @@ function RecentTicketWorkPanel({ state }: { state: WorkItemsState }) {
               {merged.map((t) => (
                 <li key={`${t.projectId}/${t.id}`} className="ov-list__row">
                   <a
-                    href={`/projects/${encodeURIComponent(t.projectId)}/issues?item=${encodeURIComponent(t.id)}`}
+                    href={`/projects/${encodeURIComponent(t.projectId)}/issues/${encodeURIComponent(t.id)}`}
                     data-testid="fleet-recent-ticket-link"
                   >
                     {t.title}

@@ -134,13 +134,13 @@ export function stateBadge(state: string): SearchStateBadge {
 }
 
 /**
- * Where clicking a hit lands. A Project-scoped hit deep-links to that Project's Tickets surface with
- * the item pre-selected (`?item=`); an unscoped hit falls back to the global Overview. The tickets
- * path is the canonical Project → Tickets route (app/projects/[projectId]/tickets).
+ * Where clicking a hit lands. A Project-scoped hit deep-links straight to that item's detail page;
+ * an unscoped hit falls back to the global Overview. The detail path is the canonical
+ * Project → Issues item route (app/projects/[projectId]/issues/[workItemId]).
  */
 export function resultHref(r: SearchResult): string {
   if (r.projectId) {
-    return `/projects/${encodeURIComponent(r.projectId)}/tickets?item=${encodeURIComponent(r.id)}`;
+    return `/projects/${encodeURIComponent(r.projectId)}/issues/${encodeURIComponent(r.id)}`;
   }
   return "/overview";
 }
