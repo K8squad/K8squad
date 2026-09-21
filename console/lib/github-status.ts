@@ -32,6 +32,19 @@ export type GithubIssue = {
   /** The provider's own assignees (MirrorPayload.Assignees), projected verbatim.
    * Absent means "unassigned", never a fabricated agent. */
   assignees?: string[];
+  /** ISI-4760 (Epic 4) — the OPTIONAL local-bridge block, mirroring the Epic 2
+   * read contract (ISI-4757 §7) EXACTLY. Present only when this GitHub issue is
+   * bridged to a Paperclip work-item (label `ksquad.github.issue=<owner>/<repo>#N`);
+   * ABSENT means "not locally assigned" — the honest default, never fabricated.
+   * It is a LOCAL-ONLY status derived from the work-item/run store; it is NEVER
+   * a GitHub assignee and must never merge into `assignees` (ADR-0013 §D4 honesty
+   * guard / contract §6). Sourced inside the same githubstatus.go mirror read, so
+   * it rides the existing BFF payload — no extra per-card request. */
+  local?: {
+    workItemId: string;
+    agent: string;
+    runState: "running" | "todo" | "done";
+  };
   updatedAt?: string;
 };
 
