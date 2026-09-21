@@ -9,6 +9,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJsonWrite } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,6 +18,8 @@ export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  // Normalize to EXACTLY one encoding layer — see the read route for why a naïve
+  // encodeURIComponent double-encodes the composite id into a mux 404 (ISI-3982).
+  const projectId = encodeProjectId((await params).projectId);
   return proxyJsonWrite(req, `/api/projects/${projectId}/github/sync`, "POST");
 }

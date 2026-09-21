@@ -77,6 +77,8 @@ import { GET as threadsGET } from "@/app/api/projects/[projectId]/discussion/thr
 import { GET as streamGET } from "@/app/api/projects/[projectId]/stream/route";
 import { GET as threadGET } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/route";
 import { POST as threadMessagesPOST } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/messages/route";
+import { GET as githubGET } from "@/app/api/projects/[projectId]/github/route";
+import { POST as githubSyncPOST } from "@/app/api/projects/[projectId]/github/sync/route";
 
 // Minimal NextRequest stand-in — the routes read only `nextUrl.search`.
 function fakeReq(search = ""): import("next/server").NextRequest {
@@ -111,6 +113,29 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
       });
       const p = pathOf(proxyJson);
       expect(p).toBe(`/api/projects/${ENCODED}/work-items?parentId=x`);
+      expect(p).not.toContain("%252F");
+    });
+  }
+
+  // ISI-4662: these two GitHub routes were the last hop still doing a naïve
+  // encodeURIComponent, which double-encoded the composite id into a mux 404 that
+  // the S5c tab renders as the honest "No GitHub status" empty state — the exact
+  // reported symptom. Pin them to the both-shapes single-encoding contract.
+  for (const [shape, param] of [
+    ["router-encoded", ENCODED],
+    ["decoded", NS_NAME],
+  ] as const) {
+    it(`github GET forwards ns%2Fname once (${shape})`, async () => {
+      await githubGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJson);
+      expect(p).toBe(`/api/projects/${ENCODED}/github`);
+      expect(p).not.toContain("%252F");
+    });
+
+    it(`github sync POST forwards ns%2Fname once (${shape})`, async () => {
+      await githubSyncPOST(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJsonWrite);
+      expect(p).toBe(`/api/projects/${ENCODED}/github/sync`);
       expect(p).not.toContain("%252F");
     });
   }

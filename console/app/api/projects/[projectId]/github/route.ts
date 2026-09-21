@@ -13,6 +13,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJson } from "@/lib/bff";
+import { encodeProjectId } from "@/lib/projectId";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -22,6 +23,10 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ projectId: string }> },
 ): Promise<Response> {
-  const projectId = encodeURIComponent((await params).projectId);
+  // Normalize to EXACTLY one encoding layer — Next hands us the still-encoded
+  // "ns%2Fname" segment, and a naïve encodeURIComponent re-encodes it to
+  // "ns%252Fname", which the apiserver decodes to the literal "ns%2Fname" (no
+  // slash) and 404s — indistinguishable from ISI-4662's empty state (ISI-3982).
+  const projectId = encodeProjectId((await params).projectId);
   return proxyJson(req, `/api/projects/${projectId}/github`);
 }
