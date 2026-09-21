@@ -635,6 +635,83 @@ func TestIssueSyncFailureSurfacesOwnReason(t *testing.T) {
 	}
 }
 
+// ── ISI-4750 E3: the review-automation trigger seam ──
+
+// recordingReviewTrigger is the test double for the E3 ReviewTrigger seam: it
+// captures the args of the single call the reconcile makes, and can be armed
+// to fail so the failure-path test can assert the reconcile surfaces its own
+// condition reason.
+type recordingReviewTrigger struct {
+	calls    int
+	gotNS    string
+	gotName  string
+	gotRepo  string
+	gotRows  []scm.MirrorRow
+	failWith error
+}
+
+func (rt *recordingReviewTrigger) ReviewChanges(_ context.Context, ns, name string, _ scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error {
+	rt.calls++
+	rt.gotNS, rt.gotName, rt.gotRepo, rt.gotRows = ns, name, repoURL, rows
+	return rt.failWith
+}
+
+// The E3 trigger rides the SAME reconcile pass, AFTER the mirror upsert, and
+// receives the JUST-APPLIED rows (echo-suppressed) scoped to this Project —
+// the seam E4 (ISI-4766) implements the body behind.
+func TestReviewTriggerRidesTheReconcile(t *testing.T) {
+	trigger := &recordingReviewTrigger{}
+	r, mirror := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.ReviewTrigger = trigger
+
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	if trigger.calls != 1 {
+		t.Fatalf("trigger calls = %d, want exactly 1 per reconcile pass", trigger.calls)
+	}
+	if trigger.gotNS != testNamespace || trigger.gotName != testProject {
+		t.Fatalf("trigger saw %s/%s, want %s/%s", trigger.gotNS, trigger.gotName, testNamespace, testProject)
+	}
+	// It receives the SAME just-applied rows the mirror holds (bot PR echo
+	// suppressed), not the raw provider snapshot.
+	if len(trigger.gotRows) != len(mirror.Rows()) || len(trigger.gotRows) != 3 {
+		t.Fatalf("trigger rows = %d, want 3 (the just-applied, echo-suppressed mirror rows)", len(trigger.gotRows))
+	}
+}
+
+// A nil ReviewTrigger (review automation unconfigured — the default) leaves
+// the reconcile untouched: the seam is opt-in, exactly like a nil IssueSync.
+func TestReviewTriggerNilIsNoop(t *testing.T) {
+	r, _ := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	// r.ReviewTrigger left nil.
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("reconcile with nil review trigger errored: %v", err)
+	}
+}
+
+// A failing trigger fails the reconcile with its OWN condition reason — the
+// mirror already applied, so the level-triggered retry re-applies it and
+// re-runs the trigger idempotently.
+func TestReviewTriggerFailureSurfacesOwnReason(t *testing.T) {
+	trigger := &recordingReviewTrigger{failWith: fmt.Errorf("review dispatch down")}
+	r, _ := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.ReviewTrigger = trigger
+
+	_, err := r.Reconcile(context.Background(), request())
+	if err == nil {
+		t.Fatal("review trigger failure swallowed")
+	}
+	updated := &ksquadapi.Project{}
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: testProject}, updated); err != nil {
+		t.Fatal(err)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, ConditionSyncReady)
+	if cond == nil || cond.Reason != reasonReviewFail {
+		t.Fatalf("SyncReady reason = %+v, want %q", cond, reasonReviewFail)
+	}
+}
+
 // ── ISI-4120: rate-limit windows must not hot-loop the reconciler ──
 
 // countingStatusClient counts status-subresource Patch calls — the probe

@@ -634,6 +634,7 @@ func (p *GitHubProvider) fetchPullRequests(ctx context.Context, owner, repo stri
 				Assignees:  getGitHubUsernames(pr.Assignees),
 				Labels:     getGitHubLabels(pr.Labels),
 				HeadRef:    pr.GetHead().GetRef(),
+				HeadSHA:    pr.GetHead().GetSHA(),
 				BaseRef:    pr.GetBase().GetRef(),
 				Merged:     pr.GetMerged(),
 			}

@@ -207,6 +207,12 @@ type NormalizedRecord struct {
 
 	// PR-specific fields
 	HeadRef string `json:"head_ref,omitempty"`
+	// HeadSHA is the PR head commit SHA (ISI-4750 E3). HeadRef carries the
+	// branch NAME; the SHA is what actually moves when a PR is pushed to, so
+	// it is the change-detection key for review automation — a new commit on
+	// the same branch is a new (number, head SHA) pair. Empty for non-PR
+	// records.
+	HeadSHA string `json:"head_sha,omitempty"`
 	BaseRef string `json:"base_ref,omitempty"`
 	Merged  bool   `json:"merged,omitempty"`
 

@@ -365,6 +365,36 @@ func TestSnapshotTargetsParsedOwnerRepo(t *testing.T) {
 	}
 }
 
+// fetchPullRequests carries the head commit SHA onto NormalizedRecord.HeadSHA
+// (ISI-4750 E3): HeadRef holds the branch name, HeadSHA the commit — the two
+// differ, and the SHA is the change-detection key review automation dedups on.
+func TestFetchPullRequestsCarriesHeadSHA(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"number":42,"state":"open","title":"feat",
+			"head":{"ref":"feat/x","sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+			"base":{"ref":"main"}}]`)
+	})
+
+	p, _ := newTestGitHubProvider(t, mux)
+	recs, err := p.Snapshot(context.Background(), "https://github.com/acme/app",
+		SnapshotOptions{Types: []RecordType{RecordTypePR}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records = %d, want 1 PR", len(recs))
+	}
+	got := recs[0]
+	if got.Kind != RecordTypePR || got.HeadRef != "feat/x" {
+		t.Fatalf("record = %+v, want PR on branch feat/x", got)
+	}
+	if got.HeadSHA != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Fatalf("HeadSHA = %q, want the PR head commit SHA (not the branch name)", got.HeadSHA)
+	}
+}
+
 // UpdateIssue sends ONE PATCH carrying state and/or the replacement labels
 // (story 11.2 outbound sync), refuses empty updates (a no-op write would
 // bump updated_at upstream and echo back as a phantom external change), and

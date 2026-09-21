@@ -61,15 +61,21 @@ type ExternalOrigin struct {
 // indexed columns (body, url, labels, assignees, timestamps, and the
 // kind-specific extras), so a mirror row is self-describing for consumers.
 type MirrorPayload struct {
-	Body       string    `json:"body,omitempty"`
-	URL        string    `json:"url,omitempty"`
-	Labels     []string  `json:"labels,omitempty"`
-	Assignees  []string  `json:"assignees,omitempty"`
-	Number     int       `json:"number,omitempty"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Merged     bool      `json:"merged,omitempty"`
-	HeadRef    string    `json:"head_ref,omitempty"`
+	Body      string    `json:"body,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	Labels    []string  `json:"labels,omitempty"`
+	Assignees []string  `json:"assignees,omitempty"`
+	Number    int       `json:"number,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Merged    bool      `json:"merged,omitempty"`
+	HeadRef   string    `json:"head_ref,omitempty"`
+	// HeadSHA is the PR head commit SHA (ISI-4750 E3): the mirror carried the
+	// branch name but never the commit, so a consumer could not tell a pushed
+	// PR from an unchanged one. It rides the JSONB payload — no indexed column,
+	// no migration — and is the (number, head SHA) change-detection key the
+	// review-automation trigger dedups on.
+	HeadSHA    string    `json:"head_sha,omitempty"`
 	BaseRef    string    `json:"base_ref,omitempty"`
 	Conclusion string    `json:"conclusion,omitempty"`
 	ExpiresAt  time.Time `json:"expires_at"`
@@ -150,6 +156,7 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 			UpdatedAt:  rec.UpdatedAt,
 			Merged:     rec.Merged,
 			HeadRef:    rec.HeadRef,
+			HeadSHA:    rec.HeadSHA,
 			BaseRef:    rec.BaseRef,
 			Conclusion: rec.Conclusion,
 			ExpiresAt:  rec.ExpiresAt,
