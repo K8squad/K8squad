@@ -116,6 +116,14 @@ const (
 	// trace answers "which KIND of tool ran" without parsing gen_ai.tool.name
 	// (ISI-4540: tools were all surfacing as bare names with no category).
 	attrToolType = attribute.Key("ksquad.tool.type")
+	// attrToolCommand names the executable a shell-family tool call actually
+	// ran (git|kubectl|npm|…) when the runtime models it as an argument to a
+	// single "bash" tool (ISI-4720). gen_ai.tool.name stays "bash" (the tool
+	// the runtime exposed); this attribute + ksquad.tool.type answer "a bash
+	// span, but it ran git" so git/kubectl/docker calls are no longer
+	// invisible. The shim populates it (a2a.ToolPayload.Command) with only the
+	// bounded, recognized head token — never the argument line.
+	attrToolCommand = attribute.Key("ksquad.tool.command")
 	// attrOutcome records the mapped outcome ("success" | "error" |
 	// "unknown") — D1 AC: unknown outcomes map safely, never panic, never
 	// drop the span.
@@ -498,10 +506,18 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 	}
 
 	attrs := labels.spanAttrs()
-	attrs = append(attrs,
-		semconv.GenAIToolName(p.Name),
-		attrToolType.String(categorizeTool(p.Name, p.Server)),
-	)
+	// ISI-4720: a shell-family call (bash) whose real executable the shim
+	// resolved (p.Command: git|kubectl|npm|…) is categorized by what it RAN,
+	// and the executable rides ksquad.tool.command, so a bash-wrapped git call
+	// is no longer an opaque "bash" span. gen_ai.tool.name stays the tool the
+	// runtime exposed. The command is only trusted for local (non-MCP) calls.
+	toolType := categorizeTool(p.Name, p.Server)
+	attrs = append(attrs, semconv.GenAIToolName(p.Name))
+	if !isMCP && p.Command != "" {
+		toolType = categorizeTool(p.Command, "")
+		attrs = append(attrs, attrToolCommand.String(p.Command))
+	}
+	attrs = append(attrs, attrToolType.String(toolType))
 	if p.ArgsSHA256 != "" {
 		// The hash IS the argument surface — raw args never reach this
 		// package (emitters hash before the event leaves the process). The

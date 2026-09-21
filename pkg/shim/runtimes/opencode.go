@@ -254,6 +254,17 @@ func parseOpenCodeLine(line string) []Progress {
 		if len(ev.Part.State.Input) > 0 {
 			args = string(ev.Part.State.Input)
 		}
+		// ISI-4720: opencode models git/npm/kubectl/… as arguments to the
+		// single "bash" tool, so without enrichment every such call surfaces
+		// only as an opaque "bash" span. Extract the invoked executable's head
+		// token here — in-process, before args are hashed — so the telemetry
+		// spine can categorize the call by what it actually ran. Only the
+		// bounded, recognized head token travels (never the command line).
+		if isShellTool(ev.Part.Tool) {
+			if head := a2a.ShellCommandHead(bashCommandArg(ev.Part.State.Input)); head != "" {
+				tool.Command = head
+			}
+		}
 		switch ev.Part.State.Status {
 		case "completed":
 			ok := true
@@ -295,6 +306,36 @@ func parseOpenCodeLine(line string) []Progress {
 	default: // step_start and future shapes: bookkeeping, not wire events
 		return nil
 	}
+}
+
+// isShellTool reports whether an opencode tool name is a shell-family tool
+// whose real work is an arbitrary command line carried as the "command"
+// argument (ISI-4720) — the tools that otherwise flatten git/npm/kubectl into
+// an opaque "bash" span.
+func isShellTool(tool string) bool {
+	switch tool {
+	case "bash", "sh", "shell":
+		return true
+	default:
+		return false
+	}
+}
+
+// bashCommandArg pulls the raw "command" string out of a shell tool's input
+// JSON ({"command":"git status", ...}). It tolerates any other shape — a
+// missing or malformed command yields "" and the call stays a plain shell span
+// (never fails the line parse).
+func bashCommandArg(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var in struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return ""
+	}
+	return in.Command
 }
 
 // usageFromStepFinish maps a step-finish part onto an EventUsage payload
