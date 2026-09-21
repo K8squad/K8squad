@@ -197,6 +197,39 @@ func TestOverviewAdminFleetWide(t *testing.T) {
 	}
 }
 
+// TestOverviewAdminFleetWide_SplitNamespaces — the reported ISI-4565 defect: on a real cluster the
+// operator puts a squad's Run CRs in its EXECUTION namespace (Team.Status.Namespace) while the
+// Team/Project CRs stay in the HOME namespace. The admin fleet overview must still join the Runs to
+// their Project (by normalizing each Run's namespace to its squad home) instead of silently dropping
+// every Run and rendering an empty overview.
+func TestOverviewAdminFleetWide_SplitNamespaces(t *testing.T) {
+	teamCR := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "bmad-squad", Name: "bmad", UID: types.UID("cccccccc-cccc-cccc-cccc-cccccccccccc")},
+		Status:     ksquadv1.TeamStatus{Namespace: "ksquad-team-bmad-exec"},
+	}
+	r := newReader(t,
+		teamCR,
+		project("bmad-squad", "bmad-demo-project", "https://github.com/acme/bmad"),
+		// Runs live in the EXECUTION namespace, not alongside the Project.
+		run("ksquad-team-bmad-exec", "run-live", "bmad-demo-project", "ISI-1", ksquadv1.RunPhaseRunning, nil),
+		run("ksquad-team-bmad-exec", "run-done", "bmad-demo-project", "ISI-2", ksquadv1.RunPhaseSucceeded, nil),
+	)
+
+	ov, err := r.Overview(context.Background(), "deadbeef-0000-0000-0000-000000000000", true)
+	if err != nil {
+		t.Fatalf("Overview(admin): %v", err)
+	}
+	if len(ov.Projects) != 1 || ov.Projects[0].Name != "bmad-demo-project" {
+		t.Fatalf("fleet projects: %+v", ov.Projects)
+	}
+	if got := len(ov.Projects[0].Runs); got != 2 {
+		t.Fatalf("cross-namespace runs dropped: got %d, want 2 (%+v)", got, ov.Projects[0].Runs)
+	}
+	if ov.Projects[0].PhaseCounts["Running"] != 1 || ov.Projects[0].PhaseCounts["Succeeded"] != 1 {
+		t.Fatalf("phase rollup wrong: %+v", ov.Projects[0].PhaseCounts)
+	}
+}
+
 // TestOverviewOrphanRunBucketed — a Run referencing a Project absent from the namespace is NOT
 // dropped (ISI-4570: silent invisibility was the bug) but surfaces under the "Unassigned/other"
 // bucket — never under a real Project row.
@@ -476,10 +509,13 @@ func TestClientOverviewReader_Overview_SplitNamespaces(t *testing.T) {
 		},
 	}
 
+	// Project (and the Team CR) live in the squad HOME namespace; Run CRs live in
+	// the reconciled EXECUTION namespace (ISI-4565). The overview must join across
+	// the two namespaces by name.
 	project := &ksquadv1.Project{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "test-project",
-			Namespace:         reconciledSquadNamespace,
+			Namespace:         teamCRNamespace,
 			CreationTimestamp: now,
 		},
 		Spec: ksquadv1.ProjectSpec{
@@ -538,9 +574,9 @@ func TestClientOverviewReader_Overview_SplitNamespaces(t *testing.T) {
 	overview, err := reader.Overview(ctx, teamID.String(), false)
 	require.NoError(t, err)
 
-	// Verify team info uses reconciled namespace
+	// Verify team info uses the squad home namespace (where the Team/Project CRs live)
 	assert.Equal(t, "test-team", overview.Team.Name)
-	assert.Equal(t, reconciledSquadNamespace, overview.Team.Namespace)
+	assert.Equal(t, teamCRNamespace, overview.Team.Namespace)
 
 	// Should have 2 project buckets: actual project + unassigned
 	assert.Len(t, overview.Projects, 2)
