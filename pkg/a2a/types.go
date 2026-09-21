@@ -29,6 +29,8 @@ package a2a
 
 import (
 	"context"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/K8squad/K8squad/internal/protocol"
@@ -242,6 +244,79 @@ type ToolPayload struct {
 	// makes the telemetry mapping emit an mcp.call span instead of
 	// gen_ai.tool.call and observe the MCP duration histogram. +optional
 	Server string `json:"server,omitempty"`
+	// Command is the invoked executable's head token for shell-family tools
+	// (bash/sh), extracted IN-PROCESS from the raw command before args are
+	// hashed (ISI-4720). Runtimes model git/npm/kubectl/… as arguments to a
+	// single "bash" tool, so without this every git or kubectl call surfaces
+	// only as an opaque "bash" span; Command lets the telemetry spine
+	// categorize a bash-wrapped call by what it actually ran. It carries ONLY
+	// the executable name (basename, env-assignment prefixes stripped), never
+	// arguments — the low-PII, low-cardinality head token, not the command
+	// line. Empty for MCP/file/native tool calls (their Name is already
+	// distinct) and for shell calls whose head token is not a recognized
+	// tool. +optional
+	Command string `json:"command,omitempty"`
+}
+
+// recognizedShellHeads is the bounded allowlist of executable head tokens a
+// shell-family tool call is enriched with (ISI-4720). It intentionally mirrors
+// the head tokens the telemetry spine categorizes
+// (pkg/telemetry/toolusage.categorizeTool): only these become a
+// ToolPayload.Command, so the value is always low-cardinality and PII-safe (a
+// known tool name, never an arbitrary script path or argument). Drift in
+// either list is caught by both packages' tests.
+var recognizedShellHeads = map[string]struct{}{
+	"git": {}, "docker": {}, "kubectl": {}, "helm": {},
+	"npm": {}, "node": {}, "pip": {}, "python": {}, "python3": {},
+}
+
+// ShellCommandHead extracts the invoked executable's head token from a raw
+// shell command string (ISI-4720): it strips any leading `VAR=value`
+// environment-assignment prefixes, takes the first remaining whitespace-split
+// token, reduces it to its basename, and returns it ONLY when it is a
+// recognized tool (recognizedShellHeads) — otherwise "". It parses the head
+// token alone and never returns arguments, so a bash-wrapped `git`/`kubectl`
+// call can be categorized by what it ran without transporting the (possibly
+// secret) command line. Extraction happens in-process at the shim before the
+// raw args are hashed away.
+func ShellCommandHead(command string) string {
+	fields := strings.Fields(command)
+	i := 0
+	// Skip leading environment-assignment prefixes ("FOO=bar cmd ..."): a token
+	// is an assignment only up to the first non-assignment token.
+	for i < len(fields) && isEnvAssignment(fields[i]) {
+		i++
+	}
+	if i >= len(fields) {
+		return ""
+	}
+	head := path.Base(fields[i])
+	if _, ok := recognizedShellHeads[head]; ok {
+		return head
+	}
+	return ""
+}
+
+// isEnvAssignment reports whether a shell token is a `NAME=value`
+// environment-assignment prefix (a `=` that follows a non-empty run of
+// identifier characters, i.e. not a flag like `-x` and not a bare `=value`).
+func isEnvAssignment(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
+		return false
+	}
+	for _, r := range tok[:eq] {
+		if !isIdentChar(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// isIdentChar reports whether r is a shell identifier character
+// ([A-Za-z0-9_]) — the character class a `NAME=value` prefix's name is made of.
+func isIdentChar(r rune) bool {
+	return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 // SkillLoadPayload is the payload of an EventSkillLoad event (Epic D, plan

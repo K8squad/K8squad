@@ -91,6 +91,39 @@ func TestParseOpenCodeLineToolUse(t *testing.T) {
 	assert.JSONEq(t, `{"filePath":"/etc/hostname"}`, p.ToolArgs)
 }
 
+// ISI-4720: a bash tool_use whose command is a real executable (git) rides the
+// recognized head token on ToolPayload.Command, so the telemetry spine can
+// categorize the otherwise-opaque "bash" span by what it actually ran. The
+// file/read tool (distinct name) carries no Command.
+func TestParseOpenCodeLineBashCommandHead(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"bash","state":{"status":"completed","input":{"command":"git commit -m secret"}}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Equal(t, "bash", out[0].Tool.Name)
+	assert.Equal(t, "git", out[0].Tool.Command, "the recognized executable head token, never the argument line")
+}
+
+// An unrecognized bash command (ls) leaves Command empty — nothing arbitrary
+// travels on the payload, the call stays a plain shell span.
+func TestParseOpenCodeLineBashUnrecognizedCommand(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"bash","state":{"status":"completed","input":{"command":"ls -la /secret"}}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Empty(t, out[0].Tool.Command)
+}
+
+// A non-shell tool (read) never grows a Command even if its input happened to
+// carry a "command"-shaped field.
+func TestParseOpenCodeLineNonShellNoCommand(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/etc/hostname"}}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Empty(t, out[0].Tool.Command)
+}
+
 func TestParseOpenCodeLineToolError(t *testing.T) {
 	line := `{"type":"tool_use","part":{"tool":"shell","state":{"status":"error","input":{"cmd":"ls"}}}}`
 	out := parseOpenCodeLine(line)

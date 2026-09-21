@@ -816,3 +816,50 @@ func TestToolEventCarriesToolType(t *testing.T) {
 		t.Errorf("ksquad.tool.type = %v, want git", got)
 	}
 }
+
+// TestToolEventShellCommandEnrichment (ISI-4720): a bash-family tool call the
+// shim resolved to a real executable (Command="git") is categorized by what it
+// RAN — ksquad.tool.type=git and ksquad.tool.command=git — while
+// gen_ai.tool.name stays the tool the runtime exposed ("bash"). Without this a
+// git/kubectl/npm call is an invisible, uncategorized "bash" span.
+func TestToolEventShellCommandEnrichment(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	p := a2a.ToolPayload{Name: "bash", Command: "git"}
+	p.Phase = "start"
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+	p.Phase = "result"
+	p.OK = boolPtr(true)
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+
+	span := findSpan(t, sr, SpanToolCall)
+	attrs := attrMap(span.Attributes())
+	if got := attrs["gen_ai.tool.name"]; got != "bash" {
+		t.Errorf("gen_ai.tool.name = %v, want bash (the exposed tool)", got)
+	}
+	if got := attrs["ksquad.tool.type"]; got != "git" {
+		t.Errorf("ksquad.tool.type = %v, want git (categorized by what it ran)", got)
+	}
+	if got := attrs["ksquad.tool.command"]; got != "git" {
+		t.Errorf("ksquad.tool.command = %v, want git", got)
+	}
+}
+
+// TestToolEventMCPIgnoresCommand (ISI-4720): Command is only trusted for local
+// tool calls — an MCP-served call keeps its mcp category and never grows a
+// ksquad.tool.command attribute even if one leaked onto the payload.
+func TestToolEventMCPIgnoresCommand(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	p := a2a.ToolPayload{Name: "create_issue", Server: "github", Command: "git", Phase: "result", OK: boolPtr(true)}
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+
+	span := findSpan(t, sr, SpanMCPCall)
+	attrs := attrMap(span.Attributes())
+	if got := attrs["ksquad.tool.type"]; got != "mcp" {
+		t.Errorf("ksquad.tool.type = %v, want mcp", got)
+	}
+	if _, ok := attrs["ksquad.tool.command"]; ok {
+		t.Errorf("ksquad.tool.command must be absent on an MCP call, got %v", attrs["ksquad.tool.command"])
+	}
+}
