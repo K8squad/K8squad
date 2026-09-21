@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,32 @@ func seedMirror(t *testing.T, store *scm.InMemoryMirrorStore, ns, name string, r
 func mirrorRow(kind scm.RecordType, extID, state, title, actor string, p scm.MirrorPayload) scm.MirrorRow {
 	raw, _ := json.Marshal(p)
 	return scm.MirrorRow{Kind: kind, ExternalID: extID, State: state, Title: title, Actor: actor, Payload: raw}
+}
+
+// TestGithubStatus_CompositeProjectId is the ISI-4662 regression for the read side: the
+// console requests /api/projects/<ns>%2F<name>/github (its canonical composite id), so a
+// bare {projectId} route 404s — which the S5c tab renders as the honest "No GitHub status"
+// empty state even though the mirror holds rows. {projectId:.+} makes it resolve + project.
+func TestGithubStatus_CompositeProjectId(t *testing.T) {
+	teamID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	proj := project("squad-a", "web", "https://github.com/acme/web")
+	reader := newDashboardClient(t, team("squad-a", "alpha", teamID.String()), proj)
+	store := scm.NewInMemoryMirrorStore()
+	seedMirror(t, store, "squad-a", "web",
+		mirrorRow(scm.RecordTypeIssue, "3", "open", "a bug", "dev",
+			scm.MirrorPayload{Number: 3, URL: "https://github.com/acme/web/issues/3"}))
+
+	h := testGithubStatusServer(t, teamID, reader, store)
+	rec, st := getGithubStatusAs(t, h, devToken, url.PathEscape("squad-a/web"))
+	if st == nil {
+		t.Fatalf("composite projectId: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if st.Project.Name != "web" || st.Project.Namespace != "squad-a" {
+		t.Fatalf("composite scope resolved wrong: %+v", st.Project)
+	}
+	if len(st.Issues) != 1 {
+		t.Errorf("want the mirror issue projected via composite id, got %+v", st.Issues)
+	}
 }
 
 // --- AC1 + AC3: projection + freshness ----------------------------------------------------------

@@ -11,6 +11,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -71,6 +72,39 @@ func TestGithubSync_202(t *testing.T) {
 	}
 	if got.Annotations[reposync.TriggerAnnotation] == "" {
 		t.Error("expected scm-sync-trigger annotation to be set")
+	}
+}
+
+// TestGithubSync_CompositeProjectId is the ISI-4662 regression: the console addresses
+// the project by its canonical url-encoded "namespace/name" composite id, so the route
+// must be {projectId:.+}. A bare {projectId} stops at the decoded slash and 404s — which
+// the S5c GitHub tab renders as the honest "No GitHub status" empty state, i.e. the screen
+// looks empty even though the mirror has data.
+func TestGithubSync_CompositeProjectId(t *testing.T) {
+	teamID := uuid.New()
+	ns := teamID.String()
+	tm := team(ns, "my-team", teamID.String())
+	proj := project(ns, "myproject", "")
+	c := buildSyncClient(t, tm, proj)
+	svc := NewGithubSyncService(c, c)
+
+	srv := testGithubSyncServer(t, teamID, svc)
+	// "<ns>/myproject", url-encoded exactly as the console sends it (slash → %2F).
+	target := "/api/projects/" + url.PathEscape(ns+"/myproject") + "/github/sync"
+	req := httptest.NewRequest(http.MethodPost, target, nil)
+	req.AddCookie(&http.Cookie{Name: "ksquad_session", Value: devToken})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("composite projectId: want 202, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Project
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: "myproject"}, &got); err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+	if got.Annotations[reposync.TriggerAnnotation] == "" {
+		t.Error("expected scm-sync-trigger annotation set via composite id")
 	}
 }
 

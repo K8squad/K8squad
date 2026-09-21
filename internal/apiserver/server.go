@@ -673,7 +673,13 @@ func (s *Server) routes(opts Options) {
 		// SAME viewer-or-admin RBAC as the dashboard — the mirror read reuses the dashboard's
 		// existence-hiding tenancy, no bespoke path. Nil service (mirror reader unwired) keeps
 		// the documented 501 so the S5c tab degrades honestly.
-		ghStatus := s.router.Path("/api/projects/{projectId}/github").Subrouter()
+		//
+		// {projectId:.+} (not bare {projectId}) so the console's canonical composite
+		// "namespace/name" id (sent url-encoded, e.g. sympozium-squad/sympozium-todo-demo)
+		// matches — a bare var stops at the decoded slash and 404s, which the S5c tab renders
+		// as the honest "No GitHub status" empty state (ISI-4662). Mirrors the file-explorer
+		// fix (c4f1456); the resolvers already handle composite ids (8184ac8).
+		ghStatus := s.router.Path("/api/projects/{projectId:.+}/github").Subrouter()
 		ghStatus.Use(authz)
 		if opts.ProjectRoles != nil {
 			ghStatus.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
@@ -688,7 +694,7 @@ func (s *Server) routes(opts Options) {
 		// ISI-4011 "Sync now": POST /api/projects/{projectId}/github/sync bumps the
 		// scm-sync-trigger annotation → reposync reconciler fires. Contributor+ required
 		// (same gate as work-item creates). Nil service ⇒ documented 501.
-		ghSync := s.router.Path("/api/projects/{projectId}/github/sync").Subrouter()
+		ghSync := s.router.Path("/api/projects/{projectId:.+}/github/sync").Subrouter()
 		ghSync.Use(authz)
 		if opts.ProjectRoles != nil {
 			ghSync.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
