@@ -223,9 +223,21 @@ export interface ActivityItem {
   event?: ThreadStatusChange;
 }
 
-/** A principal like "agent:builder" is an agent; anything else is a person. */
+/** A principal like "agent:builder" is an agent; anything else is a person.
+ *
+ * ISI-4706 (live-data fix): the coord progress mirror authors every run step as
+ * `run/<shortRunID>` (progressmirror.go), NOT `agent:<name>` — so without this
+ * branch the whole run thread classified as "user" and rendered in the single
+ * human accent ("everyone is blue"). A run IS an agent execution, so treat the
+ * `run:` / `run/` principal as an agent: it then earns the per-agent hue + spine
+ * + role chip. (The bare agent NAME still can't be recovered from a run id on
+ * the client — that half is the backend child that makes the mirror author as
+ * `agent:<name>`.) */
 export function authorKind(principal: string): "agent" | "user" {
-  return principal.startsWith("agent:") || principal.startsWith("agent/")
+  return principal.startsWith("agent:") ||
+    principal.startsWith("agent/") ||
+    principal.startsWith("run:") ||
+    principal.startsWith("run/")
     ? "agent"
     : "user";
 }
