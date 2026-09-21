@@ -537,7 +537,7 @@ export function LatestTicketsPanel({
               data-testid="landing-ticket-row"
               style={{ display: "flex", justifyContent: "space-between", gap: 8, padding: "4px 0" }}
             >
-              <a href={`${issuesHref}?item=${encodeURIComponent(t.id)}`}>{t.title}</a>
+              <a href={`${issuesHref}/${encodeURIComponent(t.id)}`}>{t.title}</a>
               <span className="phase-chip" data-tone={t.state === "done" ? "idle" : "running"}>
                 {STATE_LABELS[t.state]}
               </span>

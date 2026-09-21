@@ -96,7 +96,7 @@ describe("<GlobalSearch> — 8.19 ACs", () => {
     );
 
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(push).toHaveBeenCalledWith("/projects/p1/tickets?item=w2");
+    expect(push).toHaveBeenCalledWith("/projects/p1/issues/w2");
   });
 
   it("Escape closes the dropdown", async () => {
