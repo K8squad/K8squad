@@ -284,4 +284,43 @@ subjects:
 - kind: ServiceAccount
   name: ksquad-apiserver
   namespace: {{ $ns }}
+---
+# memory Team-agent resolver (ISI-4743, ADR-0024 §8): the memory service's
+# work_item_assign verb (the PM→implementer handoff) must authorize the target
+# implementer against the item's Team composition (agent-∈-Team, §3 D4). That
+# composition lives in the Team CR, not coord's schema, so cmd/memory stands up a
+# shared informer cache over Team CRs (internal/memory/teamresolver.go
+# NewTeamCacheReader → controller-runtime cache.New) exactly as the apiserver's
+# read models do. A controller-runtime informer marks HasSynced after its initial
+# LIST and keeps a WATCH open, so the grant is get+list+watch — without it the
+# LIST 403s at the cluster scope, the cache never syncs, and cmd/memory keeps
+# work_item_assign honestly unavailable (fail-open) while create/update still
+# serve. READ-ONLY: the memory service never writes Teams (the operator owns them);
+# Team namespaces are provisioned dynamically, so the grant is cluster-scoped.
+# Kept in lockstep by TestMemoryClusterRoleLeastPrivilege in rbac_lockstep_test.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "k8squad.fullname" . }}-memory
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "memory") | nindent 4 }}
+rules:
+- apiGroups: [ksquad.io]
+  resources: [teams]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-memory
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "memory") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "k8squad.fullname" . }}-memory
+subjects:
+- kind: ServiceAccount
+  name: ksquad-memory
+  namespace: {{ $ns }}
 {{- end }}

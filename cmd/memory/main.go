@@ -112,12 +112,27 @@ func main() {
 	// unmounted — a read-only / DB-less deployment still serves the reads. The
 	// capability gate is deny-by-default over the control-plane-stamped
 	// X-Agent-Capabilities header (role→capability, O-1). The Team-agent resolver
-	// that backs the PM→implementer ASSIGN verb lives in the apiserver's informer
-	// cache, not here, so the dispatch backend is nil for now — create + update
-	// serve, and assign returns an honest unavailable error (see ISI-4743).
-	if author := openAgentAuthor(cfg.DatabaseURL); author != nil {
-		mcpTools.WithWorkItemAuthor(author, nil, memory.NewHeaderCapabilityResolver())
-		log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign deferred to resolver wiring — ISI-4743)")
+	// that backs the PM→implementer ASSIGN verb is now supplied here too (ISI-4743):
+	// its own shared informer cache over Team CRs (mirroring the apiserver's), so
+	// work_item_assign drives a real dispatch. It is FAIL-OPEN — a cluster-less /
+	// RBAC-less deployment leaves the dispatch backend nil, and assign stays
+	// honestly unavailable while create + update still serve (the reads never go
+	// down). It never authorizes against an empty Team world.
+	var teamResolver coord.TeamAgentResolver
+	if reader, stopCache, rerr := memory.NewTeamCacheReader(ctx, 30*time.Second); rerr != nil {
+		log.Printf("ksquad-memory: Team-agent resolver unavailable — work_item_assign stays honestly unavailable (create/update serve): %v", rerr)
+	} else {
+		defer stopCache()
+		teamResolver = memory.NewClientTeamAgentResolver(reader)
+		log.Printf("ksquad-memory: Team-agent resolver ready (informer cache synced) — work_item_assign enabled")
+	}
+	if author, dispatcher := openAgentAuthor(cfg.DatabaseURL, teamResolver); author != nil {
+		mcpTools.WithWorkItemAuthor(author, dispatcher, memory.NewHeaderCapabilityResolver())
+		if dispatcher != nil {
+			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update/assign)")
+		} else {
+			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign honestly unavailable — no Team-agent resolver, ISI-4743)")
+		}
 	}
 
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
@@ -181,25 +196,40 @@ func openDiscussionDB(dsn string) *sql.DB {
 	return db
 }
 
-// openAgentAuthor builds the coord-backed agent authoring store over the shared
-// Postgres, fail-open exactly like openDiscussionDB: any setup problem returns nil
-// so the caller leaves the work_item_* tools unmounted rather than taking down the
-// memory service. It returns only the create/update backend (WorkItemWriteStore) —
-// the assign dispatch backend needs a TeamAgentResolver this service does not have,
-// so it is wired nil at the call site and assign is refused honestly (ISI-4743).
-// The handle lives for the process lifetime (it backs the tool surface).
-func openAgentAuthor(dsn string) memory.WorkItemAuthor {
+// openAgentAuthor builds the coord-backed agent authoring stores over the shared
+// Postgres, fail-open exactly like openDiscussionDB: any setup problem returns a nil
+// author so the caller leaves the work_item_* tools unmounted rather than taking
+// down the memory service. It returns the create/update backend (WorkItemWriteStore)
+// and — when a TeamAgentResolver is supplied (ISI-4743) — the assign dispatch
+// backend (WorkItemDispatchStore) over the SAME db handle, so work_item_assign
+// drives a real PM→implementer dispatch. A nil resolver (cluster-less / RBAC-less
+// deployment) yields a nil dispatcher and assign is refused honestly by the MCP
+// edge; a dispatch-store construction error is likewise degraded to nil rather than
+// failing create/update. The handle lives for the process lifetime (it backs the
+// tool surface).
+func openAgentAuthor(dsn string, resolver coord.TeamAgentResolver) (memory.WorkItemAuthor, memory.WorkItemDispatcher) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		log.Printf("ksquad-memory: agent authoring tools disabled (open db: %v)", err)
-		return nil
+		return nil, nil
 	}
 	writes, err := coord.NewWorkItemWriteStore(db)
 	if err != nil {
 		log.Printf("ksquad-memory: agent authoring tools disabled (write store: %v)", err)
-		return nil
+		return nil, nil
 	}
-	return writes
+	if resolver == nil {
+		return writes, nil
+	}
+	dispatch, err := coord.NewWorkItemDispatchStore(db, resolver)
+	if err != nil {
+		// Degrade assign to honestly-unavailable rather than dropping create/update:
+		// the resolver is present but the store could not be built (should not happen
+		// with a non-nil db + resolver), so keep the authoring lane serving reads.
+		log.Printf("ksquad-memory: work_item_assign disabled (dispatch store: %v)", err)
+		return writes, nil
+	}
+	return writes, dispatch
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is
