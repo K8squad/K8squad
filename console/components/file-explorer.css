@@ -24,16 +24,19 @@
 }
 
 .file-explorer__row {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
   text-align: left;
   background: none;
   border: none;
   color: inherit;
   font: inherit;
-  padding: 3px 8px;
+  padding: 4px 8px;
+  min-height: 26px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .file-explorer__row:hover {
@@ -44,8 +47,54 @@
   background: var(--surface-active, rgba(120, 160, 255, 0.18));
 }
 
-/* ISI-4652: per-row download affordance. The row button flexes to fill; the
-   download anchor is a quiet glyph that brightens on hover/focus. */
+/* ISI-4747: tree glyphs. A rotating caret on directories, a folder icon
+   (closed → open) per directory, a document icon per file. Files reserve the
+   caret's width with a spacer so their names line up under a folder's name. */
+.file-explorer__caret {
+  flex: none;
+  color: var(--muted, #8b949e);
+  transition: transform 120ms ease;
+}
+
+.file-explorer__caret--open {
+  transform: rotate(90deg);
+}
+
+.file-explorer__caret-spacer {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.file-explorer__glyph {
+  flex: none;
+}
+
+/* Directories carry the accent hue so they read as folders at a glance; files
+   stay muted so the folder structure is the thing the eye tracks first. */
+.file-explorer__glyph--dir {
+  color: var(--accent, #3d7dff);
+}
+
+.file-explorer__glyph--file {
+  color: var(--muted, #8b949e);
+}
+
+.file-explorer__row[aria-current="true"] .file-explorer__glyph--file {
+  color: inherit;
+}
+
+.file-explorer__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ISI-4652 / ISI-4747: per-row download affordance. The row button flexes to
+   fill; the download anchor is a quiet icon that stays out of the way until the
+   row is hovered or the anchor itself is focused (keyboard-reachable). */
 .file-explorer__rowwrap {
   display: flex;
   align-items: center;
@@ -58,12 +107,20 @@
 
 .file-explorer__download {
   flex: none;
-  padding: 3px 8px;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
   color: var(--muted, #8b949e);
   text-decoration: none;
-  font-size: 13px;
-  line-height: 1;
+  line-height: 0;
+  opacity: 0;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.file-explorer__rowwrap:hover .file-explorer__download,
+.file-explorer__download:focus-visible {
+  opacity: 1;
 }
 
 .file-explorer__download:hover,

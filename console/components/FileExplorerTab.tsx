@@ -75,6 +75,42 @@ const RICH_PREVIEW_MAX_BYTES = 256 * 1024;
 // recursing, so the tree can never stack-overflow the console again.
 const MAX_TREE_DEPTH = 64;
 
+// ISI-4747: the File Explorer tree icon set. The live tree had drifted to emoji /
+// arrow glyphs (📄 for files, a bare ▸/▾ expand arrow with NO folder icon, ⬇ for
+// download) — far from the mocks. These are stroke SVGs on the same 24-grid and
+// currentColor vocabulary as the nav rail (NavIcon), so a directory reads as a
+// real folder (closed → open), a file as a document, and the caret is a rotating
+// chevron. Single-path, multi-subpath `d` strings (Feather/Lucide geometry).
+const TREE_ICON = {
+  chevron: "M9 18l6-6-6-6",
+  folder: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
+  folderOpen:
+    "M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+  file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",
+} as const;
+
+/** One tree glyph. A single <path> renders every subpath in the `d` string, so
+ * multi-part icons (file lines, folder-open lid) need no per-subpath elements. */
+function TreeIcon({ name, className }: { name: keyof typeof TREE_ICON; className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={TREE_ICON[name]} />
+    </svg>
+  );
+}
+
 /** A reporting error boundary around the File Explorer subtree (ISI-4705). The
  * files route had NO boundary, so any render throw — a bad payload, a renderer
  * choking on a large file — propagated to the root and white-screened the whole
@@ -329,7 +365,7 @@ function TreeNode({
       title={isDir ? "Download folder (.tar.gz)" : "Download file"}
       data-testid={isDir ? "files-download-dir" : "files-download-file"}
     >
-      <span aria-hidden="true">⬇</span>
+      <TreeIcon name="download" />
     </a>
   );
 
@@ -345,7 +381,9 @@ function TreeNode({
             data-testid="files-file"
             onClick={() => onSelect(entry.path)}
           >
-            <span aria-hidden="true">📄</span> {entry.name}
+            <span className="file-explorer__caret-spacer" aria-hidden="true" />
+            <TreeIcon name="file" className="file-explorer__glyph file-explorer__glyph--file" />
+            <span className="file-explorer__label">{entry.name}</span>
           </button>
           {download}
         </div>
@@ -365,7 +403,15 @@ function TreeNode({
           data-testid="files-dir"
           onClick={() => onToggle(entry.path)}
         >
-          <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
+          <TreeIcon
+            name="chevron"
+            className={`file-explorer__caret${isOpen ? " file-explorer__caret--open" : ""}`}
+          />
+          <TreeIcon
+            name={isOpen ? "folderOpen" : "folder"}
+            className="file-explorer__glyph file-explorer__glyph--dir"
+          />
+          <span className="file-explorer__label">{entry.name}</span>
         </button>
         {download}
       </div>
@@ -708,6 +754,7 @@ function sortEntries(entries: FileEntry[]): FileEntry[] {
 }
 
 function fileName(path: string): string {
+  if (!path) return ""; // ISI-4705: never throw on a missing path (wire omits it)
   const i = path.lastIndexOf("/");
   return i >= 0 ? path.slice(i + 1) : path;
 }
