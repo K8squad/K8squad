@@ -127,6 +127,12 @@ export async function listProjectFiles(
 export type WireFileEntry = Omit<FileEntry, "path"> & { path?: string };
 export type WireFileListing = Omit<FileListing, "entries"> & { entries: WireFileEntry[] | null };
 
+/** The content payload as it ACTUALLY arrives from S4b (ISI-4705): the reader
+ * emits `{size,contentType,offset,length,data}` — `path` is NOT echoed, so the
+ * wire type must model it as absent even though the rendered `FileContent` (and
+ * the preview pane) require it. */
+export type WireFileContent = Omit<FileContent, "path"> & { path?: string };
+
 /** Give every listing entry a stable, unique workspace-root-relative `path`
  * (ISI-4705). The wire payload omits `path`; without it every `FileEntry.path`
  * is `undefined`, and the tree keys its per-directory open-state (`open`) and
@@ -158,9 +164,21 @@ export async function readProjectFile(
     { cache: "no-store" },
   );
   if (res.ok) {
-    return { kind: "ready", data: (await res.json()) as FileContent };
+    return { kind: "ready", data: normalizeContent(path, (await res.json()) as FileContent) };
   }
   return classifyFilesStatus<FileContent>(res.status);
+}
+
+/** Guarantee a content payload carries the `path` it was requested for (ISI-4705).
+ * The S4b `/files/content` wire payload is `{size,contentType,offset,length,data}`
+ * — it does NOT echo `path` (same omission as the listing). `FileContent.path` is
+ * declared required and the preview pane reaches for it immediately
+ * (`previewKind(c.path,…)` → `fileExt(c.path)` → `path.slice(…)`), so an undefined
+ * `path` threw `Cannot read properties of undefined (reading 'slice')` the instant a
+ * file was opened. The caller always knows the exact path it fetched — use it as the
+ * authoritative value. */
+export function normalizeContent(path: string, content: WireFileContent): FileContent {
+  return { ...content, path: content.path && content.path.length > 0 ? content.path : path };
 }
 
 /** Fetch a file's stat / change metadata through the BFF choke point (ISI-4651).
@@ -276,6 +294,11 @@ export function imageDataUrl(content: FileContent): string {
 }
 
 function fileExt(path: string): string {
+  // Defense-in-depth (ISI-4705): never throw on a missing path. The wire types
+  // declare `path` required but the server omits it, and a bare `undefined.slice`
+  // here is exactly what crashed the preview. Callers normalize the path, but this
+  // guarantees the extension helpers degrade to "no extension" instead of throwing.
+  if (!path) return "";
   const name = path.slice(path.lastIndexOf("/") + 1);
   const dot = name.lastIndexOf(".");
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";

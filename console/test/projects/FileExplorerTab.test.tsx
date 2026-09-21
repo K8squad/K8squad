@@ -6,9 +6,15 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
 import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
-import { normalizeListing } from "@/lib/project-files";
+import { normalizeListing, normalizeContent } from "@/lib/project-files";
 import { reportClientError } from "@/lib/client-errors";
-import type { FileContent, FileListing, FileStat, WireFileListing } from "@/lib/project-files";
+import type {
+  FileContent,
+  FileListing,
+  FileStat,
+  WireFileListing,
+  WireFileContent,
+} from "@/lib/project-files";
 
 afterEach(() => {
   cleanup();
@@ -27,7 +33,7 @@ function routeFetch(opts: {
   // actually sends, and it lets a fixture omit `path` exactly like production
   // (ISI-4705). A full FileListing is still assignable here.
   listings?: Record<string, WireFileListing | number>;
-  contents?: Record<string, FileContent | number>;
+  contents?: Record<string, WireFileContent | number>;
   stats?: Record<string, FileStat | number>;
   status?: number;
 }) {
@@ -429,6 +435,48 @@ describe("FileExplorerTab", () => {
     // A capped read (length < size) is always flagged truncated, even though the
     // server omits the `truncated` field.
     expect(screen.getByTestId("files-preview-truncated")).toBeTruthy();
+  });
+
+  // ISI-4705: the /files/content wire payload omits `path` (just like the listing).
+  // The preview reached for c.path immediately (previewKind → fileExt → path.slice),
+  // so opening a file threw "Cannot read properties of undefined (reading 'slice')"
+  // and tripped the error boundary. normalizeContent backfills the requested path.
+  it("previews a file whose content payload omits `path`, without crashing (ISI-4705)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "01-plan.md", type: "file", size: 12 }] } },
+      // NOTE: no `path` on the content, exactly like the live reader response.
+      contents: {
+        "01-plan.md": {
+          size: 12,
+          contentType: "text",
+          data: b64("# Plan\n\nhi"),
+          offset: 0,
+          length: 12,
+        } as WireFileContent,
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("01-plan.md"));
+    // The markdown preview renders — not the error-boundary panel.
+    await waitFor(() => expect(screen.getByTestId("files-markdown")).toBeTruthy());
+    expect(screen.queryByTestId("files-honest")).toBeNull();
+    // The path was backfilled from the request, so the preview header shows it.
+    expect(screen.getByTestId("files-preview-path").textContent).toBe("01-plan.md");
+  });
+
+  it("normalizeContent backfills the requested path when the wire omits it (ISI-4705)", () => {
+    const c = normalizeContent("docs/01-plan.md", {
+      size: 3,
+      contentType: "text",
+      data: "eA==",
+      offset: 0,
+      length: 3,
+    } as WireFileContent);
+    expect(c.path).toBe("docs/01-plan.md");
+    // A server that DOES echo a path is preserved.
+    const kept = normalizeContent("req/path", { path: "real/path", size: 0, contentType: "text", data: "", offset: 0, length: 0 } as FileContent);
+    expect(kept.path).toBe("real/path");
   });
 
   // ISI-4705 (PR #530 review): pin the telemetry deliverables — without these,
