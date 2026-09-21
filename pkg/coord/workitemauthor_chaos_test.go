@@ -327,6 +327,39 @@ func TestAgentUpdate_ReparentDepthCapExceeded(t *testing.T) {
 	assertParent(t, db, itemX, task)
 }
 
+// TestAgentUpdate_ReparentSubtreeDepthCapExceeded — the depth cap must bound the
+// WHOLE moved subtree, not just the moved node (ADR-0024 I3). A movable(2)→mchild(3)
+// pair grafted under a d3 parent would seat the node at the cap (d4) while its child
+// spills to d5; the per-node check would wave it through, so this pins the
+// subtree-height bound.
+func TestAgentUpdate_ReparentSubtreeDepthCapExceeded(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	task := authorSeedItem(t, db, story, "task")
+	movable := authorSeedItem(t, db, epic, "movable") // depth 2
+	authorSeedItem(t, db, movable, "mchild")          // depth 3; height(movable subtree)=2
+	grantCustody(t, db, epic)
+	s := newAuthorStore(t, db)
+
+	// Under task(d3): movable→d4 (fits alone) but mchild→d5 > cap ⇒ refused, untouched.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), movable, coord.AgentUpdateWorkItemInput{
+		ParentID: &task, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); !errors.Is(err, coord.ErrAgentAuthorDepthExceeded) {
+		t.Fatalf("over-deep subtree reparent: got %v, want ErrAgentAuthorDepthExceeded", err)
+	}
+	assertParent(t, db, movable, epic)
+
+	// Under story(d2): movable→d3, mchild→d4 == cap ⇒ allowed.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), movable, coord.AgentUpdateWorkItemInput{
+		ParentID: &story, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); err != nil {
+		t.Fatalf("at-cap subtree reparent should be allowed: %v", err)
+	}
+	assertParent(t, db, movable, story)
+}
+
 // ---- small DB helpers (chaos lane) ----
 
 func assertParent(t *testing.T, db *sql.DB, item, wantParent string) {
