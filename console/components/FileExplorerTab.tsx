@@ -75,6 +75,97 @@ const RICH_PREVIEW_MAX_BYTES = 256 * 1024;
 // recursing, so the tree can never stack-overflow the console again.
 const MAX_TREE_DEPTH = 64;
 
+// ISI-4747: the File Explorer tree icon set. The live tree had drifted to emoji /
+// arrow glyphs (📄 for files, a bare ▸/▾ expand arrow with NO folder icon, ⬇ for
+// download) — far from the mocks. These are stroke SVGs on the same 24-grid and
+// currentColor vocabulary as the nav rail (NavIcon), so a directory reads as a
+// real folder (closed → open), a file as a document, and the caret is a rotating
+// chevron. Single-path, multi-subpath `d` strings (Feather/Lucide geometry).
+const TREE_ICON = {
+  chevron: "M9 18l6-6-6-6",
+  folder: "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z",
+  folderOpen:
+    "M6 14l1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2",
+  file: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M16 13H8 M16 17H8 M10 9H8",
+  download: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3",
+  // ISI-4747 (follow-up): per-type file glyphs. Distinct silhouettes per content
+  // family so the eye can sort code from data from an image at a glance — the
+  // same 24-grid / currentColor vocabulary as the folder glyphs above.
+  code: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9.5 12.5L7.5 14.5l2 2 M14.5 12.5l2 2-2 2",
+  data: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9.5 12a1.5 1.5 0 0 0-1.5 1.5 1.5 1.5 0 0 1-1 1.4 1.5 1.5 0 0 1 1 1.4A1.5 1.5 0 0 0 9.5 19 M14.5 12a1.5 1.5 0 0 1 1.5 1.5 1.5 1.5 0 0 0 1 1.4 1.5 1.5 0 0 0-1 1.4 1.5 1.5 0 0 1-1.5 1.5",
+  image: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2 M20 19l-4-4-3 3-2-2-3 3",
+  media: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M10 12.5v5l4-2.5z",
+  archive: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M11 12h2 M11 15h2 M11 18h2",
+} as const;
+
+/** One tree glyph. A single <path> renders every subpath in the `d` string, so
+ * multi-part icons (file lines, folder-open lid) need no per-subpath elements. */
+function TreeIcon({ name, className }: { name: keyof typeof TREE_ICON; className?: string }) {
+  return (
+    <svg
+      className={className}
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={TREE_ICON[name]} />
+    </svg>
+  );
+}
+
+// ISI-4747 (follow-up, board request): map a file name to a type glyph + a tone
+// token. The glyph is the silhouette (code / data / image / media / archive /
+// doc); the tone drives the hue in file-explorer.css so languages that share the
+// `code` glyph — go, py, java, c#, … — still read apart at a glance (the GitHub
+// language-colour model, kept monochrome-per-icon). Unknown extensions fall back
+// to the plain document glyph in the muted tone, so nothing ever loses an icon.
+const FILE_TYPE: Record<string, { icon: keyof typeof TREE_ICON; tone: string }> = {};
+{
+  const reg = (icon: keyof typeof TREE_ICON, tone: string, exts: string[]) => {
+    for (const e of exts) FILE_TYPE[e] = { icon, tone };
+  };
+  // Languages — shared `code` glyph, distinct tone per language.
+  reg("code", "go", ["go"]);
+  reg("code", "py", ["py", "pyi", "pyw"]);
+  reg("code", "js", ["js", "mjs", "cjs", "jsx"]);
+  reg("code", "ts", ["ts", "tsx", "mts", "cts"]);
+  reg("code", "java", ["java", "jar"]);
+  reg("code", "cs", ["cs"]);
+  reg("code", "rust", ["rs"]);
+  reg("code", "ruby", ["rb", "erb", "gemspec"]);
+  reg("code", "php", ["php"]);
+  reg("code", "cpp", ["c", "h", "cpp", "cc", "cxx", "hpp", "hh"]);
+  reg("code", "shell", ["sh", "bash", "zsh", "fish", "ps1"]);
+  reg("code", "web", ["html", "htm", "css", "scss", "sass", "less", "vue", "svelte"]);
+  reg("code", "code", ["swift", "kt", "kts", "scala", "lua", "r", "dart", "ex", "exs", "clj", "pl", "sql", "graphql"]);
+  // Structured data / config — braces glyph.
+  reg("data", "data", ["json", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "xml", "csv", "tsv", "proto", "lock"]);
+  // Plain text & lightweight markup — document glyph, muted.
+  reg("file", "doc", ["md", "mdx", "markdown", "txt", "rst", "adoc", "tex", "log", "text"]);
+  // Rich office documents & PDF — document glyph, warm tone.
+  reg("file", "docx", ["doc", "docx", "odt", "rtf", "pdf", "ppt", "pptx", "xls", "xlsx", "ods"]);
+  // Images — picture glyph.
+  reg("image", "image", ["png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "ico", "avif", "tif", "tiff"]);
+  // Audio / video — play glyph.
+  reg("media", "media", ["mp4", "mov", "webm", "mkv", "avi", "mp3", "wav", "flac", "ogg", "m4a", "aac"]);
+  // Archives — box-with-slats glyph.
+  reg("archive", "archive", ["zip", "tar", "gz", "tgz", "bz2", "xz", "rar", "7z", "zst"]);
+}
+
+/** Resolve a file name to its type glyph + tone. Dotfiles with no extension
+ * (`.gitignore`) and unknown extensions fall back to the plain document glyph. */
+function fileTypeGlyph(name: string): { icon: keyof typeof TREE_ICON; tone: string } {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return FILE_TYPE[ext] ?? { icon: "file", tone: "default" };
+}
+
 /** A reporting error boundary around the File Explorer subtree (ISI-4705). The
  * files route had NO boundary, so any render throw — a bad payload, a renderer
  * choking on a large file — propagated to the root and white-screened the whole
@@ -317,6 +408,7 @@ function TreeNode({
   const isDir = entry.type === "dir";
   const isOpen = open.has(entry.path);
   const pad = { paddingLeft: 8 + depth * 14 };
+  const fileGlyph = fileTypeGlyph(entry.name); // ISI-4747 follow-up: type-aware file icon
 
   // ISI-4652: per-row download. A sibling anchor (not nested in the row button —
   // interactive elements cannot nest), so a download click never toggles/selects.
@@ -329,7 +421,7 @@ function TreeNode({
       title={isDir ? "Download folder (.tar.gz)" : "Download file"}
       data-testid={isDir ? "files-download-dir" : "files-download-file"}
     >
-      <span aria-hidden="true">⬇</span>
+      <TreeIcon name="download" />
     </a>
   );
 
@@ -345,7 +437,12 @@ function TreeNode({
             data-testid="files-file"
             onClick={() => onSelect(entry.path)}
           >
-            <span aria-hidden="true">📄</span> {entry.name}
+            <span className="file-explorer__caret-spacer" aria-hidden="true" />
+            <TreeIcon
+              name={fileGlyph.icon}
+              className={`file-explorer__glyph file-explorer__glyph--file file-explorer__glyph--${fileGlyph.tone}`}
+            />
+            <span className="file-explorer__label">{entry.name}</span>
           </button>
           {download}
         </div>
@@ -365,7 +462,15 @@ function TreeNode({
           data-testid="files-dir"
           onClick={() => onToggle(entry.path)}
         >
-          <span aria-hidden="true">{isOpen ? "▾" : "▸"}</span> {entry.name}
+          <TreeIcon
+            name="chevron"
+            className={`file-explorer__caret${isOpen ? " file-explorer__caret--open" : ""}`}
+          />
+          <TreeIcon
+            name={isOpen ? "folderOpen" : "folder"}
+            className="file-explorer__glyph file-explorer__glyph--dir"
+          />
+          <span className="file-explorer__label">{entry.name}</span>
         </button>
         {download}
       </div>
@@ -708,6 +813,7 @@ function sortEntries(entries: FileEntry[]): FileEntry[] {
 }
 
 function fileName(path: string): string {
+  if (!path) return ""; // ISI-4705: never throw on a missing path (wire omits it)
   const i = path.lastIndexOf("/");
   return i >= 0 ? path.slice(i + 1) : path;
 }
