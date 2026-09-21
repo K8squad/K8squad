@@ -230,3 +230,42 @@ func teamInNamespace(ctx context.Context, reader client.Reader, ns string) (*ksq
 	}
 	return nil, nil
 }
+
+// ── Run/Project namespace bridge (ISI-4565) ────────────────────────────────
+//
+// The operator provisions a per-Team EXECUTION namespace (Team.Status.Namespace,
+// e.g. "ksquad-team-bmad-squad-<uid>") where the agent Run CRs are created, while
+// the Team and Project CRs stay in the squad HOME namespace (e.g. "bmad-squad").
+// The §12.1 "a squad IS a namespace" assumption these read models were written
+// against therefore no longer holds: Runs and Projects are NOT co-tenant. Any
+// read model that joins Runs to Projects must bridge the two namespaces, or every
+// Run is silently dropped and the overview renders empty (the reported defect).
+
+// runNamespaceForHome resolves the execution namespace where a squad's Run CRs
+// live, given the squad's home namespace (where the Team/Project CRs live). Falls
+// back to homeNS when no Team owns it or Status.Namespace is unset (a co-tenant
+// dev host, or the pre-per-team-namespace layout) — those setups still work.
+func runNamespaceForHome(ctx context.Context, reader client.Reader, homeNS string) (string, error) {
+	team, err := teamInNamespace(ctx, reader, homeNS)
+	if err != nil {
+		return "", err
+	}
+	if team != nil && team.Status.Namespace != "" {
+		return team.Status.Namespace, nil
+	}
+	return homeNS, nil
+}
+
+// execToHomeNamespace maps each squad's execution namespace (Team.Status.Namespace,
+// where Run CRs live) to its home namespace (Team.Namespace, where Project/Team
+// CRs live). The fleet overview normalizes a Run's namespace through this map so
+// the projectRef join lands on the Project's own (homeNamespace, name) key.
+func execToHomeNamespace(teams []ksquadv1.Team) map[string]string {
+	m := make(map[string]string, len(teams))
+	for i := range teams {
+		if teams[i].Status.Namespace != "" {
+			m[teams[i].Status.Namespace] = teams[i].Namespace
+		}
+	}
+	return m
+}

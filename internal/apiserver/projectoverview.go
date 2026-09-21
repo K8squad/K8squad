@@ -153,7 +153,13 @@ func (s *OverviewService) Series(ctx context.Context, auth discussion.AuthorCont
 	}
 
 	// ── runs + tokens: informer cache, no seam — one List, two projections. ──
-	runs, rerr := s.projectRuns(ctx, ns, name)
+	// Run CRs live in the squad's execution namespace (Team.Status.Namespace), not
+	// the Project's home namespace (ISI-4565) — resolve it or the tile reads empty.
+	runNS, nerr := runNamespaceForHome(ctx, s.reader, ns)
+	if nerr != nil {
+		return ProjectOverviewSeries{}, nerr
+	}
+	runs, rerr := s.projectRuns(ctx, runNS, name)
 	if rerr != nil {
 		out.RunsByStatus = RunsByStatusTile{TileStatus: degradedTile(rerr.Error()), ByPhase: map[string]int{}}
 		out.Tokens = TokensTile{TileStatus: degradedTile(rerr.Error())}

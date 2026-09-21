@@ -135,20 +135,23 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 	if team == nil {
 		return SquadOverview{}, ErrTeamNotFound
 	}
-	// Use the reconciled squad namespace (Status.Namespace) with fallback to the CR namespace
-	ns := team.Status.Namespace
-	if ns == "" {
-		ns = team.Namespace
+	// Projects/Teams live in the squad HOME namespace (the Team CR's own namespace); Run CRs live
+	// in the reconciled EXECUTION namespace (Status.Namespace) the operator provisions per Team
+	// (ISI-4565). List each from where it actually lives — reading both from one namespace drops
+	// every Run into "Unassigned/other" (or nothing, cluster-wide). runNS falls back to the home
+	// namespace for the co-tenant/pre-per-team-namespace layout.
+	homeNS := team.Namespace
+	runNS := team.Status.Namespace
+	if runNS == "" {
+		runNS = homeNS
 	}
 
-	// Projects and Runs in the Team's namespace. Scoping by namespace (not by listing every
-	// Project cluster-wide and filtering) keeps the read cheap and the tenancy boundary crisp.
 	var projects ksquadv1.ProjectList
-	if err := r.reader.List(ctx, &projects, client.InNamespace(ns)); err != nil {
+	if err := r.reader.List(ctx, &projects, client.InNamespace(homeNS)); err != nil {
 		return SquadOverview{}, err
 	}
 	var runs ksquadv1.RunList
-	if err := r.reader.List(ctx, &runs, client.InNamespace(ns)); err != nil {
+	if err := r.reader.List(ctx, &runs, client.InNamespace(runNS)); err != nil {
 		return SquadOverview{}, err
 	}
 
@@ -179,7 +182,7 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 	}
 
 	out := SquadOverview{
-		Team: TeamRef{Name: team.Name, Namespace: ns, UID: string(team.UID)},
+		Team: TeamRef{Name: team.Name, Namespace: homeNS, UID: string(team.UID)},
 	}
 
 	// Add Projects with their assigned Runs
@@ -209,7 +212,7 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 		}
 		out.Projects = append(out.Projects, ProjectOverview{
 			Name:        "Unassigned/other",
-			Namespace:   ns,
+			Namespace:   homeNS,
 			RepoURL:     "",
 			Runs:        unassignedRuns,
 			PhaseCounts: counts,
@@ -235,12 +238,37 @@ func (r *ClientOverviewReader) fleetOverview(ctx context.Context) (SquadOverview
 	if err := r.reader.List(ctx, &runs); err != nil {
 		return SquadOverview{}, err
 	}
+	// Runs live in a squad's execution namespace (Team.Status.Namespace); Projects
+	// live in its home namespace (ISI-4565). Normalize each Run's namespace to its
+	// home namespace so the projectRef join lands on the Project's own key instead
+	// of silently dropping every Run (the reported empty-overview defect).
+	var teams ksquadv1.TeamList
+	if err := r.reader.List(ctx, &teams); err != nil {
+		return SquadOverview{}, err
+	}
+	execToHome := execToHomeNamespace(teams.Items)
+
+	// Valid project keys — runs with no matching Project surface in an Unassigned
+	// bucket rather than vanishing, so a namespace/reference drift is visible.
+	projectKey := make(map[string]bool, len(projects.Items))
+	for i := range projects.Items {
+		projectKey[projects.Items[i].Namespace+"/"+projects.Items[i].Name] = true
+	}
 
 	runsByProject := make(map[string][]RunStatus, len(projects.Items))
+	unassignedRuns := make([]RunStatus, 0)
 	for i := range runs.Items {
 		run := &runs.Items[i]
-		key := run.Namespace + "/" + run.Spec.ProjectRef.Name
-		runsByProject[key] = append(runsByProject[key], projectRunStatus(run))
+		home := run.Namespace
+		if h, ok := execToHome[run.Namespace]; ok {
+			home = h
+		}
+		key := home + "/" + run.Spec.ProjectRef.Name
+		if projectKey[key] {
+			runsByProject[key] = append(runsByProject[key], projectRunStatus(run))
+		} else {
+			unassignedRuns = append(unassignedRuns, projectRunStatus(run))
+		}
 	}
 
 	out := SquadOverview{Team: TeamRef{Name: "*"}, Fleet: true}
@@ -257,6 +285,18 @@ func (r *ClientOverviewReader) fleetOverview(ctx context.Context) (SquadOverview
 			Namespace:   p.Namespace,
 			RepoURL:     p.Spec.Repo.URL,
 			Runs:        rows,
+			PhaseCounts: counts,
+		})
+	}
+	if len(unassignedRuns) > 0 {
+		sort.Slice(unassignedRuns, func(a, b int) bool { return unassignedRuns[a].Name < unassignedRuns[b].Name })
+		counts := make(map[string]int, len(unassignedRuns))
+		for _, row := range unassignedRuns {
+			counts[row.Phase]++
+		}
+		out.Projects = append(out.Projects, ProjectOverview{
+			Name:        "Unassigned/other",
+			Runs:        unassignedRuns,
 			PhaseCounts: counts,
 		})
 	}
