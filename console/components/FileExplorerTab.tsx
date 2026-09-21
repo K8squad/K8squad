@@ -16,7 +16,7 @@
 // time it is opened (GET .../files?path=), so a deep workspace never front-loads
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
-import { useCallback, useEffect, useState } from "react";
+import { Component, type ReactNode, useCallback, useEffect, useState } from "react";
 import hljs from "highlight.js/lib/core";
 import hlGo from "highlight.js/lib/languages/go";
 import hlTypescript from "highlight.js/lib/languages/typescript";
@@ -27,6 +27,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./file-explorer.css";
 import { EmptyState } from "@/components/forms/EmptyState";
+import { reportClientError } from "@/lib/client-errors";
 import {
   listProjectFiles,
   readProjectFile,
@@ -57,7 +58,62 @@ hljs.registerLanguage("yaml", hlYaml);
  * path ("" = root). A directory is fetched the first time it is expanded. */
 type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean }>;
 
+// ISI-4705: the largest byte window the rich renderers (highlight.js code view,
+// ReactMarkdown) will process on the main thread. A capped read is up to 1 MiB
+// (readserver maxReadBytes); syntax-highlighting or markdown-parsing that much —
+// especially a minified single-line file — blocks the main thread for seconds
+// and can OOM-crash the tab. Above this cap the preview degrades to an honest
+// "too large to preview — download" panel. Plain text (<pre>) and the binary
+// placeholder are cheap and unaffected.
+const RICH_PREVIEW_MAX_BYTES = 256 * 1024;
+
+/** A reporting error boundary around the File Explorer subtree (ISI-4705). The
+ * files route had NO boundary, so any render throw — a bad payload, a renderer
+ * choking on a large file — propagated to the root and white-screened the whole
+ * console ("the ui crash"). This contains the throw to an honest, recoverable
+ * panel AND reports it (lib/client-errors) so the crash is collectable instead
+ * of vanishing with the tab. */
+class FileExplorerErrorBoundary extends Component<
+  { projectId: string; children: ReactNode },
+  { failed: boolean }
+> {
+  constructor(props: { projectId: string; children: ReactNode }) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown, info: { componentStack?: string }) {
+    reportClientError("file-explorer", error, {
+      projectId: this.props.projectId,
+      componentStack: info?.componentStack,
+    });
+  }
+
+  render() {
+    if (this.state.failed) {
+      return honest(
+        "File Explorer hit a problem",
+        "Something went wrong rendering this workspace. The rest of the console is unaffected — reload this tab to try again.",
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/** The File Explorer tab, wrapped in its reporting error boundary. */
 export function FileExplorerTab({ projectId }: { projectId: string }) {
+  return (
+    <FileExplorerErrorBoundary projectId={projectId}>
+      <FileExplorerTabInner projectId={projectId} />
+    </FileExplorerErrorBoundary>
+  );
+}
+
+function FileExplorerTabInner({ projectId }: { projectId: string }) {
   // Root listing drives the top-level tree + the terminal honest states
   // (unauth / not-found / not-wired / error / empty) for the whole tab.
   const [root, setRoot] = useState<DirState>({ kind: "loading" });
@@ -492,12 +548,20 @@ function PreviewPane({
 
   const c = state.data;
   const kind = previewKind(c.path, c.contentType);
+  // ISI-4705: the reader caps a read window at 1 MiB and does NOT always set the
+  // `truncated` flag (a 3.8 MB file comes back length=1 MiB, truncated omitted),
+  // so derive truncation from the window vs whole-file size too — the user must
+  // always be told the preview is partial.
+  const truncated = c.truncated === true || c.length < c.size;
+  // Guard the expensive main-thread renderers against a large window (ISI-4705).
+  const richTooLarge =
+    (kind === "code" || kind === "markdown") && c.length > RICH_PREVIEW_MAX_BYTES;
   return (
     <div>
       <div className="file-explorer__preview-head">
         <code data-testid="files-preview-path">{c.path}</code>{" "}
         <span className="muted">· {humanBytes(c.size)}</span>
-        {c.truncated && (
+        {truncated && (
           <span className="muted" data-testid="files-preview-truncated"> · preview truncated (size cap)</span>
         )}
         {" · "}
@@ -516,7 +580,22 @@ function PreviewPane({
         </div>
       )}
 
-      {kind === "binary" ? (
+      {richTooLarge ? (
+        <div data-testid="files-too-large">
+          <p className="muted">
+            This file is too large to preview here ({humanBytes(c.length)}
+            {c.length < c.size ? ` of ${humanBytes(c.size)}` : ""}). Download it to view the full
+            contents.
+          </p>
+          <a
+            href={downloadProjectFileUrl(projectId, c.path)}
+            download
+            data-testid="files-too-large-download"
+          >
+            Download {fileName(c.path)}
+          </a>
+        </div>
+      ) : kind === "binary" ? (
         <div data-testid="files-binary">
           <p className="muted">Binary file — {humanBytes(c.size)}. Not shown as text.</p>
           <a href={rawBytesDataUrl(c)} download={fileName(c.path)} data-testid="files-binary-download">

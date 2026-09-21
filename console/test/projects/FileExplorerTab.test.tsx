@@ -6,6 +6,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
 import { FileExplorerTab } from "@/components/FileExplorerTab";
+import { normalizeListing } from "@/lib/project-files";
 import type { FileContent, FileListing, FileStat } from "@/lib/project-files";
 
 afterEach(() => {
@@ -350,5 +351,73 @@ describe("FileExplorerTab", () => {
     expect(screen.getByText(/No files/)).toBeTruthy();
     // Never leaks a distinguishing "forbidden" vs "missing" — 404 is uniform.
     expect(screen.queryByText(/forbidden|403|permission/i)).toBeNull();
+  });
+
+  // ISI-4705: the S4b `/files` wire payload omits `path` on each entry. The tree
+  // keys its open-state and lazy child listings by `path`; when every path is
+  // `undefined` a single expand collapses ALL directories into one shared open +
+  // one shared (root) child listing → infinite recursive render → UI crash.
+  // normalizeListing derives per-entry paths so identity is restored.
+  it("derives entry paths when the wire omits them, so an expand loads THAT dir — not the root (ISI-4705 crash)", async () => {
+    // Note the entries carry NO `path` field, exactly like the live payload.
+    routeFetch({
+      listings: {
+        "": { path: "", entries: [
+          { name: "todo-app", type: "dir", size: 0 },
+          { name: "README.md", type: "file", size: 5 },
+        ] } as unknown as FileListing,
+        "todo-app": { path: "todo-app", entries: [
+          { name: "docs", type: "dir", size: 0 },
+        ] } as unknown as FileListing,
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // Expanding todo-app must load todo-app's OWN children (docs), and must NOT
+    // re-render the root listing under it (README.md stays a single root row).
+    fireEvent.click(screen.getByText("todo-app"));
+    await waitFor(() => expect(screen.getByText("docs")).toBeTruthy());
+    // The bug rendered the root's README.md recursively under every open dir;
+    // with derived paths it appears exactly once (the root row).
+    expect(screen.getAllByText("README.md")).toHaveLength(1);
+  });
+
+  it("normalizeListing derives unique root-relative paths and is idempotent (ISI-4705)", () => {
+    const derived = normalizeListing("todo-app", {
+      path: "todo-app",
+      entries: [
+        { name: "docs", type: "dir" },
+        { name: "main.go", type: "file", size: 3 },
+      ] as unknown as FileListing["entries"],
+    });
+    expect(derived.entries?.map((e) => e.path)).toEqual(["todo-app/docs", "todo-app/main.go"]);
+    // Root entries get bare names; a server that DOES send `path` is preserved.
+    const root = normalizeListing("", {
+      path: "",
+      entries: [{ name: "a", type: "dir" }, { name: "b.txt", path: "explicit/b.txt", type: "file" }] as unknown as FileListing["entries"],
+    });
+    expect(root.entries?.map((e) => e.path)).toEqual(["a", "explicit/b.txt"]);
+  });
+
+  // ISI-4705: a capped read window can be up to 1 MiB; running highlight.js /
+  // ReactMarkdown over that much on the main thread freezes and can OOM-crash the
+  // tab. Above the rich-preview cap the preview degrades to download-instead.
+  it("guards a large code file from the main-thread renderer, offering download instead (ISI-4705)", async () => {
+    const big = "x".repeat(300 * 1024); // > RICH_PREVIEW_MAX_BYTES (256 KiB)
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "huge.go", path: "huge.go", type: "file", size: 3_850_240 }] } },
+      contents: { "huge.go": { path: "huge.go", size: 3_850_240, contentType: "text", data: b64(big), offset: 0, length: big.length } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("huge.go"));
+    await waitFor(() => expect(screen.getByTestId("files-too-large")).toBeTruthy());
+    // The expensive code renderer is NOT mounted for an oversized window.
+    expect(screen.queryByTestId("files-code")).toBeNull();
+    expect(screen.getByTestId("files-too-large-download").getAttribute("href")).toContain("huge.go");
+    // A capped read (length < size) is always flagged truncated, even though the
+    // server omits the `truncated` field.
+    expect(screen.getByTestId("files-preview-truncated")).toBeTruthy();
   });
 });

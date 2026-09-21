@@ -113,9 +113,28 @@ export async function listProjectFiles(
     { cache: "no-store" },
   );
   if (res.ok) {
-    return { kind: "ready", data: (await res.json()) as FileListing };
+    return { kind: "ready", data: normalizeListing(path, (await res.json()) as FileListing) };
   }
   return classifyFilesStatus<FileListing>(res.status);
+}
+
+/** Guarantee every listing entry carries a stable, unique workspace-root-relative
+ * `path` (ISI-4705). The S4b `/files` wire payload only guarantees
+ * `{name,type,size}` — `path` is NOT emitted by the apiserver/reader. When it is
+ * absent every `FileEntry.path` is `undefined`, and the tree keys its per-directory
+ * open-state (`open`) and lazy child listings (`dirs`) by that single shared
+ * `undefined` key: expanding one directory then flips EVERY directory to "open"
+ * over the same (root) child listing, which renders recursively without a base
+ * case → stack overflow → the whole File Explorer (and console) crashes. Deriving
+ * the path from the requested directory + entry name restores per-node identity so
+ * the tree expands correctly. Idempotent: a server that DOES emit `path` is kept. */
+export function normalizeListing(dir: string, listing: FileListing): FileListing {
+  const base = (dir ?? "").replace(/\/+$/, "");
+  const entries = (listing.entries ?? []).map((e) => ({
+    ...e,
+    path: e.path && e.path.length > 0 ? e.path : base ? `${base}/${e.name}` : e.name,
+  }));
+  return { ...listing, path: listing.path ?? dir, entries };
 }
 
 /** Read a file's content through the BFF choke point. Read-only — there is no
