@@ -99,8 +99,11 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		// ISI-4188 gap 7: --format=json emits one JSON event per line
 		// (step_start/tool_use/text/step_finish/error); decode them into
 		// typed Progress so tool calls reach the wire + telemetry as
-		// EventTool, not opaque text.
-		Parse:      parseOpenCodeLine,
+		// EventTool, not opaque text. ISI-4718: a per-run stateful parser
+		// synthesizes each step's true model latency from opencode's own
+		// step_start→step_finish event timestamps, so the llm.call span
+		// reflects real request duration instead of a microsecond point.
+		Parse:      newOpenCodeParser(),
 		WorkDir:    lc.WorkDir,
 		SettleLine: openCodeSettleLine,
 	}
@@ -225,6 +228,55 @@ func costUSD(raw json.RawMessage) (float64, bool) {
 		return obj.Total, true
 	}
 	return 0, false
+}
+
+// openCodeLineMeta is the type + top-level Unix-ms timestamp opencode stamps
+// on every --format=json event line (verified live: the step_finish envelope
+// carries `"timestamp":1763000507000`). It is decoded separately from the full
+// part payload so the stateful parser can observe step timing without coupling
+// to parseOpenCodeLine's shape.
+type openCodeLineMeta struct {
+	Type      string `json:"type"`
+	Timestamp int64  `json:"timestamp"`
+}
+
+// newOpenCodeParser returns a per-run stateful stdout parser (ISI-4718). It
+// wraps the stateless parseOpenCodeLine and, when opencode's step-finish part
+// omits a scalar `duration` (v1.18.27 does), synthesizes the step's true model
+// latency from opencode's own event timestamps: a step's model call runs from
+// its step_start to its step_finish, while the step_finish→next step_start gap
+// is tool-execution time, not model time. Measuring step_start→step_finish
+// therefore yields real request latency and excludes inter-step tool work.
+//
+// State is per-run because Command builds a fresh ExecSpec (hence a fresh
+// parser) for each Run, so no cross-run leakage is possible. When step_start
+// carries no usable timestamp (older wire), the synthesis is skipped and the
+// telemetry mapper's wall-clock step-clock fallback (ISI-4238) still applies —
+// so this is strictly additive: accurate when opencode reports timing, no worse
+// than before when it does not.
+func newOpenCodeParser() func(line string) []Progress {
+	var stepStartMS int64 // step_start timestamp of the in-flight step; 0 = none
+	return func(line string) []Progress {
+		var meta openCodeLineMeta
+		_ = json.Unmarshal([]byte(line), &meta) // best-effort; non-JSON → zero meta
+		if meta.Type == "step_start" && meta.Timestamp > 0 {
+			stepStartMS = meta.Timestamp
+		}
+		progs := parseOpenCodeLine(line)
+		if meta.Type == "step_finish" {
+			if stepStartMS > 0 && meta.Timestamp > stepStartMS {
+				dur := meta.Timestamp - stepStartMS
+				for i := range progs {
+					if progs[i].Kind == a2a.EventUsage && progs[i].Usage != nil &&
+						progs[i].Usage.DurationMS == 0 {
+						progs[i].Usage.DurationMS = dur
+					}
+				}
+			}
+			stepStartMS = 0 // next step measures from its own step_start
+		}
+		return progs
+	}
 }
 
 func parseOpenCodeLine(line string) []Progress {
