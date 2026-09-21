@@ -166,6 +166,38 @@ func installNoopMeter(t *testing.T) func() {
 	return func() { otel.SetMeterProvider(prev) }
 }
 
+// TestSetupRegistersGlobalPropagator pins an invariant that is load-bearing but
+// otherwise untested (ISI-4540 review): Setup must register a WORKING W3C
+// propagator as the OTel GLOBAL. internal/apiserver wraps its router in
+// otelhttp.NewHandler, and otelhttp snapshots otel.GetTextMapPropagator() at
+// handler-construction time — so if this registration ever disappears or moves
+// after handler construction, every inbound apiserver request silently stops
+// joining its caller's trace (the same no-op-propagator failure this PR fixes,
+// one layer out). Assert via behavior so the test is robust to the global's
+// internal delegation wrapper.
+func TestSetupRegistersGlobalPropagator(t *testing.T) {
+	prevProp := otel.GetTextMapPropagator()
+	// Start from a no-op global so a stale registration can't pass the test.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+	t.Cleanup(func() { otel.SetTextMapPropagator(prevProp) })
+
+	_, shutdown, err := Setup(context.Background(), Options{ServiceName: "test-svc", Writer: &bytes.Buffer{}})
+	if err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	carrier := map[string]string{"traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"}
+	sc := trace.SpanContextFromContext(
+		otel.GetTextMapPropagator().Extract(context.Background(), propagation.MapCarrier(carrier)))
+	if !sc.IsValid() || sc.TraceID().String() != parentTrace {
+		t.Errorf("Setup did not register a working W3C propagator as the OTel global "+
+			"(otelhttp snapshots it at handler construction); extracted valid=%v trace=%q",
+			sc.IsValid(), sc.TraceID().String())
+	}
+}
+
 // TestExtractJoinsW3CTrace proves AC3 inbound: Extract lifts a W3C traceparent
 // out of a carrier so the next span joins the caller's distributed trace.
 func TestExtractJoinsW3CTrace(t *testing.T) {
@@ -194,29 +226,87 @@ func TestExtractJoinsW3CTrace(t *testing.T) {
 // installRecorder does NOT reproduce because it sets a TraceContext global) and
 // proves Extract still joins the caller's distributed trace.
 func TestExtractWorksBeforeSetup(t *testing.T) {
+	restore := installNoopPropagator(t)
+	defer restore()
+
+	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
+	const parentSpan = "00f067aa0ba902b7"
+	carrier := map[string]string{"traceparent": "00-" + parentTrace + "-" + parentSpan + "-01"}
+
+	ctx := Extract(context.Background(), carrier)
+
+	// Assert on the extracted span context directly — this exercises Extract
+	// itself rather than the SDK's parenting. Trace id AND parent span id must
+	// survive: a propagator that recovered only the trace id would yield the flat,
+	// broken-hierarchy shape that is easy to confuse with the bug being fixed. The
+	// parent must be remote, and its sampled flag (from -01) must carry through,
+	// otherwise the CaptureUnsampledRemoteParent net would needlessly rescue it.
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		t.Fatalf("Extract before Setup produced no valid span context (traceparent dropped)")
+	}
+	if got := sc.TraceID().String(); got != parentTrace {
+		t.Errorf("trace id = %q, want joined %q (propagator-ordering regression)", got, parentTrace)
+	}
+	if got := sc.SpanID().String(); got != parentSpan {
+		t.Errorf("parent span id = %q, want injected %q (trace joined but hierarchy broken)", got, parentSpan)
+	}
+	if !sc.IsRemote() {
+		t.Errorf("extracted parent not marked remote")
+	}
+	if !sc.IsSampled() {
+		t.Errorf("extracted parent lost its sampled flag (-01)")
+	}
+
+	// End-to-end: a child started from that ctx joins the caller's trace.
+	_, span := Tracer().Start(ctx, "child")
+	defer span.End()
+	if got := span.SpanContext().TraceID().String(); got != parentTrace {
+		t.Errorf("child trace id = %q, want joined %q "+
+			"(sandbox spans would otherwise root their own trace)", got, parentTrace)
+	}
+}
+
+// TestInjectWorksBeforeSetup is the outbound twin of TestExtractWorksBeforeSetup
+// (ISI-4540 review). Inject was changed in the same way as Extract but had no
+// guard: TestInjectWritesW3CTrace uses installRecorder, which sets a TraceContext
+// global first and masks the ordering dependency. Reverting Inject to
+// otel.GetTextMapPropagator() left the whole suite green. This forces a no-op
+// global (the true pre-Setup state) and proves Inject still emits a traceparent.
+func TestInjectWorksBeforeSetup(t *testing.T) {
+	restore := installNoopPropagator(t)
+	defer restore()
+
+	ctx, span := Tracer().Start(context.Background(), "producer")
+	defer span.End()
+	traceID := span.SpanContext().TraceID().String()
+
+	carrier := map[string]string{}
+	Inject(ctx, carrier)
+
+	if tp := carrier["traceparent"]; !strings.Contains(tp, traceID) {
+		t.Errorf("Inject before Setup wrote %q, want a traceparent carrying trace id %q "+
+			"(no-op global would have emitted nothing)", tp, traceID)
+	}
+}
+
+// installNoopPropagator forces the OTel global text-map propagator to a genuine
+// no-op (a composite with no delegates — exactly what the global is before Setup
+// runs) and installs a recording tracer, returning a restore func. It reproduces
+// the sandbox-entrypoint state that Extract/Inject must work in (ISI-4540);
+// installRecorder does NOT, because it sets a TraceContext global that masks the
+// ordering bug. Mirrors installNoopMeter.
+func installNoopPropagator(t *testing.T) func() {
+	t.Helper()
 	prevTP := otel.GetTracerProvider()
 	prevProp := otel.GetTextMapPropagator()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(tracetest.NewInMemoryExporter()))
 	otel.SetTracerProvider(tp)
-	// A composite with no delegates is a no-op propagator — exactly what the
-	// global is before Setup runs.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
-	t.Cleanup(func() {
+	return func() {
 		_ = tp.Shutdown(context.Background())
 		otel.SetTracerProvider(prevTP)
 		otel.SetTextMapPropagator(prevProp)
-	})
-
-	const parentTrace = "4bf92f3577b34da6a3ce929d0e0e4736"
-	carrier := map[string]string{"traceparent": "00-" + parentTrace + "-00f067aa0ba902b7-01"}
-
-	ctx := Extract(context.Background(), carrier)
-	_, span := Tracer().Start(ctx, "child")
-	defer span.End()
-
-	if got := span.SpanContext().TraceID().String(); got != parentTrace {
-		t.Errorf("Extract before Setup: child trace id = %q, want joined %q "+
-			"(propagator-ordering regression: sandbox spans would root their own trace)", got, parentTrace)
 	}
 }
 
@@ -298,6 +388,75 @@ func TestCaptureUnsampledRemoteParent(t *testing.T) {
 			if got != tc.wantSampled {
 				t.Errorf("IsSampled() = %v, want %v", got, tc.wantSampled)
 			}
+		})
+	}
+}
+
+// TestCaptureUnsampledRemoteParentComposesWithCRSampler is the ISI-4540 review
+// fix. CaptureUnsampledRemoteParent must COMPOSE with a CR-declared sampler, not
+// be suppressed by it. Before the fix, any non-nil Traces.Sampler took over and
+// its ParentBased(root) defaulted remoteParentNotSampled to NeverSample — so the
+// ISI-4413 safety net silently switched off for exactly the deployments that
+// configure sampling (even "always_on" dropped an unsampled remote parent). With
+// each CR sampler set alongside capture: an unsampled remote parent (the injected
+// run traceparent) is ALWAYS recorded, while a fresh ROOT still honors the CR
+// decision.
+func TestCaptureUnsampledRemoteParentComposesWithCRSampler(t *testing.T) {
+	traceID, _ := trace.TraceIDFromHex("4bf92f3577b34da6a3ce929d0e0e4736")
+	spanID, _ := trace.SpanIDFromHex("00f067aa0ba902b7")
+	unsampledRemote := func() context.Context {
+		sc := trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID: traceID, SpanID: spanID, TraceFlags: 0, Remote: true,
+		})
+		return trace.ContextWithRemoteSpanContext(context.Background(), sc)
+	}
+
+	cases := []struct {
+		name         string
+		sampler      *SamplerSpec
+		wantRootKept bool
+	}{
+		{"always_on", &SamplerSpec{Type: "always_on"}, true},
+		{"always_off", &SamplerSpec{Type: "always_off"}, false},
+		{"probabilistic ratio 0", &SamplerSpec{Type: "probabilistic", Ratio: 0}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			_, shutdown, err := Setup(context.Background(), Options{
+				ServiceName: "sandbox-svc",
+				Writer:      buf,
+				// Endpoint connects lazily (see TestSetupOTLPSignalDoesNotBlockOrError),
+				// so no network is required; we only need Sampler to be honored.
+				Traces:                       &SignalExport{Protocol: "grpc", Endpoint: "http://127.0.0.1:0", Sampler: tc.sampler},
+				CaptureUnsampledRemoteParent: true,
+			})
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+			// Bound shutdown: the endpoint is dead, so flush would otherwise block
+			// on the exporter's retry window (cf. TestSetupOTLPSignalDoesNotBlockOrError).
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = shutdown(ctx)
+			}()
+
+			// The run's injected parent is unsampled — it MUST still be captured
+			// regardless of the CR sampler (the whole point of the safety net).
+			_, runSpan := Tracer().Start(unsampledRemote(), "run.start")
+			if !runSpan.SpanContext().IsSampled() {
+				t.Errorf("unsampled remote parent dropped under CR sampler %q — safety net switched off", tc.name)
+			}
+			runSpan.End()
+
+			// A fresh ROOT (no parent) must still honor the CR sampler's decision.
+			_, rootSpan := Tracer().Start(context.Background(), "root")
+			if got := rootSpan.SpanContext().IsSampled(); got != tc.wantRootKept {
+				t.Errorf("fresh root IsSampled() = %v, want %v (CR sampler %q must still govern roots)",
+					got, tc.wantRootKept, tc.name)
+			}
+			rootSpan.End()
 		})
 	}
 }
