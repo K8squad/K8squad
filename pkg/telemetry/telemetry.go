@@ -75,6 +75,21 @@ const (
 	defaultServiceName = "ksquad-operator"
 )
 
+// propagator is the W3C trace-context + baggage propagator used by Extract and
+// Inject. It is initialized at package load — NOT inside Setup — because the
+// sandbox entrypoints (`shim run` / `shim supervisor`) call Extract to continue
+// the operator-injected run trace BEFORE they install the telemetry spine via
+// Setup (main.go / supervisor.go extract, then Setup with the extracted ctx so
+// the resource-detecting Setup does not lose the parent). When Extract/Inject
+// read otel.GetTextMapPropagator() they got the SDK-default *no-op* propagator
+// at that point, so the inbound traceparent was silently discarded and every
+// sandbox span rooted its own trace — the "single-span / disconnected" traces
+// Henrik reported (ISI-4540, ISI-4413). Using a package-level propagator makes
+// extraction independent of Setup ordering. Setup still registers this SAME
+// value as the OTel global so third-party instrumentation shares the format.
+var propagator propagation.TextMapPropagator = propagation.NewCompositeTextMapPropagator(
+	propagation.TraceContext{}, propagation.Baggage{})
+
 // SamplerSpec is a neutral, kube-free description of a head sampler (traces
 // only).
 type SamplerSpec struct {
@@ -182,26 +197,31 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 		sdktrace.WithBatcher(traceExp),
 		sdktrace.WithResource(res),
 	}
-	// Head sampler selection, in precedence order:
-	//   1. an explicit CR-declared sampler (opts.Traces.Sampler) — declared
-	//      routing always wins (unchanged pre-ISI-3620 behavior);
-	//   2. else, when CaptureUnsampledRemoteParent is set (sandbox path,
-	//      ISI-4413), a ParentBased sampler that captures the run subtree even
-	//      under a remote parent whose sampled flag is 0 — so the injected
-	//      credential traceparent can never head-drop the whole run trace;
-	//   3. else nothing: leave the SDK's default sampler untouched.
-	var sampler sdktrace.Sampler
+	// Head sampler selection:
+	//   - CaptureUnsampledRemoteParent (sandbox path, ISI-4413) COMPOSES with the
+	//     CR-declared root decision instead of being suppressed by it: it keeps
+	//     whatever the CR spec chooses for a fresh ROOT span (or AlwaysSample when
+	//     no CR sampler is set), but ALWAYS captures a remote parent whose sampled
+	//     flag is 0. A sandbox hosts exactly one Run, so its run trace must be
+	//     recorded regardless of the injected credential traceparent's decision —
+	//     and that safety net must not silently switch off for deployments that
+	//     configure a CR sampler (ISI-4540 review).
+	//   - otherwise the CR-declared sampler (opts.Traces.Sampler) wins as before,
+	//     and a nil spec leaves the SDK default untouched.
+	var traceSampler *SamplerSpec
 	if opts.Traces != nil {
-		sampler = samplerFor(opts.Traces.Sampler)
+		traceSampler = opts.Traces.Sampler
 	}
-	if sampler == nil && opts.CaptureUnsampledRemoteParent {
-		// Root/local/remote-sampled cases behave exactly like the SDK default
-		// (ParentBased(AlwaysSample)); ONLY the remote-parent-not-sampled case
-		// is overridden to sample, so a run's spans are recorded regardless of
-		// the injected parent's decision while every explicit-keep decision is
-		// still honored.
-		sampler = sdktrace.ParentBased(sdktrace.AlwaysSample(),
+	var sampler sdktrace.Sampler
+	if opts.CaptureUnsampledRemoteParent {
+		root := rootSamplerFor(traceSampler)
+		if root == nil {
+			root = sdktrace.AlwaysSample()
+		}
+		sampler = sdktrace.ParentBased(root,
 			sdktrace.WithRemoteParentNotSampled(sdktrace.AlwaysSample()))
+	} else {
+		sampler = samplerFor(traceSampler)
 	}
 	if sampler != nil {
 		traceProviderOpts = append(traceProviderOpts, sdktrace.WithSampler(sampler))
@@ -210,9 +230,10 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	otel.SetTracerProvider(tp)
 
 	// W3C trace-context is the propagation format the ACs call for; baggage
-	// rides alongside so future cross-cutting labels propagate too.
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{}, propagation.Baggage{}))
+	// rides alongside so future cross-cutting labels propagate too. Register the
+	// same package-level propagator Extract/Inject already use, so global-reading
+	// third-party instrumentation and this package's own helpers never disagree.
+	otel.SetTextMapPropagator(propagator)
 
 	// --- metrics ---
 	// A PeriodicReader wraps the stdout exporter so instrument values are
@@ -299,7 +320,24 @@ func Extract(ctx context.Context, carrier map[string]string) context.Context {
 	if len(carrier) == 0 {
 		return ctx
 	}
-	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(carrier))
+	// Use the package-level propagator, not otel.GetTextMapPropagator(): the
+	// sandbox entrypoints call Extract before Setup installs the global, and the
+	// default global is a no-op that would drop the inbound traceparent.
+	out := propagator.Extract(ctx, propagation.MapCarrier(carrier))
+	// Self-diagnosing (ISI-4540): the propagator can no longer be the cause of a
+	// dropped parent, but the SAME symptom still arrives from a missing/malformed
+	// traceparent (an injector that didn't run, a truncated value). A carrier that
+	// carries a traceparent yet yields no valid parent means exactly that, and the
+	// run will silently root its own trace. Surface it on stderr (both sandbox
+	// entrypoints already log telemetry diagnostics there, so no stdout-corruption
+	// risk) so the next recurrence is not invisible.
+	if _, hasTraceparent := carrier["traceparent"]; hasTraceparent &&
+		!trace.SpanContextFromContext(out).IsValid() {
+		fmt.Fprintf(os.Stderr, "telemetry: carrier has a traceparent but yielded no valid "+
+			"parent span context (malformed/dropped; run will root its own trace); carrier keys=%v\n",
+			keysOf(carrier))
+	}
+	return out
 }
 
 // Inject writes ctx's current span context into carrier as W3C trace-context
@@ -307,5 +345,18 @@ func Extract(ctx context.Context, carrier map[string]string) context.Context {
 // runs the agent — can Extract it and continue the same trace. carrier must be
 // non-nil.
 func Inject(ctx context.Context, carrier map[string]string) {
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(carrier))
+	// Package-level propagator (see Extract): keeps Inject order-independent of
+	// Setup so an operator that injects before installing the global still emits
+	// a valid traceparent.
+	propagator.Inject(ctx, propagation.MapCarrier(carrier))
+}
+
+// keysOf returns a carrier's keys for diagnostics — never the values, which can
+// carry trace/tracestate/baggage content we do not want on stderr.
+func keysOf(m map[string]string) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	return ks
 }

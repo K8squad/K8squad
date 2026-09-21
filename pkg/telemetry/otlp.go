@@ -66,16 +66,31 @@ func parseGRPCEndpoint(endpoint string) (hostport string, insecure bool) {
 // samplerFor maps a neutral SamplerSpec onto an SDK head sampler. A nil spec
 // returns nil so the caller omits WithSampler and keeps the SDK default.
 func samplerFor(s *SamplerSpec) sdktrace.Sampler {
+	root := rootSamplerFor(s)
+	if root == nil {
+		return nil
+	}
+	return sdktrace.ParentBased(root)
+}
+
+// rootSamplerFor returns the bare ROOT-span head decision for a neutral spec,
+// WITHOUT the ParentBased wrapper samplerFor adds. Setup uses it to COMPOSE the
+// CR-declared root decision with WithRemoteParentNotSampled (ISI-4540 review):
+// the CaptureUnsampledRemoteParent safety net (ISI-4413) must keep the sandbox's
+// single Run trace even when a CR sampler is configured, instead of being
+// suppressed by it. A nil or unknown spec returns nil (the caller supplies the
+// default root).
+func rootSamplerFor(s *SamplerSpec) sdktrace.Sampler {
 	if s == nil {
 		return nil
 	}
 	switch s.Type {
 	case "always_on":
-		return sdktrace.ParentBased(sdktrace.AlwaysSample())
+		return sdktrace.AlwaysSample()
 	case "always_off":
-		return sdktrace.ParentBased(sdktrace.NeverSample())
+		return sdktrace.NeverSample()
 	case "probabilistic":
-		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(s.Ratio))
+		return sdktrace.TraceIDRatioBased(s.Ratio)
 	default:
 		return nil
 	}
