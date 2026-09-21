@@ -96,6 +96,94 @@ type RepoSpec struct {
 	// Sync configures the repo-sync reconciler (§5.4). Nil disables sync.
 	// +optional
 	Sync *RepoSyncSpec `json:"sync,omitempty"`
+
+	// ReviewAutomation configures human-enabled, system-executed PR-review
+	// automation for this Project (ISI-4750, PRD v1 D1-D6). A human enabling this
+	// policy is the authorizing act (D1): the reviewer Run is later dispatched
+	// under a SYSTEM identity, NOT agent-initiated - this config introduces NO
+	// agent-authored work item and does not cross the ISI-4711 custody wall.
+	// Nil (the default) means automation is off. Writing this config is INERT
+	// until the E3 change-detection and E4 dispatch epics land - it stores policy
+	// only and triggers nothing yet.
+	// +optional
+	ReviewAutomation *ReviewAutomationSpec `json:"reviewAutomation,omitempty"`
+}
+
+// ReviewAutomationSpec is the PR-review-automation policy (ISI-4750 D6, E0 §2).
+// Persisting it is inert until the E3/E4 epics land: it is authoritative config
+// the change-detection and system-dispatch paths will later READ, not behaviour
+// this story wires.
+type ReviewAutomationSpec struct {
+	// Enabled turns the standing policy on. When false (or the whole struct is
+	// nil) no review is ever triggered. Enabling is the human authorizing act
+	// for the D1 system-dispatch path.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ReviewerAgentID is the team agent that performs the review. It MUST be an
+	// agent in the owning Team's composition whose Role carries the code_review
+	// capability (Role.spec.activePhases contains "code_review", D5); the
+	// apiserver validates eligibility on write via the shared ReviewerEligibility
+	// resolver. Required whenever Enabled is true.
+	// +optional
+	ReviewerAgentID string `json:"reviewerAgentId,omitempty"`
+
+	// Scope selects which PRs are reviewed (D3). "team_authored" (default) only
+	// reviews PRs whose actor is a team agent; "all" reviews every PR.
+	// +optional
+	// +kubebuilder:validation:Enum=team_authored;all
+	// +kubebuilder:default=team_authored
+	Scope string `json:"scope,omitempty"`
+
+	// Trigger selects when a review fires (D4). "on_open" reviews a newly
+	// mirrored PR row once; "on_new_commits" (default) also re-reviews when the
+	// mirrored head SHA changes (requires the E3 mirror head-SHA enrichment).
+	// +optional
+	// +kubebuilder:validation:Enum=on_open;on_new_commits
+	// +kubebuilder:default=on_new_commits
+	Trigger string `json:"trigger,omitempty"`
+
+	// EnabledBy is the SERVER-STAMPED principal that last set Enabled=true - the
+	// D1 authorizing-act provenance threaded into the E4 system dispatch (E0 §5).
+	// It is written by the apiserver from the authenticated caller on any write
+	// that sets Enabled=true, and CLEARED when Enabled is set false. It is NEVER
+	// trusted from the request body: the write handler overwrites/strips any
+	// client-supplied value. Read-only from the caller's perspective.
+	// +optional
+	EnabledBy string `json:"enabledBy,omitempty"`
+}
+
+// Review-automation enum values (ISI-4750 D3/D4, E0 §2). Kept as Go constants so
+// the apiserver handler and the shared ReviewerEligibility resolver default and
+// validate against the SAME vocabulary the CRD enum markers pin.
+const (
+	// ReviewScopeTeamAuthored reviews only PRs authored by a team agent (default).
+	ReviewScopeTeamAuthored = "team_authored"
+	// ReviewScopeAll reviews every PR.
+	ReviewScopeAll = "all"
+
+	// ReviewTriggerOnOpen reviews a newly mirrored PR row once.
+	ReviewTriggerOnOpen = "on_open"
+	// ReviewTriggerOnNewCommits also re-reviews when the head SHA changes (default).
+	ReviewTriggerOnNewCommits = "on_new_commits"
+)
+
+// EffectiveScope resolves the configured review scope, applying the team_authored
+// default when unset (D3: the scope is configured per Project, never hardcoded).
+func (s *ReviewAutomationSpec) EffectiveScope() string {
+	if s == nil || s.Scope == "" {
+		return ReviewScopeTeamAuthored
+	}
+	return s.Scope
+}
+
+// EffectiveTrigger resolves the configured review trigger, applying the
+// on_new_commits default when unset (D4).
+func (s *ReviewAutomationSpec) EffectiveTrigger() string {
+	if s == nil || s.Trigger == "" {
+		return ReviewTriggerOnNewCommits
+	}
+	return s.Trigger
 }
 
 // RepoAuth is the provider credential discipline for a Project repo
