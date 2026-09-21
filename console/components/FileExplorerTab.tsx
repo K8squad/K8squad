@@ -16,7 +16,7 @@
 // time it is opened (GET .../files?path=), so a deep workspace never front-loads
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
-import { Component, type ReactNode, useCallback, useEffect, useState } from "react";
+import { Component, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import hljs from "highlight.js/lib/core";
 import hlGo from "highlight.js/lib/languages/go";
 import hlTypescript from "highlight.js/lib/languages/typescript";
@@ -67,13 +67,21 @@ type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean }>;
 // placeholder are cheap and unaffected.
 const RICH_PREVIEW_MAX_BYTES = 256 * 1024;
 
+// ISI-4705 defense-in-depth: `TreeNode` recurses on `entry.path` with no cycle
+// detection, so ANY listing with a repeating/duplicate path (a future server bug,
+// a symlink loop) re-enters it forever. normalizeListing keys on a locally-unique
+// `${dir}/${name}`, but a bounded recursion depth is the belt to that suspenders:
+// past this depth a directory renders an honest "too deep" row instead of
+// recursing, so the tree can never stack-overflow the console again.
+const MAX_TREE_DEPTH = 64;
+
 /** A reporting error boundary around the File Explorer subtree (ISI-4705). The
  * files route had NO boundary, so any render throw — a bad payload, a renderer
  * choking on a large file — propagated to the root and white-screened the whole
  * console ("the ui crash"). This contains the throw to an honest, recoverable
  * panel AND reports it (lib/client-errors) so the crash is collectable instead
  * of vanishing with the tab. */
-class FileExplorerErrorBoundary extends Component<
+export class FileExplorerErrorBoundary extends Component<
   { projectId: string; children: ReactNode },
   { failed: boolean }
 > {
@@ -106,8 +114,11 @@ class FileExplorerErrorBoundary extends Component<
 
 /** The File Explorer tab, wrapped in its reporting error boundary. */
 export function FileExplorerTab({ projectId }: { projectId: string }) {
+  // `key={projectId}` remounts the boundary on a project change so a crash in
+  // one project does not latch its error panel over the next project's healthy
+  // Files tab (the App Router reuses this instance across the [projectId] param).
   return (
-    <FileExplorerErrorBoundary projectId={projectId}>
+    <FileExplorerErrorBoundary key={projectId} projectId={projectId}>
       <FileExplorerTabInner projectId={projectId} />
     </FileExplorerErrorBoundary>
   );
@@ -369,6 +380,14 @@ function TreeNode({
               <li className="muted" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>
                 (empty)
               </li>
+            ) : depth + 1 > MAX_TREE_DEPTH ? (
+              <li
+                className="muted"
+                style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+                data-testid="files-too-deep"
+              >
+                Too deeply nested to expand here — download the folder to see the rest.
+              </li>
             ) : (
               sortEntries(childState.data.entries).map((c) => (
                 <TreeNode
@@ -546,16 +565,44 @@ function PreviewPane({
     );
   }
 
-  const c = state.data;
+  return <FilePreviewBody projectId={projectId} c={state.data} />;
+}
+
+/** The ready-state preview body (ISI-4705). Split out of PreviewPane so the
+ * expensive decode + syntax-highlight run inside `useMemo`: PreviewPane's parent
+ * (`FileExplorerTabInner`) re-renders on every `open`/`dirs`/`selected`/`preview`/
+ * `stat` change, and inlining these in the JSX re-decoded and re-highlighted the
+ * whole (up to 1 MiB) window on each of those unrelated renders. */
+function FilePreviewBody({ projectId, c }: { projectId: string; c: FileContent }) {
   const kind = previewKind(c.path, c.contentType);
-  // ISI-4705: the reader caps a read window at 1 MiB and does NOT always set the
-  // `truncated` flag (a 3.8 MB file comes back length=1 MiB, truncated omitted),
-  // so derive truncation from the window vs whole-file size too — the user must
-  // always be told the preview is partial.
-  const truncated = c.truncated === true || c.length < c.size;
-  // Guard the expensive main-thread renderers against a large window (ISI-4705).
+  // The returned window size in bytes. Prefer the server's `length`, but that
+  // field — exactly like `path` — is not on the Go struct and can be absent; fall
+  // back to the base64 payload size (4 chars ≈ 3 bytes) so the large-file guard
+  // never fails OPEN on a payload missing `length` (the same omit-a-field failure
+  // mode this PR exists to fix).
+  const windowBytes = c.length ?? Math.floor(((c.data?.length ?? 0) * 3) / 4);
+  // Partial iff the window is smaller than the whole file. A missing `length`
+  // reads as "unknown", never silently as "not truncated".
+  const truncated = c.truncated === true || (c.length != null && c.length < c.size);
+  // Guard EVERY text-ish renderer — code, markdown, AND plain <pre>: a 1 MiB
+  // .log/.csv classifies as `text` and still bloats the DOM. Images/binary are
+  // cheap placeholders and pass through.
   const richTooLarge =
-    (kind === "code" || kind === "markdown") && c.length > RICH_PREVIEW_MAX_BYTES;
+    (kind === "code" || kind === "markdown" || kind === "text") &&
+    windowBytes > RICH_PREVIEW_MAX_BYTES;
+
+  // Decode once; skip entirely when the bytes are never rendered as text
+  // (binary/image placeholders, or the too-large panel).
+  const decoded = useMemo(
+    () => (richTooLarge || kind === "binary" || kind === "image" ? "" : decodeTextContent(c.data)),
+    [richTooLarge, kind, c.data],
+  );
+  // Highlight once per (bytes, path) — not on every parent re-render.
+  const codeHtml = useMemo(
+    () => (kind === "code" && !richTooLarge ? highlightCode(decoded, codeLanguage(c.path)) : ""),
+    [kind, richTooLarge, decoded, c.path],
+  );
+
   return (
     <div>
       <div className="file-explorer__preview-head">
@@ -583,8 +630,8 @@ function PreviewPane({
       {richTooLarge ? (
         <div data-testid="files-too-large">
           <p className="muted">
-            This file is too large to preview here ({humanBytes(c.length)}
-            {c.length < c.size ? ` of ${humanBytes(c.size)}` : ""}). Download it to view the full
+            This file is too large to preview here ({humanBytes(windowBytes)}
+            {windowBytes < c.size ? ` of ${humanBytes(c.size)}` : ""}). Download it to view the full
             contents.
           </p>
           <a
@@ -608,17 +655,15 @@ function PreviewPane({
         </div>
       ) : kind === "markdown" ? (
         <div className="file-explorer__markdown" data-testid="files-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{decodeTextContent(c.data)}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{decoded}</ReactMarkdown>
         </div>
       ) : kind === "code" ? (
         <pre className="file-explorer__code" data-testid="files-code">
-          <code
-            dangerouslySetInnerHTML={{ __html: highlightCode(decodeTextContent(c.data), codeLanguage(c.path)) }}
-          />
+          <code dangerouslySetInnerHTML={{ __html: codeHtml }} />
         </pre>
       ) : (
         <pre className="file-explorer__code" data-testid="files-text">
-          {decodeTextContent(c.data)}
+          {decoded}
         </pre>
       )}
     </div>

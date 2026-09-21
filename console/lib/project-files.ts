@@ -113,26 +113,36 @@ export async function listProjectFiles(
     { cache: "no-store" },
   );
   if (res.ok) {
-    return { kind: "ready", data: normalizeListing(path, (await res.json()) as FileListing) };
+    return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
   }
   return classifyFilesStatus<FileListing>(res.status);
 }
 
-/** Guarantee every listing entry carries a stable, unique workspace-root-relative
- * `path` (ISI-4705). The S4b `/files` wire payload only guarantees
- * `{name,type,size}` — `path` is NOT emitted by the apiserver/reader. When it is
- * absent every `FileEntry.path` is `undefined`, and the tree keys its per-directory
- * open-state (`open`) and lazy child listings (`dirs`) by that single shared
- * `undefined` key: expanding one directory then flips EVERY directory to "open"
- * over the same (root) child listing, which renders recursively without a base
- * case → stack overflow → the whole File Explorer (and console) crashes. Deriving
- * the path from the requested directory + entry name restores per-node identity so
- * the tree expands correctly. Idempotent: a server that DOES emit `path` is kept. */
-export function normalizeListing(dir: string, listing: FileListing): FileListing {
+/** The directory-listing shape as it ACTUALLY arrives from S4b (ISI-4705): the
+ * reader/apiserver DirEntry is `{name,type,size}` — `path` is NOT on the Go
+ * struct, so the wire type must model it as absent even though the rendered
+ * `FileEntry` requires it. Typing the fetch boundary honestly is what removes
+ * the `as unknown as` casts the tests otherwise need, and stops fixtures from
+ * pretending the server sends a field it never has. */
+export type WireFileEntry = Omit<FileEntry, "path"> & { path?: string };
+export type WireFileListing = Omit<FileListing, "entries"> & { entries: WireFileEntry[] | null };
+
+/** Give every listing entry a stable, unique workspace-root-relative `path`
+ * (ISI-4705). The wire payload omits `path`; without it every `FileEntry.path`
+ * is `undefined`, and the tree keys its per-directory open-state (`open`) and
+ * lazy child listings (`dirs`) by that single shared `undefined` key — expanding
+ * one directory flips EVERY directory to "open" over the same (root) listing and
+ * renders recursively with no base case → stack overflow → the whole console
+ * crashes. The path is derived LOCALLY from the requested directory + entry name
+ * and the server's own `path` is intentionally NOT trusted: a POSIX name cannot
+ * contain "/", so `${dir}/${name}` is unique by construction, and a server that
+ * later emits a wrong or duplicated `path` (ISI-4708) still cannot reintroduce
+ * the shared-key recursion. */
+export function normalizeListing(dir: string, listing: WireFileListing): FileListing {
   const base = (dir ?? "").replace(/\/+$/, "");
-  const entries = (listing.entries ?? []).map((e) => ({
+  const entries: FileEntry[] = (listing.entries ?? []).map((e) => ({
     ...e,
-    path: e.path && e.path.length > 0 ? e.path : base ? `${base}/${e.name}` : e.name,
+    path: base ? `${base}/${e.name}` : e.name,
   }));
   return { ...listing, path: listing.path ?? dir, entries };
 }

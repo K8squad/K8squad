@@ -5,9 +5,10 @@
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
-import { FileExplorerTab } from "@/components/FileExplorerTab";
+import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
 import { normalizeListing } from "@/lib/project-files";
-import type { FileContent, FileListing, FileStat } from "@/lib/project-files";
+import { reportClientError } from "@/lib/client-errors";
+import type { FileContent, FileListing, FileStat, WireFileListing } from "@/lib/project-files";
 
 afterEach(() => {
   cleanup();
@@ -22,7 +23,10 @@ const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
  * by the `path` query (root = ""); `contents` and `stats` by the file path.
  * A key that maps to a number is returned as that HTTP status with a null body. */
 function routeFetch(opts: {
-  listings?: Record<string, FileListing | number>;
+  // Listings are typed as the WIRE shape (path optional) — that is what S4b
+  // actually sends, and it lets a fixture omit `path` exactly like production
+  // (ISI-4705). A full FileListing is still assignable here.
+  listings?: Record<string, WireFileListing | number>;
   contents?: Record<string, FileContent | number>;
   stats?: Record<string, FileStat | number>;
   status?: number;
@@ -365,10 +369,10 @@ describe("FileExplorerTab", () => {
         "": { path: "", entries: [
           { name: "todo-app", type: "dir", size: 0 },
           { name: "README.md", type: "file", size: 5 },
-        ] } as unknown as FileListing,
+        ] },
         "todo-app": { path: "todo-app", entries: [
           { name: "docs", type: "dir", size: 0 },
-        ] } as unknown as FileListing,
+        ] },
       },
     });
     render(<FileExplorerTab projectId="web" />);
@@ -383,21 +387,27 @@ describe("FileExplorerTab", () => {
     expect(screen.getAllByText("README.md")).toHaveLength(1);
   });
 
-  it("normalizeListing derives unique root-relative paths and is idempotent (ISI-4705)", () => {
+  it("normalizeListing derives unique root-relative paths, ignoring any server-sent path (ISI-4705)", () => {
     const derived = normalizeListing("todo-app", {
       path: "todo-app",
       entries: [
         { name: "docs", type: "dir" },
         { name: "main.go", type: "file", size: 3 },
-      ] as unknown as FileListing["entries"],
+      ],
     });
     expect(derived.entries?.map((e) => e.path)).toEqual(["todo-app/docs", "todo-app/main.go"]);
-    // Root entries get bare names; a server that DOES send `path` is preserved.
-    const root = normalizeListing("", {
+    // The path is derived from dir+name and a server-supplied `path` is NOT
+    // trusted — so even a server that emits a duplicate/wrong path cannot
+    // reintroduce the shared-key recursion. Here both rows claim "dup" yet get
+    // distinct derived keys.
+    const adversarial = normalizeListing("", {
       path: "",
-      entries: [{ name: "a", type: "dir" }, { name: "b.txt", path: "explicit/b.txt", type: "file" }] as unknown as FileListing["entries"],
+      entries: [
+        { name: "a", path: "dup", type: "dir" },
+        { name: "b", path: "dup", type: "dir" },
+      ],
     });
-    expect(root.entries?.map((e) => e.path)).toEqual(["a", "explicit/b.txt"]);
+    expect(adversarial.entries?.map((e) => e.path)).toEqual(["a", "b"]);
   });
 
   // ISI-4705: a capped read window can be up to 1 MiB; running highlight.js /
@@ -419,5 +429,45 @@ describe("FileExplorerTab", () => {
     // A capped read (length < size) is always flagged truncated, even though the
     // server omits the `truncated` field.
     expect(screen.getByTestId("files-preview-truncated")).toBeTruthy();
+  });
+
+  // ISI-4705 (PR #530 review): pin the telemetry deliverables — without these,
+  // the boundary and the reporter could be deleted with the suite staying green.
+  it("reportClientError emits a structured console line AND a server beacon (ISI-4705)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const beacon = vi.fn((_url: string, _body?: BodyInit) => true);
+    vi.stubGlobal("navigator", { sendBeacon: beacon, userAgent: "vitest" });
+
+    reportClientError("unit-test", new Error("kaboom"), { projectId: "web" });
+
+    expect(errSpy).toHaveBeenCalledWith(
+      "[client-crash]",
+      expect.objectContaining({ source: "unit-test", message: "kaboom", context: { projectId: "web" } }),
+    );
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(beacon.mock.calls[0][0]).toBe("/api/telemetry/client-error");
+  });
+
+  it("the error boundary catches a render throw, shows an honest panel, and reports it (ISI-4705)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const beacon = vi.fn(() => true);
+    vi.stubGlobal("navigator", { sendBeacon: beacon, userAgent: "vitest" });
+    const Boom = (): never => {
+      throw new Error("render exploded");
+    };
+
+    render(
+      <FileExplorerErrorBoundary projectId="web">
+        <Boom />
+      </FileExplorerErrorBoundary>,
+    );
+
+    // Honest, contained panel — NOT a white-screen propagating to the root.
+    expect(screen.getByTestId("files-honest")).toBeTruthy();
+    // And the crash was reported through the collectable channel.
+    expect(errSpy).toHaveBeenCalledWith(
+      "[client-crash]",
+      expect.objectContaining({ source: "file-explorer" }),
+    );
   });
 });

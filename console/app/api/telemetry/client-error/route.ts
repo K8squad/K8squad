@@ -10,23 +10,43 @@
 //
 // This is deliberately a LOCAL sink (no apiserver proxy): a crash report is
 // low-trust, unauthenticated telemetry and must never be able to reach a
-// data-bearing route. The body is hard-capped so a beacon can't be used to
-// flood the log pipeline, and every field is treated as untrusted text.
+// data-bearing route. Two abuse controls (PR #530 review):
+//   - crossSiteReject (the house `/api/*` idiom, lib/bff.ts): `/api/*` is public
+//     because each BFF handler owns its own guard; a write handler that acts
+//     without forwarding identity must still refuse cross-site callers.
+//   - a byte cap enforced from the Content-Length header BEFORE the body is
+//     read into memory (and re-checked on the decoded bytes), so a large POST
+//     can neither flood the log pipeline nor balloon the pod's heap.
 
 import type { NextRequest } from "next/server";
+import { crossSiteReject } from "@/lib/bff";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
 
 // A crash report (message + stack + small context) is a few KiB at most; cap
-// well above that but far below anything that could flood logs.
+// well above that but far below anything that could flood logs or the heap.
 const MAX_BODY_BYTES = 16 * 1024;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  // Refuse cross-site callers up front — this handler acts without forwarding a
+  // session, so it must not be a public, forgeable write into the log pipeline.
+  const rejected = crossSiteReject(req);
+  if (rejected) return rejected;
+
   try {
+    // Cap BEFORE reading the body into memory: a declared oversize length is
+    // refused without ever materialising the payload (a bare req.text() would
+    // buffer the whole thing first — the DoS this guard exists to prevent).
+    const declared = Number(req.headers.get("content-length") ?? 0);
+    if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+      return new Response(null, { status: 413 });
+    }
     const raw = await req.text();
-    if (raw.length > MAX_BODY_BYTES) {
+    // Re-check on real bytes (Buffer.byteLength, not String.length which counts
+    // UTF-16 code units) in case Content-Length was absent or understated.
+    if (Buffer.byteLength(raw, "utf8") > MAX_BODY_BYTES) {
       return new Response(null, { status: 413 });
     }
     let report: unknown;
