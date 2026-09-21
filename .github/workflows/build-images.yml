@@ -183,11 +183,22 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            # This list MUST mirror cmd/shim's compile-time dependency surface: the
+            # shim main statically links these packages into the binary baked into
+            # ghcr.io/k8squad/ksquad-shim-<rt>, so a change to any of them must rebuild
+            # the shim image. Missing pkg/telemetry here (ISI-4540 / b534b57c) meant the
+            # Extract-before-Setup propagator fix landed in pkg/telemetry but never
+            # produced a new shim image — sandboxes kept running the stale binary. Keep
+            # this in sync with `go list -deps ./cmd/shim | grep .../pkg/`.
             CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
               'Dockerfile.shim' \
               'cmd/shim/**' \
               'cmd/ksquad-codex-exec/**' \
               'pkg/shim/**' \
+              'pkg/telemetry/**' \
+              'pkg/a2a/**' \
+              'pkg/capability/**' \
+              'pkg/taskio/**' \
               '.github/workflows/build-images.yml' \
               '.github/workflows/component-matrix.yml')
             if [ -z "$CHANGED" ]; then
