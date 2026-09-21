@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  agentHueMap,
   avatarInitial,
   buildRunComments,
   displayName,
@@ -46,6 +47,67 @@ describe("displayName", () => {
     expect(displayName("user:alice")).toBe("alice");
     expect(displayName("Winston")).toBe("Winston");
     expect(displayName("")).toBe("unknown");
+  });
+
+  it("also strips principal:/human: so a person reads as their bare name (ISI-4706)", () => {
+    // "flagged under User" / "it should be admin or userx" — never the raw prefix.
+    expect(displayName("principal:admin")).toBe("admin");
+    expect(displayName("human:henrik")).toBe("henrik");
+  });
+});
+
+describe("agentHueMap", () => {
+  // The property the ticket cares about, asserted directly (not one lucky pair):
+  // every distinct agent in a thread gets a DISTINCT hue, up to the palette size.
+  // Index assignment guarantees this where a hash could not — a fixed 7-hue hash
+  // collided on this repo's own roster (coordinator/tester, architect/coder, …).
+  it("spreads the repo's real agent roster across the palette with no collision (ISI-4706)", () => {
+    const roster = [
+      "architect",
+      "builder",
+      "coder",
+      "coordinator",
+      "planner",
+      "reviewer",
+      "tester",
+    ];
+    const hues = agentHueMap(roster.map((n) => `agent:${n}`));
+    expect(hues.size).toBe(roster.length);
+    expect(new Set(hues.values()).size).toBe(roster.length);
+  });
+
+  it("assigns by first-appearance index, case/prefix-insensitive, deduped", () => {
+    const hues = agentHueMap([
+      "agent:Architect",
+      "user:alice", // humans skipped
+      "agent/architect", // same agent, different prefix/case — no new slot
+      "agent:Builder",
+    ]);
+    expect([...hues.keys()]).toEqual(["architect", "builder"]);
+    // First two palette slots, in order — distinct.
+    expect(hues.get("architect")).not.toBe(hues.get("builder"));
+  });
+
+  it("omits humans so the accent CSS owns them", () => {
+    const hues = agentHueMap(["user:alice", "principal:admin", "Winston"]);
+    expect(hues.size).toBe(0);
+  });
+
+  it("buildRunComments stamps each agent bubble its own hue, humans none", () => {
+    const bubbles = buildRunComments(
+      thread({
+        comments: [
+          { author: "agent:builder", body: "wired", createdAt: "2026-09-14T10:00:00Z" },
+          { author: "agent:reviewer", body: "lgtm", createdAt: "2026-09-14T10:01:00Z" },
+          { author: "user:alice", body: "ok", createdAt: "2026-09-14T10:02:00Z" },
+        ],
+      }),
+    );
+    const [builder, reviewer, alice] = bubbles;
+    expect(typeof builder.authorHue).toBe("number");
+    expect(typeof reviewer.authorHue).toBe("number");
+    expect(builder.authorHue).not.toBe(reviewer.authorHue);
+    expect(alice.authorHue).toBeUndefined();
   });
 });
 

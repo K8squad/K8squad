@@ -1230,6 +1230,32 @@
   padding: 10px 12px;
 }
 
+/* Workflow rows (status moves + change refs) are context, not conversation
+   (ISI-4706: "the workflow should be in smaller fonts, in italic … the most
+   important part are the comments, the rest is just for info"). Render them
+   quieter than a comment bubble — smaller, italic, muted — so the eye lands on
+   what people and agents actually said, and the run's bookkeeping recedes. */
+.ksq-activity--event,
+.ksq-activity--change {
+  font-size: 0.82rem;
+  font-style: italic;
+}
+/* NB: no `color`/`opacity` here on purpose. The row's text nodes are already
+   `.muted` / `.ksq-ticket-id` (both --text-2), so an override colour was a no-op;
+   the `opacity: 0.9` that DID composite pushed --muted under the 4.5:1 AA floor
+   at this 0.82rem size. Smaller + italic alone delivers the ask ("smaller fonts,
+   in italic … the rest is just for info") and keeps every theme AA-clean. */
+/* Links, mono ids + chips inside a workflow row keep the smaller scale but drop
+   the italic so refs/PR titles and the PR/commit chip stay upright + legible. */
+.ksq-activity--event a,
+.ksq-activity--change a,
+.ksq-activity--event .ksq-ticket-id,
+.ksq-activity--change .ksq-ticket-id,
+.ksq-activity--event .ksq-chip,
+.ksq-activity--change .ksq-chip {
+  font-style: normal;
+}
+
 .ksq-activity__head {
   display: flex;
   align-items: baseline;
@@ -1243,9 +1269,15 @@
   color: var(--text-1);
 }
 
+/* The agent role chip picks up THIS agent's own hue (ISI-4706 per-agent colour):
+   the inline `--ksq-author-hue` resolves against a theme-invariant saturation and
+   a per-theme lightness (globals.css) so the ink clears WCAG AA on both canvases.
+   When no per-agent hue is set (an older bundle, or a principal we couldn't
+   classify) it degrades to hue 258 — the shared Run hue — keeping the old look.
+   Humans keep the accent. */
 .ksq-chip[data-role="agent"] {
-  border-color: var(--ksq-run);
-  color: var(--ksq-run);
+  border-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
 }
 .ksq-chip[data-role="user"] {
   border-color: var(--accent);
@@ -1306,8 +1338,8 @@
 /* An agent's avatar ring picks up the reserved Run hue so a run reads as a run;
    a human's picks up the accent hue — the two never share a colour (ISI-4567). */
 .ksq-runcomment__avatar[data-kind="agent"] {
-  border-color: var(--ksq-run);
-  color: var(--ksq-run);
+  border-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
 }
 .ksq-runcomment__avatar[data-kind="user"] {
   border-color: var(--accent);
@@ -1327,8 +1359,12 @@
    (ISI-4567 "distinguish each comment"): agents wear the Run hue, humans the
    accent hue. The tint is subtle on the fill and firm on the left spine edge. */
 .ksq-runcomment[data-role="agent"] .ksq-runcomment__bubble {
-  border-left-color: var(--ksq-run);
-  background: color-mix(in srgb, var(--ksq-run) 7%, var(--canvas));
+  border-left-color: hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l));
+  background: color-mix(
+    in srgb,
+    hsl(var(--ksq-author-hue, 258) var(--ksq-author-s) var(--ksq-author-l)) 7%,
+    var(--canvas)
+  );
 }
 .ksq-runcomment[data-role="user"] .ksq-runcomment__bubble {
   border-left-color: var(--accent);

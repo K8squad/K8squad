@@ -37,16 +37,24 @@ export interface RunComment {
   traceHref?: string;
   /** The attributed run is live — pulse the status dot. */
   running: boolean;
+  /** This agent's own palette hue (ISI-4706), assigned by first-appearance index
+   * within the thread so agents in one conversation never collide; absent for
+   * humans (they keep the shared accent). The renderer emits it as
+   * `--ksq-author-hue` and CSS resolves saturation + per-theme lightness. */
+  authorHue?: number;
 }
 
-/** The principal minus its `agent:`/`user:` role prefix — the bare name, which
- * may be empty. The single source both displayName and avatarInitial strip from,
- * so neither has to know the other's empty-name fallback (a "" here, not the
- * "unknown" sentinel). */
+/** The principal minus its role prefix — the bare name, which may be empty. The
+ * single source displayName, avatarInitial and authorAccent strip from, so none
+ * has to know the others' empty-name fallback (a "" here, not the "unknown"
+ * sentinel). Covers every prefix the coord principal vocabulary emits —
+ * `agent:` / `agent/` for runs, and `user:` / `principal:` / `human:` for the
+ * people who post from the console (ISI-4706: "it should be admin or userx",
+ * i.e. the bare name, not the raw `principal:admin`). */
 function stripRolePrefix(author: string): string {
   return author
     .replace(/^agent[:/]/i, "")
-    .replace(/^user[:/]/i, "")
+    .replace(/^(?:user|principal|human)[:/]/i, "")
     .trim();
 }
 
@@ -62,6 +70,51 @@ export function displayName(author: string): string {
 export function avatarInitial(author: string): string {
   const ch = stripRolePrefix(author).charAt(0);
   return ch ? ch.toUpperCase() : "?";
+}
+
+/**
+ * Per-agent chat colour (ISI-4706: "a different set of colour for human and for
+ * each individual agent"). ISI-4567 only split the thread two ways — every agent
+ * shared one Run hue, every human shared the accent — so a board with five agents
+ * still read as one colour per side. This gives each distinct agent principal its
+ * OWN hue, so "Architect" and "Builder" never wear the same tint.
+ *
+ * Curated categorical palette, in MAXIMUM-SEPARATION order: consecutive entries
+ * sit ~135-180° apart on the wheel, so palette-adjacent agents stay separable
+ * (including under the common colour-vision deficiencies) and no pair is a
+ * near-duplicate — the earlier 130/95 greens collapsed to ΔE00 ≈ 1.83 in the 7%
+ * bubble mix, below the JND. Assignment (agentHueMap) is by FIRST-APPEARANCE
+ * INDEX within the thread, NOT a hash: an index cannot collide below the palette
+ * size, so the first eight distinct agents in a conversation are guaranteed
+ * distinct — a 7-slot hash collided ~65% of the time at just four agents. The
+ * ticket asks that we tell agents apart WITHIN a thread; cross-thread hue
+ * stability is not requested and is traded away for that guarantee.
+ *
+ * Lightness is deliberately NOT baked in here — the renderer emits only the hue
+ * number and CSS resolves saturation + per-theme lightness, so every hue clears
+ * WCAG AA on both the dark and light canvases (a fixed 52% lightness failed AA
+ * in light mode). Humans are absent from the map: they keep the single accent
+ * hue the `data-role="user"` CSS already owns, so we never fabricate a
+ * per-person rainbow the ask didn't request.
+ */
+const AGENT_HUES = [25, 205, 70, 250, 115, 295, 160, 340] as const;
+
+/**
+ * Map each DISTINCT agent principal in a thread to its own palette hue, keyed by
+ * the bare lowercased name, by first-appearance index (see AGENT_HUES). Humans
+ * are skipped — they stay on the accent. Guarantees distinct hues for the first
+ * `AGENT_HUES.length` agents; only wraps (and can then repeat) beyond that.
+ */
+export function agentHueMap(authors: readonly string[]): Map<string, number> {
+  const hues = new Map<string, number>();
+  for (const author of authors) {
+    if (authorKind(author) !== "agent") continue;
+    const name = stripRolePrefix(author).toLowerCase();
+    if (name && !hues.has(name)) {
+      hues.set(name, AGENT_HUES[hues.size % AGENT_HUES.length]);
+    }
+  }
+  return hues;
 }
 
 /**
@@ -100,6 +153,12 @@ export function buildRunComments(thread: NormalizedThread): RunComment[] {
   );
   const running = thread.runId !== "" && isRunningState(thread.state);
 
+  // Per-agent hue is assigned by first-appearance index across the WHOLE thread
+  // (ISI-4706), so each distinct agent is guaranteed its own colour within the
+  // conversation. Ordering by the sorted (oldest-first) list keeps an agent's
+  // hue stable as later comments arrive.
+  const hueByName = agentHueMap(sorted.map((c) => c.author));
+
   // Newest agent bubble = the one the current holding run authored.
   let latestAgentIdx = -1;
   for (let i = sorted.length - 1; i >= 0; i--) {
@@ -122,6 +181,9 @@ export function buildRunComments(thread: NormalizedThread): RunComment[] {
       isLatestAgent,
       running: hasRun && running,
     };
+    if (k === "agent") {
+      bubble.authorHue = hueByName.get(stripRolePrefix(c.author).toLowerCase());
+    }
     if (hasRun) {
       bubble.runId = thread.runId;
       bubble.traceHref = runHref(thread.runId);
