@@ -133,6 +133,68 @@ func TestProgressMirrorWritesIncrementalComments(t *testing.T) {
 	}
 }
 
+// TestProgressMirrorAuthorsAgentIdentity is the ISI-4739 AC: when the work
+// item's checkout claim names an agent, run comments are authored
+// agent:<name> (so the console renders the NAME and hashes a stable per-agent
+// colour, ISI-4706); when the assignee can't be resolved the author falls back
+// to run/<shortRunID>. The [run <id>] body prefix carries provenance either way.
+func TestProgressMirrorAuthorsAgentIdentity(t *testing.T) {
+	f := newMirrorFixture(t)
+	f.m.assignee = func(context.Context, string) string { return "sam" }
+	ctx := context.Background()
+	task := "c3beee63-0000-0000-0000-000000000000"
+
+	if err := f.m.Event(ctx, msgEv(1, task, "working…")); err != nil {
+		t.Fatalf("Event errored: %v", err)
+	}
+	got := f.comments()
+	if len(got) != 1 {
+		t.Fatalf("appended %d comments, want 1: %v", len(got), got)
+	}
+	parts := strings.SplitN(got[0], "|", 3)
+	if parts[1] != "agent:sam" {
+		t.Fatalf("author = %q, want agent:sam", parts[1])
+	}
+	if !strings.HasPrefix(parts[2], "[run c3beee63]") {
+		t.Fatalf("body lost the run-id prefix: %q", parts[2])
+	}
+
+	// Empty assignee → fall back to run/<shortRunID> (no claim row / released).
+	f.m.assignee = func(context.Context, string) string { return "" }
+	f.m.agentCache.Range(func(k, _ any) bool { f.m.agentCache.Delete(k); return true })
+	task2 := "d4ffff74-0000-0000-0000-000000000000"
+	if err := f.m.Event(ctx, msgEv(1, task2, "no agent")); err != nil {
+		t.Fatalf("Event errored: %v", err)
+	}
+	got = f.comments()
+	if parts := strings.SplitN(got[len(got)-1], "|", 3); parts[1] != "run/d4ffff74" {
+		t.Fatalf("fallback author = %q, want run/d4ffff74", parts[1])
+	}
+}
+
+// TestProgressMirrorCachesAssignee: the assignee lookup is resolved once per
+// work item and cached — chatty runs don't re-query coord.claim per comment.
+func TestProgressMirrorCachesAssignee(t *testing.T) {
+	f := newMirrorFixture(t)
+	f.m.minInterval = 0
+	var calls int
+	f.m.assignee = func(context.Context, string) string { calls++; return "kai" }
+	ctx := context.Background()
+	task := "e5aaaa85-0000-0000-0000-000000000000"
+
+	for seq := uint64(1); seq <= 3; seq++ {
+		_ = f.m.Event(ctx, msgEv(seq, task, "tick"))
+	}
+	if calls != 1 {
+		t.Fatalf("assignee resolved %d times, want 1 (cached)", calls)
+	}
+	for _, c := range f.comments() {
+		if p := strings.SplitN(c, "|", 3); p[1] != "agent:kai" {
+			t.Fatalf("author = %q, want agent:kai", p[1])
+		}
+	}
+}
+
 // TestProgressMirrorDedupsReplayedSeqs: the EventSink contract is
 // at-least-once — a replayed/duplicate seq must not double-append.
 func TestProgressMirrorDedupsReplayedSeqs(t *testing.T) {
