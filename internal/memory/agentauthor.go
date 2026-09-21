@@ -134,7 +134,7 @@ var (
 	workItemUpdateTool = mcpTool{
 		Name:        "work_item_update",
 		Description: "Edit fields (title/body/parent) of a work item you hold in custody or any of its descendants. State is never changed here (lane motion stays a custody op). expected_updated_at gives optimistic-concurrency. Requires the work_item.author capability; identity/team/run are server-authenticated. Returns the updated work item.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to edit"},"title":{"type":"string","description":"new title"},"body":{"type":"string","description":"new body (empty string clears it)"},"parent_id":{"type":"string","description":"reparent target (empty string detaches to root)"},"expected_updated_at":{"type":"string","description":"optional RFC3339 optimistic-concurrency precondition"}},"required":["id"]}`),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to edit"},"title":{"type":"string","description":"new title"},"body":{"type":"string","description":"new body (empty string clears it)"},"parent_id":{"type":"string","description":"reparent target: another work-item id (uuid) you hold in custody. Omit to leave the parent unchanged; detaching to root is refused (root items are human-only)"},"expected_updated_at":{"type":"string","description":"optional RFC3339 optimistic-concurrency precondition"}},"required":["id"]}`),
 	}
 	workItemAssignTool = mcpTool{
 		Name:        "work_item_assign",
