@@ -151,7 +151,9 @@ func (r *ClientOnboardingReader) resolveTeam(ctx context.Context, teamUID string
 	}
 	for i := range teams.Items {
 		if string(teams.Items[i].UID) == teamUID {
-			id := teamIdentity{name: teams.Items[i].Name, ns: teams.Items[i].Namespace}
+			// Onboarding reads only home-namespace CRs (Agents/Projects/Team); execNS is
+			// irrelevant here, so it is left as the home namespace fallback.
+			id := teamIdentity{name: teams.Items[i].Name, homeNS: teams.Items[i].Namespace, execNS: teams.Items[i].Namespace}
 			r.teams[teamUID] = id
 			return id, nil
 		}
@@ -186,17 +188,17 @@ func (r *ClientOnboardingReader) Progress(ctx context.Context, teamUID string, a
 		return OnboardingProgress{}, err
 	}
 	var agents ksquadv1.AgentList
-	if err := r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
+	if err := r.reader.List(ctx, &agents, client.InNamespace(team.homeNS)); err != nil {
 		return OnboardingProgress{}, err
 	}
 	var projects ksquadv1.ProjectList
-	if err := r.reader.List(ctx, &projects, client.InNamespace(team.ns)); err != nil {
+	if err := r.reader.List(ctx, &projects, client.InNamespace(team.homeNS)); err != nil {
 		return OnboardingProgress{}, err
 	}
 	// The dismissal/test-connection flags live on the Team CR — fetch it for the annotations
 	// (the resolveTeam list is memoized per UID and does not retain the object).
 	var teamCR ksquadv1.Team
-	if err := r.reader.Get(ctx, client.ObjectKey{Namespace: team.ns, Name: team.name}, &teamCR); err != nil {
+	if err := r.reader.Get(ctx, client.ObjectKey{Namespace: team.homeNS, Name: team.name}, &teamCR); err != nil {
 		return OnboardingProgress{}, err
 	}
 	complete := [OnboardingTotalMilestones]bool{

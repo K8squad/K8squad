@@ -152,18 +152,25 @@ type OrgReader interface {
 }
 
 // ClientOrgReader is the production OrgReader over any client.Reader (the informer cache in the
-// host; a fake client in tests). Read-only. Team UID→(name, namespace) is memoized: a Team's UID
-// and name are immutable for the object's lifetime, so the cluster-wide Team list runs at most once
-// per distinct UID (the credentials.go perf discipline).
+// host; a fake client in tests). Read-only. Team UID→identity is memoized: a Team's UID, name, and
+// (once reconciled) its home/execution namespaces are immutable for the object's lifetime, so the
+// cluster-wide Team list runs at most once per distinct UID (the credentials.go perf discipline).
 type ClientOrgReader struct {
 	reader client.Reader
 	mu     sync.RWMutex
-	teams  map[string]teamIdentity // teamUID → identity (immutable once resolved)
+	teams  map[string]teamIdentity // teamUID → identity (memoized once reconciled)
 }
 
+// teamIdentity carries the two namespaces the org read model must keep distinct (ISI-4737, the
+// ISI-4565 class): Agents/Roles/AgentRuntimes live in the Team CR's HOME namespace, while the
+// operator mints Run CRs into the reconciled EXECUTION namespace (Team.Status.Namespace). Under the
+// split-namespace layout (M1.2/ISI-4128) the two differ, so a read that lists both from one
+// namespace finds no Runs and every agent renders idle forever. execNS falls back to homeNS for the
+// co-tenant / pre-per-team-namespace layout where a squad IS a single namespace.
 type teamIdentity struct {
-	name string
-	ns   string
+	name   string
+	homeNS string
+	execNS string
 }
 
 // NewClientOrgReader builds the org read model over a client.Reader (the informer cache in the
@@ -172,7 +179,11 @@ func NewClientOrgReader(r client.Reader) *ClientOrgReader {
 	return &ClientOrgReader{reader: r, teams: map[string]teamIdentity{}}
 }
 
-// resolveTeam resolves the Team UID to its (name, namespace) — the §12.1 tenancy root — memoized.
+// resolveTeam resolves the Team UID to its identity (name + home/exec namespaces) — the §12.1
+// tenancy root — memoized once the Team is reconciled. An unreconciled Team (Status.Namespace
+// empty) is resolved with execNS falling back to homeNS but is NOT memoized: Status.Namespace is
+// written once, later, so caching the fallback would strand the run namespace for the object's
+// lifetime and keep every agent idle even after reconcile lands.
 func (r *ClientOrgReader) resolveTeam(ctx context.Context, teamUID string) (teamIdentity, error) {
 	if teamUID == "" {
 		return teamIdentity{}, ErrTeamNotFound
@@ -193,11 +204,20 @@ func (r *ClientOrgReader) resolveTeam(ctx context.Context, teamUID string) (team
 		return teamIdentity{}, err
 	}
 	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			id := teamIdentity{name: teams.Items[i].Name, ns: teams.Items[i].Namespace}
-			r.teams[teamUID] = id
+		if string(teams.Items[i].UID) != teamUID {
+			continue
+		}
+		homeNS := teams.Items[i].Namespace
+		execNS := teams.Items[i].Status.Namespace
+		id := teamIdentity{name: teams.Items[i].Name, homeNS: homeNS, execNS: execNS}
+		if execNS == "" {
+			// Not yet reconciled: serve this read against the home namespace but do not
+			// memoize, so a later reconcile that stamps Status.Namespace is picked up.
+			id.execNS = homeNS
 			return id, nil
 		}
+		r.teams[teamUID] = id
+		return id, nil
 	}
 	return teamIdentity{}, ErrTeamNotFound
 }
@@ -210,7 +230,7 @@ func (r *ClientOrgReader) Org(ctx context.Context, teamUID string) (TeamOrg, err
 	if err != nil {
 		return TeamOrg{}, err
 	}
-	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, team.ns)
+	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, team.homeNS, team.execNS)
 	if err != nil {
 		return TeamOrg{}, err
 	}
@@ -223,45 +243,57 @@ func (r *ClientOrgReader) Org(ctx context.Context, teamUID string) (TeamOrg, err
 	return out, nil
 }
 
-// resolveAgentScope locates the Agent identified by agentUID, returning its namespace and name.
-// admin ⇒ the Agent is searched CLUSTER-WIDE (fleet-wide, ADR-039 / ISI-3932): the bootstrap
-// admin has no backing Team namespace to fence to, so a namespace filter would (correctly for a
-// tenant, wrongly for the fleet admin) hide every Agent. non-admin ⇒ the search is fenced to
-// teamUID's namespace (a UID outside it is structurally ErrAgentNotFound — existence-hiding). The
-// returned namespace is always the FOUND Agent's own namespace, so downstream Run/Role/Runtime
-// reads scope to the Agent's squad regardless of caller.
-func (r *ClientOrgReader) resolveAgentScope(ctx context.Context, teamUID, agentUID string, admin bool) (ns, name string, err error) {
+// resolveAgentScope locates the Agent identified by agentUID, returning its HOME namespace (where
+// the Agent/Role/Runtime CRs live), the EXECUTION namespace where its Run CRs live (ISI-4737), and
+// its name. admin ⇒ the Agent is searched CLUSTER-WIDE (fleet-wide, ADR-039 / ISI-3932): the
+// bootstrap admin has no backing Team namespace to fence to, so a namespace filter would (correctly
+// for a tenant, wrongly for the fleet admin) hide every Agent. non-admin ⇒ the search is fenced to
+// teamUID's home namespace (a UID outside it is structurally ErrAgentNotFound — existence-hiding).
+// The returned homeNS is always the FOUND Agent's own namespace; execNS is resolved from the owning
+// Team's Status.Namespace (falling back to homeNS), so downstream Run reads scope to the squad's
+// execution namespace regardless of caller.
+func (r *ClientOrgReader) resolveAgentScope(ctx context.Context, teamUID, agentUID string, admin bool) (homeNS, execNS, name string, err error) {
 	var agents ksquadv1.AgentList
 	if admin {
 		if err = r.reader.List(ctx, &agents); err != nil { // no InNamespace ⇒ every namespace
-			return "", "", err
+			return "", "", "", err
 		}
-	} else {
-		team, terr := r.resolveTeam(ctx, teamUID)
-		if terr != nil {
-			return "", "", terr
+		for i := range agents.Items {
+			if string(agents.Items[i].UID) == agentUID {
+				home := agents.Items[i].Namespace
+				exec, rerr := runNamespaceForHome(ctx, r.reader, home)
+				if rerr != nil {
+					return "", "", "", rerr
+				}
+				return home, exec, agents.Items[i].Name, nil
+			}
 		}
-		if err = r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
-			return "", "", err
-		}
+		return "", "", "", ErrAgentNotFound
+	}
+	team, terr := r.resolveTeam(ctx, teamUID)
+	if terr != nil {
+		return "", "", "", terr
+	}
+	if err = r.reader.List(ctx, &agents, client.InNamespace(team.homeNS)); err != nil {
+		return "", "", "", err
 	}
 	for i := range agents.Items {
 		if string(agents.Items[i].UID) == agentUID {
-			return agents.Items[i].Namespace, agents.Items[i].Name, nil
+			return team.homeNS, team.execNS, agents.Items[i].Name, nil
 		}
 	}
-	return "", "", ErrAgentNotFound
+	return "", "", "", ErrAgentNotFound
 }
 
 // Agent resolves a single Agent by UID and projects it. admin ⇒ resolved fleet-wide; non-admin ⇒
 // within the caller's Team namespace. A UID that resolves to no in-scope Agent (missing, or
 // belonging to another Team when non-admin) yields ErrAgentNotFound — existence-hiding.
 func (r *ClientOrgReader) Agent(ctx context.Context, teamUID, agentUID string, admin bool) (OrgAgent, error) {
-	ns, _, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
+	homeNS, execNS, _, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
 	if err != nil {
 		return OrgAgent{}, err
 	}
-	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, ns)
+	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, homeNS, execNS)
 	if err != nil {
 		return OrgAgent{}, err
 	}
@@ -275,18 +307,23 @@ func (r *ClientOrgReader) Agent(ctx context.Context, teamUID, agentUID string, a
 
 // AgentRuns lists the Runs that select the Agent (by UID), most-recent-first, paginated. admin ⇒
 // the Agent is located fleet-wide; non-admin ⇒ within the caller's Team namespace (existence-hiding
-// 404 otherwise). Runs are always read from the resolved Agent's OWN namespace.
+// 404 otherwise). Runs are read from the squad's EXECUTION namespace (Team.Status.Namespace, where
+// the operator mints them), which differs from the Agent's home namespace under the split-namespace
+// layout (ISI-4737).
 func (r *ClientOrgReader) AgentRuns(ctx context.Context, teamUID, agentUID string, limit, offset int, admin bool) ([]RunSummary, error) {
-	ns, agentName, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
+	homeNS, execNS, agentName, err := r.resolveAgentScope(ctx, teamUID, agentUID, admin)
 	if err != nil {
 		return nil, err
 	}
 
+	// Runs live in the squad's EXECUTION namespace (Team.Status.Namespace), while the Agent CRs
+	// live in the HOME namespace; the agent-ref tenancy check is against homeNS (where the Agent
+	// being queried lives) — ISI-4737.
 	var runs ksquadv1.RunList
-	if err := r.reader.List(ctx, &runs, client.InNamespace(ns)); err != nil {
+	if err := r.reader.List(ctx, &runs, client.InNamespace(execNS)); err != nil {
 		return nil, err
 	}
-	selected := runsForAgent(runs.Items, agentName, ns)
+	selected := runsForAgent(runs.Items, agentName, homeNS)
 	// Most-recent-first: by claim time when known, else creation time, tie-broken by name so the
 	// order is stable across identical timestamps.
 	sort.Slice(selected, func(a, b int) bool {
@@ -312,14 +349,16 @@ func (r *ClientOrgReader) AgentStatuses(ctx context.Context, teamUID string) ([]
 		return nil, err
 	}
 	var agents ksquadv1.AgentList
-	if err := r.reader.List(ctx, &agents, client.InNamespace(team.ns)); err != nil {
+	if err := r.reader.List(ctx, &agents, client.InNamespace(team.homeNS)); err != nil {
 		return nil, err
 	}
+	// Runs live in the EXECUTION namespace, Agents in the HOME namespace (ISI-4737): list each
+	// where it actually lives, then attribute Runs to Agents by name (homeNS tenancy check).
 	var runs ksquadv1.RunList
-	if err := r.reader.List(ctx, &runs, client.InNamespace(team.ns)); err != nil {
+	if err := r.reader.List(ctx, &runs, client.InNamespace(team.execNS)); err != nil {
 		return nil, err
 	}
-	runsByAgent := indexRunsByAgent(runs.Items, team.ns)
+	runsByAgent := indexRunsByAgent(runs.Items, team.homeNS, agentNames(agents.Items))
 
 	out := make([]AgentStatusDelta, 0, len(agents.Items))
 	for i := range agents.Items {
@@ -336,24 +375,27 @@ func (r *ClientOrgReader) AgentStatuses(ctx context.Context, teamUID string) ([]
 	return out, nil
 }
 
-// load lists the Agents in ns plus the lookup tables the per-agent projection needs: runtime
-// flavor by AgentRuntime name, Role by name, and Runs indexed by the Agent they select.
+// load lists the Agents/Roles/AgentRuntimes in the HOME namespace plus the Runs in the EXECUTION
+// namespace (ISI-4737 — the two differ under the split-namespace layout, mirroring overview.go's
+// ISI-4565 bridge), then builds the lookup tables the per-agent projection needs: runtime flavor by
+// AgentRuntime name, Role by name, and Runs indexed by the Agent they select. execNS == homeNS for
+// the co-tenant / pre-per-team-namespace layout.
 func (r *ClientOrgReader) load(
-	ctx context.Context, ns string,
+	ctx context.Context, homeNS, execNS string,
 ) (agents ksquadv1.AgentList, runtimeType map[string]string, roleByName map[string]*ksquadv1.Role, runsByAgent map[string][]*ksquadv1.Run, err error) {
-	if err = r.reader.List(ctx, &agents, client.InNamespace(ns)); err != nil {
+	if err = r.reader.List(ctx, &agents, client.InNamespace(homeNS)); err != nil {
 		return
 	}
 	var runtimes ksquadv1.AgentRuntimeList
-	if err = r.reader.List(ctx, &runtimes, client.InNamespace(ns)); err != nil {
+	if err = r.reader.List(ctx, &runtimes, client.InNamespace(homeNS)); err != nil {
 		return
 	}
 	var roles ksquadv1.RoleList
-	if err = r.reader.List(ctx, &roles, client.InNamespace(ns)); err != nil {
+	if err = r.reader.List(ctx, &roles, client.InNamespace(homeNS)); err != nil {
 		return
 	}
 	var runs ksquadv1.RunList
-	if err = r.reader.List(ctx, &runs, client.InNamespace(ns)); err != nil {
+	if err = r.reader.List(ctx, &runs, client.InNamespace(execNS)); err != nil {
 		return
 	}
 
@@ -365,8 +407,18 @@ func (r *ClientOrgReader) load(
 	for i := range roles.Items {
 		roleByName[roles.Items[i].Name] = &roles.Items[i]
 	}
-	runsByAgent = indexRunsByAgent(runs.Items, ns)
+	runsByAgent = indexRunsByAgent(runs.Items, homeNS, agentNames(agents.Items))
 	return
+}
+
+// agentNames lists the Agent object names — the keys a defaulted Run (empty spec.agents) attributes
+// to across every Agent in the squad (see indexRunsByAgent).
+func agentNames(items []ksquadv1.Agent) []string {
+	names := make([]string, 0, len(items))
+	for i := range items {
+		names = append(names, items[i].Name)
+	}
+	return names
 }
 
 // projectAgent projects one Agent into its org node: runtime flavor (falling back to the ref name
@@ -402,14 +454,24 @@ func projectAgent(
 	}
 }
 
-// indexRunsByAgent groups Runs by the Agent NAME they select (Run.spec.agents). An explicit
-// foreign namespace in the ref is skipped (ObjectRef.Namespace empty means the Run's own
-// namespace) so a cross-namespace name never attributes to a same-named Agent here — the
-// credentials.go tenancy rule.
-func indexRunsByAgent(items []ksquadv1.Run, ns string) map[string][]*ksquadv1.Run {
+// indexRunsByAgent groups Runs by the Agent NAME they select (Run.spec.agents). A ref whose
+// namespace names a DIFFERENT namespace than where the Agents live is skipped (an empty
+// ObjectRef.Namespace attributes to the local Agents) so a cross-namespace name never attributes to
+// a same-named Agent here — the credentials.go tenancy rule. A Run with NO explicit agents is a
+// reconciler-defaulted Run: it attributes to EVERY Agent in the squad, mirroring runsForAgent's
+// empty-spec fallback (ISI-4737 secondary — intake always sets spec.agents so this is a consistency
+// guard, not the dispatch path). ns is the namespace the Agents live in (homeNS).
+func indexRunsByAgent(items []ksquadv1.Run, ns string, agentNames []string) map[string][]*ksquadv1.Run {
 	byAgent := map[string][]*ksquadv1.Run{}
 	for i := range items {
 		run := &items[i]
+		if len(run.Spec.Agents) == 0 {
+			// Defaulted Run: applies to all Agents in the squad.
+			for _, name := range agentNames {
+				byAgent[name] = append(byAgent[name], run)
+			}
+			continue
+		}
 		for _, ref := range run.Spec.Agents {
 			if ref.Namespace != "" && ref.Namespace != ns {
 				continue

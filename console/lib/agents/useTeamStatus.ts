@@ -25,6 +25,15 @@ export type AgentStatusDelta = {
 
 export type StreamStatus = "connecting" | "open" | "error";
 
+// A native EventSource auto-reconnects on a transient drop (ingress/gateway recycling the
+// text/event-stream connection, a brief 5xx, a node roll). Escalating to a persistent alarming
+// "error" on the FIRST onerror makes the chip flap live↔error every recycle even though the stream
+// self-heals within a second or two (ISI-4737 symptom A). We instead hold the last-good state
+// through a grace window and only surface "error" if the connection stays down past it — a brief
+// reconnect never reaches the user. Long enough to cover an ingress recycle + reconnect handshake,
+// short enough that a genuine sustained outage still surfaces promptly.
+export const RECONNECT_GRACE_MS = 10_000;
+
 const STATUSES: ReadonlySet<string> = new Set([
   "idle",
   "running",
@@ -54,16 +63,42 @@ export function useTeamStatus(teamId: string) {
   const [deltas, setDeltas] = useState<Record<string, AgentStatusDelta>>({});
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const esRef = useRef<EventSource | null>(null);
+  const graceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!teamId) return;
+    const clearGrace = () => {
+      if (graceTimer.current !== null) {
+        clearTimeout(graceTimer.current);
+        graceTimer.current = null;
+      }
+    };
     const es = new EventSource(
       `/api/teams/${encodeURIComponent(teamId)}/status/stream`,
     );
     esRef.current = es;
 
-    es.onopen = () => setStatus("open");
-    es.onerror = () => setStatus("error"); // native EventSource auto-reconnects w/ Last-Event-ID
+    es.onopen = () => {
+      clearGrace(); // a (re)connect landed — cancel any pending error escalation
+      setStatus("open");
+    };
+    es.onerror = () => {
+      // readyState CLOSED ⇒ the browser will NOT auto-reconnect (a fatal 4xx / CORS):
+      // that is a genuine terminal error, surface it at once. CONNECTING ⇒ a transient
+      // drop the browser is already re-establishing — hold the last-good state through
+      // the grace window and only escalate to "error" if it stays down (ISI-4737 §A / AC-A).
+      if (es.readyState === EventSource.CLOSED) {
+        clearGrace();
+        setStatus("error");
+        return;
+      }
+      if (graceTimer.current === null) {
+        graceTimer.current = setTimeout(() => {
+          graceTimer.current = null;
+          setStatus("error");
+        }, RECONNECT_GRACE_MS);
+      }
+    };
     es.onmessage = (msg: MessageEvent) => {
       let parsed: unknown;
       try {
@@ -76,6 +111,7 @@ export function useTeamStatus(teamId: string) {
     };
 
     return () => {
+      clearGrace();
       es.close();
       esRef.current = null;
     };
