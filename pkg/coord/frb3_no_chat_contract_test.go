@@ -390,6 +390,15 @@ var allowedSurface = map[string]string{
 	"NewWorkItemDispatchStore":              "§8.6 constructor (db + Team-agent resolver)",
 	"WorkItemDispatchStore.RequestDispatch": "§8.6/§6.5 agent-∈-Team check + intent write + backlog→todo CAS + audit, no-fence, Team-scoped",
 
+	// ADR-0024 §5 (ISI-4741): the AGENT-facing half of the board dispatch — the
+	// PM→implementer handoff. NOT an agent-to-agent channel: it adds one custody
+	// gate (caller holds the item or an ancestor) then delegates to the single-
+	// sourced RequestDispatch, so the handoff still lands as a coord dispatch
+	// (requested_agent intent + backlog→todo CAS + agent-∈-Team guard), never a
+	// message. Provenance is honestly stamped initiator=agent.
+	"AgentRequestDispatchInput":                  "ADR-0024 §5 agent dispatch input (workItem/assignee + server-stamped agent identity + team scope)",
+	"WorkItemDispatchStore.AgentRequestDispatch": "ADR-0024 §5 custody-gated PM→implementer handoff; delegates to RequestDispatch (initiator=agent), inherits agent-∈-Team",
+
 	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
 	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own
 	// content + claim/fence state; AppendComment is the SANCTIONED handoff half

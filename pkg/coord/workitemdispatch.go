@@ -66,6 +66,12 @@ type RequestDispatchInput struct {
 	TeamID            string
 	Principal         string
 	InitiatedByUserID string
+	// Initiator names who requested the dispatch, stamped verbatim into the §6.5
+	// audit payload. Empty ⇒ "human" (the board default) so every existing caller
+	// and audit row is byte-identical; the agent authoring lane (ADR-0024,
+	// AgentRequestDispatch) passes "agent" so a PM→implementer handoff is
+	// provenanced as agent-initiated, never spoofed as a human dispatch.
+	Initiator string
 }
 
 // WorkItemDispatchResult is the outcome of one successful dispatch: the lane advance the
@@ -236,8 +242,12 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 	// custody). Mirrors humanstate.go's state_transition row shape so the whole
 	// board write surface reads one way; the re-assign branch books its own event
 	// type with from==to=="todo" (the lane did not move).
+	initiator := in.Initiator
+	if initiator == "" {
+		initiator = "human" // board default; keeps every human dispatch audit byte-identical.
+	}
 	payload, err := json.Marshal(map[string]any{
-		"initiator":       "human",
+		"initiator":       initiator,
 		"requested_agent": in.AgentID,
 	})
 	if err != nil {
