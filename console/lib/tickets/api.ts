@@ -8,6 +8,7 @@
 // the console (distinct authority path, §6.2).
 
 import { encodeProjectId } from "@/lib/projectId";
+import type { GithubIssue } from "@/lib/github-status";
 import type {
   CreateWorkItemBody,
   StateTransitionBody,
@@ -184,6 +185,84 @@ export async function dispatchWorkItem(
     },
   );
   return (await jsonOrThrow(res)) as DispatchResult;
+}
+
+/** The Epic-2 bridge result (ISI-4757 contract): the apiserver finds-or-creates the
+ * work-item for a GitHub issue and dispatches the chosen agent atomically. `created`
+ * is false when an existing work-item was reused (idempotent re-assign). */
+export interface GithubAssignResult {
+  workItemId: string;
+  /** The compact issue ref `owner/repo#number` the apiserver derived + labelled. */
+  issueRef: string;
+  created: boolean;
+  dispatch: { requestedAgent: string; fromState: string; toState: string };
+}
+
+/** Discriminated failure code for the assign-&-dispatch call, mapped from the
+ * Epic-2 status codes so the UI can surface the right §6 message. */
+export type GithubAssignErrorCode =
+  | "invalid-agent" // 400 — invalid/missing agent
+  | "forbidden" // 403 — human-only / agent not in this Team
+  | "already" // 409 — already dispatched / bridged (non-destructive)
+  | "not-found" // 404 — issue not resolvable
+  | "not-hosted" // 501 — bridge seam not hosted in this deployment
+  | "failed"; // network / other
+
+export type GithubAssignOutcome =
+  | { ok: true; result: GithubAssignResult }
+  | { ok: false; status: number; code: GithubAssignErrorCode };
+
+function mapGithubAssignError(status: number): GithubAssignErrorCode {
+  switch (status) {
+    case 400:
+      return "invalid-agent";
+    case 403:
+      return "forbidden";
+    case 409:
+      return "already";
+    case 404:
+      return "not-found";
+    case 501:
+      return "not-hosted";
+    default:
+      return "failed";
+  }
+}
+
+/**
+ * Assign a GitHub issue to one of the squad's agents (ISI-4759 / ISI-4749 epic 3),
+ * calling the Epic-2 bridge (ISI-4757) via its BFF proxy:
+ *   POST /api/projects/{projectId}/github/issues/{number}/assign {agentId, url}
+ * The apiserver does find-or-create work-item + dispatch in ONE atomic call,
+ * keyed on the dedicated idempotency label `ksquad.github.issue=owner/repo#N`
+ * (NOT the telemetry join-key), so a repeat click is safe (created:false / 409).
+ * `agentId` carries the agent NAME (ISI-4501 dispatch convention). Honesty
+ * (ADR-0013): this is a Paperclip-side dispatch only — it NEVER writes GitHub
+ * assignees. Returns a discriminated outcome so the popup maps states without
+ * throwing.
+ */
+export async function assignAndDispatch(
+  projectId: string,
+  issue: Pick<GithubIssue, "number" | "url">,
+  agentName: string,
+): Promise<GithubAssignOutcome> {
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeProjectId(projectId)}/github/issues/${issue.number}/assign`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agentId: agentName, url: issue.url }),
+        cache: "no-store",
+      },
+    );
+    if (res.ok) {
+      return { ok: true, result: (await res.json()) as GithubAssignResult };
+    }
+    return { ok: false, status: res.status, code: mapGithubAssignError(res.status) };
+  } catch {
+    return { ok: false, status: 0, code: "failed" };
+  }
 }
 
 /**

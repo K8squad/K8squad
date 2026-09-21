@@ -3891,6 +3891,56 @@ a:hover {
   margin-left: 3px;
 }
 
+/* ISI-4759 (ISI-4749 epic 3): the agent-assign / dispatch control that fills the
+   popup's assign slot. */
+.gh-issue-assign {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gh-issue-assign__label {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.gh-issue-assign__select {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 8px);
+  color: var(--text-hi);
+  font-size: 0.85rem;
+}
+.gh-issue-assign__select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.gh-issue-assign__submit {
+  align-self: flex-start;
+  padding: 8px 14px;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-control, 8px);
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gh-issue-assign__submit:hover:not(:disabled),
+.gh-issue-assign__submit:focus-visible:not(:disabled) {
+  filter: brightness(1.08);
+}
+.gh-issue-assign__submit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.gh-issue-assign__error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--danger, #ef5350);
+}
+
 @media (max-width: 900px) {
   .gh-kanban {
     grid-template-columns: repeat(4, minmax(220px, 1fr));
