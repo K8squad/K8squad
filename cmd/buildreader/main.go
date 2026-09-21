@@ -26,6 +26,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -36,7 +37,23 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver"
 )
 
+// version is stamped at build time (-ldflags "-X main.version=..."). It doubles as
+// the payload for the fast-exit `version` subcommand below.
+var version = "dev"
+
 func main() {
+	// Fast-exit subcommand (ISI-4721): the distroless/static image ships no shell or
+	// coreutils, so the classic `/bin/false` image-warm trick used by the
+	// `buildreader-prepull` DaemonSet no longer exists in the image and crash-loops
+	// with `exec "/bin/false": ... no such file or directory` (P-2609204, GH #525).
+	// Give any image-warm / pre-pull mechanism a command that actually exists in the
+	// image: `buildreader version` pulls the image, prints, and exits 0 without
+	// starting the server. Keep it arg-tolerant so it never accidentally serves.
+	if isVersionArgs(os.Args[1:]) {
+		fmt.Println(version)
+		return
+	}
+
 	root := envOr("KSQUAD_WORKSPACE_ROOT", readserver.DefaultRoot)
 	addr := envOr("KSQUAD_READER_ADDR", ":8080")
 
@@ -66,6 +83,21 @@ func main() {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(shutCtx)
+}
+
+// isVersionArgs reports whether args request the fast-exit version subcommand. It is
+// the only recognized argument form; anything else falls through to the server so the
+// image-warm command must be an exact match and can never accidentally start serving.
+func isVersionArgs(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "version", "--version", "-version", "-v":
+		return true
+	default:
+		return false
+	}
 }
 
 func envOr(key, def string) string {
