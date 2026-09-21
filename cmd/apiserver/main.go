@@ -456,6 +456,19 @@ func main() {
 		log.Printf("ksquad-apiserver: CRD-apply write surface ready (8.5 compose endpoints; first-team-create tenancy rebind on)")
 	}
 
+	// E1 PR-review-automation config surface (ISI-4763 / ISI-4750): GET (member+)
+	// / PUT-PATCH (contributor+) /api/projects/{id}/repo/review-automation reads
+	// and persists spec.repo.reviewAutomation. Reads ride the SAME informer cache
+	// the settings read model uses; writes ride the SAME direct client the compose
+	// surface uses (one write path into the cluster). A cluster-less dev run (nil
+	// cache) leaves it nil ⇒ the route keeps the documented 501; a cache-up but
+	// write-down host serves reads and 501s writes (handler guard).
+	var reviewAutomation *apiserver.ReviewAutomationService
+	if dashboardReader != nil {
+		reviewAutomation = apiserver.NewReviewAutomationService(dashboardReader, crdApplier, memberships)
+		log.Printf("ksquad-apiserver: review-automation config surface ready (GET/PUT/PATCH /api/projects/{id}/repo/review-automation)")
+	}
+
 	// ISI-3954 OTelConfig write surface (ISI-3949 gap G5): PUT/POST /api/otelconfig
 	// upserts the cluster-scoped CR "default" through the SAME direct write client
 	// the compose surface uses (one write path into the cluster, never two),
@@ -594,13 +607,14 @@ func main() {
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
-		ProjectRoles:    memberships,
-		ProjectSettings: projectSettings,
-		ComposeCRD:      composeCRD,
-		IssueLinks:      issueLinks,
-		GithubStatus:    githubStatus,
-		Killer:          apiserver.NewProdRunKiller(db),
-		AuditLog:        auditLog,
+		ProjectRoles:     memberships,
+		ProjectSettings:  projectSettings,
+		ReviewAutomation: reviewAutomation,
+		ComposeCRD:       composeCRD,
+		IssueLinks:       issueLinks,
+		GithubStatus:     githubStatus,
+		Killer:           apiserver.NewProdRunKiller(db),
+		AuditLog:         auditLog,
 		// Epic D tool-usage panel read model (ISI-3288, D3): aggregates the
 		// operator's ksquad_* tool metrics. Unset takes the in-cluster
 		// operator metrics default; a scrape that cannot reach it answers

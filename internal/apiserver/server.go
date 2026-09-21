@@ -114,6 +114,14 @@ type Options struct {
 	// like Dashboard. It rides the SAME §12.3 choke point + requireProjectRole
 	// gate as the dashboard — no settings-specific authz path.
 	ProjectSettings *ProjectSettingsService
+	// ReviewAutomation is the E1 (ISI-4763 / ISI-4750) PR-review-automation config
+	// service: GET (member+) / PUT-PATCH (contributor+)
+	// /api/projects/{projectId}/repo/review-automation reads and persists
+	// spec.repo.reviewAutomation behind the SAME §12.3 choke point +
+	// requireProjectRole(viewer) gate; the contributor write-tier is enforced in
+	// the handler. When nil the route keeps the documented 501 (cluster-less dev),
+	// exactly like the other write models.
+	ReviewAutomation *ReviewAutomationService
 	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
@@ -725,6 +733,27 @@ func (s *Server) routes(opts Options) {
 		} else {
 			settings.HandleFunc("", notImplemented("project-settings read model", "ISI-3999: wire a ProjectSettingsService (informer cache) to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// E1 PR-review-automation config (ISI-4763 / ISI-4750): the dedicated
+		// spec.repo.reviewAutomation sub-resource. Behind the SAME §12.3 choke point
+		// + requireProjectRole(viewer) gate — read = member+; the contributor
+		// write-tier for PUT/PATCH is enforced inside the handler (canWriteProject),
+		// so a viewer reaching the write is a 403, never a silent accept. Writes are
+		// same-origin guarded like every other mutation route. Nil service (cluster-
+		// less dev) ⇒ 501, honestly, until a ReviewAutomationService is wired.
+		reviewAuto := s.router.Path("/api/projects/{projectId}/repo/review-automation").Subrouter()
+		reviewAuto.Use(authz)
+		reviewAuto.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		if opts.ProjectRoles != nil {
+			reviewAuto.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.ReviewAutomation != nil {
+			reviewAuto.HandleFunc("", s.reviewAutomationRead(opts.ReviewAutomation)).Methods(http.MethodGet)
+			reviewAuto.HandleFunc("", s.reviewAutomationWrite(opts.ReviewAutomation)).Methods(http.MethodPut, http.MethodPatch)
+		} else {
+			reviewAuto.HandleFunc("", notImplemented("review-automation config API", "ISI-4763: wire a ReviewAutomationService (informer cache + write client) to enable")).
+				Methods(http.MethodGet, http.MethodPut, http.MethodPatch)
 		}
 
 		// S4b — Project File Explorer (ISI-3991, ADR-0012 §D2): read-only workspace browse

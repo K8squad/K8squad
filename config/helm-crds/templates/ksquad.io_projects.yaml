@@ -159,6 +159,60 @@ spec:
                       Ref is the default ref to track (branch or tag); empty means the
                       provider default branch.
                     type: string
+                  reviewAutomation:
+                    description: |-
+                      ReviewAutomation configures human-enabled, system-executed PR-review
+                      automation for this Project (ISI-4750, PRD v1 D1-D6). A human enabling this
+                      policy is the authorizing act (D1): the reviewer Run is later dispatched
+                      under a SYSTEM identity, NOT agent-initiated - this config introduces NO
+                      agent-authored work item and does not cross the ISI-4711 custody wall.
+                      Nil (the default) means automation is off. Writing this config is INERT
+                      until the E3 change-detection and E4 dispatch epics land - it stores policy
+                      only and triggers nothing yet.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled turns the standing policy on. When false (or the whole struct is
+                          nil) no review is ever triggered. Enabling is the human authorizing act
+                          for the D1 system-dispatch path.
+                        type: boolean
+                      enabledBy:
+                        description: |-
+                          EnabledBy is the SERVER-STAMPED principal that last set Enabled=true - the
+                          D1 authorizing-act provenance threaded into the E4 system dispatch (E0 §5).
+                          It is written by the apiserver from the authenticated caller on any write
+                          that sets Enabled=true, and CLEARED when Enabled is set false. It is NEVER
+                          trusted from the request body: the write handler overwrites/strips any
+                          client-supplied value. Read-only from the caller's perspective.
+                        type: string
+                      reviewerAgentId:
+                        description: |-
+                          ReviewerAgentID is the team agent that performs the review. It MUST be an
+                          agent in the owning Team's composition whose Role carries the code_review
+                          capability (Role.spec.activePhases contains "code_review", D5); the
+                          apiserver validates eligibility on write via the shared ReviewerEligibility
+                          resolver. Required whenever Enabled is true.
+                        type: string
+                      scope:
+                        default: team_authored
+                        description: |-
+                          Scope selects which PRs are reviewed (D3). "team_authored" (default) only
+                          reviews PRs whose actor is a team agent; "all" reviews every PR.
+                        enum:
+                        - team_authored
+                        - all
+                        type: string
+                      trigger:
+                        default: on_new_commits
+                        description: |-
+                          Trigger selects when a review fires (D4). "on_open" reviews a newly
+                          mirrored PR row once; "on_new_commits" (default) also re-reviews when the
+                          mirrored head SHA changes (requires the E3 mirror head-SHA enrichment).
+                        enum:
+                        - on_open
+                        - on_new_commits
+                        type: string
+                    type: object
                   sync:
                     description: Sync configures the repo-sync reconciler (§5.4).
                       Nil disables sync.

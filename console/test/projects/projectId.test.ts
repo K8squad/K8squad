@@ -79,6 +79,11 @@ import { GET as threadGET } from "@/app/api/projects/[projectId]/discussion/thre
 import { POST as threadMessagesPOST } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/messages/route";
 import { GET as githubGET } from "@/app/api/projects/[projectId]/github/route";
 import { POST as githubSyncPOST } from "@/app/api/projects/[projectId]/github/sync/route";
+import {
+  GET as reviewAutoGET,
+  PUT as reviewAutoPUT,
+  PATCH as reviewAutoPATCH,
+} from "@/app/api/projects/[projectId]/repo/review-automation/route";
 
 // Minimal NextRequest stand-in — the routes read only `nextUrl.search`.
 function fakeReq(search = ""): import("next/server").NextRequest {
@@ -136,6 +141,35 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
       await githubSyncPOST(fakeReq(), { params: Promise.resolve({ projectId: param }) });
       const p = pathOf(proxyJsonWrite);
       expect(p).toBe(`/api/projects/${ENCODED}/github/sync`);
+      expect(p).not.toContain("%252F");
+    });
+  }
+
+  // ISI-4763 (E1) — the review-automation sub-resource is a NEW project-scoped
+  // path; its BFF route must ride the SAME single-encoding discipline for both the
+  // read (GET) and write (PUT/PATCH) verbs, from either router-shape.
+  for (const [shape, param] of [
+    ["router-encoded", ENCODED],
+    ["decoded", NS_NAME],
+  ] as const) {
+    it(`review-automation GET forwards ns%2Fname once (${shape})`, async () => {
+      await reviewAutoGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJson);
+      expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
+      expect(p).not.toContain("%252F");
+    });
+
+    it(`review-automation PUT forwards ns%2Fname once (${shape})`, async () => {
+      await reviewAutoPUT(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJsonWrite);
+      expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
+      expect(p).not.toContain("%252F");
+    });
+
+    it(`review-automation PATCH forwards ns%2Fname once (${shape})`, async () => {
+      await reviewAutoPATCH(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJsonWrite);
+      expect(p).toBe(`/api/projects/${ENCODED}/repo/review-automation`);
       expect(p).not.toContain("%252F");
     });
   }
