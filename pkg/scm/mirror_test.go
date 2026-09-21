@@ -18,6 +18,7 @@ package scm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -96,6 +97,32 @@ func TestBuildMirrorRowsProvenanceTrustEcho(t *testing.T) {
 		if row.ExternalID == "9" {
 			t.Error("bot-authored record was not echo-suppressed")
 		}
+	}
+}
+
+// ISI-4750 E3: the PR head commit SHA rides the mirror payload JSONB — the
+// mirror previously carried the branch name (HeadRef) but no commit, so a
+// consumer could not tell a pushed PR from an unchanged one. BuildMirrorRows
+// must serialize it, and it must survive the payload round-trip unchanged
+// (this is the change-detection key review automation dedups on).
+func TestBuildMirrorRowsCarriesHeadSHAInPayload(t *testing.T) {
+	provider := &stubProvider{name: "github"}
+	rows := BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", []NormalizedRecord{
+		{Kind: RecordTypePR, ExternalID: "42", State: "open", Title: "feat", Actor: "dev",
+			HeadRef: "feat/x", HeadSHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+	}, "")
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	var payload MirrorPayload
+	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.HeadRef != "feat/x" {
+		t.Fatalf("payload HeadRef = %q, want the branch name feat/x", payload.HeadRef)
+	}
+	if payload.HeadSHA != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+		t.Fatalf("payload HeadSHA = %q, want the PR head commit SHA carried through the mirror", payload.HeadSHA)
 	}
 }
 

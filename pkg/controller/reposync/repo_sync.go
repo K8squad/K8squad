@@ -78,6 +78,7 @@ const (
 	reasonProviderFail = "ProviderError"
 	reasonMirrorFail   = "MirrorWriteError"
 	reasonIssueSync    = "IssueSyncError"
+	reasonReviewFail   = "ReviewTriggerError"
 )
 
 // DefaultPollIntervalSeconds is used when spec.repo.sync.pollIntervalSeconds
@@ -95,6 +96,27 @@ const minPollIntervalSeconds int32 = 60
 // dropped — it is never logged, never echoed, never placed in a Run env
 // (AC5, NFR-SEC8; there is no code path from this package to Run pods).
 const tokenSecretKey = "token"
+
+// ReviewTrigger is the OPTIONAL PR-review-automation dispatch seam (ISI-4750
+// E3/E4). It is introduced here (E3) and implemented by E4 (ISI-4766); a nil
+// trigger disables review automation entirely, exactly like a nil IssueSync
+// disables the link pass. When wired, the SAME reconcile pass that upsert the
+// mirror and ran the issue link pass hands the JUST-APPLIED snapshot rows to
+// the trigger — same triggers (webhook + poll), same level-triggered
+// discipline. E3 deliberately owns only the seam and the invocation site: the
+// trigger BODY (which rows qualify, the work-item label dedup on (PR number,
+// head SHA), the create-if-absent and the dispatch) lives entirely in E4, so
+// this reconciler never touches the ISI-4711 human-only custody wall.
+type ReviewTrigger interface {
+	// ReviewChanges inspects one Project's just-applied mirror rows and
+	// dispatches review for new/changed qualifying PRs. It MUST be
+	// level-triggered and idempotent: re-running it on an unchanged snapshot
+	// (a redelivered webhook, a poll tick) is a no-op, because dedup is keyed
+	// on the (PR number, head SHA) pair now carried on the PR rows' payload —
+	// there is no stored diff state. A failure fails the reconcile so the
+	// next level-triggered pass retries against the re-applied mirror.
+	ReviewChanges(ctx context.Context, projectNamespace, projectName string, provider scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error
+}
 
 // Reconciler is the repo-sync reconciler (story 11.1). It talks ONLY to
 // the scm.SourceControlProvider seam and the scm.MirrorStore seam; the
@@ -125,6 +147,12 @@ type Reconciler struct {
 	// across the seam for every scm.issue_link of this Project, per the
 	// configured direction (spec.repo.sync.issueSync.direction).
 	IssueSync *issuesync.Syncer
+
+	// ReviewTrigger is the OPTIONAL PR-review-automation dispatch seam
+	// (ISI-4750 E3 introduces it, E4 wires the implementation). Nil disables
+	// review automation; when wired, the same reconcile pass hands the
+	// just-applied PR rows to it after the link pass. See ReviewTrigger.
+	ReviewTrigger ReviewTrigger
 
 	// BotActor is the echo-suppression identity (default scm.DefaultBotActor):
 	// provider records authored by this actor are OUR reflected writes and are
@@ -302,6 +330,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Error(err, "repo-sync: issue link pass failed", "project", req.NamespacedName)
 			reason = reasonIssueSync
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonIssueSync, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
+	// ── the ISI-4750 review-automation trigger: mirror PR rows → review dispatch ──
+	// Runs AFTER the link pass on the SAME just-applied rows and the SAME
+	// level-triggered discipline. E3 owns only this nil-guarded invocation; the
+	// trigger body (qualify → dedup by (PR number, head SHA) label →
+	// create-if-absent → dispatch) is E4 (ISI-4766), kept behind the seam so
+	// this reconciler stays clear of the human-only custody wall (ISI-4711).
+	// A failure fails the reconcile — the mirror already applied, so the next
+	// level-triggered pass re-applies it and retries the trigger idempotently.
+	if r.ReviewTrigger != nil {
+		if err := r.ReviewTrigger.ReviewChanges(ctx, project.Namespace, project.Name,
+			provider, project.Spec.Repo.URL, rows); err != nil {
+			logger.Error(err, "repo-sync: review trigger failed", "project", req.NamespacedName)
+			reason = reasonReviewFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonReviewFail, err.Error())})
 			return ctrl.Result{}, err
 		}
 	}
