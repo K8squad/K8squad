@@ -358,6 +358,23 @@ var allowedSurface = map[string]string{
 	"WorkItemWriteStore.AppendHumanComment": "§6.1/§6.5 human comment append + audit, Team-scoped (ISI-4406); server-stamped author, existence-hiding 404; ISI-4495 comment-triggered re-dispatch — parked+unheld lane advance to todo in the same txn (never backlog/terminal/live-run)",
 	"HumanCommentOutcome":                   "§6.1/§6.5 the ISI-4406 comment result (embedded TaskComment) + the ISI-4495 re-dispatch outcome (ReTriggered/fromState/toState) — a read-only result value, not a channel",
 
+	// ADR-0024 (ISI-4735, origin ISI-4711): the AGENT-authored, capability-verified,
+	// custody-scoped create/edit entry — a SEPARATE trusted lane from the human-only
+	// HTTP board wall, reachable only from the MCP tool edge after it verifies the
+	// `work_item.author` capability. NOT an agent-to-agent channel: authoring a
+	// sub-ticket + assigning it via RequestDispatch is handoff = create/state change
+	// on work_item (§6.1, §8.4), never a worker-to-worker message.
+	"AgentAuthorMaxDepth":                    "ADR-0024 §4.3 fan-out depth cap (epic→story→task→subtask)",
+	"AgentAuthorRunBudget":                   "ADR-0024 §4.3 per-run create budget",
+	"ErrAgentAuthorRootDenied":               "ADR-0024 §4.1 guard: agent create with no parent — root items stay human-only (→400)",
+	"ErrAgentAuthorNotInCustody":             "ADR-0024 §4.1 guard: target not held by the agent (existence-hiding, →404/403)",
+	"ErrAgentAuthorDepthExceeded":            "ADR-0024 §4.3 guard: child depth over the cap (→400)",
+	"ErrAgentAuthorRunBudgetExceeded":        "ADR-0024 §4.3 guard: run over its create budget (→400)",
+	"AgentCreateWorkItemInput":               "ADR-0024 §5 agent sub-ticket create input (parent/title/body/attrs + server-stamped agent identity)",
+	"AgentUpdateWorkItemInput":               "ADR-0024 §5 agent field-edit input (title/body/parent pointers + optimistic guard + agent identity)",
+	"WorkItemWriteStore.AgentCreateWorkItem": "ADR-0024 §4/§5 custody-scoped agent sub-ticket create + honest agent audit, depth/run-budget bounded",
+	"WorkItemWriteStore.AgentUpdateWorkItem": "ADR-0024 §4/§5 custody-scoped (item+descendants) agent field CAS + honest agent audit",
+
 	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
 	// custody op. Records the human's pre-run agent choice as durable INTENT on
 	// the work item (requested_agent, mig 0021) + advances the lane backlog→todo
@@ -372,6 +389,15 @@ var allowedSurface = map[string]string{
 	"WorkItemDispatchStore":                 "§8.6/§13 human board dispatch store bound to the prod schema",
 	"NewWorkItemDispatchStore":              "§8.6 constructor (db + Team-agent resolver)",
 	"WorkItemDispatchStore.RequestDispatch": "§8.6/§6.5 agent-∈-Team check + intent write + backlog→todo CAS + audit, no-fence, Team-scoped",
+
+	// ADR-0024 §5 (ISI-4741): the AGENT-facing half of the board dispatch — the
+	// PM→implementer handoff. NOT an agent-to-agent channel: it adds one custody
+	// gate (caller holds the item or an ancestor) then delegates to the single-
+	// sourced RequestDispatch, so the handoff still lands as a coord dispatch
+	// (requested_agent intent + backlog→todo CAS + agent-∈-Team guard), never a
+	// message. Provenance is honestly stamped initiator=agent.
+	"AgentRequestDispatchInput":                  "ADR-0024 §5 agent dispatch input (workItem/assignee + server-stamped agent identity + team scope)",
+	"WorkItemDispatchStore.AgentRequestDispatch": "ADR-0024 §5 custody-gated PM→implementer handoff; delegates to RequestDispatch (initiator=agent), inherits agent-∈-Team",
 
 	// §6.1 shared richer work-item read + sanctioned comment append (ISI-3601 S2,
 	// designed once with S1/ISI-3600). ReadTaskDetail is a READ of a card's own

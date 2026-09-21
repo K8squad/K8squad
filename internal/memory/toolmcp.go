@@ -28,6 +28,16 @@ type ToolMCP struct {
 	read    *ReadService
 	write   *WriteService
 	discuss DiscussionWriter
+	// author + dispatcher + caps back the ADR-0024 agent authoring tools
+	// (work_item_create / _update / _assign, ISI-4741). author (create/update) and
+	// dispatcher (assign) are wired independently: a nil author leaves all three
+	// tools unmounted (a DB-less / read-only deployment); a non-nil author with a
+	// nil dispatcher serves create+update and refuses assign honestly (no
+	// TeamAgentResolver in this deployment); a nil caps resolver denies every call
+	// (deny-by-default). See agentauthor.go.
+	author     WorkItemAuthor
+	dispatcher WorkItemDispatcher
+	caps       CapabilityResolver
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -38,6 +48,20 @@ type ToolMCP struct {
 // and Team-scope enforcement (the fence) live in the store, not this transport (ISI-4085, ISI-4013 AC3).
 func NewToolMCP(read *ReadService, write *WriteService, discuss DiscussionWriter) *ToolMCP {
 	return &ToolMCP{read: read, write: write, discuss: discuss}
+}
+
+// WithWorkItemAuthor wires the ADR-0024 agent authoring lane (ISI-4741): the coord
+// create/update backend (author), the optional dispatch backend that backs the
+// PM→implementer assign verb (dispatcher — nil where no TeamAgentResolver is
+// available, so assign is refused honestly rather than dropped), and the capability
+// resolver that gates all three tools (caps — nil denies by default). Passing a nil
+// author leaves the three work_item_* tools unmounted, exactly as a nil discuss
+// writer unmounts discussion_post. Returns the receiver for chaining at construction.
+func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemDispatcher, caps CapabilityResolver) *ToolMCP {
+	m.author = author
+	m.dispatcher = dispatcher
+	m.caps = caps
+	return m
 }
 
 // MCPEndpoint is the single streamable-HTTP path the JSON-RPC transport is served on. It sits alongside
@@ -95,6 +119,10 @@ type mcpSession struct {
 	principal string  // X-Principal-Id — required only for memory_write (author)
 	agentID   *string // X-Agent-Id — optional authorship linkage
 	runID     *string // X-Run-Id — optional Run linkage
+	// capabilities is the control-plane-stamped grant set (X-Agent-Capabilities,
+	// comma/space separated) the ADR-0024 authoring gate reads (ISI-4741). Like the
+	// other fields it is a server-authenticated header, never a tool argument.
+	capabilities []string
 }
 
 // handle is the single JSON-RPC entrypoint. It decodes the envelope, dispatches by method, and writes a
@@ -110,6 +138,8 @@ func (m *ToolMCP) handle(w http.ResponseWriter, r *http.Request) {
 		principal: r.Header.Get("X-Principal-Id"),
 		agentID:   optional(r.Header.Get("X-Agent-Id")),
 		runID:     optional(r.Header.Get("X-Run-Id")),
+
+		capabilities: parseCapabilities(r.Header.Get("X-Agent-Capabilities")),
 	}
 
 	var req jsonrpcRequest
@@ -214,6 +244,15 @@ func (m *ToolMCP) toolsList() any {
 	}
 	if m.discuss != nil {
 		tools = append(tools, discussionPostTool)
+	}
+	// The ADR-0024 authoring tools (ISI-4741) are advertised whenever the author
+	// store is wired — the capability gate bites at call time, not by hiding the
+	// tool, so an ungranted agent gets an honest capability-denied error rather than
+	// a confusing "unknown tool" (ADR-0024 §5). work_item_assign is advertised too
+	// even when the dispatch backend is absent; it then returns an honest
+	// assign-unavailable error rather than vanishing from the catalog.
+	if m.author != nil {
+		tools = append(tools, workItemCreateTool, workItemUpdateTool, workItemAssignTool)
 	}
 	return map[string]any{"tools": tools}
 }
@@ -330,6 +369,21 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // a write — unmounted read-only
 		}
 		return m.callDiscussionPost(ctx, sess, p.Arguments)
+	case workItemCreateTool.Name:
+		if m.author == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // authoring unmounted
+		}
+		return m.callWorkItemCreate(ctx, sess, p.Arguments)
+	case workItemUpdateTool.Name:
+		if m.author == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
+		}
+		return m.callWorkItemUpdate(ctx, sess, p.Arguments)
+	case workItemAssignTool.Name:
+		if m.author == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
+		}
+		return m.callWorkItemAssign(ctx, sess, p.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", p.Name))
 	}

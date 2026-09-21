@@ -142,8 +142,12 @@ func TestWorkItemCreateSubIssue(t *testing.T) {
 	}
 }
 
-// TestWorkItemCreateAgentForbidden — an agent-authored session is refused 403 before
-// the store is touched.
+// TestWorkItemCreateAgentForbidden — the console/HTTP board CREATE surface is
+// human-only: an agent-authored session is refused 403 before the store is touched.
+// ADR-0024 (ISI-4735) does NOT move this wall — agents author sub-tickets through a
+// separate capability-gated MCP lane (coord.AgentCreateWorkItem), never via HTTP —
+// so this assertion is unchanged: the board's console-facing write surface carries
+// zero new agent-write risk.
 func TestWorkItemCreateAgentForbidden(t *testing.T) {
 	store := &fakeWorkItemWriter{}
 	h := testWriteServer(t, uuid.New(), store)
@@ -234,7 +238,10 @@ func TestWorkItemEditOK(t *testing.T) {
 	}
 }
 
-// TestWorkItemEditAgentForbidden — agents cannot edit board fields.
+// TestWorkItemEditAgentForbidden — the console/HTTP board EDIT surface is human-only:
+// agents cannot edit board fields via HTTP. ADR-0024 (ISI-4735) leaves this wall in
+// place; agents edit in-custody items through the capability-gated MCP lane
+// (coord.AgentUpdateWorkItem), never via HTTP — so this assertion is unchanged.
 func TestWorkItemEditAgentForbidden(t *testing.T) {
 	store := &fakeWorkItemWriter{}
 	h := testWriteServer(t, uuid.New(), store)
