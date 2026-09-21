@@ -243,7 +243,12 @@ func (s *WorkItemWriteStore) AgentCreateWorkItem(ctx context.Context, in AgentCr
 //   - (zero, ErrInvalidWorkItem): missing identity, no editable field, blank title,
 //     or a self/cyclic reparent (400).
 //   - (zero, ErrAgentAuthorNotInCustody): neither the item nor any ancestor is held
-//     by the agent — or the item does not exist (existence-hiding).
+//     by the agent — or the item (or a reparent destination) does not exist
+//     (existence-hiding).
+//   - (zero, ErrAgentAuthorRootDenied): a reparent to parent_id:"" (detach-to-root) —
+//     agents never promote a sub-ticket to a root item (F1, ISI-4746).
+//   - (zero, ErrAgentAuthorDepthExceeded): a reparent whose destination would push
+//     the moved item past the depth cap (F1, ISI-4746).
 //   - (zero, ErrStateConflict): ExpectedUpdatedAt did not match (409).
 //   - (zero, err): infrastructure failure; nothing was written.
 func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID string, in AgentUpdateWorkItemInput) (WorkItemRecord, error) {
@@ -297,9 +302,16 @@ func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID
 		}
 	}
 
-	// (4) Reparent validation (only when a new non-empty parent is supplied). The
-	// new parent must also be within the agent's custody scope, so an agent cannot
-	// graft its subtree under work it does not hold.
+	// (4) Reparent validation. A reparent is a fresh authoring decision about WHERE
+	// work lives, so the create-side invariants re-run on the destination (F1,
+	// ISI-4746): no detach-to-root (I1), the new parent must be in the agent's
+	// custody scope (dest custody), and the moved item's new depth must stay within
+	// the cap (I3). Source custody is already settled by step (2) above.
+	if in.ParentID != nil && *in.ParentID == "" {
+		// I1: parent_id:"" would NULL the parent and promote an in-custody sub-ticket
+		// to an agent-controlled ROOT item — the exact rule AgentCreateWorkItem guards.
+		return WorkItemRecord{}, ErrAgentAuthorRootDenied
+	}
 	if in.ParentID != nil && *in.ParentID != "" {
 		if *in.ParentID == workItemID {
 			return WorkItemRecord{}, fmt.Errorf("%w: an item cannot be its own parent", ErrInvalidWorkItem)
@@ -330,6 +342,15 @@ func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID
 		}
 		if cyclic {
 			return WorkItemRecord{}, fmt.Errorf("%w: reparent would form a cycle", ErrInvalidWorkItem)
+		}
+		// I3: the moved item's new depth (new-parent depth + 1) must stay within the
+		// cap, mirroring create's per-node bound at the create/move point (F1, ISI-4746).
+		newParentDepth, derr := chainDepth(ctx, tx, *in.ParentID)
+		if derr != nil {
+			return WorkItemRecord{}, derr
+		}
+		if newParentDepth+1 > AgentAuthorMaxDepth {
+			return WorkItemRecord{}, fmt.Errorf("%w: reparented item depth %d exceeds cap %d", ErrAgentAuthorDepthExceeded, newParentDepth+1, AgentAuthorMaxDepth)
 		}
 	}
 

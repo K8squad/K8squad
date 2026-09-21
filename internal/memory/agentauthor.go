@@ -211,6 +211,14 @@ func (m *ToolMCP) requireAuthor(ctx context.Context, sess mcpSession) (authorIde
 		msg := "work_item authoring requires a server-authenticated agent run (X-Agent-Id and X-Run-Id)"
 		return authorIdentity{}, &msg
 	}
+	// F2 (ISI-4746): X-Team-Id is mandatory for authoring. It is the caller's tenancy
+	// scope threaded into the PM→implementer assign (AgentRequestDispatch's
+	// target-∈-Team guard); an empty team would leave that scope unset. Require it so
+	// the authoring identity is always fully-formed and tenancy is never silently open.
+	if sess.team == "" {
+		msg := "work_item authoring requires a server-authenticated team scope (X-Team-Id)"
+		return authorIdentity{}, &msg
+	}
 	if m.caps == nil {
 		msg := "capability denied: no capability resolver configured (deny-by-default)"
 		return authorIdentity{}, &msg

@@ -205,6 +205,29 @@ func TestAgentAuthorRequiresPrincipalAndRun(t *testing.T) {
 	}
 }
 
+// TestAgentAuthorRequiresTeam (F2, ISI-4746) — a fully-authenticated agent run WITH
+// the capability but NO X-Team-Id is refused before the capability check: authoring
+// needs the server-authenticated team scope (it is threaded into the PM→implementer
+// assign's target-∈-Team guard), never an empty tenancy.
+func TestAgentAuthorRequiresTeam(t *testing.T) {
+	caps := &fakeCaps{grant: true}
+	author := &fakeAuthor{}
+	m := newAuthoringMCP(author, nil, caps)
+	sess := grantedSession()
+	sess.team = "" // no team scope
+	out, rpcErr := m.callWorkItemCreate(context.Background(), sess, createArgs(t, workItemCreateArgs{ParentID: "p", Title: "t"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "team scope") {
+		t.Fatalf("want team-scope refusal, got isErr=%v text=%q", isErr, text)
+	}
+	if caps.called {
+		t.Fatal("capability resolver consulted despite a missing team scope")
+	}
+	if author.createCalled {
+		t.Fatal("coord was called without a team scope")
+	}
+}
+
 // --- create ----------------------------------------------------------------
 
 // TestAgentAuthorWithCapabilityCreatesChild — the happy path: identity is folded
