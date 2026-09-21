@@ -5,8 +5,10 @@
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
-import { FileExplorerTab } from "@/components/FileExplorerTab";
-import type { FileContent, FileListing, FileStat } from "@/lib/project-files";
+import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
+import { normalizeListing } from "@/lib/project-files";
+import { reportClientError } from "@/lib/client-errors";
+import type { FileContent, FileListing, FileStat, WireFileListing } from "@/lib/project-files";
 
 afterEach(() => {
   cleanup();
@@ -21,7 +23,10 @@ const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
  * by the `path` query (root = ""); `contents` and `stats` by the file path.
  * A key that maps to a number is returned as that HTTP status with a null body. */
 function routeFetch(opts: {
-  listings?: Record<string, FileListing | number>;
+  // Listings are typed as the WIRE shape (path optional) — that is what S4b
+  // actually sends, and it lets a fixture omit `path` exactly like production
+  // (ISI-4705). A full FileListing is still assignable here.
+  listings?: Record<string, WireFileListing | number>;
   contents?: Record<string, FileContent | number>;
   stats?: Record<string, FileStat | number>;
   status?: number;
@@ -350,5 +355,119 @@ describe("FileExplorerTab", () => {
     expect(screen.getByText(/No files/)).toBeTruthy();
     // Never leaks a distinguishing "forbidden" vs "missing" — 404 is uniform.
     expect(screen.queryByText(/forbidden|403|permission/i)).toBeNull();
+  });
+
+  // ISI-4705: the S4b `/files` wire payload omits `path` on each entry. The tree
+  // keys its open-state and lazy child listings by `path`; when every path is
+  // `undefined` a single expand collapses ALL directories into one shared open +
+  // one shared (root) child listing → infinite recursive render → UI crash.
+  // normalizeListing derives per-entry paths so identity is restored.
+  it("derives entry paths when the wire omits them, so an expand loads THAT dir — not the root (ISI-4705 crash)", async () => {
+    // Note the entries carry NO `path` field, exactly like the live payload.
+    routeFetch({
+      listings: {
+        "": { path: "", entries: [
+          { name: "todo-app", type: "dir", size: 0 },
+          { name: "README.md", type: "file", size: 5 },
+        ] },
+        "todo-app": { path: "todo-app", entries: [
+          { name: "docs", type: "dir", size: 0 },
+        ] },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // Expanding todo-app must load todo-app's OWN children (docs), and must NOT
+    // re-render the root listing under it (README.md stays a single root row).
+    fireEvent.click(screen.getByText("todo-app"));
+    await waitFor(() => expect(screen.getByText("docs")).toBeTruthy());
+    // The bug rendered the root's README.md recursively under every open dir;
+    // with derived paths it appears exactly once (the root row).
+    expect(screen.getAllByText("README.md")).toHaveLength(1);
+  });
+
+  it("normalizeListing derives unique root-relative paths, ignoring any server-sent path (ISI-4705)", () => {
+    const derived = normalizeListing("todo-app", {
+      path: "todo-app",
+      entries: [
+        { name: "docs", type: "dir" },
+        { name: "main.go", type: "file", size: 3 },
+      ],
+    });
+    expect(derived.entries?.map((e) => e.path)).toEqual(["todo-app/docs", "todo-app/main.go"]);
+    // The path is derived from dir+name and a server-supplied `path` is NOT
+    // trusted — so even a server that emits a duplicate/wrong path cannot
+    // reintroduce the shared-key recursion. Here both rows claim "dup" yet get
+    // distinct derived keys.
+    const adversarial = normalizeListing("", {
+      path: "",
+      entries: [
+        { name: "a", path: "dup", type: "dir" },
+        { name: "b", path: "dup", type: "dir" },
+      ],
+    });
+    expect(adversarial.entries?.map((e) => e.path)).toEqual(["a", "b"]);
+  });
+
+  // ISI-4705: a capped read window can be up to 1 MiB; running highlight.js /
+  // ReactMarkdown over that much on the main thread freezes and can OOM-crash the
+  // tab. Above the rich-preview cap the preview degrades to download-instead.
+  it("guards a large code file from the main-thread renderer, offering download instead (ISI-4705)", async () => {
+    const big = "x".repeat(300 * 1024); // > RICH_PREVIEW_MAX_BYTES (256 KiB)
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "huge.go", path: "huge.go", type: "file", size: 3_850_240 }] } },
+      contents: { "huge.go": { path: "huge.go", size: 3_850_240, contentType: "text", data: b64(big), offset: 0, length: big.length } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+    fireEvent.click(screen.getByText("huge.go"));
+    await waitFor(() => expect(screen.getByTestId("files-too-large")).toBeTruthy());
+    // The expensive code renderer is NOT mounted for an oversized window.
+    expect(screen.queryByTestId("files-code")).toBeNull();
+    expect(screen.getByTestId("files-too-large-download").getAttribute("href")).toContain("huge.go");
+    // A capped read (length < size) is always flagged truncated, even though the
+    // server omits the `truncated` field.
+    expect(screen.getByTestId("files-preview-truncated")).toBeTruthy();
+  });
+
+  // ISI-4705 (PR #530 review): pin the telemetry deliverables — without these,
+  // the boundary and the reporter could be deleted with the suite staying green.
+  it("reportClientError emits a structured console line AND a server beacon (ISI-4705)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const beacon = vi.fn((_url: string, _body?: BodyInit) => true);
+    vi.stubGlobal("navigator", { sendBeacon: beacon, userAgent: "vitest" });
+
+    reportClientError("unit-test", new Error("kaboom"), { projectId: "web" });
+
+    expect(errSpy).toHaveBeenCalledWith(
+      "[client-crash]",
+      expect.objectContaining({ source: "unit-test", message: "kaboom", context: { projectId: "web" } }),
+    );
+    expect(beacon).toHaveBeenCalledTimes(1);
+    expect(beacon.mock.calls[0][0]).toBe("/api/telemetry/client-error");
+  });
+
+  it("the error boundary catches a render throw, shows an honest panel, and reports it (ISI-4705)", () => {
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const beacon = vi.fn(() => true);
+    vi.stubGlobal("navigator", { sendBeacon: beacon, userAgent: "vitest" });
+    const Boom = (): never => {
+      throw new Error("render exploded");
+    };
+
+    render(
+      <FileExplorerErrorBoundary projectId="web">
+        <Boom />
+      </FileExplorerErrorBoundary>,
+    );
+
+    // Honest, contained panel — NOT a white-screen propagating to the root.
+    expect(screen.getByTestId("files-honest")).toBeTruthy();
+    // And the crash was reported through the collectable channel.
+    expect(errSpy).toHaveBeenCalledWith(
+      "[client-crash]",
+      expect.objectContaining({ source: "file-explorer" }),
+    );
   });
 });

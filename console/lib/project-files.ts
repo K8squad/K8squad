@@ -113,9 +113,38 @@ export async function listProjectFiles(
     { cache: "no-store" },
   );
   if (res.ok) {
-    return { kind: "ready", data: (await res.json()) as FileListing };
+    return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
   }
   return classifyFilesStatus<FileListing>(res.status);
+}
+
+/** The directory-listing shape as it ACTUALLY arrives from S4b (ISI-4705): the
+ * reader/apiserver DirEntry is `{name,type,size}` — `path` is NOT on the Go
+ * struct, so the wire type must model it as absent even though the rendered
+ * `FileEntry` requires it. Typing the fetch boundary honestly is what removes
+ * the `as unknown as` casts the tests otherwise need, and stops fixtures from
+ * pretending the server sends a field it never has. */
+export type WireFileEntry = Omit<FileEntry, "path"> & { path?: string };
+export type WireFileListing = Omit<FileListing, "entries"> & { entries: WireFileEntry[] | null };
+
+/** Give every listing entry a stable, unique workspace-root-relative `path`
+ * (ISI-4705). The wire payload omits `path`; without it every `FileEntry.path`
+ * is `undefined`, and the tree keys its per-directory open-state (`open`) and
+ * lazy child listings (`dirs`) by that single shared `undefined` key — expanding
+ * one directory flips EVERY directory to "open" over the same (root) listing and
+ * renders recursively with no base case → stack overflow → the whole console
+ * crashes. The path is derived LOCALLY from the requested directory + entry name
+ * and the server's own `path` is intentionally NOT trusted: a POSIX name cannot
+ * contain "/", so `${dir}/${name}` is unique by construction, and a server that
+ * later emits a wrong or duplicated `path` (ISI-4708) still cannot reintroduce
+ * the shared-key recursion. */
+export function normalizeListing(dir: string, listing: WireFileListing): FileListing {
+  const base = (dir ?? "").replace(/\/+$/, "");
+  const entries: FileEntry[] = (listing.entries ?? []).map((e) => ({
+    ...e,
+    path: base ? `${base}/${e.name}` : e.name,
+  }));
+  return { ...listing, path: listing.path ?? dir, entries };
 }
 
 /** Read a file's content through the BFF choke point. Read-only — there is no
