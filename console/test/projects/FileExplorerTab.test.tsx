@@ -470,4 +470,55 @@ describe("FileExplorerTab", () => {
       expect.objectContaining({ source: "file-explorer" }),
     );
   });
+
+  it("gives each file type its own icon tone, and folders never take a file tone (ISI-4747 follow-up)", async () => {
+    routeFetch({
+      listings: {
+        "": {
+          path: "",
+          entries: [
+            { name: "src", path: "src", type: "dir" },
+            { name: "main.go", path: "main.go", type: "file", size: 10 },
+            { name: "app.py", path: "app.py", type: "file", size: 10 },
+            { name: "index.js", path: "index.js", type: "file", size: 10 },
+            { name: "Main.java", path: "Main.java", type: "file", size: 10 },
+            { name: "Program.cs", path: "Program.cs", type: "file", size: 10 },
+            { name: "notes.md", path: "notes.md", type: "file", size: 10 },
+            { name: "report.docx", path: "report.docx", type: "file", size: 10 },
+            { name: "logo.png", path: "logo.png", type: "file", size: 10 },
+            { name: "data.json", path: "data.json", type: "file", size: 10 },
+            { name: "bundle.zip", path: "bundle.zip", type: "file", size: 10 },
+            { name: "clip.mp4", path: "clip.mp4", type: "file", size: 10 },
+            { name: "Makefile", path: "Makefile", type: "file", size: 10 },
+          ],
+        },
+      },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    // Each recognised extension paints its glyph a distinct tone class...
+    const toneOf = (label: string): string => {
+      const glyph = screen.getByText(label).parentElement?.querySelector(".file-explorer__glyph--file");
+      return glyph?.getAttribute("class") ?? "";
+    };
+    expect(toneOf("main.go")).toContain("file-explorer__glyph--go");
+    expect(toneOf("app.py")).toContain("file-explorer__glyph--py");
+    expect(toneOf("index.js")).toContain("file-explorer__glyph--js");
+    expect(toneOf("Main.java")).toContain("file-explorer__glyph--java");
+    expect(toneOf("Program.cs")).toContain("file-explorer__glyph--cs");
+    expect(toneOf("notes.md")).toContain("file-explorer__glyph--doc");
+    expect(toneOf("report.docx")).toContain("file-explorer__glyph--docx");
+    expect(toneOf("logo.png")).toContain("file-explorer__glyph--image");
+    expect(toneOf("data.json")).toContain("file-explorer__glyph--data");
+    expect(toneOf("bundle.zip")).toContain("file-explorer__glyph--archive");
+    expect(toneOf("clip.mp4")).toContain("file-explorer__glyph--media");
+    // ...and an extension-less file still gets a glyph — the muted default, never nothing.
+    expect(toneOf("Makefile")).toContain("file-explorer__glyph--default");
+
+    // A directory carries the accent folder glyph, never a file tone.
+    const dirGlyph = screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--dir");
+    expect(dirGlyph).toBeTruthy();
+    expect(screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--file")).toBeNull();
+  });
 });

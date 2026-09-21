@@ -80,6 +80,33 @@
   color: var(--muted, #8b949e);
 }
 
+/* ISI-4747 (follow-up): per-type file tones. A file's glyph shape says what
+   family it is (code / data / image / media / archive / doc); the tone tells
+   languages that share the `code` glyph apart at a glance (GitHub language-colour
+   model). Two-class selectors so a tone beats the muted `--file` base; the
+   selected-row `inherit` rule below is more specific, so a highlighted file's
+   glyph stays legible on the accent row. Hues chosen for dark-theme contrast. */
+.file-explorer__glyph--go { color: #29b6d8; }
+.file-explorer__glyph--py { color: #4b9fe0; }
+.file-explorer__glyph--js { color: #e5c04b; }
+.file-explorer__glyph--ts { color: #7ca6f7; }
+.file-explorer__glyph--java { color: #e5793b; }
+.file-explorer__glyph--cs { color: #a06ff0; }
+.file-explorer__glyph--rust { color: #e0a06b; }
+.file-explorer__glyph--ruby { color: #e0576b; }
+.file-explorer__glyph--php { color: #8a92d6; }
+.file-explorer__glyph--cpp { color: #6fb0e0; }
+.file-explorer__glyph--shell { color: #7bd66f; }
+.file-explorer__glyph--web { color: #e6795b; }
+.file-explorer__glyph--code { color: #9aa4b2; }
+.file-explorer__glyph--data { color: #f0a94b; }
+.file-explorer__glyph--doc { color: var(--muted, #8b949e); }
+.file-explorer__glyph--docx { color: #5b9be0; }
+.file-explorer__glyph--image { color: #59c07d; }
+.file-explorer__glyph--media { color: #c678dd; }
+.file-explorer__glyph--archive { color: #d19a66; }
+.file-explorer__glyph--default { color: var(--muted, #8b949e); }
+
 .file-explorer__row[aria-current="true"] .file-explorer__glyph--file {
   color: inherit;
 }
