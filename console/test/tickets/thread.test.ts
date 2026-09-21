@@ -85,6 +85,17 @@ describe("authorKind", () => {
     expect(authorKind("user:alice")).toBe("user");
     expect(authorKind("henrik@perfbytes.com")).toBe("user");
   });
+
+  it("treats a run principal as an agent (ISI-4706: progress mirror authors run/<id>)", () => {
+    // The live coord progress mirror authors run steps as `run/<shortRunID>`, not
+    // `agent:<name>` — these are agent executions and must NOT fall to the human
+    // accent (the "everyone is blue" bug).
+    expect(authorKind("run/c3beee63")).toBe("agent");
+    expect(authorKind("run:c3beee63")).toBe("agent");
+    // A bare human/operator principal is still a person.
+    expect(authorKind("admin")).toBe("user");
+    expect(authorKind("ksquad-operator")).toBe("user");
+  });
 });
 
 function thread(partial: Partial<NormalizedThread>): NormalizedThread {
