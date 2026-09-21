@@ -243,7 +243,12 @@ func (s *WorkItemWriteStore) AgentCreateWorkItem(ctx context.Context, in AgentCr
 //   - (zero, ErrInvalidWorkItem): missing identity, no editable field, blank title,
 //     or a self/cyclic reparent (400).
 //   - (zero, ErrAgentAuthorNotInCustody): neither the item nor any ancestor is held
-//     by the agent — or the item does not exist (existence-hiding).
+//     by the agent — or the item (or a reparent destination) does not exist
+//     (existence-hiding).
+//   - (zero, ErrAgentAuthorRootDenied): a reparent to parent_id:"" (detach-to-root) —
+//     agents never promote a sub-ticket to a root item (F1, ISI-4746).
+//   - (zero, ErrAgentAuthorDepthExceeded): a reparent whose destination would push
+//     the moved item past the depth cap (F1, ISI-4746).
 //   - (zero, ErrStateConflict): ExpectedUpdatedAt did not match (409).
 //   - (zero, err): infrastructure failure; nothing was written.
 func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID string, in AgentUpdateWorkItemInput) (WorkItemRecord, error) {
@@ -297,9 +302,16 @@ func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID
 		}
 	}
 
-	// (4) Reparent validation (only when a new non-empty parent is supplied). The
-	// new parent must also be within the agent's custody scope, so an agent cannot
-	// graft its subtree under work it does not hold.
+	// (4) Reparent validation. A reparent is a fresh authoring decision about WHERE
+	// work lives, so the create-side invariants re-run on the destination (F1,
+	// ISI-4746): no detach-to-root (I1), the new parent must be in the agent's
+	// custody scope (dest custody), and the moved item's new depth must stay within
+	// the cap (I3). Source custody is already settled by step (2) above.
+	if in.ParentID != nil && *in.ParentID == "" {
+		// I1: parent_id:"" would NULL the parent and promote an in-custody sub-ticket
+		// to an agent-controlled ROOT item — the exact rule AgentCreateWorkItem guards.
+		return WorkItemRecord{}, ErrAgentAuthorRootDenied
+	}
 	if in.ParentID != nil && *in.ParentID != "" {
 		if *in.ParentID == workItemID {
 			return WorkItemRecord{}, fmt.Errorf("%w: an item cannot be its own parent", ErrInvalidWorkItem)
@@ -330,6 +342,23 @@ func (s *WorkItemWriteStore) AgentUpdateWorkItem(ctx context.Context, workItemID
 		}
 		if cyclic {
 			return WorkItemRecord{}, fmt.Errorf("%w: reparent would form a cycle", ErrInvalidWorkItem)
+		}
+		// I3: reparenting must keep the WHOLE moved subtree within the cap, not just
+		// the moved node. The moved node lands at newParentDepth+1 and its deepest
+		// descendant at newParentDepth+height(subtree); checking only the node's own
+		// depth would let an agent graft a movable(d2)→child(d3) pair under a d3 parent
+		// so the node sits at the cap (d4) while its child spills to d5. Bound the
+		// deepest leaf (F1 I3, ISI-4744 remediation over the ISI-4746 per-node check).
+		newParentDepth, derr := chainDepth(ctx, tx, *in.ParentID)
+		if derr != nil {
+			return WorkItemRecord{}, derr
+		}
+		subHeight, serr := subtreeHeight(ctx, tx, workItemID)
+		if serr != nil {
+			return WorkItemRecord{}, serr
+		}
+		if newParentDepth+subHeight > AgentAuthorMaxDepth {
+			return WorkItemRecord{}, fmt.Errorf("%w: reparent nests subtree to depth %d exceeds cap %d", ErrAgentAuthorDepthExceeded, newParentDepth+subHeight, AgentAuthorMaxDepth)
 		}
 	}
 
@@ -472,6 +501,30 @@ func chainDepth(ctx context.Context, tx *sql.Tx, workItemID string) (int, error)
 		cur = parent.String
 	}
 	return 0, fmt.Errorf("coord.workItemAuthor: depth walk exceeded %d (possible pre-existing cycle)", depthCap)
+}
+
+// subtreeHeight returns the height of the subtree rooted at workItemID, counting the
+// root itself as 1 (a leaf has height 1). Reparent depth-capping uses it: the moved
+// node lands at newParentDepth+1 and its deepest leaf at newParentDepth+height, which
+// must stay within AgentAuthorMaxDepth (ADR-0024 I3). The descend is bounded by the
+// same depthCap as the ancestry walks so a pre-existing cycle can't spin it forever.
+func subtreeHeight(ctx context.Context, tx *sql.Tx, workItemID string) (int, error) {
+	const depthCap = 256
+	var height int
+	err := tx.QueryRowContext(ctx, `
+		WITH RECURSIVE sub(id, depth) AS (
+			SELECT id, 1 FROM coord.work_item WHERE id = $1::uuid
+			UNION ALL
+			SELECT c.id, sub.depth + 1
+			  FROM coord.work_item c JOIN sub ON c.parent_id = sub.id
+			 WHERE sub.depth < $2
+		)
+		SELECT COALESCE(MAX(depth), 1) FROM sub`,
+		workItemID, depthCap).Scan(&height)
+	if err != nil {
+		return 0, fmt.Errorf("coord.workItemAuthor: subtree-height walk: %w", err)
+	}
+	return height, nil
 }
 
 // writeAgentAudit inserts the §6.5 provenance row for an agent-authored write in

@@ -29,6 +29,7 @@ import (
 	"github.com/K8squad/K8squad/internal/discussionindex"
 	"github.com/K8squad/K8squad/internal/handoffmirror"
 	"github.com/K8squad/K8squad/internal/memory"
+	"github.com/K8squad/K8squad/pkg/coord"
 )
 
 func main() {
@@ -104,6 +105,21 @@ func main() {
 	// advertised and served only when the discussion DB opened (nil ⇒ unmounted, AC5) (ISI-4085).
 	mcpTools := memory.NewToolMCP(readSvc, writeSvc, discuss)
 
+	// ADR-0024 agent work-item authoring lane (ISI-4741): the capability-gated
+	// work_item_create / _update / _assign MCP tools, backed by coord over the SAME
+	// Postgres the discussion writer uses. Fail-open, matching discussion_post: if
+	// the coord DB handle or store can't be built, log and leave the tools
+	// unmounted — a read-only / DB-less deployment still serves the reads. The
+	// capability gate is deny-by-default over the control-plane-stamped
+	// X-Agent-Capabilities header (role→capability, O-1). The Team-agent resolver
+	// that backs the PM→implementer ASSIGN verb lives in the apiserver's informer
+	// cache, not here, so the dispatch backend is nil for now — create + update
+	// serve, and assign returns an honest unavailable error (see ISI-4743).
+	if author := openAgentAuthor(cfg.DatabaseURL); author != nil {
+		mcpTools.WithWorkItemAuthor(author, nil, memory.NewHeaderCapabilityResolver())
+		log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign deferred to resolver wiring — ISI-4743)")
+	}
+
 	// Best-effort discussion→pgvector indexer (10.2, §7.6/§17.4). It projects committed discussion
 	// messages into the memory index out of band; it NEVER blocks a room write or Run (AC5). If the
 	// discussion schema is absent or the DB handle can't open, indexing is simply disabled — it must
@@ -163,6 +179,27 @@ func openDiscussionDB(dsn string) *sql.DB {
 		return nil
 	}
 	return db
+}
+
+// openAgentAuthor builds the coord-backed agent authoring store over the shared
+// Postgres, fail-open exactly like openDiscussionDB: any setup problem returns nil
+// so the caller leaves the work_item_* tools unmounted rather than taking down the
+// memory service. It returns only the create/update backend (WorkItemWriteStore) —
+// the assign dispatch backend needs a TeamAgentResolver this service does not have,
+// so it is wired nil at the call site and assign is refused honestly (ISI-4743).
+// The handle lives for the process lifetime (it backs the tool surface).
+func openAgentAuthor(dsn string) memory.WorkItemAuthor {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: agent authoring tools disabled (open db: %v)", err)
+		return nil
+	}
+	writes, err := coord.NewWorkItemWriteStore(db)
+	if err != nil {
+		log.Printf("ksquad-memory: agent authoring tools disabled (write store: %v)", err)
+		return nil
+	}
+	return writes
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is

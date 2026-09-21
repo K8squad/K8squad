@@ -255,7 +255,127 @@ func TestAgentUpdate_DescendantOfCustody_Allowed(t *testing.T) {
 	}
 }
 
+// TestAgentUpdate_DetachToRoot_Denied (F1 / I1, ISI-4746) — a reparent to parent_id:""
+// would NULL the parent and promote an in-custody sub-ticket to an agent-controlled
+// ROOT item. It is refused ErrAgentAuthorRootDenied and the parent link is untouched.
+func TestAgentUpdate_DetachToRoot_Denied(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	grantCustody(t, db, epic) // whole subtree in custody scope
+	s := newAuthorStore(t, db)
+
+	detach := ""
+	if _, err := s.AgentUpdateWorkItem(context.Background(), story, coord.AgentUpdateWorkItemInput{
+		ParentID: &detach, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); !errors.Is(err, coord.ErrAgentAuthorRootDenied) {
+		t.Fatalf("detach-to-root: got %v, want ErrAgentAuthorRootDenied", err)
+	}
+	assertParent(t, db, story, epic) // parent link untouched
+}
+
+// TestAgentUpdate_ReparentToUnheld_Denied (F1 / I2 dest, ISI-4746) — a reparent whose
+// DESTINATION the agent does not hold is refused: only source custody is settled by
+// the frontier walk, so the destination gate must bite. Existence-hiding refusal.
+func TestAgentUpdate_ReparentToUnheld_Denied(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	grantCustody(t, db, epic)
+	other := authorSeedItem(t, db, "", "other-epic") // no custody granted
+	s := newAuthorStore(t, db)
+
+	if _, err := s.AgentUpdateWorkItem(context.Background(), story, coord.AgentUpdateWorkItemInput{
+		ParentID: &other, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); !errors.Is(err, coord.ErrAgentAuthorNotInCustody) {
+		t.Fatalf("reparent to unheld dest: got %v, want ErrAgentAuthorNotInCustody", err)
+	}
+	assertParent(t, db, story, epic) // parent link untouched
+}
+
+// TestAgentUpdate_ReparentDepthCapExceeded (F1 / I3, ISI-4746) — a reparent whose
+// destination would push the moved item past the depth cap is refused; the same move
+// under a shallower held destination is allowed.
+func TestAgentUpdate_ReparentDepthCapExceeded(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	// epic(1)→story(2)→task(3)→subtask(4), whole subtree held via the root epic.
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	task := authorSeedItem(t, db, story, "task")
+	subtask := authorSeedItem(t, db, task, "subtask") // depth 4 == cap
+	grantCustody(t, db, epic)
+	itemX := authorSeedItem(t, db, epic, "movable") // depth 2, held (descendant of epic)
+	s := newAuthorStore(t, db)
+
+	// Reparent itemX under the depth-4 subtask ⇒ new depth 5 > cap ⇒ refused.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), itemX, coord.AgentUpdateWorkItemInput{
+		ParentID: &subtask, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); !errors.Is(err, coord.ErrAgentAuthorDepthExceeded) {
+		t.Fatalf("over-deep reparent: got %v, want ErrAgentAuthorDepthExceeded", err)
+	}
+	assertParent(t, db, itemX, epic) // move rejected, parent untouched
+
+	// Reparent itemX under the depth-3 task ⇒ new depth 4 == cap ⇒ allowed.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), itemX, coord.AgentUpdateWorkItemInput{
+		ParentID: &task, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); err != nil {
+		t.Fatalf("depth-4 reparent should be allowed: %v", err)
+	}
+	assertParent(t, db, itemX, task)
+}
+
+// TestAgentUpdate_ReparentSubtreeDepthCapExceeded — the depth cap must bound the
+// WHOLE moved subtree, not just the moved node (ADR-0024 I3). A movable(2)→mchild(3)
+// pair grafted under a d3 parent would seat the node at the cap (d4) while its child
+// spills to d5; the per-node check would wave it through, so this pins the
+// subtree-height bound.
+func TestAgentUpdate_ReparentSubtreeDepthCapExceeded(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	task := authorSeedItem(t, db, story, "task")
+	movable := authorSeedItem(t, db, epic, "movable") // depth 2
+	authorSeedItem(t, db, movable, "mchild")          // depth 3; height(movable subtree)=2
+	grantCustody(t, db, epic)
+	s := newAuthorStore(t, db)
+
+	// Under task(d3): movable→d4 (fits alone) but mchild→d5 > cap ⇒ refused, untouched.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), movable, coord.AgentUpdateWorkItemInput{
+		ParentID: &task, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); !errors.Is(err, coord.ErrAgentAuthorDepthExceeded) {
+		t.Fatalf("over-deep subtree reparent: got %v, want ErrAgentAuthorDepthExceeded", err)
+	}
+	assertParent(t, db, movable, epic)
+
+	// Under story(d2): movable→d3, mchild→d4 == cap ⇒ allowed.
+	if _, err := s.AgentUpdateWorkItem(context.Background(), movable, coord.AgentUpdateWorkItemInput{
+		ParentID: &story, Principal: authorPrinc, AgentName: authorAgent, RunID: authorRun,
+	}); err != nil {
+		t.Fatalf("at-cap subtree reparent should be allowed: %v", err)
+	}
+	assertParent(t, db, movable, story)
+}
+
 // ---- small DB helpers (chaos lane) ----
+
+func assertParent(t *testing.T, db *sql.DB, item, wantParent string) {
+	t.Helper()
+	var parent sql.NullString
+	if err := db.QueryRow(`SELECT parent_id::text FROM coord.work_item WHERE id = $1::uuid`, item).Scan(&parent); err != nil {
+		t.Fatalf("read parent: %v", err)
+	}
+	got := ""
+	if parent.Valid {
+		got = parent.String
+	}
+	if got != wantParent {
+		t.Fatalf("parent = %q, want %q", got, wantParent)
+	}
+}
 
 func assertChildCount(t *testing.T, db *sql.DB, parent string, want int) {
 	t.Helper()
