@@ -60,7 +60,6 @@ import {
   type ThreadComment,
 } from "@/lib/tickets/thread";
 import {
-  authorAccent,
   buildRunComments,
   displayName,
   runCommentKey,
@@ -437,13 +436,17 @@ function RunCommentCard({
   const comment = item.comment!;
   const author = displayName(comment.author);
   // Per-agent chat colour (ISI-4706): each distinct agent principal carries its
-  // own stable hue via an inline custom property; humans return undefined and
-  // fall back to the accent the data-role="user" CSS already owns. Setting the
-  // var on the row cascades it to the bubble, avatar ring and role chip.
-  const accent = authorAccent(comment.author);
-  const accentStyle = accent
-    ? ({ "--ksq-author-accent": accent } as CSSProperties)
-    : undefined;
+  // own hue — assigned by buildRunComments (agentHueMap) so agents in one thread
+  // never collide — surfaced here as an inline `--ksq-author-hue`. CSS resolves
+  // saturation + per-theme lightness from it (so every hue clears WCAG AA on both
+  // canvases). Humans get no hue and fall back to the accent the data-role="user"
+  // CSS already owns. Setting the var on the row cascades it to the bubble,
+  // avatar ring and role chip.
+  const hue = meta?.authorHue;
+  const accentStyle =
+    hue !== undefined
+      ? ({ "--ksq-author-hue": String(hue) } as CSSProperties)
+      : undefined;
   // Older agent runs collapse to a one-liner; the newest agent run and every
   // human reply start open (design "newest last; older runs collapse").
   const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);

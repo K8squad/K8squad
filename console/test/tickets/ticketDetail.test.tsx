@@ -226,6 +226,37 @@ describe("TicketDetail", () => {
     expect(headers).not.toContain("user:alice");
   });
 
+  it("paints each agent its own hue and leaves humans on the accent (ISI-4706)", async () => {
+    // Two distinct agents + a human. Wiring test, not a helper test: it pins that
+    // the per-agent hue actually reaches the rendered <li> as --ksq-author-hue —
+    // the CSS half a Vitest helper-only test can't see. builder is the OLDER agent
+    // (collapsed path) and reviewer the latest (open path), so both render paths
+    // are exercised.
+    routeFetch({
+      thread: {
+        ...THREAD,
+        Comments: [
+          { author: "agent:builder", body: "seam wired", createdAt: "2026-09-14T10:00:00Z" },
+          { author: "agent:reviewer", body: "lgtm", createdAt: "2026-09-14T10:03:00Z" },
+          { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
+        ],
+      },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    const hueOf = (el: Element) =>
+      (el as HTMLElement).style.getPropertyValue("--ksq-author-hue").trim();
+    const [builder, reviewer, alice] = screen.getAllByTestId("activity-comment");
+
+    // Each agent bubble carries a numeric hue; the two agents differ.
+    expect(hueOf(builder)).toMatch(/^\d+$/);
+    expect(hueOf(reviewer)).toMatch(/^\d+$/);
+    expect(hueOf(builder)).not.toBe(hueOf(reviewer));
+    // The human bubble carries no per-agent hue — the accent CSS owns it.
+    expect(hueOf(alice)).toBe("");
+  });
+
   it("lays out the ISI-4447 redesign: header card + pinned rail with Properties and Sub-tickets status", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

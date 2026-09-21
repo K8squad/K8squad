@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  authorAccent,
+  agentHueMap,
   avatarInitial,
   buildRunComments,
   displayName,
@@ -56,23 +56,58 @@ describe("displayName", () => {
   });
 });
 
-describe("authorAccent", () => {
-  it("gives each distinct agent its own stable hue (ISI-4706)", () => {
-    const architect = authorAccent("agent:Architect");
-    const builder = authorAccent("agent:Builder");
-    expect(architect).toMatch(/^hsl\(\d+ 68% 52%\)$/);
-    expect(builder).toMatch(/^hsl\(\d+ 68% 52%\)$/);
-    // Two different agents must not collapse to the same colour here.
-    expect(architect).not.toBe(builder);
-    // Stable + case/prefix-insensitive: same agent → same colour every render.
-    expect(authorAccent("agent:Architect")).toBe(architect);
-    expect(authorAccent("agent/architect")).toBe(architect);
+describe("agentHueMap", () => {
+  // The property the ticket cares about, asserted directly (not one lucky pair):
+  // every distinct agent in a thread gets a DISTINCT hue, up to the palette size.
+  // Index assignment guarantees this where a hash could not — a fixed 7-hue hash
+  // collided on this repo's own roster (coordinator/tester, architect/coder, …).
+  it("spreads the repo's real agent roster across the palette with no collision (ISI-4706)", () => {
+    const roster = [
+      "architect",
+      "builder",
+      "coder",
+      "coordinator",
+      "planner",
+      "reviewer",
+      "tester",
+    ];
+    const hues = agentHueMap(roster.map((n) => `agent:${n}`));
+    expect(hues.size).toBe(roster.length);
+    expect(new Set(hues.values()).size).toBe(roster.length);
   });
 
-  it("returns undefined for humans so the accent CSS owns them", () => {
-    expect(authorAccent("user:alice")).toBeUndefined();
-    expect(authorAccent("principal:admin")).toBeUndefined();
-    expect(authorAccent("Winston")).toBeUndefined();
+  it("assigns by first-appearance index, case/prefix-insensitive, deduped", () => {
+    const hues = agentHueMap([
+      "agent:Architect",
+      "user:alice", // humans skipped
+      "agent/architect", // same agent, different prefix/case — no new slot
+      "agent:Builder",
+    ]);
+    expect([...hues.keys()]).toEqual(["architect", "builder"]);
+    // First two palette slots, in order — distinct.
+    expect(hues.get("architect")).not.toBe(hues.get("builder"));
+  });
+
+  it("omits humans so the accent CSS owns them", () => {
+    const hues = agentHueMap(["user:alice", "principal:admin", "Winston"]);
+    expect(hues.size).toBe(0);
+  });
+
+  it("buildRunComments stamps each agent bubble its own hue, humans none", () => {
+    const bubbles = buildRunComments(
+      thread({
+        comments: [
+          { author: "agent:builder", body: "wired", createdAt: "2026-09-14T10:00:00Z" },
+          { author: "agent:reviewer", body: "lgtm", createdAt: "2026-09-14T10:01:00Z" },
+          { author: "user:alice", body: "ok", createdAt: "2026-09-14T10:02:00Z" },
+        ],
+      }),
+    );
+    const [builder, reviewer, alice] = bubbles;
+    expect(typeof builder.authorHue).toBe("number");
+    expect(typeof reviewer.authorHue).toBe("number");
+    expect(builder.authorHue).not.toBe(reviewer.authorHue);
+    expect(alice.authorHue).toBeUndefined();
   });
 });
 

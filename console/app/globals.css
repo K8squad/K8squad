@@ -17,6 +17,16 @@
    * Aligned to the visual-system sheet (#A78BFA) per the ISI-3545 gap report. */
   --ksq-run: #a78bfa;
 
+  /* Per-agent comment hue (ISI-4706). The hue itself is emitted per-bubble as
+   * an inline `--ksq-author-hue`; saturation is theme-invariant, but LIGHTNESS
+   * is resolved per theme so the resulting colour clears WCAG AA on both the
+   * dark and light canvases (a single baked 52% lightness failed AA in light).
+   * Dark wants a light ink (L≈70%, inside the measured AA-safe [64,95] band);
+   * light wants a dark ink (L≈28%, inside [10,29]). --ksq-author-l is set in
+   * each [data-theme] block below. */
+  --ksq-author-s: 68%;
+  --ksq-author-l: 70%;
+
   /* Radius scale (visual-system §Components, ISI-3545 P1-2): 6 chip · 8 control · 12 card · 999
    * for dots/avatars. `--radius` stays as the default *control* radius so existing btn/input
    * rules keep working; cards opt into the larger --radius-card for shape hierarchy. */
@@ -46,6 +56,8 @@
   --text-hi: #e8eef9;
   --text-1: var(--text);
   --text-2: var(--muted);
+  /* Light ink on the dark canvas (ISI-4706 per-agent hue, AA-safe band). */
+  --ksq-author-l: 70%;
 }
 
 /* Light: the SAME token roles, luminance-inverted. The dark canvas navy #0B1220 returns here in
@@ -61,6 +73,8 @@
   --text-hi: #0b1220;
   --text-1: var(--text);
   --text-2: var(--muted);
+  /* Dark ink on the light canvas (ISI-4706 per-agent hue, AA-safe band). */
+  --ksq-author-l: 28%;
 }
 
 * {
