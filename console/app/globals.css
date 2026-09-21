@@ -3711,6 +3711,20 @@ a:hover {
 .gh-kanban-card--blocked {
   border-color: color-mix(in srgb, #fb7185 60%, var(--border));
 }
+/* ISI-4758: the card is a click target opening the issue popup. */
+.gh-kanban-card--clickable {
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.gh-kanban-card--clickable:hover {
+  border-color: var(--accent);
+}
+.gh-kanban-card--clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .gh-kanban-card__title {
   margin-bottom: 8px;
   font-size: 0.85rem;
@@ -3788,6 +3802,93 @@ a:hover {
 }
 .gh-priority-badge--blocked {
   background: #fb7185;
+}
+
+/* Issue popup (ISI-4758) — centred modal opened from a Kanban card. */
+.gh-issue-popup-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 60;
+}
+.gh-issue-popup {
+  width: min(520px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control, 8px);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+  animation: gh-issue-popup-in 140ms ease-out;
+}
+@keyframes gh-issue-popup-in {
+  from {
+    transform: translateY(8px);
+    opacity: 0.6;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.gh-issue-popup__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.gh-issue-popup__title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.gh-issue-popup__close {
+  flex: none;
+  min-height: 36px;
+  min-width: 36px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.gh-issue-popup__close:hover,
+.gh-issue-popup__close:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.gh-issue-popup__body {
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+/* Empty in this shell; epic 3 fills it. Reserve no height so it stays invisible. */
+.gh-issue-popup__assign:empty {
+  display: none;
+}
+.gh-issue-popup__gh-link {
+  align-self: flex-start;
+  color: var(--text-hi);
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+.gh-issue-popup__gh-link:hover {
+  text-decoration: underline;
+}
+.gh-issue-popup__gh-link span[aria-hidden] {
+  color: #00bcd4;
+  margin-left: 3px;
 }
 
 @media (max-width: 900px) {

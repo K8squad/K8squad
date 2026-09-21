@@ -4,7 +4,7 @@
 // labels/assignees — never fabricated.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup, within } from "@testing-library/react";
+import { render, screen, cleanup, within, fireEvent } from "@testing-library/react";
 import {
   GitHubIssuesKanban,
   columnFor,
@@ -78,15 +78,16 @@ describe("GitHubIssuesKanban", () => {
     expect(screen.getByTestId("gh-kanban-count-done").textContent).toBe("1");
   });
 
-  it("deep-links every issue title (url or issues/{n})", () => {
+  it("titles each card without turning it into a navigating anchor (ISI-4758)", () => {
     render(<GitHubIssuesKanban issues={issues} />);
     const board = screen.getByTestId("gh-issues-kanban");
-    const links = within(board).getAllByTestId("gh-issue-title");
-    expect(links).toHaveLength(4);
-    const first = links.find((l) => l.textContent?.includes("#98"));
-    expect(first?.getAttribute("href")).toBe("https://gh/issues/98");
-    const fallback = links.find((l) => l.textContent?.includes("#91"));
-    expect(fallback?.getAttribute("href")).toBe("https://github.com/K8squad/K8squad/issues/91");
+    const titles = within(board).getAllByTestId("gh-issue-title");
+    expect(titles).toHaveLength(4);
+    // The deep-link moved into the popup, so a card title is no longer an <a>.
+    for (const t of titles) {
+      expect(t.tagName.toLowerCase()).not.toBe("a");
+      expect(t.getAttribute("href")).toBeNull();
+    }
     // No fabricated "live" badge on this mirror-backed screen.
     expect(screen.queryByText(/live/i)).toBeNull();
   });
@@ -118,5 +119,89 @@ describe("GitHubIssuesKanban", () => {
   it("renders nothing for an empty issue set (parent owns the empty state)", () => {
     const { container } = render(<GitHubIssuesKanban issues={[]} />);
     expect(container.firstChild).toBeNull();
+  });
+});
+
+// ISI-4758 (ISI-4749 epic 1): card → popup UX shell.
+describe("GitHubIssuesKanban card popup", () => {
+  const firstCard = () => {
+    const board = screen.getByTestId("gh-issues-kanban");
+    return within(board)
+      .getAllByTestId("gh-issue-card")
+      .find((c) => c.textContent?.includes("#98"))!;
+  };
+
+  it("opens the popup on card click with the issue identity as its label", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    expect(screen.queryByTestId("gh-issue-popup")).toBeNull();
+    fireEvent.click(firstCard());
+    const popup = screen.getByTestId("gh-issue-popup");
+    expect(popup.getAttribute("role")).toBe("dialog");
+    expect(popup.getAttribute("aria-modal")).toBe("true");
+    expect(popup.textContent).toContain("#98");
+    expect(popup.textContent).toContain("Add authentication middleware");
+  });
+
+  it("is keyboard-openable (Enter / Space) on the focusable card", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    const card = firstCard();
+    expect(card.getAttribute("tabindex")).toBe("0");
+    expect(card.getAttribute("role")).toBe("button");
+    fireEvent.keyDown(card, { key: "Enter" });
+    expect(screen.getByTestId("gh-issue-popup")).toBeTruthy();
+  });
+
+  it("hosts the working 'Open on GitHub' new-tab deep-link inside the popup", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    fireEvent.click(firstCard());
+    const link = screen.getByTestId("gh-issue-popup-open-github");
+    expect(link.tagName.toLowerCase()).toBe("a");
+    expect(link.getAttribute("href")).toBe("https://gh/issues/98");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("falls the deep-link back to issues/{n} for a sparse mirror row", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    const board = screen.getByTestId("gh-issues-kanban");
+    const sparse = within(board)
+      .getAllByTestId("gh-issue-card")
+      .find((c) => c.textContent?.includes("#91"))!;
+    fireEvent.click(sparse);
+    expect(
+      screen.getByTestId("gh-issue-popup-open-github").getAttribute("href"),
+    ).toBe("https://github.com/K8squad/K8squad/issues/91");
+  });
+
+  it("reserves an empty assign slot for epic 3 (no fabricated control)", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    fireEvent.click(firstCard());
+    const slot = screen.getByTestId("gh-issue-assign-slot");
+    expect(slot).toBeTruthy();
+    expect(slot.childElementCount).toBe(0);
+    expect(slot.textContent).toBe("");
+  });
+
+  it("closes on Escape and on backdrop click", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    fireEvent.click(firstCard());
+    expect(screen.getByTestId("gh-issue-popup")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByTestId("gh-issue-popup")).toBeNull();
+
+    // Reopen and close via the backdrop scrim.
+    fireEvent.click(firstCard());
+    fireEvent.click(screen.getByTestId("gh-issue-popup-scrim"));
+    expect(screen.queryByTestId("gh-issue-popup")).toBeNull();
+  });
+
+  it("closes via the × button but not when clicking inside the popup", () => {
+    render(<GitHubIssuesKanban issues={issues} />);
+    fireEvent.click(firstCard());
+    // A click on the popup body must not fall through to the scrim's close.
+    fireEvent.click(screen.getByTestId("gh-issue-popup"));
+    expect(screen.getByTestId("gh-issue-popup")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("gh-issue-popup-close"));
+    expect(screen.queryByTestId("gh-issue-popup")).toBeNull();
   });
 });
