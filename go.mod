@@ -9,7 +9,7 @@ toolchain go1.26.7
 // pairs with k8s.io/* v0.31.x and controller-tools (controller-gen) v0.16.x.
 require (
 	k8s.io/apimachinery v0.37.0
-	sigs.k8s.io/controller-runtime v0.25.0
+	sigs.k8s.io/controller-runtime v0.25.1
 )
 
 require (
