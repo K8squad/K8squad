@@ -106,6 +106,38 @@ function isPriorityLabel(label: string): boolean {
   return PRIORITY_RULES.some((r) => r.re.test(label));
 }
 
+/** LocalRunBadge is the clearly-LOCAL status chip (ISI-4760, Epic 4). Its tone
+ * mirrors the work-item run state from the Epic 2 read contract (ISI-4757 §7). */
+export type LocalRunBadge = { label: string; tone: "running" | "queued" | "done" };
+
+/** localRunBadge derives the honest local overlay from `issue.local` — the
+ * OPTIONAL bridge block the apiserver attaches only for a GitHub issue linked to
+ * a Paperclip work-item (contract §7). It is a PURE projection:
+ *   • absent `local`                       → null (AC4: non-bridged card unchanged)
+ *   • runState "running"                    → "<agent> working…"  (AC1)
+ *   • runState "todo"                       → "<agent> queued"
+ *   • runState "done"                       → "<agent> finished"  (AC3 terminal)
+ * It reads ONLY `local` and NEVER `assignees` — the badge is a local status, not
+ * a GitHub assignee (ADR-0013 / contract §6 honesty guard). The BE never sends
+ * enum values outside the §7 set, so any unrecognised state yields null rather
+ * than an invented chip. */
+export function localRunBadge(issue: GithubIssue): LocalRunBadge | null {
+  const local = issue.local;
+  if (!local) return null;
+  const agent = local.agent?.trim();
+  if (!agent) return null;
+  switch (local.runState) {
+    case "running":
+      return { label: `${agent} working…`, tone: "running" };
+    case "todo":
+      return { label: `${agent} queued`, tone: "queued" };
+    case "done":
+      return { label: `${agent} finished`, tone: "done" };
+    default:
+      return null;
+  }
+}
+
 /** issueHref prefers the mirror's normalized url; a sparse row still gets the
  * repo-base deep link so the AC "titles deep-link via issues/{n}" always holds. */
 export function issueHref(issue: GithubIssue): string | undefined {
@@ -325,6 +357,10 @@ function IssueCard({
   // focusable; the GitHub deep-link lives inside the popup, not on the card, so a
   // card click never navigates away.
   const open = () => onOpen(issue);
+  // ISI-4760 honesty guard (ADR-0013 / contract §6): the local badge is derived
+  // PURELY from `issue.local` and is NEVER merged into the mirrored `assignees`
+  // line below. This render path issues no GitHub write of any kind.
+  const localBadge = localRunBadge(issue);
   return (
     <article
       className={`gh-kanban-card gh-kanban-card--clickable${isBlocked(issue) ? " gh-kanban-card--blocked" : ""}`}
@@ -347,6 +383,16 @@ function IssueCard({
         </span>
       </div>
       <div className="gh-kanban-card__tags">
+        {localBadge && (
+          <span
+            className={`gh-local-badge gh-local-badge--${localBadge.tone}`}
+            data-testid="gh-issue-local-run"
+            aria-label={`Local Paperclip status: ${localBadge.label}`}
+          >
+            <span className="gh-local-badge__dot" aria-hidden="true" />
+            {localBadge.label}
+          </span>
+        )}
         {priority && (
           <span
             className={`gh-priority-badge gh-priority-badge--${priority.tone}`}

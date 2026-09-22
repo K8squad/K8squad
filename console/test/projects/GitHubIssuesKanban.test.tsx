@@ -17,6 +17,7 @@ import {
   columnFor,
   issueHref,
   priorityFor,
+  localRunBadge,
 } from "@/components/GitHubIssuesKanban";
 import type { GithubIssue } from "@/lib/github-status";
 
@@ -390,5 +391,71 @@ describe("GitHubIssuesKanban assign & dispatch (epic 3)", () => {
     const body = JSON.parse((mutating[0][1] as RequestInit).body as string);
     expect(body).not.toHaveProperty("assignees");
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("assignees"))).toBe(false);
+  });
+});
+
+// ISI-4760 (Epic 4) — the honest LOCAL "agent working…" overlay, derived from the
+// optional `issue.local` bridge block (Epic 2 read contract, ISI-4757 §7).
+describe("localRunBadge — the pure local-status projection", () => {
+  const base: GithubIssue = { number: 1, title: "x", state: "open" };
+
+  it("returns null when the issue is not bridged (no `local` block)", () => {
+    expect(localRunBadge(base)).toBeNull();
+  });
+
+  it("maps runState onto an honest, agent-named chip", () => {
+    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "running" } }))
+      .toEqual({ label: "john working…", tone: "running" });
+    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "todo" } }))
+      .toEqual({ label: "john queued", tone: "queued" });
+    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "john", runState: "done" } }))
+      .toEqual({ label: "john finished", tone: "done" });
+  });
+
+  it("never invents a chip for a missing agent", () => {
+    expect(localRunBadge({ ...base, local: { workItemId: "wi1", agent: "", runState: "running" } }))
+      .toBeNull();
+  });
+});
+
+describe("GitHubIssuesKanban local overlay (ISI-4760)", () => {
+  const bridged: GithubIssue = {
+    number: 200,
+    title: "Wire the dispatch bridge",
+    state: "open",
+    url: "https://gh/issues/200",
+    assignees: ["gh-human"], // GitHub's OWN assignee — must stay untouched
+    local: { workItemId: "wi-200", agent: "sam", runState: "running" },
+  };
+
+  it("AC1/AC5: shows a clearly-local, screen-reader-named badge on a bridged card", () => {
+    render(<GitHubIssuesKanban issues={[bridged]} />);
+    const badge = screen.getByTestId("gh-issue-local-run");
+    expect(badge.textContent).toContain("sam working…");
+    expect(badge.getAttribute("aria-label")).toBe("Local Paperclip status: sam working…");
+  });
+
+  it("AC2: the badge never merges into or alters the mirrored GitHub assignee line", () => {
+    render(<GitHubIssuesKanban issues={[bridged]} />);
+    const card = screen.getByTestId("gh-issue-card");
+    // Assignee line still reflects ONLY GitHub's assignees, not the local agent.
+    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).toBe("gh-human");
+    expect(card.querySelector('[data-testid="gh-issue-assignee"]')?.textContent).not.toContain("sam");
+  });
+
+  it("AC4: a non-bridged card renders no local badge", () => {
+    render(<GitHubIssuesKanban issues={[{ ...bridged, local: undefined }]} />);
+    expect(screen.queryByTestId("gh-issue-local-run")).toBeNull();
+  });
+
+  it("AC3: a terminal run shows the finished representation, not 'working…'", () => {
+    render(
+      <GitHubIssuesKanban
+        issues={[{ ...bridged, local: { workItemId: "wi-200", agent: "sam", runState: "done" } }]}
+      />,
+    );
+    const badge = screen.getByTestId("gh-issue-local-run");
+    expect(badge.textContent).toContain("sam finished");
+    expect(badge.textContent).not.toContain("working…");
   });
 });

@@ -3941,6 +3941,48 @@ a:hover {
   color: var(--danger, #ef5350);
 }
 
+/* ISI-4760 (Epic 4) — the clearly-LOCAL "agent working…" overlay. Distinct from
+ * the solid-fill priority badge and from the assignee line: an OUTLINED chip
+ * whose label uses the theme text colour (so AA contrast holds in light & dark),
+ * with a tone-coloured status dot. It is a Paperclip-local status, never a
+ * GitHub assignee (ADR-0013 / contract §6). */
+.gh-local-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 6%, transparent);
+  white-space: nowrap;
+}
+.gh-local-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-2);
+  flex: 0 0 auto;
+}
+.gh-local-badge--running {
+  border-color: color-mix(in srgb, #16a34a 55%, var(--border));
+}
+.gh-local-badge--running .gh-local-badge__dot {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #16a34a 22%, transparent);
+}
+.gh-local-badge--queued {
+  border-color: color-mix(in srgb, #b45309 45%, var(--border));
+}
+.gh-local-badge--queued .gh-local-badge__dot {
+  background: #d97706;
+}
+.gh-local-badge--done .gh-local-badge__dot {
+  background: var(--text-2);
+}
+
 @media (max-width: 900px) {
   .gh-kanban {
     grid-template-columns: repeat(4, minmax(220px, 1fr));
