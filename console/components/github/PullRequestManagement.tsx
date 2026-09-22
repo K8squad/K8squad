@@ -24,6 +24,7 @@
 import { useState } from "react";
 import { ageLabel, type GithubPR, type GithubStatus } from "@/lib/github-status";
 import { GITHUB_REPO_LABEL, GITHUB_REPO_URL, githubPullHref } from "@/lib/github-links";
+import { ReviewAutomationDialog } from "./ReviewAutomationDialog";
 import "./github-screens.css";
 import "./prs.css";
 
@@ -99,15 +100,22 @@ function ExtGlyph() {
 
 export function PullRequestManagement({
   data,
+  projectId,
   ghost = false,
 }: {
   data: GithubStatus;
+  /** The project whose review-automation config the settings dialog reads/writes
+   * (ISI-4764). Absent (e.g. a stale caller) hides the settings button rather
+   * than opening a dialog with no target. */
+  projectId?: string;
   /** Stale/errored mirror: keep last-good data visible but ghosted (degrade,
    * don't blank — DESIGN-SPEC §3). */
   ghost?: boolean;
 }) {
   const prs = data.pullRequests;
   const [selected, setSelected] = useState<number | null>(null);
+  // ISI-4764: the "Review automation" settings dialog on the PR header.
+  const [reviewAutomationOpen, setReviewAutomationOpen] = useState(false);
 
   // The tab's own empty state owns the no-data case; this screen renders
   // nothing so it composes cleanly with the other GitHub screens.
@@ -135,16 +143,38 @@ export function PullRequestManagement({
             <span data-testid="gh-prs-freshness">{freshness}</span>
           </p>
         </div>
-        <a
-          className="gh-btn"
-          href={GITHUB_REPO_URL}
-          target="_blank"
-          rel="noreferrer noopener"
-          data-testid="gh-prs-open-github"
-        >
-          Open on GitHub <ExtGlyph />
-        </a>
+        <div className="gh-screen__head-actions">
+          {/* ISI-4764: unlike the read-only deep-links, this is a real in-console
+              write path — it opens the E1-backed review-automation config. */}
+          {projectId && (
+            <button
+              type="button"
+              className="gh-btn"
+              data-testid="gh-review-automation-btn"
+              onClick={() => setReviewAutomationOpen(true)}
+              aria-haspopup="dialog"
+            >
+              ⚙ Review automation
+            </button>
+          )}
+          <a
+            className="gh-btn"
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noreferrer noopener"
+            data-testid="gh-prs-open-github"
+          >
+            Open on GitHub <ExtGlyph />
+          </a>
+        </div>
       </header>
+
+      {reviewAutomationOpen && projectId && (
+        <ReviewAutomationDialog
+          projectId={projectId}
+          onClose={() => setReviewAutomationOpen(false)}
+        />
+      )}
 
       {/* Action row: every control is a real GitHub action deep-link, never a
           fabricated in-console write path (the console is read-only over the

@@ -274,7 +274,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
               data-ghost={ghost ? "true" : "false"}
               aria-hidden={ghost ? "true" : undefined}
             >
-              <PullRequestManagement data={data} ghost={ghost} />
+              <PullRequestManagement data={data} projectId={projectId} ghost={ghost} />
               <GitHubIssuesKanban issues={data.issues} projectId={projectId} />
               <CiCdPipelineStatus data={data} />
               <ReleasePanel releases={data.releases} />

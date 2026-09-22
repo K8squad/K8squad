@@ -171,4 +171,15 @@ describe("PullRequestManagement", () => {
     const { container } = render(<PullRequestManagement data={status()} />);
     expect(container.firstChild).toBeNull();
   });
+
+  it("shows the Review automation settings button only with a projectId (ISI-4764)", () => {
+    // Without a projectId the settings button is hidden (no dialog target).
+    const { rerender } = render(<PullRequestManagement data={status({ pullRequests: prs })} />);
+    expect(screen.queryByTestId("gh-review-automation-btn")).toBeNull();
+
+    // With a projectId the button appears and the dialog is closed until clicked.
+    rerender(<PullRequestManagement data={status({ pullRequests: prs })} projectId="ns/demo" />);
+    expect(screen.getByTestId("gh-review-automation-btn")).toBeTruthy();
+    expect(screen.queryByTestId("gh-review-automation-dialog")).toBeNull();
+  });
 });

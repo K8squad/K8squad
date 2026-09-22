@@ -246,6 +246,161 @@ export function syncedAgo(iso: string | undefined, now: number): string {
   return `synced ${Math.round(hrs / 24)}d ago`;
 }
 
+// ============================================================================
+// Review automation config (ISI-4764 / ISI-4750 E2) — the client contract for
+// the E1 sub-resource BFF route (app/api/projects/[id]/repo/review-automation).
+//
+// Types mirror the E1 apiserver ReviewAutomationView (internal/apiserver/
+// reviewautomation.go, PR #561) EXACTLY; the Go struct is the contract owner.
+// Enum wire values are underscore-cased. `enabledBy` and `canEdit` are
+// server-computed and READ-ONLY: `enabledBy` is the D1 provenance stamp (never
+// sent back on write); `canEdit` is the caller's contributor write-tier, which
+// gates the form here — E2 does NOT call fetchViewerRole() (ISI-4496 trap).
+// ============================================================================
+
+/** Which PRs the automation reviews. Default is `team_authored`. */
+export type ReviewScope = "team_authored" | "all";
+/** When a review fires. Default is `on_new_commits`. */
+export type ReviewTrigger = "on_open" | "on_new_commits";
+
+/** The GET read model + the 200 write-response body (reviewautomation.go
+ * ReviewAutomationView). Enum fields always carry a resolved default. */
+export type ReviewAutomationView = {
+  enabled: boolean;
+  reviewerAgentId: string;
+  scope: ReviewScope;
+  trigger: ReviewTrigger;
+  /** Server-stamped D1 provenance (who last enabled it) — read-only. */
+  enabledBy: string;
+  /** Server-computed contributor write-tier — gates the form. */
+  canEdit: boolean;
+};
+
+/** The write input the apiserver accepts — a strict subset of the view. It
+ * structurally OMITS `enabledBy` (server-stamped, never body-trusted) and
+ * `canEdit` (server-computed authZ). */
+export type ReviewAutomationInput = {
+  enabled: boolean;
+  reviewerAgentId: string;
+  scope: ReviewScope;
+  trigger: ReviewTrigger;
+};
+
+/** Human labels for the enum wire values (dialog copy). */
+export const REVIEW_SCOPE_LABEL: Record<ReviewScope, string> = {
+  team_authored: "Team-authored PRs only",
+  all: "All pull requests",
+};
+export const REVIEW_TRIGGER_LABEL: Record<ReviewTrigger, string> = {
+  on_open: "When a pull request is opened",
+  on_new_commits: "When new commits are pushed",
+};
+
+/** The distinct honest state the GET carries (mirrors GithubStatusState). */
+export type ReviewAutomationState =
+  | { kind: "loading" }
+  | { kind: "ready"; view: ReviewAutomationView }
+  | { kind: "unauthenticated" }
+  | { kind: "not-found" }
+  | { kind: "not-wired" }
+  | { kind: "error"; status: number };
+
+/** Fetch the review-automation config through the BFF choke point. Relays the
+ * apiserver status verbatim: 501 ⇒ the service is not wired in this deployment
+ * (the dialog renders its honest "not available yet" state), 404 ⇒ existence-
+ * hiding, never fabricated config. */
+export async function fetchReviewAutomation(
+  projectId: string,
+): Promise<ReviewAutomationState> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/review-automation`,
+    { cache: "no-store" },
+  );
+  if (res.ok) {
+    return { kind: "ready", view: (await res.json()) as ReviewAutomationView };
+  }
+  switch (res.status) {
+    case 401:
+      return { kind: "unauthenticated" };
+    case 404:
+      return { kind: "not-found" };
+    case 501:
+      return { kind: "not-wired" };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
+/** The outcome of a review-automation write (PUT). Distinguishes the field-
+ * level rejections the dialog surfaces inline (400 bad body / 422 invalid enum
+ * or ineligible reviewer) from the deploy-level unavailability (501/502) and
+ * the authZ deny (403). */
+export type ReviewAutomationSaveResult =
+  | { kind: "saved"; view: ReviewAutomationView }
+  | { kind: "invalid"; message: string; fields: string[] }
+  | { kind: "denied" }
+  | { kind: "unavailable"; status: number }
+  | { kind: "error"; status: number };
+
+/** Read the apiserver's `{error, fields}` rejection body (best-effort — a
+ * missing/garbled body degrades to a generic message, never a throw). */
+async function readRejection(
+  res: Response,
+): Promise<{ message: string; fields: string[] }> {
+  try {
+    const body = (await res.json()) as { error?: unknown; fields?: unknown };
+    const message = typeof body.error === "string" && body.error ? body.error : "";
+    const fields = Array.isArray(body.fields)
+      ? body.fields.filter((f): f is string => typeof f === "string")
+      : [];
+    return { message, fields };
+  } catch {
+    return { message: "", fields: [] };
+  }
+}
+
+/** PUT the review-automation config through the BFF. The apiserver owns the
+ * authoritative validation (deny-by-default authZ, D5 reviewer eligibility), so
+ * this never pre-validates — it just classifies the relayed status so the
+ * dialog can surface a 422 inline against the offending fields. */
+export async function saveReviewAutomation(
+  projectId: string,
+  input: ReviewAutomationInput,
+): Promise<ReviewAutomationSaveResult> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/review-automation`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      cache: "no-store",
+    },
+  );
+  if (res.ok) {
+    return { kind: "saved", view: (await res.json()) as ReviewAutomationView };
+  }
+  switch (res.status) {
+    case 400:
+    case 422: {
+      const { message, fields } = await readRejection(res);
+      return {
+        kind: "invalid",
+        message:
+          message ||
+          "The apiserver rejected this configuration — check the reviewer and options.",
+        fields,
+      };
+    }
+    case 403:
+      return { kind: "denied" };
+    case 501:
+    case 502:
+      return { kind: "unavailable", status: res.status };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
 /** The mirror is "stale" when its last mirror time is older than `thresholdMs`
  * (default 10 min) — the tab shows a subdued "may be stale" hint (never blocks). */
 export function isStale(
