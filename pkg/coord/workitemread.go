@@ -236,6 +236,52 @@ func readStatusHistory(ctx context.Context, db *sql.DB, workItemID string) ([]St
 	return out, nil
 }
 
+// FindWorkItemByLabel returns the work item in projectID that carries label,
+// or ErrWorkItemNotFound when none does. It is the shared create-if-absent
+// precondition for label-keyed idempotent writes (ISI-4757 GitHub-Kanban bridge
+// join; ISI-4766 system review-automation dedup): a caller looks a
+// candidate label up first and skips its create when a match already exists, so
+// a redelivered webhook or a re-run reconcile is a no-op. teamID scopes tenancy
+// EXACTLY like ListWorkItems — a scoped Team sees only its own items (a foreign
+// or team-less item reads as ErrWorkItemNotFound, never a cross-tenant 403);
+// an empty teamID is the trusted fleet path used by the operator-side SYSTEM
+// callers. When more than one item carries the label (labels are not unique at
+// the schema level) the oldest is returned deterministically. Read-only: it
+// mutates nothing and creates no item, so it never crosses the ISI-4711 custody
+// wall.
+func (s *WorkItemReadStore) FindWorkItemByLabel(ctx context.Context, teamID, projectID, label string) (WorkItemRecord, error) {
+	if projectID == "" {
+		return WorkItemRecord{}, fmt.Errorf("coord.FindWorkItemByLabel: projectID required")
+	}
+	if label == "" {
+		return WorkItemRecord{}, fmt.Errorf("coord.FindWorkItemByLabel: label required")
+	}
+	var rec WorkItemRecord
+	var team sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT wi.id::text, wi.project_id::text, wi.team_id::text, wi.title, wi.state, wi.labels
+		  FROM coord.work_item wi
+		 WHERE wi.project_id = $1::uuid
+		   AND ($2::uuid IS NULL OR wi.team_id = $2::uuid)
+		   AND $3 = ANY(wi.labels)
+		 ORDER BY wi.created_at, wi.id
+		 LIMIT 1`, projectID, nullUUID(teamID), label).
+		Scan(&rec.ID, &rec.ProjectID, &team, &rec.Title, &rec.State, pq.Array(&rec.Labels))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemRecord{}, ErrWorkItemNotFound
+	}
+	if err != nil {
+		return WorkItemRecord{}, fmt.Errorf("coord.FindWorkItemByLabel: lookup %s in %s: %w", label, projectID, err)
+	}
+	if team.Valid {
+		rec.TeamID = &team.String
+	}
+	if rec.Labels == nil {
+		rec.Labels = []string{}
+	}
+	return rec, nil
+}
+
 // nullUUID turns an empty teamID into a NULL bind parameter (the trusted
 // fleet-admin path); a non-empty one is cast to uuid at the server.
 func nullUUID(id string) any {
