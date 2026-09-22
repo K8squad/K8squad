@@ -237,6 +237,35 @@ func TestRunListItemProjection(t *testing.T) {
 	})
 }
 
+// TestEnrichWorkItemsNilDBLeavesFieldsEmpty guards the ISI-4777 fabrication
+// discipline: without a database (or on an older apiserver) the work-item title
+// and triggering principal must stay absent so the console renders "—" rather
+// than a fabricated value. enrichWorkItems is a fail-open no-op here.
+func TestEnrichWorkItemsNilDBLeavesFieldsEmpty(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-abc-r1", Namespace: "ns"},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "proj"},
+			WorkItemRef: "ef5b2075-1111-2222-3333-444455556666",
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning, ClaimedAt: &now},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(run).Build()
+	svc := NewRunsService(k8sClient) // nil db
+
+	items, err := svc.listRunsInNamespace(ctx, "ns", RunListQuery{Limit: 10}, discussion.AuthorContext{})
+	assert.NoError(t, err)
+	assert.Len(t, items, 1)
+	assert.Empty(t, items[0].WorkItemTitle, "no db → title must stay absent")
+	assert.Empty(t, items[0].TriggeredBy, "no db → triggeredBy must stay absent")
+
+	// enrichWorkItems must also tolerate an empty slice without panicking.
+	svc.enrichWorkItems(ctx, nil)
+}
+
 func authRequest(r *http.Request) *http.Request {
 	// Add test auth token (simplified for test)
 	r.Header.Set("Authorization", "Bearer test-token")
