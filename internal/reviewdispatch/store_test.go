@@ -81,6 +81,12 @@ func TestEnsureReviewFreshCreateDispatchesUnderSystemIdentity(t *testing.T) {
 	if w.got.DedupLabel != "ksquad.review=deadbeef" || w.got.ProjectID != "proj-uid" || w.got.TeamID != "team-uid" {
 		t.Errorf("create scope wrong: %+v", w.got)
 	}
+	// ISI-4767 E5: the create carries the plaintext PR-review anchor so the console
+	// read model can join this review back to the PR card. Slug is lower-cased.
+	wantAnchor := "ksquad.github.pr=acme/widget#42"
+	if len(w.got.ExtraLabels) != 1 || w.got.ExtraLabels[0] != wantAnchor {
+		t.Errorf("create ExtraLabels = %v, want [%q]", w.got.ExtraLabels, wantAnchor)
+	}
 	// Dispatch: system Initiator, human EnabledBy Principal, correct agent + item.
 	if d.calls != 1 {
 		t.Fatalf("dispatch calls = %d, want 1", d.calls)

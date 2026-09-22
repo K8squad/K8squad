@@ -7,6 +7,20 @@
 // renders as "synced Ns ago", NEVER a fabricated "live" badge (ADR-0013 §D4).
 // The BYO repo credential is never present (the apiserver never returns it).
 
+/** The OPTIONAL local automated-review block (ISI-4767 / ISI-4750 E5), mirroring
+ * internal/apiserver/githubstatus.go GithubPRReview EXACTLY. Present only when the
+ * PR is bridged to a system-dispatched PR-review work item (label
+ * `ksquad.github.pr=<owner>/<repo>#N`, produced by E4). ABSENT means "not
+ * reviewed" — the honest default (ADR-0013 §D4), never a fabricated verdict. It is
+ * a LOCAL work-item status, NOT a GitHub review, and must never merge into
+ * `reviewState` (the raw provider column). MVP surfaces presence + a deep-link to
+ * the work item; the reviewing agent name + reviewed head-SHA are Phase-2. */
+export type GithubPRReview = {
+  workItemId: string;
+  /** The review work item's coord state (backlog | in progress | done | …). */
+  state?: string;
+};
+
 export type GithubPR = {
   number: number;
   title: string;
@@ -17,6 +31,7 @@ export type GithubPR = {
   url?: string;
   actor?: string;
   updatedAt?: string;
+  review?: GithubPRReview;
 };
 
 export type GithubIssue = {
