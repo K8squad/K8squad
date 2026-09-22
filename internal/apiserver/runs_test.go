@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -284,4 +285,47 @@ func TestRunsServiceNilDB(t *testing.T) {
 	} else if response != nil {
 		t.Logf("Response received: %+v", response)
 	}
+}
+
+// TestGetRunDetailFleetResolvesExecNamespace reproduces the live k8squad-test
+// topology (ISI-4565): the Run CR lives in the squad *execution* namespace, but
+// an admin's detail request is fleet-scoped (namespace == ""). A namespaced Get
+// with an empty namespace does NOT search all namespaces, so before the fix the
+// endpoint 502'd with "Run not found" for every admin. The fleet path must
+// resolve the Run by name across namespaces.
+func TestGetRunDetailFleetResolvesExecNamespace(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+
+	// Run lives in the execution namespace, distinct from any home/default ns.
+	execNS := "ksquad-team-bmad-squad-f6e8fc70"
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "intake-ef5b2075-r15",
+			Namespace: execNS,
+		},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "bmad-demo-project"},
+			WorkItemRef: "ef5b2075",
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning, ClaimedAt: &now},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(run).Build()
+	svc := NewRunsService(k8sClient)
+
+	// Fleet/admin scope (namespace == "") must find the Run despite it living in
+	// the execution namespace.
+	resp, err := svc.getRunDetailInNamespace(ctx, "", "intake-ef5b2075-r15")
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	if resp != nil {
+		assert.Equal(t, "intake-ef5b2075-r15", resp.Run.Name)
+		assert.Equal(t, execNS, resp.Run.Namespace)
+	}
+
+	// A genuinely missing Run in fleet scope must be a typed NotFound (→ 404),
+	// not an opaque error the handler would surface as a 502.
+	_, missErr := svc.getRunDetailInNamespace(ctx, "", "does-not-exist")
+	assert.Error(t, missErr)
+	assert.True(t, apierrors.IsNotFound(missErr), "expected IsNotFound, got %v", missErr)
 }

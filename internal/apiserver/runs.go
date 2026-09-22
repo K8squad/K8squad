@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -275,6 +276,13 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 
 		detail, err := svc.getRunDetailInNamespace(r.Context(), namespace, runID)
 		if err != nil {
+			// A missing Run is a 404 the console renders as "not available", not a
+			// 502 upstream error (ISI-4565: admins hit this because the Run lives in
+			// the squad execution namespace).
+			if apierrors.IsNotFound(err) {
+				writeJSONError(w, http.StatusNotFound, err.Error())
+				return
+			}
 			writeJSONError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -283,11 +291,36 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 	}
 }
 
-// getRunDetailInNamespace fetches a single run's detail with enriched data
+// getRunDetailInNamespace fetches a single run's detail with enriched data.
+//
+// namespace == "" means fleet/admin scope. A namespaced Get with an empty
+// namespace does NOT search all namespaces (unlike List), so for the admin path
+// we resolve the Run by listing fleet-wide and matching on name — otherwise the
+// endpoint 502s for every admin because Run CRs live in the squad *execution*
+// namespace, not the empty/default one (ISI-4565). Run names are cluster-unique
+// (intake-<uuid>-rN), so the first name match is authoritative.
 func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, runID string) (*RunDetailResponse, error) {
 	var run ksquadv1.Run
-	if err := s.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: runID}, &run); err != nil {
-		return nil, err
+	if namespace != "" {
+		if err := s.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: runID}, &run); err != nil {
+			return nil, err
+		}
+	} else {
+		var runs ksquadv1.RunList
+		if err := s.reader.List(ctx, &runs); err != nil {
+			return nil, err
+		}
+		found := false
+		for i := range runs.Items {
+			if runs.Items[i].Name == runID {
+				run = runs.Items[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, apierrors.NewNotFound(ksquadv1.GroupVersion.WithResource("runs").GroupResource(), runID)
+		}
 	}
 
 	response := &RunDetailResponse{
