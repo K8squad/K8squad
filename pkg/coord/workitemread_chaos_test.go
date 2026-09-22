@@ -147,3 +147,78 @@ func TestListWorkItemsParentFilter(t *testing.T) {
 			byTitle["child-a"].ParentID, byTitle["unrelated-1"].ParentID)
 	}
 }
+
+// TestFindWorkItemByLabel is the ISI-4757/ISI-4766 create-if-absent precondition
+// on the shipped schema: an exact label lookup finds the carrying item, honors
+// Team tenancy the same existence-hiding way ListWorkItems does, and returns
+// ErrWorkItemNotFound (never a partial/zero item) when no item carries the label.
+func TestFindWorkItemByLabel(t *testing.T) {
+	dsn := dsnOrFatal(t)
+	ctx := context.Background()
+	db := openDB(t, dsn)
+
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
+		t.Fatalf("reset coord schema: %v", err)
+	}
+	for _, name := range []string{
+		"0001_coord_schema.sql",
+		"0002_coord_dispatch.sql",
+		"0015_work_item_change_ref.sql",
+		"0018_claim_assignee.sql",
+		"0020_work_item_create_fields.sql", // work_item.labels — the lookup predicate
+	} {
+		if _, err := db.ExecContext(ctx, migrationFile(t, name)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+
+	const project = "77777777-7777-7777-7777-777777777777"
+	const teamA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	const teamB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	const label = "ksquad.review=deadbeefdeadbeefdeadbeefdeadbeef"
+
+	// A team-A item carrying the dedup label, plus a decoy carrying an unrelated
+	// label, so ANY(labels) must match on the exact string, not a prefix.
+	var hitID string
+	if err := db.QueryRowContext(ctx, `
+		INSERT INTO coord.work_item (project_id, team_id, title, state, labels, created_by)
+		VALUES ($1::uuid, $2::uuid, 'review PR#7', 'todo', ARRAY[$3, 'other=x'], 'principal:test')
+		RETURNING id::text`, project, teamA, label).Scan(&hitID); err != nil {
+		t.Fatalf("seed labelled item: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO coord.work_item (project_id, team_id, title, state, labels, created_by)
+		VALUES ($1::uuid, $2::uuid, 'unrelated', 'todo', ARRAY['ksquad.review=other'], 'principal:test')`,
+		project, teamA); err != nil {
+		t.Fatalf("seed decoy: %v", err)
+	}
+
+	rd, err := coord.NewWorkItemReadStore(db)
+	if err != nil {
+		t.Fatalf("NewWorkItemReadStore: %v", err)
+	}
+
+	// (1) Trusted fleet path (empty teamID) finds the carrying item by exact label.
+	rec, err := rd.FindWorkItemByLabel(ctx, "", project, label)
+	if err != nil {
+		t.Fatalf("FindWorkItemByLabel(fleet): %v", err)
+	}
+	if rec.ID != hitID {
+		t.Fatalf("found %s, want the labelled item %s", rec.ID, hitID)
+	}
+
+	// (2) The owning Team sees it; a foreign Team gets existence-hiding 404,
+	// never the item, matching ListWorkItems tenancy.
+	if _, err := rd.FindWorkItemByLabel(ctx, teamA, project, label); err != nil {
+		t.Fatalf("FindWorkItemByLabel(owning team): %v", err)
+	}
+	if _, err := rd.FindWorkItemByLabel(ctx, teamB, project, label); err != coord.ErrWorkItemNotFound {
+		t.Fatalf("foreign team lookup err = %v, want ErrWorkItemNotFound", err)
+	}
+
+	// (3) A label no item carries is a clean not-found — the create-if-absent
+	// caller proceeds to create only here.
+	if _, err := rd.FindWorkItemByLabel(ctx, "", project, "ksquad.review=nope"); err != coord.ErrWorkItemNotFound {
+		t.Fatalf("absent-label lookup err = %v, want ErrWorkItemNotFound", err)
+	}
+}
