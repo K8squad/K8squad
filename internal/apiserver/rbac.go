@@ -57,7 +57,7 @@ func requireProjectRole(resolver ProjectRoleResolver, minRole string) mux.Middle
 				next.ServeHTTP(w, r) // fleet-wide authority: no membership needed
 				return
 			}
-			project := mux.Vars(r)["projectId"]
+			project := decodePathVar(mux.Vars(r)["projectId"])
 			if project == "" {
 				// A project-scoped route with no bound {projectId} is a wiring bug — fail closed.
 				writeJSONError(w, http.StatusNotFound, "no such project")

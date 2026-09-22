@@ -144,7 +144,7 @@ func (h *Hub) subscriberCount(runID string) int {
 // (SSE-source child issue). It upgrades the connection to text/event-stream, replays nothing
 // (live-tail), and streams events until the client disconnects.
 func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
-	runID := mux.Vars(r)["runId"]
+	runID := decodePathVar(mux.Vars(r)["runId"])
 	if runID == "" {
 		writeJSONError(w, http.StatusBadRequest, "missing runId")
 		return

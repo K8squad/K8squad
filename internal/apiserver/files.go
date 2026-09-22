@@ -141,7 +141,7 @@ func (s *Server) projectFiles(reader WorkspaceReader) http.HandlerFunc {
 		return notImplemented("project file-explorer list", "ISI-3991: wire a WorkspaceReader (S4a reader-pod client) to enable")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 
 		rawPath := r.URL.Query().Get("path")
 		cleanPath, err := workspaceJailPath(rawPath)
@@ -186,7 +186,7 @@ func (s *Server) projectFilesContent(reader WorkspaceReader) http.HandlerFunc {
 		return notImplemented("project file-explorer content", "ISI-3991: wire a WorkspaceReader (S4a reader-pod client) to enable")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 
 		rawPath := r.URL.Query().Get("path")
 		if rawPath == "" {
@@ -266,7 +266,7 @@ func (s *Server) projectFilesStat(reader WorkspaceReader) http.HandlerFunc {
 		return notImplemented("project file-explorer stat", "ISI-4649: wire a WorkspaceReader (S4a reader-pod client) to enable")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 
 		rawPath := r.URL.Query().Get("path")
 		if rawPath == "" {

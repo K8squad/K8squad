@@ -428,7 +428,7 @@ func (s *Server) projectGithubStatus(svc *GithubStatusService) http.HandlerFunc 
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		status, err := svc.GithubStatus(r.Context(), auth, projectID)
 		switch {
 		case errors.Is(err, ErrTeamNotFound):

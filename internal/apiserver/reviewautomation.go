@@ -286,7 +286,7 @@ func (s *Server) reviewAutomationRead(svc *ReviewAutomationService) http.Handler
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		view, err := svc.Read(r.Context(), auth, projectID)
 		switch {
 		case err == nil:
@@ -318,7 +318,7 @@ func (s *Server) reviewAutomationWrite(svc *ReviewAutomationService) http.Handle
 			writeJSONError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		view, err := svc.Write(r.Context(), auth, projectID, in)
 		switch {
 		case err == nil:

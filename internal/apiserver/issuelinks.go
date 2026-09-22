@@ -180,6 +180,7 @@ func (s *IssueLinkService) Remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	externalID, ok := mux.Vars(r)["externalId"]
+	externalID = decodePathVar(externalID)
 	if !ok || externalID == "" {
 		writeJSONError(w, http.StatusBadRequest, "externalId required")
 		return
@@ -211,7 +212,7 @@ func (s *IssueLinkService) resolveScope(r *http.Request, auth discussion.AuthorC
 	if ns == "" {
 		return "", "", ErrTeamNotFound
 	}
-	project := mux.Vars(r)["projectId"]
+	project := decodePathVar(mux.Vars(r)["projectId"])
 	var projects ksquadv1.ProjectList
 	if err := s.reader.List(r.Context(), &projects, client.InNamespace(ns)); err != nil {
 		return "", "", err

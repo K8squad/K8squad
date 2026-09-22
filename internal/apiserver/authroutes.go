@@ -696,7 +696,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 }
 
 func userIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
-	id, err := uuid.Parse(mux.Vars(r)["id"])
+	id, err := uuid.Parse(decodePathVar(mux.Vars(r)["id"]))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "user id must be a uuid")
 		return uuid.UUID{}, false
