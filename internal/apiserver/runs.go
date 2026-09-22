@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -179,14 +180,34 @@ func (s *RunsService) listRunsInNamespace(ctx context.Context, namespace string,
 		return nil, err
 	}
 
+	// query.ProjectID arrives from the console as the canonical "namespace/name"
+	// composite (console lib/projectId.ts), but a Run's spec.projectRef stores the
+	// bare Name plus an optional Namespace. Split the composite so the filter matches
+	// the real fields — comparing "ns/name" against the bare Name matched nothing and
+	// emptied every project's runs screen (ISI-4565). A bare name (no slash) still works.
+	wantProjectNS, wantProjectName := "", query.ProjectID
+	if idx := strings.Index(query.ProjectID, "/"); idx >= 0 {
+		wantProjectNS, wantProjectName = query.ProjectID[:idx], query.ProjectID[idx+1:]
+	}
+
 	// Filter and project
 	var filtered []RunListItem
 	for i := range runs.Items {
 		run := &runs.Items[i]
 
 		// Apply project filter if specified
-		if query.ProjectID != "" && run.Spec.ProjectRef.Name != query.ProjectID {
-			continue
+		if query.ProjectID != "" {
+			if run.Spec.ProjectRef.Name != wantProjectName {
+				continue
+			}
+			// When both sides carry a namespace, require they match so same-named
+			// projects in different squads don't cross-list. A run whose projectRef
+			// omits the namespace (means "the run's own namespace") is matched on
+			// name alone, preserving the co-tenant/dev-host layout.
+			if wantProjectNS != "" && run.Spec.ProjectRef.Namespace != "" &&
+				run.Spec.ProjectRef.Namespace != wantProjectNS {
+				continue
+			}
 		}
 
 		// Apply phase filter if specified
@@ -275,6 +296,13 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 
 		detail, err := svc.getRunDetailInNamespace(r.Context(), namespace, runID)
 		if err != nil {
+			// A missing Run is a 404 the console renders as "not available", not a
+			// 502 upstream error (ISI-4565: admins hit this because the Run lives in
+			// the squad execution namespace).
+			if apierrors.IsNotFound(err) {
+				writeJSONError(w, http.StatusNotFound, err.Error())
+				return
+			}
 			writeJSONError(w, http.StatusBadGateway, err.Error())
 			return
 		}
@@ -283,11 +311,36 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 	}
 }
 
-// getRunDetailInNamespace fetches a single run's detail with enriched data
+// getRunDetailInNamespace fetches a single run's detail with enriched data.
+//
+// namespace == "" means fleet/admin scope. A namespaced Get with an empty
+// namespace does NOT search all namespaces (unlike List), so for the admin path
+// we resolve the Run by listing fleet-wide and matching on name — otherwise the
+// endpoint 502s for every admin because Run CRs live in the squad *execution*
+// namespace, not the empty/default one (ISI-4565). Run names are cluster-unique
+// (intake-<uuid>-rN), so the first name match is authoritative.
 func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, runID string) (*RunDetailResponse, error) {
 	var run ksquadv1.Run
-	if err := s.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: runID}, &run); err != nil {
-		return nil, err
+	if namespace != "" {
+		if err := s.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: runID}, &run); err != nil {
+			return nil, err
+		}
+	} else {
+		var runs ksquadv1.RunList
+		if err := s.reader.List(ctx, &runs); err != nil {
+			return nil, err
+		}
+		found := false
+		for i := range runs.Items {
+			if runs.Items[i].Name == runID {
+				run = runs.Items[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, apierrors.NewNotFound(ksquadv1.GroupVersion.WithResource("runs").GroupResource(), runID)
+		}
 	}
 
 	response := &RunDetailResponse{
