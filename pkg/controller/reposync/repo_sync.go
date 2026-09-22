@@ -58,6 +58,7 @@ import (
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/scmwriteback"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/scmmetrics"
 )
@@ -72,13 +73,14 @@ const TriggerAnnotation = "ksquad.io/scm-sync-trigger"
 const ConditionSyncReady = "SyncReady"
 
 const (
-	reasonSynced       = "Synced"
-	reasonUnconfigured = "SyncNotConfigured"
-	reasonNoCredential = "CredentialMissing"
-	reasonProviderFail = "ProviderError"
-	reasonMirrorFail   = "MirrorWriteError"
-	reasonIssueSync    = "IssueSyncError"
-	reasonReviewFail   = "ReviewTriggerError"
+	reasonSynced        = "Synced"
+	reasonUnconfigured  = "SyncNotConfigured"
+	reasonNoCredential  = "CredentialMissing"
+	reasonProviderFail  = "ProviderError"
+	reasonMirrorFail    = "MirrorWriteError"
+	reasonIssueSync     = "IssueSyncError"
+	reasonReviewFail    = "ReviewTriggerError"
+	reasonWriteBackFail = "RunWriteBackError"
 )
 
 // DefaultPollIntervalSeconds is used when spec.repo.sync.pollIntervalSeconds
@@ -153,6 +155,17 @@ type Reconciler struct {
 	// review automation; when wired, the same reconcile pass hands the
 	// just-applied PR rows to it after the link pass. See ReviewTrigger.
 	ReviewTrigger ReviewTrigger
+
+	// RunWriteBack is the OPTIONAL run-outcome → GitHub-issue write-back engine
+	// (ISI-4797, follow-up of ISI-4793/PR#572). Nil disables it, exactly like a
+	// nil IssueSync / ReviewTrigger. When wired, the SAME reconcile pass hands
+	// the just-resolved provider + repo to it AFTER the review trigger: for every
+	// work item this Project labelled `ksquad.github.issue=owner/repo#N` whose
+	// latest agent run reached a terminal step, it reflects the outcome back to
+	// the GitHub issue via the provider write seam, idempotently (a
+	// `github_writeback` audit marker dedups) and honestly (never a GitHub
+	// assignee — ADR-0013). It authors no work item and touches no coord surface.
+	RunWriteBack *scmwriteback.Engine
 
 	// BotActor is the echo-suppression identity (default scm.DefaultBotActor):
 	// provider records authored by this actor are OUR reflected writes and are
@@ -348,6 +361,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Error(err, "repo-sync: review trigger failed", "project", req.NamespacedName)
 			reason = reasonReviewFail
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonReviewFail, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
+	// ── the ISI-4797 run-outcome write-back: terminal run → GitHub issue comment ──
+	// Runs AFTER the review trigger on the SAME resolved provider + repo, keyed on
+	// the Project CR UID (coord.work_item.project_id, ISI-4132). For every work
+	// item this Project labelled `ksquad.github.issue=owner/repo#N` whose latest
+	// run reached a terminal step and has no write-back marker, it posts one
+	// honest, informational comment back to the GitHub issue and marks it. A
+	// transient provider error fails the reconcile so the next level-triggered
+	// pass retries idempotently (the marker dedups); a permanent one (issue gone /
+	// forbidden) is absorbed by the engine so it never wedges the loop.
+	if r.RunWriteBack != nil {
+		if _, err := r.RunWriteBack.WriteBackProject(ctx, string(project.UID), project.Spec.Repo.URL, provider); err != nil {
+			logger.Error(err, "repo-sync: run write-back pass failed", "project", req.NamespacedName)
+			reason = reasonWriteBackFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonWriteBackFail, err.Error())})
 			return ctrl.Result{}, err
 		}
 	}

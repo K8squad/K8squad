@@ -83,6 +83,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/issuesync"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
+	"github.com/K8squad/K8squad/pkg/scmwriteback"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/cphealth"
@@ -1144,12 +1145,25 @@ func main() {
 			}
 		}
 
+		// ISI-4797: the run-outcome → GitHub-issue write-back engine rides the
+		// SAME repo-sync pass (a sibling of the issue-link engine). It reflects a
+		// terminal agent run back to the GitHub issue the bridge (ISI-4783) minted
+		// the ticket from — honest, informational, idempotent. Nil on a bind
+		// failure disables just the write-back, never the whole reconciler.
+		var runWriteBack *scmwriteback.Engine
+		if wbStore, wbErr := scmwriteback.NewSQLStore(db); wbErr != nil {
+			ctrl.Log.Error(wbErr, "run write-back disabled (store bind failed)")
+		} else {
+			runWriteBack = scmwriteback.NewEngine(wbStore)
+		}
+
 		if err := (&reposync.Reconciler{
 			Client:        mgr.GetClient(),
 			Store:         scm.NewSQLMirrorStore(db),
 			Providers:     scm.NewProviderRegistry(),
 			IssueSync:     issuesync.NewSyncer(issueLinkStore),
 			ReviewTrigger: reviewDispatcher,
+			RunWriteBack:  runWriteBack,
 			Metrics:       scmMetrics,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
