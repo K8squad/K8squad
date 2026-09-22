@@ -164,6 +164,16 @@ jobs:
           PY
           echo "::notice::toolchain image matrix planned from component-matrix + images/toolchains/matrix.json"
 
+      # ISI-4731: the shim change-gate below derives the shim's compile-time import
+      # closure via `go list -deps ./cmd/shim`, so this light plan leg needs a Go
+      # toolchain. Pin to the module's Go version (go.mod); cache:false because the
+      # self-hosted runner keeps a persistent module cache and restoring the
+      # multi-GB setup-go archive over it floods tar (same rationale as ci.yml).
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
       # ISI-3653 shim image lane planning. The A2A shim sidecar was previously NOT a
       # container-image lane here (see the header) — it is now. One row per runtime from the
       # component-matrix `shims` family; every row builds the SAME Dockerfile.shim with a
@@ -183,24 +193,45 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "push" ] && [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-            # This list MUST mirror cmd/shim's compile-time dependency surface: the
-            # shim main statically links these packages into the binary baked into
-            # ghcr.io/k8squad/ksquad-shim-<rt>, so a change to any of them must rebuild
-            # the shim image. Missing pkg/telemetry here (ISI-4540 / b534b57c) meant the
-            # Extract-before-Setup propagator fix landed in pkg/telemetry but never
-            # produced a new shim image — sandboxes kept running the stale binary. Keep
-            # this in sync with `go list -deps ./cmd/shim | grep .../pkg/`.
-            CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
-              'Dockerfile.shim' \
-              'cmd/shim/**' \
-              'cmd/ksquad-codex-exec/**' \
-              'pkg/shim/**' \
-              'pkg/telemetry/**' \
-              'pkg/a2a/**' \
-              'pkg/capability/**' \
-              'pkg/taskio/**' \
-              '.github/workflows/build-images.yml' \
-              '.github/workflows/component-matrix.yml')
+            # ISI-4731: derive the change-gate from the shim binary's ACTUAL
+            # compile-time import closure so it can never silently drift from what
+            # ghcr.io/k8squad/ksquad-shim-<rt> bakes in. `go list -deps ./cmd/shim`
+            # enumerates every package statically linked into the shim main; keep
+            # only this module's packages and map each import path to its repo-root
+            # dir (a git pathspec matches the whole subtree). A hand-maintained list
+            # missed pkg/telemetry once (ISI-4540 / b534b57c) — the Extract-before-
+            # Setup propagator fix rebuilt the operator but never the shim, so
+            # sandboxes ran the stale binary — and, when this replaced it, STILL
+            # missed nine more (api/v1alpha1, internal/buildbrowser,
+            # internal/protocol, pkg/auth, pkg/coord, pkg/events, pkg/reconcile,
+            # pkg/toolchain, pkg/toolcred). Deriving the list closes that gap for
+            # good. UNION with the inputs go list can't see: Dockerfile.shim; the
+            # ksquad-codex-exec wrapper (a separate main baked in by Dockerfile.shim,
+            # not imported by cmd/shim); go.mod/go.sum (a dependency bump changes the
+            # compiled binary); and the two workflow files that define this lane.
+            MODULE=$(go list -m)
+            mapfile -t DEP_PATHS < <(
+              go list -deps ./cmd/shim \
+                | grep "^${MODULE}/" \
+                | sed "s#^${MODULE}/##" \
+                | sort -u
+            )
+            if [ "${#DEP_PATHS[@]}" -eq 0 ]; then
+              # Fail closed: if the import closure can't be derived, rebuild rather
+              # than risk shipping a stale shim. `go list` resolving the graph is a
+              # prerequisite of the operator build anyway, so this should never fire.
+              echo "::warning::could not derive shim import closure from go list — forcing shim rebuild."
+              CHANGED="forced-rebuild"
+            else
+              CHANGED=$(git diff --name-only "$BEFORE" "${GITHUB_SHA}" -- \
+                "${DEP_PATHS[@]}" \
+                'Dockerfile.shim' \
+                'cmd/ksquad-codex-exec/**' \
+                'go.mod' \
+                'go.sum' \
+                '.github/workflows/build-images.yml' \
+                '.github/workflows/component-matrix.yml')
+            fi
             if [ -z "$CHANGED" ]; then
               echo 'shims=[]' >> "$GITHUB_OUTPUT"
               echo "::notice::no shim-relevant changes in this push — shim image lane skipped."
@@ -253,10 +284,10 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
         if: steps.guard.outputs.present == 'true'
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
         if: steps.guard.outputs.present == 'true'
 
       - name: Log in to ghcr.io
@@ -282,7 +313,7 @@ jobs:
       - name: Build and push
         if: steps.guard.outputs.present == 'true'
         id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -397,9 +428,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
@@ -411,7 +442,7 @@ jobs:
 
       - name: Build and push toolchain image
         id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
@@ -519,9 +550,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
 
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
@@ -533,7 +564,7 @@ jobs:
 
       - name: Build and push shim image
         id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: Dockerfile.shim
