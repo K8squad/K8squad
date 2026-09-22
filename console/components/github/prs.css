@@ -241,3 +241,137 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+
+/* ---- Review automation dialog (ISI-4764 / ISI-4750 E2) ------------------------------------ */
+/* The header's right-hand controls: the in-console settings button sits beside
+   the "Open on GitHub" deep-link. */
+.gh-screen__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gh-ra-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  background: color-mix(in srgb, #000 62%, transparent);
+}
+.gh-ra-dialog {
+  width: min(520px, 100%);
+  max-height: 84vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  box-shadow: 0 24px 64px color-mix(in srgb, #000 55%, transparent);
+}
+.gh-ra-dialog__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.gh-ra-dialog__title {
+  margin: 0;
+  margin-right: auto;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-hi);
+}
+.gh-ra-dialog__close {
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+}
+.gh-ra-dialog__close:hover { color: var(--text-hi); }
+.gh-ra-dialog__body { padding: 16px 18px; }
+
+.gh-ra-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.gh-ra-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.gh-ra-field--row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.gh-ra-field__label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.gh-ra-field select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--surface) 70%, #000 6%);
+  color: var(--text-hi);
+  font: inherit;
+}
+.gh-ra-field select.gh-ra-invalid {
+  border-color: var(--status-blocked);
+}
+.gh-ra-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-1);
+  padding: 2px 0;
+}
+.gh-ra-hint {
+  font-size: 0.72rem;
+}
+.gh-ra-hint code {
+  font-family: var(--font-mono);
+}
+.gh-ra-readonly {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--status-paused);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-paused) 12%, transparent);
+  font-size: 0.78rem;
+  color: var(--text-1);
+}
+.gh-ra-error { margin: 0; }
+.gh-ra-honest {
+  padding: 8px 0;
+}
+.gh-ra-honest__title {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+  color: var(--text-hi);
+}
+.gh-ra-dialog__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 4px;
+}
+.gh-ra-field input:disabled,
+.gh-ra-field select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
