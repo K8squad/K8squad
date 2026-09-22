@@ -68,12 +68,14 @@ import (
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
 	"github.com/K8squad/K8squad/internal/memory"
+	"github.com/K8squad/K8squad/internal/reviewdispatch"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
 	projectpvc "github.com/K8squad/K8squad/pkg/controller/projectpvc"
 	reposync "github.com/K8squad/K8squad/pkg/controller/reposync"
+	reviewtrigger "github.com/K8squad/K8squad/pkg/controller/reviewtrigger"
 	runctrl "github.com/K8squad/K8squad/pkg/controller/run"
 	rundrive "github.com/K8squad/K8squad/pkg/controller/rundrive"
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
@@ -1110,12 +1112,45 @@ func main() {
 			ctrl.Log.Error(smErr, "scm sync metrics disabled (Register failed)")
 			scmMetrics = nil
 		}
+
+		// ISI-4750 E4 (ISI-4776): the system PR-review dispatch trigger. It rides
+		// the SAME repo-sync reconcile as the mirror + issue-link passes. The pure
+		// decision core (pkg/controller/reviewtrigger) is bound here to its three
+		// authorities: the standing policy off the Project CR, team membership via
+		// the SAME coord TeamAgentResolver the board dispatch authorizes against,
+		// and the custody-wall-sensitive create+dispatch executed under the SYSTEM
+		// identity (never an agent — ISI-4711). A construction failure disables ONLY
+		// the trigger (nil ⇒ review automation off, the pre-E4 default); the mirror
+		// and link passes still run.
+		var reviewDispatcher reposync.ReviewTrigger
+		reviewWriteStore, rwErr := coord.NewWorkItemWriteStore(db)
+		reviewTeamResolver := memory.NewClientTeamAgentResolver(mgr.GetClient())
+		reviewDispatchStore, rdErr := coord.NewWorkItemDispatchStore(db, reviewTeamResolver)
+		switch {
+		case rwErr != nil:
+			ctrl.Log.Error(rwErr, "review automation disabled (work-item write store)")
+		case rdErr != nil:
+			ctrl.Log.Error(rdErr, "review automation disabled (work-item dispatch store)")
+		default:
+			reviewStore, rsErr := reviewdispatch.NewSystemReviewItemStore(reviewWriteStore, reviewDispatchStore)
+			if rsErr != nil {
+				ctrl.Log.Error(rsErr, "review automation disabled (system review item store)")
+			} else {
+				reviewDispatcher = &reviewtrigger.Dispatcher{
+					Policy:  reviewdispatch.NewProjectPolicyReader(mgr.GetClient()),
+					Members: reviewdispatch.NewTeamMembership(reviewTeamResolver),
+					Store:   reviewStore,
+				}
+			}
+		}
+
 		if err := (&reposync.Reconciler{
-			Client:    mgr.GetClient(),
-			Store:     scm.NewSQLMirrorStore(db),
-			Providers: scm.NewProviderRegistry(),
-			IssueSync: issuesync.NewSyncer(issueLinkStore),
-			Metrics:   scmMetrics,
+			Client:        mgr.GetClient(),
+			Store:         scm.NewSQLMirrorStore(db),
+			Providers:     scm.NewProviderRegistry(),
+			IssueSync:     issuesync.NewSyncer(issueLinkStore),
+			ReviewTrigger: reviewDispatcher,
+			Metrics:       scmMetrics,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
 			os.Exit(1)
