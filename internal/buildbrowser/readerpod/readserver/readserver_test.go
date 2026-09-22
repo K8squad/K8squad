@@ -474,3 +474,51 @@ func TestBlockedNameCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+// ISI-4785 (CR hand-back from ISI-4786): an IN-JAIL symlink aliasing blocked credential material must
+// be 404 on /read and /stat. The requested name (key.txt / notes) passes the front-door pathBlocked
+// check, but the EvalSymlinks-resolved real path lands on id_rsa (or .ssh/id_rsa) and must be caught by
+// the post-resolution re-check in jail(). Before the fix this served 200 + full PRIVATE-KEY content.
+func TestInJailSymlinkToBlockedIsNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks unreliable on windows")
+	}
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("project code"))
+	mustWrite(t, filepath.Join(root, "id_rsa"), []byte("PRIVATE KEY leak"))
+	if err := os.Mkdir(filepath.Join(root, ".ssh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, ".ssh", "id_rsa"), []byte("nested PRIVATE KEY leak"))
+	// key.txt -> id_rsa (blocked hard-set name); notes -> .ssh/id_rsa (blocked dot-segment). Both stay
+	// inside the jail, so the within() re-check alone would pass them.
+	if err := os.Symlink("id_rsa", filepath.Join(root, "key.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(".ssh", "id_rsa"), filepath.Join(root, "notes")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, p := range []string{"key.txt", "notes"} {
+		rr, _ := doRead(t, s, "path="+p)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("read symlink %q want 404, got %d", p, rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), "leak") {
+			t.Errorf("SECURITY: in-jail symlink %q leaked blocked content: %s", p, rr.Body.String())
+		}
+		sr := httptest.NewRecorder()
+		s.Handler().ServeHTTP(sr, httptest.NewRequest(http.MethodGet, "/stat?path="+p, nil))
+		if sr.Code != http.StatusNotFound {
+			t.Errorf("stat symlink %q want 404, got %d", p, sr.Code)
+		}
+	}
+	// Sanity: a legit file is still readable — the re-check didn't over-block.
+	rr, fc := doRead(t, s, "path=a.txt")
+	if rr.Code != http.StatusOK || string(fc.Data) != "project code" {
+		t.Fatalf("legit read broken: code=%d data=%q", rr.Code, fc.Data)
+	}
+}

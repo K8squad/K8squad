@@ -169,8 +169,11 @@ func (s *Server) Handler() http.Handler {
 // (pkg/warmpool/kube.go stamps HOME == KSQUAD_WORKDIR == /workspace when a Project PVC is mounted), so
 // HOME dotfiles (.ssh/.config/.local/…) and *.env / credential files sit at the SAME level as the
 // project checkout — anchoring the jail deeper cannot separate them. So the jail itself fails closed
-// on any hidden or sensitive path segment: read/stat/list on such a path is errNotFound (404), never
-// a leak. Entry-level hiding for a legitimate listing is done in handleList.
+// on any hidden or sensitive path segment: read/stat/list on such a path is errNotFound (404) — both
+// on the requested path AND on the EvalSymlinks-resolved real path, so an in-jail symlink can't alias
+// blocked content. Residual ceiling: a hardlink to blocked content shares no name to match and stays
+// reachable (creating one needs pre-existing in-jail write access). Entry-level hiding for a legitimate
+// listing is done in handleList.
 func (s *Server) jail(raw string) (string, error) {
 	rel, err := cleanRel(raw)
 	if err != nil {
@@ -189,6 +192,15 @@ func (s *Server) jail(raw string) (string, error) {
 	}
 	if !within(s.realRoot, real) {
 		return "", errEscape
+	}
+	// Re-check the RESOLVED real path against the block list. cleanRel/pathBlocked above only see the
+	// requested name, so an in-jail symlink (key.txt -> id_rsa, or notes -> .ssh/id_rsa) would otherwise
+	// pass the front-door check yet resolve onto blocked credential material and be served. Mirror the
+	// post-resolution `within` re-check so the block list is enforced on what is actually read, not just
+	// what was asked for. Ceiling: a hardlink to blocked content shares no name to match and stays
+	// reachable — acceptable for v1 since creating one needs pre-existing in-jail write access.
+	if rel2, rerr := filepath.Rel(s.realRoot, real); rerr == nil && pathBlocked(filepath.ToSlash(rel2)) {
+		return "", errNotFound
 	}
 	return real, nil
 }
