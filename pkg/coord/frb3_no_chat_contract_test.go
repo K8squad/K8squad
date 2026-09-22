@@ -375,6 +375,17 @@ var allowedSurface = map[string]string{
 	"WorkItemWriteStore.AgentCreateWorkItem": "ADR-0024 §4/§5 custody-scoped agent sub-ticket create + honest agent audit, depth/run-budget bounded",
 	"WorkItemWriteStore.AgentUpdateWorkItem": "ADR-0024 §4/§5 custody-scoped (item+descendants) agent field CAS + honest agent audit",
 
+	// ISI-4750 E4 (ISI-4776): the SYSTEM-authored, dedup-idempotent PR-review
+	// create used by the review-automation dispatch adapter. A THIRD writer,
+	// distinct from the human-only board wall and the ADR-0024 agent-authoring
+	// lane: authored under the SYSTEM principal the caller passes (never an agent
+	// identity, per D1 / ISI-4711), reusing the same §6.1/§6.5 insert+audit shape
+	// as CreateWorkItem. NOT an agent-to-agent channel — a system-executed standing
+	// policy materialising one review work item; the dedup label is the only mark.
+	"EnsureReviewWorkItemInput":              "ISI-4750 E4 idempotent review-item create input (project/team/title/body + required SYSTEM principal + dedup label)",
+	"EnsureReviewWorkItemResult":             "ISI-4750 E4 create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
+	"WorkItemWriteStore.EnsureReviewWorkItem": "ISI-4750 E4/§6.1/§6.5 create-if-absent PR-review item under SYSTEM principal, atomic on (project,dedupLabel) via pg_advisory_xact_lock — closes the level-triggered reconcile double-create race; no-fence, Team-scoped",
+
 	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
 	// custody op. Records the human's pre-run agent choice as durable INTENT on
 	// the work item (requested_agent, mig 0021) + advances the lane backlog→todo
