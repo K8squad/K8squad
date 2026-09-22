@@ -10,6 +10,7 @@ import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/re
 import {
   RunsList,
   RUNS_PAGE_SIZE,
+  RUNS_POLL_MS,
   formatAge,
   formatDuration,
   runHref,
@@ -251,6 +252,83 @@ describe("RunsList — degrade and empty states", () => {
     await screen.findByTestId("runs-empty");
     fireEvent.click(screen.getByText("Clear filters"));
     await screen.findByTestId("runs-table");
+  });
+});
+
+describe("RunsList — run→action traceability (ISI-4777)", () => {
+  it("surfaces the work-item title and triggering principal on the row", async () => {
+    stubFetch(() =>
+      jsonResponse(200, [
+        run({ workItemTitle: "Ask: add auth badge", triggeredBy: "henrik" }),
+      ]),
+    );
+    render(<RunsList />);
+    const wi = await screen.findByTestId("runs-row-wi-run-1");
+    expect(wi.textContent).toContain("Ask: add auth badge");
+    expect(wi.textContent).toContain("henrik");
+    // The full title is the hover target, not the truncated uuid.
+    expect(wi.getAttribute("title")).toBe("Ask: add auth badge");
+  });
+
+  it("falls back to the wi-<uuid> stub when the title is not surfaced", async () => {
+    stubFetch(() => jsonResponse(200, [run({ workItemTitle: undefined })]));
+    render(<RunsList />);
+    const wi = await screen.findByTestId("runs-row-wi-run-1");
+    expect(wi.textContent).toContain("wi 11111111");
+  });
+
+  it("shows the Live auto-refresh indicator on the newest page", async () => {
+    stubFetch(() => jsonResponse(200, [run()]));
+    render(<RunsList />);
+    await screen.findByTestId("runs-table");
+    expect(screen.getByTestId("runs-live")).toBeTruthy();
+  });
+});
+
+describe("RunsList — auto-refresh (ISI-4777)", () => {
+  it("silently refetches the newest page on an interval, surfacing new runs", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let rows = [run({ id: "run-1", name: "run-1" })];
+      const calls = stubFetch(() => jsonResponse(200, rows));
+      render(<RunsList />);
+      await screen.findByTestId("runs-row-run-1");
+      const initialCalls = calls.length;
+
+      // A new run fires after the page loaded (Henrik's comment path).
+      rows = [run({ id: "run-2", name: "run-2" }), rows[0]];
+      await vi.advanceTimersByTimeAsync(RUNS_POLL_MS + 50);
+
+      await waitFor(() => expect(calls.length).toBeGreaterThan(initialCalls));
+      await screen.findByTestId("runs-row-run-2");
+      // No spinner flash — the table stayed mounted throughout.
+      expect(screen.queryByTestId("runs-loading")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not auto-refresh once the user pages past the newest page", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const full = Array.from({ length: RUNS_PAGE_SIZE }, (_, i) =>
+        run({ id: `run-${i}`, name: `run-${i}` }),
+      );
+      const calls = stubFetch(() => jsonResponse(200, full));
+      render(<RunsList />);
+      await screen.findByTestId("runs-table");
+
+      fireEvent.click(screen.getByTestId("runs-next"));
+      await waitFor(() =>
+        expect(calls[calls.length - 1]).toContain(`offset=${RUNS_PAGE_SIZE}`),
+      );
+      const afterPaging = calls.length;
+
+      await vi.advanceTimersByTimeAsync(RUNS_POLL_MS * 2 + 50);
+      expect(calls.length).toBe(afterPaging); // no background polls off page 1
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

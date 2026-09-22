@@ -24,6 +24,38 @@
 .runs-head__count {
   font-size: 13px;
 }
+/* ISI-4777: live-refresh indicator — the newest page auto-refreshes, so signal
+ * it so the user trusts that a run they just triggered will appear. */
+.runs-head__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.runs-head__live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok, #22c55e);
+  animation: runs-live-pulse 2s ease-in-out infinite;
+}
+@keyframes runs-live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .runs-head__live-dot {
+    animation: none;
+  }
+}
 
 /* ---- filter bar (mock: .filters-section) -------------------------------------------------- */
 .runs-filters {
@@ -126,6 +158,14 @@
 .runs-row__sub {
   font-size: 11px;
   margin-top: 2px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* ISI-4777: the triggering principal, dimmed a touch further than the title. */
+.runs-row__actor {
+  opacity: 0.8;
 }
 .runs-link {
   color: var(--accent);
