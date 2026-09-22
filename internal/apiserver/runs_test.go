@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -237,6 +238,35 @@ func TestRunListItemProjection(t *testing.T) {
 	})
 }
 
+// TestEnrichWorkItemsNilDBLeavesFieldsEmpty guards the ISI-4777 fabrication
+// discipline: without a database (or on an older apiserver) the work-item title
+// and triggering principal must stay absent so the console renders "—" rather
+// than a fabricated value. enrichWorkItems is a fail-open no-op here.
+func TestEnrichWorkItemsNilDBLeavesFieldsEmpty(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-abc-r1", Namespace: "ns"},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "proj"},
+			WorkItemRef: "ef5b2075-1111-2222-3333-444455556666",
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning, ClaimedAt: &now},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(run).Build()
+	svc := NewRunsService(k8sClient) // nil db
+
+	items, err := svc.listRunsInNamespace(ctx, "ns", RunListQuery{Limit: 10}, discussion.AuthorContext{})
+	assert.NoError(t, err)
+	assert.Len(t, items, 1)
+	assert.Empty(t, items[0].WorkItemTitle, "no db → title must stay absent")
+	assert.Empty(t, items[0].TriggeredBy, "no db → triggeredBy must stay absent")
+
+	// enrichWorkItems must also tolerate an empty slice without panicking.
+	svc.enrichWorkItems(ctx, nil)
+}
+
 func authRequest(r *http.Request) *http.Request {
 	// Add test auth token (simplified for test)
 	r.Header.Set("Authorization", "Bearer test-token")
@@ -372,4 +402,116 @@ func TestListRunsProjectScopedCompositeID(t *testing.T) {
 	if len(got) == 1 {
 		assert.Equal(t, "intake-abc-r1", got[0].Name)
 	}
+}
+
+// TestRunNamespaceForTeam proves the ISI-4738 fix: a non-admin caller's Team UID
+// resolves to the squad's real EXECUTION namespace (Team.Status.Namespace, where
+// Run CRs live), bridged home→exec, rather than the old fabricated "team-<hash>"
+// stub that matched no real namespace and returned an empty list for every tenant.
+func TestRunNamespaceForTeam(t *testing.T) {
+	ctx := context.Background()
+	teamUID := uuid.New()
+	execNS := "ksquad-team-bmad-squad-f6e8fc70" // realistic exec ns, NOT "team-<hash>"
+
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "bmad-squad",
+			Namespace: "bmad-squad", // home namespace
+			UID:       types.UID(teamUID.String()),
+		},
+		Status: ksquadv1.TeamStatus{Namespace: execNS},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(team).Build()
+	svc := NewRunsService(k8sClient)
+
+	// UID → execution namespace (never the "team-<hash>" fabrication).
+	ns, err := svc.runNamespaceForTeam(ctx, teamUID.String())
+	assert.NoError(t, err)
+	assert.Equal(t, execNS, ns)
+	assert.NotEqual(t, "team-"+teamUID.String()[:8], ns, "must not fabricate a team-<hash> namespace")
+}
+
+// TestRunNamespaceForTeam_FallbackToHome covers a Team with no execution namespace
+// provisioned (co-tenant dev host / pre-per-team layout): the resolver falls back
+// to the home namespace, matching runNamespaceForHome's contract.
+func TestRunNamespaceForTeam_FallbackToHome(t *testing.T) {
+	ctx := context.Background()
+	teamUID := uuid.New()
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "dev-squad",
+			Namespace: "dev-squad",
+			UID:       types.UID(teamUID.String()),
+		},
+		// Status.Namespace intentionally empty.
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(team).Build()
+	svc := NewRunsService(k8sClient)
+
+	ns, err := svc.runNamespaceForTeam(ctx, teamUID.String())
+	assert.NoError(t, err)
+	assert.Equal(t, "dev-squad", ns)
+}
+
+// TestRunNamespaceForTeam_NoScope covers the no-scope paths: an empty/zero UID
+// yields ("", nil) so the handler answers 404, and a non-zero UID matching no Team
+// yields ErrTeamNotFound — never a fabricated namespace.
+func TestRunNamespaceForTeam_NoScope(t *testing.T) {
+	ctx := context.Background()
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).Build()
+	svc := NewRunsService(k8sClient)
+
+	ns, err := svc.runNamespaceForTeam(ctx, "")
+	assert.NoError(t, err)
+	assert.Equal(t, "", ns)
+
+	ns, err = svc.runNamespaceForTeam(ctx, "00000000-0000-0000-0000-000000000000")
+	assert.NoError(t, err)
+	assert.Equal(t, "", ns)
+
+	ns, err = svc.runNamespaceForTeam(ctx, uuid.New().String())
+	assert.ErrorIs(t, err, ErrTeamNotFound)
+	assert.Equal(t, "", ns)
+}
+
+// TestListRunsNonAdminSeesExecNamespace is the end-to-end proof: a non-admin
+// request whose TeamID owns the exec namespace sees its runs (before the fix the
+// stub namespace matched nothing → empty 200); an orphan TeamID gets 404.
+func TestListRunsNonAdminSeesExecNamespace(t *testing.T) {
+	teamUID := uuid.New()
+	execNS := "ksquad-team-bmad-squad-f6e8fc70"
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "bmad-squad", Namespace: "bmad-squad", UID: types.UID(teamUID.String())},
+		Status:     ksquadv1.TeamStatus{Namespace: execNS},
+	}
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-abc-r1", Namespace: execNS},
+		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "bmad-demo-project"}},
+		Status:     ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(team, run).Build()
+	svc := NewRunsService(k8sClient)
+
+	// Non-admin whose TeamID owns execNS: 200 with the run.
+	req := httptest.NewRequest("GET", "/api/runs", nil)
+	req = req.WithContext(discussion.WithAuth(req.Context(), discussion.AuthorContext{
+		Principal: "user:tenant", TeamID: teamUID,
+	}))
+	w := httptest.NewRecorder()
+	listRuns(svc)(w, req)
+	resp := w.Result()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	var items []RunListItem
+	assert.NoError(t, json.NewDecoder(resp.Body).Decode(&items))
+	resp.Body.Close()
+	assert.Len(t, items, 1, "non-admin must see the run in its exec namespace")
+
+	// Orphan TeamID (no Team CR): 404, not an empty 200.
+	req2 := httptest.NewRequest("GET", "/api/runs", nil)
+	req2 = req2.WithContext(discussion.WithAuth(req2.Context(), discussion.AuthorContext{
+		Principal: "user:orphan", TeamID: uuid.New(),
+	}))
+	w2 := httptest.NewRecorder()
+	listRuns(svc)(w2, req2)
+	assert.Equal(t, http.StatusNotFound, w2.Result().StatusCode)
 }

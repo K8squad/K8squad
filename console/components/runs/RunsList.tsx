@@ -30,6 +30,11 @@ export interface RunListItem {
   phase: string;
   pausedReason?: string;
   workItemRef: string;
+  /** ISI-4777: human-readable work-item title + the principal who created it,
+   * joined from coord.work_item by the apiserver so a row ties back to the
+   * comment/ask that spawned it. Absent (older apiserver / missing row) → "—". */
+  workItemTitle?: string;
+  triggeredBy?: string;
   projectRef: string;
   agents?: string[] | null;
   totalTokens?: number | null;
@@ -40,6 +45,10 @@ export interface RunListItem {
 }
 
 export const RUNS_PAGE_SIZE = 25;
+
+/** ISI-4777: background auto-refresh cadence for the newest page. 12s matches
+ * the overview dashboards' liveness without hammering the read model. */
+export const RUNS_POLL_MS = 12_000;
 
 /** The Run CRD phases (api/v1alpha1/run_types.go) offered as filter values. */
 export const RUN_PHASES = [
@@ -150,36 +159,66 @@ export function RunsList({
     [projectId],
   );
 
-  useEffect(() => {
-    let alive = true;
-    setState({ kind: "loading" });
-    const params = new URLSearchParams();
-    if (phase) params.set("phase", phase);
-    if (agent) params.set("agent", agent);
-    if (window_) params.set("window", window_);
-    params.set("limit", String(RUNS_PAGE_SIZE));
-    params.set("offset", String(offset));
-    fetch(`${endpoint}?${params.toString()}`, {
-      headers: { accept: "application/json" },
-    })
-      .then(async (res) => {
-        if (!alive) return;
-        if (!res.ok) {
-          setState(
-            res.status === 404 || res.status === 501
-              ? { kind: "not-available" }
-              : { kind: "error", status: res.status },
-          );
-          return;
-        }
-        const body = (await res.json()) as RunListItem[] | null;
-        setState({ kind: "ready", runs: body ?? [] });
+  // load fetches the current page. `silent` (ISI-4777 auto-refresh) skips the
+  // loading spinner and swallows transient errors so a background poll never
+  // blanks or error-cards a good table — it only ever replaces rows on success.
+  const load = useCallback(
+    (silent: boolean) => {
+      if (!silent) setState({ kind: "loading" });
+      const controller = new AbortController();
+      const params = new URLSearchParams();
+      if (phase) params.set("phase", phase);
+      if (agent) params.set("agent", agent);
+      if (window_) params.set("window", window_);
+      params.set("limit", String(RUNS_PAGE_SIZE));
+      params.set("offset", String(offset));
+      fetch(`${endpoint}?${params.toString()}`, {
+        headers: { accept: "application/json" },
+        signal: controller.signal,
       })
-      .catch(() => alive && setState({ kind: "error", status: 0 }));
+        .then(async (res) => {
+          if (!res.ok) {
+            if (silent) return; // keep the last good table on a poll blip
+            setState(
+              res.status === 404 || res.status === 501
+                ? { kind: "not-available" }
+                : { kind: "error", status: res.status },
+            );
+            return;
+          }
+          const body = (await res.json()) as RunListItem[] | null;
+          setState({ kind: "ready", runs: body ?? [] });
+        })
+        .catch((err) => {
+          if (err?.name === "AbortError" || silent) return;
+          setState({ kind: "error", status: 0 });
+        });
+      return () => controller.abort();
+    },
+    [endpoint, phase, agent, window_, offset],
+  );
+
+  // Foreground load: filter/pagination change or an explicit retry (tick).
+  useEffect(() => load(false), [load, tick]);
+
+  // ISI-4777: a run created after the page loaded (Henrik comments → a run
+  // fires) must surface without a manual reload. Poll the newest page in the
+  // background while the tab is visible. We only auto-refresh page 1 (offset 0,
+  // where new/unclaimed runs sort to the top) so paging back through history
+  // isn't yanked out from under the user.
+  useEffect(() => {
+    if (offset !== 0) return;
+    let cancel: (() => void) | undefined;
+    const id = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      cancel?.();
+      cancel = load(true);
+    }, RUNS_POLL_MS);
     return () => {
-      alive = false;
+      clearInterval(id);
+      cancel?.();
     };
-  }, [endpoint, phase, agent, window_, offset, tick]);
+  }, [load, offset]);
 
   const runs = state.kind === "ready" ? state.runs : [];
   const hasFilters = phase !== "" || agentInput !== "" || window_ !== "";
@@ -197,6 +236,12 @@ export function RunsList({
         {state.kind === "ready" && (
           <span className="muted runs-head__count" data-testid="runs-count">
             {offset + 1}–{offset + runs.length} shown
+            {offset === 0 && (
+              <span className="runs-head__live" data-testid="runs-live">
+                <span className="runs-head__live-dot" aria-hidden="true" />
+                Live
+              </span>
+            )}
           </span>
         )}
       </header>
@@ -343,9 +388,24 @@ export function RunsList({
                     >
                       {r.name}
                     </a>
-                    {r.workItemRef && (
-                      <div className="muted runs-row__sub" title={r.workItemRef}>
-                        wi {r.workItemRef.slice(0, 8)}
+                    {/* ISI-4777: tie the run to the action that triggered it —
+                     * the work-item title and the principal who asked, so Henrik
+                     * can spot "his" run instead of a wall of intake-<uuid>. */}
+                    {(r.workItemTitle || r.workItemRef) && (
+                      <div
+                        className="muted runs-row__sub"
+                        title={r.workItemTitle || r.workItemRef}
+                        data-testid={`runs-row-wi-${r.name}`}
+                      >
+                        {r.workItemTitle
+                          ? r.workItemTitle
+                          : `wi ${r.workItemRef.slice(0, 8)}`}
+                        {r.triggeredBy && (
+                          <span className="runs-row__actor">
+                            {" · "}
+                            {r.triggeredBy}
+                          </span>
+                        )}
                       </div>
                     )}
                   </td>

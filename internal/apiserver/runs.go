@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/lib/pq"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,11 +40,19 @@ type RunListQuery struct {
 
 // RunListItem is one row in a run listing (reuses RunSummary pattern from org.go)
 type RunListItem struct {
-	ID              string     `json:"id"`
-	Name            string     `json:"name"`
-	Phase           string     `json:"phase"`
-	PausedReason    *string    `json:"pausedReason,omitempty"`
-	WorkItemRef     string     `json:"workItemRef"`
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Phase        string  `json:"phase"`
+	PausedReason *string `json:"pausedReason,omitempty"`
+	WorkItemRef  string  `json:"workItemRef"`
+	// WorkItemTitle and TriggeredBy answer ISI-4777 ("i never see the runs I
+	// trigger, it is confusing"): the Run CR only carries the opaque work-item
+	// uuid, so a row cannot tie a run to the comment/ask that spawned it. We
+	// join coord.work_item by ref to surface the human-readable title and the
+	// principal who created the item. Fail-open — absent (db unwired / row
+	// missing) stays empty and the console renders "—" per FR-I3.
+	WorkItemTitle   string     `json:"workItemTitle,omitempty"`
+	TriggeredBy     string     `json:"triggeredBy,omitempty"`
 	ProjectRef      string     `json:"projectRef"`
 	Agents          []string   `json:"agents,omitempty"`
 	TotalTokens     *int64     `json:"totalTokens,omitempty"`
@@ -155,9 +164,10 @@ func listRuns(svc *RunsService) http.HandlerFunc {
 			// Admin can see across all namespaces
 			namespace = "" // fleet-wide
 		} else {
-			// Non-admins are limited to their team namespace
-			namespace = teamNamespace(auth.TeamID.String())
-			if namespace == "" {
+			// Non-admins are limited to their team's execution namespace (where the
+			// Run CRs live), resolved from the Team CR and bridged home→exec (ISI-4738).
+			namespace, err = svc.runNamespaceForTeam(r.Context(), auth.TeamID.String())
+			if err != nil || namespace == "" {
 				writeJSONError(w, http.StatusNotFound, "no team scope for this user")
 				return
 			}
@@ -264,7 +274,73 @@ func (s *RunsService) listRunsInNamespace(ctx context.Context, namespace string,
 		end = len(filtered)
 	}
 
-	return filtered[query.Offset:end], nil
+	page := filtered[query.Offset:end]
+	// ISI-4777: enrich only the returned page (≤ limit rows) with work-item
+	// title + triggering principal so the row ties back to the action. One
+	// batched query; fail-open so a db hiccup never breaks the listing.
+	s.enrichWorkItems(ctx, page)
+	return page, nil
+}
+
+// enrichWorkItems folds the coord.work_item title + created_by principal into
+// the given run rows (ISI-4777), joining by the opaque WorkItemRef uuid. It is
+// best-effort: when the db is unwired or a row is missing, the fields stay
+// empty and the console renders "—" (FR-I3 fabrication discipline). Mutates
+// items in place.
+func (s *RunsService) enrichWorkItems(ctx context.Context, items []RunListItem) {
+	db, ok := s.db.(*sql.DB)
+	if !ok || db == nil || len(items) == 0 {
+		return
+	}
+
+	// Distinct, non-empty refs — the same work item is often re-triggered
+	// across several runs (ISI-4495 human-comment path), so dedupe first.
+	seen := make(map[string]struct{}, len(items))
+	var refs []string
+	for i := range items {
+		ref := items[i].WorkItemRef
+		if ref == "" {
+			continue
+		}
+		if _, dup := seen[ref]; dup {
+			continue
+		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
+	}
+	if len(refs) == 0 {
+		return
+	}
+
+	type wi struct {
+		title     string
+		createdBy string
+	}
+	byID := make(map[string]wi, len(refs))
+	rows, err := db.QueryContext(ctx,
+		`SELECT id::text, title, created_by FROM coord.work_item WHERE id = ANY($1::uuid[])`,
+		pq.Array(refs))
+	if err != nil {
+		// Fail-open: log and leave rows unenriched.
+		fmt.Printf("enrichWorkItems: %v\n", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var id, title, createdBy string
+		if err := rows.Scan(&id, &title, &createdBy); err != nil {
+			fmt.Printf("enrichWorkItems scan: %v\n", err)
+			return
+		}
+		byID[id] = wi{title: title, createdBy: createdBy}
+	}
+
+	for i := range items {
+		if w, found := byID[items[i].WorkItemRef]; found {
+			items[i].WorkItemTitle = w.title
+			items[i].TriggeredBy = w.createdBy
+		}
+	}
 }
 
 // getRunDetail answers GET /api/runs/{id} with steps, thinking, and interactions
@@ -287,11 +363,12 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 		if auth.IsAdmin {
 			namespace = "" // fleet-wide
 		} else {
-			namespace = teamNamespace(auth.TeamID.String())
-			if namespace == "" {
+			ns, err := svc.runNamespaceForTeam(r.Context(), auth.TeamID.String())
+			if err != nil || ns == "" {
 				writeJSONError(w, http.StatusNotFound, "no team scope for this user")
 				return
 			}
+			namespace = ns
 		}
 
 		detail, err := svc.getRunDetailInNamespace(r.Context(), namespace, runID)
@@ -586,12 +663,37 @@ func runInTimeWindow(run *ksquadv1.Run, window string) bool {
 	}
 }
 
-// teamNamespace maps a Team UUID to its namespace (simplified for now)
-func teamNamespace(teamID string) string {
-	// TODO: Proper team-to-namespace mapping from Team CR
-	// For now, return empty string for admin/empty team
+// runNamespaceForTeam resolves the EXECUTION namespace where a non-admin caller's
+// Run CRs live, given the caller's Team UID. It resolves the Team CR by UID (a
+// rename can never widen scope, §12.1) to its home namespace, then bridges to the
+// per-Team execution namespace (Team.Status.Namespace) exactly like the overview
+// read model does via runNamespaceForHome (ISI-4565). This replaces the old
+// fabricated "team-<hash>" stub, which pointed at a namespace that never exists so
+// List(InNamespace(...)) matched nothing and the runs screens rendered empty for
+// every tenant user (ISI-4738).
+//
+// Returns ("", nil) when the caller has no Team scope (empty/zero UID) so the
+// handler can answer 404 "no team scope"; returns ErrTeamNotFound when a non-zero
+// UID matches no Team CR.
+func (s *RunsService) runNamespaceForTeam(ctx context.Context, teamID string) (string, error) {
 	if teamID == "" || teamID == "00000000-0000-0000-0000-000000000000" {
-		return ""
+		return "", nil
 	}
-	return "team-" + strings.ToLower(teamID[:8]) // simple hash for demo
+	var teams ksquadv1.TeamList
+	if err := s.reader.List(ctx, &teams); err != nil {
+		return "", err
+	}
+	for i := range teams.Items {
+		if string(teams.Items[i].UID) != teamID {
+			continue
+		}
+		// Bridge home → execution namespace; fall back to the home namespace when
+		// no execution namespace is provisioned (co-tenant dev host / pre-per-team
+		// layout), matching runNamespaceForHome's contract.
+		if teams.Items[i].Status.Namespace != "" {
+			return teams.Items[i].Status.Namespace, nil
+		}
+		return teams.Items[i].Namespace, nil
+	}
+	return "", ErrTeamNotFound
 }
