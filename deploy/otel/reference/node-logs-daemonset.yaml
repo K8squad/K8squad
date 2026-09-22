@@ -126,7 +126,7 @@ data:
         summary: debug
       transform/redaction:
         error_mode: ignore
-        # Key-name PII scrub. `token([^s]|$)` matches SINGULAR credential keys
+        # Key-name PII scrub. `token(?:[^s]|$)` matches SINGULAR credential keys
         # (token, access_token, ...) but preserves the PLURAL gen_ai usage token
         # counts (gen_ai.usage.*_tokens) that are agent observability signals
         # (ISI-4799). OTTL uses Go RE2 (no lookahead); `[^s]|$` is the RE2-safe
@@ -134,7 +134,7 @@ data:
         log_statements:
           - context: log
             statements:
-              - delete_matching_keys(attributes, "(?i).*(token([^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
+              - delete_matching_keys(attributes, "(?i).*(token(?:[^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
               - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
               - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
               - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")

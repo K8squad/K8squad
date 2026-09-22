@@ -94,7 +94,7 @@ spec:
       transform/redaction:
         error_mode: ignore
         # Key-name PII scrub. The `token` branch matches SINGULAR credential keys
-        # (token, access_token, auth_token, ...) via `token([^s]|$)` but must NOT
+        # (token, access_token, auth_token, ...) via `token(?:[^s]|$)` but must NOT
         # match the PLURAL gen_ai usage counts (gen_ai.usage.input_tokens,
         # output_tokens, cache_read_tokens, reasoning_tokens, ...) which are
         # first-class agent observability signals (ISI-4799). OTTL uses Go RE2 —
@@ -104,11 +104,11 @@ spec:
         trace_statements:
           - context: span
             statements:
-              - delete_matching_keys(attributes, "(?i).*(token([^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
+              - delete_matching_keys(attributes, "(?i).*(token(?:[^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
         log_statements:
           - context: log
             statements:
-              - delete_matching_keys(attributes, "(?i).*(token([^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
+              - delete_matching_keys(attributes, "(?i).*(token(?:[^s]|$)|secret|password|authorization|api[-_]?key|credential).*")
               - replace_pattern(body, "(?i)bearer\\s+[a-z0-9._~+/-]+=*", "Bearer [REDACTED]")
               - replace_pattern(body, "sk-[A-Za-z0-9]{16,}", "[REDACTED_KEY]")
               - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
