@@ -370,6 +370,7 @@ func main() {
 	// resolve the composition, so it leaves the store unset and the route keeps its
 	// documented 501 rather than authorizing against an empty world.
 	var workItemDispatch apiserver.WorkItemDispatcher
+	var githubIssueDispatch apiserver.GithubIssueDispatcher
 	if dashboardReader != nil {
 		dispatchStore, derr := coord.NewWorkItemDispatchStore(db, apiserver.NewClientTeamAgentResolver(dashboardReader))
 		if derr != nil {
@@ -377,6 +378,17 @@ func main() {
 		}
 		workItemDispatch = dispatchStore
 		log.Printf("ksquad-apiserver: work-item dispatch ready (POST /api/work-items/{id}/dispatch)")
+
+		// GitHub-issue → work-item bridge (ISI-4783 / ISI-4749 Epic 2): composes the
+		// generic idempotent create-by-label (workItemWrites.EnsureReviewWorkItem)
+		// with the board dispatch verb (dispatchStore.RequestDispatch). It needs the
+		// same informer cache as dispatch (the agent-∈-Team authority), so it is
+		// bound in the same guarded block; a cache-less dev run keeps the route's 501.
+		githubIssueDispatch = struct {
+			*coord.WorkItemWriteStore
+			*coord.WorkItemDispatchStore
+		}{workItemWrites, dispatchStore}
+		log.Printf("ksquad-apiserver: github-issue dispatch bridge ready (POST /api/projects/{id}/github/issues/{n}/assign)")
 	}
 
 	// M1.5 board read models (ISI-4131): the per-Project card list + the ticket
@@ -577,33 +589,34 @@ func main() {
 	}
 
 	srv := apiserver.NewServer(apiserver.Options{
-		Authenticator:    authn,
-		Discussion:       discussion.NewHandler(discussion.NewStore(db)),
-		Ready:            dbReady{db},
-		Overview:         overview,
-		ProjectOverview:  projectOverview,
-		Runs:             runsService,
-		Teams:            teams,
-		FleetList:        fleetList,
-		Credentials:      credentials,
-		SecretWriter:     secretWriter,
-		CredentialTester: credentialTester,
-		RepoAuthTest:     repoAuthTest,
-		Org:              org,
-		Onboarding:       onboarding,
-		OTelConfig:       otelConfig,
-		OTelConfigWriter: otelConfigWriter,
-		Builds:           builds,
-		Artifacts:        artifacts,
-		WorkspaceReader:  workspaceReader,
-		AuditTrail:       apiserver.NewPostgresAuditTrailReader(db),
-		WorkItemState:    workItemState,
-		WorkItemWrites:   workItemWrites,
-		WorkItemComments: workItemWrites, // ISI-4406: same store exposes AppendHumanComment
-		WorkItemDispatch: workItemDispatch,
-		WorkItemReads:    workItemReads,
-		ProjectRefs:      projectRefs,
-		Search:           searcher,
+		Authenticator:       authn,
+		Discussion:          discussion.NewHandler(discussion.NewStore(db)),
+		Ready:               dbReady{db},
+		Overview:            overview,
+		ProjectOverview:     projectOverview,
+		Runs:                runsService,
+		Teams:               teams,
+		FleetList:           fleetList,
+		Credentials:         credentials,
+		SecretWriter:        secretWriter,
+		CredentialTester:    credentialTester,
+		RepoAuthTest:        repoAuthTest,
+		Org:                 org,
+		Onboarding:          onboarding,
+		OTelConfig:          otelConfig,
+		OTelConfigWriter:    otelConfigWriter,
+		Builds:              builds,
+		Artifacts:           artifacts,
+		WorkspaceReader:     workspaceReader,
+		AuditTrail:          apiserver.NewPostgresAuditTrailReader(db),
+		WorkItemState:       workItemState,
+		WorkItemWrites:      workItemWrites,
+		WorkItemComments:    workItemWrites, // ISI-4406: same store exposes AppendHumanComment
+		WorkItemDispatch:    workItemDispatch,
+		GithubIssueDispatch: githubIssueDispatch,
+		WorkItemReads:       workItemReads,
+		ProjectRefs:         projectRefs,
+		Search:              searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.

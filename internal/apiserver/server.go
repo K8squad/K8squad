@@ -159,6 +159,12 @@ type Options struct {
 	// as intent + advance backlog→todo so Intake starts the Run with that agent. Nil ⇒
 	// the route keeps the documented 501 (a DB-less dev run), exactly like the siblings.
 	WorkItemDispatch WorkItemDispatcher
+	// GithubIssueDispatch is the ISI-4783 / ISI-4749 Epic-2 bridge: POST
+	// /api/projects/{projectId}/github/issues/{number}/assign — find-or-create the
+	// work item mirroring a GitHub issue (idempotent on ksquad.github.issue=owner/repo#N)
+	// and dispatch the chosen agent in one call. Nil ⇒ the route keeps the documented
+	// 501 (a DB-less/cache-less dev run), exactly like the dispatch sibling.
+	GithubIssueDispatch GithubIssueDispatcher
 	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
 	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
 	// /api/work-items/{id} (ticket thread — comments, status history, change
@@ -1045,6 +1051,27 @@ func (s *Server) routes(opts Options) {
 			dispatch.HandleFunc("", workItemDispatchHandler(opts.WorkItemDispatch)).Methods(http.MethodPost)
 		} else {
 			dispatch.HandleFunc("", notImplemented("work-item dispatch seam", "ISI-4411: wire a coord.WorkItemDispatchStore (Postgres + Team resolver) to enable")).
+				Methods(http.MethodPost)
+		}
+
+		// GitHub-issue → work-item assign-&-dispatch bridge (ISI-4783 / ISI-4749
+		// Epic 2): POST /api/projects/{projectId}/github/issues/{number}/assign —
+		// find-or-create the ticket mirroring a GitHub issue (idempotent on the
+		// ksquad.github.issue label) and dispatch the chosen agent in one call.
+		// Project-scoped, so it rides requireProjectRole(Contributor) at the wall
+		// exactly like the work-item create; human-only + Team scope + agent-∈-Team
+		// enforced server-side. Same CSRF + bounded-body guards. Nil ⇒ documented 501.
+		ghAssign := s.router.Path("/api/projects/{projectId:.+}/github/issues/{number}/assign").Subrouter()
+		ghAssign.Use(authz)
+		ghAssign.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		ghAssign.Use(maxBytesBody(8 << 10))
+		if opts.ProjectRoles != nil {
+			ghAssign.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+		}
+		if opts.GithubIssueDispatch != nil {
+			ghAssign.HandleFunc("", githubIssueDispatchHandler(opts.GithubIssueDispatch, opts.ProjectRefs)).Methods(http.MethodPost)
+		} else {
+			ghAssign.HandleFunc("", notImplemented("github-issue dispatch bridge", "ISI-4783: wire a coord.WorkItemWriteStore + WorkItemDispatchStore to enable")).
 				Methods(http.MethodPost)
 		}
 
