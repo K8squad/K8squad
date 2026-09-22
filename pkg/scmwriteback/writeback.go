@@ -45,6 +45,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/K8squad/K8squad/pkg/scm"
@@ -266,13 +267,22 @@ func repoSlug(repoURL string) string {
 }
 
 // permanentCommentError reports whether the provider error is a permanent
-// failure (issue gone, or the token lacks write) that a retry cannot fix — so
-// the caller marks it written-back rather than wedging the reconcile forever. A
-// transient error (rate limit, 5xx, network) returns false and fails the pass.
+// failure (issue gone, the token lacks write, or the request is malformed) that
+// a retry cannot fix — so the caller marks it written-back rather than wedging
+// the reconcile forever. A transient error (rate limit, 5xx, network) returns
+// false and fails the pass.
+//
+// The production GitHubProvider maps every CreateComment error onto a
+// *scm.ProviderError carrying the HTTP status (github.go classifyGitHubWriteError,
+// ISI-4803), so this single errors.As covers the real provider as well as the
+// gitlab/fake providers. Permanent: 404/410 (issue deleted/transferred/gone),
+// 403 (missing issues:write, archived repo, locked issue), 422 (an unparseable
+// repo URL or issue id — a deterministic client error).
 func permanentCommentError(err error) bool {
 	var pe *scm.ProviderError
 	if errors.As(err, &pe) {
-		return pe.IsNotFound() || pe.IsForbidden()
+		return pe.IsNotFound() || pe.IsForbidden() ||
+			pe.HTTPCode == http.StatusGone || pe.HTTPCode == http.StatusUnprocessableEntity
 	}
 	return false
 }

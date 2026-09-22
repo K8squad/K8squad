@@ -194,6 +194,56 @@ func TestWriteBack_PermanentProviderErrorMarkedNotFailed(t *testing.T) {
 	}
 }
 
+// TestWriteBack_PermanentStatusesAllSkipped pins the ISI-4803 fix end-to-end:
+// the production GitHubProvider now maps every CreateComment failure onto a
+// *scm.ProviderError carrying the HTTP status (github.go classifyGitHubWriteError),
+// so a real 404 (issue deleted/transferred), 403 (missing issues:write, archived
+// repo, locked issue), 410 (gone), or 422 (unparseable repo URL / id) must be
+// marked-and-skipped — never returned as a transient failure that requeues the
+// repo-sync reconcile forever.
+func TestWriteBack_PermanentStatusesAllSkipped(t *testing.T) {
+	for _, code := range []int{403, 404, 410, 422} {
+		store := &fakeStore{pending: []Pending{{
+			WorkItemID: "wi-1", RunID: "run-1", IssueRef: "K8squad/K8squad#42", TerminalStep: "succeeded",
+		}}}
+		poster := &fakePoster{err: &scm.ProviderError{HTTPCode: code, Message: "permanent"}}
+		stats, err := run(t, store, poster)
+		if err != nil {
+			t.Fatalf("code %d: permanent must not fail the pass: %v", code, err)
+		}
+		if stats.Skipped != 1 || stats.Failed != 0 {
+			t.Fatalf("code %d: stats=%+v, want Skipped:1 Failed:0", code, stats)
+		}
+		if len(store.recorded) != 1 || !strings.Contains(store.recorded[0].note, "permanent") {
+			t.Fatalf("code %d: must be marked so it never retries: %+v", code, store.recorded)
+		}
+	}
+}
+
+// TestWriteBack_TransientStatusesFailPass guards the other half of the
+// classification: a rate limit (429), a 5xx, or a transport error (HTTPCode 0,
+// what github.go emits for a timeout/DNS failure) must stay transient — fail
+// the pass so the level-triggered reconcile retries, and never mark (which would
+// silently drop a deliverable write-back).
+func TestWriteBack_TransientStatusesFailPass(t *testing.T) {
+	for _, code := range []int{0, 429, 500, 502, 503} {
+		store := &fakeStore{pending: []Pending{{
+			WorkItemID: "wi-1", RunID: "run-1", IssueRef: "K8squad/K8squad#42", TerminalStep: "succeeded",
+		}}}
+		poster := &fakePoster{err: &scm.ProviderError{HTTPCode: code, Message: "transient"}}
+		stats, err := run(t, store, poster)
+		if err == nil {
+			t.Fatalf("code %d: transient must fail the pass for a retry", code)
+		}
+		if stats.Failed != 1 || stats.Posted != 0 {
+			t.Fatalf("code %d: stats=%+v, want Failed:1", code, stats)
+		}
+		if len(store.recorded) != 0 {
+			t.Fatalf("code %d: transient must NOT mark: %+v", code, store.recorded)
+		}
+	}
+}
+
 func TestWriteBack_TransientProviderErrorFailsPassNoMarker(t *testing.T) {
 	store := &fakeStore{pending: []Pending{{
 		WorkItemID: "wi-1", RunID: "run-1", IssueRef: "K8squad/K8squad#42", TerminalStep: "succeeded",
