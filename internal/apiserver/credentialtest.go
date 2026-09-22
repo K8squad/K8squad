@@ -651,5 +651,5 @@ func pinnedProbeTransport(addrs []netip.Addr) *http.Transport {
 // muxVarsName reads a gorilla/mux path variable, matching the house pattern
 // (artifacts.go / dashboard.go).
 func muxVarsName(r *http.Request, key string) string {
-	return mux.Vars(r)[key]
+	return decodePathVar(mux.Vars(r)[key])
 }

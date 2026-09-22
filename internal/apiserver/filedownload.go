@@ -68,7 +68,7 @@ func (s *Server) projectFilesDownload(reader WorkspaceReader) http.HandlerFunc {
 		return notImplemented("project file-explorer download", "ISI-4650: wire a WorkspaceReader (S4a reader-pod client) to enable")
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 
 		rawPath := r.URL.Query().Get("path")
 		if rawPath == "" {

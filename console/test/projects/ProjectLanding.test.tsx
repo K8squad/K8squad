@@ -86,6 +86,13 @@ describe("ProjectLanding — pure projections", () => {
     expect(selectProject(overview, "nope")).toBeNull();
   });
 
+  it("selectProject also matches the namespace/name composite id (ISI-4795)", () => {
+    // Nav via project.id delivers the composite; the slice must still land on the
+    // project, or the runs/active-run tiles render empty on fleet data that has them.
+    expect(selectProject(overview, "squad-alpha/webapp")?.name).toBe("webapp");
+    expect(selectProject(overview, "squad-beta/webapp")).toBeNull(); // wrong namespace: no match
+  });
+
   it("recentRuns sorts claimedAt desc, unclaimed last, capped", () => {
     const runs = recentRuns(selectProject(overview, "webapp"), 8);
     expect(runs.map((r) => r.name)).toEqual(["run-new", "run-old"]);

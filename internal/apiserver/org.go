@@ -19,7 +19,7 @@ import (
 )
 
 // muxVar reads a path variable, empty when absent.
-func muxVar(r *http.Request, key string) string { return mux.Vars(r)[key] }
+func muxVar(r *http.Request, key string) string { return decodePathVar(mux.Vars(r)[key]) }
 
 // ============================================================================
 // Agents org read model (stories 8.10 + 8.11 / ISI-3548, child of ISI-3543) —

@@ -283,7 +283,7 @@ func (s *Server) projectOverview(svc *OverviewService) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, perr.Error())
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		series, err := svc.Series(r.Context(), auth, projectID, from, to)
 		switch {
 		case errors.Is(err, ErrTeamNotFound):

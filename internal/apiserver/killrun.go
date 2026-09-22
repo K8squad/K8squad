@@ -73,7 +73,7 @@ func killRunHandler(killer RunKiller) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		id := mux.Vars(r)["workItemId"]
+		id := decodePathVar(mux.Vars(r)["workItemId"])
 		if id == "" {
 			writeJSONError(w, http.StatusBadRequest, "work item id is required")
 			return

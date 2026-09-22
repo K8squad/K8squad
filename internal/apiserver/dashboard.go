@@ -507,7 +507,7 @@ func (s *Server) projectDashboard(svc *DashboardService) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		dash, err := svc.Dashboard(r.Context(), auth, projectID)
 		switch {
 		case errors.Is(err, ErrTeamNotFound):

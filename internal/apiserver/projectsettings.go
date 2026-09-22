@@ -232,7 +232,7 @@ func (s *Server) projectSettings(svc *ProjectSettingsService) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		settings, err := svc.Settings(r.Context(), auth, projectID)
 		switch {
 		case err == nil:

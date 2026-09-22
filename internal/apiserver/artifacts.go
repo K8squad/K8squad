@@ -25,7 +25,7 @@ func artifactsHandler(svc *artifactbrowser.Service) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		runID := mux.Vars(r)["runId"]
+		runID := decodePathVar(mux.Vars(r)["runId"])
 		listing, err := svc.Listing(r.Context(), caller, runID)
 		switch {
 		case err == nil:

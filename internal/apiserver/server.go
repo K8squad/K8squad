@@ -263,7 +263,22 @@ func NewServer(opts Options) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
-	s := &Server{router: mux.NewRouter(), hub: hub}
+	router := mux.NewRouter()
+	// ISI-4795: the console addresses a Project by its canonical "namespace/name"
+	// composite id (ISI-3982), percent-encoded to a single path segment
+	// "namespace%2Fname". By default gorilla/mux matches against the DECODED path,
+	// so that "%2F" collapses to "/" and "/api/projects/ns%2Fname/runs" is seen as
+	// four segments — it never matches "/api/projects/{projectId}/runs" and 404s at
+	// routing before any handler runs. UseEncodedPath() matches (and captures vars)
+	// against the ESCAPED path, so {projectId} captures "ns%2Fname" as one segment;
+	// SkipClean(true) stops mux from redirect-cleaning the encoded slash. Every var
+	// reader then unescapes via decodePathVar (pathvars.go) to recover the value
+	// handlers saw under decoded-path routing — a no-op for UUIDs/numbers/names, and
+	// the single seam that makes the composite Project id route uniformly (runs,
+	// overview, dashboard, files, settings, github, issue-links).
+	router.UseEncodedPath()
+	router.SkipClean(true)
+	s := &Server{router: router, hub: hub}
 	s.routes(opts)
 	return s
 }

@@ -101,5 +101,5 @@ func workItemStateHandler(store WorkItemStateTransitioner) http.HandlerFunc {
 // misconfigured route) is a 400, not a silent empty string.
 func pathVar(r *http.Request, key string) (string, bool) {
 	v, ok := mux.Vars(r)[key]
-	return v, ok
+	return decodePathVar(v), ok
 }

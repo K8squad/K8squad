@@ -144,7 +144,7 @@ func listRuns(svc *RunsService) http.HandlerFunc {
 
 		// For project-scoped routes, extract project ID from path
 		var projectID string
-		if projectID = mux.Vars(r)["projectId"]; projectID != "" {
+		if projectID = decodePathVar(mux.Vars(r)["projectId"]); projectID != "" {
 			query.ProjectID = projectID
 		}
 
@@ -276,7 +276,7 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 			return
 		}
 
-		runID := mux.Vars(r)["runId"]
+		runID := decodePathVar(mux.Vars(r)["runId"])
 		if runID == "" {
 			writeJSONError(w, http.StatusBadRequest, "run ID required")
 			return

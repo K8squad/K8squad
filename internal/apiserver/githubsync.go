@@ -138,7 +138,7 @@ func (s *Server) projectGithubSync(svc *GithubSyncService) http.HandlerFunc {
 			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
-		projectID := mux.Vars(r)["projectId"]
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		err := svc.TriggerSync(r.Context(), auth, projectID)
 		switch {
 		case err == nil:

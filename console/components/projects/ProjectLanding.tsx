@@ -87,7 +87,17 @@ export function selectProject(
   data: SquadOverviewData,
   projectId: string,
 ): OverviewProject | null {
-  return (data.projects ?? []).find((p) => p.name === projectId) ?? null;
+  // ISI-4795: the fleet overview keys each project by its bare `name`, but the
+  // page's projectId can arrive as the canonical "namespace/name" composite id
+  // (ProjectsNavTree/ProjectSelector link via project.id, ISI-3982). Match either
+  // form — the same bare-or-composite match the apiserver's project resolver uses —
+  // so the client-side slice lands on the project regardless of which nav link the
+  // user followed, instead of returning null and rendering an empty runs tile.
+  return (
+    (data.projects ?? []).find(
+      (p) => p.name === projectId || `${p.namespace}/${p.name}` === projectId,
+    ) ?? null
+  );
 }
 
 /** Most-recent runs first (claimedAt desc; unclaimed sort last), capped at `limit`. */
