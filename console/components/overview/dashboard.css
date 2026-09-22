@@ -51,6 +51,21 @@
   justify-content: space-between;
   gap: 8px;
 }
+/* ISI-4565: overview run rows deep-link to /runs/{id}. Keep the row's own colour
+   and layout; just make the whole row a pointer target with a subtle hover. */
+.ov-thinking__link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: inherit;
+  text-decoration: none;
+  border-radius: 6px;
+  margin: -2px -4px;
+  padding: 2px 4px;
+}
+.ov-thinking__link:hover {
+  background: var(--surface-2, rgba(255, 255, 255, 0.05));
+}
 .ov-thinking__snippet {
   margin: 0;
   padding: 8px 10px;
