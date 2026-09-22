@@ -368,3 +368,109 @@ func TestNewFailsClosed(t *testing.T) {
 		t.Fatal("New should fail when root is a file")
 	}
 }
+
+// dotfileServer builds a jail whose root is polluted with the HOME dotfiles + credential files the
+// sandbox layout co-locates with the project checkout (KSQUAD_WORKDIR == HOME == /workspace). The
+// legit project file a.txt stands in for the code the reader MUST keep serving.
+func dotfileServer(t *testing.T) *Server {
+	t.Helper()
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "a.txt"), []byte("project code"))
+	mustWrite(t, filepath.Join(root, "secret.env"), []byte("API_KEY=leak"))
+	mustWrite(t, filepath.Join(root, ".env"), []byte("TOKEN=leak"))
+	mustWrite(t, filepath.Join(root, "id_rsa"), []byte("PRIVATE KEY leak"))
+	mustWrite(t, filepath.Join(root, "credentials"), []byte("aws creds leak"))
+	mustWrite(t, filepath.Join(root, ".npmrc"), []byte("//registry/:_authToken=leak"))
+	// A future-junk dotfile nobody enumerated — fail-closed must still hide it.
+	mustWrite(t, filepath.Join(root, ".surprise-junk"), []byte("whatever leak"))
+	for _, d := range []string{".ssh", ".config", ".local"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(t, filepath.Join(root, ".ssh", "id_rsa"), []byte("nested key leak"))
+	s, err := New(root)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s
+}
+
+// ISI-4785 locked-down v1: dotfiles + the hard sensitive set are structurally ABSENT from a listing,
+// while legitimate project files remain.
+func TestListHidesDotfilesAndSensitive(t *testing.T) {
+	s := dotfileServer(t)
+	_, dl := doList(t, s, "", "0")
+	for _, e := range dl.Entries {
+		if e.Name != "a.txt" {
+			t.Errorf("leaked entry in listing: %q", e.Name)
+		}
+	}
+	if len(dl.Entries) != 1 || dl.Entries[0].Name != "a.txt" {
+		t.Fatalf("want only a.txt visible, got %+v", dl.Entries)
+	}
+}
+
+// ISI-4785: /read on any hidden or sensitive path is 404 (not a hidden row), at the root AND nested,
+// and never leaks content.
+func TestReadRejectsBlockedPaths(t *testing.T) {
+	s := dotfileServer(t)
+	for _, p := range []string{".env", "secret.env", "id_rsa", "credentials", ".npmrc", ".surprise-junk", ".ssh/id_rsa", ".config/anything"} {
+		rr, _ := doRead(t, s, "path="+p)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("read %q want 404, got %d", p, rr.Code)
+		}
+		if strings.Contains(rr.Body.String(), "leak") {
+			t.Errorf("SECURITY: read %q leaked content: %s", p, rr.Body.String())
+		}
+	}
+	// The legit project file is unaffected — read-only semantics unchanged.
+	rr, fc := doRead(t, s, "path=a.txt")
+	if rr.Code != http.StatusOK || string(fc.Data) != "project code" {
+		t.Fatalf("legit read broken: code=%d data=%q", rr.Code, fc.Data)
+	}
+}
+
+// ISI-4785: /stat on any hidden or sensitive path is 404, at the root AND nested.
+func TestStatRejectsBlockedPaths(t *testing.T) {
+	s := dotfileServer(t)
+	for _, p := range []string{".env", "secret.env", "id_rsa", "credentials", ".ssh", ".ssh/id_rsa", ".config"} {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/stat?path="+p, nil)
+		s.Handler().ServeHTTP(rr, req)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("stat %q want 404, got %d", p, rr.Code)
+		}
+	}
+	// Legit project file still stats.
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/stat?path=a.txt", nil)
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legit stat broken: code=%d", rr.Code)
+	}
+}
+
+// ISI-4785: /list of a blocked directory itself is 404 — you cannot enumerate inside .ssh/.config.
+func TestListBlockedDirIsNotFound(t *testing.T) {
+	s := dotfileServer(t)
+	for _, p := range []string{".ssh", ".config", ".local"} {
+		if rr, _ := doList(t, s, p, "0"); rr.Code != http.StatusNotFound {
+			t.Errorf("list %q want 404, got %d", p, rr.Code)
+		}
+	}
+}
+
+// ISI-4785: case-insensitivity — an upper/mixed-case sensitive name is still blocked.
+func TestBlockedNameCaseInsensitive(t *testing.T) {
+	for _, n := range []string{"PROD.ENV", "Id_Rsa", "Credentials", ".SSH"} {
+		if !blockedName(n) {
+			t.Errorf("blockedName(%q) = false, want true", n)
+		}
+	}
+	for _, n := range []string{"a.txt", "main.go", "README.md", "envfile", "credentials.txt"} {
+		if blockedName(n) {
+			t.Errorf("blockedName(%q) = true, want false (legit project file)", n)
+		}
+	}
+}

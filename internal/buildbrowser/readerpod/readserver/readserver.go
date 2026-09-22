@@ -164,10 +164,20 @@ func (s *Server) Handler() http.Handler {
 // jail canonicalises a client-supplied path and verifies it stays inside the jail root. It returns
 // the resolved real absolute path, or errEscape / errNotFound. Symlinks are resolved and the result
 // re-checked, so a symlink pointing outside /workspace is rejected rather than followed.
+//
+// Locked-down v1 (ISI-4785): on our sandboxes the reader's jail root (/workspace) IS the agent's HOME
+// (pkg/warmpool/kube.go stamps HOME == KSQUAD_WORKDIR == /workspace when a Project PVC is mounted), so
+// HOME dotfiles (.ssh/.config/.local/…) and *.env / credential files sit at the SAME level as the
+// project checkout — anchoring the jail deeper cannot separate them. So the jail itself fails closed
+// on any hidden or sensitive path segment: read/stat/list on such a path is errNotFound (404), never
+// a leak. Entry-level hiding for a legitimate listing is done in handleList.
 func (s *Server) jail(raw string) (string, error) {
 	rel, err := cleanRel(raw)
 	if err != nil {
 		return "", err
+	}
+	if pathBlocked(rel) {
+		return "", errNotFound
 	}
 	abs := filepath.Join(s.realRoot, rel)
 	real, err := filepath.EvalSymlinks(abs)
@@ -207,6 +217,46 @@ func within(root, p string) bool {
 	return strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
+// blockedName reports whether a SINGLE path element is hidden or sensitive and must never be listed,
+// read, or stat-ed (ISI-4785 locked-down v1). Two independent, fail-closed reasons:
+//
+//   - Any leading-dot name is hidden. The board declined a "show hidden" toggle, so every dotfile
+//     (.ssh .aws .gnupg .config .local .cache .npmrc .git-credentials …) is structurally absent. This
+//     also hides legitimate project dotfiles (.github, .gitignore); that is the accepted v1 tradeoff.
+//   - A hard sensitive set that does NOT start with a dot — *.env files and common credential
+//     material (id_rsa & friends, a bare "credentials" store) — is blocked at every depth regardless.
+//
+// Comparison is case-insensitive so a FOO.ENV / Id_Rsa can't slip through.
+func blockedName(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".env") {
+		return true
+	}
+	switch lower {
+	case "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials", "credentials.json":
+		return true
+	}
+	return false
+}
+
+// pathBlocked reports whether ANY segment of a jail-relative path is blocked, so a sensitive path is
+// unreachable at every depth (e.g. ".ssh/id_rsa", "a/b/prod.env"). rel is already cleanRel-normalised
+// (no leading slash, no ".."); the root alias "." is never blocked.
+func pathBlocked(rel string) bool {
+	if rel == "." || rel == "" {
+		return false
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if blockedName(seg) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	real, err := s.jail(r.URL.Query().Get("path"))
 	if err != nil {
@@ -227,6 +277,18 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read error", http.StatusInternalServerError)
 		return
 	}
+	// Locked-down v1 (ISI-4785): drop hidden + sensitive entries BEFORE sort/pagination so they are
+	// structurally absent from the listing — not merely hidden rows. The same reader serves /read and
+	// /stat (both rejected by jail via pathBlocked), so filtering here is the list-side half of one
+	// fail-closed policy, not a cosmetic hide. Filter in place; order within des is irrelevant here.
+	kept := des[:0]
+	for _, de := range des {
+		if blockedName(de.Name()) {
+			continue
+		}
+		kept = append(kept, de)
+	}
+	des = kept
 	sort.Slice(des, func(i, j int) bool { return des[i].Name() < des[j].Name() })
 
 	page := parseNonNegInt(r.URL.Query().Get("page"))
