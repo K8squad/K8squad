@@ -1,0 +1,438 @@
+/* components/runs/run-detail.css — the ISI-4792 run-detail redesign (built for
+ * ISI-4798). ZERO new tokens: every colour resolves to an existing globals.css
+ * custom property, and the 5-kind system rides the status channel —
+ *   You       = --accent          (#3d7dff)
+ *   Thinking  = --ksq-run         (#a78bfa, italic)
+ *   Comment   = --status-running  (#34d399)
+ *   Tool      = --muted           (#7e8ca6); ok=--status-running, err=--status-blocked
+ *   System    = --status-idle     (#64748b)
+ * Light theme luminance-inverts automatically because it reads the same tokens.
+ * Imported by RunDetail.tsx so the route always ships its CSS (no unstyled gap). */
+
+.run-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---- header ---------------------------------------------------------------- */
+.run-detail__header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.run-detail__badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.run-detail__agent-badge,
+.run-detail__project-badge {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 2px 9px;
+  border-radius: 999px;
+}
+.run-detail__agent-badge {
+  color: var(--ksq-run);
+  background: color-mix(in srgb, var(--ksq-run) 16%, transparent);
+}
+.run-detail__project-badge {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.run-detail__title {
+  margin: 10px 0 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 20px;
+  color: var(--text-hi);
+}
+.run-detail__meta {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.run-detail__meta a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.run-detail__meta a:hover {
+  text-decoration: underline;
+}
+.run-detail__token-count {
+  color: var(--accent);
+}
+
+/* ---- two-column grid (main + right rail) ----------------------------------- */
+.run-detail__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+}
+.run-detail__main,
+.run-detail__side {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .run-detail__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- lifecycle rail -------------------------------------------------------- */
+.run-rail__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.run-rail__title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.run-rail__total {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-2);
+}
+.run-rail__track {
+  position: relative;
+  padding: 0 8px 4px;
+}
+.run-rail__line {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  background: var(--border);
+}
+.run-rail__line--done {
+  right: auto;
+  background: var(--status-running);
+  transition: width 0.3s ease;
+}
+.run-rail__nodes {
+  position: relative;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  justify-content: space-between;
+}
+.run-rail__node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  text-align: center;
+}
+.run-rail__node:first-child {
+  align-items: flex-start;
+  text-align: left;
+}
+.run-rail__node:last-child {
+  align-items: flex-end;
+  text-align: right;
+}
+.run-rail__dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 2px solid var(--status-idle);
+  box-sizing: border-box;
+}
+.run-rail__node.is-reached .run-rail__dot {
+  border-color: var(--status-running);
+  background: radial-gradient(
+    circle,
+    var(--status-running) 0 40%,
+    var(--surface) 45%
+  );
+}
+.run-rail__node.is-current .run-rail__dot {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status-running) 22%, transparent);
+}
+.run-rail__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.run-rail__clock {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-2);
+}
+
+/* ---- activity head: title + scope toggle + legend -------------------------- */
+.run-activity__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.run-activity__title {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text-hi);
+}
+.run-scope {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.run-scope__btn {
+  border: none;
+  background: none;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.run-scope__btn:hover {
+  color: var(--text-hi);
+}
+.run-scope__btn.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+.run-scope__btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.run-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.run-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.run-legend__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--kind-color);
+}
+.run-legend__item[data-kind="you"] {
+  --kind-color: var(--accent);
+}
+.run-legend__item[data-kind="thinking"] {
+  --kind-color: var(--ksq-run);
+}
+.run-legend__item[data-kind="comment"] {
+  --kind-color: var(--status-running);
+}
+.run-legend__item[data-kind="tool"] {
+  --kind-color: var(--muted);
+}
+.run-legend__item[data-kind="system"] {
+  --kind-color: var(--status-idle);
+}
+
+/* ---- activity stream + colour-coded cards ---------------------------------- */
+.activity-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.activity {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  --kind-color: var(--muted);
+}
+.activity[data-kind="you"] {
+  --kind-color: var(--accent);
+}
+.activity[data-kind="thinking"] {
+  --kind-color: var(--ksq-run);
+}
+.activity[data-kind="comment"] {
+  --kind-color: var(--status-running);
+}
+.activity[data-kind="tool"] {
+  --kind-color: var(--muted);
+}
+.activity[data-kind="system"] {
+  --kind-color: var(--status-idle);
+}
+.activity__rail-dot {
+  margin-top: 14px;
+  width: 11px;
+  height: 11px;
+  justify-self: center;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 2px solid var(--kind-color);
+  box-sizing: border-box;
+}
+.activity__card {
+  border: 1px solid color-mix(in srgb, var(--kind-color) 26%, transparent);
+  border-left: 3px solid var(--kind-color);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--kind-color) 7%, var(--surface));
+  padding: 10px 14px 12px;
+  min-width: 0;
+}
+.activity__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.activity__icon {
+  display: inline-flex;
+  color: var(--kind-color);
+}
+.activity__kind {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--kind-color);
+}
+.activity__author {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.activity__time {
+  margin-left: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--text-2);
+}
+.activity__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.activity[data-kind="thinking"] .activity__text {
+  font-style: italic;
+  color: var(--text-2);
+}
+.activity[data-kind="system"] .activity__text {
+  color: var(--text-2);
+}
+
+/* tool chip row */
+.activity__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: var(--inset);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-1);
+}
+.tool-chip.is-ok {
+  border-color: color-mix(in srgb, var(--status-running) 40%, transparent);
+}
+.tool-chip.is-err {
+  border-color: color-mix(in srgb, var(--status-blocked) 40%, transparent);
+}
+.tool-chip__mark {
+  font-size: 11px;
+  line-height: 1;
+}
+.tool-chip.is-ok .tool-chip__mark {
+  color: var(--status-running);
+}
+.tool-chip.is-err .tool-chip__mark {
+  color: var(--status-blocked);
+}
+
+.activity-more {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  padding: 4px 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+}
+.activity-more:hover {
+  text-decoration: underline;
+}
+
+/* ---- run summary card ------------------------------------------------------ */
+.run-summary__title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  color: var(--text-hi);
+}
+.run-summary__rows {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.run-summary__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.run-summary__row dt {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.run-summary__row dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.run-summary__row dd[data-tone="running"] {
+  color: var(--status-running);
+}
+.run-summary__row dd[data-tone="blocked"] {
+  color: var(--status-blocked);
+}
+.run-summary__tokens {
+  color: var(--accent);
+}
+.run-summary__agent {
+  color: var(--ksq-run);
+}
