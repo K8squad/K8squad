@@ -155,9 +155,10 @@ func listRuns(svc *RunsService) http.HandlerFunc {
 			// Admin can see across all namespaces
 			namespace = "" // fleet-wide
 		} else {
-			// Non-admins are limited to their team namespace
-			namespace = teamNamespace(auth.TeamID.String())
-			if namespace == "" {
+			// Non-admins are limited to their team's execution namespace (where the
+			// Run CRs live), resolved from the Team CR and bridged home→exec (ISI-4738).
+			namespace, err = svc.runNamespaceForTeam(r.Context(), auth.TeamID.String())
+			if err != nil || namespace == "" {
 				writeJSONError(w, http.StatusNotFound, "no team scope for this user")
 				return
 			}
@@ -287,11 +288,12 @@ func getRunDetail(svc *RunsService) http.HandlerFunc {
 		if auth.IsAdmin {
 			namespace = "" // fleet-wide
 		} else {
-			namespace = teamNamespace(auth.TeamID.String())
-			if namespace == "" {
+			ns, err := svc.runNamespaceForTeam(r.Context(), auth.TeamID.String())
+			if err != nil || ns == "" {
 				writeJSONError(w, http.StatusNotFound, "no team scope for this user")
 				return
 			}
+			namespace = ns
 		}
 
 		detail, err := svc.getRunDetailInNamespace(r.Context(), namespace, runID)
@@ -586,12 +588,37 @@ func runInTimeWindow(run *ksquadv1.Run, window string) bool {
 	}
 }
 
-// teamNamespace maps a Team UUID to its namespace (simplified for now)
-func teamNamespace(teamID string) string {
-	// TODO: Proper team-to-namespace mapping from Team CR
-	// For now, return empty string for admin/empty team
+// runNamespaceForTeam resolves the EXECUTION namespace where a non-admin caller's
+// Run CRs live, given the caller's Team UID. It resolves the Team CR by UID (a
+// rename can never widen scope, §12.1) to its home namespace, then bridges to the
+// per-Team execution namespace (Team.Status.Namespace) exactly like the overview
+// read model does via runNamespaceForHome (ISI-4565). This replaces the old
+// fabricated "team-<hash>" stub, which pointed at a namespace that never exists so
+// List(InNamespace(...)) matched nothing and the runs screens rendered empty for
+// every tenant user (ISI-4738).
+//
+// Returns ("", nil) when the caller has no Team scope (empty/zero UID) so the
+// handler can answer 404 "no team scope"; returns ErrTeamNotFound when a non-zero
+// UID matches no Team CR.
+func (s *RunsService) runNamespaceForTeam(ctx context.Context, teamID string) (string, error) {
 	if teamID == "" || teamID == "00000000-0000-0000-0000-000000000000" {
-		return ""
+		return "", nil
 	}
-	return "team-" + strings.ToLower(teamID[:8]) // simple hash for demo
+	var teams ksquadv1.TeamList
+	if err := s.reader.List(ctx, &teams); err != nil {
+		return "", err
+	}
+	for i := range teams.Items {
+		if string(teams.Items[i].UID) != teamID {
+			continue
+		}
+		// Bridge home → execution namespace; fall back to the home namespace when
+		// no execution namespace is provisioned (co-tenant dev host / pre-per-team
+		// layout), matching runNamespaceForHome's contract.
+		if teams.Items[i].Status.Namespace != "" {
+			return teams.Items[i].Status.Namespace, nil
+		}
+		return teams.Items[i].Namespace, nil
+	}
+	return "", ErrTeamNotFound
 }
