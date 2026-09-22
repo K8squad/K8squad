@@ -180,14 +180,34 @@ func (s *RunsService) listRunsInNamespace(ctx context.Context, namespace string,
 		return nil, err
 	}
 
+	// query.ProjectID arrives from the console as the canonical "namespace/name"
+	// composite (console lib/projectId.ts), but a Run's spec.projectRef stores the
+	// bare Name plus an optional Namespace. Split the composite so the filter matches
+	// the real fields — comparing "ns/name" against the bare Name matched nothing and
+	// emptied every project's runs screen (ISI-4565). A bare name (no slash) still works.
+	wantProjectNS, wantProjectName := "", query.ProjectID
+	if idx := strings.Index(query.ProjectID, "/"); idx >= 0 {
+		wantProjectNS, wantProjectName = query.ProjectID[:idx], query.ProjectID[idx+1:]
+	}
+
 	// Filter and project
 	var filtered []RunListItem
 	for i := range runs.Items {
 		run := &runs.Items[i]
 
 		// Apply project filter if specified
-		if query.ProjectID != "" && run.Spec.ProjectRef.Name != query.ProjectID {
-			continue
+		if query.ProjectID != "" {
+			if run.Spec.ProjectRef.Name != wantProjectName {
+				continue
+			}
+			// When both sides carry a namespace, require they match so same-named
+			// projects in different squads don't cross-list. A run whose projectRef
+			// omits the namespace (means "the run's own namespace") is matched on
+			// name alone, preserving the co-tenant/dev-host layout.
+			if wantProjectNS != "" && run.Spec.ProjectRef.Namespace != "" &&
+				run.Spec.ProjectRef.Namespace != wantProjectNS {
+				continue
+			}
 		}
 
 		// Apply phase filter if specified

@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 func TestRunsService(t *testing.T) {
@@ -328,4 +329,47 @@ func TestGetRunDetailFleetResolvesExecNamespace(t *testing.T) {
 	_, missErr := svc.getRunDetailInNamespace(ctx, "", "does-not-exist")
 	assert.Error(t, missErr)
 	assert.True(t, apierrors.IsNotFound(missErr), "expected IsNotFound, got %v", missErr)
+}
+
+// TestListRunsProjectScopedCompositeID reproduces the empty project/runs screen
+// (ISI-4565): the console passes the Project id as a "namespace/name" composite,
+// but a Run's spec.projectRef stores the bare Name (+ optional Namespace). The
+// filter must split the composite instead of comparing "ns/name" to "name".
+func TestListRunsProjectScopedCompositeID(t *testing.T) {
+	ctx := context.Background()
+	now := metav1.Now()
+
+	execNS := "ksquad-team-bmad-squad-f6e8fc70"
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-abc-r1", Namespace: execNS},
+		Spec: ksquadv1.RunSpec{
+			// projectRef carries the bare name + the squad HOME namespace.
+			ProjectRef:  ksquadv1.ObjectRef{Name: "bmad-demo-project", Namespace: "bmad-squad"},
+			WorkItemRef: "abc",
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning, ClaimedAt: &now},
+	}
+	// A same-named project in a different squad must NOT cross-list.
+	other := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-xyz-r1", Namespace: "ksquad-team-other"},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "bmad-demo-project", Namespace: "other-squad"},
+			WorkItemRef: "xyz",
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning, ClaimedAt: &now},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(run, other).Build()
+	svc := NewRunsService(k8sClient)
+
+	// Admin fleet scope (namespace "") + composite project id, exactly as the
+	// console route delivers it.
+	got, err := svc.listRunsInNamespace(ctx, "", RunListQuery{
+		ProjectID: "bmad-squad/bmad-demo-project",
+		Limit:     50,
+	}, discussion.AuthorContext{})
+	assert.NoError(t, err)
+	assert.Len(t, got, 1, "composite project id must return only the matching squad's run")
+	if len(got) == 1 {
+		assert.Equal(t, "intake-abc-r1", got[0].Name)
+	}
 }
