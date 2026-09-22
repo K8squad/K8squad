@@ -73,14 +73,24 @@ func (s *SystemReviewItemStore) EnsureReview(ctx context.Context, req reviewtrig
 		return false, fmt.Errorf("reviewdispatch: review request for %s#%s has no Principal (EnabledBy) provenance", req.RepoURL, req.PRNumber)
 	}
 
-	res, err := s.writer.EnsureReviewWorkItem(ctx, coord.EnsureReviewWorkItemInput{
+	in := coord.EnsureReviewWorkItemInput{
 		ProjectID:  req.ProjectID,
 		TeamID:     req.TeamID,
 		Title:      req.Title,
 		Body:       reviewBody(req),
 		DedupLabel: req.DedupLabel,
 		Principal:  reviewtrigger.Initiator, // SYSTEM author — never an agent
-	})
+	}
+	// Descriptive plaintext anchor so the console read model (ISI-4767 E5) can
+	// join this review back to the PR card. It is purely additive — it does NOT
+	// change the dedup key (that stays req.DedupLabel), so it cannot re-open the
+	// D1/custody authz decision the dispatcher already made. Absent when the repo
+	// URL can't be slugged (the join then stays honestly "not reviewed").
+	if anchor := reviewtrigger.PRAnchorLabel(req.RepoURL, req.PRNumber); anchor != "" {
+		in.ExtraLabels = []string{anchor}
+	}
+
+	res, err := s.writer.EnsureReviewWorkItem(ctx, in)
 	if err != nil {
 		return false, fmt.Errorf("reviewdispatch: ensure work item for %s#%s: %w", req.RepoURL, req.PRNumber, err)
 	}

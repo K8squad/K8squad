@@ -182,4 +182,55 @@ describe("PullRequestManagement", () => {
     expect(screen.getByTestId("gh-review-automation-btn")).toBeTruthy();
     expect(screen.queryByTestId("gh-review-automation-dialog")).toBeNull();
   });
+
+  // ISI-4767 E5: local automated-review visibility on the PR card.
+  describe("review visibility badge (ISI-4767 E5)", () => {
+    const reviewedPrs: GithubPR[] = [
+      {
+        number: 200,
+        title: "reviewed & done",
+        state: "open",
+        reviewState: "ready-for-review",
+        review: { workItemId: "wi-done", state: "done" },
+      },
+      {
+        number: 201,
+        title: "review in flight",
+        state: "open",
+        review: { workItemId: "wi-flight", state: "in progress" },
+      },
+      { number: 202, title: "no review", state: "open" },
+    ];
+
+    it("shows a review badge only on PRs that carry a review, labelled by state", () => {
+      render(
+        <PullRequestManagement
+          data={status({ pullRequests: reviewedPrs })}
+          projectId="ns/demo"
+        />,
+      );
+      const cards = screen.getAllByTestId("pr-row");
+      // #200 done → "Reviewed", deep-links to the work item.
+      const done = within(cards[0]).getByTestId("gh-pr-review-badge");
+      expect(done.textContent).toContain("Reviewed");
+      expect(done.getAttribute("href")).toBe("/projects/ns%2Fdemo/issues/wi-done");
+      // #201 in progress → "Review in progress".
+      expect(within(cards[1]).getByTestId("gh-pr-review-badge").textContent).toContain(
+        "Review in progress",
+      );
+      // #202 no review → honest absence, no badge.
+      expect(within(cards[2]).queryByTestId("gh-pr-review-badge")).toBeNull();
+    });
+
+    it("renders the badge as presence-only text when no projectId is available", () => {
+      render(<PullRequestManagement data={status({ pullRequests: reviewedPrs })} />);
+      const badge = within(screen.getAllByTestId("pr-row")[0]).getByTestId(
+        "gh-pr-review-badge",
+      );
+      // No projectId ⇒ no deep-link, but the presence is still surfaced honestly.
+      expect(badge.tagName).toBe("SPAN");
+      expect(badge.getAttribute("href")).toBeNull();
+      expect(badge.textContent).toContain("Reviewed");
+    });
+  });
 });

@@ -14,11 +14,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/controller/reposync"
+	"github.com/K8squad/K8squad/pkg/controller/reviewtrigger"
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/gorilla/mux"
 	"go.opentelemetry.io/otel/attribute"
@@ -95,6 +98,26 @@ type GithubPR struct {
 	URL         string     `json:"url,omitempty"`
 	Actor       string     `json:"actor,omitempty"`
 	UpdatedAt   *time.Time `json:"updatedAt,omitempty"`
+	// Review is the OPTIONAL local automated-review block (ISI-4767 / ISI-4750
+	// E5). Present only when this PR is bridged to a system-dispatched PR-review
+	// work item (label ksquad.github.pr=<owner>/<repo>#N, produced by ISI-4766
+	// E4). ABSENT means "not reviewed" — the honest default (ADR-0013 §D4), never
+	// a fabricated verdict. It is a LOCAL work-item status derived in the same
+	// mirror read, so it rides the existing payload with no extra per-card request;
+	// it is NEVER a GitHub review and must never merge into ReviewState (the raw
+	// provider column).
+	Review *GithubPRReview `json:"review,omitempty"`
+}
+
+// GithubPRReview is the local review-visibility block for a PR (ISI-4767 E5 MVP:
+// presence + a deep-link to the work item). WorkItemID lets the console link to
+// the ticket; State is the review work item's coord state (backlog | in progress
+// | done | …) so the card can say "review queued" vs "reviewed" honestly. The
+// reviewing agent's display name and the reviewed head-SHA are deferred to a
+// Phase-2 follow-up (each needs a further backend join E4 does not expose yet).
+type GithubPRReview struct {
+	WorkItemID string `json:"workItemId"`
+	State      string `json:"state,omitempty"`
 }
 
 // GithubIssue is one mirrored issue. Labels + Assignees are the provider's own
@@ -174,17 +197,32 @@ type GithubFreshness struct {
 type GithubStatusService struct {
 	reader client.Reader
 	mirror scm.MirrorReader
+	// reviews is the OPTIONAL coord read seam that joins a PR to its system-
+	// dispatched review work item (ISI-4767 E5). Nil ⇒ no review block is ever
+	// attached (the honest "not reviewed" default), so a deployment without the
+	// coord read store degrades cleanly rather than 500ing.
+	reviews ReviewItemFinder
 	// now sources the wall clock used to compute mirror age; overridable in
 	// tests. Defaulted to time.Now by the constructor.
 	now func() time.Time
 }
 
-// NewGithubStatusService builds the read model. Both dependencies are required;
+// ReviewItemFinder is the coord read seam that resolves a PR's local review work
+// item by its plaintext anchor label (reviewtrigger.PRAnchorLabel). Implemented
+// by *coord.WorkItemReadStore.FindWorkItemByLabel; teamID scopes tenancy exactly
+// like the board reads ("" ⇒ trusted fleet-admin path). It is read-only and
+// creates nothing, so it never crosses the ISI-4711 custody wall.
+type ReviewItemFinder interface {
+	FindWorkItemByLabel(ctx context.Context, teamID, projectID, label string) (coord.WorkItemRecord, error)
+}
+
+// NewGithubStatusService builds the read model. reader + mirror are required;
 // when the mirror reader is unavailable the caller leaves opts.GithubStatus nil
 // and the route answers the documented 501 (AC5) rather than constructing a
-// half-wired service.
-func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader) *GithubStatusService {
-	return &GithubStatusService{reader: reader, mirror: mirror, now: time.Now}
+// half-wired service. reviews is optional (nil ⇒ PR cards never carry a review
+// block; every other panel is unaffected).
+func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder) *GithubStatusService {
+	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, now: time.Now}
 }
 
 // GithubStatus composes the payload for one Project. Resolution and every read
@@ -196,12 +234,12 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 	// dashboard + project-settings read models use — a global admin resolves
 	// fleet-wide (UID-first, 409 on a bare-name collision), a non-admin is
 	// team-fenced with the existence-hiding 404 (ISI-3956 S5b "no bespoke tenancy").
-	var ns, name string
+	var ns, name, uid string
 	var err error
 	if auth.IsAdmin {
-		ns, name, err = resolveProjectFleetWide(ctx, s.reader, projectID)
+		ns, name, uid, err = resolveProjectFleetWideWithUID(ctx, s.reader, projectID)
 	} else {
-		ns, name, err = resolveProjectInTeam(ctx, s.reader, auth.TeamID.String(), projectID)
+		ns, name, uid, err = resolveProjectInTeamWithUID(ctx, s.reader, auth.TeamID.String(), projectID)
 	}
 	if err != nil {
 		return GithubStatus{}, err
@@ -248,6 +286,16 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 			out.Freshness.MirrorRecordCount = sync.MirrorRecordCount
 		}
 		out.Sync = s.syncSummary(&proj)
+
+		// ISI-4767 E5: join each PR to its local review work item via the plaintext
+		// anchor label E4 stamps (ksquad.github.pr=<owner>/<repo>#N). Best-effort and
+		// optional: a nil seam, an unslug-able repo URL, or a miss all leave the PR
+		// honestly "not reviewed" (no Review block) — never a fabricated verdict. The
+		// repo slug is derived from the SAME proj.Spec.Repo.URL the producer used, so
+		// the two sides agree via reviewtrigger.PRAnchorLabel's shared normalization.
+		if s.reviews != nil && uid != "" && repoURL != "" {
+			s.attachReviews(ctx, &out, reviewTeamID(auth), uid, repoURL)
+		}
 	} else {
 		// No Project object at all (e.g. mirror rows but the CR is gone from the
 		// informer): the tab treats this as not-configured rather than a blank.
@@ -274,6 +322,40 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 	}
 
 	return out, nil
+}
+
+// reviewTeamID is the tenancy scope for the review join: a non-admin is fenced to
+// its own Team (matching every other board read); a global admin uses the trusted
+// fleet path ("") so it can resolve review items for any team's project — the
+// same posture the project-overview status join uses.
+func reviewTeamID(auth discussion.AuthorContext) string {
+	if auth.IsAdmin {
+		return ""
+	}
+	return auth.TeamID.String()
+}
+
+// attachReviews looks up each PR's local review work item by its anchor label and
+// attaches the MVP review block (work-item id + state). It is best-effort: any
+// lookup that misses (ErrWorkItemNotFound) or errors transiently leaves that PR
+// without a Review block — the honest "not reviewed" default (ADR-0013 §D4). It
+// makes at most one indexed coord read per PR (bounded by the mirrored PR count);
+// no PR without an anchor is queried.
+func (s *GithubStatusService) attachReviews(ctx context.Context, out *GithubStatus, teamID, projectUID, repoURL string) {
+	for i := range out.PullRequests {
+		anchor := reviewtrigger.PRAnchorLabel(repoURL, strconv.Itoa(out.PullRequests[i].Number))
+		if anchor == "" {
+			continue
+		}
+		rec, err := s.reviews.FindWorkItemByLabel(ctx, teamID, projectUID, anchor)
+		if err != nil {
+			continue // not-found (honest absence) or a transient read error — never fabricate
+		}
+		out.PullRequests[i].Review = &GithubPRReview{
+			WorkItemID: rec.ID,
+			State:      rec.State,
+		}
+	}
 }
 
 // syncSummary derives the wire sync-state from the resolved Project.status. The

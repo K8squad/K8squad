@@ -280,11 +280,9 @@ func main() {
 	// credential — GitHub traffic stays exclusively in the operator reposync reconciler
 	// (§D1). Needs BOTH the DB (mirror reader) and the cache (resolution + freshness); a
 	// dev run without either keeps the documented 501 so the S5c tab renders "not available yet".
+	// Constructed below, once the coord work-item read store exists — the PR cards
+	// join to their review work items through it (ISI-4767 E5).
 	var githubStatus *apiserver.GithubStatusService
-	if db != nil && dashboardReader != nil {
-		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db))
-		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
-	}
 
 	// 8.7a/8.7d build-browser read-model (ISI-2759). Production wires a Postgres-backed RunSource
 	// (Run→Team/owner/workspace from the coord store); until then a dev runs file lets the real
@@ -385,6 +383,21 @@ func main() {
 	workItemReads, err := coord.NewWorkItemReadStore(db)
 	if err != nil {
 		log.Fatalf("ksquad-apiserver: work-item read store: %v", err)
+	}
+
+	// S5b GitHub-status read model (ISI-3956): GET /api/projects/{id}/github projects
+	// the operator's scm.mirror_record mirror (PRs/issues/check-runs/artifacts/releases)
+	// keyed by Project. It reuses the SAME informer cache the dashboard uses for
+	// existence-hiding tenancy (admin fleet-wide short-circuit; else team-fenced 404) and
+	// reads the mirror over the SAME *sql.DB. It makes NO GitHub call and touches NO BYO
+	// credential — GitHub traffic stays exclusively in the operator reposync reconciler
+	// (§D1). PR cards join to their local review work items through the coord work-item
+	// read store (ISI-4767 E5, label ksquad.github.pr=<owner>/<repo>#N). Needs BOTH the
+	// DB (mirror reader) and the cache (resolution + freshness); a dev run without either
+	// keeps the documented 501 so the S5c tab renders "not available yet".
+	if db != nil && dashboardReader != nil {
+		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads)
+		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
 	}
 
 	// Project-overview time-series read model (ISI-4509 / ISI-4505 S4): runs-by-status +

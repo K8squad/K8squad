@@ -22,9 +22,11 @@ import (
 
 	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -38,18 +40,38 @@ func testGithubStatusServer(t *testing.T, teamID uuid.UUID, reader client.Reader
 
 // testGithubStatusServerAs wires both a non-admin devToken session (scoped to
 // teamID) and an admin adminDashToken session, so one server exercises both.
-func testGithubStatusServerAs(t *testing.T, teamID uuid.UUID, admin discussion.AuthorContext, reader client.Reader, mirror scm.MirrorReader) http.Handler {
+func testGithubStatusServerAs(t *testing.T, teamID uuid.UUID, admin discussion.AuthorContext, reader client.Reader, mirror scm.MirrorReader, finder ...ReviewItemFinder) http.Handler {
 	t.Helper()
 	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
 		devToken:       {Principal: "user:alice", TeamID: teamID},
 		adminDashToken: admin,
 	}}
+	var f ReviewItemFinder
+	if len(finder) > 0 {
+		f = finder[0]
+	}
 	srv := NewServer(Options{
 		Authenticator: NewCookieAuthenticator(resolver),
 		Discussion:    discussion.NewHandler(nil),
-		GithubStatus:  NewGithubStatusService(reader, mirror),
+		GithubStatus:  NewGithubStatusService(reader, mirror, f),
 	})
 	return srv.Handler()
+}
+
+// fakeReviewFinder is an in-memory ReviewItemFinder keyed on (teamID, projectID,
+// label). A miss returns coord.ErrWorkItemNotFound — exactly like the real store,
+// so the read model's honest "not reviewed" default is exercised.
+type fakeReviewFinder struct {
+	byLabel map[string]coord.WorkItemRecord // key: teamID + "|" + projectID + "|" + label
+	calls   int
+}
+
+func (f *fakeReviewFinder) FindWorkItemByLabel(_ context.Context, teamID, projectID, label string) (coord.WorkItemRecord, error) {
+	f.calls++
+	if rec, ok := f.byLabel[teamID+"|"+projectID+"|"+label]; ok {
+		return rec, nil
+	}
+	return coord.WorkItemRecord{}, coord.ErrWorkItemNotFound
 }
 
 func getGithubStatusAs(t *testing.T, h http.Handler, token, projectID string) (*httptest.ResponseRecorder, *GithubStatus) {
@@ -241,6 +263,85 @@ func TestGithubStatusProjection(t *testing.T) {
 		if strings.Contains(strings.ToLower(body), forbidden) {
 			t.Errorf("response leaked %q: %s", forbidden, body)
 		}
+	}
+}
+
+// --- ISI-4767 E5: PR-card review-visibility join --------------------------------------------------
+
+// TestGithubStatusReviewJoin covers the E5 read-join: a PR whose review work item
+// carries the plaintext anchor label (ksquad.github.pr=<owner>/<repo>#N, lower-
+// cased) gets a Review block (work-item id + state); a PR with no matching label
+// stays honestly "not reviewed" (Review nil). The anchor slug is derived from the
+// SAME repo URL on both sides via reviewtrigger.PRAnchorLabel.
+func TestGithubStatusReviewJoin(t *testing.T) {
+	teamID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	projUID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+	// Repo URL cased "Acme/Web" to prove the join is case-insensitive via the
+	// shared lower-casing normalization.
+	proj := project("squad-a", "web", "https://github.com/Acme/Web")
+	proj.UID = types.UID(projUID)
+	reader := newDashboardClient(t, team("squad-a", "alpha", teamID.String()), proj)
+
+	store := scm.NewInMemoryMirrorStore()
+	seedMirror(t, store, "squad-a", "web",
+		mirrorRow(scm.RecordTypePR, "7", "open", "reviewed PR", "dev",
+			scm.MirrorPayload{Number: 7, URL: "https://github.com/Acme/Web/pull/7"}),
+		mirrorRow(scm.RecordTypePR, "9", "open", "unreviewed PR", "dev",
+			scm.MirrorPayload{Number: 9, URL: "https://github.com/Acme/Web/pull/9"}),
+	)
+
+	finder := &fakeReviewFinder{byLabel: map[string]coord.WorkItemRecord{
+		teamID.String() + "|" + projUID + "|ksquad.github.pr=acme/web#7": {
+			ID: "wi-review-7", State: "in progress",
+		},
+	}}
+
+	h := testGithubStatusServerAs(t, teamID, discussion.AuthorContext{}, reader, store, finder)
+	rec, st := getGithubStatusAs(t, h, devToken, "web")
+	if st == nil {
+		t.Fatalf("projection: got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	prByNum := map[int]GithubPR{}
+	for _, pr := range st.PullRequests {
+		prByNum[pr.Number] = pr
+	}
+	// PR #7 is reviewed: the block carries the work-item id + state for the deep-link.
+	got7 := prByNum[7]
+	if got7.Review == nil {
+		t.Fatalf("PR #7: want Review block, got nil (%+v)", got7)
+	}
+	if got7.Review.WorkItemID != "wi-review-7" || got7.Review.State != "in progress" {
+		t.Errorf("PR #7 review block wrong: %+v", got7.Review)
+	}
+	// PR #9 has no matching review item: honest "not reviewed" (no block).
+	if got9 := prByNum[9]; got9.Review != nil {
+		t.Errorf("PR #9: want no Review block, got %+v", got9.Review)
+	}
+}
+
+// TestGithubStatusReviewJoinNilFinderNoBlock: a deployment without the coord read
+// seam (nil finder) never attaches a review block — every panel still serves.
+func TestGithubStatusReviewJoinNilFinderNoBlock(t *testing.T) {
+	teamID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	proj := project("squad-a", "web", "https://github.com/acme/web")
+	proj.UID = types.UID("11111111-2222-3333-4444-555555555555")
+	reader := newDashboardClient(t, team("squad-a", "alpha", teamID.String()), proj)
+
+	store := scm.NewInMemoryMirrorStore()
+	seedMirror(t, store, "squad-a", "web",
+		mirrorRow(scm.RecordTypePR, "7", "open", "a PR", "dev",
+			scm.MirrorPayload{Number: 7, URL: "https://github.com/acme/web/pull/7"}),
+	)
+
+	h := testGithubStatusServer(t, teamID, reader, store) // nil finder
+	rec, st := getGithubStatusAs(t, h, devToken, "web")
+	if st == nil {
+		t.Fatalf("projection: got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if len(st.PullRequests) != 1 || st.PullRequests[0].Review != nil {
+		t.Errorf("nil finder must attach no review block: %+v", st.PullRequests)
 	}
 }
 

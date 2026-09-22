@@ -23,7 +23,12 @@
 
 import { useState } from "react";
 import { ageLabel, type GithubPR, type GithubStatus } from "@/lib/github-status";
-import { GITHUB_REPO_LABEL, GITHUB_REPO_URL, githubPullHref } from "@/lib/github-links";
+import {
+  GITHUB_REPO_LABEL,
+  GITHUB_REPO_URL,
+  githubPullHref,
+  reviewWorkItemHref,
+} from "@/lib/github-links";
 import { ReviewAutomationDialog } from "./ReviewAutomationDialog";
 import "./github-screens.css";
 import "./prs.css";
@@ -263,6 +268,7 @@ export function PullRequestManagement({
             key={`pr-${pr.number}`}
             pr={pr}
             checks={data.checkRuns}
+            projectId={projectId}
             selected={selectedPr.number === pr.number}
             onSelect={() => setSelected(pr.number)}
           />
@@ -277,11 +283,15 @@ export function PullRequestManagement({
 function PrCard({
   pr,
   checks,
+  projectId,
   selected,
   onSelect,
 }: {
   pr: GithubPR;
   checks: GithubStatus["checkRuns"];
+  /** The project the PR belongs to — needed to deep-link a review badge to its
+   * work item (ISI-4767 E5). Absent ⇒ the badge shows presence text only. */
+  projectId?: string;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -289,6 +299,17 @@ function PrCard({
   const href = githubPullHref(pr.number, pr.url);
   const activity = timeAgo(pr.updatedAt);
   const rawReview = pr.reviewState || pr.state;
+  // ISI-4767 E5: the local automated-review badge. Presence + deep-link to the
+  // review work item; absent `review` = honest "not reviewed" (no badge). The
+  // label reflects the review work item's state so a queued/in-flight review is
+  // never mislabelled "Reviewed".
+  const reviewHref =
+    pr.review && projectId ? reviewWorkItemHref(projectId, pr.review.workItemId) : "";
+  const reviewLabel = pr.review
+    ? pr.review.state === "done"
+      ? "Reviewed"
+      : "Review in progress"
+    : "";
 
   return (
     <article
@@ -314,6 +335,23 @@ function PrCard({
         >
           {STAGE_LABEL[stage]}
         </span>
+        {/* ISI-4767 E5: local automated-review badge. A deep-link to the review
+            work item when we have both a review and a project; presence-only text
+            otherwise. Never shown when the PR has no review (honest default). */}
+        {pr.review &&
+          (reviewHref ? (
+            <a
+              className="gh-pr-review-badge"
+              href={reviewHref}
+              data-testid="gh-pr-review-badge"
+            >
+              {reviewLabel} · view review
+            </a>
+          ) : (
+            <span className="gh-pr-review-badge" data-testid="gh-pr-review-badge">
+              {reviewLabel}
+            </span>
+          ))}
       </header>
 
       <dl className="gh-pr-card__meta">

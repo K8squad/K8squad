@@ -298,3 +298,27 @@ func TestIdempotentAcrossReRun(t *testing.T) {
 		t.Fatalf("re-running against an unchanged snapshot created %d items, want 1", created)
 	}
 }
+
+// TestPRAnchorLabel covers the plaintext PR-review anchor (ISI-4767 E5): the
+// join key the console read model looks a PR up by. Slug is lower-cased so the
+// producer and consumer always agree; unrecognized URLs yield no anchor.
+func TestPRAnchorLabel(t *testing.T) {
+	cases := []struct {
+		name, repoURL, prNumber, want string
+	}{
+		{"plain https", "https://github.com/acme/widget", "42", "ksquad.github.pr=acme/widget#42"},
+		{"trailing slash", "https://github.com/acme/widget/", "7", "ksquad.github.pr=acme/widget#7"},
+		{"dot-git suffix", "https://github.com/acme/widget.git", "9", "ksquad.github.pr=acme/widget#9"},
+		{"mixed case lower-cased", "https://github.com/Acme/Widget", "3", "ksquad.github.pr=acme/widget#3"},
+		{"empty repo", "", "1", ""},
+		{"one segment", "https://github.com", "1", ""},
+		{"empty pr number", "https://github.com/acme/widget", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := PRAnchorLabel(tc.repoURL, tc.prNumber); got != tc.want {
+				t.Errorf("PRAnchorLabel(%q,%q) = %q, want %q", tc.repoURL, tc.prNumber, got, tc.want)
+			}
+		})
+	}
+}

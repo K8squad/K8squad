@@ -255,6 +255,48 @@ func dedupLabel(trigger, repoURL, prNumber, headSHA string) string {
 	return dedupLabelPrefix + hex.EncodeToString(sum[:16])
 }
 
+// AnchorLabelPrefix is the plaintext, human-legible label that joins a PR-review
+// work item back to the pull request it reviews. Unlike the opaque dedup label
+// (dedupLabelPrefix), it is a stable, greppable key the console read model
+// (ISI-4767 E5) looks up to surface "reviewed" on the PR card. It mirrors the
+// ISI-4757 GitHub-issue bridge anchor form (ksquad.github.issue=<owner>/<repo>#N).
+const AnchorLabelPrefix = "ksquad.github.pr="
+
+// PRAnchorLabel builds the plaintext PR-review anchor label for (repoURL, PR
+// number): ksquad.github.pr=<owner>/<repo>#N. owner/repo is lower-cased so the
+// producer (the review dispatch store) and the read-model consumer (apiserver
+// githubstatus) always agree regardless of how GitHub cases the slug — the
+// single shared normalization is the join invariant. It returns "" when
+// owner/repo cannot be extracted from repoURL (or prNumber is empty): an
+// unrecognized URL yields no anchor rather than a malformed one.
+func PRAnchorLabel(repoURL, prNumber string) string {
+	slug := repoSlug(repoURL)
+	if slug == "" || prNumber == "" {
+		return ""
+	}
+	return AnchorLabelPrefix + slug + "#" + prNumber
+}
+
+// repoSlug extracts the lower-cased <owner>/<repo> from a repo URL, tolerating a
+// trailing slash and a .git suffix. Returns "" when two path segments cannot be
+// found.
+func repoSlug(repoURL string) string {
+	s := strings.TrimSuffix(strings.TrimSpace(repoURL), "/")
+	s = strings.TrimSuffix(s, ".git")
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	owner, repo := parts[len(parts)-2], parts[len(parts)-1]
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return strings.ToLower(owner + "/" + repo)
+}
+
 func reviewTitle(repoURL, prNumber, prTitle string) string {
 	repo := repoURL
 	if i := strings.LastIndex(strings.TrimSuffix(repoURL, "/"), "/"); i >= 0 {

@@ -125,6 +125,28 @@
 .gh-pr-card__title:hover { color: var(--gh-teal); text-decoration: none; }
 .gh-pr-card__head .gh-badge { margin-left: auto; flex: none; }
 
+/* ISI-4767 E5: local automated-review badge — a compact chip after the stage
+   badge. Rendered as a link when it deep-links to the review work item, else as
+   plain presence text; tone reuses the teal review accent. */
+.gh-pr-review-badge {
+  flex: none;
+  align-self: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.6;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--gh-teal);
+  border: 1px solid color-mix(in srgb, var(--gh-teal) 55%, transparent);
+  background: color-mix(in srgb, var(--gh-teal) 14%, transparent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.gh-pr-review-badge:hover {
+  background: color-mix(in srgb, var(--gh-teal) 24%, transparent);
+  text-decoration: none;
+}
+
 .gh-pr-card__meta {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
