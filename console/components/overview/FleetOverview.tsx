@@ -388,15 +388,23 @@ function LiveRunsPanel({
       <ul className="ov-thinking" data-testid="fleet-live-runs">
         {runs.map((r) => (
           <li key={`${r.project.name}/${r.name}`} className="ov-thinking__row">
-            <div className="ov-thinking__head">
-              <span title={r.workItem ?? undefined}>{r.name}</span>
-              <span className="phase-chip" data-tone={phaseTone(r.phase)}>
-                {r.phase}
+            {/* ISI-4565: let the user open a run's detail directly from the
+               overview instead of routing through the full runs list. */}
+            <a
+              className="ov-thinking__link"
+              href={`/runs/${encodeURIComponent(r.name)}`}
+              data-testid="fleet-run-link"
+            >
+              <div className="ov-thinking__head">
+                <span title={r.workItem ?? undefined}>{r.name}</span>
+                <span className="phase-chip" data-tone={phaseTone(r.phase)}>
+                  {r.phase}
+                </span>
+              </div>
+              <span className="muted" style={{ fontSize: 12 }}>
+                {r.project.name} · {formatWhen(r.claimedAt ?? null)}
               </span>
-            </div>
-            <span className="muted" style={{ fontSize: 12 }}>
-              {r.project.name} · {formatWhen(r.claimedAt ?? null)}
-            </span>
+            </a>
           </li>
         ))}
       </ul>

@@ -206,6 +206,9 @@ describe("FleetOverview render", () => {
     const live = screen.getByTestId("fleet-live-runs");
     expect(live.textContent).toContain("run-infra");
     expect(live.textContent).toContain("infra");
+    // ISI-4565: each run deep-links straight to its detail page.
+    const runLink = live.querySelector('[data-testid="fleet-run-link"]');
+    expect(runLink?.getAttribute("href")).toBe("/runs/run-infra");
   });
 
   it("degrades honestly when the overview read model is not wired (501)", async () => {
