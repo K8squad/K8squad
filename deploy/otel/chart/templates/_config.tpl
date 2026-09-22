@@ -4,8 +4,12 @@ CR (operator mode) and the ConfigMap (deployment mode). Content is the live
 in-cluster pipeline captured in ISI-4153; only endpoints, resource attributes,
 and the auth secret reference are parameterized.
 Pipeline order is a hard rule: memory_limiter → k8sattributes → resource →
-cumulativetodelta/redaction → batch. (tail_sampling is temporarily detached
-from the traces pipeline for 100% span capture — ISI-4238.)
+cumulativetodelta/redaction → batch. No tail_sampling: it stays out of the
+collector entirely while end-to-end run tracing is being validated at 100%
+span capture (ISI-4780, per board directive — extends the ISI-4238 detach).
+The processor definition was removed (not just unwired) so sampling cannot be
+silently re-enabled during the test window; restore it from git history
+(commit e3886a3 / deploy/otel/reference) once tracing is confirmed.
 */}}
 {{- define "k8squad-otel.gatewayConfig" -}}
 extensions:
@@ -89,33 +93,12 @@ processors:
           - replace_pattern(body, "xox[baprs]-[A-Za-z0-9-]+", "[REDACTED_TOKEN]")
           - replace_pattern(body, "eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+", "[REDACTED_JWT]")
           - replace_pattern(body, "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}", "[REDACTED_EMAIL]")
-  # NOTE (ISI-4238): defined but intentionally NOT wired into the traces
-  # pipeline right now — see the comment on the traces processors list. Kept
-  # here so re-enabling sampling is a one-line change once run spans are
-  # validated at 100% capture.
-  tail_sampling:
-    decision_wait: 10s
-    num_traces: 50000
-    expected_new_traces_per_sec: 200
-    policies:
-      - name: keep-errors
-        type: status_code
-        status_code:
-          status_codes: [ERROR]
-      - name: keep-failed-runs
-        type: string_attribute
-        string_attribute:
-          key: ksquad.run.terminal_reason
-          values: [failed, error, killed]
-      - name: keep-paused-runs
-        type: string_attribute
-        string_attribute:
-          key: ksquad.run.phase
-          values: [Paused]
-      - name: base-rate
-        type: probabilistic
-        probabilistic:
-          sampling_percentage: 10
+  # tail_sampling REMOVED (ISI-4780). No trace sampling runs in the collector
+  # while end-to-end run tracing is validated at 100% span capture. The prior
+  # ISI-4238 change only detached it from the pipeline but kept the definition
+  # (one-line re-enable); the board asked for it fully out so it cannot be
+  # silently switched back on mid-test. Restore the processor + wire it before
+  # `batch` from git history (commit e3886a3) once tracing is confirmed.
   batch:
     send_batch_size: 8192
     send_batch_max_size: 16384
@@ -149,12 +132,11 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      # tail_sampling temporarily detached for 100% span capture (ISI-4238).
-      # The engine run/LLM spans are still being validated end-to-end; the
-      # base-rate probabilistic policy would silently drop ~90% of
-      # successful-run traces and make that validation unreliable. Restore
-      # sampling by re-inserting `tail_sampling` before `batch` once spans are
-      # confirmed flowing.
+      # No tail_sampling (ISI-4780). Trace sampling is kept out of the collector
+      # while engine run/LLM spans are validated end-to-end — the old base-rate
+      # probabilistic policy dropped ~90% of successful-run traces and made that
+      # validation unreliable. Re-add `tail_sampling` (processor + this list)
+      # once tracing is confirmed flowing at 100% capture.
       processors: [memory_limiter, k8sattributes, resource, redaction, transform/redaction, batch]
       exporters: [otlphttp/vendor]
     metrics:
