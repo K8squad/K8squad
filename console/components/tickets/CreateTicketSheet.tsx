@@ -26,6 +26,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import {
   ApiError,
+  agentOptionLabel,
   createWorkItem,
   dispatchWorkItem,
   listSquadAgents,
@@ -360,7 +361,7 @@ export function CreateTicketSheet({
                 <option value="">Unassigned</option>
                 {agents.map((a) => (
                   <option key={a.id} value={a.name}>
-                    {a.name}
+                    {agentOptionLabel(a)}
                   </option>
                 ))}
               </select>
