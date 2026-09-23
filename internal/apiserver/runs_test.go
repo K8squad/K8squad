@@ -275,6 +275,50 @@ func authRequest(r *http.Request) *http.Request {
 }
 
 // Test that the RunsService can be created with nil database (fallback mode)
+// TestRunDetailActivityTypesFromInteractions verifies the ISI-4811 mapping:
+// CRD LLMInteractions become typed timeline entries (tool calls get tool_use /
+// observation, responses surface the Response digest) and are not double-listed.
+func TestRunDetailActivityTypesFromInteractions(t *testing.T) {
+	ctx := context.Background()
+	ts := metav1.Now()
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: "team-ns"},
+		Status: ksquadv1.RunStatus{
+			LLMInteractions: []ksquadv1.LLMInteraction{
+				{ID: "i1", Type: "prompt", Model: "claude", Timestamp: ts, Request: []byte("hello?")},
+				{ID: "i2", Type: "response", Model: "claude", Timestamp: ts, Response: []byte("hi there")},
+				{ID: "i3", Type: "tool_call", Model: "claude", Timestamp: ts, Request: []byte("bash: ls")},
+				{ID: "i4", Type: "tool_response", Model: "claude", Timestamp: ts, Response: []byte("file.txt")},
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(run).Build()
+	svc := NewRunsService(k8sClient) // nil db → no comments, activity still maps
+
+	resp, err := svc.getRunDetailInNamespace(ctx, "team-ns", "run-1")
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+
+	// Exactly one timeline entry per interaction — no double-listing.
+	assert.Len(t, resp.Thinking, 4)
+
+	byID := map[string]ThinkingEntry{}
+	for _, e := range resp.Thinking {
+		byID[e.ID] = e
+	}
+	assert.Equal(t, "llm_interaction", byID["i1"].Type)
+	assert.Equal(t, "hello?", byID["i1"].Content)
+	assert.Equal(t, "llm_interaction", byID["i2"].Type)
+	assert.Equal(t, "hi there", byID["i2"].Content) // response digest, not empty request
+	assert.Equal(t, "tool_use", byID["i3"].Type)
+	assert.Equal(t, "bash: ls", byID["i3"].Content)
+	assert.Equal(t, "observation", byID["i4"].Type)
+	assert.Equal(t, "file.txt", byID["i4"].Content)
+
+	// Digest array still populated alongside the timeline.
+	assert.Len(t, resp.LLMInteractions, 4)
+}
+
 func TestRunsServiceNilDB(t *testing.T) {
 	ctx := context.Background()
 
