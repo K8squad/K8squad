@@ -532,6 +532,61 @@ func TestIntakeSweepRemintsAfterTerminalRun(t *testing.T) {
 	}
 }
 
+// ISI-4829 regression: old generations are GC-pruned, so the SURVIVING Run set
+// has gaps. Naming the next mint off the count of surviving Runs (2 here) lands
+// on "-r3", which still exists — Create answers AlreadyExists every tick and no
+// fresh Run is ever minted: the ticket freezes on 'todo' ("impossible to trigger
+// an agent run from the UI"). The next mint must clear the HIGHEST surviving
+// suffix (r3) → "-r4", never the count.
+func TestIntakeSweepRemintClearsHighestSurvivingGeneration(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	// Two surviving terminal Runs with a pruned gap: the first-born (gen 1) and a
+	// high generation (r3). Intermediate r2 was GC'd. Count == 2.
+	objs = append(objs,
+		&api.Run{
+			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+			Spec:       api.RunSpec{WorkItemRef: itemID},
+			Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
+		},
+		&api.Run{
+			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-r3", Namespace: "squad-alpha"},
+			Spec:       api.RunSpec{WorkItemRef: itemID},
+			Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
+		},
+	)
+	in, cl, _ := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 3 {
+		t.Fatalf("want the 2 survivors + one re-mint, got %d Runs", len(runs.Items))
+	}
+	want := "intake-" + itemID + "-r4"
+	found := false
+	for _, r := range runs.Items {
+		if r.Name == want {
+			found = true
+		}
+	}
+	if !found {
+		names := make([]string, 0, len(runs.Items))
+		for _, r := range runs.Items {
+			names = append(names, r.Name)
+		}
+		t.Fatalf("re-mint must clear highest surviving suffix as %q; got %v", want, names)
+	}
+}
+
 // The live half of the guard: a Running (non-terminal) Run still suppresses
 // intake — a comment on a ticket whose run is actively working must never mint
 // a racing second Run (§6.2 custody).

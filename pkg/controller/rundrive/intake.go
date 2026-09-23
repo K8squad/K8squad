@@ -62,6 +62,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -333,11 +335,26 @@ func (i *Intake) sweep(ctx context.Context) {
 		i.logf("rundrive.intake: list runs: %v", err)
 		return
 	}
+	// highestGen indexes each work item's HIGHEST existing Run generation, not a
+	// running count. The base Run "intake-<id>" is generation 1, "intake-<id>-rN"
+	// is generation N; a ref with no Run maps to 0. The next mint is highest+1.
+	//
+	// ISI-4829: this MUST be the max surviving suffix, never the count. The
+	// deterministic name is only collision-free against LIVE Run objects, and
+	// old generations are pruned (a Run TTL/GC) — so a count of 14 surviving Runs
+	// whose highest surviving suffix is r148 makes count-based naming compute the
+	// already-taken "intake-<id>-r15". Create then answers AlreadyExists every
+	// tick, intake counts the collision as "dispatched" and NEVER mints a fresh
+	// Run: the ticket freezes on 'todo' forever ("impossible to trigger a run").
+	// max(suffix)+1 is still deterministic (racing sweeps converge on the same
+	// name → AlreadyExists) but immune to GC-pruned gaps in the series.
 	liveRun := make(map[string]bool, len(runs.Items))
-	generation := make(map[string]int, len(runs.Items))
+	highestGen := make(map[string]int, len(runs.Items))
 	for idx := range runs.Items {
 		r := runs.Items[idx]
-		generation[r.Spec.WorkItemRef]++
+		if g := runGeneration(r.Name); g > highestGen[r.Spec.WorkItemRef] {
+			highestGen[r.Spec.WorkItemRef] = g
+		}
 		if !runPhaseTerminal(r.Status.Phase) {
 			liveRun[r.Spec.WorkItemRef] = true
 		}
@@ -364,7 +381,7 @@ func (i *Intake) sweep(ctx context.Context) {
 			i.logf("rundrive.intake: work item %s not re-armed: %v", item.ID, err)
 			continue
 		}
-		run, err := i.buildRun(ctx, item, teamByUID, generation[item.ID])
+		run, err := i.buildRun(ctx, item, teamByUID, highestGen[item.ID])
 		if err != nil {
 			// Honest degraded: log and leave the item in todo for the next
 			// tick — a not-yet-reconciled Team or a dangling reference is a
@@ -393,12 +410,14 @@ func (i *Intake) sweep(ctx context.Context) {
 
 // buildRun resolves one ticket's squad graph and renders its Run CR. It errors
 // (never panics, never half-builds) when the graph does not resolve, so sweep
-// can log-and-retry the item. generation is the number of Run CRs this work
-// item has already minted (0 on first mint): the deterministic name suffixes
-// -r<generation+1> from the second mint on, so a re-entered 'todo' ticket (a
-// human reopen, or the ISI-4495 comment re-dispatch) gets a FRESH Run CR beside
-// the terminal one instead of colliding on the first-born name (intake-<id>).
-func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[string]api.Team, generation int) (*api.Run, error) {
+// can log-and-retry the item. highestGen is the HIGHEST existing Run generation
+// for this work item (0 on first mint, 1 when only the base Run exists): the
+// deterministic name suffixes -r<highestGen+1> from the second mint on, so a
+// re-entered 'todo' ticket (a human reopen, or the ISI-4495 comment re-dispatch)
+// gets a FRESH Run CR beside the terminal one instead of colliding on the
+// first-born name (intake-<id>) — or, once old generations are GC-pruned, on a
+// surviving high-suffix generation (ISI-4829).
+func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[string]api.Team, highestGen int) (*api.Run, error) {
 	team, ok := teamByUID[item.TeamID]
 	if !ok {
 		return nil, fmt.Errorf("team uid %s resolves to no Team CR", item.TeamID)
@@ -463,7 +482,7 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 	}
 
 	return &api.Run{
-		ObjectMeta: runObjectMeta(item.ID, ns, generation),
+		ObjectMeta: runObjectMeta(item.ID, ns, highestGen),
 		Spec: api.RunSpec{
 			// M1.2 (ISI-4128): like projectRef — a Team CR living outside the
 			// squad namespace must be referenced by namespace or later
@@ -570,14 +589,16 @@ func (i *Intake) resolveProject(ctx context.Context, ns, projectID string) (*api
 
 // runObjectMeta renders the deterministic Run identity: name intake-<work
 // item id> (a uuid is already DNS-1123-safe) for the first mint, then
-// intake-<work item id>-r<N> for the Nth RE-mint (N = generation+1 ≥ 2), in the
-// squad namespace. The deterministic name IS the create idempotency: two racing
-// sweeps compute the same generation and converge on AlreadyExists instead of
-// duplicate Runs.
-func runObjectMeta(workItemID, ns string, generation int) metav1.ObjectMeta {
+// intake-<work item id>-r<N> for the Nth RE-mint (N = highestGen+1 ≥ 2), in the
+// squad namespace. highestGen is the highest EXISTING generation (0 when none),
+// so the mint always lands one above the highest surviving Run and never
+// collides with a GC-pruned gap (ISI-4829). The deterministic name IS the
+// create idempotency: two racing sweeps read the same highest generation and
+// converge on AlreadyExists instead of duplicate Runs.
+func runObjectMeta(workItemID, ns string, highestGen int) metav1.ObjectMeta {
 	name := "intake-" + workItemID
-	if generation > 0 {
-		name = fmt.Sprintf("intake-%s-r%d", workItemID, generation+1)
+	if highestGen > 0 {
+		name = fmt.Sprintf("intake-%s-r%d", workItemID, highestGen+1)
 	}
 	return metav1.ObjectMeta{
 		Name:      name,
@@ -600,6 +621,23 @@ func runPhaseTerminal(phase api.RunPhase) bool {
 	default:
 		return false
 	}
+}
+
+// runGeneration reads the generation of an intake Run from its name. The base
+// Run "intake-<id>" is generation 1; a re-mint "intake-<id>-rN" is generation N.
+// A work-item uuid is hex+hyphens (no 'r'), so the only "-r<digits>" tail is the
+// generation suffix — anything else (including a name intake never authored)
+// falls back to 1, the first-born generation. This is the inverse of
+// runObjectMeta and MUST stay in lockstep with it (ISI-4829): sweep takes the
+// max over surviving Runs so the next mint clears every existing suffix rather
+// than colliding on a GC-pruned gap.
+func runGeneration(name string) int {
+	if idx := strings.LastIndex(name, "-r"); idx >= 0 {
+		if n, err := strconv.Atoi(name[idx+2:]); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 1
 }
 
 func (i *Intake) logf(format string, args ...any) {
