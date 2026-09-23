@@ -115,21 +115,33 @@ func NewWorkItemDispatchStore(db *sql.DB, agents TeamAgentResolver) (*WorkItemDi
 // no run has claimed yet — requested_agent is swapped in place (no lane move)
 // with a 'work_item_reassign_requested' audit row, same guards, same txn shape.
 //
+// RE-RUN (ISI-4808): the same verb also re-dispatches an already-worked ticket
+// parked off the dispatch lanes — a working/engine lane (the six phases +
+// in_progress + in_review) whose checkout is RELEASED, or a terminal
+// (done/cancelled) — by stamping requested_agent and advancing that lane → 'todo'
+// with a 'work_item_rerun_requested' audit row. The idempotency guard is
+// LIVENESS, not lane (§3 D5): only a LIVE run (coord.claim.holder_principal set)
+// is refused, so a parked/settled item re-runs without the human having to move
+// the card back. This unifies with the comment nudge (workitemcomment.go,
+// ISI-4495), which shares the working/engine lane set and the same holder guard
+// but does NOT record an agent and does NOT reopen terminals.
+//
 // Semantics:
 //   - (result, nil): requested_agent stamped and the item now in 'todo' (fresh
-//     dispatch), or requested_agent swapped on an unclaimed 'todo' item
-//     (re-assign, fromState==toState=="todo"); Intake will prefer AgentID over
-//     Team.Spec.Agents[0] on its next tick.
+//     backlog dispatch, or a re-run from a parked working/engine/terminal lane —
+//     fromState is the lane we left), or requested_agent swapped on an unclaimed
+//     'todo' item (re-assign, fromState==toState=="todo"); Intake will prefer
+//     AgentID over Team.Spec.Agents[0] on its next tick.
 //   - (zero, ErrInvalidWorkItem): missing required input, or the item has no
 //     owning Team to check membership against (400).
 //   - (zero, ErrWorkItemNotFound): no such item in the caller's Team scope (404,
 //     existence-hiding — never a cross-tenant 403).
 //   - (zero, ErrAgentNotInTeam): the agent is not in the owning Team's composition
 //     (403). The item is left untouched (§3 D5).
-//   - (zero, ErrStateConflict): the item is not in 'backlog' or an unclaimed
-//     'todo' — a claimed todo (coord.claim.run_id set), in_progress, in_review,
-//     done (…) is a clean 409 naming the state, never a silent second start
-//     behind a live run (§3 D5 idempotency).
+//   - (zero, ErrStateConflict): a claimed todo (coord.claim.run_id set) or a lane
+//     held by a LIVE run (holder_principal set) — a clean 409 naming the state,
+//     never a silent second start behind a live run (§3 D5 idempotency) — or an
+//     unknown/undispatchable lane (fail closed).
 //   - (zero, err): infrastructure failure (incl. a dangling team the resolver
 //     cannot resolve); nothing was written.
 func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestDispatchInput) (WorkItemDispatchResult, error) {
@@ -170,18 +182,40 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 		return WorkItemDispatchResult{}, fmt.Errorf("%w: work item has no owning team to dispatch to", ErrInvalidWorkItem)
 	}
 
-	// (4) Branch on the LOCKED lane, still inside the txn (ISI-4573): backlog is
-	// the dispatch advance below, unchanged; todo is the re-assign window iff no
-	// run has claimed the item yet; anything else is past this door.
+	// (4) Branch on the LOCKED lane, still inside the txn: backlog is the dispatch
+	// advance below, unchanged; todo is the re-assign window iff no run has claimed
+	// the item yet (ISI-4573); a parked working/engine lane OR a terminal is the
+	// ISI-4808 RE-RUN window iff no LIVE run holds the checkout; a claimed todo or
+	// a lane held by a live run is past this door (§3 D5).
+	//
+	// ISI-4808 — the D5 idempotency guard is LIVENESS, not lane. ADR-0022 §3 D5
+	// says "never a silent second start behind a LIVE run"; the original code
+	// enforced that by refusing every lane past unclaimed-todo, which also refused
+	// PARKED runs (a settled/awaiting-review item whose checkout is released) that
+	// are exactly what a human wants to re-run. That over-broad lane gate is why
+	// users had to move the card back to force a re-run. The honest guard is the
+	// one the comment re-trigger already uses (workitemcomment.go, ISI-4495):
+	// coord.claim.holder_principal — a live checkout means a run is actively
+	// working, and only THAT must be refused. So the assign verb now unifies with
+	// the comment nudge: same lane set, same liveness guard, but the verb ALSO
+	// records the chosen agent (requested_agent) so "comment + assign" is one
+	// reliable path, not two racing ones. Terminals (done/cancelled) hold no live
+	// run, so the deliberate assign verb reopens+dispatches them too — the comment
+	// nudge deliberately does NOT (conversation must not resurrect closed work),
+	// which is why the two paths share the working/engine lanes but only the verb
+	// extends to terminals.
 	var fromState, toState, eventType, updateSQL string
-	switch currentState {
-	case "backlog":
+	// updateArgs are the CAS write's bind values; the re-run branch appends the
+	// locked lane as $3 so currentState is never interpolated into the SQL text.
+	updateArgs := []any{in.WorkItemID, in.AgentID}
+	switch {
+	case currentState == "backlog":
 		fromState, toState, eventType = "backlog", "todo", "work_item_dispatch_requested"
 		updateSQL = `
 			UPDATE coord.work_item
 			   SET requested_agent = $2, state = 'todo', updated_at = now()
 			 WHERE id = $1::uuid AND state = 'backlog'`
-	case "todo":
+	case currentState == "todo":
 		// The re-assign precondition: coord.claim must carry no run for this item.
 		// The claim row is locked FOR UPDATE in the same txn so a run claiming
 		// concurrently (prodclaim.go rewrites run_id) cannot interleave with this
@@ -209,8 +243,48 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 			UPDATE coord.work_item
 			   SET requested_agent = $2, updated_at = now()
 			 WHERE id = $1::uuid AND state = 'todo'`
+	case commentReTriggerLanes[currentState] || currentState == "done" || currentState == "cancelled":
+		// ISI-4808 RE-RUN: an already-worked ticket parked off the dispatch lanes.
+		// The working/engine lanes (commentReTriggerLanes — the six phases +
+		// in_progress + in_review) re-run iff NO live run holds the checkout, the
+		// exact liveness guard the comment nudge uses. Terminals (done/cancelled)
+		// hold no live run by construction, so the deliberate verb reopens them.
+		//
+		// The live-run guard: read coord.claim.holder_principal FOR UPDATE (locking
+		// the claim row the same way the todo branch locks run_id) so a run
+		// acquiring concurrently (prodclaim.go writes holder_principal + advances
+		// the lane) cannot interleave with this check. A live holder → 409 pointing
+		// at the Kill + re-dispatch flow; an absent holder → re-enter todo.
+		var holder sql.NullString
+		err = tx.QueryRowContext(ctx, `
+			SELECT holder_principal FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`,
+			in.WorkItemID).Scan(&holder)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			// No claim row ⇒ no holder ⇒ safe to re-run (mig 0001 provisions one
+			// row per item, but a terminal item may predate it; treat as unheld).
+		case err != nil:
+			return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: read claim holder: %w", err)
+		case holder.Valid:
+			return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q with a live run (%s); re-run requires killing the current run first", ErrStateConflict, currentState, holder.String)
+		}
+		fromState, toState, eventType = currentState, "todo", "work_item_rerun_requested"
+		updateArgs = append(updateArgs, currentState) // $3 — the locked lane, CAS-re-asserted
+		// CAS re-asserts BOTH the lane we locked ($3) AND holder-still-absent, so a
+		// run that claimed between our read and this write fails the CAS (0 rows →
+		// ErrStateConflict below) and never has its live lane clobbered.
+		updateSQL = `
+			UPDATE coord.work_item
+			   SET requested_agent = $2, state = 'todo', updated_at = now()
+			 WHERE id = $1::uuid
+			   AND state = $3
+			   AND NOT EXISTS (
+			       SELECT 1 FROM coord.claim c
+			        WHERE c.work_item_id = coord.work_item.id
+			          AND c.holder_principal IS NOT NULL)`
 	default:
-		return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q, dispatch requires backlog", ErrStateConflict, currentState)
+		// Unknown/unhandled lane — fail closed, never guess a re-run.
+		return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q, which is not a dispatchable lane", ErrStateConflict, currentState)
 	}
 
 	// (5) Authorization the admission layer does NOT cover (§3 D4): the agent must
@@ -226,9 +300,9 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 		return WorkItemDispatchResult{}, fmt.Errorf("%w: agent %q not in team %s", ErrAgentNotInTeam, in.AgentID, itemTeam.String)
 	}
 
-	// (6) Conditional write: both branches CAS on the lane the lock read saw, so a
+	// (6) Conditional write: every branch CAS's on the lane the lock read saw, so a
 	// slipped concurrent change is a conflict, never a silent clobber.
-	res, err := tx.ExecContext(ctx, updateSQL, in.WorkItemID, in.AgentID)
+	res, err := tx.ExecContext(ctx, updateSQL, updateArgs...)
 	if err != nil {
 		return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: update: %w", err)
 	}
