@@ -231,6 +231,111 @@ func TestIntakeSweepDispatchesTodoWorkItem(t *testing.T) {
 	}
 }
 
+// ISI-4820: the composition's Agent CRs live in the Team's HOME namespace
+// (Team.Namespace, e.g. bmad-squad), NOT the reconciled EXEC namespace
+// (Status.Namespace). buildRun must resolve the agent in the home ns and carry
+// that ns on the Run's dispatch-agent ref so dispatch.go finds the same CR —
+// otherwise every non-mirrored agent silently fails to mint a Run and the
+// ticket loops on 'todo' forever ("works only for sam; change status to force").
+func TestIntakeSweepResolvesAgentInHomeNamespace(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		homeNS  = "bmad-squad"
+		execNS  = "ksquad-team-bmad-squad-f6e8fc70"
+		agent   = "winston"
+		projUID = "proj-uid-1"
+	)
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "bmad-squad", Namespace: homeNS, UID: types.UID(teamUID)},
+		Spec: api.TeamSpec{
+			NamespaceStrategy: "dedicated",
+			// composition agent carries an EMPTY namespace (the live shape)
+			Agents: []api.ObjectRef{{Name: agent}},
+		},
+	}
+	team.Status.Namespace = execNS
+	objs := []client.Object{
+		team,
+		// Agent + Project authored in the HOME ns, NOT the exec ns.
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent, Namespace: homeNS}},
+		&api.Project{ObjectMeta: metav1.ObjectMeta{Name: "proj", Namespace: homeNS, UID: types.UID(projUID)}},
+	}
+	in, cl, logs := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: projUID},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("want 1 minted Run (home-ns agent must resolve), got %d; logs=%v", len(runs.Items), *logs)
+	}
+	run := runs.Items[0]
+	if run.Namespace != execNS {
+		t.Fatalf("run namespace: got %q want exec ns %q", run.Namespace, execNS)
+	}
+	if len(run.Spec.Agents) != 1 || run.Spec.Agents[0].Name != agent {
+		t.Fatalf("agents: got %+v want [%s]", run.Spec.Agents, agent)
+	}
+	// The dispatch-agent ref MUST carry the home ns (≠ run ns) so dispatch.go's
+	// own empty-ns→run.Namespace fallback resolves the same CR.
+	if run.Spec.Agents[0].Namespace != homeNS {
+		t.Fatalf("agent ref namespace: got %q want home ns %q (else dispatch re-fails)", run.Spec.Agents[0].Namespace, homeNS)
+	}
+}
+
+// ISI-4820: the mirrored case (`sam` was copied into the exec ns). When the
+// Agent CR resolves in the run's OWN ns, the ref stays bare — the existing
+// convention (TeamRef/ProjectRef only carry a ns when cross-ns).
+func TestIntakeSweepResolvesMirroredAgentInExecNamespace(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		homeNS  = "bmad-squad"
+		execNS  = "ksquad-team-bmad-squad-f6e8fc70"
+		agent   = "sam"
+		projUID = "proj-uid-1"
+	)
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "bmad-squad", Namespace: homeNS, UID: types.UID(teamUID)},
+		Spec: api.TeamSpec{
+			NamespaceStrategy: "dedicated",
+			Agents:            []api.ObjectRef{{Name: agent}},
+		},
+	}
+	team.Status.Namespace = execNS
+	objs := []client.Object{
+		team,
+		// Agent present ONLY in the exec ns (mirrored), not home; project home.
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: agent, Namespace: execNS}},
+		&api.Project{ObjectMeta: metav1.ObjectMeta{Name: "proj", Namespace: homeNS, UID: types.UID(projUID)}},
+	}
+	in, cl, logs := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: projUID},
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 {
+		t.Fatalf("want 1 minted Run (exec-ns fallback must resolve), got %d; logs=%v", len(runs.Items), *logs)
+	}
+	run := runs.Items[0]
+	if len(run.Spec.Agents) != 1 || run.Spec.Agents[0].Name != agent {
+		t.Fatalf("agents: got %+v want [%s]", run.Spec.Agents, agent)
+	}
+	if run.Spec.Agents[0].Namespace != "" {
+		t.Fatalf("agent ref namespace: got %q want bare (agent in run's own ns)", run.Spec.Agents[0].Namespace)
+	}
+}
+
 // twoAgentSquad builds a resolvable world with a Team whose composition is
 // [agent0, agent1] (both Agent CRs present in the squad ns) + a Project. Used to
 // prove the requested_agent preference actually selects a non-default agent.
