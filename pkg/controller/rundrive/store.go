@@ -331,7 +331,7 @@ func (c *ProdClaims) ClearSandboxBind(ctx context.Context, runID string) error {
 		INSERT INTO coord.audit_log
 		       (work_item_id, run_id, event_type, principal, to_state, payload)
 		VALUES ($1::uuid, $2::uuid, 'sandbox_bind_cleared', $3, 'claiming_sandbox',
-		        jsonb_build_object('sandbox_ref', $4, 'reason', 'sandbox pod not found'))`,
+		        jsonb_build_object('sandbox_ref', $4::text, 'reason', 'sandbox pod not found'))`,
 		workItemID, runID, c.principal, sandboxRef); err != nil {
 		return fmt.Errorf("rundrive.ProdClaims.ClearSandboxBind: audit: %w", err)
 	}

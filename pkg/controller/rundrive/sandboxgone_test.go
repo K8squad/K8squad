@@ -293,7 +293,14 @@ func TestProdClaimsClearSandboxBind(t *testing.T) {
 		WithArgs(goneRunUID).
 		WillReturnRows(sqlmock.NewRows([]string{"work_item_id", "sandbox_ref"}).
 			AddRow("11111111-1111-1111-1111-111111111111", gonePod))
-	mock.ExpectExec("INSERT INTO coord.audit_log").
+	// ISI-4540: the sandbox_ref param inside jsonb_build_object MUST carry an
+	// explicit ::text cast. Without it Postgres cannot infer the parameter type
+	// and fails at plan time with SQLSTATE 42P18 ("could not determine data type
+	// of parameter $4"), which broke every gone-pod sandbox-bind clear and
+	// wedged the run in Collecting. sqlmock regex-matches the query string (it
+	// never plans against a real planner, so it cannot catch 42P18 on its own),
+	// so pin the cast here as the regression guard.
+	mock.ExpectExec(`jsonb_build_object\('sandbox_ref', \$4::text`).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 	// Second call: no marker — commit the no-op, write NO audit row.
