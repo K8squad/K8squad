@@ -12,9 +12,18 @@
 //     entry already carries, so interleaved runs stop mixing;
 //   - a lifecycle rail projected out of the run phase + step transitions.
 
-import type { RunDetailResponseWire, RunStepWire, ThinkingEntryWire } from "@/lib/runs";
+import type {
+  LLMInteractionWire,
+  RunDetailResponseWire,
+  RunStepWire,
+  ThinkingEntryWire,
+} from "@/lib/runs";
 
-export type EntryKind = "you" | "thinking" | "comment" | "tool" | "system";
+// `llm` = a model prompt/response exchange; `tool` = a tool_use call or its
+// observation output. Both are EXECUTION kinds (ISI-4813 P2-C): the run screen
+// separates these from the CONVERSATION kinds (you / comment / system) so
+// ticket/admin chatter no longer drowns the execution detail.
+export type EntryKind = "you" | "thinking" | "comment" | "tool" | "system" | "llm";
 
 export interface ToolCall {
   name: string;
@@ -31,8 +40,18 @@ export interface ClassifiedEntry {
   runScope: string | null;
   /** Present only for `kind === "tool"`. */
   tool?: ToolCall;
+  /** For `kind === "tool"`: whether this entry is the call (args) or its result (output). */
+  toolPhase?: "call" | "result";
+  /** For `kind === "llm"`: the interaction role joined from the digest (prompt|response|…). */
+  role?: string;
+  /** For `kind === "llm"`: token count joined from the digest, when known. */
+  tokens?: number;
   ts: number;
 }
+
+/** Execution = the model's own work; Conversation = ticket/admin chatter. */
+export const EXECUTION_KINDS: ReadonlySet<EntryKind> = new Set(["llm", "tool", "thinking"]);
+export const CONVERSATION_KINDS: ReadonlySet<EntryKind> = new Set(["you", "comment", "system"]);
 
 function parseTs(value?: string | null): number {
   if (!value) return 0;
@@ -81,9 +100,14 @@ function userName(agent: string): string | undefined {
 }
 
 /**
- * Map a wire thinking/comment/tool entry to its display kind + tone (§3 table).
- * Precedence: a tool marker wins (it can ride any agent), then the human/system
- * agent prefixes, then the `comment` vs `thinking` type.
+ * Map a wire thinking/comment/tool entry to its display kind (§3 table).
+ *
+ * Precedence (ISI-4813): the enriched P2-A activity types come first — the
+ * backend only ever tags `llm_interaction` / `tool_use` / `observation` on the
+ * model-exchange entries it derives from `Run.Status.LLMInteractions`
+ * (activityFromInteraction), and `comment` on progressmirror rows. A legacy
+ * `[tool:…]` marker still wins for older payloads. Only then do the human/system
+ * agent prefixes and the comment/thinking fallback apply.
  */
 export function classifyEntry(entry: ThinkingEntryWire): ClassifiedEntry {
   const raw = entry.content ?? "";
@@ -92,22 +116,79 @@ export function classifyEntry(entry: ThinkingEntryWire): ClassifiedEntry {
   const ts = parseTs(entry.timestamp);
   const base = { id: entry.id, runScope, ts };
 
-  const tool = parseToolCall(rest);
-  if (tool || entry.type === "tool_use") {
-    const name = tool?.tool.name ?? "tool";
-    const ok = tool?.tool.ok ?? true;
-    return { ...base, kind: "tool", tool: { name, ok }, text: tool?.rest ?? rest, author: agent || undefined };
+  // 1. A legacy `[tool:name/result(..)]` marker wins over everything — it can ride
+  //    any agent (a pasted result), matching the pre-P2-C behaviour.
+  const marker = parseToolCall(rest);
+  if (marker) {
+    return {
+      ...base,
+      kind: "tool",
+      toolPhase: "call",
+      tool: marker.tool,
+      text: marker.rest,
+      author: agent || undefined,
+    };
   }
+  // 2. Human / system turns are keyed off the agent, ahead of the execution types —
+  //    a real prompt/tool/observation entry always carries the model as its agent
+  //    (activityFromInteraction), never `user:*` or the operator, so this only
+  //    guards against a mis-typed conversation row.
   if (isUserAgent(agent)) {
     return { ...base, kind: "you", author: userName(agent), text: rest };
   }
   if (isSystemAgent(agent)) {
     return { ...base, kind: "system", author: agent || undefined, text: rest };
   }
+  // 3. The enriched P2-A execution types.
+  if (entry.type === "tool_use") {
+    return {
+      ...base,
+      kind: "tool",
+      toolPhase: "call",
+      tool: { name: "tool", ok: true },
+      text: rest,
+      author: agent || undefined,
+    };
+  }
+  if (entry.type === "observation") {
+    return { ...base, kind: "tool", toolPhase: "result", text: rest, author: agent || undefined };
+  }
+  if (entry.type === "llm_interaction") {
+    return { ...base, kind: "llm", text: rest, author: agent || undefined };
+  }
+  if (entry.type === "thinking") {
+    return { ...base, kind: "thinking", text: rest, author: agent || undefined };
+  }
+  // 4. Conversation fallback.
   if (entry.type === "comment") {
     return { ...base, kind: "comment", author: agent || undefined, text: rest };
   }
   return { ...base, kind: "thinking", author: agent || undefined, text: rest };
+}
+
+/**
+ * Join the `llmInteractions` digest onto the classified `llm` entries by id, so
+ * the model-exchange card can show the role and token count the thinking entry
+ * itself does not carry (ISI-4813). Non-llm entries pass through untouched; a
+ * missing digest leaves role/tokens undefined (honest — no fabrication).
+ */
+export function enrichLlm(
+  entries: ClassifiedEntry[],
+  digests: LLMInteractionWire[] | null | undefined,
+): ClassifiedEntry[] {
+  if (!digests?.length) return entries;
+  const byId = new Map(digests.map((d) => [d.id, d]));
+  return entries.map((e) => {
+    if (e.kind !== "llm") return e;
+    const d = byId.get(e.id);
+    if (!d) return e;
+    return {
+      ...e,
+      role: d.role || e.role,
+      tokens: d.tokensUsed && d.tokensUsed > 0 ? d.tokensUsed : e.tokens,
+      author: d.model || e.author,
+    };
+  });
 }
 
 /** The short run label shown on the `This run (r15)` toggle. */
@@ -142,6 +223,110 @@ export function filterByScope(
 ): ClassifiedEntry[] {
   if (scope === "all") return entries;
   return entries.filter((e) => belongsToRun(e, runId));
+}
+
+// ---- execution vs conversation (ISI-4813 P2-C) -----------------------------
+
+export type RunView = "execution" | "conversation";
+
+/** Split the classified feed into the execution and conversation streams. */
+export function partitionByView(entries: ClassifiedEntry[]): {
+  execution: ClassifiedEntry[];
+  conversation: ClassifiedEntry[];
+} {
+  const execution: ClassifiedEntry[] = [];
+  const conversation: ClassifiedEntry[] = [];
+  for (const e of entries) {
+    if (CONVERSATION_KINDS.has(e.kind)) conversation.push(e);
+    else execution.push(e);
+  }
+  return { execution, conversation };
+}
+
+/** One rendered row in the execution stream (ISI-4814 §5 component decomposition). */
+export type ExecutionItem =
+  | {
+      type: "exchange";
+      id: string;
+      model?: string;
+      tokens?: number;
+      prompt?: string;
+      response?: string;
+      ts: number;
+    }
+  | {
+      type: "tool";
+      id: string;
+      name?: string;
+      ok?: boolean;
+      args?: string;
+      output?: string;
+      ts: number;
+    }
+  | { type: "thinking"; id: string; entry: ClassifiedEntry };
+
+/**
+ * Project the execution entries into cards. Adjacent halves are paired so each
+ * card reads as one unit: an `llm` prompt followed by its response becomes one
+ * model-exchange card (blue prompt + green response panels); a tool `call`
+ * followed by its `result` becomes one tool card (args + output + exit badge).
+ * Unpaired halves render on their own — the screen never fabricates a missing
+ * side.
+ */
+export function buildExecutionItems(entries: ClassifiedEntry[]): ExecutionItem[] {
+  const out: ExecutionItem[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const next = entries[i + 1];
+
+    if (e.kind === "llm") {
+      const item: Extract<ExecutionItem, { type: "exchange" }> = {
+        type: "exchange",
+        id: e.id,
+        model: e.author,
+        tokens: e.tokens,
+        ts: e.ts,
+      };
+      const isResponse = (e.role ?? "").toLowerCase() === "response";
+      if (isResponse) item.response = e.text;
+      else item.prompt = e.text;
+      // Fold a following response into the same card when this was the prompt.
+      if (!isResponse && next?.kind === "llm" && (next.role ?? "").toLowerCase() === "response") {
+        item.response = next.text;
+        item.tokens = next.tokens ?? item.tokens;
+        item.model = next.author ?? item.model;
+        i++;
+      }
+      out.push(item);
+      continue;
+    }
+
+    if (e.kind === "tool") {
+      const item: Extract<ExecutionItem, { type: "tool" }> = {
+        type: "tool",
+        id: e.id,
+        name: e.tool?.name,
+        ok: e.tool?.ok,
+        ts: e.ts,
+      };
+      if (e.toolPhase === "result") {
+        item.output = e.text;
+      } else {
+        item.args = e.text;
+        // Fold the paired observation output into the same card.
+        if (next?.kind === "tool" && next.toolPhase === "result") {
+          item.output = next.text;
+          item.ts = next.ts;
+          i++;
+        }
+      }
+      out.push(item);
+      continue;
+    }
+
+    out.push({ type: "thinking", id: e.id, entry: e });
+  }
+  return out;
 }
 
 /** A rendered activity row: either a single entry or a folded run of tool calls. */
