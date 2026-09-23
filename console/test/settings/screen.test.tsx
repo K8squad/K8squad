@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent, act } from "@testing-library/react";
 import { ProjectSettingsScreen } from "@/components/settings/ProjectSettingsScreen";
 import type { ProjectSettings } from "@/lib/projectSettings";
 
@@ -152,5 +152,58 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     fireEvent.submit(screen.getByTestId("settings-repo-form"));
     await waitFor(() => screen.getByTestId("repo-msg"));
     expect(screen.getByTestId("repo-msg").textContent).toContain("repo.url: must be a github.com URL");
+  });
+});
+
+describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
+  it("wires an IntersectionObserver to every section card and moves the active link to whichever crosses the trigger band", async () => {
+    // Controllable IntersectionObserver: capture the callback so the test drives entries.
+    let ioCallback: IntersectionObserverCallback | null = null;
+    const observed: Element[] = [];
+    class MockIntersectionObserver {
+      constructor(cb: IntersectionObserverCallback) {
+        ioCallback = cb;
+      }
+      observe(el: Element) {
+        observed.push(el);
+      }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [] as IntersectionObserverEntry[];
+      }
+      root = null;
+      rootMargin = "";
+      thresholds = [] as number[];
+    }
+    vi.stubGlobal("IntersectionObserver", MockIntersectionObserver as unknown as typeof IntersectionObserver);
+
+    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+
+    // On mount the first section is active, and all three section cards are observed.
+    expect(screen.getByTestId("settings-nav-repository").className).toContain("settings__nav-link--active");
+    expect(observed.length).toBe(3);
+    expect(ioCallback).not.toBeNull();
+
+    // "Access & credentials" scrolls into the trigger band → the active link follows it,
+    // proving the highlight is no longer hardcoded to the first entry.
+    const accessEl = document.getElementById("settings-access") as Element;
+    act(() => {
+      ioCallback?.(
+        [
+          {
+            target: accessEl,
+            isIntersecting: true,
+            boundingClientRect: { top: 10 } as DOMRectReadOnly,
+          } as unknown as IntersectionObserverEntry,
+        ],
+        {} as IntersectionObserver,
+      );
+    });
+    expect(screen.getByTestId("settings-nav-access").className).toContain("settings__nav-link--active");
+    expect(screen.getByTestId("settings-nav-access").getAttribute("aria-current")).toBe("true");
+    expect(screen.getByTestId("settings-nav-repository").className).not.toContain("settings__nav-link--active");
   });
 });

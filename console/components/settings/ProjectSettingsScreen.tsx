@@ -153,6 +153,34 @@ function ReadyView({
 }) {
   const { project } = data;
 
+  // Scroll-spy: highlight the section nearest the top of the viewport. Guarded
+  // because jsdom (unit tests) and pre-observer browsers have no IntersectionObserver
+  // — there the nav simply keeps the first section active (its initial state).
+  const [activeSection, setActiveSection] = useState<string>(SECTIONS[0].id);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const els = SECTIONS.map((s) => document.getElementById(`settings-${s.id}`)).filter(
+      (el): el is HTMLElement => el !== null,
+    );
+    if (els.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Of the sections crossing the trigger band, pick the topmost.
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          setActiveSection(visible[0].target.id.replace(/^settings-/, ""));
+        }
+      },
+      // Trigger band ~top quarter of the viewport so the active link flips as a
+      // section's heading scrolls under the header, not only when it fully fills the view.
+      { rootMargin: "-15% 0px -75% 0px", threshold: 0 },
+    );
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
+
   return (
     <section className="settings settings--redesign" data-testid="settings-ready">
       <header className="settings__header">
@@ -171,11 +199,12 @@ function ReadyView({
 
       <div className="settings__grid">
         <nav className="settings__nav" aria-label="Settings sections">
-          {SECTIONS.map((s, i) => (
+          {SECTIONS.map((s) => (
             <a
               key={s.id}
               href={`#settings-${s.id}`}
-              className={`settings__nav-link${i === 0 ? " settings__nav-link--active" : ""}`}
+              className={`settings__nav-link${s.id === activeSection ? " settings__nav-link--active" : ""}`}
+              aria-current={s.id === activeSection ? "true" : undefined}
               data-testid={`settings-nav-${s.id}`}
             >
               {s.label}
