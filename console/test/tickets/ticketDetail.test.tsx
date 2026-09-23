@@ -123,8 +123,10 @@ function routeFetch(opts?: {
   role?: string;
   postStatus?: number;
   dispatchStatus?: number;
+  squad?: Array<{ id: string; name: string; role?: string }>;
 }) {
   const threadBody = opts?.thread ?? THREAD;
+  const squad = opts?.squad ?? SQUAD;
   const baseComments = Array.isArray(threadBody.Comments) ? threadBody.Comments : [];
   const threadStatus = opts?.threadStatus ?? 200;
   const role = opts?.role ?? "viewer";
@@ -141,7 +143,7 @@ function routeFetch(opts?: {
       return Promise.resolve(jsonResponse({ globalRole: role }));
     }
     if (u.includes("/api/squad/agents")) {
-      return Promise.resolve(jsonResponse({ agents: SQUAD }));
+      return Promise.resolve(jsonResponse({ agents: squad }));
     }
     if (u.includes("/api/work-items/") && u.includes("/comments") && method === "POST") {
       if (postStatus === 201) posted = true;
@@ -439,6 +441,38 @@ describe("TicketDetail", () => {
         (screen.getByTestId("detail-assignee-select") as HTMLSelectElement).value,
       ).toBe("agent:reviewer"),
     );
+  });
+
+  it("labels the composer assign dropdown role — name, matching the rail (ISI-4807)", async () => {
+    // Give one roster agent a role: the composer <option> must read "role — name"
+    // (agentOptionLabel), not the bare name PR #581 left behind on this dropdown.
+    routeFetch({
+      role: "contributor",
+      thread: BACKLOG_THREAD,
+      squad: [
+        { id: "ag-1", name: "agent:builder", role: "Engineer" },
+        { id: "ag-2", name: "agent:reviewer" },
+      ],
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-composer")).toBeTruthy());
+    const composer = screen.getByTestId("detail-composer-assignee");
+    // Roled agent renders "Engineer — agent:builder"; a role-less agent stays bare.
+    await waitFor(() =>
+      expect(
+        within(composer).getByRole("option", { name: "Engineer — agent:builder" }),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(composer).getByRole("option", { name: "agent:reviewer" }),
+    ).toBeTruthy();
+    // The wire value stays the bare NAME (ISI-4501 dispatch contract), not the label.
+    expect(
+      (within(composer).getByRole("option", {
+        name: "Engineer — agent:builder",
+      }) as HTMLOptionElement).value,
+    ).toBe("agent:builder");
   });
 
   it("keeps the comment + inline error when the assign half 403s (never loses the text)", async () => {
