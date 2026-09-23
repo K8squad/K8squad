@@ -126,6 +126,17 @@ export interface AgentOption {
   /** Agent NAME — the identity `POST .../dispatch {agentId}` resolves against
    * (coord.RequestDispatch checks Team.Spec.Agents names, fleetlist.go). */
   name: string;
+  /** Referenced Role name (fleetlist.go AgentListEntry.Role), shown as a
+   * "role — name" label so a human picks by function not opaque handle
+   * (ISI-4807 §2). Empty when the agent declares no role. */
+  role?: string;
+}
+
+/** The dropdown label for an assignable agent: "role — name" when the agent
+ * carries a role, else the bare name (ISI-4807 §2). Kept pure + exported so the
+ * create-sheet and the detail rail render one identical label. */
+export function agentOptionLabel(a: AgentOption): string {
+  return a.role ? `${a.role} — ${a.name}` : a.name;
 }
 
 /**
@@ -144,10 +155,28 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
     if (!res.ok) return [];
     const payload = (await res.json()) as { agents?: unknown };
     const rows = Array.isArray(payload.agents) ? payload.agents : [];
-    return rows
-      .map((r) => r as { id?: unknown; name?: unknown })
+    const mapped = rows
+      .map((r) => r as { id?: unknown; name?: unknown; role?: unknown })
       .filter((r) => typeof r.id === "string" && typeof r.name === "string")
-      .map((r) => ({ id: r.id as string, name: r.name as string }));
+      .map((r) => ({
+        id: r.id as string,
+        name: r.name as string,
+        role: typeof r.role === "string" ? (r.role as string) : undefined,
+      }));
+    // Dedupe by agent NAME (ISI-4807 §1): a fleet/admin caller's GET /api/squad/agents
+    // spans every squad namespace (fleetlist.go scope), so an agent present in two
+    // namespaces (e.g. k8squad-system + k8squad-preview) returns twice — "2× the
+    // agents". Dispatch matches on name against the owning Team's composition, which
+    // is name-unique, so collapsing on name is correct: the first occurrence wins and
+    // the picker shows each agent exactly once.
+    const seen = new Set<string>();
+    const deduped: AgentOption[] = [];
+    for (const a of mapped) {
+      if (seen.has(a.name)) continue;
+      seen.add(a.name);
+      deduped.push(a);
+    }
+    return deduped;
   } catch {
     return [];
   }

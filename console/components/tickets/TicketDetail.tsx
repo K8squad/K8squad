@@ -41,6 +41,7 @@ import { useEffect, useState } from "react";
 import "./tickets.css";
 import {
   ApiError,
+  agentOptionLabel,
   dispatchWorkItem,
   fetchViewerRole,
   listSquadAgents,
@@ -344,7 +345,9 @@ function AssigneeControl({
         )}
         {agents.map((a) => (
           <option key={a.id} value={a.name}>
-            {a.name === requestedAgent ? `Requested: ${a.name}` : a.name}
+            {a.name === requestedAgent
+              ? `Requested: ${agentOptionLabel(a)}`
+              : agentOptionLabel(a)}
           </option>
         ))}
       </select>

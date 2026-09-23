@@ -16,7 +16,13 @@ import { resolve } from "node:path";
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
-import { fetchViewerRole, listWorkItems, patchWorkItemState } from "@/lib/tickets/api";
+import {
+  agentOptionLabel,
+  fetchViewerRole,
+  listSquadAgents,
+  listWorkItems,
+  patchWorkItemState,
+} from "@/lib/tickets/api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -151,5 +157,55 @@ describe("fetchViewerRole reads /auth/me's globalRole (ISI-4496 RBAC gate)", () 
       }),
     );
     expect(await fetchViewerRole()).toBe("viewer");
+  });
+});
+
+describe("listSquadAgents dedupe + role projection (ISI-4807 §1/§2)", () => {
+  beforeEach(() => fetchMock.mockReset());
+
+  it("collapses the fleet list to one option per agent name (2× → 1×)", async () => {
+    // A fleet/admin caller's GET /api/squad/agents spans every squad namespace,
+    // so an agent living in two namespaces returns twice — the reported "2× the
+    // agents". Dispatch matches on name (name-unique per team), so dedupe on name.
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        agents: [
+          { id: "ns1-rev", name: "agent:reviewer", role: "Code Reviewer", namespace: "k8squad-system" },
+          { id: "ns2-rev", name: "agent:reviewer", role: "Code Reviewer", namespace: "k8squad-preview" },
+          { id: "ns1-bld", name: "agent:builder", role: "Implementer", namespace: "k8squad-system" },
+          { id: "ns2-bld", name: "agent:builder", role: "Implementer", namespace: "k8squad-preview" },
+        ],
+      }),
+    );
+    const agents = await listSquadAgents();
+    expect(agents.map((a) => a.name)).toEqual(["agent:reviewer", "agent:builder"]);
+    // First occurrence wins — the id is stable, not doubled.
+    expect(agents[0].id).toBe("ns1-rev");
+  });
+
+  it("carries the referenced role through so the picker can label role — name", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ agents: [{ id: "a1", name: "agent:pm", role: "Product Manager" }] }),
+    );
+    const [pm] = await listSquadAgents();
+    expect(pm.role).toBe("Product Manager");
+  });
+
+  it("leaves role undefined when the agent declares none", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ agents: [{ id: "a1", name: "agent:pm" }] }));
+    const [pm] = await listSquadAgents();
+    expect(pm.role).toBeUndefined();
+  });
+});
+
+describe("agentOptionLabel (ISI-4807 §2)", () => {
+  it("renders role — name when a role is present", () => {
+    expect(agentOptionLabel({ id: "a1", name: "agent:pm", role: "Product Manager" })).toBe(
+      "Product Manager — agent:pm",
+    );
+  });
+
+  it("falls back to the bare name when no role is set", () => {
+    expect(agentOptionLabel({ id: "a1", name: "agent:pm" })).toBe("agent:pm");
   });
 });
