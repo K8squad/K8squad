@@ -445,13 +445,21 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 				item.ID, item.RequestedAgent, team.Namespace, team.Name, team.Spec.Agents[0].Name)
 		}
 	}
-	agentNS := agentRef.Namespace
-	if agentNS == "" {
-		agentNS = ns
-	}
-	var agent api.Agent
-	if err := i.Client.Get(ctx, client.ObjectKey{Namespace: agentNS, Name: agentRef.Name}, &agent); err != nil {
-		return nil, fmt.Errorf("resolve agent %s/%s: %w", agentNS, agentRef.Name, err)
+	// ISI-4820: resolve the Agent CR where a composition's agents actually
+	// live. The Team.Spec.Agents entries carry an EMPTY namespace, and the old
+	// fallback resolved them in the EXEC/run namespace (Status.Namespace) — but
+	// composition Agent CRs are authored in the Team's HOME namespace
+	// (Team.Namespace, e.g. bmad-squad), not the reconciled exec ns. Only an
+	// agent accidentally mirrored into the exec ns (`sam`) resolved there, so
+	// every other agent silently failed to mint a Run and the ticket looped on
+	// 'todo' forever ("dispatch works only for sam; change status to force it").
+	// Same exec-vs-home namespace-bridge class as ISI-4738 (runNamespaceForTeam).
+	// Try, in order: an EXPLICIT ref namespace (honored as authored), then the
+	// HOME ns (canonical composition home), then the EXEC ns (the mirrored case
+	// — keeps `sam`, which exists in both, resolving).
+	agentNS, err := i.resolveAgent(ctx, agentRef, team.Namespace, ns)
+	if err != nil {
+		return nil, err
 	}
 
 	return &api.Run{
@@ -468,10 +476,62 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 			}(),
 			ProjectRef:  *projectRef,
 			WorkItemRef: item.ID,
-			Agents:      []api.ObjectRef{{Name: agentRef.Name}},
-			OwnedBy:     api.PrincipalRef(IntakePrincipal),
+			// ISI-4820: carry the namespace the Agent CR actually resolved in
+			// when it is not the run's own ns — exactly the TeamRef/ProjectRef
+			// cross-ns convention above. dispatch.go resolves the dispatch agent
+			// with the SAME empty-ns→run.Namespace fallback, so without this the
+			// run would mint but then fail agent resolution at dispatch for any
+			// home-ns (non-mirrored) agent.
+			Agents:  []api.ObjectRef{agentRefForRun(agentRef.Name, agentNS, ns)},
+			OwnedBy: api.PrincipalRef(IntakePrincipal),
 		},
 	}, nil
+}
+
+// resolveAgent finds the composition's Agent CR, trying (in order) an explicit
+// ref namespace, the Team's HOME namespace, then the EXEC/run namespace, and
+// returns the namespace it resolved in. Empty and duplicate candidates are
+// skipped so a home-less Team (homeNS == "") or homeNS == execNS degrades to a
+// single exec-ns lookup. The error preserves every namespace tried, so an
+// honest-degraded log names where it looked.
+func (i *Intake) resolveAgent(ctx context.Context, agentRef api.ObjectRef, homeNS, execNS string) (string, error) {
+	var candidates []string
+	add := func(ns string) {
+		if ns == "" {
+			return
+		}
+		for _, c := range candidates {
+			if c == ns {
+				return
+			}
+		}
+		candidates = append(candidates, ns)
+	}
+	add(agentRef.Namespace)
+	add(homeNS)
+	add(execNS)
+
+	var lastErr error
+	for _, ns := range candidates {
+		var agent api.Agent
+		if err := i.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: agentRef.Name}, &agent); err != nil {
+			lastErr = err
+			continue
+		}
+		return ns, nil
+	}
+	return "", fmt.Errorf("resolve agent %q in %v: %w", agentRef.Name, candidates, lastErr)
+}
+
+// agentRefForRun renders the Run's dispatch-agent ObjectRef: bare name when the
+// Agent CR lives in the run's own ns (the existing convention, keeping specs
+// clean), name+namespace when it lives elsewhere — so dispatch.go's cross-ns
+// resolution finds the same CR intake validated.
+func agentRefForRun(name, agentNS, runNS string) api.ObjectRef {
+	if agentNS != "" && agentNS != runNS {
+		return api.ObjectRef{Name: name, Namespace: agentNS}
+	}
+	return api.ObjectRef{Name: name}
 }
 
 // resolveProject mirrors the apiserver's fleet-wide resolution (UID-first,
