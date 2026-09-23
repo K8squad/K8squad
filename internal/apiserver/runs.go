@@ -440,7 +440,11 @@ func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, ru
 		}
 	}
 
-	// LLM interaction digests from run status
+	// LLM interaction digests + typed activity entries from run status.
+	// This is the single owner of the Status.LLMInteractions → timeline mapping
+	// (ISI-4811): populateThinking no longer appends interaction entries, so they
+	// are not double-listed. Tool calls get their own activity type here instead
+	// of collapsing to a generic llm_interaction, so the Tool tab is populated.
 	for _, interaction := range run.Status.LLMInteractions {
 		digest := LLMInteractionDigest{
 			ID:        interaction.ID,
@@ -456,9 +460,42 @@ func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, ru
 			digest.TokensUsed = int(interaction.TokenUsage.TotalTokens)
 		}
 		response.LLMInteractions = append(response.LLMInteractions, digest)
+		response.Thinking = append(response.Thinking, activityFromInteraction(interaction))
 	}
 
 	return response, nil
+}
+
+// activityFromInteraction maps a CRD LLMInteraction to a run-detail timeline
+// entry (ISI-4811 / ISI-4565 §7 Phase 2). Tool calls and their outputs get their
+// own activity types (tool_use/observation) rather than being collapsed into a
+// generic llm_interaction, and responses surface the Response digest instead of
+// the empty Request. Content stays empty when the source digest is empty — the
+// screen renders honest "no content" rather than fabricating.
+func activityFromInteraction(in ksquadv1.LLMInteraction) ThinkingEntry {
+	entry := ThinkingEntry{
+		ID:        in.ID,
+		Agent:     in.Model,
+		Timestamp: in.Timestamp.Time,
+	}
+	switch in.Type {
+	case "tool_call":
+		entry.Type = "tool_use"
+		entry.Content = string(in.Request)
+	case "tool_response":
+		entry.Type = "observation"
+		entry.Content = string(in.Response)
+	case "response":
+		entry.Type = "llm_interaction"
+		entry.Content = string(in.Response)
+	default: // "prompt" and any future/unknown type
+		entry.Type = "llm_interaction"
+		entry.Content = string(in.Request)
+		if entry.Content == "" {
+			entry.Content = string(in.Response)
+		}
+	}
+	return entry
 }
 
 // populateSteps reads the Run's execution steps from coord.claim.reconcile_step and audit_log.
@@ -543,19 +580,9 @@ func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResp
 func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailResponse) error {
 	db, ok := s.db.(*sql.DB)
 	if !ok || db == nil || response.Run.Spec.WorkItemRef == "" {
-		// Fallback for testing/demo: create placeholder thinking
-		if response.Run.Status.LLMInteractions != nil {
-			thinking := []ThinkingEntry{}
-			for _, interaction := range response.Run.Status.LLMInteractions {
-				thinking = append(thinking, ThinkingEntry{
-					Type:      "llm_interaction",
-					Content:   string(interaction.Request),
-					Agent:     interaction.Model,
-					Timestamp: interaction.Timestamp.Time,
-				})
-			}
-			response.Thinking = thinking
-		}
+		// No database: comments live in coord.comment and cannot be read here.
+		// LLM/tool activity from Run.Status.LLMInteractions is mapped centrally in
+		// getRunDetailInNamespace (see activityFromInteraction), so nothing to do.
 		return nil
 	}
 
@@ -580,18 +607,9 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 		response.Thinking = append(response.Thinking, comment)
 	}
 
-	// Add LLM interactions from status
-	if response.Run.Status.LLMInteractions != nil {
-		for _, interaction := range response.Run.Status.LLMInteractions {
-			response.Thinking = append(response.Thinking, ThinkingEntry{
-				Type:      "llm_interaction",
-				Content:   string(interaction.Request),
-				Agent:     interaction.Model,
-				Timestamp: interaction.Timestamp.Time,
-			})
-		}
-	}
-
+	// LLM/tool activity is mapped centrally from Run.Status.LLMInteractions in
+	// getRunDetailInNamespace (activityFromInteraction) so it is not double-listed
+	// here — this function now owns only progressmirror comments (ISI-4811).
 	return nil
 }
 
