@@ -28,21 +28,32 @@ function stubFetch(routes: (url: string, init?: RequestInit) => Response | Promi
 }
 
 describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
-  it("AC1: renders repo url/ref/provider + honest tri-state badge from the S1 projection", async () => {
+  it("AC1: renders repo url/ref/provider + honest tri-state badge from the S1 projection (ISI-4830: editable card pre-fills the inputs)", async () => {
     stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    expect((screen.getByTestId("repo-url-input") as HTMLInputElement).value).toBe("https://github.com/org/repo");
+    expect((screen.getByTestId("repo-ref-input") as HTMLInputElement).value).toBe("main");
+    expect(screen.getByTestId("repo-provider").textContent).toBe("github");
+    expect(screen.getByTestId("cred-status-badge").textContent).toBe("Connected — test passed");
+  });
+
+  it("AC1: an empty ref shows a 'default branch' placeholder, never a blank claim of a ref", async () => {
+    stubFetch(() => jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false } })));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    const refInput = screen.getByTestId("repo-ref-input") as HTMLInputElement;
+    expect(refInput.value).toBe("");
+    expect(refInput.placeholder).toBe("default branch");
+  });
+
+  it("AC1/AC6: a read-only viewer sees repo facts as text (url/ref/provider), never inputs", async () => {
+    stubFetch(() => jsonResponse(200, settings({ canEdit: false })));
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
     expect(screen.getByTestId("repo-url").textContent).toBe("https://github.com/org/repo");
     expect(screen.getByTestId("repo-ref").textContent).toBe("main");
     expect(screen.getByTestId("repo-provider").textContent).toBe("github");
-    expect(screen.getByTestId("cred-status-badge").textContent).toBe("Connected — test passed");
-  });
-
-  it("AC1: an empty ref renders 'default branch', never a blank", async () => {
-    stubFetch(() => jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false } })));
-    render(<ProjectSettingsScreen projectId="proj-a" />);
-    await waitFor(() => screen.getByTestId("settings-ready"));
-    expect(screen.getByTestId("repo-ref").textContent).toBe("default branch");
   });
 
   it("AC6: canEdit:false renders read-only — no inputs, no save/PAT affordances", async () => {
@@ -114,6 +125,17 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     expect(put!.body).not.toContain("ghp_secrettoken");
     // The PUT preserved the project's goals (full-spec round-trip).
     expect(put!.body).toContain("g1");
+  });
+
+  it("ISI-4830 S4: the connection-health rail re-projects the S1 payload (linked + credential + last test)", async () => {
+    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: true, pollIntervalSeconds: 300, reflectOutbound: false } })) : jsonResponse(404, {})));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-health-rail"));
+    expect(screen.getByTestId("health-repo").textContent).toContain("Linked");
+    expect(screen.getByTestId("health-cred").textContent).toContain("Connected — test passed");
+    expect(screen.getByTestId("health-test").textContent).toContain("Passed");
+    expect(screen.getByTestId("health-sync").textContent).toContain("Every 300s");
+    expect(screen.getByTestId("health-provider").textContent).toContain("github");
   });
 
   it("AC3: a save validation 422 surfaces the apiserver's field error VERBATIM", async () => {
