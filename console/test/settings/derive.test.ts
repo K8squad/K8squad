@@ -91,4 +91,46 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
     const body = buildProjectPutBody(detail({ goals: [] }), { repoUrl: "u" });
     expect(body.goals).toBeUndefined();
   });
+
+  // ── S5 (ISI-4843): sync round-trip — the net-new write must never drop the
+  // opaque sync sub-spec (webhookSecretRef/mirror/issueSync) when editing poll. ──
+  it("carries an existing sync sub-spec through a repo-only edit (no sync overlay)", () => {
+    const d = detail({
+      repo: { url: "u", ref: "main", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" } } },
+    });
+    const body = buildProjectPutBody(d, { repoUrl: "https://github.com/org/new" });
+    expect((body.repo as Record<string, unknown>).sync).toEqual({
+      provider: "github",
+      pollIntervalSeconds: 300,
+      webhookSecretRef: { name: "hook" },
+    });
+  });
+
+  it("overlays poll/reflect but PRESERVES the opaque sync passthrough (webhookSecretRef/mirror)", () => {
+    const d = detail({
+      repo: { url: "u", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" }, mirror: { pullRequests: true } } },
+    });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "u",
+      sync: { enabled: true, pollIntervalSeconds: 600, reflectOutbound: true },
+    });
+    expect((body.repo as Record<string, unknown>).sync).toEqual({
+      provider: "github",
+      pollIntervalSeconds: 600,
+      reflectOutbound: true,
+      webhookSecretRef: { name: "hook" },
+      mirror: { pullRequests: true },
+    });
+  });
+
+  it("enabling sync with no prior sub-spec defaults the required provider to github", () => {
+    const body = buildProjectPutBody(detail(), { repoUrl: "u", sync: { enabled: true, pollIntervalSeconds: 120 } });
+    expect((body.repo as Record<string, unknown>).sync).toEqual({ provider: "github", pollIntervalSeconds: 120 });
+  });
+
+  it("disabling sync omits repo.sync entirely (spec.repo.sync ⇒ nil ⇒ disabled)", () => {
+    const d = detail({ repo: { url: "u", sync: { provider: "github", pollIntervalSeconds: 300 } } });
+    const body = buildProjectPutBody(d, { repoUrl: "u", sync: { enabled: false } });
+    expect((body.repo as Record<string, unknown>).sync).toBeUndefined();
+  });
 });

@@ -172,6 +172,42 @@ func TestComposeCreateProject_RepoAuthEmptyRefFailsClosed(t *testing.T) {
 	}
 }
 
+// TestComposeCreateProject_RepoSync — a repo.sync sub-spec rides the wire onto
+// spec.repo.sync (ISI-4843 S5), defaulting only the required provider so an
+// enable-sync write from the Settings SyncCard (no provider picker) is valid; the
+// opaque passthrough (webhookSecretRef) round-trips untouched.
+func TestComposeCreateProject_RepoSync(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := validProject("widget")
+	req.Repo.Sync = &ksquadv1.RepoSyncSpec{
+		PollIntervalSeconds: 600,
+		ReflectOutbound:     true,
+		WebhookSecretRef:    &ksquadv1.SecretRef{Name: "widget-hook"},
+	}
+	w := do(svc.handleProject(true), http.MethodPost, "/api/projects",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Project
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "widget"}, &got); err != nil {
+		t.Fatalf("project not applied: %v", err)
+	}
+	sync := got.Spec.Repo.Sync
+	if sync == nil {
+		t.Fatal("spec.repo.sync not mapped from the wire")
+	}
+	if sync.Provider != defaultRepoProvider {
+		t.Fatalf("provider must default to %q, got %q", defaultRepoProvider, sync.Provider)
+	}
+	if sync.PollIntervalSeconds != 600 || !sync.ReflectOutbound {
+		t.Fatalf("poll/reflect mapped wrong: %+v", sync)
+	}
+	if sync.WebhookSecretRef == nil || sync.WebhookSecretRef.Name != "widget-hook" {
+		t.Fatalf("webhookSecretRef passthrough dropped: %+v", sync.WebhookSecretRef)
+	}
+}
+
 // ── viewer → 403 (invariant 2, DoD) ──────────────────────────────────────────
 
 func TestComposeViewerForbidden(t *testing.T) {

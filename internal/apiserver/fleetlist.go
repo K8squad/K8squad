@@ -206,6 +206,10 @@ type projectRepoWire struct {
 	URL  string        `json:"url"`
 	Ref  string        `json:"ref,omitempty"`
 	Auth *repoAuthWire `json:"auth,omitempty"`
+	// Sync mirrors spec.repo.sync so a compose PUT round-trips the full sub-spec
+	// (§5.4, ISI-4843). The Settings SyncCard reads this to seed its toggle/interval
+	// and hands it back unchanged except the fields it edits.
+	Sync *ksquadv1.RepoSyncSpec `json:"sync,omitempty"`
 }
 
 // ProjectDetail is the GET /api/squad/projects/{name} authoring-spec projection.
@@ -691,6 +695,9 @@ func projectDetail(p *ksquadv1.Project) ProjectDetail {
 			Name: p.Spec.Repo.Auth.CredentialSecretRef.Name,
 			Key:  p.Spec.Repo.Auth.CredentialSecretRef.Key,
 		}}
+	}
+	if p.Spec.Repo.Sync != nil {
+		d.Repo.Sync = p.Spec.Repo.Sync
 	}
 	if p.Spec.EgressPolicyRef != nil {
 		d.EgressPolicyRef = &objectRefWire{Name: p.Spec.EgressPolicyRef.Name, Namespace: p.Spec.EgressPolicyRef.Namespace}

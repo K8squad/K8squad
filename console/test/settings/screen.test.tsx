@@ -116,6 +116,51 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     expect(put!.body).toContain("g1");
   });
 
+  // ── S5 (ISI-4843): SyncCard — the net-new WRITE. ──────────────────────────
+  it("S5: enabling sync + editing the poll interval writes a full-spec PUT that preserves goals + the sync passthrough", async () => {
+    const calls: Array<{ url: string; method?: string; body?: string }> = [];
+    stubFetch((url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body as string | undefined });
+      if (url.includes("/api/squad/projects/")) {
+        return jsonResponse(200, {
+          name: "proj-a",
+          repo: { url: "https://github.com/org/repo", ref: "main", sync: { provider: "github", pollIntervalSeconds: 300, webhookSecretRef: { name: "hook" } } },
+          goals: ["g1"],
+        });
+      }
+      if (url.includes("/api/compose/projects/") && init?.method === "PUT") return jsonResponse(200, { operation: "updated" });
+      return jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: false, pollIntervalSeconds: 0, reflectOutbound: false } }));
+    });
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    fireEvent.click(screen.getByTestId("sync-enabled-input"));
+    fireEvent.change(screen.getByTestId("sync-poll-input"), { target: { value: "600" } });
+    fireEvent.submit(screen.getByTestId("settings-sync-form"));
+    await waitFor(() => screen.getByTestId("sync-msg"));
+    const put = calls.find((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT");
+    expect(put?.body).toBeTruthy();
+    const body = JSON.parse(put!.body as string);
+    // The whole sync sub-spec round-trips: edited poll, preserved webhookSecretRef + provider.
+    expect(body.repo.sync).toEqual({ provider: "github", pollIntervalSeconds: 600, reflectOutbound: false, webhookSecretRef: { name: "hook" } });
+    // Goals preserved (full-spec round-trip, no silent wipe).
+    expect(body.goals).toEqual(["g1"]);
+  });
+
+  it("S5: a sub-minimum poll interval is rejected client-side before any write", async () => {
+    const calls: Array<{ url: string; method?: string }> = [];
+    stubFetch((url, init) => {
+      calls.push({ url, method: init?.method });
+      return jsonResponse(200, settings({ repo: { url: "https://github.com/org/repo", ref: "main", provider: "github", syncEnabled: true, pollIntervalSeconds: 300, reflectOutbound: false } }));
+    });
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    fireEvent.change(screen.getByTestId("sync-poll-input"), { target: { value: "30" } });
+    fireEvent.submit(screen.getByTestId("settings-sync-form"));
+    await waitFor(() => screen.getByTestId("sync-msg"));
+    expect(screen.getByTestId("sync-msg").textContent).toContain("at least 60");
+    expect(calls.some((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT")).toBe(false);
+  });
+
   it("AC3: a save validation 422 surfaces the apiserver's field error VERBATIM", async () => {
     stubFetch((url, init) => {
       if (url.includes("/api/squad/projects/")) return jsonResponse(200, { name: "proj-a", repo: { url: "https://github.com/org/repo" } });

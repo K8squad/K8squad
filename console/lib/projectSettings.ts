@@ -112,6 +112,18 @@ export interface WireSecretRef {
   key?: string;
 }
 
+/** spec.repo.sync authoring wire (mirror of ksquadv1.RepoSyncSpec). The SyncCard
+ *  owns only provider/pollIntervalSeconds/reflectOutbound; webhookSecretRef,
+ *  mirror and issueSync are OPAQUE passthrough — carried untouched through a
+ *  round-trip so editing the poll interval never drops a project's webhook /
+ *  mirror config (the full-replace footgun, same rule as goals/egress). */
+export interface RepoSyncWire {
+  provider?: string;
+  pollIntervalSeconds?: number;
+  reflectOutbound?: boolean;
+  [passthrough: string]: unknown;
+}
+
 /** ProjectDetail authoring wire (mirror of fleetlist.go ProjectDetail). */
 export interface ProjectDetail {
   name: string;
@@ -119,9 +131,19 @@ export interface ProjectDetail {
     url: string;
     ref?: string;
     auth?: { credentialSecretRef: WireSecretRef } | null;
+    sync?: RepoSyncWire | null;
   };
   goals?: string[];
   egressPolicyRef?: { name: string; namespace?: string } | null;
+}
+
+/** The fields the Settings SyncCard edits. `enabled:false` disables sync entirely
+ *  (spec.repo.sync ⇒ nil); when omitted, an unrelated save (repo/PAT) round-trips
+ *  the existing sync sub-spec untouched. */
+export interface SyncOverlay {
+  enabled: boolean;
+  pollIntervalSeconds?: number;
+  reflectOutbound?: boolean;
 }
 
 /**
@@ -143,11 +165,13 @@ export const SCM_PAT_SECRET_KEY = "apiKey";
  * Build the full compose PUT body from the current detail + the tab's overlay.
  * Preserves goals + egressPolicyRef (full-replace safety); overlays repo.url/ref;
  * carries repo.auth from either an explicit new ref (PAT just attached) or the
- * detail's existing auth (so a repo-only edit never drops a connected credential).
+ * detail's existing auth (so a repo-only edit never drops a connected credential);
+ * round-trips repo.sync — untouched by default, overlaid only when the SyncCard
+ * edits it (enable+poll/reflect), disabled (omitted) when the toggle is off.
  */
 export function buildProjectPutBody(
   detail: ProjectDetail,
-  overlay: { repoUrl: string; repoRef?: string; credentialSecretRef?: WireSecretRef },
+  overlay: { repoUrl: string; repoRef?: string; credentialSecretRef?: WireSecretRef; sync?: SyncOverlay },
 ): Record<string, unknown> {
   const repo: Record<string, unknown> = { url: overlay.repoUrl.trim() };
   const ref = (overlay.repoRef ?? detail.repo.ref ?? "").trim();
@@ -160,6 +184,20 @@ export function buildProjectPutBody(
         ? { name: authRef.name, key: authRef.key }
         : { name: authRef.name },
     };
+  }
+
+  // Sync: an overlay edits the toggle/interval; otherwise the existing sync
+  // sub-spec rides through unchanged. enabled:false ⇒ omit sync ⇒ disables it.
+  if (overlay.sync) {
+    if (overlay.sync.enabled) {
+      const base: RepoSyncWire = { ...(detail.repo.sync ?? {}) };
+      if (!base.provider) base.provider = "github";
+      if (overlay.sync.pollIntervalSeconds !== undefined) base.pollIntervalSeconds = overlay.sync.pollIntervalSeconds;
+      if (overlay.sync.reflectOutbound !== undefined) base.reflectOutbound = overlay.sync.reflectOutbound;
+      repo.sync = base;
+    }
+  } else if (detail.repo.sync) {
+    repo.sync = detail.repo.sync;
   }
 
   const body: Record<string, unknown> = { name: detail.name, repo };
