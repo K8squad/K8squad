@@ -174,6 +174,58 @@ func TestParseWebhookEvent(t *testing.T) {
 	}
 }
 
+// TestCreateComment_ErrorClassification pins the ISI-4803 regression: every
+// CreateComment failure must surface as a *ProviderError carrying the HTTP
+// status, so scmwriteback can tell a permanent 404/403 (issue gone / forbidden)
+// from a transient 5xx and stop wedging the repo-sync reconcile forever. Before
+// the fix CreateComment returned a raw fmt.Errorf wrapping *github.ErrorResponse,
+// which errors.As(&*ProviderError) never matched → every real 404/403 was
+// misread as transient and requeued indefinitely.
+func TestCreateComment_ErrorClassification(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{"not found (issue deleted/transferred)", http.StatusNotFound},
+		{"forbidden (missing scope / archived / locked)", http.StatusForbidden},
+		{"gone", http.StatusGone},
+		{"server error stays transient", http.StatusBadGateway},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/acme/app/issues/7/comments", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(c.status)
+				fmt.Fprint(w, `{"message":"boom","documentation_url":"x"}`)
+			})
+			p, _ := newTestGitHubProvider(t, mux)
+			_, err := p.CreateComment(context.Background(), "https://github.com/acme/app", "issue", "7", "hi")
+			pe, ok := err.(*ProviderError)
+			if !ok {
+				t.Fatalf("CreateComment error = %T (%v), want *ProviderError", err, err)
+			}
+			if pe.HTTPCode != c.status {
+				t.Fatalf("ProviderError.HTTPCode = %d, want %d", pe.HTTPCode, c.status)
+			}
+		})
+	}
+
+	// A malformed repo URL can never resolve to a repository — a deterministic
+	// client error (422), never transient, so the write-back stops retrying it.
+	p, _ := newTestGitHubProvider(t, http.NewServeMux())
+	_, err := p.CreateComment(context.Background(), "git@nohost", "issue", "7", "hi")
+	if pe, ok := err.(*ProviderError); !ok || pe.HTTPCode != http.StatusUnprocessableEntity {
+		t.Fatalf("malformed repo URL: err=%#v, want *ProviderError{422}", err)
+	}
+
+	// A transport error (no HTTP response) has no status → HTTPCode 0, which
+	// every Is* predicate reads as transient (the safe default: keep retrying).
+	if pe := classifyGitHubWriteError("op", fmt.Errorf("dial tcp: timeout")); pe.HTTPCode != 0 {
+		t.Fatalf("transport error HTTPCode = %d, want 0 (transient)", pe.HTTPCode)
+	}
+}
+
 // newTestGitHubProvider points a provider at an httptest server so the
 // fetchers' wire behaviour (pagination, filtering, call counts) is exercised
 // against the real go-github client.

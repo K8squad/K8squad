@@ -420,10 +420,16 @@ func probeGitHubPayload(payload []byte) string {
 }
 
 // CreateComment creates a comment on a GitHub issue or PR.
+//
+// Every error path returns a *ProviderError so callers can classify permanent
+// failures (issue gone, forbidden, malformed request) apart from transient ones
+// (rate limit, 5xx, network) — see classifyGitHubWriteError. A malformed repo
+// URL / external ID or an unsupported kind is a deterministic client error that
+// no retry can fix, so it maps to HTTP 422.
 func (p *GitHubProvider) CreateComment(ctx context.Context, repoURL string, kind string, externalID string, comment string) (string, error) {
 	repoOwner, repoName, err := parseRepoURL(repoURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid repo URL: %w", err)
+		return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid repo URL: %v", err)}
 	}
 
 	var issueNum int
@@ -431,25 +437,42 @@ func (p *GitHubProvider) CreateComment(ctx context.Context, repoURL string, kind
 	case "issue":
 		issueNum, err = parseExternalID(externalID)
 		if err != nil {
-			return "", fmt.Errorf("invalid issue ID: %w", err)
+			return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid issue ID: %v", err)}
 		}
 	case "pr":
 		issueNum, err = parseExternalID(externalID)
 		if err != nil {
-			return "", fmt.Errorf("invalid PR ID: %w", err)
+			return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid PR ID: %v", err)}
 		}
 	default:
-		return "", fmt.Errorf("unsupported comment kind: %s", kind)
+		return "", &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("unsupported comment kind: %s", kind)}
 	}
 
 	githubComment, _, err := p.client.Issues.CreateComment(ctx, repoOwner, repoName, issueNum, &github.IssueComment{
 		Body: &comment,
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to create comment: %w", err)
+		return "", classifyGitHubWriteError("failed to create comment", err)
 	}
 
 	return fmt.Sprintf("%d", githubComment.GetID()), nil
+}
+
+// classifyGitHubWriteError maps a go-github write error onto the *ProviderError
+// classification contract. go-github (v57) returns a *github.ErrorResponse
+// carrying the HTTP status, but it never satisfies *ProviderError on its own, so
+// a caller doing errors.As(err, &*ProviderError) would otherwise misread a real
+// 404/403 as transient and retry forever (ISI-4803). We surface the status:
+// 404/410 (issue gone), 403 (forbidden) read as permanent; 429/5xx stay
+// transient. A transport error (timeout, DNS) has no HTTP response and becomes
+// HTTPCode 0, which every Is* predicate reads as transient — the safe default.
+func classifyGitHubWriteError(op string, err error) *ProviderError {
+	pe := &ProviderError{Message: fmt.Sprintf("%s: %v", op, err)}
+	var ghErr *github.ErrorResponse
+	if errors.As(err, &ghErr) && ghErr.Response != nil {
+		pe.HTTPCode = ghErr.Response.StatusCode
+	}
+	return pe
 }
 
 // Issue state projections normalized across providers (story 11.2): the
