@@ -16,19 +16,24 @@ import { RunStream } from "@/components/RunStream";
 import { phaseTone } from "@/components/SquadOverview";
 import "@/components/runs/run-detail.css";
 import {
+  buildExecutionItems,
   buildLifecycle,
   classifyEntry,
+  enrichLlm,
   filterByScope,
   foldActivity,
   formatCompactTime,
   formatDurationMs,
   formatRailClock,
+  partitionByView,
   runScopeLabel,
   type ActivityItem,
   type ClassifiedEntry,
   type EntryKind,
+  type ExecutionItem,
   type Lifecycle,
   type RunScope,
+  type RunView,
   type ToolCall,
 } from "@/lib/run-activity";
 import {
@@ -43,13 +48,18 @@ const KIND_LABEL: Record<EntryKind, string> = {
   comment: "Agent comment",
   tool: "Tool activity",
   system: "System",
+  llm: "Model exchange",
 };
 
-const LEGEND: { kind: EntryKind; label: string }[] = [
-  { kind: "thinking", label: "Thinking" },
-  { kind: "comment", label: "Comment" },
-  { kind: "you", label: "You" },
+const EXECUTION_LEGEND: { kind: EntryKind; label: string }[] = [
+  { kind: "llm", label: "Model" },
   { kind: "tool", label: "Tool" },
+  { kind: "thinking", label: "Thinking" },
+];
+
+const CONVERSATION_LEGEND: { kind: EntryKind; label: string }[] = [
+  { kind: "you", label: "You" },
+  { kind: "comment", label: "Comment" },
   { kind: "system", label: "System" },
 ];
 
@@ -92,6 +102,13 @@ function KindIcon({ kind }: { kind: EntryKind }) {
         <svg {...common}>
           <circle cx="12" cy="12" r="3" />
           <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" />
+        </svg>
+      );
+    case "llm":
+      return (
+        <svg {...common}>
+          <path d="M4 5h16v10H10l-4 3v-3H4z" />
+          <path d="M8 9h8M8 11.5h5" />
         </svg>
       );
     case "tool":
@@ -227,6 +244,141 @@ function ActivityStream({
   );
 }
 
+// ---- execution view (ISI-4813 P2-C / ISI-4814 mock) ------------------------
+
+const EXCHANGE_COLLAPSE = 480; // chars of a panel shown before "Show all"
+
+function ExchangePanel({ label, tone, text }: { label: string; tone: "prompt" | "response"; text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > EXCHANGE_COLLAPSE;
+  const shown = open || !long ? text : `${text.slice(0, EXCHANGE_COLLAPSE)}…`;
+  return (
+    <div className={`exchange__panel exchange__panel--${tone}`}>
+      <span className="exchange__panel-label">{label}</span>
+      <p className="exchange__panel-text">{shown}</p>
+      {long ? (
+        <button type="button" className="exchange__toggle" onClick={() => setOpen((v) => !v)}>
+          {open ? "Show less" : "Show all"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ModelExchangeCard({ item }: { item: Extract<ExecutionItem, { type: "exchange" }> }) {
+  const tokens = formatTokens(item.tokens);
+  return (
+    <article className="activity" data-kind="llm" data-testid="activity-llm">
+      <span className="activity__rail-dot" aria-hidden />
+      <div className="activity__card exchange">
+        <header className="activity__head">
+          <span className="activity__icon">
+            <KindIcon kind="llm" />
+          </span>
+          <span className="activity__kind">Model exchange</span>
+          {item.model ? <span className="activity__author">{item.model}</span> : null}
+          {tokens ? <span className="exchange__tokens">{tokens} tokens</span> : null}
+          <time className="activity__time">{formatCompactTime(item.ts)}</time>
+        </header>
+        {item.prompt ? <ExchangePanel label="Prompt" tone="prompt" text={item.prompt} /> : null}
+        {item.response ? <ExchangePanel label="Response" tone="response" text={item.response} /> : null}
+        {!item.prompt && !item.response ? (
+          <p className="activity__text muted">No exchange content recorded.</p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ToolCallCard({ item }: { item: Extract<ExecutionItem, { type: "tool" }> }) {
+  const [open, setOpen] = useState(false);
+  const hasExit = typeof item.ok === "boolean";
+  return (
+    <article className="activity" data-kind="tool" data-testid="activity-tool">
+      <span className="activity__rail-dot" aria-hidden />
+      <div className="activity__card toolcall">
+        <button
+          type="button"
+          className="toolcall__head"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          <span className="activity__icon">
+            <KindIcon kind="tool" />
+          </span>
+          <span className="activity__kind">Tool call</span>
+          {item.name && item.name !== "tool" ? (
+            <code className="toolcall__name">{item.name}</code>
+          ) : null}
+          {hasExit ? (
+            <span className={`toolcall__exit ${item.ok ? "is-ok" : "is-err"}`}>
+              {item.ok ? "ok" : "error"}
+            </span>
+          ) : null}
+          <time className="activity__time">{formatCompactTime(item.ts)}</time>
+          <span className="toolcall__caret" aria-hidden>
+            {open ? "▾" : "▸"}
+          </span>
+        </button>
+        {open ? (
+          <div className="toolcall__body">
+            {item.args ? (
+              <div className="toolcall__section">
+                <span className="toolcall__label">Args</span>
+                <pre className="toolcall__pre">{item.args}</pre>
+              </div>
+            ) : null}
+            {item.output ? (
+              <div className="toolcall__section">
+                <span className="toolcall__label">Output</span>
+                <pre className="toolcall__pre">{item.output}</pre>
+              </div>
+            ) : (
+              <p className="activity__text muted">No tool output recorded for this call.</p>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function ExecutionStream({ items }: { items: ExecutionItem[] }) {
+  const [expanded, setExpanded] = useState(false);
+  if (items.length === 0) {
+    return (
+      <div className="execution-empty" data-testid="execution-empty">
+        <p className="execution-empty__line">No model exchange recorded for this run.</p>
+        <p className="execution-empty__line">No tool calls recorded for this run.</p>
+        <p className="execution-empty__hint muted">
+          Execution telemetry (prompts, tool calls) appears here once the run emits it.
+        </p>
+      </div>
+    );
+  }
+  const collapsed = !expanded && items.length > COLLAPSE_AFTER;
+  const shown = collapsed ? items.slice(0, COLLAPSE_AFTER) : items;
+  const hidden = items.length - shown.length;
+  return (
+    <div className="activity-stream" data-testid="run-execution">
+      {shown.map((item) =>
+        item.type === "exchange" ? (
+          <ModelExchangeCard key={item.id} item={item} />
+        ) : item.type === "tool" ? (
+          <ToolCallCard key={item.id} item={item} />
+        ) : (
+          <ActivityRow key={item.id} entry={item.entry} />
+        ),
+      )}
+      {collapsed ? (
+        <button type="button" className="activity-more" onClick={() => setExpanded(true)}>
+          {hidden} more execution item{hidden === 1 ? "" : "s"} collapsed · Show all
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 function RunSummaryCard({
   phase,
   phaseToneName,
@@ -297,6 +449,7 @@ function parseTs(value?: string | null): number {
 export function RunDetail({ runId }: { runId: string }) {
   const [state, setState] = useState<RunDetailState>({ kind: "loading" });
   const [scope, setScope] = useState<RunScope>("this");
+  const [view, setView] = useState<RunView>("execution");
 
   useEffect(() => {
     const ac = new AbortController();
@@ -311,17 +464,20 @@ export function RunDetail({ runId }: { runId: string }) {
 
   const classified = useMemo<ClassifiedEntry[]>(() => {
     if (!detail) return [];
-    return (detail.thinking ?? [])
+    const entries = (detail.thinking ?? [])
       .filter((e) => e.content)
       .map(classifyEntry)
       .sort((a, b) => a.ts - b.ts);
+    return enrichLlm(entries, detail.llmInteractions);
   }, [detail]);
 
   const scoped = useMemo(
     () => filterByScope(classified, scope, runId),
     [classified, scope, runId],
   );
-  const items = useMemo(() => foldActivity(scoped), [scoped]);
+  const { execution, conversation } = useMemo(() => partitionByView(scoped), [scoped]);
+  const executionItems = useMemo(() => buildExecutionItems(execution), [execution]);
+  const conversationItems = useMemo(() => foldActivity(conversation), [conversation]);
 
   if (state.kind === "loading") {
     return (
@@ -356,8 +512,13 @@ export function RunDetail({ runId }: { runId: string }) {
   const duration = formatDurationMs(lifecycle.totalMs);
   const pausedReason = run.status?.conditions?.find((c) => c.type === "Paused")?.reason;
 
-  const toolEntries = classified.filter((e) => e.kind === "tool");
-  const toolErrors = toolEntries.filter((e) => e.tool && !e.tool.ok).length;
+  // Run-wide tool tally for the summary: fold call+result halves so one tool call
+  // counts once (not twice), across the whole run regardless of the scope toggle.
+  const allToolCards = buildExecutionItems(partitionByView(classified).execution).filter(
+    (i) => i.type === "tool",
+  );
+  const toolCount = allToolCards.length;
+  const toolErrors = allToolCards.filter((i) => i.type === "tool" && i.ok === false).length;
   const label = runScopeLabel(runId);
 
   return (
@@ -402,6 +563,34 @@ export function RunDetail({ runId }: { runId: string }) {
             <div className="run-activity__head">
               <h2 className="run-activity__title">Activity</h2>
               <div
+                className="run-view"
+                role="tablist"
+                aria-label="Run view"
+                data-testid="run-view-toggle"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "execution"}
+                  className={`run-view__btn${view === "execution" ? " is-active" : ""}`}
+                  onClick={() => setView("execution")}
+                  data-testid="run-view-execution"
+                >
+                  Run execution
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={view === "conversation"}
+                  className={`run-view__btn${view === "conversation" ? " is-active" : ""}`}
+                  onClick={() => setView("conversation")}
+                  data-testid="run-view-conversation"
+                >
+                  Conversation
+                  {conversation.length ? ` (${conversation.length})` : ""}
+                </button>
+              </div>
+              <div
                 className="run-scope"
                 role="tablist"
                 aria-label="Run scope"
@@ -429,7 +618,7 @@ export function RunDetail({ runId }: { runId: string }) {
                 </button>
               </div>
               <ul className="run-legend" aria-hidden>
-                {LEGEND.map((l) => (
+                {(view === "execution" ? EXECUTION_LEGEND : CONVERSATION_LEGEND).map((l) => (
                   <li key={l.kind} className="run-legend__item" data-kind={l.kind}>
                     <span className="run-legend__dot" />
                     {l.label}
@@ -437,14 +626,18 @@ export function RunDetail({ runId }: { runId: string }) {
                 ))}
               </ul>
             </div>
-            <ActivityStream
-              items={items}
-              emptyHint={
-                scope === "this" && classified.length > 0
-                  ? "No activity for this run yet — switch to All to see other runs."
-                  : "No agent activity recorded yet — live events appear below as the run advances."
-              }
-            />
+            {view === "execution" ? (
+              <ExecutionStream items={executionItems} />
+            ) : (
+              <ActivityStream
+                items={conversationItems}
+                emptyHint={
+                  scope === "this" && conversation.length === 0 && classified.length > 0
+                    ? "No conversation for this run yet — switch to All to see other runs."
+                    : "No ticket conversation recorded for this run."
+                }
+              />
+            )}
           </section>
         </div>
 
@@ -456,7 +649,7 @@ export function RunDetail({ runId }: { runId: string }) {
             duration={duration}
             tokens={tokens}
             steps={(state.detail.steps ?? []).length}
-            toolCount={toolEntries.length}
+            toolCount={toolCount}
             toolErrors={toolErrors}
             agent={agents[0] ?? null}
           />
