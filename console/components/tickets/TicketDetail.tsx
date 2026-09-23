@@ -829,7 +829,7 @@ function Composer({
           </option>
           {agents.map((a) => (
             <option key={a.id} value={a.name}>
-              {a.name}
+              {agentOptionLabel(a)}
             </option>
           ))}
         </select>
