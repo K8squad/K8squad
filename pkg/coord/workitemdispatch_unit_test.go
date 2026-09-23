@@ -92,9 +92,14 @@ const (
 var (
 	dispLockSQL  = regexp.QuoteMeta(`SELECT state, team_id FROM coord.work_item WHERE id = $1::uuid FOR UPDATE`)
 	dispClaimSQL = regexp.QuoteMeta(`SELECT run_id FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`)
-	// The backlog CAS moves the lane; the re-assign CAS does NOT (state stays todo).
+	// The ISI-4808 re-run branch reads the live checkout holder (its liveness
+	// guard) and CAS's on the locked lane bound as $3.
+	dispHolderSQL = regexp.QuoteMeta(`SELECT holder_principal FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`)
+	// The backlog CAS moves the lane; the re-assign CAS does NOT (state stays todo);
+	// the re-run CAS moves the lane AND re-asserts the locked lane ($3) + no holder.
 	dispBacklogUpdateSQL = regexp.QuoteMeta(`SET requested_agent = $2, state = 'todo', updated_at = now()`)
 	dispReassignUpdateQL = regexp.QuoteMeta(`SET requested_agent = $2, updated_at = now()`)
+	dispRerunUpdateSQL   = regexp.QuoteMeta(`AND state = $3`)
 	dispAuditSQL         = regexp.QuoteMeta(`INSERT INTO coord.audit_log`)
 )
 
@@ -232,10 +237,12 @@ func TestRequestDispatchTodoClaimedConflict(t *testing.T) {
 	}
 }
 
-// TestRequestDispatchPostTodoLanesConflict — in_progress / in_review / done are
-// past the door: 409 naming the state, before the claim read or the resolver.
-func TestRequestDispatchPostTodoLanesConflict(t *testing.T) {
-	for _, state := range []string{"in_progress", "in_review", "done"} {
+// TestRequestDispatchReRunUnheldOK (ISI-4808) — a working/engine lane parked with
+// NO live checkout holder, and a terminal, re-run: requested_agent stamped +
+// lane advanced to 'todo' with a 'work_item_rerun_requested' audit row
+// (fromState==the lane we left, toState=="todo"), same membership guard.
+func TestRequestDispatchReRunUnheldOK(t *testing.T) {
+	for _, state := range []string{"in_progress", "in_review", "implementation", "code_review", "done", "cancelled"} {
 		t.Run(state, func(t *testing.T) {
 			agents := &stubAgents{names: []string{"coder"}}
 			s, mock := newDispatchSUT(t, agents)
@@ -243,22 +250,84 @@ func TestRequestDispatchPostTodoLanesConflict(t *testing.T) {
 			mock.ExpectBegin()
 			mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
 				WillReturnRows(dispLockRows(state, dispTeam))
-			mock.ExpectRollback()
+			// Live-holder guard reads the claim; NULL holder ⇒ unheld ⇒ re-run.
+			mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+				WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow(nil))
+			mock.ExpectExec(dispRerunUpdateSQL).WithArgs(dispItem, "coder", state).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectExec(dispAuditSQL).
+				WithArgs(dispItem, "work_item_rerun_requested", "user:alice", nil, state, "todo", dispAuditPayload("coder")).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			mock.ExpectCommit()
 
-			_, err := s.RequestDispatch(context.Background(), dispBase())
-			if !errors.Is(err, ErrStateConflict) {
-				t.Fatalf("%s: want ErrStateConflict, got %v", state, err)
+			got, err := s.RequestDispatch(context.Background(), dispBase())
+			if err != nil {
+				t.Fatalf("%s re-run: %v", state, err)
 			}
-			if !strings.Contains(err.Error(), `"`+state+`"`) {
-				t.Fatalf("409 must name the state %q, got %v", state, err)
+			if got.FromState != state || got.ToState != "todo" || got.RequestedAgent != "coder" {
+				t.Fatalf("re-run result: %+v (want from=%s to=todo)", got, state)
 			}
-			if agents.called {
-				t.Fatal("resolver must not be consulted once the lane precondition fails")
+			if !agents.called {
+				t.Fatal("membership resolver must be consulted on the re-run path")
 			}
 			if err := mock.ExpectationsWereMet(); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+// TestRequestDispatchReRunLiveHolderConflict (ISI-4808) — a working lane held by
+// a LIVE run (holder_principal set) is the ONE thing the liveness guard refuses:
+// a clean 409 naming the state, NO intent write, NO audit. This is the §3 D5
+// "never a second start behind a live run" invariant, now keyed on liveness.
+func TestRequestDispatchReRunLiveHolderConflict(t *testing.T) {
+	agents := &stubAgents{names: []string{"coder"}}
+	s, mock := newDispatchSUT(t, agents)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
+		WillReturnRows(dispLockRows("in_progress", dispTeam))
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow("agent:coder@run-7"))
+	mock.ExpectRollback()
+
+	_, err := s.RequestDispatch(context.Background(), dispBase())
+	if !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("live holder: want ErrStateConflict, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `"in_progress"`) {
+		t.Fatalf("409 must name the state, got %v", err)
+	}
+	if agents.called {
+		t.Fatal("membership is moot once the live-run precondition fails")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRequestDispatchUnknownLaneFailsClosed (ISI-4808) — a lane outside the known
+// enum never guesses a re-run: 409 naming the state, before the claim read or the
+// resolver.
+func TestRequestDispatchUnknownLaneFailsClosed(t *testing.T) {
+	agents := &stubAgents{names: []string{"coder"}}
+	s, mock := newDispatchSUT(t, agents)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
+		WillReturnRows(dispLockRows("some_future_lane", dispTeam))
+	mock.ExpectRollback()
+
+	_, err := s.RequestDispatch(context.Background(), dispBase())
+	if !errors.Is(err, ErrStateConflict) {
+		t.Fatalf("unknown lane: want ErrStateConflict, got %v", err)
+	}
+	if agents.called {
+		t.Fatal("resolver must not be consulted for an undispatchable lane")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
