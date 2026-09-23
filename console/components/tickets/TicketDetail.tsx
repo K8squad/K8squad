@@ -239,16 +239,24 @@ function StatusControl({
 }
 
 /**
- * Rail ASSIGNEE control (ISI-4495 board ask, extended ISI-4567 §2.2): on a
- * BACKLOG **or unclaimed TODO** ticket, contributor+ gets the squad roster
- * dropdown whose pick chains POST /work-items/{id}/dispatch {agentId} — the
- * ADR-0022 "assign == start" verb that stamps requested_agent (backlog also
- * advances →todo so Intake mints the Run; todo re-assigns in place pre-claim).
- * The select's VALUE reflects reality: the current requestedAgent shows as
- * "Requested: <name>" when set, else the "Assign agent…" placeholder. Off the
- * assignable lanes the ticket already carries custody: the current holder
- * renders read-only with a hint pointing at the Kill / re-dispatch flow, and an
- * unclaimed todo surfaces "Requested: <agent> · dispatch pending" (§2.4).
+ * Rail ASSIGNEE control (ISI-4495 board ask, extended ISI-4567 §2.2, ISI-4809):
+ * contributor+ gets the squad roster dropdown whose pick chains POST
+ * /work-items/{id}/dispatch {agentId} — the ADR-0022 "assign == start" verb that
+ * stamps requested_agent (backlog also advances →todo so Intake mints the Run).
+ *
+ * The gate is LIVENESS, not lane (ADR-0022 §8, ISI-4808): the control is live
+ * whenever there is NO run holder (`holder === ""`), mirroring the backend
+ * re-dispatch guard exactly. So it shows on backlog/todo AND on parked working
+ * phases / in_review / done / cancelled once the checkout is released — a
+ * "Re-run with agent…" affordance for a past-first-run ticket. A LIVE-held
+ * ticket (holder set) stays read-only with the Kill / re-dispatch hint.
+ *
+ * On the re-run lanes the value stays at the placeholder (not the past
+ * requested_agent) so re-picking the SAME agent still fires a change — a re-run
+ * with the same agent must NOT silently no-op (ISI-4809 §3). On backlog/todo the
+ * select's VALUE reflects reality: the current requestedAgent shows as
+ * "Requested: <name>", else the "Assign agent…" placeholder; an unclaimed todo
+ * also surfaces "Requested: <agent> · dispatch pending" (§2.4).
  */
 function AssigneeControl({
   state,
@@ -268,7 +276,11 @@ function AssigneeControl({
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const assignable = canEdit && (state === "backlog" || state === "todo");
+  // Liveness gate (ADR-0022 §8): assignable exactly when nothing holds a live
+  // run — the mirror of the backend re-dispatch guard. A re-run lane is any
+  // assignable lane that already had a first run (i.e. not backlog/todo).
+  const assignable = canEdit && holder === "";
+  const isRerun = assignable && state !== "backlog" && state !== "todo";
 
   useEffect(() => {
     if (!assignable) return;
@@ -322,30 +334,38 @@ function AssigneeControl({
     }
   }
 
+  // On a re-run lane the value stays at the placeholder so re-selecting the same
+  // past agent still emits a change (a same-agent re-run must not no-op). On
+  // backlog/todo the value mirrors the pre-claim requested agent.
+  const selectValue = isRerun ? "" : requestedAgent ?? "";
+  const placeholderLabel = isRerun ? "Re-run with agent…" : "Assign agent…";
   return (
     <div className="ksq-rail-control">
       <select
         data-testid="detail-assignee-select"
-        aria-label="Assign to agent"
-        value={requestedAgent ?? ""}
+        aria-label={isRerun ? "Re-run with agent" : "Assign to agent"}
+        value={selectValue}
         disabled={busy}
         onChange={(e) => {
           const name = e.target.value;
-          if (name && name !== requestedAgent) void assign(name);
+          // Re-run lanes drop the equal-name guard: the user often wants the
+          // SAME agent again, so any pick dispatches (ISI-4809 §3).
+          if (name && (isRerun || name !== requestedAgent)) void assign(name);
         }}
       >
-        {!requestedAgent && (
-          <option value="">{agents.length > 0 ? "Assign agent…" : "Loading squad…"}</option>
+        {(isRerun || !requestedAgent) && (
+          <option value="">{agents.length > 0 ? placeholderLabel : "Loading squad…"}</option>
         )}
         {/* The requested name may predate this roster load (or have left the
             team) — keep a matching option so the select never silently shows
-            a blank value for a ticket that HAS a requested agent. */}
-        {requestedAgent && !agents.some((a) => a.name === requestedAgent) && (
+            a blank value for a ticket that HAS a requested agent. Off the
+            re-run lanes only: there the value is the placeholder, not a name. */}
+        {!isRerun && requestedAgent && !agents.some((a) => a.name === requestedAgent) && (
           <option value={requestedAgent}>Requested: {requestedAgent}</option>
         )}
         {agents.map((a) => (
           <option key={a.id} value={a.name}>
-            {a.name === requestedAgent
+            {!isRerun && a.name === requestedAgent
               ? `Requested: ${agentOptionLabel(a)}`
               : agentOptionLabel(a)}
           </option>
@@ -357,9 +377,11 @@ function AssigneeControl({
         </span>
       )}
       <span className="ksq-field__hint muted">
-        {state === "todo"
-          ? "Assignment applies before the agent starts."
-          : "Assigning dispatches the agent to start this ticket."}
+        {isRerun
+          ? "Re-running dispatches the agent to work this ticket again."
+          : state === "todo"
+            ? "Assignment applies before the agent starts."
+            : "Assigning dispatches the agent to start this ticket."}
       </span>
       {err && (
         <p className="ksq-composer__error" role="alert" data-testid="detail-assignee-error">
