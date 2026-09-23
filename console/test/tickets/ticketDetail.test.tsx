@@ -75,6 +75,34 @@ const TODO_THREAD = {
 /** A mid-flight ticket — custody held, rail must stay read-only. */
 const IN_PROGRESS_THREAD = { ...THREAD, State: "in_progress" };
 
+/**
+ * Re-run lanes (ISI-4809): a past-first-run ticket whose checkout has been
+ * released — no live holder, so the liveness gate (ADR-0022 §8) re-opens the
+ * assign control as a "Re-run with agent…" affordance. Each carries the
+ * previously-requested agent to prove a SAME-agent re-run still fires.
+ */
+const IN_PROGRESS_UNHELD = {
+  ...THREAD,
+  State: "in_progress",
+  Holder: "",
+  RunID: "",
+  RequestedAgent: "agent:builder",
+};
+const IN_REVIEW_UNHELD = {
+  ...THREAD,
+  State: "in_review",
+  Holder: "",
+  RunID: "",
+  RequestedAgent: "agent:builder",
+};
+const DONE_UNHELD = {
+  ...THREAD,
+  State: "done",
+  Holder: "",
+  RunID: "",
+  RequestedAgent: "agent:builder",
+};
+
 const POSTED_COMMENT = {
   author: "user:me",
   body: "hello agents",
@@ -587,5 +615,90 @@ describe("TicketDetail", () => {
     // Neither rail write control renders for a viewer (fail-closed, §12.3).
     expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
     expect(screen.queryByTestId("detail-status-select")).toBeNull();
+  });
+
+  // ---- Re-run affordance on past-first-run tickets (ISI-4809, ADR-0022 §8) ----
+
+  for (const thread of [IN_PROGRESS_UNHELD, IN_REVIEW_UNHELD, DONE_UNHELD]) {
+    it(`surfaces the Re-run picker on an unheld ${thread.State} ticket (liveness gate, not lane)`, async () => {
+      routeFetch({ role: "contributor", thread });
+      render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+      const select = await screen.findByTestId("detail-assignee-select");
+      // No read-only holder display — the checkout is released.
+      expect(screen.queryByTestId("detail-holder")).toBeNull();
+      // Re-run copy, not the first-run "Assign agent…" placeholder, and the
+      // value parks on the placeholder so a same-agent re-pick still fires.
+      await screen.findByText("Re-run with agent…");
+      expect((select as HTMLSelectElement).value).toBe("");
+      expect(
+        screen.getByText("Re-running dispatches the agent to work this ticket again."),
+      ).toBeTruthy();
+      // The full roster is pickable (including the past agent).
+      expect(
+        await within(select).findByRole("option", { name: "agent:builder" }),
+      ).toBeTruthy();
+    });
+  }
+
+  it("keeps a LIVE-held done-lane ticket read-only: Kill/re-dispatch hint, no picker", async () => {
+    // Holder set on a terminal lane → still live custody, so the gate stays shut
+    // regardless of lane (ISI-4809 §1: the mirror of the backend live-holder 409).
+    routeFetch({ role: "contributor", thread: { ...THREAD, State: "done" } });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-holder")).toBeTruthy());
+    expect(screen.queryByTestId("detail-assignee-select")).toBeNull();
+    expect(
+      within(screen.getByTestId("detail-holder")).getByText("agent:builder"),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Agent changes use the Kill + re-dispatch flow."),
+    ).toBeTruthy();
+  });
+
+  it("re-runs the SAME agent: re-picking the past agent still POSTs dispatch (regression)", async () => {
+    routeFetch({ role: "contributor", thread: DONE_UNHELD });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    // Value parks on the placeholder even though agent:builder ran first — this
+    // is exactly what lets the same-agent re-pick emit a change (ISI-4809 §3).
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+
+    fireEvent.change(select, { target: { value: "agent:builder" } });
+
+    // The re-run fired the dispatch verb for the SAME agent — no silent no-op.
+    const dispatchCalls = fetchMock.mock.calls.filter(([u]) =>
+      String(u).includes("/dispatch"),
+    );
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0][1]?.body).toBe(JSON.stringify({ agentId: "agent:builder" }));
+  });
+
+  it("re-run 409: a conflict surfaces the inline error and re-syncs the thread", async () => {
+    // A live run was minted under us between load and pick → backend 409s. The
+    // control must show the honest error and re-fetch (unchanged 409 handling).
+    routeFetch({ role: "contributor", thread: DONE_UNHELD, dispatchStatus: 409 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+
+    const threadCallsBefore = fetchMock.mock.calls.filter(
+      ([u]) => String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
+    ).length;
+
+    fireEvent.change(select, { target: { value: "agent:reviewer" } });
+
+    // Inline error rendered (not a blank swallow)…
+    await screen.findByTestId("detail-assignee-error");
+    // …and the reconciling re-fetch ran (a 409 means the lane moved under us).
+    await waitFor(() => {
+      const after = fetchMock.mock.calls.filter(
+        ([u]) => String(u).includes("/api/work-items/") && String(u).includes("wi-1"),
+      ).length;
+      expect(after).toBeGreaterThan(threadCallsBefore);
+    });
   });
 });
