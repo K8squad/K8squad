@@ -51,6 +51,42 @@ type TeamSpec struct {
 	// RBAC scope queries (internal/index).
 	// +optional
 	OwnedBy PrincipalRef `json:"ownedBy,omitempty"`
+
+	// Grants bind capabilities to the roles in this squad's composition
+	// (ADR-0024a D3, ADR-0024 O-1 role→capability). The grant store is
+	// data/config: adding "work_item.author" to a role is a Team edit — no
+	// rebuild to widen (ADR-0024 §3). Bind to the PM role initially (O-1).
+	//
+	// Run assembly (pkg/capability.ResolveGrant) reads the grant for a Run's
+	// decomposing agent from its owning Team and feeds the authoring-MCP
+	// gate (S2, ISI-4868) and the run-token capability claim (S3, ISI-4869)
+	// from one resolution. Deny-by-default: a role with no matching grant —
+	// or a Team with no Grants — is treated as ungranted.
+	// +optional
+	// +listType=map
+	// +listMapKey=role
+	Grants []CapabilityGrant `json:"grants,omitempty"`
+}
+
+// CapabilityGrant binds a set of capability slugs to a role within a Team's
+// composition (ADR-0024a D3). It is pure config: granting a new capability
+// (e.g. "work_item.author") is a Team edit, never a rebuild (ADR-0024 §3).
+// Keyed by role — not by agent — so it composes with the Role CR model and
+// grants every agent on the Team whose spec.roleRef resolves to this role.
+type CapabilityGrant struct {
+	// Role is the Role name (Role.metadata.name) this grant binds to. Every
+	// dispatched agent whose spec.roleRef resolves to this role is granted
+	// the listed capabilities at Run assembly.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Role string `json:"role"`
+
+	// Capabilities are the capability slugs granted to the role — an open
+	// string list (only "work_item.author" is defined today; kept open so
+	// widening a grant never needs a CRD/schema change). Deny-by-default: a
+	// role absent from a Team's Grants carries no capability.
+	// +kubebuilder:validation:MinItems=1
+	Capabilities []string `json:"capabilities"`
 }
 
 var _ OwnedByHolder = &Team{}
