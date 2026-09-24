@@ -32,6 +32,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capability"
+	"github.com/K8squad/K8squad/pkg/controller/team"
+	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 	"github.com/K8squad/K8squad/pkg/toolchain"
 
@@ -66,8 +69,8 @@ func seedAssemblyWorld(t *testing.T) (client.Client, *api.Run, *fakeStepSource) 
 			Requires:    api.SkillRequires{Toolchains: []string{"kubectl@1.31"}},
 			McpToolRefs: []api.ObjectRef{{Name: "github-mcp"}},
 			Source: api.SkillSource{
-				Type:        api.SkillSourceInline,
-				Inline:      "# restart-deploy\nRoll a deployment back.\n",
+				Type:   api.SkillSourceInline,
+				Inline: "# restart-deploy\nRoll a deployment back.\n",
 			},
 			Permissions: []string{"apps:patch"},
 		},
@@ -278,4 +281,157 @@ func TestReconcilerAssemblyErrorRequeuesFailClosed(t *testing.T) {
 	_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: run.Namespace, Name: run.Name}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "assemble capabilities")
+}
+
+// --- ADR-0024a S3 (ISI-4869): run capability token mint at assembly ---
+
+// testMinter builds a minter over a 32+ byte HS256 key (the shared
+// KSQUAD_JWT_SIGNING_KEY in production).
+func testMinter(t *testing.T) *mcpauthtoken.Minter {
+	t.Helper()
+	m, err := mcpauthtoken.NewMinter([]byte("test-signing-key-at-least-32-bytes-long!!"), 0)
+	require.NoError(t, err)
+	return m
+}
+
+func authoringRun() *api.Run {
+	return &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "asm1", Namespace: asmRunNS, UID: "uid-asm1"},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "squad-a"},
+			WorkItemRef: "wi-1",
+			OwnedBy:     "henrik",
+			Agents:      []api.ObjectRef{{Name: "decomposer"}},
+		},
+	}
+}
+
+// authoringEps returns a resolved endpoint set carrying the injected built-in
+// memory-authoring endpoint (as S2 would inject it: no credential ref — S1
+// leaves it nil for S3 to wire).
+func authoringEps() []capability.Endpoint {
+	return []capability.Endpoint{
+		{Name: "github-mcp", Transport: "streamable-http", URL: "https://gh"},
+		{Name: team.AuthoringMCPServerName, Transport: "streamable-http", URL: "http://memory/mcp"},
+	}
+}
+
+func TestBindAuthoringCredential(t *testing.T) {
+	t.Run("granted run with minter sets per-run ref and env", func(t *testing.T) {
+		asm := &Assembler{Minter: testMinter(t)}
+		eps := authoringEps()
+		asm.bindAuthoringCredential(authoringRun(), eps)
+
+		ep := authoringEndpoint(eps)
+		require.NotNil(t, ep)
+		require.NotNil(t, ep.CredentialSecretRef)
+		assert.Equal(t, "asm1-authoring-token", ep.CredentialSecretRef.Name)
+		assert.Equal(t, []string{capability.CredentialEnvName(team.AuthoringMCPServerName)}, ep.EnvNames)
+
+		// The non-authoring endpoint is untouched.
+		assert.Nil(t, eps[0].CredentialSecretRef)
+	})
+
+	t.Run("no minter leaves the endpoint credential-less (inert)", func(t *testing.T) {
+		asm := &Assembler{} // Minter nil
+		eps := authoringEps()
+		asm.bindAuthoringCredential(authoringRun(), eps)
+		assert.Nil(t, authoringEndpoint(eps).CredentialSecretRef)
+	})
+
+	t.Run("agent-less run is a no-op", func(t *testing.T) {
+		asm := &Assembler{Minter: testMinter(t)}
+		run := authoringRun()
+		run.Spec.Agents = nil
+		eps := authoringEps()
+		asm.bindAuthoringCredential(run, eps)
+		assert.Nil(t, authoringEndpoint(eps).CredentialSecretRef)
+	})
+
+	t.Run("ungranted run (no authoring endpoint) is a no-op", func(t *testing.T) {
+		asm := &Assembler{Minter: testMinter(t)}
+		eps := []capability.Endpoint{{Name: "github-mcp"}}
+		asm.bindAuthoringCredential(authoringRun(), eps)
+		assert.Nil(t, eps[0].CredentialSecretRef)
+	})
+}
+
+func newAuthoringClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	s := runtime.NewScheme()
+	require.NoError(t, api.AddToScheme(s))
+	require.NoError(t, clientgoscheme.AddToScheme(s))
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+}
+
+func TestEnsureAuthoringToken(t *testing.T) {
+	minter := testMinter(t)
+
+	t.Run("mints a per-run Secret whose token verifies to the grant-bound claims", func(t *testing.T) {
+		run := authoringRun()
+		c := newAuthoringClient(t, run)
+		asm := &Assembler{Client: c, Minter: minter}
+
+		eps := authoringEps()
+		asm.bindAuthoringCredential(run, eps)
+		require.NoError(t, asm.ensureAuthoringToken(context.Background(), run, eps))
+
+		var sec corev1.Secret
+		require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &sec))
+
+		// Owned by the Run (GC'd with it), token under the "token" key.
+		require.Len(t, sec.OwnerReferences, 1)
+		assert.Equal(t, "Run", sec.OwnerReferences[0].Kind)
+		assert.Equal(t, run.UID, sec.OwnerReferences[0].UID)
+		tokBytes, ok := sec.Data[authoringTokenSecretKey]
+		require.True(t, ok)
+
+		claims, err := minter.Verify(string(tokBytes))
+		require.NoError(t, err)
+		assert.Equal(t, "squad-a", claims.TeamID)
+		assert.Equal(t, "henrik", claims.Principal)
+		assert.Equal(t, "decomposer", claims.AgentID)
+		assert.Equal(t, "uid-asm1", claims.RunID)
+		assert.Equal(t, []string{capability.CapabilityWorkItemAuthor}, claims.Capabilities)
+	})
+
+	t.Run("idempotent: create-if-absent leaves an existing token be", func(t *testing.T) {
+		run := authoringRun()
+		c := newAuthoringClient(t, run)
+		asm := &Assembler{Client: c, Minter: minter}
+		eps := authoringEps()
+		asm.bindAuthoringCredential(run, eps)
+
+		require.NoError(t, asm.ensureAuthoringToken(context.Background(), run, eps))
+		var first corev1.Secret
+		require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &first))
+
+		require.NoError(t, asm.ensureAuthoringToken(context.Background(), run, eps))
+		var second corev1.Secret
+		require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &second))
+		assert.Equal(t, first.Data[authoringTokenSecretKey], second.Data[authoringTokenSecretKey], "token must not churn (SecretKeyRef env is start-time-only)")
+	})
+
+	t.Run("no minter writes no Secret (S3 inert)", func(t *testing.T) {
+		run := authoringRun()
+		c := newAuthoringClient(t, run)
+		asm := &Assembler{Client: c} // Minter nil
+		eps := authoringEps()
+		// bind is a no-op without a minter, so no ref; ensure is also a no-op.
+		asm.bindAuthoringCredential(run, eps)
+		require.NoError(t, asm.ensureAuthoringToken(context.Background(), run, eps))
+		err := c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &corev1.Secret{})
+		assert.True(t, apierrors.IsNotFound(err))
+	})
+
+	t.Run("ungranted run writes no Secret", func(t *testing.T) {
+		run := authoringRun()
+		c := newAuthoringClient(t, run)
+		asm := &Assembler{Client: c, Minter: minter}
+		eps := []capability.Endpoint{{Name: "github-mcp"}} // no authoring endpoint injected
+		asm.bindAuthoringCredential(run, eps)
+		require.NoError(t, asm.ensureAuthoringToken(context.Background(), run, eps))
+		err := c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &corev1.Secret{})
+		assert.True(t, apierrors.IsNotFound(err))
+	})
 }
