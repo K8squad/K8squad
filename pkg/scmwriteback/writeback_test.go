@@ -353,3 +353,52 @@ func TestRenderComment_OnlySucceededFailed(t *testing.T) {
 		t.Errorf("succeeded body missing agent/title: %q", got)
 	}
 }
+
+// TestRenderComment_ReportsCreatedTickets is the ISI-4872 honesty check: a
+// decomposition run's comment lists the created child tickets (identifiers +
+// count) sourced from the audit log, never "artifacts stored in workspace".
+func TestRenderComment_ReportsCreatedTickets(t *testing.T) {
+	got := renderComment(Pending{
+		TerminalStep: "succeeded", AgentName: "quill", Title: "Decompose the epic",
+		CreatedItems: []CreatedItem{
+			{ID: "child-a", Title: "Wire the ResolveMCP gate"},
+			{ID: "child-b", Title: "Mint the run token"},
+		},
+	})
+	if !strings.Contains(got, "Created 2 sub-ticket(s)") {
+		t.Errorf("comment must report the created count: %q", got)
+	}
+	for _, want := range []string{"child-a", "child-b", "Wire the ResolveMCP gate", "Mint the run token"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("comment must list created ticket %q: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "workspace") {
+		t.Errorf("comment must not claim artifacts stored in workspace: %q", got)
+	}
+}
+
+// TestRenderComment_NoCreatedTicketsStaysQuiet: an ordinary run that authored no
+// sub-tickets carries no created-ticket section and no false "0 created" success
+// claim — the comment is unchanged from the plain outcome line.
+func TestRenderComment_NoCreatedTicketsStaysQuiet(t *testing.T) {
+	got := renderComment(Pending{TerminalStep: "succeeded", AgentName: "coder", Title: "Fix the bug"})
+	if strings.Contains(got, "sub-ticket") {
+		t.Errorf("a run that created nothing must not mention sub-tickets: %q", got)
+	}
+}
+
+// TestRenderComment_FailedPartialCreate: a run that created some children before
+// failing reports the true partial set — never rounded up to success.
+func TestRenderComment_FailedPartialCreate(t *testing.T) {
+	got := renderComment(Pending{
+		TerminalStep: "failed", AgentName: "quill", Title: "Decompose",
+		CreatedItems: []CreatedItem{{ID: "child-a", Title: "One"}},
+	})
+	if !strings.Contains(got, "failed") {
+		t.Errorf("partial-create comment must still report failure: %q", got)
+	}
+	if !strings.Contains(got, "Created 1 sub-ticket(s)") || !strings.Contains(got, "before the run ended") {
+		t.Errorf("partial-create comment must report the true created set: %q", got)
+	}
+}

@@ -68,6 +68,20 @@ type RunDetailResponse struct {
 	Steps           []StepInfo             `json:"steps"`
 	Thinking        []ThinkingEntry        `json:"thinking"`
 	LLMInteractions []LLMInteractionDigest `json:"llmInteractions"`
+	// CreatedItems is the set of sub-tickets this run authored via the
+	// work_item_create MCP tool (ADR-0024a S6, ISI-4872), sourced from the
+	// run-scoped `work_item_created` audit rows — the ground truth the run screen
+	// reports so a decomposition run's created children are shown honestly rather
+	// than left to the agent's free-text completion prose. Nil/empty when the run
+	// authored none (the screen renders the honest zero, never a fabricated list).
+	CreatedItems []CreatedWorkItem `json:"createdItems"`
+}
+
+// CreatedWorkItem is one sub-ticket a run authored, as recorded in coord's audit
+// log (ID = the created work item id, Title = its title at creation).
+type CreatedWorkItem struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
 }
 
 // StepInfo represents a reconcile_step from coord.claim + audit events
@@ -440,6 +454,14 @@ func (s *RunsService) getRunDetailInNamespace(ctx context.Context, namespace, ru
 		}
 	}
 
+	// Populate the sub-tickets this run authored via work_item_create (ADR-0024a
+	// S6, ISI-4872), keyed on the Run UID the mint stamped into the run-scoped
+	// audit rows. Best-effort: a read failure leaves the list empty (the screen
+	// renders the honest zero) rather than failing the whole detail.
+	if err := s.populateCreatedItems(ctx, response); err != nil {
+		fmt.Printf("populateCreatedItems for run %s: %v", runID, err)
+	}
+
 	// LLM interaction digests + typed activity entries from run status.
 	// This is the single owner of the Status.LLMInteractions → timeline mapping
 	// (ISI-4811): populateThinking no longer appends interaction entries, so they
@@ -496,6 +518,48 @@ func activityFromInteraction(in ksquadv1.LLMInteraction) ThinkingEntry {
 		}
 	}
 	return entry
+}
+
+// populateCreatedItems reads the sub-tickets this run authored via
+// work_item_create (ADR-0024a S6, ISI-4872). It reads the SAME run-scoped signal
+// the per-run authoring budget counter uses — coord.audit_log rows of type
+// 'work_item_created' stamped with the Run UID (pkg/coord AgentCreateWorkItem;
+// the mint sets the token's RunID claim to run.UID, so the sandbox's authoring
+// calls land keyed on that UID). work_item_id is the created child; the title is
+// the audit payload's title. No new coord export surface (FR-B3 untouched).
+func (s *RunsService) populateCreatedItems(ctx context.Context, response *RunDetailResponse) error {
+	db, ok := s.db.(*sql.DB)
+	if !ok || db == nil || response.Run == nil {
+		return nil
+	}
+	runUID := string(response.Run.GetUID())
+	if runUID == "" {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `
+		SELECT work_item_id::text, COALESCE(payload->>'title', '')
+		FROM coord.audit_log
+		WHERE run_id = $1::uuid
+		  AND event_type = 'work_item_created'
+		ORDER BY created_at ASC, id ASC`, runUID)
+	if err != nil {
+		return fmt.Errorf("read created items: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var items []CreatedWorkItem
+	for rows.Next() {
+		var it CreatedWorkItem
+		if err := rows.Scan(&it.ID, &it.Title); err != nil {
+			return fmt.Errorf("scan created item: %w", err)
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate created items: %w", err)
+	}
+	response.CreatedItems = items
+	return nil
 }
 
 // populateSteps reads the Run's execution steps from coord.claim.reconcile_step and audit_log.

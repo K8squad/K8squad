@@ -50,11 +50,22 @@ export interface RunWire {
   };
 }
 
+/** One sub-ticket a run authored via work_item_create (ADR-0024a S6, ISI-4872),
+ * sourced from the run-scoped `work_item_created` audit rows — ground truth, not
+ * the agent's completion prose. */
+export interface CreatedWorkItemWire {
+  id: string;
+  title: string;
+}
+
 export interface RunDetailResponseWire {
   run: RunWire;
   steps?: RunStepWire[] | null;
   thinking?: ThinkingEntryWire[] | null;
   llmInteractions?: LLMInteractionWire[] | null;
+  /** Sub-tickets this run created on the board (ISI-4872). Absent/empty when the
+   * run authored none — the screen renders the honest zero, never a fabrication. */
+  createdItems?: CreatedWorkItemWire[] | null;
 }
 
 export type RunDetailState =

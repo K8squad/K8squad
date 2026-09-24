@@ -85,8 +85,25 @@ SELECT latest.wid::text,
            AND wb.event_type = 'github_writeback'
        )`
 
-// PendingWriteBacks runs pendingQuery and strips the label prefix down to the
-// bare `owner/repo#N` issue ref the engine parses.
+// createdItemsQuery lists the sub-tickets a run authored via work_item_create,
+// in creation order. It reads the SAME run-scoped signal the per-run authoring
+// budget counter uses (pkg/coord AgentCreateWorkItem stamps run_id on every
+// `work_item_created` audit row): work_item_id is the created child's id and
+// payload->>'title' its title at creation. No new coord export surface (FR-B3
+// untouched) — plain SQL over a table coord already owns. The row is written
+// only on the agent MCP path (the REST create path leaves run_id null), which is
+// exactly the dispatched-agent decomposition this comment reports.
+const createdItemsQuery = `
+SELECT work_item_id::text,
+       COALESCE(payload->>'title', '')
+  FROM coord.audit_log
+ WHERE run_id = $1::uuid
+   AND event_type = 'work_item_created'
+ ORDER BY created_at ASC, id ASC`
+
+// PendingWriteBacks runs pendingQuery, strips the label prefix down to the bare
+// `owner/repo#N` issue ref the engine parses, and attaches the sub-tickets each
+// run authored (ISI-4872) so the completion comment reports the true created set.
 func (s *SQLStore) PendingWriteBacks(ctx context.Context, projectID string) ([]Pending, error) {
 	rows, err := s.db.QueryContext(ctx, pendingQuery, projectID)
 	if err != nil {
@@ -111,6 +128,43 @@ func (s *SQLStore) PendingWriteBacks(ctx context.Context, projectID string) ([]P
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("scmwriteback: iterate pending: %w", err)
+	}
+
+	// Second pass (the cursor above must be drained before a new query on the
+	// same connection): attach each run's authored sub-tickets. A per-run read
+	// failure is not fatal — the comment degrades to the outcome line without the
+	// created list rather than wedging the whole write-back pass.
+	for i := range out {
+		if out[i].RunID == "" {
+			continue
+		}
+		items, cerr := s.createdItems(ctx, out[i].RunID)
+		if cerr != nil {
+			return nil, cerr
+		}
+		out[i].CreatedItems = items
+	}
+	return out, nil
+}
+
+// createdItems reads the sub-tickets one run authored (createdItemsQuery).
+func (s *SQLStore) createdItems(ctx context.Context, runID string) ([]CreatedItem, error) {
+	rows, err := s.db.QueryContext(ctx, createdItemsQuery, runID)
+	if err != nil {
+		return nil, fmt.Errorf("scmwriteback: query created items: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CreatedItem
+	for rows.Next() {
+		var it CreatedItem
+		if err := rows.Scan(&it.ID, &it.Title); err != nil {
+			return nil, fmt.Errorf("scmwriteback: scan created item: %w", err)
+		}
+		out = append(out, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scmwriteback: iterate created items: %w", err)
 	}
 	return out, nil
 }

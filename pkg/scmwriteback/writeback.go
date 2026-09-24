@@ -94,6 +94,20 @@ type Pending struct {
 	TerminalStep string // succeeded | failed | cancelled
 	AgentName    string // "" when the checkout assignee is unresolvable
 	Title        string // work-item title, for the comment body
+	// CreatedItems is the set of sub-tickets this run authored via the
+	// work_item_create MCP tool (ADR-0024a S6, ISI-4872) — sourced from the
+	// run-scoped `work_item_created` audit rows, NOT a workspace file scan. It
+	// is the ground truth the honest completion comment reports: a decomposition
+	// run that created N children lists exactly those N, a run that created none
+	// lists none (the comment never rounds a filesystem artifact up to a ticket).
+	CreatedItems []CreatedItem
+}
+
+// CreatedItem is one sub-ticket a run authored, as recorded in the coord audit
+// log (id = the created work item, Title = its title at creation).
+type CreatedItem struct {
+	ID    string
+	Title string
 }
 
 // Stats reports one pass's outcome (observation, not control input).
@@ -223,7 +237,39 @@ func renderComment(p Pending) string {
 		fmt.Fprintf(&b, " (ticket: %s)", p.Title)
 	}
 	b.WriteString(".\n\n")
+	b.WriteString(renderCreatedItems(p.TerminalStep, p.CreatedItems))
 	b.WriteString("_Informational only — the GitHub assignee was not changed (ADR-0013)._")
+	return b.String()
+}
+
+// renderCreatedItems is the honest sub-ticket accounting for the completion
+// comment (ADR-0024a S6, ISI-4872). It reports EXACTLY the tickets the run
+// authored via work_item_create (sourced from the run-scoped audit log, not a
+// workspace scan): a decomposition run that created N children lists those N by
+// title + id; a run that created none adds nothing (the comment never claims
+// "artifacts stored in workspace", and never rounds an unauthored file up to a
+// ticket). On a FAILED run that still created some children first, the count is
+// reported as a partial result — never rounded up to success. Returns "" when
+// the run created nothing, so an ordinary (non-decomposition) run's comment is
+// unchanged.
+func renderCreatedItems(terminalStep string, items []CreatedItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if terminalStep == "failed" {
+		fmt.Fprintf(&b, "Created %d sub-ticket(s) on the K8squad board before the run ended:\n\n", len(items))
+	} else {
+		fmt.Fprintf(&b, "Created %d sub-ticket(s) on the K8squad board:\n\n", len(items))
+	}
+	for _, it := range items {
+		title := it.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		fmt.Fprintf(&b, "- %s (`%s`)\n", title, it.ID)
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 
