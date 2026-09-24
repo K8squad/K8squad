@@ -115,9 +115,10 @@ type MCPServerDiscovery struct {
 	// discovery probe; "Manual" disables probing entirely and treats
 	// status.observedTools as authoritative (seeded out-of-band for a
 	// compiled-in first-party tool surface — ADR-0024a S1). IntervalMinutes is
-	// irrelevant under Manual.
+	// irrelevant under Manual. The Probe;Manual enum lives on the
+	// MCPDiscoveryMode type; a second field-level marker would emit a
+	// duplicated allOf enum (codegen drift), so it is deliberately absent here.
 	// +optional
-	// +kubebuilder:validation:Enum=Probe;Manual
 	// +kubebuilder:default=Probe
 	Mode MCPDiscoveryMode `json:"mode,omitempty"`
 }

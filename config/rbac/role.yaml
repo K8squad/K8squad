@@ -84,7 +84,6 @@ rules:
   - agentruntimes
   - agents
   - egresspolicies
-  - mcpservers
   - modelconfigs
   - otelconfigs
   - roles
@@ -99,7 +98,11 @@ rules:
   - mcpservers
   verbs:
   - create
+  - get
+  - list
+  - patch
   - update
+  - watch
 - apiGroups:
   - ksquad.io
   resources:
