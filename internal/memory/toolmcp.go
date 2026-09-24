@@ -38,6 +38,16 @@ type ToolMCP struct {
 	author     WorkItemAuthor
 	dispatcher WorkItemDispatcher
 	caps       CapabilityResolver
+	// tokenAuth + tokenCaps back the ADR-0024a S3/D2 token-auth (sandbox) path
+	// (ISI-4869). tokenAuth verifies an inbound run capability token and yields
+	// the server-authenticated session from its claims; tokenCaps gates authoring
+	// on that path from the token-derived capabilities. Both are nil unless
+	// WithAuthoringTokenAuth wired a verifier — when nil the /mcp edge serves only
+	// the header (BFF) path, so the token-auth mode is INERT until the signing key
+	// is distributed to this process (D2 key distribution, Henrik's readiness
+	// call). See agentauthor.go (TokenCapabilityResolver) and pkg/mcpauthtoken.
+	tokenAuth AuthoringTokenVerifier
+	tokenCaps CapabilityResolver
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -61,6 +71,33 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 	m.author = author
 	m.dispatcher = dispatcher
 	m.caps = caps
+	return m
+}
+
+// AuthoringTokenVerifier verifies an inbound bearer run capability token and
+// returns the server-authenticated session it encodes (ADR-0024a S3/D2,
+// ISI-4869). The returned session's identity, tenancy and capabilities come from
+// the VERIFIED token claims, with ViaToken set — never a client X-* header. A
+// verification failure returns a non-nil error (the edge fails closed to a 401).
+// The concrete implementation over pkg/mcpauthtoken lives in authtoken.go.
+type AuthoringTokenVerifier interface {
+	Verify(bearer string) (AgentSession, error)
+}
+
+// WithAuthoringTokenAuth enables the ADR-0024a S3/D2 token-auth (sandbox) path:
+// requests presenting a bearer run capability token are authenticated from the
+// verified token claims and ALL inbound X-* identity headers are discarded, so an
+// untrusted sandbox can neither forge authorship nor self-grant a capability. The
+// token-path authoring gate uses the TokenCapabilityResolver over the
+// token-derived capabilities. Passing a nil verifier leaves the token path off
+// (header/BFF path only) — the mode stays inert until the signing key is
+// distributed to this process. Returns the receiver for chaining.
+func (m *ToolMCP) WithAuthoringTokenAuth(verifier AuthoringTokenVerifier) *ToolMCP {
+	if verifier == nil {
+		return m
+	}
+	m.tokenAuth = verifier
+	m.tokenCaps = NewTokenCapabilityResolver()
 	return m
 }
 
@@ -123,6 +160,12 @@ type mcpSession struct {
 	// comma/space separated) the ADR-0024 authoring gate reads (ISI-4741). Like the
 	// other fields it is a server-authenticated header, never a tool argument.
 	capabilities []string
+	// viaToken is true when this session was built from a VERIFIED run capability
+	// token (ADR-0024a S3/D2, the sandbox path) rather than the BFF-stamped X-*
+	// headers. On the token path every field above is derived from the token
+	// claims and all inbound X-* headers are discarded; the authoring gate uses
+	// the TokenCapabilityResolver. See handle and agentauthor.requireAuthor.
+	viaToken bool
 }
 
 // handle is the single JSON-RPC entrypoint. It decodes the envelope, dispatches by method, and writes a
@@ -133,13 +176,46 @@ func (m *ToolMCP) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	sess := mcpSession{
-		team:      r.Header.Get("X-Team-Id"),
-		principal: r.Header.Get("X-Principal-Id"),
-		agentID:   optional(r.Header.Get("X-Agent-Id")),
-		runID:     optional(r.Header.Get("X-Run-Id")),
 
-		capabilities: parseCapabilities(r.Header.Get("X-Agent-Capabilities")),
+	// ADR-0024a S3/D2 token-auth (sandbox) path (ISI-4869): when a run-capability
+	// token verifier is wired AND the request presents a bearer token, the
+	// caller's identity, tenancy and capabilities come from the VERIFIED token
+	// claims and EVERY inbound X-* identity header is discarded — an untrusted
+	// sandbox cannot forge authorship or self-grant a capability by stamping its
+	// own headers. A bearer token that does not verify fails closed to 401; we do
+	// NOT fall back to header trust (that would let a sandbox pair a junk token
+	// with forged X-* headers). When no verifier is wired the Authorization header
+	// is ignored and only the header (BFF) path serves, so the mode is inert until
+	// D2 key distribution is enabled.
+	var sess mcpSession
+	if m.tokenAuth != nil {
+		if bearer := bearerToken(r.Header.Get("Authorization")); bearer != "" {
+			as, err := m.tokenAuth.Verify(bearer)
+			if err != nil {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			sess = mcpSession{
+				team:         as.TeamID,
+				principal:    as.Principal,
+				agentID:      optional(as.AgentID),
+				runID:        optional(as.RunID),
+				capabilities: as.Capabilities,
+				viaToken:     true,
+			}
+		}
+	}
+	if !sess.viaToken {
+		// Header-trust (BFF) path on the trusted network: tenancy/authorship from
+		// the §13 BFF-stamped headers (unchanged behaviour).
+		sess = mcpSession{
+			team:      r.Header.Get("X-Team-Id"),
+			principal: r.Header.Get("X-Principal-Id"),
+			agentID:   optional(r.Header.Get("X-Agent-Id")),
+			runID:     optional(r.Header.Get("X-Run-Id")),
+
+			capabilities: parseCapabilities(r.Header.Get("X-Agent-Capabilities")),
+		}
 	}
 
 	var req jsonrpcRequest
