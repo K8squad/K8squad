@@ -58,6 +58,11 @@ type ResolvedEnvelope struct {
 	Endpoints    []capability.Endpoint
 	Servers      []*api.MCPServer
 	Manifest     *api.CapabilityManifest
+	// Grants is the capability grant resolved for the Run's decomposing
+	// agent(s) from the owning Team's grant store (ADR-0024a S4). Empty by
+	// default (deny-by-default). Feeds the authoring-MCP gate (S2) and the
+	// run-token capability claim (S3).
+	Grants capability.GrantSet
 }
 
 // Resolve computes a Run's full capability envelope fail-closed
@@ -89,12 +94,21 @@ func (a *Assembler) Resolve(ctx context.Context, run *api.Run) (*ResolvedEnvelop
 		return nil, err
 	}
 
+	// ADR-0024a S4: resolve the authoring capability grant for the Run's
+	// decomposing agent from the owning Team, fail-closed (deny-by-default).
+	// The read feeds S2's authoring-MCP gate and S3's run-token claim.
+	grants, err := capability.ResolveGrant(ctx, a.Client, run)
+	if err != nil {
+		return nil, err
+	}
+
 	return &ResolvedEnvelope{
 		Requirements: reqs,
 		Toolchains:   resolved,
 		Endpoints:    endpoints,
 		Servers:      servers,
 		Manifest:     capability.BuildManifest(resolved, endpoints, reqs.Skills),
+		Grants:       grants,
 	}, nil
 }
 
