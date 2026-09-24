@@ -61,6 +61,7 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 )
 
 // RevisionAnnotation carries the monotonic apply revision on every composed CR
@@ -326,6 +327,23 @@ type skillRequest struct {
 	Permissions []string `json:"permissions,omitempty"`
 }
 
+// modelConfigRequest is the compose wire shape for the org-default model tier
+// (ISI-4890, epic ISI-4822 Flow A). It is the floor of the Model-Per-Role
+// resolution ladder (agent → role → this default, ISI-4430). Unlike every other
+// compose kind it carries NO `name` or `project`: it is a fixed singleton
+// (k8squad-system/default, admin-only) — planModelConfig pins the identity so the
+// wire never picks the target. The three fields map 1:1 onto ModelConfigSpec and
+// reuse the Agent model triple's wire types (secretRefWire / fallbackModelWire),
+// so the console's ModelSelector output serializes here unchanged.
+type modelConfigRequest struct {
+	// Model is the system-default primary model. REQUIRED (MinLength=1 on the CRD):
+	// the default tier has nothing below it to fall through to, so an empty primary
+	// is a fail-closed 422 here — the ONE tier where blank is never "inherit".
+	Model            string             `json:"model"`
+	FallbackModel    *fallbackModelWire `json:"fallbackModel,omitempty"`
+	ModelEndpointRef *secretRefWire     `json:"modelEndpointRef,omitempty"`
+}
+
 // ============================================================================
 // RBAC write-tier gate (invariant 2) — reuse the 15.4 membership primitive
 // ============================================================================
@@ -506,11 +524,19 @@ func setRevision(obj client.Object, rev int) {
 // applyPlan bundles everything a handler resolves from a decoded request: the RBAC
 // scope, the concrete objects (desired + a zero for the Get), and the kind label.
 type applyPlan struct {
-	kind     string
-	scope    writeScope
-	errs     []fieldError
-	desired  client.Object // spec/name filled; namespace set by run()
-	existing client.Object // fresh zero of the same type
+	kind  string
+	scope writeScope
+	errs  []fieldError
+	// fixedNamespace pins a kind to a well-known namespace, bypassing BOTH the
+	// systemNS (Team) and the caller-team-namespace resolution in apply(). It
+	// exists for singleton kinds whose identity is not team-scoped: ModelConfig
+	// (ISI-4890) is a fixed k8squad-system/default object the resolver reads
+	// (pkg/modelendpoint DefaultSystemNamespace) — the write MUST land exactly
+	// where the read looks, so the target can never be a caller-derived namespace.
+	// Empty ⇒ the normal Team/team-namespace resolution applies.
+	fixedNamespace string
+	desired        client.Object // spec/name filled; namespace set by run()
+	existing       client.Object // fresh zero of the same type
 }
 
 // applyOutcome is the result of applying one plan against the cluster. Exactly
@@ -551,9 +577,14 @@ func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorCont
 	// lands in systemNS; every OTHER kind is team-scoped into the caller's own
 	// namespace (a cross-tenant name is structurally a 404, existence-hiding).
 	var ns string
-	if plan.kind == "Team" {
+	switch {
+	case plan.fixedNamespace != "":
+		// A well-known singleton (ModelConfig, ISI-4890): the target is pinned so
+		// the write lands exactly where the resolver reads — never a caller ns.
+		ns = plan.fixedNamespace
+	case plan.kind == "Team":
 		ns = s.systemNS
-	} else {
+	default:
 		resolved, err := s.teamNamespace(ctx, author.TeamID.String())
 		if errors.Is(err, ErrTeamNamespaceUnresolved) {
 			return applyOutcome{status: http.StatusNotFound, msg: "no team namespace for this caller"}
@@ -880,6 +911,59 @@ func (s *ComposeService) planSkill(req skillRequest) applyPlan {
 	}
 }
 
+// ── ModelConfig (org default tier, ISI-4890) ────────────────────────────────────
+
+// planModelConfig maps the org-default model request onto a fixed-identity
+// ModelConfig apply. It is the ONE compose kind that is NOT team-scoped: the
+// target is pinned to the well-known singleton the resolver reads —
+// modelendpoint.DefaultSystemNamespace / DefaultModelConfigName (k8squad-system/
+// default) — via applyPlan.fixedNamespace, so the team-namespace resolver is
+// deliberately NOT run (any {name} path var is ignored by handleModelConfig too).
+// It is admin-only (writeScope.adminOnly → authorizeWrite 403/401/fail-closed,
+// the same gate Teams use — no new RBAC). `required("model")` is the fail-closed
+// guardrail: an empty primary is a clean pre-apply 422, with the CRD's
+// Required,MinLength=1 as the admission backstop (belt + suspenders, ISI-4430 D3).
+func (s *ComposeService) planModelConfig(req modelConfigRequest) applyPlan {
+	var errs []fieldError
+	errs = required("model", req.Model, errs)
+	spec := ksquadv1.ModelConfigSpec{Model: req.Model}
+	if req.FallbackModel != nil {
+		spec.FallbackModel = req.FallbackModel.toSpec()
+	}
+	if req.ModelEndpointRef != nil {
+		ref := req.ModelEndpointRef.toRef()
+		spec.ModelEndpointRef = &ref
+	}
+	mc := &ksquadv1.ModelConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: modelendpoint.DefaultModelConfigName},
+		Spec:       spec,
+	}
+	return applyPlan{
+		kind:           "ModelConfig",
+		scope:          writeScope{adminOnly: true},
+		fixedNamespace: modelendpoint.DefaultSystemNamespace,
+		errs:           errs, desired: mc, existing: &ksquadv1.ModelConfig{},
+	}
+}
+
+// modelConfigToWire maps a ModelConfig CR back onto the modelConfigRequest wire
+// shape (the exact inverse of planModelConfig) so the console's fromWire hydrates
+// the Model Priority form on load. Only the three authored fields ride back.
+func modelConfigToWire(mc *ksquadv1.ModelConfig) modelConfigRequest {
+	out := modelConfigRequest{Model: mc.Spec.Model}
+	if fb := mc.Spec.FallbackModel; fb != nil {
+		w := &fallbackModelWire{Model: fb.Model}
+		if fb.ModelEndpointRef != nil {
+			w.ModelEndpointRef = &secretRefWire{Name: fb.ModelEndpointRef.Name, Key: fb.ModelEndpointRef.Key}
+		}
+		out.FallbackModel = w
+	}
+	if ref := mc.Spec.ModelEndpointRef; ref != nil {
+		out.ModelEndpointRef = &secretRefWire{Name: ref.Name, Key: ref.Key}
+	}
+	return out
+}
+
 // ============================================================================
 // Route handlers — thin decode shells over run()
 // ============================================================================
@@ -931,6 +1015,57 @@ func (s *ComposeService) handleSkill(create bool) http.HandlerFunc {
 			return
 		}
 		s.applyEdit(w, r, create, s.planSkill(req))
+	}
+}
+
+// handleModelConfig writes the org-default model singleton (ISI-4890). It always
+// UPSERTs (run with create=false): the Settings Save is idempotent create-or-edit
+// of the one well-known object, so a second Save revises rather than 409ing. It
+// deliberately does NOT call applyEdit — the identity is fixed in planModelConfig
+// and must never be retargeted by a {name} path var, so any path name is ignored.
+// Bound to BOTH the POST (collection) and PUT ({name}) compose routes; both are
+// the same upsert against k8squad-system/default.
+func (s *ComposeService) handleModelConfig() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req modelConfigRequest
+		if err := decodeJSON(w, r, &req); err != nil {
+			return
+		}
+		s.run(w, r, false, s.planModelConfig(req))
+	}
+}
+
+// handleModelConfigGet hydrates the Settings→Configuration Model Priority section
+// (ISI-4890 AC1): GET /api/modelconfig returns the org-default ModelConfig/default
+// mapped onto the write wire shape (so the console's fromWire is the exact inverse
+// of toWire). 404 ⇒ no default configured yet (the empty-form state, mirroring the
+// OTLP surface's opt-in 404). Admin-only, matching the adminOnly write scope so the
+// read and the write agree on who may see it; a resolver 404 never leaks existence.
+func (s *ComposeService) handleModelConfigGet() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		author, ok := discussion.AuthFromContext(r.Context())
+		if !ok || author.Principal == "" {
+			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		if !author.IsAdmin {
+			writeJSONError(w, http.StatusForbidden, "the org default model is admin-only")
+			return
+		}
+		var mc ksquadv1.ModelConfig
+		key := client.ObjectKey{
+			Namespace: modelendpoint.DefaultSystemNamespace,
+			Name:      modelendpoint.DefaultModelConfigName,
+		}
+		if err := s.applier.Get(r.Context(), key, &mc); err != nil {
+			if apierrors.IsNotFound(err) {
+				writeJSONError(w, http.StatusNotFound, "no org default model configured")
+				return
+			}
+			writeJSONError(w, http.StatusBadGateway, "model config read unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, modelConfigToWire(&mc))
 	}
 }
 

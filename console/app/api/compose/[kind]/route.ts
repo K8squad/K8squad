@@ -12,7 +12,7 @@
 
 import type { NextRequest } from "next/server";
 import { proxyJsonWrite } from "@/lib/bff";
-import { isComposeKind } from "@/lib/compose";
+import { isProxyableComposeKind } from "@/lib/compose";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -23,7 +23,10 @@ export async function POST(
   { params }: { params: Promise<{ kind: string }> },
 ): Promise<Response> {
   const { kind } = await params;
-  if (!isComposeKind(kind)) {
+  // Wizard kinds + singleton kinds (modelconfig, ISI-4890) both proxy through the
+  // ONE apiserver compose choke point; the fixed allow-list prevents an arbitrary
+  // upstream path.
+  if (!isProxyableComposeKind(kind)) {
     return Response.json({ error: "unknown compose kind" }, { status: 404 });
   }
   return proxyJsonWrite(req, `/api/${kind}`, "POST");

@@ -27,6 +27,27 @@ export function isComposeKind(v: string): v is ComposeKind {
   return (COMPOSE_KINDS as readonly string[]).includes(v);
 }
 
+/**
+ * Singleton compose kinds written through the SAME BFF compose route + apiserver
+ * compose machine (authz choke point + upsert-with-revision + provenance), but NOT
+ * authored via the compose WIZARD — they are edited from their own Settings surface
+ * and carry no name/project (their identity is a fixed well-known object). Kept OUT
+ * of COMPOSE_KINDS so the wizard's kind selector, form union, and per-kind
+ * toWire/fromWire/validate switches stay exactly the five authored kinds.
+ *
+ * `modelconfig` (ISI-4890): the org-default model tier — a fixed
+ * k8squad-system/default singleton, admin-only, edited from Settings→Configuration
+ * (the apiserver pins the identity in planModelConfig).
+ */
+export const SINGLETON_COMPOSE_KINDS = ["modelconfig"] as const;
+export type SingletonComposeKind = (typeof SINGLETON_COMPOSE_KINDS)[number];
+
+/** Every kind the generic BFF compose route may proxy: the wizard five + singletons. */
+export type ProxyableComposeKind = ComposeKind | SingletonComposeKind;
+export function isProxyableComposeKind(v: string): v is ProxyableComposeKind {
+  return isComposeKind(v) || (SINGLETON_COMPOSE_KINDS as readonly string[]).includes(v);
+}
+
 /** Create (POST) vs edit-by-name (PUT, new revision) — the compose surface's two write modes. */
 export type ComposeMode = "create" | "edit";
 
@@ -669,3 +690,119 @@ export type ComposeResult = {
   revision: number;
   operation: "created" | "updated";
 };
+
+// ── ModelConfig (org-default model tier, ISI-4890 / epic ISI-4822 Flow A) ──────
+//
+// The org default is the FLOOR of the Model-Per-Role resolution ladder (agent →
+// role → this default, ISI-4430). It is a fixed singleton edited from
+// Settings→Configuration, NOT a wizard kind — so it lives here as its OWN form +
+// pure wire helpers (mirroring the agent model triple) rather than in the
+// ComposeForm union. The persisted spec is the same `{ model, fallbackModel?,
+// modelEndpointRef? }` triple `ModelSelector` already emits; `adapter` is a
+// UI-only credential-path branch (Frame-4 RuntimeAdapterStep) that is NOT
+// persisted (the resolved model id is provider-agnostic).
+
+/** The runtime-adapter credential branch (Frame-4, board LOCK OQ5). */
+export const RUNTIME_ADAPTERS = ["claude", "codex", "opencode"] as const;
+export type RuntimeAdapter = (typeof RUNTIME_ADAPTERS)[number];
+
+/** Human labels for the adapter selector. */
+export const RUNTIME_ADAPTER_LABELS: Record<RuntimeAdapter, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  opencode: "OpenCode",
+};
+
+export type ModelConfigForm = {
+  // adapter is UI-only (the credential path); it is NOT serialized — the org
+  // default persists only the resolved model triple, provider-agnostic.
+  adapter: RuntimeAdapter;
+  // model is the default-tier PRIMARY. Fail-closed: it can never be empty (AC4) —
+  // the ONLY tier with nothing below it to inherit from.
+  model: string;
+  modelEndpointRef: string; // BYO endpoint Secret "name" or "name/key"; omitted when blank
+  byoEnabled: boolean; // UI-only BYO toggle (derives from a non-empty ref on hydrate)
+  fallbackModel: string;
+  fallbackModelEndpointRef: string;
+};
+
+export function emptyModelConfigForm(): ModelConfigForm {
+  return {
+    adapter: "claude",
+    model: "",
+    modelEndpointRef: "",
+    byoEnabled: false,
+    fallbackModel: "",
+    fallbackModelEndpointRef: "",
+  };
+}
+
+/**
+ * modelConfigToWire produces exactly the JSON the apiserver modelConfigRequest
+ * decodes: `{ model, fallbackModel?: { model, modelEndpointRef? }, modelEndpointRef? }`.
+ * It mirrors the agents branch of toWire (the same model triple). `adapter` never
+ * rides the wire. The BYO endpoint is emitted only when the toggle is on AND a ref
+ * is set (BYO off ⇒ the org default resolves against the provider default).
+ */
+export function modelConfigToWire(f: ModelConfigForm): Record<string, unknown> {
+  return {
+    model: f.model.trim(),
+    ...(f.byoEnabled && f.modelEndpointRef.trim()
+      ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) }
+      : {}),
+    ...(f.fallbackModel.trim()
+      ? {
+          fallbackModel: {
+            model: f.fallbackModel.trim(),
+            ...(f.fallbackModelEndpointRef.trim()
+              ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/** The GET /api/modelconfig hydration body (the write wire shape, read back). */
+interface ModelConfigWire {
+  model?: string;
+  modelEndpointRef?: WireSecretRef | null;
+  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
+}
+
+/**
+ * modelConfigFromWire is the exact inverse of modelConfigToWire: it hydrates the
+ * form from GET /api/modelconfig (AC1). `byoEnabled` derives from a non-empty
+ * primary endpoint ref; `adapter` defaults to claude (the persisted spec is
+ * adapter-agnostic, so the credential branch resets to the primary path on load).
+ */
+export function modelConfigFromWire(wire: unknown): ModelConfigForm {
+  const w = (wire ?? {}) as ModelConfigWire;
+  const endpoint = secretRefToString(w.modelEndpointRef);
+  return {
+    adapter: "claude",
+    model: w.model ?? "",
+    modelEndpointRef: endpoint,
+    byoEnabled: endpoint.length > 0,
+    fallbackModel: w.fallbackModel?.model ?? "",
+    fallbackModelEndpointRef: secretRefToString(w.fallbackModel?.modelEndpointRef),
+  };
+}
+
+/**
+ * validateModelConfig mirrors the apiserver planModelConfig field checks at the
+ * form edge. The org default primary is FAIL-CLOSED: an empty `model` is a hard
+ * error (AC4) — the ONLY tier where blank is never "inherit the tier below",
+ * because there is no tier below it (mirrors the CRD Required,MinLength=1 + the
+ * apiserver required("model") 422). A BYO toggle that is on requires an endpoint ref.
+ */
+export function validateModelConfig(f: ModelConfigForm): FieldErrors {
+  const errs: FieldErrors = {};
+  checkRequired("model", f.model, errs);
+  if (f.byoEnabled) checkRequired("modelEndpointRef.name", parseSecretRef(f.modelEndpointRef).name, errs);
+  return errs;
+}
+
+export function isModelConfigValid(f: ModelConfigForm): boolean {
+  return Object.keys(validateModelConfig(f)).length === 0;
+}
