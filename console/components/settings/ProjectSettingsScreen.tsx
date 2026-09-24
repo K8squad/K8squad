@@ -38,6 +38,7 @@ import {
   type ProjectSettings,
   type ProjectSettingsState,
   type RepoAuthTestResult,
+  type RepoSettings,
 } from "@/lib/projectSettings";
 
 type Msg = { tone: "ok" | "bad"; text: string };
@@ -538,24 +539,31 @@ function RepositoryAndCredentials({
         )}
       </section>
 
-      {/* ── Sync — read-only in v1 (editable write is ISI-4843, needs a PUT seam). ── */}
-      <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
-        <div className="settings__card-head">
-          <h2 className="settings__card-title">Sync</h2>
-          <span
-            className={`settings__chip settings__chip--${repo.syncEnabled ? "ok" : "muted"}`}
-            data-testid="sync-state-chip"
-          >
-            {repo.syncEnabled ? "On" : "Off"}
-          </span>
-        </div>
-        <p className="muted settings__note" data-testid="repo-sync">
-          {repo.syncEnabled
-            ? `Polling every ${repo.pollIntervalSeconds}s`
-            : "Not configured"}
-          {repo.reflectOutbound ? " · reflects outbound" : ""}
-        </p>
-      </section>
+      {/* ── Sync — editable write (ISI-4843, S5): editors get the SyncCard control;
+          non-editors keep the honest read-only summary. The write is a full-spec
+          compose PUT (buildProjectPutBody) that round-trips goals/egress + the
+          opaque sync passthrough (webhookSecretRef/mirror/issueSync). ── */}
+      {canEdit ? (
+        <SyncCard repo={repo} projectId={projectId} onReload={onReload} />
+      ) : (
+        <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+          <div className="settings__card-head">
+            <h2 className="settings__card-title">Sync</h2>
+            <span
+              className={`settings__chip settings__chip--${repo.syncEnabled ? "ok" : "muted"}`}
+              data-testid="sync-state-chip"
+            >
+              {repo.syncEnabled ? "On" : "Off"}
+            </span>
+          </div>
+          <p className="muted settings__note" data-testid="repo-sync">
+            {repo.syncEnabled
+              ? `Polling every ${repo.pollIntervalSeconds}s`
+              : "Not configured"}
+            {repo.reflectOutbound ? " · reflects outbound" : ""}
+          </p>
+        </section>
+      )}
     </>
   );
 }
@@ -609,6 +617,133 @@ function ConnectionHealthRail({ data }: { data: ProjectSettings }) {
         ))}
       </dl>
     </div>
+  );
+}
+
+/** Default poll cadence when sync is enabled but no interval is set — mirrors the
+ *  CRD default (RepoSyncSpec.PollIntervalSeconds +kubebuilder:default=300). */
+const DEFAULT_POLL_SECONDS = 300;
+/** CRD floor for the poll interval (RepoSyncSpec.PollIntervalSeconds Minimum=60). */
+const MIN_POLL_SECONDS = 60;
+
+// ── S5 (ISI-4843): SyncCard — the net-new WRITE. Promotes the old muted "Sync
+// …" line to a real control: an explicit toggle + editable poll interval +
+// reflect-outbound opt-in. Enabling maps to spec.repo.sync (nil ⇒ disabled); the
+// write is a FULL-SPEC compose PUT via buildProjectPutBody, so the whole sync
+// sub-spec (webhookSecretRef/mirror/issueSync) and goals/egress round-trip
+// untouched — editing the poll interval never silently drops them.
+function SyncCard({
+  repo,
+  projectId,
+  onReload,
+}: {
+  repo: RepoSettings;
+  projectId: string;
+  onReload: () => Promise<void>;
+}) {
+  const [enabled, setEnabled] = useState(repo.syncEnabled);
+  const [poll, setPoll] = useState(
+    repo.syncEnabled && repo.pollIntervalSeconds ? repo.pollIntervalSeconds : DEFAULT_POLL_SECONDS,
+  );
+  const [reflect, setReflect] = useState(repo.reflectOutbound);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+
+  const onSave = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      setMsg(null);
+      if (enabled && (!Number.isFinite(poll) || poll < MIN_POLL_SECONDS)) {
+        setMsg({ tone: "bad", text: `pollIntervalSeconds: must be at least ${MIN_POLL_SECONDS}` });
+        return;
+      }
+      setBusy(true);
+      try {
+        const detail = await fetchProjectDetail(projectId);
+        if (!detail) {
+          setMsg({ tone: "bad", text: "Couldn't read the current project to save — try again." });
+          return;
+        }
+        // Round-trip the authoritative repo URL (never the repo form's unsaved edit).
+        const body = buildProjectPutBody(detail, {
+          repoUrl: detail.repo.url,
+          sync: enabled ? { enabled: true, pollIntervalSeconds: poll, reflectOutbound: reflect } : { enabled: false },
+        });
+        const res = await putProject(projectId, body);
+        if (res.ok) {
+          setMsg({ tone: "ok", text: enabled ? "Sync settings saved." : "Sync disabled." });
+          await onReload();
+        } else {
+          setMsg({ tone: "bad", text: await composeErrorText(res) });
+        }
+      } catch {
+        setMsg({ tone: "bad", text: "The compose endpoint is unreachable — try again." });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, enabled, poll, reflect, onReload],
+  );
+
+  return (
+    <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+      <div className="settings__card-head">
+        <h2 className="settings__card-title">Sync</h2>
+        <span
+          className={`settings__chip settings__chip--${enabled ? "ok" : "muted"}`}
+          data-testid="sync-state-chip"
+        >
+          {enabled ? "On" : "Off"}
+        </span>
+      </div>
+      <p className="muted settings__note">
+        Mirror this repository&apos;s issues, pull requests and check runs on a poll fallback. Reflect-outbound
+        posts KSquad run status back to the provider.
+      </p>
+      <form className="settings__form" data-testid="settings-sync-form" onSubmit={onSave}>
+        <label className="settings__toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            data-testid="sync-enabled-input"
+          />
+          <span>Sync enabled</span>
+        </label>
+        <label className="settings__field">
+          <span>Poll interval (seconds)</span>
+          <input
+            type="number"
+            min={MIN_POLL_SECONDS}
+            step={1}
+            value={poll}
+            onChange={(e) => setPoll(e.target.valueAsNumber)}
+            disabled={!enabled}
+            data-testid="sync-poll-input"
+          />
+        </label>
+        <label className="settings__toggle">
+          <input
+            type="checkbox"
+            checked={reflect}
+            onChange={(e) => setReflect(e.target.checked)}
+            disabled={!enabled}
+            data-testid="sync-reflect-input"
+          />
+          <span>Reflect outbound (post run status back to the provider)</span>
+        </label>
+        <div className="settings__actions">
+          <button className="btn btn--primary" type="submit" disabled={busy} data-testid="sync-save">
+            {busy ? "Saving…" : "Save sync settings"}
+          </button>
+          {msg ? (
+            <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="sync-msg" role="status">
+              {msg.text}
+            </span>
+          ) : null}
+        </div>
+      </form>
+    </section>
   );
 }
 

@@ -256,6 +256,12 @@ type projectRequest struct {
 		URL  string        `json:"url"`
 		Ref  string        `json:"ref,omitempty"`
 		Auth *repoAuthWire `json:"auth,omitempty"`
+		// Sync round-trips spec.repo.sync (§5.4, ISI-4843). Nil ⇒ sync disabled.
+		// The WHOLE sub-spec rides the wire — a compose PUT is a full-spec upsert
+		// (not a merge), so the Settings SyncCard editing only poll/reflect must
+		// carry provider/webhookSecretRef/mirror/issueSync through untouched or it
+		// would silently drop them (the goals/egress full-replace footgun).
+		Sync *ksquadv1.RepoSyncSpec `json:"sync,omitempty"`
 	} `json:"repo"`
 	Goals           []string       `json:"goals,omitempty"`
 	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
@@ -709,6 +715,17 @@ func (s *ComposeService) planProject(req projectRequest) applyPlan {
 		// agentRequest.credentialSecretRef.
 		errs = required("repo.auth.credentialSecretRef.name", req.Repo.Auth.CredentialSecretRef.Name, errs)
 		spec.Repo.Auth = req.Repo.Auth.toSpec()
+	}
+	if req.Repo.Sync != nil {
+		// Round-trip the whole sync sub-spec; only default the required provider
+		// (enum-validated by admission) so an enable-sync write from a tab that
+		// doesn't render a provider picker still yields a valid object. Poll
+		// interval min/default are enforced by the CRD (Minimum=60, default=300).
+		sync := *req.Repo.Sync
+		if sync.Provider == "" {
+			sync.Provider = defaultRepoProvider
+		}
+		spec.Repo.Sync = &sync
 	}
 	if req.EgressPolicyRef != nil {
 		ref := req.EgressPolicyRef.toRef()
