@@ -71,6 +71,9 @@ import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/t
 import { STATUS_META } from "@/lib/tickets/statusColor";
 import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
+import { AssigneeChipView } from "./RailAssigneeChip";
+import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
+import { DispatchPendingCard } from "./DispatchPendingCard";
 
 type ThreadState =
   | { kind: "loading" }
@@ -265,6 +268,8 @@ function AssigneeControl({
   workItemId,
   canEdit,
   onAssigned,
+  dispatchWatch,
+  onDispatched,
 }: {
   state: string;
   holder: string;
@@ -272,6 +277,12 @@ function AssigneeControl({
   workItemId: string;
   canEdit: boolean;
   onAssigned: () => void;
+  // ISI-4882 (S4): the honest ladder from the parent's SINGLE useDispatchWatch — seeded only on a
+  // real dispatch 200, so a passively-viewed ticket (requested agent stamped, nothing in flight)
+  // reads null here and the chip stays on its static fallback. Never a second self-armed hook.
+  dispatchWatch: DispatchWatch | null;
+  // Seed the parent ladder when the dispatch originates from THIS rail select (not just the composer).
+  onDispatched: (agent: string) => void;
 }) {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [busy, setBusy] = useState(false);
@@ -305,9 +316,18 @@ function AssigneeControl({
           </>
         ) : state === "todo" ? (
           requestedAgent ? (
-            <span className="muted" data-testid="detail-requested">
-              Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
-            </span>
+            // ISI-4882 (S4): while the dispatch is in flight the chip tracks the honest ladder
+            // (queued → picking up… → working… → finished); it falls back to today's static
+            // "Requested: <agent> · dispatch pending" text whenever nothing is in flight.
+            <AssigneeChipView
+              agent={requestedAgent}
+              watch={dispatchWatch}
+              fallback={
+                <span className="muted" data-testid="detail-requested">
+                  Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
+                </span>
+              }
+            />
           ) : (
             <span className="muted">dispatch pending</span>
           )
@@ -324,6 +344,7 @@ function AssigneeControl({
     setErr(null);
     try {
       await dispatchWorkItem(workItemId, name);
+      onDispatched(name); // seed the honest ladder BEFORE the re-fetch (S4 mirror of the composer path)
       onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
@@ -372,9 +393,17 @@ function AssigneeControl({
         ))}
       </select>
       {state === "todo" && requestedAgent && (
-        <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
-          dispatch pending
-        </span>
+        // ISI-4882 (S4): the pending hint becomes the live tri-state ladder chip once the dispatch is
+        // in flight; the static "dispatch pending" hint is the clean fallback (zero new tokens).
+        <AssigneeChipView
+          agent={requestedAgent}
+          watch={dispatchWatch}
+          fallback={
+            <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
+              dispatch pending
+            </span>
+          }
+        />
       )}
       <span className="ksq-field__hint muted">
         {isRerun
@@ -625,11 +654,23 @@ function Composer({
   canComment,
   onOptimisticAppend,
   onPosted,
+  onDispatched,
+  dispatchWatch,
+  dispatchAgent,
 }: {
   workItemId: string;
   canComment: boolean;
   onOptimisticAppend: (c: ThreadComment) => void;
   onPosted: (posted: PostedComment) => void;
+  // ISI-4881 (S3 of ISI-4853): fired on a dispatch 200 so the parent can seed the
+  // useDispatchWatch ladder + mount the placeholder card at the stream head. Never
+  // fired on a non-200 (dispatchWorkItem throws) — so no card is seeded on failure.
+  onDispatched: (agent: string) => void;
+  // The live ladder view (from the parent's useDispatchWatch); drives the composer
+  // status line, which auto-dismisses once the card goes live (state ≥ picking_up).
+  dispatchWatch: DispatchWatch | null;
+  // The agent this dispatch went to — surfaced in the status-line copy.
+  dispatchAgent: string;
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
@@ -761,6 +802,11 @@ function Composer({
     setStatus({ kind: "idle" });
     try {
       await dispatchWorkItem(workItemId, assignee);
+      // Dispatch 200: seed the honest "run is on its way" ladder BEFORE clearing the
+      // pick, so the placeholder card + status line appear within a frame of the 200
+      // (ISI-4881). Only reached on success — a non-200 throws to the catch below and
+      // no card is seeded (the existing role="alert" error path stands).
+      onDispatched(assignee);
       setAssignee("");
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
@@ -852,6 +898,20 @@ function Composer({
           data-testid="detail-composer-assign-error"
         >
           {assignErr}
+        </p>
+      )}
+      {/* ISI-4881 (S3) composer status line — reuses the .ksq-notice role="status"
+          pattern (same as "▶ Agent re-triggered"). Board answer OQ1: surface = BOTH
+          (card + this line). Auto-dismisses the instant the card goes live (the ladder
+          advances past "queued", i.e. a Run row is observed), so it never lingers into
+          "Working…". No line on a failed dispatch — dispatchWatch stays null there. */}
+      {dispatchWatch && dispatchWatch.state === "queued" && dispatchAgent && (
+        <p
+          className="ksq-notice"
+          role="status"
+          data-testid="detail-dispatch-status"
+        >
+          Dispatched to {dispatchAgent} · waiting for the operator to start the run…
         </p>
       )}
     </form>
@@ -950,6 +1010,22 @@ function TicketBody({
   useEffect(() => {
     setPending([]);
   }, [thread]);
+  // ISI-4881 (S3 of ISI-4853): the in-flight dispatch, seeded on a Composer dispatch
+  // 200. `useDispatchWatch` turns it into the honest ladder (Queued → Picking up… →
+  // Working… → terminal) that drives BOTH surfaces the board asked for (OQ1): the
+  // placeholder card at the stream head + the composer status line. Null ⇒ no dispatch
+  // in flight ⇒ the hook returns null and both surfaces stay dark.
+  const [dispatch, setDispatch] = useState<{ agent: string } | null>(null);
+  // Clear ONLY on navigation to a different ticket — NOT on the reconciling re-fetch
+  // that fires right after a dispatch (a new `thread` object with the SAME workItemId),
+  // which would otherwise yank the just-seeded card out within a frame of the 200.
+  useEffect(() => {
+    setDispatch(null);
+  }, [thread.workItemId]);
+  const dispatchWatch = useDispatchWatch(
+    dispatch ? thread.workItemId : null,
+    dispatch?.agent ?? "",
+  );
   // Single pending-inclusive projection drives both the chronological Activity
   // timeline and the S3 run-meta map, so an optimistically-posted comment and its
   // run bubble stay consistent (buildRunComments still owns the attribution rules).
@@ -1051,7 +1127,7 @@ function TicketBody({
             newest last. */}
         <section className="card" data-testid="detail-activity">
           <h2>Activity</h2>
-          {activity.length === 0 ? (
+          {activity.length === 0 && !dispatchWatch ? (
             <p className="muted" data-testid="detail-activity-empty">
               No activity yet.
             </p>
@@ -1060,6 +1136,16 @@ function TicketBody({
               {activity.map((item, i) => (
                 <ActivityRow key={`${item.kind}-${i}`} item={item} runMeta={runMeta} />
               ))}
+              {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
+                  the real RunCommentCard eventually renders (activity is newest-last),
+                  so there is no layout jump on hand-off. Appears within a frame of the
+                  dispatch 200, before any Run row exists (board OQ1: card + status line). */}
+              {dispatchWatch && dispatch && (
+                <DispatchPendingCard
+                  watch={dispatchWatch}
+                  agentName={dispatch.agent}
+                />
+              )}
             </ul>
           )}
 
@@ -1087,6 +1173,9 @@ function TicketBody({
               onCommentPosted();
               if (posted.reTriggered) setNudge({ from: posted.fromState ?? "" });
             }}
+            onDispatched={(agent) => setDispatch({ agent })}
+            dispatchWatch={dispatchWatch}
+            dispatchAgent={dispatch?.agent ?? ""}
           />
         </section>
       </div>
@@ -1144,6 +1233,8 @@ function TicketBody({
                 workItemId={thread.workItemId}
                 canEdit={canComment(role)}
                 onAssigned={onCommentPosted}
+                dispatchWatch={dispatchWatch}
+                onDispatched={(agent) => setDispatch({ agent })}
               />
             </dd>
 
