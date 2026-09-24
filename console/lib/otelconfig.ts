@@ -48,7 +48,19 @@ export type OtelConfigWire = {
   };
   status?: {
     signals?: Partial<
-      Record<SignalKey, { state?: string; detail?: string }>
+      Record<
+        SignalKey,
+        {
+          state?: string;
+          detail?: string;
+          /**
+           * Best-effort recent throughput series (e.g. spans/min for traces),
+           * oldest→newest. Drives the right-rail sparkline; absent on backends
+           * that don't publish it — the UI hides the sparkline (degrade-don't-blank).
+           */
+          throughput?: number[];
+        }
+      >
     >;
   };
 };

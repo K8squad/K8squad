@@ -203,3 +203,158 @@ describe("<OtlpConfigScreen> — ISI-4831 S2 Signals list & row", () => {
     expect(screen.getByTestId("signal-pill-traces").textContent).toBe("Off");
   });
 });
+
+describe("<OtlpConfigScreen> — ISI-4831 S3 Right rail + action bar", () => {
+  it("rolls up export health verdict + N of 3 exporting from CRD status", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("export-health"));
+
+    // 2 healthy + 1 erroring → Degraded, 2 of 3 exporting.
+    expect(screen.getByTestId("export-health-verdict").textContent).toBe(
+      "Degraded",
+    );
+    expect(screen.getByTestId("export-health-count").textContent).toBe(
+      "2 of 3 exporting",
+    );
+  });
+
+  it("reads 'Healthy' when every enabled signal is healthy", async () => {
+    const wire = loadedWire();
+    wire.status!.signals!.logs = { state: "healthy" };
+    stubOtlp(jsonResponse(200, wire));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("export-health"));
+
+    expect(screen.getByTestId("export-health-verdict").textContent).toBe(
+      "Healthy",
+    );
+    expect(screen.getByTestId("export-health-count").textContent).toBe(
+      "3 of 3 exporting",
+    );
+  });
+
+  it("hides the sparkline when status carries no throughput (degrade-don't-blank)", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("export-health"));
+
+    expect(screen.queryByTestId("export-health-sparkline")).toBeNull();
+    expect(screen.getByTestId("export-health-no-spark")).toBeTruthy();
+  });
+
+  it("renders the spans/min sparkline when throughput is present", async () => {
+    const wire = loadedWire();
+    wire.status!.signals!.traces = {
+      state: "healthy",
+      throughput: [10, 40, 25, 60, 55],
+    };
+    stubOtlp(jsonResponse(200, wire));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("export-health"));
+
+    expect(screen.getByTestId("export-health-sparkline")).toBeTruthy();
+    expect(screen.queryByTestId("export-health-no-spark")).toBeNull();
+  });
+
+  it("edits shared resource attributes and serialises them onto every inheriting signal", async () => {
+    let putBody = "";
+    const wire = loadedWire();
+    wire.spec!.traces = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.metrics = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.logs = { ...SHARED, resourceAttributes: { env: "prod" } };
+    stubOtlp(jsonResponse(200, wire), (b) => (putBody = b));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("resource-attributes"));
+
+    // Seeded from the shared destination attributes.
+    expect((screen.getByTestId("attr-key-0") as HTMLInputElement).value).toBe(
+      "env",
+    );
+
+    // Add a second shared attribute.
+    fireEvent.click(screen.getByTestId("attr-add"));
+    fireEvent.change(screen.getByTestId("attr-key-1"), {
+      target: { value: "region" },
+    });
+    fireEvent.change(screen.getByTestId("attr-value-1"), {
+      target: { value: "eu" },
+    });
+    fireEvent.click(screen.getByTestId("otlp-apply"));
+
+    await waitFor(() => expect(putBody).not.toBe(""));
+    const put = JSON.parse(putBody) as OtelConfigWire;
+    for (const key of ["traces", "metrics", "logs"] as const) {
+      expect(put.spec?.[key]?.resourceAttributes).toEqual({
+        env: "prod",
+        region: "eu",
+      });
+    }
+  });
+
+  it("removing a shared attribute row drops it from the wire", async () => {
+    let putBody = "";
+    const wire = loadedWire();
+    wire.spec!.traces = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.metrics = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.logs = { ...SHARED, resourceAttributes: { env: "prod" } };
+    stubOtlp(jsonResponse(200, wire), (b) => (putBody = b));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("resource-attributes"));
+
+    fireEvent.click(screen.getByTestId("attr-remove-0"));
+    fireEvent.click(screen.getByTestId("otlp-apply"));
+
+    await waitFor(() => expect(putBody).not.toBe(""));
+    const put = JSON.parse(putBody) as OtelConfigWire;
+    expect(put.spec?.traces?.resourceAttributes).toBeUndefined();
+  });
+
+  it("shows the unsaved-changes indicator and Discard reverts every edit", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("otlp-signals"));
+
+    // Clean: no dirty indicator, Discard + Apply disabled.
+    expect(screen.queryByTestId("otlp-dirty")).toBeNull();
+    expect((screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    // Edit the endpoint → dirty.
+    fireEvent.change(screen.getByTestId("dest-endpoint"), {
+      target: { value: "changed:4317" },
+    });
+    expect(screen.getByTestId("otlp-dirty")).toBeTruthy();
+    expect((screen.getByTestId("otlp-discard") as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+
+    // Discard → back to the loaded endpoint, dirty cleared.
+    fireEvent.click(screen.getByTestId("otlp-discard"));
+    expect((screen.getByTestId("dest-endpoint") as HTMLInputElement).value).toBe(
+      "otel-collector:4317",
+    );
+    expect(screen.queryByTestId("otlp-dirty")).toBeNull();
+  });
+
+  it("Discard re-seeds the resource-attribute rows from the loaded config", async () => {
+    const wire = loadedWire();
+    wire.spec!.traces = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.metrics = { ...SHARED, resourceAttributes: { env: "prod" } };
+    wire.spec!.logs = { ...SHARED, resourceAttributes: { env: "prod" } };
+    stubOtlp(jsonResponse(200, wire));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("resource-attributes"));
+
+    fireEvent.click(screen.getByTestId("attr-add"));
+    expect(screen.getByTestId("attr-row-1")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("otlp-discard"));
+    // The added blank row is gone; only the loaded one remains.
+    expect(screen.queryByTestId("attr-row-1")).toBeNull();
+    expect((screen.getByTestId("attr-key-0") as HTMLInputElement).value).toBe(
+      "env",
+    );
+  });
+});
