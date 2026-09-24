@@ -117,6 +117,14 @@ func CredentialEnvName(serverName string) string {
 // carries no explicit key (the catalog convention).
 const defaultCredentialKey = "token"
 
+// authoringMCPServerName is the deterministic, singleton name of the built-in
+// memory-authoring MCPServer the Team controller provisions per squad
+// namespace (ADR-0024a S1, mirrors pkg/controller/team.AuthoringMCPServerName).
+// S2 auto-injects this endpoint for capability-granted Runs; a guard test pins
+// the two constants together so they can never drift. It is kept unexported
+// here to avoid a lib→controller import.
+const authoringMCPServerName = "ksquad-memory-authoring"
+
 // ResolveMCP resolves a Run's MCP demand fail-closed (ADR-044 step 4):
 //
 //   - every referenced MCPServer must exist (admission cache may be stale);
@@ -131,10 +139,10 @@ const defaultCredentialKey = "token"
 // It returns the IR endpoints AND the resolved server objects (the egress
 // re-assertion in egress.go needs the source objects; one fetch serves
 // both). Both slices are sorted by server name for stable manifest bytes.
-func ResolveMCP(ctx context.Context, reader client.Reader, run *api.Run, reqs *Requirements) ([]Endpoint, []*api.MCPServer, error) {
+func ResolveMCP(ctx context.Context, reader client.Reader, run *api.Run, reqs *Requirements, grants GrantSet) ([]Endpoint, []*api.MCPServer, error) {
 	details := toolchain.DetailsFor(run)
-	endpoints := make([]Endpoint, 0, len(reqs.MCPRefs))
-	servers := make([]*api.MCPServer, 0, len(reqs.MCPRefs))
+	endpoints := make([]Endpoint, 0, len(reqs.MCPRefs)+1)
+	servers := make([]*api.MCPServer, 0, len(reqs.MCPRefs)+1)
 
 	for _, ref := range reqs.MCPRefs {
 		ns := ref.Namespace
@@ -159,9 +167,58 @@ func ResolveMCP(ctx context.Context, reader client.Reader, run *api.Run, reqs *R
 		servers = append(servers, server.DeepCopy())
 	}
 
+	// ADR-0024a S2: capability-gated auto-injection of the built-in
+	// memory-authoring endpoint. Deny-by-default — only a Run whose agent
+	// holds work_item.author (the server-resolved grant from S4, never
+	// anything the sandbox supplies) is wired to the authoring tools, and the
+	// endpoint is injected independent of reqs.MCPRefs. It is appended before
+	// the sort so it participates in the stable ordering. Reusing endpointFor
+	// gives the built-in the identical IR treatment — transport validation,
+	// allow-set computation, credential env-name, and the empty-observedTools
+	// fail-closed guard (which is why S1 must seed status.observedTools).
+	if grants.Has(CapabilityWorkItemAuthor) {
+		if err := injectAuthoringEndpoint(ctx, reader, run, reqs, &endpoints, &servers); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].Name < endpoints[j].Name })
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	return endpoints, servers, nil
+}
+
+// injectAuthoringEndpoint appends the built-in memory-authoring endpoint to a
+// capability-granted Run's resolved set (ADR-0024a S2). It fails closed: a
+// missing built-in MCPServer (S1 not yet reconciled) or an empty observedTools
+// surface rejects Run assembly rather than dispatching a granted agent against
+// an unknown authoring surface. If the built-in is already present via
+// reqs.MCPRefs it is a no-op — the built-in name is reserved and never wired
+// twice.
+func injectAuthoringEndpoint(ctx context.Context, reader client.Reader, run *api.Run, reqs *Requirements, endpoints *[]Endpoint, servers *[]*api.MCPServer) error {
+	for i := range *endpoints {
+		if (*endpoints)[i].Name == authoringMCPServerName {
+			return nil // already resolved via MCPRefs — do not double-inject
+		}
+	}
+
+	key := run.Namespace + "/" + authoringMCPServerName
+	var server api.MCPServer
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: authoringMCPServerName}, &server); err != nil {
+		if isNotFound(err) {
+			return &MCPError{Server: key,
+				Reason:  "built-in memory-authoring MCPServer not found; the Team controller provisions it per squad namespace (ADR-0024a S1) — wait for reconciliation or check the Team",
+				Details: toolchain.DetailsFor(run)}
+		}
+		return fmt.Errorf("read built-in authoring mcpserver %s (fail-closed): %w", key, err)
+	}
+
+	ep, err := endpointFor(run, reqs, key, &server)
+	if err != nil {
+		return err
+	}
+	*endpoints = append(*endpoints, *ep)
+	*servers = append(*servers, server.DeepCopy())
+	return nil
 }
 
 // endpointFor computes one server's IR with its effective tool filter.
