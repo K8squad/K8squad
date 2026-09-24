@@ -981,6 +981,35 @@ a:hover {
   color: var(--status-paused);
 }
 
+/* ProvenanceChip (ISI-4893 / S4, epic ISI-4822) — the model-priority tier atom. Tinted pill + dot
+   in the winning tier's locked hue; colour lives only in the three modifiers (no per-tier hex). */
+.provenance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  letter-spacing: 0.3px;
+}
+.provenance-chip__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.provenance-chip--default {
+  color: var(--accent);
+}
+.provenance-chip--role {
+  color: var(--ksq-run);
+}
+.provenance-chip--agent {
+  color: var(--status-running);
+}
+
 /* Org diagram (8.10). */
 .org-diagram__head {
   display: flex;
