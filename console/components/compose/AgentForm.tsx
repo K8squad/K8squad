@@ -3,14 +3,27 @@
 import { ComposeForm, FieldErrors } from "@/lib/compose";
 import { Field } from "./fields";
 import { ModelSelector } from "./ModelSelector";
+import { EffectiveModelReadout } from "./EffectiveModelReadout";
 
 interface AgentFormProps {
   cf: ComposeForm & { kind: "agents" };
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
+  // The PERSISTED agent name to resolve the effective-model read-out against
+  // (ISI-4892 / S3). Set only in edit mode; absent in create/onboarding, where the
+  // read-out hides (there is no saved agent for the resolver to key on).
+  effectiveModelName?: string;
+  // Admin cross-squad selector for that read (the ?team= act-as-team seam).
+  effectiveModelTeam?: string;
 }
 
-export function AgentForm({ cf, errors, patch }: AgentFormProps) {
+export function AgentForm({
+  cf,
+  errors,
+  patch,
+  effectiveModelName,
+  effectiveModelTeam,
+}: AgentFormProps) {
   const nameField = (
     <Field label="Name" hint="DNS-1123 label (lowercase, digits, '-')" error={errors["name"]}>
       <input
@@ -56,6 +69,7 @@ export function AgentForm({ cf, errors, patch }: AgentFormProps) {
         errors={errors}
         patch={patch}
       />
+      <EffectiveModelReadout agentName={effectiveModelName} team={effectiveModelTeam} />
       <Field label="Credential Secret ref" hint="name or name/key" error={errors["credentialSecretRef.name"]}>
         <input
           value={cf.form.credentialSecretRef}

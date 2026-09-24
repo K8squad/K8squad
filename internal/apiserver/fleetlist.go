@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"sort"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 )
 
 // ============================================================================
@@ -193,6 +195,31 @@ type AgentDetail struct {
 	FallbackModel       *fallbackModelWire `json:"fallbackModel,omitempty"`
 }
 
+// EffectiveModelView is the GET /api/squad/agents/{name}/effective-model
+// projection (ISI-4892 / S3, epic ISI-4822 Flow C). It answers "which model will
+// this agent actually run, and why?" as a READ-ONLY projection over the shipped
+// Model-Per-Role resolver (modelendpoint.Resolver.ResolveEffective, ISI-4430):
+// the console renders Model + a provenance chip keyed by Tier without re-deriving
+// precedence in TypeScript. Fail-closed (ErrNoModel) surfaces as Unresolved=true
+// (a structured 200), never a 5xx — the read-out shows a non-blocking guardrail.
+type EffectiveModelView struct {
+	// Model is the resolved primary model id to display (e.g. "claude-sonnet-4-5").
+	// Empty only when Unresolved is true.
+	Model string `json:"model"`
+	// Tier is the winning provenance tier: "agent" | "role" | "default". Empty
+	// when Unresolved is true. Maps 1:1 to the S4 ProvenanceChip's `tier` prop.
+	Tier string `json:"tier"`
+	// RoleName is the Agent's roleRef name — the label the "from Role: {x}" chip
+	// renders. Present regardless of the winning tier (informational).
+	RoleName string `json:"roleName,omitempty"`
+	// FallbackModel is the resolved fallback model id, informational for a future
+	// stretch (the v1 read-out shows only the primary). Empty when none resolved.
+	FallbackModel string `json:"fallbackModel,omitempty"`
+	// Unresolved is true when no tier — not even the system-default ModelConfig —
+	// supplies a model (resolver ErrNoModel). The read-out shows the guardrail.
+	Unresolved bool `json:"unresolved,omitempty"`
+}
+
 // RoleDetail is the GET /api/squad/roles/{name} authoring-spec projection.
 type RoleDetail struct {
 	Name             string          `json:"name"`
@@ -266,6 +293,14 @@ type FleetListReader interface {
 	AgentDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (AgentDetail, error)
 	RoleDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (RoleDetail, error)
 	ProjectDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (ProjectDetail, error)
+	// EffectiveModel projects the Model-Per-Role resolver's verdict for a single
+	// Agent by name (ISI-4892 / S3): it loads the Agent + its referenced Role and
+	// runs the SAME modelendpoint.Resolver.ResolveEffective the dispatch path and
+	// admission webhook use, so the console never forks the precedence rule. Scoping
+	// is identical to AgentDetail (same act-as-team seam; a miss is existence-hiding
+	// ErrTeamNotFound). Read-only — no write verb rides this. A fail-closed
+	// resolution (ErrNoModel) is a non-error verdict: it returns Unresolved=true.
+	EffectiveModel(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (EffectiveModelView, error)
 }
 
 // ErrSkillNotFound is returned by a FleetListReader.Skill when no Skill the caller
@@ -598,6 +633,75 @@ func (r *ClientFleetListReader) AgentDetail(ctx context.Context, teamUID, name, 
 	return AgentDetail{}, ErrTeamNotFound
 }
 
+// EffectiveModel resolves the effective model + provenance tier for one Agent by
+// name (ISI-4892 / S3). It mirrors AgentDetail's scope-and-find, then runs the
+// shipped resolver over the SAME client.Reader (informer cache in the host), so
+// the console renders a pure projection of the Go precedence rule (Agent → Role →
+// system-default ModelConfig) rather than re-implementing it. Read-only.
+func (r *ClientFleetListReader) EffectiveModel(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (EffectiveModelView, error) {
+	if name == "" {
+		return EffectiveModelView{}, ErrTeamNotFound
+	}
+	ns, err := r.detailNamespace(ctx, teamUID, targetTeamUID, admin)
+	if err != nil {
+		return EffectiveModelView{}, err
+	}
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents, client.InNamespace(ns)); err != nil {
+		return EffectiveModelView{}, err
+	}
+	var agent *ksquadv1.Agent
+	for i := range agents.Items {
+		if agents.Items[i].Name == name {
+			agent = &agents.Items[i]
+			break
+		}
+	}
+	if agent == nil {
+		return EffectiveModelView{}, ErrTeamNotFound
+	}
+
+	// Fetch the referenced Role best-effort: a dangling roleRef contributes
+	// nothing to the walk (its own guard, GuardAgentRole, owns rejection), while a
+	// transient read error fails closed so the read-out never lies about the tier.
+	var role *ksquadv1.Role
+	if agent.Spec.RoleRef.Name != "" {
+		roleNS := agent.Spec.RoleRef.Namespace
+		if roleNS == "" {
+			roleNS = agent.Namespace
+		}
+		var ro ksquadv1.Role
+		switch err := r.reader.Get(ctx, client.ObjectKey{Namespace: roleNS, Name: agent.Spec.RoleRef.Name}, &ro); {
+		case err == nil:
+			role = &ro
+		case apierrors.IsNotFound(err):
+			// dangling roleRef — role tier contributes nothing
+		default:
+			return EffectiveModelView{}, err
+		}
+	}
+
+	resolver := modelendpoint.Resolver{Reader: r.reader}
+	primary, fallback, tier, ok, err := resolver.ResolveEffective(ctx, agent, role)
+	if errors.Is(err, modelendpoint.ErrNoModel) {
+		// Fail-closed (ISI-4430 D3): a non-error verdict for the read-out — it
+		// renders the non-blocking guardrail, not a 5xx.
+		return EffectiveModelView{Unresolved: true, RoleName: agent.Spec.RoleRef.Name}, nil
+	}
+	if err != nil {
+		return EffectiveModelView{}, err
+	}
+	view := EffectiveModelView{
+		Model:    primary.Model,
+		Tier:     string(tier),
+		RoleName: agent.Spec.RoleRef.Name,
+	}
+	if ok {
+		view.FallbackModel = fallback.Model
+	}
+	return view, nil
+}
+
 // RoleDetail projects a single Role's authoring spec by name (ADR-0016).
 func (r *ClientFleetListReader) RoleDetail(ctx context.Context, teamUID, name, targetTeamUID string, admin bool) (RoleDetail, error) {
 	if name == "" {
@@ -876,6 +980,31 @@ func (s *Server) squadAgentDetail(reader FleetListReader) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, detail)
+	}
+}
+
+// squadAgentEffectiveModel is the handler behind GET
+// /api/squad/agents/{name}/effective-model (ISI-4892 / S3). It rides the SAME §13
+// authz choke point and act-as-team scoping as squadAgentDetail: a name the caller
+// may not see (or that does not exist) is existence-hiding 404, never a 403. The
+// body is the read-only EffectiveModelView (Model + provenance tier); a fail-closed
+// resolution is a structured 200 (unresolved:true), not a 5xx. GET-only.
+func (s *Server) squadAgentEffectiveModel(reader FleetListReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, admin, ok := authScopeAdmin(w, r)
+		if !ok {
+			return
+		}
+		view, err := reader.EffectiveModel(r.Context(), auth, muxVar(r, "name"), r.URL.Query().Get("team"), admin)
+		if errors.Is(err, ErrTeamNotFound) {
+			writeJSONError(w, http.StatusNotFound, "no such agent")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadGateway, "effective-model read unavailable")
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

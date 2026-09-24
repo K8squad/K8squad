@@ -499,6 +499,12 @@ func (s *Server) routes(opts Options) {
 		fleetRoleOne.Use(authz)
 		fleetProjectOne := s.router.Path("/api/squad/projects/{name}").Subrouter()
 		fleetProjectOne.Use(authz)
+		// ISI-4892 / S3: the read-only effective-model projection the Agent form's
+		// EffectiveModelReadout renders against — one GET that projects the shipped
+		// Model-Per-Role resolver (Agent→Role→default). Rides the SAME choke point
+		// and act-as-team scoping as the agent-detail read; no mutating verb.
+		fleetAgentEffective := s.router.Path("/api/squad/agents/{name}/effective-model").Subrouter()
+		fleetAgentEffective.Use(authz)
 		if opts.FleetList != nil {
 			fleetTeams.HandleFunc("", s.squadTeams(opts.FleetList)).Methods(http.MethodGet)
 			fleetTeamOne.HandleFunc("", s.squadTeamDetail(opts.FleetList)).Methods(http.MethodGet)
@@ -507,6 +513,7 @@ func (s *Server) routes(opts Options) {
 			fleetSkillOne.HandleFunc("", s.squadSkillDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", s.squadRoles(opts.FleetList)).Methods(http.MethodGet)
 			fleetAgentOne.HandleFunc("", s.squadAgentDetail(opts.FleetList)).Methods(http.MethodGet)
+			fleetAgentEffective.HandleFunc("", s.squadAgentEffectiveModel(opts.FleetList)).Methods(http.MethodGet)
 			fleetRoleOne.HandleFunc("", s.squadRoleDetail(opts.FleetList)).Methods(http.MethodGet)
 			fleetProjectOne.HandleFunc("", s.squadProjectDetail(opts.FleetList)).Methods(http.MethodGet)
 		} else {
@@ -518,6 +525,7 @@ func (s *Server) routes(opts Options) {
 			fleetSkillOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoles.HandleFunc("", h).Methods(http.MethodGet)
 			fleetAgentOne.HandleFunc("", h).Methods(http.MethodGet)
+			fleetAgentEffective.HandleFunc("", h).Methods(http.MethodGet)
 			fleetRoleOne.HandleFunc("", h).Methods(http.MethodGet)
 			fleetProjectOne.HandleFunc("", h).Methods(http.MethodGet)
 		}
