@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"log"
@@ -30,7 +31,24 @@ import (
 	"github.com/K8squad/K8squad/internal/handoffmirror"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/pkg/coord"
+	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 )
+
+// decodeSigningKey mirrors cmd/operator.decodeSigningKey / internal/apiserver's
+// key decode: accept a raw or base64-encoded HS256 key so cmd/memory reads the
+// SAME KSQUAD_JWT_SIGNING_KEY value the control plane mints with (a shared Secret
+// mints and verifies the run capability token, ADR-0024a D2 option (a)). A
+// too-short/invalid value is handed through verbatim so mcpauthtoken.NewMinter
+// rejects it loudly (< 32 bytes).
+func decodeSigningKey(key string) []byte {
+	if raw, err := base64.RawStdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	if raw, err := base64.StdEncoding.DecodeString(key); err == nil && len(raw) >= 32 {
+		return raw
+	}
+	return []byte(key)
+}
 
 func main() {
 	var (
@@ -132,6 +150,23 @@ func main() {
 			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update/assign)")
 		} else {
 			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign honestly unavailable — no Team-agent resolver, ISI-4743)")
+		}
+		// ADR-0024a S3/D2 (ISI-4869): enable the token-auth (sandbox) path when the
+		// shared HS256 signing key is distributed to this process (D2 option (a) —
+		// the SAME KSQUAD_JWT_SIGNING_KEY the control plane mints with). A sandbox
+		// then reaches the authoring tools with a verified run capability token, and
+		// its client X-* identity headers are discarded. No key ⇒ the token path
+		// stays off and only the trusted BFF header path serves (inert until the key
+		// is delivered — Henrik's D2 readiness call on key distribution).
+		if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" {
+			if minter, merr := mcpauthtoken.NewMinter(decodeSigningKey(raw), 0); merr != nil {
+				log.Printf("ksquad-memory: run-capability-token auth DISABLED — KSQUAD_JWT_SIGNING_KEY invalid (sandbox authoring stays header-path only): %v", merr)
+			} else {
+				mcpTools.WithAuthoringTokenAuth(memory.NewMCPAuthTokenVerifier(minter))
+				log.Printf("ksquad-memory: run-capability-token auth ENABLED — sandbox authoring accepts verified tokens; client X-* identity headers discarded on that path (ADR-0024a S3/D2)")
+			}
+		} else {
+			log.Printf("ksquad-memory: run-capability-token auth off — no KSQUAD_JWT_SIGNING_KEY; authoring served on the trusted BFF header path only (ADR-0024a S3/D2 inert)")
 		}
 	}
 

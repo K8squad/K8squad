@@ -47,6 +47,13 @@ type Claims struct {
 	// cannot widen it. Empty on ordinary session JWTs and on IC run tokens; the
 	// org/project coord API checks it server-side on every privileged call.
 	Scopes []string `json:"scp,omitempty"`
+	// AgentID binds a run token to the specific dispatched agent (ADR-0024a S3,
+	// ISI-4869): the MCP authoring token carries the agent whose grant seeded its
+	// capabilities so the memory `/mcp` edge derives authorship from the VERIFIED
+	// claim, never a client-supplied X-Agent-Id header, and S5 can match it
+	// against the work item's dispatch claim (custody-match). Empty on console
+	// session JWTs and on the task-io token (which binds by run/work-item only).
+	AgentID string `json:"agid,omitempty"`
 }
 
 // JWTIssuer issues HS256 mint/Verify pair.

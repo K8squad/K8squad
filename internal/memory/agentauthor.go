@@ -94,6 +94,14 @@ type AgentSession struct {
 	AgentID      string
 	RunID        string
 	Capabilities []string
+	// ViaToken is true when this session was authenticated from a verified run
+	// capability token (ADR-0024a S3/D2, the sandbox path) rather than the
+	// BFF-stamped X-* headers (the trusted-network path). On the token path the
+	// Capabilities above are derived from the VERIFIED token claims (mint-time
+	// grant, S4), never a client X-Agent-Capabilities header. The
+	// TokenCapabilityResolver refuses a session where this is false, so the
+	// token-path gate can never be reached with header-sourced capabilities.
+	ViaToken bool
 }
 
 // WorkItemAuthorCapability is the capability slug the gate checks (O-1).
@@ -113,6 +121,34 @@ func NewHeaderCapabilityResolver() *HeaderCapabilityResolver { return &HeaderCap
 // HasWorkItemAuthor implements CapabilityResolver: true iff the session's stamped
 // capability set contains work_item.author.
 func (r *HeaderCapabilityResolver) HasWorkItemAuthor(_ context.Context, sess AgentSession) (bool, error) {
+	for _, c := range sess.Capabilities {
+		if c == WorkItemAuthorCapability {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// TokenCapabilityResolver is the O-1 resolver for the token-auth (sandbox) path
+// (ADR-0024a S3/D2, ISI-4869). It reads the grant from the session's capability
+// set exactly like HeaderCapabilityResolver — but on the token path that set is
+// derived from the VERIFIED run-capability-token claims (the mint-time grant
+// baked in from the agent's role, S4), never a client X-Agent-Capabilities
+// header. It is deny-by-default AND refuses any session that did not arrive via
+// a verified token (sess.ViaToken == false), so it can never be reached with
+// header-sourced capabilities even if wired on the wrong path.
+type TokenCapabilityResolver struct{}
+
+// NewTokenCapabilityResolver builds the token-path resolver.
+func NewTokenCapabilityResolver() *TokenCapabilityResolver { return &TokenCapabilityResolver{} }
+
+// HasWorkItemAuthor implements CapabilityResolver: true iff the session arrived
+// via a verified token AND its (token-derived) capability set contains
+// work_item.author.
+func (r *TokenCapabilityResolver) HasWorkItemAuthor(_ context.Context, sess AgentSession) (bool, error) {
+	if !sess.ViaToken {
+		return false, nil // defense in depth: never grant a non-token session here.
+	}
 	for _, c := range sess.Capabilities {
 		if c == WorkItemAuthorCapability {
 			return true, nil
@@ -238,12 +274,21 @@ func (m *ToolMCP) requireAuthor(ctx context.Context, sess mcpSession) (authorIde
 		msg := "work_item authoring requires a server-authenticated team scope (X-Team-Id)"
 		return authorIdentity{}, &msg
 	}
-	if m.caps == nil {
+	// Select the capability resolver by the path the session arrived on
+	// (ADR-0024a S3/D2): a token-authenticated (sandbox) session is gated by the
+	// TokenCapabilityResolver over its VERIFIED-claim capabilities; a header
+	// (BFF) session by the header resolver. The selection is by the session's
+	// authenticated origin, never a config flag or a client-supplied field.
+	resolver := m.caps
+	if sess.viaToken {
+		resolver = m.tokenCaps
+	}
+	if resolver == nil {
 		msg := "capability denied: no capability resolver configured (deny-by-default)"
 		return authorIdentity{}, &msg
 	}
-	as := AgentSession{TeamID: sess.team, Principal: sess.principal, AgentID: agentID, RunID: runID, Capabilities: sess.capabilities}
-	ok, err := m.caps.HasWorkItemAuthor(ctx, as)
+	as := AgentSession{TeamID: sess.team, Principal: sess.principal, AgentID: agentID, RunID: runID, Capabilities: sess.capabilities, ViaToken: sess.viaToken}
+	ok, err := resolver.HasWorkItemAuthor(ctx, as)
 	if err != nil {
 		msg := "capability check unavailable: " + err.Error() // fail-closed: refuse, never allow on error.
 		return authorIdentity{}, &msg
