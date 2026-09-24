@@ -1127,6 +1127,15 @@ var composeKinds = []struct {
 	{"agents", func(s *ComposeService) http.HandlerFunc { return s.handleAgent(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgent(false) }, func(s *ComposeService) http.HandlerFunc { return s.handleAgentDelete() }},
 	{"roles", func(s *ComposeService) http.HandlerFunc { return s.handleRole(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleRole(false) }, nil},
 	{"skills", func(s *ComposeService) http.HandlerFunc { return s.handleSkill(true) }, func(s *ComposeService) http.HandlerFunc { return s.handleSkill(false) }, nil},
+	// modelconfig (ISI-4890): the org-default model tier, a FIXED singleton
+	// (k8squad-system/default, admin-only) — not team-scoped. Both POST and PUT
+	// resolve to the SAME upsert (handleModelConfig ignores any {name} path var and
+	// pins the identity in planModelConfig), so the console's Save is idempotent
+	// create-or-edit of the one object. It rides the compose machine ONLY to reuse
+	// the ADR-013 authz choke point + upsert-with-revision + provenance (S0 §14.2);
+	// it is NOT authored via the compose WIZARD (COMPOSE_KINDS in lib/compose.ts is
+	// the wizard's form set; this kind is edited from Settings→Configuration).
+	{"modelconfig", func(s *ComposeService) http.HandlerFunc { return s.handleModelConfig() }, func(s *ComposeService) http.HandlerFunc { return s.handleModelConfig() }, nil},
 }
 
 // mountComposeRoutes installs POST /api/{kind} + PUT /api/{kind}/{name} for each
@@ -1159,6 +1168,23 @@ func (s *Server) mountComposeRoutes(authz mux.MiddlewareFunc, opts Options) {
 				item.HandleFunc("", h).Methods(http.MethodDelete)
 			}
 		}
+	}
+
+	// ModelConfig singleton READ (ISI-4890): GET /api/modelconfig hydrates the
+	// Settings→Configuration Model Priority section from the org-default
+	// ModelConfig/default. A DISTINCT GET subrouter from the POST /api/modelconfig
+	// compose collection above — mux routes them by method, exactly as /api/teams
+	// has a GET read model beside the POST compose collection. A 404 is the
+	// empty-form state (no default configured yet), not an error. Admin-only in the
+	// handler, matching the adminOnly write scope. A nil ComposeService keeps the
+	// documented 501 so the route stays a discoverable contract.
+	modelConfigGet := s.router.Path("/api/modelconfig").Subrouter()
+	modelConfigGet.Use(authz)
+	if opts.ComposeCRD != nil {
+		modelConfigGet.HandleFunc("", opts.ComposeCRD.handleModelConfigGet()).Methods(http.MethodGet)
+	} else {
+		modelConfigGet.HandleFunc("", notImplemented("model-config read model", "ISI-4890: wire a ComposeService (controller-runtime client) to enable")).
+			Methods(http.MethodGet)
 	}
 
 	// Squad materialize (ISI-3677, AD-3): POST /api/compose/squad turns a

@@ -219,6 +219,9 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"projects"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"skills"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"roles"}, Verbs: []string{"get", "list", "create", "update"}},
+		// modelconfigs (ISI-4890): org-default model tier — compose upsert of the
+		// fixed k8squad-system/default singleton + hydration GET. No list (singleton).
+		{APIGroups: []string{"ksquad.io"}, Resources: []string{"modelconfigs"}, Verbs: []string{"get", "create", "update"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"agentruntimes", "runs"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"egresspolicies"}, Verbs: []string{"get", "list"}},
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},

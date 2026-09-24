@@ -226,6 +226,16 @@ rules:
 - apiGroups: [ksquad.io]
   resources: [roles]
   verbs: [get, list, create, update]
+# modelconfigs (ISI-4890): the org-default model tier is written through the SAME
+# compose path (POST/PUT /api/modelconfig → handleModelConfig upsert of the fixed
+# k8squad-system/default singleton) and hydrated by GET /api/modelconfig. get =
+# hydration + the upsert's Get-then-Create-or-Update; create+update = the upsert.
+# No list (it is a fixed singleton, no fleet list), no watch/patch/delete. The
+# operator only READS this CR (the resolver, pkg/modelendpoint) — its write lives
+# here, on the apiserver's compose SA.
+- apiGroups: [ksquad.io]
+  resources: [modelconfigs]
+  verbs: [get, create, update]
 # agentruntimes + runs are READ-ONLY, informer-cache-backed (ISI-3932): the
 # Agents org read model (org.go load()/AgentRuns/AgentStatuses) and the squad
 # overview read model (overview.go), both wired over NewCacheReader, List these

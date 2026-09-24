@@ -4748,3 +4748,77 @@ a:hover {
 .effective-model--loading {
   opacity: 0.6;
 }
+/* ── Model Priority section (ISI-4890 S1) — org-default model tier on Settings→Configuration.
+   Reuses .card / .btn / .chip / .state / .muted and the compose ModelSelector; adds only layout
+   and the per-adapter tint (LOCKED status hues via --adapter-accent, no new color tokens). */
+.settings-modelpriority {
+  margin-bottom: 24px;
+}
+.settings-modelpriority__form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-modelpriority__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings-modelpriority__guardrail {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* RuntimeAdapterStep (Frame-4) — adapter selector + per-adapter credential branch fronting
+   ModelSelector. --adapter-accent is set inline per adapter (claude=--accent, codex=--status-paused,
+   opencode=--status-running). Shared with S2 (ISI-4891). */
+.runtime-adapter {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.runtime-adapter__tabs {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.runtime-adapter__tab {
+  padding: 6px 14px;
+  border-radius: var(--radius-chip, 999px);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+}
+.runtime-adapter__tab:hover {
+  border-color: color-mix(in srgb, var(--adapter-accent) 45%, var(--border));
+}
+.runtime-adapter__tab.is-active {
+  color: var(--adapter-accent);
+  border-color: var(--adapter-accent);
+  background: color-mix(in srgb, var(--adapter-accent) 12%, transparent);
+}
+.runtime-adapter__tab:focus-visible {
+  outline: 2px solid var(--adapter-accent);
+  outline-offset: 2px;
+}
+.runtime-adapter__cred {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--adapter-accent) 30%, var(--border));
+  border-left: 3px solid var(--adapter-accent);
+  background: color-mix(in srgb, var(--adapter-accent) 6%, transparent);
+}
+.runtime-adapter__cred .muted {
+  margin: 0;
+}
+.chip--soon {
+  color: var(--text-2);
+  border-color: var(--border);
+  margin-left: 6px;
+}
