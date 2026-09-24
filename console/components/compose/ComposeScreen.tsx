@@ -33,6 +33,7 @@ import { STATUS_META, WORKING_PHASES } from "@/lib/tickets/statusColor";
 import { TeamForm } from "./TeamForm";
 import { ProjectForm } from "./ProjectForm";
 import { AgentForm } from "./AgentForm";
+import { ModelSelector } from "./ModelSelector";
 
 type Mode = ComposeMode;
 
@@ -1016,6 +1017,24 @@ function KindFields({
               onChange={(e) => patch({ defaultSkills: e.target.value })}
             />
           </Field>
+
+          {/* ── ISI-4891 S2 role-tier model (Flow B) ──
+              Reuses the Agent ModelSelector with the role-tier constraints: a blank model
+              inherits the org default (blankMeansInherit), and there is no primary BYO
+              endpoint (hidePrimaryByo) — RoleSpec has no primary modelEndpointRef, so BYO is
+              bindable only on the fallback (plan §14.1). The primary+fallback slots, curated
+              picker, custom escape hatch, and same-provider ⚠ all come from ModelSelector. */}
+          <ModelSelector
+            model={f.model}
+            modelEndpointRef=""
+            byoEnabled={false}
+            fallbackModel={f.fallbackModel}
+            fallbackModelEndpointRef={f.fallbackModelEndpointRef}
+            errors={errors}
+            patch={patch}
+            hidePrimaryByo
+            blankMeansInherit
+          />
 
           {/* ── ISI-4431 phase-lifecycle authoring (E6) ── */}
           {/* Phase multi-select → activePhases. Rendered as a fieldset (not a Field, whose

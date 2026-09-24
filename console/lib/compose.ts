@@ -171,6 +171,19 @@ export type RoleForm = {
   // rejects a mode set while coordinator=false — so it never rides the wire unless the
   // toggle is on.
   coordinatorMode: string; // "" | "auto" | "propose"
+  // ── ISI-4891 S2 role-tier model (Flow B) ──
+  // model is the role-tier model id → Role.spec.model. BLANK ⇒ inherit the org
+  // default (system ModelConfig singleton): the role pins no model and resolution
+  // falls through to the default tier. Unlike the Agent form, there is NO primary
+  // `modelEndpointRef`/`byoEnabled` here — RoleSpec has no primary endpoint field
+  // (plan §14.1), so a BYO endpoint is expressible ONLY on the fallback below.
+  model: string;
+  // fallbackModel is the role-tier secondary model (Role.spec.fallbackModel.model),
+  // and fallbackModelEndpointRef optionally binds its own BYO endpoint Secret
+  // ("name" or "name/key") — the role's one BYO seam. Both mirror the Agent form's
+  // fallback fields and only ride the wire when a fallbackModel is set.
+  fallbackModel: string;
+  fallbackModelEndpointRef: string;
 };
 
 export type SkillSourceType = "inline" | "git";
@@ -234,6 +247,9 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
           activePhases: [],
           coordinator: false,
           coordinatorMode: "",
+          model: "",
+          fallbackModel: "",
+          fallbackModelEndpointRef: "",
         },
       };
     case "skills":
@@ -354,6 +370,20 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
               ...(f.coordinatorMode.trim() ? { coordinatorMode: f.coordinatorMode.trim() } : {}),
             }
           : {}),
+        // Role-tier model (ISI-4891 S2): a blank model is omitted entirely — the role
+        // pins nothing and resolution inherits the org default. The primary has no BYO
+        // endpoint (RoleSpec lacks the field); only the fallback carries its own ref.
+        ...(f.model.trim() ? { model: f.model.trim() } : {}),
+        ...(f.fallbackModel.trim()
+          ? {
+              fallbackModel: {
+                model: f.fallbackModel.trim(),
+                ...(f.fallbackModelEndpointRef.trim()
+                  ? { modelEndpointRef: parseSecretRef(f.fallbackModelEndpointRef) }
+                  : {}),
+              },
+            }
+          : {}),
       };
     }
     case "skills": {
@@ -438,6 +468,9 @@ interface RoleWire {
   activePhases?: string[];
   coordinator?: boolean;
   coordinatorMode?: string;
+  // ISI-4891 S2: role-tier model + fallback (no primary modelEndpointRef on RoleSpec).
+  model?: string;
+  fallbackModel?: { model?: string; modelEndpointRef?: WireSecretRef | null } | null;
 }
 interface ProjectWire {
   name?: string;
@@ -517,6 +550,11 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
           activePhases: WORKING_PHASES.filter((p) => (r.activePhases ?? []).includes(p)),
           coordinator: !!r.coordinator,
           coordinatorMode: r.coordinatorMode ?? "",
+          // ISI-4891 S2: hydrate role-tier model + fallback. A blank model round-trips
+          // to "inherit org default"; the fallback's own endpoint ref (if any) hydrates.
+          model: r.model ?? "",
+          fallbackModel: r.fallbackModel?.model ?? "",
+          fallbackModelEndpointRef: secretRefToString(r.fallbackModel?.modelEndpointRef),
         },
       };
     }

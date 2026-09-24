@@ -461,6 +461,74 @@ func TestComposeAgentPersistsCredentialClassAndFallback(t *testing.T) {
 	}
 }
 
+// ── role-tier model + fallback persist onto the Role spec (ISI-4891 S2, Flow B) ──
+//
+// Model-Per-Role (ISI-4430) resolves Agent→Role→ModelConfig; S2 lets Compose→Roles author the
+// role tier. `model` + `fallbackModel` must round-trip through roleRequest → planRole onto
+// Role.spec, reusing the shared fallbackModelWire. RoleSpec has NO primary modelEndpointRef, so
+// the role's only BYO seam is the fallback's own endpoint ref (plan §14.1).
+func TestComposeRolePersistsModelAndFallback(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := roleRequest{
+		Project:   "widget",
+		Name:      "engineer",
+		PromptRef: objectRefWire{Name: "engineer-prompt"},
+		Model:     "claude-opus-4-8",
+		FallbackModel: &fallbackModelWire{
+			Model:            "claude-haiku-4-5",
+			ModelEndpointRef: &secretRefWire{Name: "fb-endpoint", Key: "url"},
+		},
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Role
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "engineer"}, &got); err != nil {
+		t.Fatalf("role not applied: %v", err)
+	}
+	if got.Spec.Model != "claude-opus-4-8" {
+		t.Fatalf("role model not persisted: %q", got.Spec.Model)
+	}
+	if got.Spec.FallbackModel == nil || got.Spec.FallbackModel.Model != "claude-haiku-4-5" {
+		t.Fatalf("role fallbackModel not persisted: %+v", got.Spec.FallbackModel)
+	}
+	if got.Spec.FallbackModel.ModelEndpointRef == nil ||
+		got.Spec.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" ||
+		got.Spec.FallbackModel.ModelEndpointRef.Key != "url" {
+		t.Fatalf("role fallback endpoint ref not persisted: %+v", got.Spec.FallbackModel.ModelEndpointRef)
+	}
+}
+
+// ── a Role composed with a blank model inherits the org default (no phantom persist) ───────────
+//
+// A blank role-tier model is valid — it means "inherit the system-default ModelConfig". The empty
+// string must round-trip as an unset spec.Model, and no fallback should be persisted when unset.
+func TestComposeRoleBlankModelInherits(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := roleRequest{
+		Project:   "widget",
+		Name:      "reviewer",
+		PromptRef: objectRefWire{Name: "reviewer-prompt"},
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Role
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "reviewer"}, &got); err != nil {
+		t.Fatalf("role not applied: %v", err)
+	}
+	if got.Spec.Model != "" {
+		t.Fatalf("blank role model must stay unset, got %q", got.Spec.Model)
+	}
+	if got.Spec.FallbackModel != nil {
+		t.Fatalf("unset fallback must not persist: %+v", got.Spec.FallbackModel)
+	}
+}
+
 // ── an Agent composed without the optional fields leaves them unset (no phantom persist) ────────
 func TestComposeAgentOmitsUnsetOptionalFields(t *testing.T) {
 	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
