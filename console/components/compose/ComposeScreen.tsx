@@ -34,6 +34,7 @@ import { TeamForm } from "./TeamForm";
 import { ProjectForm } from "./ProjectForm";
 import { AgentForm } from "./AgentForm";
 import { ModelSelector } from "./ModelSelector";
+import { RuntimeAdapterStep } from "./RuntimeAdapterStep";
 
 type Mode = ComposeMode;
 
@@ -1038,23 +1039,32 @@ function KindFields({
             />
           </Field>
 
-          {/* ── ISI-4891 S2 role-tier model (Flow B) ──
+          {/* ── ISI-4891 S2 role-tier model (Flow B) + Frame-4 fold-in ──
               Reuses the Agent ModelSelector with the role-tier constraints: a blank model
               inherits the org default (blankMeansInherit), and there is no primary BYO
               endpoint (hidePrimaryByo) — RoleSpec has no primary modelEndpointRef, so BYO is
               bindable only on the fallback (plan §14.1). The primary+fallback slots, curated
-              picker, custom escape hatch, and same-provider ⚠ all come from ModelSelector. */}
-          <ModelSelector
-            model={f.model}
-            modelEndpointRef=""
-            byoEnabled={false}
-            fallbackModel={f.fallbackModel}
-            fallbackModelEndpointRef={f.fallbackModelEndpointRef}
-            errors={errors}
-            patch={patch}
-            hidePrimaryByo
-            blankMeansInherit
-          />
+              picker, custom escape hatch, and same-provider ⚠ all come from ModelSelector.
+              RuntimeAdapterStep (the titled Frame-4 fold, shared verbatim with S1 ISI-4890)
+              fronts the selector with the per-runtime credential branch (claude token-only +
+              coming-soon OAuth / codex token / opencode manual-entry). `adapter` is UI-only —
+              never serialized — so the persisted role model triple is unchanged. */}
+          <RuntimeAdapterStep
+            adapter={f.adapter}
+            onAdapterChange={(adapter) => patch({ adapter })}
+          >
+            <ModelSelector
+              model={f.model}
+              modelEndpointRef=""
+              byoEnabled={false}
+              fallbackModel={f.fallbackModel}
+              fallbackModelEndpointRef={f.fallbackModelEndpointRef}
+              errors={errors}
+              patch={patch}
+              hidePrimaryByo
+              blankMeansInherit
+            />
+          </RuntimeAdapterStep>
 
           {/* ── ISI-4431 phase-lifecycle authoring (E6) ── */}
           {/* Phase multi-select → activePhases. Rendered as a fieldset (not a Field, whose

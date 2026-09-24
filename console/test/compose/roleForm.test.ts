@@ -109,6 +109,14 @@ describe("RoleForm — role-tier model wire (ISI-4891 S2, Flow B)", () => {
       validate(baseRole({ model: "claude-opus-4-8", fallbackModel: "claude-haiku-4-5" })),
     ).toEqual({});
   });
+
+  // ISI-4891 Frame-4 fold-in: RuntimeAdapterStep's `adapter` is a UI-only credential
+  // branch — it must NEVER ride the wire (the persisted role spec is adapter-agnostic).
+  it("never serializes the runtime adapter (UI-only credential branch)", () => {
+    const wire = toWire(baseRole({ model: "claude-opus-4-8", adapter: "opencode" }));
+    expect(wire).not.toHaveProperty("adapter");
+    expect(wire.model).toBe("claude-opus-4-8");
+  });
 });
 
 describe("workingPhaseOf — honest empty phase (FR-7)", () => {
