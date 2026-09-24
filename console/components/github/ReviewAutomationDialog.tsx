@@ -14,10 +14,12 @@
 //     NO reviewer-eligibility pre-check — it gates the form on the server's
 //     `canEdit` (read-only when false) and surfaces the write-time 422 (invalid
 //     enum OR reviewer-not-code_review-capable) inline against the fields.
-//   - The reviewer dropdown lists ALL team agents (listSquadAgents): no console
-//     read model exposes the `code_review` capability, so eligibility is
-//     enforced by the E1 422 backstop, not fabricated here. A future backend
-//     eligible-agents surface (ISI-4779) is a 1-line data-source swap.
+//   - The reviewer dropdown lists the code_review-capable team agents from the
+//     D5 eligible-agents read surface (listEligibleReviewers → ISI-4779), which
+//     the apiserver pre-filters via the SHARED pkg/reviewauto resolver. This is a
+//     convenience pre-filter, NOT the wall: the E1 write-time 422 remains the
+//     authoritative eligibility check (an agent that loses the capability between
+//     load and save is still rejected on write).
 //   - `enabledBy` (provenance) is server-stamped and shown read-only; it is
 //     never sent back on write. Writing this config is inert until E3/E4 land —
 //     the dialog says so honestly rather than implying live reviews.
@@ -35,7 +37,7 @@ import {
   type ReviewScope,
   type ReviewTrigger,
 } from "@/lib/github-status";
-import { listSquadAgents, type AgentOption } from "@/lib/tickets/api";
+import { listEligibleReviewers, type AgentOption } from "@/lib/tickets/api";
 
 const SCOPES: ReviewScope[] = ["team_authored", "all"];
 const TRIGGERS: ReviewTrigger[] = ["on_open", "on_new_commits"];
@@ -82,17 +84,19 @@ export function ReviewAutomationDialog({
     };
   }, [projectId]);
 
-  // Populate the reviewer dropdown (best-effort; failure degrades to an empty
-  // roster so the field still renders "Select an agent" alone).
+  // Populate the reviewer dropdown from the D5 eligible-agents pre-filter
+  // (ISI-4779): only code_review-capable team agents. Best-effort — failure
+  // degrades to an empty roster so the field still renders "Select an agent"
+  // alone, and the write-time 422 stays the authoritative eligibility backstop.
   useEffect(() => {
     let alive = true;
-    void listSquadAgents().then((list) => {
+    void listEligibleReviewers(projectId).then((list) => {
       if (alive) setAgents(list);
     });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [projectId]);
 
   // Close on Escape (a11y for a modal dialog); focus the first field on open.
   useEffect(() => {

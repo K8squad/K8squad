@@ -785,6 +785,26 @@ func (s *Server) routes(opts Options) {
 				Methods(http.MethodGet, http.MethodPut, http.MethodPatch)
 		}
 
+		// ISI-4779 (ISI-4750 E2 follow-up): the D5 eligible-agents read surface —
+		// the reviewer-dropdown client-side pre-filter. E2 was listing ALL team
+		// agents (GET /api/squad/agents) and leaning on E1's write-time 422 to
+		// reject a non-code_review-capable reviewer; this surfaces the pre-filtered
+		// roster so the dropdown shows only eligible agents (the 422 stays as the
+		// authoritative backstop). Member+ read behind the SAME §12.3 choke point +
+		// requireProjectRole(viewer) gate as the config read. Nil service ⇒ 501.
+		eligibleAgents := s.router.Path("/api/projects/{projectId}/repo/review-automation/eligible-agents").Subrouter()
+		eligibleAgents.Use(authz)
+		eligibleAgents.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		if opts.ProjectRoles != nil {
+			eligibleAgents.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.ReviewAutomation != nil {
+			eligibleAgents.HandleFunc("", s.reviewAutomationEligibleAgents(opts.ReviewAutomation)).Methods(http.MethodGet)
+		} else {
+			eligibleAgents.HandleFunc("", notImplemented("review-automation eligible-agents API", "ISI-4779: wire a ReviewAutomationService to enable")).
+				Methods(http.MethodGet)
+		}
+
 		// S4b — Project File Explorer (ISI-3991, ADR-0012 §D2): read-only workspace browse
 		// backed by the S4a reader-pod protocol. Both routes sit behind the §13 choke point
 		// and requireProjectRole(Viewer). A nil WorkspaceReader answers 501 so S4c degrades

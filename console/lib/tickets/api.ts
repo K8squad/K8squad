@@ -182,6 +182,36 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
   }
 }
 
+/**
+ * List a project's code_review-capable agents for the review-automation reviewer
+ * dropdown (ISI-4779 / ISI-4750 E2). Proxies GET
+ * /api/projects/{projectId}/repo/review-automation/eligible-agents
+ * (reviewautomation.go EligibleAgentsView → {agents:[{id,name}]}), which the
+ * apiserver pre-filters to the project team's agents whose Role carries the D5
+ * code_review capability. The row `name` is the value the dialog submits as
+ * reviewerAgentId (the identity the write-time 422 matches on). BEST-EFFORT: any
+ * failure (unhosted 501, 404 existence-hiding, network) degrades to an empty
+ * roster so the dropdown still renders "Select an agent" alone — the write-time
+ * 422 remains the authoritative eligibility backstop.
+ */
+export async function listEligibleReviewers(projectId: string): Promise<AgentOption[]> {
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/repo/review-automation/eligible-agents`,
+      { headers: { accept: "application/json" }, cache: "no-store" },
+    );
+    if (!res.ok) return [];
+    const payload = (await res.json()) as { agents?: unknown };
+    const rows = Array.isArray(payload.agents) ? payload.agents : [];
+    return rows
+      .map((r) => r as { id?: unknown; name?: unknown })
+      .filter((r) => typeof r.id === "string" && typeof r.name === "string")
+      .map((r) => ({ id: r.id as string, name: r.name as string }));
+  } catch {
+    return [];
+  }
+}
+
 /** Result of a board dispatch (workitemdispatch.go WorkItemDispatchResult). */
 export interface DispatchResult {
   workItemId: string;

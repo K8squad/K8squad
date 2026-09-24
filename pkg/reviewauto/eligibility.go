@@ -158,6 +158,80 @@ func CheckReviewerEligibility(ctx context.Context, reader client.Reader, teamNam
 	return nil
 }
 
+// ReviewerRef is one code_review-capable team agent in the identity the E2
+// reviewer dropdown selects: Name is the agent name written as reviewerAgentId
+// (the value CheckReviewerEligibility matches on), and ID is the Agent CR UID for
+// a stable client key (mirrors the /api/squad/agents row shape).
+type ReviewerRef struct {
+	ID   string
+	Name string
+}
+
+// EligibleReviewers returns every agent in the Team owning teamNamespace whose
+// Role carries the code_review capability (D5) — the affirmative-grant roster the
+// E2 reviewer dropdown pre-filters to (ISI-4779). It applies the SAME per-agent
+// resolution as CheckReviewerEligibility (reviewerCapable), so the list and the
+// write-time 422 cannot disagree: a name this returns passes CheckReviewerEligibility,
+// and one it omits fails it.
+//
+// Returns (nil, nil) when no Team owns teamNamespace — an empty roster, not an
+// error (existence-hiding is the caller's concern). A dangling agent/role ref is
+// silently skipped (that agent is simply not eligible). Any OTHER cluster-read
+// failure is returned wrapped, for the caller to map to 502 (never a partial
+// roster presented as complete).
+func EligibleReviewers(ctx context.Context, reader client.Reader, teamNamespace string) ([]ReviewerRef, error) {
+	team, err := teamInNamespace(ctx, reader, teamNamespace)
+	if err != nil {
+		return nil, fmt.Errorf("reviewauto: resolve owning team for namespace %q: %w", teamNamespace, err)
+	}
+	if team == nil {
+		return nil, nil
+	}
+	var out []ReviewerRef
+	for _, ref := range team.Spec.Agents {
+		uid, ok, err := reviewerCapable(ctx, reader, team, ref)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, ReviewerRef{ID: uid, Name: ref.Name})
+		}
+	}
+	return out, nil
+}
+
+// reviewerCapable resolves agentRef's Agent CR and its Role within team and
+// reports whether the role is code_review-capable, returning the Agent UID for a
+// client key. It mirrors the agent→role resolution in CheckReviewerEligibility so
+// EligibleReviewers and the write-time check apply the identical D5 rule. A
+// missing Agent or Role CR ⇒ (_, false, nil): a dangling ref is not eligible,
+// never an error. Only a genuine cluster-read failure returns a non-nil error.
+func reviewerCapable(ctx context.Context, reader client.Reader, team *ksquadv1.Team, agentRef ksquadv1.ObjectRef) (string, bool, error) {
+	agentNS := agentRef.Namespace
+	if agentNS == "" {
+		agentNS = team.Namespace
+	}
+	var agent ksquadv1.Agent
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: agentNS, Name: agentRef.Name}, &agent); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("reviewauto: get agent %s/%s: %w", agentNS, agentRef.Name, err)
+	}
+	roleNS := agent.Spec.RoleRef.Namespace
+	if roleNS == "" {
+		roleNS = agent.Namespace
+	}
+	var role ksquadv1.Role
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: roleNS, Name: agent.Spec.RoleRef.Name}, &role); err != nil {
+		if apierrors.IsNotFound(err) {
+			return string(agent.UID), false, nil
+		}
+		return "", false, fmt.Errorf("reviewauto: get role %s/%s: %w", roleNS, agent.Spec.RoleRef.Name, err)
+	}
+	return string(agent.UID), RoleCodeReviewCapable(&role), nil
+}
+
 // agentRefInTeam returns the composition ref for agentID and whether it is
 // present. Match is by ObjectRef.Name — the identity Team.spec.agents carries.
 func agentRefInTeam(team *ksquadv1.Team, agentID string) (ksquadv1.ObjectRef, bool) {

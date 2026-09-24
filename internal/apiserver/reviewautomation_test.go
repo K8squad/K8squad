@@ -345,6 +345,71 @@ func TestReviewAutoBadEnum422(t *testing.T) {
 	}
 }
 
+// --- ISI-4779: eligible-agents read surface (D5 dropdown pre-filter) -----------------------------
+
+// raEligible GETs the eligible-agents surface and decodes the roster on 200.
+func raEligible(t *testing.T, h http.Handler, token, projectID string) (*httptest.ResponseRecorder, *EligibleAgentsView) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/repo/review-automation/eligible-agents", nil), token))
+	if rec.Code != http.StatusOK {
+		return rec, nil
+	}
+	var out EligibleAgentsView
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode eligible-agents: %v (body %s)", err, rec.Body.String())
+	}
+	return rec, &out
+}
+
+// The roster is pre-filtered to code_review-capable team agents: "rev" (role has
+// the code_review phase) is present, "writer" (role lacks it) is not — and the
+// list is exactly what CheckReviewerEligibility would accept on write.
+func TestReviewAutoEligibleAgentsPreFilter(t *testing.T) {
+	cl := newRAClient(t, raFixtures()...)
+	h := testReviewAutoServer(t, cl)
+	rec, v := raEligible(t, h, raViewerToken, "web") // member+ read
+	if v == nil {
+		t.Fatalf("want 200 roster, got %d: %s", rec.Code, rec.Body.String())
+	}
+	names := map[string]bool{}
+	for _, a := range v.Agents {
+		names[a.Name] = true
+	}
+	if !names["rev"] {
+		t.Fatalf("code_review-capable agent 'rev' must be listed: %+v", v.Agents)
+	}
+	if names["writer"] {
+		t.Fatalf("non-capable agent 'writer' must be filtered out: %+v", v.Agents)
+	}
+	if len(v.Agents) != 1 {
+		t.Fatalf("want exactly the one eligible agent, got %+v", v.Agents)
+	}
+}
+
+func TestReviewAutoEligibleAgentsUnauthenticated(t *testing.T) {
+	cl := newRAClient(t, raFixtures()...)
+	h := testReviewAutoServer(t, cl)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/projects/web/repo/review-automation/eligible-agents", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", rec.Code)
+	}
+}
+
+// A below-member / foreign caller gets 404 existence-hiding, mirroring the config
+// read — the roster never leaks that the project exists.
+func TestReviewAutoEligibleAgentsHidden404(t *testing.T) {
+	cl := newRAClient(t, raFixtures()...)
+	h := testReviewAutoServer(t, cl)
+	if rec, _ := raEligible(t, h, raStrangerToken, "web"); rec.Code != http.StatusNotFound {
+		t.Fatalf("below-member want 404, got %d", rec.Code)
+	}
+	if rec, _ := raEligible(t, h, raContributorToken, "does-not-exist"); rec.Code != http.StatusNotFound {
+		t.Fatalf("foreign project want 404, got %d", rec.Code)
+	}
+}
+
 // --- 501: nil service keeps the documented contract ---------------------------------------------
 
 func TestReviewAutoNilService501(t *testing.T) {
@@ -363,5 +428,11 @@ func TestReviewAutoNilService501(t *testing.T) {
 	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/web/repo/review-automation", nil), raContributorToken))
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("nil service want 501, got %d", rec.Code)
+	}
+	// ISI-4779: the eligible-agents surface honors the same nil-service 501.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, withSession(httptest.NewRequest(http.MethodGet, "/api/projects/web/repo/review-automation/eligible-agents", nil), raContributorToken))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("nil service eligible-agents want 501, got %d", rec.Code)
 	}
 }
