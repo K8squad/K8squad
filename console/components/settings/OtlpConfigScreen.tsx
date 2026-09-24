@@ -15,7 +15,14 @@
 // plus compact **signal rows** (toggle · icon · name · inherit/override chip · live status pill ·
 // expand). A signal opts into its **own endpoint** only when it genuinely differs; Remove lives in
 // the expanded panel (no standing danger button). Wire shape is unchanged — this is pure form
-// sugar over the per-signal CRD. Right-rail health/attrs + sticky action bar land in S3.
+// sugar over the per-signal CRD.
+//
+// ISI-4831 S3 (Right rail + action bar): a right rail carries an **Export health** card (rollup
+// verdict · `N of 3 exporting` · best-effort spans/min sparkline from CRD status.throughput,
+// hidden when absent — degrade-don't-blank) and a shared **Resource attributes** card (key=value
+// rows copied onto every inheriting signal; per-signal override still lives in the expanded panel,
+// OQ3). The Apply control becomes a **sticky action bar** with an unsaved-changes indicator + a
+// Discard that reverts to the last-loaded config. Still console-only — no backend/CRD change.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -139,6 +146,66 @@ function healthRollup(
   return parts.join(" · ");
 }
 
+/**
+ * Roll up enabled-signal health into a single verdict for the right-rail Export health card.
+ * `exporting` counts signals actually flowing (healthy); `enabled` is how many are switched on.
+ */
+function exportHealth(
+  wire: OtelConfigWire | null,
+  signals: Record<SignalKey, SignalSlot>,
+): { label: string; tone: StatusTone; exporting: number } {
+  let healthy = 0;
+  let erroring = 0;
+  let enabled = 0;
+  for (const key of SIGNAL_KEYS) {
+    if (!signals[key].enabled) continue;
+    enabled += 1;
+    const state = wire?.status?.signals?.[key]?.state;
+    if (state === "healthy") healthy += 1;
+    else if (state === "erroring") erroring += 1;
+  }
+  if (enabled === 0) return { label: "Not exporting", tone: "idle", exporting: 0 };
+  if (healthy === enabled) return { label: "Healthy", tone: "running", exporting: healthy };
+  if (healthy === 0 && erroring > 0)
+    return { label: "Erroring", tone: "blocked", exporting: healthy };
+  return { label: "Degraded", tone: "paused", exporting: healthy };
+}
+
+/** Inline spans/min sparkline. Renders only when the status carries a ≥2-point series. */
+function Sparkline({ data }: { data: number[] }) {
+  const w = 132;
+  const h = 34;
+  const max = Math.max(...data, 1);
+  const points = data
+    .map((v, i) => {
+      const x = data.length > 1 ? (i / (data.length - 1)) * w : 0;
+      const y = h - (Math.max(v, 0) / max) * h;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg
+      className="export-health__spark"
+      viewBox={`0 0 ${w} ${h}`}
+      width={w}
+      height={h}
+      role="img"
+      aria-label="Recent spans per minute"
+      data-testid="export-health-sparkline"
+      preserveAspectRatio="none"
+    >
+      <polyline
+        points={points}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 /** The SignalForm an inheriting signal serialises (shared copy; sampling traces-only). */
 function inheritedCopy(dest: Destination, key: SignalKey): SignalForm {
   return {
@@ -194,6 +261,8 @@ export function OtlpConfigScreen() {
   }));
   const [dirty, setDirty] = useState(false);
   const [expanded, setExpanded] = useState<SignalKey | null>(null);
+  // Bumped on Discard to re-seed the (uncontrolled) Resource attributes rows.
+  const [revision, setRevision] = useState(0);
   // Fields validate only AFTER they're touched (P4: inline, post-edit only).
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const [saveState, setSaveState] = useState<
@@ -300,6 +369,28 @@ export function OtlpConfigScreen() {
     setSlot(key, { ...cur, override: { ...cur.override, ...p } });
   }
 
+  /** Revert every edit back to the last-loaded config (or the opt-in default when absent). */
+  function discard() {
+    const model =
+      load.kind === "loaded"
+        ? fromWireShared(load.wire)
+        : {
+            destination: deriveDestination(emptyConfig()),
+            signals: {
+              traces: { enabled: false } as SignalSlot,
+              metrics: { enabled: false } as SignalSlot,
+              logs: { enabled: false } as SignalSlot,
+            },
+          };
+    setDestination(model.destination);
+    setSignals(model.signals);
+    setExpanded(null);
+    setTouched(new Set());
+    setDirty(false);
+    setSaveState({ kind: "idle" });
+    setRevision((r) => r + 1);
+  }
+
   async function save() {
     setSaveState({ kind: "saving" });
     const res = await fetch("/api/otelconfig", {
@@ -336,6 +427,8 @@ export function OtlpConfigScreen() {
 
       {load.kind !== "loading" && load.kind !== "error" && (
         <>
+        <div className="settings-otlp__body">
+          <div className="settings-otlp__main">
           {/* Destination — the shared endpoint every enabled signal inherits. */}
           <div className="card otlp-destination" data-testid="otlp-destination">
             <h2>Destination</h2>
@@ -529,8 +622,36 @@ export function OtlpConfigScreen() {
               </p>
             )}
           </div>
+          </div>
 
-          <div className="settings-otlp__actions">
+          <aside className="settings-otlp__rail" data-testid="otlp-rail">
+            <ExportHealthCard wire={wire} signals={signals} />
+            <ResourceAttributesCard
+              key={`attrs-${revision}`}
+              attrs={destination.resourceAttributes}
+              onChange={(next) => patchDestination({ resourceAttributes: next })}
+            />
+          </aside>
+        </div>
+
+        <div className="settings-otlp__actions" data-testid="otlp-actions">
+            {dirty && (
+              <span
+                className="settings-otlp__dirty"
+                data-testid="otlp-dirty"
+              >
+                Unsaved changes
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn"
+              onClick={discard}
+              disabled={!dirty || saveState.kind === "saving"}
+              data-testid="otlp-discard"
+            >
+              Discard
+            </button>
             <button
               type="button"
               className="btn btn--primary"
@@ -549,6 +670,138 @@ export function OtlpConfigScreen() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Right-rail Export health rollup: a single verdict pill, `N of 3 exporting`, and a
+ * best-effort spans/min sparkline from `status.throughput` (hidden when absent).
+ */
+function ExportHealthCard({
+  wire,
+  signals,
+}: {
+  wire: OtelConfigWire | null;
+  signals: Record<SignalKey, SignalSlot>;
+}) {
+  const verdict = exportHealth(wire, signals);
+  const throughput = wire?.status?.signals?.traces?.throughput;
+  const hasSpark = Array.isArray(throughput) && throughput.length >= 2;
+  return (
+    <div className="card export-health" data-testid="export-health">
+      <h2>Export health</h2>
+      <span
+        className={`pill pill--${verdict.tone} export-health__verdict`}
+        data-testid="export-health-verdict"
+      >
+        {verdict.label}
+      </span>
+      <p className="export-health__count" data-testid="export-health-count">
+        {verdict.exporting} of {SIGNAL_KEYS.length} exporting
+      </p>
+      {hasSpark ? (
+        <div className="export-health__spark-wrap">
+          <Sparkline data={throughput!} />
+          <span className="muted export-health__spark-label">spans/min</span>
+        </div>
+      ) : (
+        <p className="muted export-health__no-spark" data-testid="export-health-no-spark">
+          Throughput history unavailable.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Shared Resource attributes (OQ3): key=value rows copied onto every INHERITING signal.
+ * Rows are edited locally and serialised to a Record on each change (empty keys dropped);
+ * the parent re-mounts this card via a `key` on Discard to re-seed from the reset model.
+ * Per-signal overrides still carry their own attributes in the expanded panel (S2).
+ */
+function ResourceAttributesCard({
+  attrs,
+  onChange,
+}: {
+  attrs: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+}) {
+  type Row = { key: string; value: string };
+  const [rows, setRows] = useState<Row[]>(() =>
+    Object.entries(attrs).map(([key, value]) => ({ key, value })),
+  );
+
+  function commit(next: Row[]) {
+    setRows(next);
+    const rec: Record<string, string> = {};
+    for (const r of next) {
+      const k = r.key.trim();
+      if (k) rec[k] = r.value;
+    }
+    onChange(rec);
+  }
+
+  return (
+    <div className="card resource-attrs" data-testid="resource-attributes">
+      <h2>Resource attributes</h2>
+      <p className="muted">
+        Applied to every signal that inherits the destination. A signal with its own
+        endpoint keeps its own attributes.
+      </p>
+      {rows.length === 0 && (
+        <p className="muted" data-testid="attrs-empty">
+          No shared attributes.
+        </p>
+      )}
+      <ul className="resource-attrs__rows" role="list">
+        {rows.map((row, i) => (
+          <li className="resource-attrs__row" key={i} data-testid={`attr-row-${i}`}>
+            <input
+              className="resource-attrs__key"
+              data-testid={`attr-key-${i}`}
+              value={row.key}
+              placeholder="key"
+              aria-label={`Attribute ${i + 1} key`}
+              onChange={(e) =>
+                commit(rows.map((r, j) => (j === i ? { ...r, key: e.target.value } : r)))
+              }
+            />
+            <span className="resource-attrs__eq" aria-hidden="true">
+              =
+            </span>
+            <input
+              className="resource-attrs__value"
+              data-testid={`attr-value-${i}`}
+              value={row.value}
+              placeholder="value"
+              aria-label={`Attribute ${i + 1} value`}
+              onChange={(e) =>
+                commit(
+                  rows.map((r, j) => (j === i ? { ...r, value: e.target.value } : r)),
+                )
+              }
+            />
+            <button
+              type="button"
+              className="resource-attrs__remove"
+              data-testid={`attr-remove-${i}`}
+              aria-label={`Remove attribute ${i + 1}`}
+              onClick={() => commit(rows.filter((_, j) => j !== i))}
+            >
+              ✕
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        className="btn resource-attrs__add"
+        data-testid="attr-add"
+        onClick={() => commit([...rows, { key: "", value: "" }])}
+      >
+        Add attribute
+      </button>
     </div>
   );
 }

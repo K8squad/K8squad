@@ -1094,10 +1094,150 @@ a:hover {
   gap: 16px;
 }
 
+/* OTLP redesign — two-column body + right rail (ISI-4831 S3) */
+.settings-otlp__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+}
+
+.settings-otlp__main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settings-otlp__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .settings-otlp__body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Sticky action bar (ISI-4831 S3) — mirrors the single Apply, adds dirty + Discard. */
 .settings-otlp__actions {
   display: flex;
   align-items: center;
   gap: 12px;
+  position: sticky;
+  bottom: 0;
+  padding: 12px 0;
+  background: linear-gradient(
+    to top,
+    var(--canvas) 70%,
+    color-mix(in srgb, var(--canvas) 0%, transparent)
+  );
+  border-top: 1px solid var(--border);
+  z-index: 2;
+}
+
+.settings-otlp__dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--status-paused);
+  margin-right: auto;
+}
+
+/* Export health card (ISI-4831 S3) */
+.export-health__verdict {
+  margin-top: 4px;
+}
+
+.export-health__count {
+  margin: 8px 0 4px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.export-health__spark-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  color: var(--accent);
+  margin-top: 4px;
+}
+
+.export-health__spark {
+  display: block;
+}
+
+.export-health__spark-label {
+  font-size: 12px;
+}
+
+.export-health__no-spark {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+/* Shared resource attributes card (ISI-4831 S3) */
+.resource-attrs__rows {
+  list-style: none;
+  margin: 10px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resource-attrs__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.resource-attrs__key,
+.resource-attrs__value {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 36px;
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 4px 8px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.resource-attrs__eq {
+  color: var(--text-2);
+  flex: none;
+}
+
+.resource-attrs__remove {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.resource-attrs__remove:hover,
+.resource-attrs__remove:focus-visible {
+  color: var(--status-blocked);
+  border-color: var(--status-blocked);
+  outline: none;
+}
+
+.resource-attrs__add {
+  min-height: 36px;
+  padding: 6px 14px;
 }
 
 .signal__grid {
