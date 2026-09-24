@@ -16,6 +16,25 @@ import (
 // error/assign surfacing — with fakes standing in for the coord backends (the coord
 // custody/depth/budget invariants themselves are proven in pkg/coord's own suites).
 
+// TestWorkItemCreateToolInstructsAuthoring is the ISI-4872 (ADR-0024a S6)
+// instruction regression: the work_item_create tool description — the one
+// instruction surface guaranteed to render whenever the tool is mounted (and,
+// by S2 deny-by-default, mounted ONLY for a granted decomposing agent) — must
+// explicitly tell the agent to create sub-tickets via the tool and NOT treat a
+// markdown story file as the deliverable. This is the concrete fix for the
+// ISI-4855 symptom where quill wrote docs/03-stories.md and created zero tickets.
+func TestWorkItemCreateToolInstructsAuthoring(t *testing.T) {
+	desc := workItemCreateTool.Description
+	for _, want := range []string{"markdown", "not a ticket"} {
+		if !strings.Contains(strings.ToLower(desc), strings.ToLower(want)) {
+			t.Errorf("work_item_create description must warn against %q; got: %q", want, desc)
+		}
+	}
+	if !strings.Contains(strings.ToLower(desc), "create each") && !strings.Contains(strings.ToLower(desc), "create every") {
+		t.Errorf("work_item_create description must direct the agent to create each sub-ticket via the tool; got: %q", desc)
+	}
+}
+
 // --- fakes -----------------------------------------------------------------
 
 type fakeAuthor struct {

@@ -624,3 +624,47 @@
 .run-summary__agent {
   color: var(--ksq-run);
 }
+
+/* Sub-tickets a run authored (ISI-4872) — honest created-ticket accounting. */
+.run-created__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--text-hi);
+}
+.run-created__count {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.run-created__empty {
+  margin: 0;
+  font-size: 13px;
+}
+.run-created__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.run-created__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.run-created__link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.run-created__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.run-created__id {
+  font-size: 11px;
+  color: var(--muted);
+}

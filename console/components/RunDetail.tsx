@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { ArtifactBrowser } from "@/components/ArtifactBrowser";
 import { KillRun } from "@/components/KillRun";
+import { RunCreatedTickets } from "@/components/runs/RunCreatedTickets";
 import { RunStream } from "@/components/RunStream";
 import { phaseTone } from "@/components/SquadOverview";
 import "@/components/runs/run-detail.css";
@@ -653,6 +654,13 @@ export function RunDetail({ runId }: { runId: string }) {
             toolErrors={toolErrors}
             agent={agents[0] ?? null}
           />
+          {/* Sub-tickets this run authored (ISI-4872). Mounted only when the run
+              actually created some — an ordinary (non-decomposition) run shows no
+              card rather than a noisy "0 created" on every screen; the honest-zero
+              rendering stays available to callers that expect a decomposition. */}
+          {state.detail.createdItems && state.detail.createdItems.length > 0 ? (
+            <RunCreatedTickets items={state.detail.createdItems} />
+          ) : null}
         </aside>
       </div>
 
