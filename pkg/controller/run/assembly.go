@@ -86,19 +86,21 @@ func (a *Assembler) Resolve(ctx context.Context, run *api.Run) (*ResolvedEnvelop
 		return nil, err
 	}
 
-	endpoints, servers, err := capability.ResolveMCP(ctx, a.Client, run, reqs)
+	// ADR-0024a S4: resolve the authoring capability grant for the Run's
+	// decomposing agent from the owning Team, fail-closed (deny-by-default).
+	// Resolved control-plane-side (never from anything the sandbox supplies),
+	// it gates S2's authoring-MCP auto-injection in ResolveMCP below and feeds
+	// S3's run-token claim so the gate proved and the token minted agree.
+	grants, err := capability.ResolveGrant(ctx, a.Client, run)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoints, servers, err := capability.ResolveMCP(ctx, a.Client, run, reqs, grants)
 	if err != nil {
 		return nil, err
 	}
 	if err := capability.CheckEgressAll(ctx, a.Client, run, servers); err != nil {
-		return nil, err
-	}
-
-	// ADR-0024a S4: resolve the authoring capability grant for the Run's
-	// decomposing agent from the owning Team, fail-closed (deny-by-default).
-	// The read feeds S2's authoring-MCP gate and S3's run-token claim.
-	grants, err := capability.ResolveGrant(ctx, a.Client, run)
-	if err != nil {
 		return nil, err
 	}
 
