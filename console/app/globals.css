@@ -3990,3 +3990,306 @@ a:hover {
     padding-bottom: 4px;
   }
 }
+
+/* ============================================================================
+ * ISI-4830 — Project Settings redesign (S1–S4).
+ * A real settings IA over the SAME read/compose surface: project header →
+ * section nav (left) → concern cards (middle) → connection-health rail (right).
+ * Every colour/radius is a verbatim token from :root — zero new primitives.
+ * ==========================================================================*/
+.settings--redesign {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.settings__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings__crumb {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.settings__avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-control);
+  background: var(--raised);
+  border: 1px solid var(--border);
+  color: var(--text-hi);
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+.settings__title {
+  margin: 0;
+  font-size: 1.4rem;
+  line-height: 1.1;
+  color: var(--text-hi);
+}
+.settings__subtitle {
+  margin: 2px 0 0;
+  font-size: 0.85rem;
+}
+
+/* 3-column grid: nav | main | rail. Collapses to single column on narrow screens. */
+.settings__grid {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr) 288px;
+  gap: 20px;
+  align-items: start;
+}
+.settings__nav {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.settings__nav-link {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  border-left: 2px solid transparent;
+  color: var(--text-2);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.settings__nav-link:hover {
+  background: var(--raised);
+  color: var(--text-hi);
+}
+.settings__nav-link--active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.settings__main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.settings__rail {
+  position: sticky;
+  top: 12px;
+}
+
+/* Concern cards share the base .card; margin is owned by the flex gap. */
+.settings__card {
+  margin-bottom: 0;
+}
+.settings__card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.settings__card-title {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-hi);
+}
+.settings__sub-title {
+  margin: 0 0 4px;
+  font-size: 0.92rem;
+  color: var(--text-hi);
+}
+.settings__note {
+  font-size: 0.82rem;
+  margin: 6px 0;
+}
+
+/* Forms */
+.settings__form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+.settings__field > span {
+  font-size: 0.8rem;
+  color: var(--text-2);
+}
+.settings__field input {
+  width: 100%;
+}
+.settings__field-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings__field--static {
+  justify-content: flex-start;
+}
+.settings__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.settings__replace {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+/* Chips + badges — reuse status hues for meaning. */
+.settings__chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip);
+  font-size: 0.78rem;
+  border: 1px solid var(--border);
+  background: var(--raised);
+  color: var(--text);
+}
+.settings__chip--muted {
+  color: var(--text-2);
+}
+.settings__chip--ok {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 40%, var(--border));
+  background: color-mix(in srgb, var(--status-running) 12%, transparent);
+}
+.settings__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: var(--radius-chip);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.settings__badge--ok {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 45%, var(--border));
+  background: color-mix(in srgb, var(--status-running) 12%, transparent);
+}
+.settings__badge--warn {
+  color: var(--status-paused);
+  border-color: color-mix(in srgb, var(--status-paused) 45%, var(--border));
+  background: color-mix(in srgb, var(--status-paused) 12%, transparent);
+}
+.settings__badge--bad {
+  color: var(--status-blocked);
+  border-color: color-mix(in srgb, var(--status-blocked) 45%, var(--border));
+  background: color-mix(in srgb, var(--status-blocked) 12%, transparent);
+}
+.settings__badge--idle {
+  color: var(--status-idle);
+  border-color: color-mix(in srgb, var(--status-idle) 45%, var(--border));
+  background: color-mix(in srgb, var(--status-idle) 12%, transparent);
+}
+
+/* Credential status strip: badge + secret chip + Test on one row. */
+.settings__cred-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.settings__cred-strip .btn {
+  margin-left: auto;
+}
+
+/* Facts (read-only viewer) + inline messages. */
+.settings__facts {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+.settings__facts dt {
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+.settings__facts dd {
+  margin: 2px 0 0;
+  color: var(--text-hi);
+  word-break: break-all;
+}
+.settings__msg {
+  font-size: 0.82rem;
+  margin: 0;
+}
+.settings__msg--ok {
+  color: var(--status-running);
+}
+.settings__msg--bad {
+  color: var(--status-blocked);
+}
+
+/* Connection-health rail — status-coloured re-projection of the S1 payload. */
+.settings__health-list {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0 0;
+}
+.settings__health-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.settings__health-row dt {
+  font-size: 0.82rem;
+  color: var(--text-2);
+}
+.settings__health-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  text-align: right;
+  word-break: break-word;
+}
+.settings__health-value--ok {
+  color: var(--status-running);
+}
+.settings__health-value--bad {
+  color: var(--status-blocked);
+}
+.settings__health-value--warn {
+  color: var(--status-paused);
+}
+.settings__health-value--muted {
+  color: var(--text-2);
+}
+.settings__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+@media (max-width: 900px) {
+  .settings__grid {
+    grid-template-columns: 1fr;
+  }
+  .settings__nav {
+    position: static;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .settings__nav-link {
+    border-left: none;
+    border-bottom: 2px solid transparent;
+  }
+  .settings__nav-link--active {
+    border-left: none;
+    border-bottom-color: var(--accent);
+  }
+  .settings__rail {
+    position: static;
+  }
+}
