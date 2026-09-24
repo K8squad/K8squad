@@ -118,6 +118,36 @@ function statusView(
   }
 }
 
+/** Status-pill legend (frame 2C): the four states share the same pill tokens as the rows. */
+function StatusLegend() {
+  const items: { tone: StatusTone; label: string }[] = [
+    { tone: "running", label: "Healthy" },
+    { tone: "blocked", label: "Erroring" },
+    { tone: "paused", label: "Degraded" },
+    { tone: "idle", label: "Off" },
+  ];
+  return (
+    <ul
+      className="status-legend"
+      role="list"
+      aria-label="Signal status legend"
+      data-testid="status-legend"
+    >
+      {items.map((it) => (
+        <li
+          key={it.tone}
+          className="status-legend__item"
+          data-testid={`legend-${it.tone}`}
+        >
+          <span className={`pill pill--${it.tone} status-legend__pill`}>
+            {it.label}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** Human rollup of enabled-signal health for the Signals card header. */
 function healthRollup(
   wire: OtelConfigWire | null,
@@ -409,14 +439,22 @@ export function OtlpConfigScreen() {
   return (
     <div className="settings-otlp">
       <h1>Settings · Configuration</h1>
-      <p className="muted">
+      <p className="muted settings-otlp__subtitle">
         Application-level OTLP routing — where <em>this app</em> sends its own
-        traces, metrics, and logs. Opt-in: with nothing configured here, the app
-        emits no OTLP of its own. This screen does not govern platform telemetry,
-        which your cluster&apos;s infrastructure OTel Collector may already be
-        exporting. Auth is a Secret reference; token values are never shown or
-        stored here.
+        traces, metrics, and logs.
       </p>
+      {/* Scope pills (P1): the mental model as three scannable facts, not a prose wall. */}
+      <ul className="scope-pills" role="list" data-testid="otlp-scope-pills">
+        <li className="chip scope-pill" data-testid="scope-pill-app">
+          App-level only
+        </li>
+        <li className="chip scope-pill" data-testid="scope-pill-platform">
+          Platform telemetry stays with the cluster collector
+        </li>
+        <li className="chip scope-pill" data-testid="scope-pill-secrets">
+          Tokens are Secret refs
+        </li>
+      </ul>
 
       {load.kind === "loading" && <p className="muted">Loading…</p>}
       {load.kind === "error" && (
@@ -450,9 +488,16 @@ export function OtlpConfigScreen() {
                       : "otel-collector:4317"
                   }
                   aria-invalid={!!show("dest-endpoint", destErrors.endpoint)}
+                  aria-describedby={
+                    show("dest-endpoint", destErrors.endpoint)
+                      ? "dest-endpoint-err"
+                      : undefined
+                  }
                 />
                 {show("dest-endpoint", destErrors.endpoint) && (
-                  <em className="field-error">{destErrors.endpoint}</em>
+                  <em className="field-error" id="dest-endpoint-err" role="alert">
+                    {destErrors.endpoint}
+                  </em>
                 )}
               </label>
               <label>
@@ -474,9 +519,16 @@ export function OtlpConfigScreen() {
                   onBlur={() => touch("dest-auth")}
                   placeholder="my-exporter-secret (name only — never a token)"
                   aria-invalid={!!show("dest-auth", destErrors.authSecretRef)}
+                  aria-describedby={
+                    show("dest-auth", destErrors.authSecretRef)
+                      ? "dest-auth-err"
+                      : undefined
+                  }
                 />
                 {show("dest-auth", destErrors.authSecretRef) && (
-                  <em className="field-error">{destErrors.authSecretRef}</em>
+                  <em className="field-error" id="dest-auth-err" role="alert">
+                    {destErrors.authSecretRef}
+                  </em>
                 )}
               </label>
               <label>
@@ -496,9 +548,16 @@ export function OtlpConfigScreen() {
                   }
                   onBlur={() => touch("dest-sampling")}
                   aria-invalid={!!show("dest-sampling", destErrors.sampling)}
+                  aria-describedby={
+                    show("dest-sampling", destErrors.sampling)
+                      ? "dest-sampling-err"
+                      : undefined
+                  }
                 />
                 {show("dest-sampling", destErrors.sampling) && (
-                  <em className="field-error">{destErrors.sampling}</em>
+                  <em className="field-error" id="dest-sampling-err" role="alert">
+                    {destErrors.sampling}
+                  </em>
                 )}
               </label>
             </div>
@@ -512,6 +571,7 @@ export function OtlpConfigScreen() {
                 {healthRollup(wire, signals)}
               </span>
             </div>
+            <StatusLegend />
             <ul className="signal-rows" role="list">
               {SIGNAL_KEYS.map((key) => {
                 const slot = signals[key];
@@ -615,11 +675,23 @@ export function OtlpConfigScreen() {
               })}
             </ul>
             {!anyEnabled && (
-              <p className="muted" data-testid="signals-empty">
-                No app-level OTLP exporter enabled. Platform telemetry may still be
-                exported by the cluster&apos;s infrastructure OTel Collector — that
-                layer is managed outside this screen.
-              </p>
+              <div className="signals-empty" data-testid="signals-empty">
+                <p className="signals-empty__title">No app-level exporter yet</p>
+                <p className="muted signals-empty__body">
+                  Turn on a signal to start routing <em>this app&apos;s</em> own
+                  telemetry to your collector. Platform telemetry still flows via the
+                  cluster&apos;s infrastructure OTel Collector — that layer is managed
+                  outside this screen.
+                </p>
+                <button
+                  type="button"
+                  className="btn btn--primary signals-empty__cta"
+                  data-testid="signals-empty-cta"
+                  onClick={() => toggleSignal("traces")}
+                >
+                  Enable Traces exporter
+                </button>
+              </div>
             )}
           </div>
           </div>
@@ -877,9 +949,14 @@ function SignalOverridePanel({
                   : "otel-collector:4317"
               }
               aria-invalid={!!show("endpoint", errors.endpoint)}
+              aria-describedby={
+                show("endpoint", errors.endpoint) ? f("endpoint-err") : undefined
+              }
             />
             {show("endpoint", errors.endpoint) && (
-              <em className="field-error">{errors.endpoint}</em>
+              <em className="field-error" id={f("endpoint-err")} role="alert">
+                {errors.endpoint}
+              </em>
             )}
           </label>
           <label>
@@ -899,9 +976,14 @@ function SignalOverridePanel({
               onBlur={() => onTouch(f("auth"))}
               placeholder="my-exporter-secret (name only — never a token)"
               aria-invalid={!!show("auth", errors.authSecretRef)}
+              aria-describedby={
+                show("auth", errors.authSecretRef) ? f("auth-err") : undefined
+              }
             />
             {show("auth", errors.authSecretRef) && (
-              <em className="field-error">{errors.authSecretRef}</em>
+              <em className="field-error" id={f("auth-err")} role="alert">
+                {errors.authSecretRef}
+              </em>
             )}
           </label>
           {signalKey === "traces" && (
@@ -921,9 +1003,14 @@ function SignalOverridePanel({
                 }
                 onBlur={() => onTouch(f("sampling"))}
                 aria-invalid={!!show("sampling", errors.sampling)}
+                aria-describedby={
+                  show("sampling", errors.sampling) ? f("sampling-err") : undefined
+                }
               />
               {show("sampling", errors.sampling) && (
-                <em className="field-error">{errors.sampling}</em>
+                <em className="field-error" id={f("sampling-err")} role="alert">
+                  {errors.sampling}
+                </em>
               )}
             </label>
           )}
