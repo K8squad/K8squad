@@ -1448,6 +1448,59 @@
   text-decoration: underline;
 }
 
+/* ---- Dispatch pending placeholder card (ISI-4880 · S2 of ISI-4853) ---- */
+/* Reuses the .ksq-runcomment shell above so the real run card mutates in place with ZERO layout
+   shift. ZERO new hues: every tone keys a LOCKED status token (globals.css §status) and every motion
+   reuses an already reduced-motion-gated animation (ksq-skel-bar / .rail__spinner / run pulse). */
+.ksq-dispatch-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.ksq-dispatch-card__label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+/* Static dot for queued (idle) + terminal (running/blocked). Hue is keyed off the status
+   container's data-tone — no per-dot palette value. */
+.ksq-dispatch-card__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+  background: var(--status-idle);
+}
+.ksq-dispatch-card__status[data-tone="running"] .ksq-dispatch-card__dot {
+  background: var(--status-running);
+}
+.ksq-dispatch-card__status[data-tone="blocked"] .ksq-dispatch-card__dot {
+  background: var(--status-blocked);
+}
+/* Picking-up spinner: the shared .rail__spinner shape/animation, repainted to the LOCKED paused
+   hue (reused token, no new colour). prefers-reduced-motion is inherited from .rail__spinner. */
+.ksq-dispatch-card__spinner {
+  border-top-color: var(--status-paused);
+}
+/* Placeholder body — shimmer bars stand in for the not-yet-arrived run content. */
+.ksq-dispatch-card__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ksq-dispatch-card__skeleton .ksq-skel-bar:last-child {
+  width: 60%;
+}
+/* Honest "still waiting" degrade note (design §4) — queued-only. */
+.ksq-dispatch-card__degrade {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-2);
+}
+
 /* Collapsed older run — one line: avatar + author + pill + snippet + time. */
 .ksq-runcomment--collapsed {
   align-items: center;
