@@ -113,6 +113,18 @@ spec:
                     maximum: 1440
                     minimum: 0
                     type: integer
+                  mode:
+                    default: Probe
+                    description: |-
+                      Mode selects the discovery strategy. "Probe" (default) runs the live
+                      discovery probe; "Manual" disables probing entirely and treats
+                      status.observedTools as authoritative (seeded out-of-band for a
+                      compiled-in first-party tool surface - ADR-0024a S1). IntervalMinutes is
+                      irrelevant under Manual.
+                    enum:
+                    - Probe
+                    - Manual
+                    type: string
                 type: object
               egressRef:
                 description: |-

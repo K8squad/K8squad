@@ -96,6 +96,13 @@ rules:
 - apiGroups:
   - ksquad.io
   resources:
+  - mcpservers
+  verbs:
+  - create
+  - update
+- apiGroups:
+  - ksquad.io
+  resources:
   - mcpservers/status
   - otelconfigs/status
   - projects/status

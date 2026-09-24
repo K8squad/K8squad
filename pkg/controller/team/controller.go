@@ -229,6 +229,8 @@ func TelemetryTargetFromEndpoint(endpoint string) *TelemetryTarget {
 //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups="",resources=resourcequotas;limitranges,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=ksquad.io,resources=mcpservers,verbs=get;list;watch;create;update;patch
+//+kubebuilder:rbac:groups=ksquad.io,resources=mcpservers/status,verbs=get;update;patch
 
 // Reconcile drives a Team to its provisioned squad namespace (or through
 // finalizer teardown on deletion). It is idempotent: a steady-state requeue
@@ -352,6 +354,13 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
 			return fmt.Errorf("ensure %T %s/%s: %w", obj, obj.GetNamespace(), obj.GetName(), err)
 		}
+	}
+	// ADR-0024a S1 (ISI-4867): the built-in memory-authoring MCPServer. Kept
+	// out of the ensureOwned loop above because it also needs a status
+	// subresource seed (observedTools), which the spec-only ensureOwned path
+	// does not write.
+	if err := r.ensureAuthoringMCPServer(ctx, teamObj, nsName, ns.UID); err != nil {
+		return fmt.Errorf("ensure authoring MCPServer: %w", err)
 	}
 	return nil
 }
@@ -508,6 +517,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&corev1.ResourceQuota{}, scaffoldEvents).
 		Watches(&corev1.LimitRange{}, scaffoldEvents).
 		Watches(&networkingv1.NetworkPolicy{}, scaffoldEvents).
+		Watches(&api.MCPServer{}, scaffoldEvents).
 		Named("team").
 		Complete(r)
 }

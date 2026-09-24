@@ -68,6 +68,13 @@ rules:
   resources: [runs]
   verbs: [create, get, list, watch]
 - apiGroups: [ksquad.io]
+  # mcpservers split out for create/update (ISI-4867): the team reconciler
+  # provisions the built-in ksquad-memory-authoring MCPServer per squad
+  # namespace (pkg/controller/team/mcpauthoring.go). read stays in the pack
+  # above; the status seed rides the mcpservers/status grant below.
+  resources: [mcpservers]
+  verbs: [create, update]
+- apiGroups: [ksquad.io]
   resources: [mcpservers/status, otelconfigs/status, projects/status, runs/status, teams/status]
   verbs: [get, patch, update]
 - apiGroups: [ksquad.io]
