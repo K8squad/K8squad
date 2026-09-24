@@ -116,6 +116,50 @@ func (s *ReviewAutomationService) Read(ctx context.Context, auth discussion.Auth
 	return view, nil
 }
 
+// EligibleAgent is one code_review-capable team agent for the E2 reviewer
+// dropdown pre-filter (ISI-4779). Shape mirrors an /api/squad/agents row so the
+// console swaps the dropdown data source without reshaping: id = Agent UID (React
+// key), name = the agent name the write submits as reviewerAgentId (the D5
+// identity CheckReviewerEligibility matches on).
+type EligibleAgent struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// EligibleAgentsView is the GET
+// /api/projects/{projectId}/repo/review-automation/eligible-agents payload.
+// Agents is non-nil on the wire ([] never null) so the console never branches on
+// null.
+type EligibleAgentsView struct {
+	Agents []EligibleAgent `json:"agents"`
+}
+
+// EligibleAgents lists the code_review-capable agents of the Team owning
+// projectID (the D5 roster), for E2's reviewer-dropdown client-side pre-filter
+// (ISI-4779). Read tier = member+, the SAME as the config read (it rides the
+// route's requireProjectRole(viewer) gate). It reuses the SHARED pkg/reviewauto
+// resolver so the roster stays in lockstep with the write-time 422: an agent this
+// returns passes CheckReviewerEligibility. No secret crosses this boundary — the
+// view carries only id + name (a structural property).
+func (s *ReviewAutomationService) EligibleAgents(ctx context.Context, auth discussion.AuthorContext, projectID string) (EligibleAgentsView, error) {
+	// Resolve under the caller's scope (team-fenced non-admin → 404 existence-
+	// hiding; admin cross-squad collision → 409), exactly as Read does. The
+	// Project's namespace IS the owning Team's home namespace.
+	ns, _, err := s.resolveProject(ctx, s.reader, auth, projectID)
+	if err != nil {
+		return EligibleAgentsView{}, err
+	}
+	refs, err := reviewauto.EligibleReviewers(ctx, s.reader, ns)
+	if err != nil {
+		return EligibleAgentsView{}, err
+	}
+	out := EligibleAgentsView{Agents: make([]EligibleAgent, 0, len(refs))}
+	for _, r := range refs {
+		out.Agents = append(out.Agents, EligibleAgent{ID: r.ID, Name: r.Name})
+	}
+	return out, nil
+}
+
 // writeValidationError carries the field-level 422 failures produced by a write.
 type writeValidationError struct {
 	fields []fieldError
@@ -297,6 +341,33 @@ func (s *Server) reviewAutomationRead(svc *ReviewAutomationService) http.Handler
 			writeJSONError(w, http.StatusConflict, "project name ambiguous across squads; address by uid")
 		default:
 			writeJSONError(w, http.StatusBadGateway, "review-automation read model unavailable")
+		}
+	}
+}
+
+// reviewAutomationEligibleAgents is the handler behind GET
+// /api/projects/{projectId}/repo/review-automation/eligible-agents (ISI-4779).
+// Member+ read; statuses mirror the config read (AC2/AC5): 401 unauthenticated,
+// 404 no-team-scope / foreign Project (existence-hiding), 409 admin cross-squad
+// collision, 502 read model unavailable.
+func (s *Server) reviewAutomationEligibleAgents(svc *ReviewAutomationService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, ok := discussion.AuthFromContext(r.Context())
+		if !ok || auth.Principal == "" {
+			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		projectID := mux.Vars(r)["projectId"]
+		view, err := svc.EligibleAgents(r.Context(), auth, projectID)
+		switch {
+		case err == nil:
+			writeJSON(w, http.StatusOK, view)
+		case errors.Is(err, ErrTeamNotFound), errors.Is(err, ErrProjectNotFound):
+			writeJSONError(w, http.StatusNotFound, "no review-automation config for this project")
+		case errors.Is(err, ErrProjectAmbiguous):
+			writeJSONError(w, http.StatusConflict, "project name ambiguous across squads; address by uid")
+		default:
+			writeJSONError(w, http.StatusBadGateway, "eligible-agents read model unavailable")
 		}
 	}
 }

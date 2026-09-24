@@ -4,8 +4,9 @@
 // Covers the story acceptance criteria:
 //   - AC1: the four config knobs render (enable / reviewer / scope / trigger),
 //     populated from the E1 GET's resolved defaults;
-//   - AC2: the reviewer dropdown lists all team agents (no client-side
-//     eligibility pre-filter — the server's 422 is the backstop);
+//   - AC2: the reviewer dropdown lists the code_review-capable team agents from
+//     the D5 eligible-agents pre-filter (ISI-4779); the server's 422 stays the
+//     authoritative backstop;
 //   - AC3: Save PUTs exactly the write-input subset ({enabled, reviewerAgentId,
 //     scope, trigger}) — never enabledBy/canEdit;
 //   - AC4: a server 422 surfaces inline against the offending field, and the
@@ -52,8 +53,9 @@ const VIEW = {
   canEdit: true,
 };
 
-/** Route fetch by request: mount fires GET config + GET /api/squad/agents;
- * Save fires PUT config. */
+/** Route fetch by request: mount fires GET config + GET eligible-agents
+ * (ISI-4779); Save fires PUT config. The eligible-agents check MUST precede the
+ * config check — its URL contains the "/repo/review-automation" substring. */
 function route(handlers: {
   get?: Response;
   agents?: Response;
@@ -61,7 +63,7 @@ function route(handlers: {
 } = {}) {
   fetchMock.mockImplementation((url: string, init?: RequestInit) => {
     const u = String(url);
-    if (u.includes("/api/squad/agents")) {
+    if (u.includes("/eligible-agents")) {
       return Promise.resolve(handlers.agents ?? jsonResponse(AGENTS, 200));
     }
     if (u.includes("/repo/review-automation")) {
@@ -112,7 +114,7 @@ describe("ReviewAutomationDialog", () => {
     expect(checkedTrigger?.value).toBe("on_new_commits");
   });
 
-  it("lists all team agents in the reviewer dropdown (AC2)", async () => {
+  it("lists the eligible (code_review-capable) agents in the reviewer dropdown (AC2/ISI-4779)", async () => {
     route();
     render(<ReviewAutomationDialog projectId={PROJECT} onClose={vi.fn()} />);
     const reviewer = (await screen.findByTestId("ra-reviewer")) as HTMLSelectElement;

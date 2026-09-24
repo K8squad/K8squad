@@ -150,3 +150,60 @@ func TestCheckReviewerEligibility_DanglingRoleRef(t *testing.T) {
 		t.Fatalf("want ErrReviewerNoCapability (dangling role ref), got %v", err)
 	}
 }
+
+// --- ISI-4779: EligibleReviewers (the D5 roster the dropdown pre-filters to) ---
+
+func names(refs []ReviewerRef) map[string]bool {
+	m := map[string]bool{}
+	for _, r := range refs {
+		m[r.Name] = true
+	}
+	return m
+}
+
+// EligibleReviewers returns ONLY code_review-capable team agents, skipping the
+// non-capable and the dangling refs — the exact set CheckReviewerEligibility
+// accepts. This is the single-source-of-truth invariant that keeps the dropdown
+// pre-filter and the write-time 422 from ever disagreeing.
+func TestEligibleReviewers_FiltersToCapableAndAgreesWithCheck(t *testing.T) {
+	r := newReader(t,
+		team(
+			ksquadv1.ObjectRef{Name: "rev"},      // capable
+			ksquadv1.ObjectRef{Name: "writer"},   // role lacks code_review
+			ksquadv1.ObjectRef{Name: "ghost"},    // no Agent CR (dangling)
+			ksquadv1.ObjectRef{Name: "roleless"}, // agent → missing Role
+		),
+		agentWithRole("rev", "reviewer-role"),
+		agentWithRole("writer", "writer-role"),
+		agentWithRole("roleless", "ghost-role"),
+		role("reviewer-role", "implementation", "code_review"),
+		role("writer-role", "implementation"),
+	)
+	refs, err := EligibleReviewers(context.Background(), r, teamNS)
+	if err != nil {
+		t.Fatalf("EligibleReviewers: %v", err)
+	}
+	got := names(refs)
+	if len(refs) != 1 || !got["rev"] {
+		t.Fatalf("want exactly [rev], got %+v", refs)
+	}
+	// Consistency: every name the roster lists passes the write-time check, and
+	// every name it omits fails it.
+	for _, n := range []string{"rev", "writer", "ghost", "roleless"} {
+		accepted := CheckReviewerEligibility(context.Background(), r, teamNS, n) == nil
+		if accepted != got[n] {
+			t.Fatalf("roster/check disagree for %q: roster=%v check-accepts=%v", n, got[n], accepted)
+		}
+	}
+}
+
+func TestEligibleReviewers_NoTeamIsEmptyNotError(t *testing.T) {
+	r := newReader(t) // no Team owns the namespace
+	refs, err := EligibleReviewers(context.Background(), r, teamNS)
+	if err != nil {
+		t.Fatalf("no-team must be an empty roster, not an error: %v", err)
+	}
+	if len(refs) != 0 {
+		t.Fatalf("want empty roster, got %+v", refs)
+	}
+}
