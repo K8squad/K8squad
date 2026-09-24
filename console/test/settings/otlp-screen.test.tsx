@@ -358,3 +358,92 @@ describe("<OtlpConfigScreen> — ISI-4831 S3 Right rail + action bar", () => {
     );
   });
 });
+
+describe("<OtlpConfigScreen> — ISI-4831 S4 States & a11y", () => {
+  it("replaces the prose wall with three scope pills (P1)", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("otlp-scope-pills"));
+
+    expect(screen.getByTestId("scope-pill-app").textContent).toBe(
+      "App-level only",
+    );
+    expect(screen.getByTestId("scope-pill-platform").textContent).toBe(
+      "Platform telemetry stays with the cluster collector",
+    );
+    expect(screen.getByTestId("scope-pill-secrets").textContent).toBe(
+      "Tokens are Secret refs",
+    );
+  });
+
+  it("renders the status-pill legend with the four state semantics (frame 2C)", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("status-legend"));
+
+    // Each legend entry carries the pill token matching spec section 2.
+    expect(screen.getByTestId("legend-running").textContent).toBe("Healthy");
+    expect(screen.getByTestId("legend-blocked").textContent).toBe("Erroring");
+    expect(screen.getByTestId("legend-paused").textContent).toBe("Degraded");
+    expect(screen.getByTestId("legend-idle").textContent).toBe("Off");
+    // Legend pills reuse the shared pill tokens (zero new classes).
+    expect(
+      screen.getByTestId("legend-running").querySelector(".pill--running"),
+    ).toBeTruthy();
+    expect(
+      screen.getByTestId("legend-idle").querySelector(".pill--idle"),
+    ).toBeTruthy();
+  });
+
+  it("shows a friendly opt-in CTA (with the platform-telemetry reassurance) when nothing is enabled", async () => {
+    stubOtlp(jsonResponse(404, {}));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("signals-empty"));
+
+    const empty = screen.getByTestId("signals-empty");
+    expect(empty.textContent).toContain("cluster");
+    expect(empty.textContent).toContain("infrastructure OTel Collector");
+    expect(screen.getByTestId("signals-empty-cta")).toBeTruthy();
+  });
+
+  it("the opt-in CTA enables the Traces exporter and dismisses the empty state", async () => {
+    stubOtlp(jsonResponse(404, {}));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("signals-empty-cta"));
+
+    fireEvent.click(screen.getByTestId("signals-empty-cta"));
+
+    // Traces is now on → empty state gone, its inherit chip appears, dirty flagged.
+    expect(screen.queryByTestId("signals-empty")).toBeNull();
+    expect(screen.getByTestId("signal-toggle-traces").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByTestId("signal-chip-traces").textContent).toBe(
+      "→ destination",
+    );
+    expect(screen.getByTestId("otlp-dirty")).toBeTruthy();
+  });
+
+  it("preserves aria-invalid + wires aria-describedby to the inline error after edit (P4 + a11y)", async () => {
+    stubOtlp(jsonResponse(200, loadedWire()));
+    render(<OtlpConfigScreen />);
+    await waitFor(() => screen.getByTestId("otlp-signals"));
+
+    const endpoint = screen.getByTestId("dest-endpoint") as HTMLInputElement;
+    // Clean field: not invalid, not described by an error.
+    expect(endpoint.getAttribute("aria-invalid")).toBe("false");
+    expect(endpoint.getAttribute("aria-describedby")).toBeNull();
+
+    fireEvent.change(endpoint, { target: { value: "" } });
+    fireEvent.blur(endpoint);
+
+    await waitFor(() =>
+      expect(endpoint.getAttribute("aria-invalid")).toBe("true"),
+    );
+    // The input points at its error node, which announces via role=alert.
+    expect(endpoint.getAttribute("aria-describedby")).toBe("dest-endpoint-err");
+    const err = document.getElementById("dest-endpoint-err");
+    expect(err).toBeTruthy();
+    expect(err!.getAttribute("role")).toBe("alert");
+  });
+});
