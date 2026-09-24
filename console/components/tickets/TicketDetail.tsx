@@ -71,6 +71,7 @@ import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/t
 import { STATUS_META } from "@/lib/tickets/statusColor";
 import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
+import { RailAssigneeChip } from "./RailAssigneeChip";
 
 type ThreadState =
   | { kind: "loading" }
@@ -305,9 +306,18 @@ function AssigneeControl({
           </>
         ) : state === "todo" ? (
           requestedAgent ? (
-            <span className="muted" data-testid="detail-requested">
-              Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
-            </span>
+            // ISI-4882 (S4): while the dispatch is in flight the chip tracks the honest ladder
+            // (queued → picking up… → working… → finished); it falls back to today's static
+            // "Requested: <agent> · dispatch pending" text whenever nothing is in flight.
+            <RailAssigneeChip
+              workItemId={workItemId}
+              agent={requestedAgent}
+              fallback={
+                <span className="muted" data-testid="detail-requested">
+                  Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
+                </span>
+              }
+            />
           ) : (
             <span className="muted">dispatch pending</span>
           )
@@ -372,9 +382,17 @@ function AssigneeControl({
         ))}
       </select>
       {state === "todo" && requestedAgent && (
-        <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
-          dispatch pending
-        </span>
+        // ISI-4882 (S4): the pending hint becomes the live tri-state ladder chip once the dispatch is
+        // in flight; the static "dispatch pending" hint is the clean fallback (zero new tokens).
+        <RailAssigneeChip
+          workItemId={workItemId}
+          agent={requestedAgent}
+          fallback={
+            <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
+              dispatch pending
+            </span>
+          }
+        />
       )}
       <span className="ksq-field__hint muted">
         {isRerun
