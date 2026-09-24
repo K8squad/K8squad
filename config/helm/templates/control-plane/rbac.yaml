@@ -59,7 +59,7 @@ rules:
   resources: [jobs]
   verbs: [create, delete, get, list, watch]
 - apiGroups: [ksquad.io]
-  resources: [agentruntimes, agents, egresspolicies, mcpservers, modelconfigs, otelconfigs, roles, skills]
+  resources: [agentruntimes, agents, egresspolicies, modelconfigs, otelconfigs, roles, skills]
   verbs: [get, list, watch]
 - apiGroups: [ksquad.io]
   # runs split out of the read-only pack (ISI-4132): the M1.3 intake sweep
@@ -67,6 +67,14 @@ rules:
   # Without create, dispatch 403s forever on a fresh install.
   resources: [runs]
   verbs: [create, get, list, watch]
+- apiGroups: [ksquad.io]
+  # mcpservers split out of the read-only pack (ISI-4867): the team reconciler
+  # provisions the built-in ksquad-memory-authoring MCPServer per squad
+  # namespace (pkg/controller/team/mcpauthoring.go). controller-gen consolidates
+  # all mcpservers verbs into ONE rule, so this mirrors config/rbac/role.yaml
+  # exactly (the rbac lockstep guard test compares the two rule sets).
+  resources: [mcpservers]
+  verbs: [create, get, list, patch, update, watch]
 - apiGroups: [ksquad.io]
   resources: [mcpservers/status, otelconfigs/status, projects/status, runs/status, teams/status]
   verbs: [get, patch, update]

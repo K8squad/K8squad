@@ -183,17 +183,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	setCondition(&next, ksquadv1alpha1.MCPServerConditionEgressAllowed, egressOK,
 		boolReason(egressOK, reasonEgressOK, reasonEgressMissing), egressMsg, now)
 
-	due := probeDue(&server, &next)
 	var wait bool
 
-	switch server.Spec.Transport {
-	case ksquadv1alpha1.MCPTransportStreamableHTTP:
-		if due {
+	switch {
+	case manualDiscovery(&server.Spec):
+		// Manual discovery (ADR-0024a S1): status.observedTools is authoritative,
+		// seeded out-of-band from a compiled-in first-party manifest by the
+		// built-in MCPServer provisioner. NEVER probe (that would be probing our
+		// own memory service) and NEVER clobber the seed. Reflect the seed into
+		// ToolsDiscovered so Ready still aggregates honestly.
+		if len(next.ObservedTools) > 0 {
+			setCondition(&next, ksquadv1alpha1.MCPServerConditionToolsDiscovered, true, reasonDiscovered,
+				fmt.Sprintf("manual discovery: %d tools seeded from a compiled-in manifest (no probe)", len(next.ObservedTools)), now)
+		} else {
+			setCondition(&next, ksquadv1alpha1.MCPServerConditionToolsDiscovered, false, reasonProbePending,
+				"manual discovery: status.observedTools has not been seeded yet", now)
+		}
+	case server.Spec.Transport == ksquadv1alpha1.MCPTransportStreamableHTTP:
+		if probeDue(&server, &next) {
 			r.probeHTTP(ctx, &server, &next, now)
 		}
-	case ksquadv1alpha1.MCPTransportStdio:
+	case server.Spec.Transport == ksquadv1alpha1.MCPTransportStdio:
 		var err error
-		wait, err = r.reconcileStdioProbe(ctx, &server, &next, now, due)
+		wait, err = r.reconcileStdioProbe(ctx, &server, &next, now, probeDue(&server, &next))
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -220,6 +232,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	switch {
 	case wait:
 		requeue = probeJobWait
+	case manualDiscovery(&server.Spec):
+		// No periodic re-probe for a manual server — the seed is static and
+		// watches drive any spec/status change. A fixed requeue would just
+		// hot-loop no-op status reconciles forever.
+		requeue = 0
 	default:
 		requeue = periodicRequeue(&server.Spec, &next, now)
 	}
@@ -249,6 +266,14 @@ func (r *Reconciler) prober() HTTPProber {
 		return r.HTTPProber
 	}
 	return &StreamableHTTPProber{Client: httpTimeoutClient()}
+}
+
+// manualDiscovery reports whether the server opts out of live probing
+// (spec.discovery.mode=Manual, ADR-0024a S1): its status.observedTools is
+// seeded from a compiled-in manifest, so the controller neither probes it nor
+// overwrites the seed.
+func manualDiscovery(spec *ksquadv1alpha1.MCPServerSpec) bool {
+	return spec.Discovery != nil && spec.Discovery.Mode == ksquadv1alpha1.MCPDiscoveryModeManual
 }
 
 // probeDue reports whether a fresh probe is warranted: never probed, or the

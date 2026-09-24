@@ -80,6 +80,25 @@ type MCPToolFilter struct {
 	Deny []string `json:"deny,omitempty"`
 }
 
+// MCPDiscoveryMode selects how an MCPServer's tool surface is discovered.
+// +kubebuilder:validation:Enum=Probe;Manual
+type MCPDiscoveryMode string
+
+const (
+	// MCPDiscoveryModeProbe (the default) runs the control-plane discovery
+	// probe — initialize → tools/list against the server — to populate
+	// status.observedTools. This is the BYO path (probe.go).
+	MCPDiscoveryModeProbe MCPDiscoveryMode = "Probe"
+
+	// MCPDiscoveryModeManual disables ALL probing and treats
+	// status.observedTools as externally seeded. It exists for FIRST-PARTY
+	// built-in servers whose tool surface is compiled into the platform
+	// (ADR-0024a S1, ISI-4867): the operator seeds observedTools from a
+	// compiled-in manifest, and the discovery controller must neither probe
+	// our own service nor clobber the seed on a (non-existent) probe failure.
+	MCPDiscoveryModeManual MCPDiscoveryMode = "Manual"
+)
+
 // MCPServerDiscovery tunes the control-plane discovery probe cadence
 // (ADR-042: discovery runs in the control plane).
 type MCPServerDiscovery struct {
@@ -91,6 +110,17 @@ type MCPServerDiscovery struct {
 	// +kubebuilder:validation:Maximum=1440
 	// +kubebuilder:default=10
 	IntervalMinutes *int32 `json:"intervalMinutes,omitempty"`
+
+	// Mode selects the discovery strategy. "Probe" (default) runs the live
+	// discovery probe; "Manual" disables probing entirely and treats
+	// status.observedTools as authoritative (seeded out-of-band for a
+	// compiled-in first-party tool surface — ADR-0024a S1). IntervalMinutes is
+	// irrelevant under Manual. The Probe;Manual enum lives on the
+	// MCPDiscoveryMode type; a second field-level marker would emit a
+	// duplicated allOf enum (codegen drift), so it is deliberately absent here.
+	// +optional
+	// +kubebuilder:default=Probe
+	Mode MCPDiscoveryMode `json:"mode,omitempty"`
 }
 
 // MCPServerSpec defines the desired state of MCPServer (ADR-042).

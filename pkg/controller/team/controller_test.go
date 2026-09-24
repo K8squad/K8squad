@@ -59,7 +59,7 @@ func fixedClock() metav1.Time { return metav1.Time{Time: metav1.Now().Time} }
 func newReconciler(t *testing.T, objs ...client.Object) (*Reconciler, client.Client) {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(objs...).WithStatusSubresource(&api.Team{}).Build()
+		WithObjects(objs...).WithStatusSubresource(&api.Team{}, &api.MCPServer{}).Build()
 	return &Reconciler{Client: c, Now: fixedClock}, c
 }
 
@@ -793,7 +793,7 @@ func TestControlPlaneIngressSupervisorPort(t *testing.T) {
 func TestConditionTransitionTimePinnedByClock(t *testing.T) {
 	frozen := metav1.Time{Time: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
 	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
-		WithObjects(newTeam("alpha", "uid-alpha")).WithStatusSubresource(&api.Team{}).Build()
+		WithObjects(newTeam("alpha", "uid-alpha")).WithStatusSubresource(&api.Team{}, &api.MCPServer{}).Build()
 	r := &Reconciler{Client: c, Now: func() metav1.Time { return frozen }}
 
 	if err := reconcileTeam(t, r, "alpha"); err != nil {

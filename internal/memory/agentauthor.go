@@ -125,19 +125,38 @@ func (r *HeaderCapabilityResolver) HasWorkItemAuthor(_ context.Context, sess Age
 // tool schemas — identity/tenancy DELIBERATELY absent (server-authenticated).
 // ---------------------------------------------------------------------------
 
+// The three first-party authoring tool NAMES this MCP edge advertises. They are
+// EXPORTED and reused verbatim in the tool literals below so there is exactly one
+// source of truth: the operator's built-in MCPServer provisioner (pkg/controller/
+// team, ADR-0024a S1) seeds status.observedTools from AuthoringToolNames instead
+// of hardcoding a second copy of the strings, so the advertised set and the seeded
+// set can never drift (ISI-4867). Changing a name here changes it everywhere.
+const (
+	WorkItemCreateToolName = "work_item_create"
+	WorkItemUpdateToolName = "work_item_update"
+	WorkItemAssignToolName = "work_item_assign"
+)
+
+// AuthoringToolNames is the compiled-in first-party authoring manifest — the exact
+// tool surface the built-in ksquad-memory-authoring MCPServer exposes. It is the
+// seed the operator writes to status.observedTools with NO network self-probe
+// (the memory service would be probing itself); the live discovery probe
+// (pkg/controller/mcpserver/probe.go) stays for BYO servers only.
+var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName}
+
 var (
 	workItemCreateTool = mcpTool{
-		Name:        "work_item_create",
+		Name:        WorkItemCreateToolName,
 		Description: "Create a sub-ticket under a parent you hold in custody (a PM decomposing an epic it claimed). parent_id is REQUIRED — root items are human-only. Optionally hand the child straight to an implementer with assignee_agent_id. Requires the work_item.author capability; identity, team and run are server-authenticated (never arguments). Returns the created work item.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"parent_id":{"type":"string","description":"REQUIRED parent work-item id (uuid) you hold in custody; the child inherits its team"},"title":{"type":"string","description":"the sub-ticket title"},"body":{"type":"string","description":"optional description"},"priority":{"type":"string","description":"optional priority (validated against the coord enum)"},"work_mode":{"type":"string","description":"optional work mode (validated against the coord enum)"},"labels":{"type":"array","items":{"type":"string"},"description":"optional labels"},"assignee_agent_id":{"type":"string","description":"optional implementer agent to assign the new child to (must be in the item's team)"}},"required":["parent_id","title"]}`),
 	}
 	workItemUpdateTool = mcpTool{
-		Name:        "work_item_update",
+		Name:        WorkItemUpdateToolName,
 		Description: "Edit fields (title/body/parent) of a work item you hold in custody or any of its descendants. State is never changed here (lane motion stays a custody op). expected_updated_at gives optimistic-concurrency. Requires the work_item.author capability; identity/team/run are server-authenticated. Returns the updated work item.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to edit"},"title":{"type":"string","description":"new title"},"body":{"type":"string","description":"new body (empty string clears it)"},"parent_id":{"type":"string","description":"reparent target: another work-item id (uuid) you hold in custody. Omit to leave the parent unchanged; detaching to root is refused (root items are human-only)"},"expected_updated_at":{"type":"string","description":"optional RFC3339 optimistic-concurrency precondition"}},"required":["id"]}`),
 	}
 	workItemAssignTool = mcpTool{
-		Name:        "work_item_assign",
+		Name:        WorkItemAssignToolName,
 		Description: "Assign a work item you hold in custody (or a descendant) to an implementer agent — the PM→implementer handoff. Drives the same board dispatch a human assign does; the target agent must belong to the item's team and the item must be an unclaimed backlog/todo. Requires the work_item.author capability; identity/team/run are server-authenticated. Returns the dispatch result.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"id":{"type":"string","description":"REQUIRED work-item id (uuid) to assign"},"assignee_agent_id":{"type":"string","description":"REQUIRED implementer agent (Team.Spec.Agents[].Name) to hand the item to"}},"required":["id","assignee_agent_id"]}`),
 	}

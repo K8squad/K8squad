@@ -196,6 +196,72 @@ func TestReconcileHTTPDiscovery(t *testing.T) {
 	assert.NotContains(t, string(marshaled), "s3cr3t-token-value")
 }
 
+// recordingProber records invocation and returns a sentinel tool that must
+// never survive: if a manual server were (wrongly) probed, its seed would be
+// clobbered to the sentinel, failing the assertions below.
+type recordingProber struct{ called bool }
+
+func (p *recordingProber) DiscoverTools(context.Context, *ksquadv1alpha1.MCPServer, string) ([]string, error) {
+	p.called = true
+	return []string{"SHOULD-NOT-APPEAR"}, nil
+}
+
+// TestManualDiscoveryNoProbe (ADR-0024a S1, ISI-4867): a discovery.mode=Manual
+// server is never probed and its seeded observedTools is never clobbered; the
+// seed is reflected into ToolsDiscovered=True and Ready aggregates True. The
+// periodic requeue is disabled (no hot loop on a static seed).
+func TestManualDiscoveryNoProbe(t *testing.T) {
+	ctx := context.Background()
+	prober := &recordingProber{}
+	seed := []string{"work_item_create", "work_item_update", "work_item_assign"}
+
+	srv := httpMCPServer("ksquad-memory-authoring", "http://ksquad-memory.ksquad-system.svc:8080/mcp", func(s *ksquadv1alpha1.MCPServer) {
+		s.Spec.Discovery = &ksquadv1alpha1.MCPServerDiscovery{Mode: ksquadv1alpha1.MCPDiscoveryModeManual}
+		s.Status.ObservedTools = append([]string(nil), seed...)
+	})
+	r, c := newReconciler(t, srv)
+	r.HTTPProber = prober
+
+	res, err := r.Reconcile(ctx, ctrlReq("squad-a", "ksquad-memory-authoring"))
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), res.RequeueAfter, "manual server must not schedule a periodic re-probe")
+	assert.False(t, prober.called, "manual server must not be probed (no self-probe against our own service)")
+
+	var got ksquadv1alpha1.MCPServer
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "squad-a", Name: "ksquad-memory-authoring"}, &got))
+	assert.Equal(t, seed, got.Status.ObservedTools, "seed must not be clobbered")
+	td := getCond(t, &got, ksquadv1alpha1.MCPServerConditionToolsDiscovered)
+	require.NotNil(t, td)
+	assert.Equal(t, metav1.ConditionTrue, td.Status)
+	ready := getCond(t, &got, ksquadv1alpha1.MCPServerConditionReady)
+	require.NotNil(t, ready)
+	assert.Equal(t, metav1.ConditionTrue, ready.Status)
+}
+
+// TestManualDiscoveryUnseededNotReady: a manual server whose observedTools has
+// not been seeded yet is honestly not-ready (ToolsDiscovered=False) rather than
+// probing to fill the gap.
+func TestManualDiscoveryUnseededNotReady(t *testing.T) {
+	ctx := context.Background()
+	prober := &recordingProber{}
+	srv := httpMCPServer("ksquad-memory-authoring", "http://ksquad-memory.ksquad-system.svc:8080/mcp", func(s *ksquadv1alpha1.MCPServer) {
+		s.Spec.Discovery = &ksquadv1alpha1.MCPServerDiscovery{Mode: ksquadv1alpha1.MCPDiscoveryModeManual}
+	})
+	r, c := newReconciler(t, srv)
+	r.HTTPProber = prober
+
+	_, err := r.Reconcile(ctx, ctrlReq("squad-a", "ksquad-memory-authoring"))
+	require.NoError(t, err)
+	assert.False(t, prober.called)
+
+	var got ksquadv1alpha1.MCPServer
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "squad-a", Name: "ksquad-memory-authoring"}, &got))
+	assert.Empty(t, got.Status.ObservedTools)
+	td := getCond(t, &got, ksquadv1alpha1.MCPServerConditionToolsDiscovered)
+	require.NotNil(t, td)
+	assert.Equal(t, metav1.ConditionFalse, td.Status)
+}
+
 // A3 AC4: intervalMinutes=0 disables the periodic requeue; a spec change
 // (generation bump) still triggers one fresh probe.
 func TestReconcileIntervalZeroAndSpecChange(t *testing.T) {
