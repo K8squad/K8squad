@@ -158,6 +158,24 @@ func (s *WorkItemWriteStore) AgentCreateWorkItem(ctx context.Context, in AgentCr
 	case err != nil:
 		return WorkItemRecord{}, fmt.Errorf("coord.AgentCreateWorkItem: read parent: %w", err)
 	}
+	// Create is DIRECT-PARENT-ONLY by design: it uses agentHoldsClaim (a claim on
+	// THIS parent, or being its assignee), NOT the depth-capped ancestor walk
+	// agentHoldsCustodyScope that the mutation paths use (update: AgentUpdateWorkItem
+	// step (2); reparent-destination: step (4); dispatch: AgentRequestDispatch). The
+	// asymmetry is deliberate and traces to two SEPARATE ADR-0024 decisions:
+	//   - §4.1 scopes CREATE to "an active coord.claim on that parent (or is the
+	//     parent's assigned agent)" — you may spawn a child only directly under work
+	//     you were actually handed. This is the invariant that keeps the authoring
+	//     relaxation bounded (a PM claims the epic, spawns its children, then hands
+	//     each off; the implementer who receives a child claims it before decomposing
+	//     further). It is NOT the O-3 descendant scope.
+	//   - O-3 scopes the EDIT/reassign surface to "the in-custody item + its
+	//     descendants" — editing or re-homing existing work anywhere below what you
+	//     hold. That is a weaker act than minting new work, so it gets the wider walk.
+	// Net effect: fan-out (new rows) is fenced to direct custody; motion/edits of
+	// existing rows follow the subtree. Do NOT switch this to agentHoldsCustodyScope
+	// without re-opening §4.1 — see TestSpineAuthorCreate_GrandparentCustody_Denied,
+	// which pins the direct-parent rule (ISI-4912, follow-up to ISI-4907/PR#614).
 	held, err := agentHoldsClaim(ctx, tx, in.ParentID, in.Principal, in.AgentName)
 	if err != nil {
 		return WorkItemRecord{}, err
