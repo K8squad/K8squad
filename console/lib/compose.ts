@@ -328,7 +328,10 @@ export function toWire(cf: ComposeForm): Record<string, unknown> {
         runtimeRef: parseObjectRef(f.runtimeRef),
         roleRef: parseObjectRef(f.roleRef),
         ...(skillRefs.length ? { skillRefs } : {}),
-        model: f.model.trim(),
+        // Blank model ⇒ omit it (ISI-4892 / S3, Flow C): Agent.spec.model is optional (ISI-4430),
+        // and a blank field means "inherit from Role → org-default". Omitting rather than sending
+        // model:"" keeps the write wire clean and matches the CRD's omitempty intent.
+        ...(f.model.trim() ? { model: f.model.trim() } : {}),
         ...(f.modelEndpointRef.trim() ? { modelEndpointRef: parseSecretRef(f.modelEndpointRef) } : {}),
         credentialSecretRef: parseSecretRef(f.credentialSecretRef),
         ...(f.credentialClass.trim() ? { credentialClass: f.credentialClass.trim() } : {}),
@@ -601,7 +604,12 @@ export function validate(cf: ComposeForm): FieldErrors {
       checkRequired("runtimeRef.name", parseObjectRef(f.runtimeRef).name, errs);
       checkRequired("roleRef.name", parseObjectRef(f.roleRef).name, errs);
       checkRequired("credentialSecretRef.name", parseSecretRef(f.credentialSecretRef).name, errs);
-      checkRequired("model", f.model, errs);
+      // Model is INTENTIONALLY not required (ISI-4892 / S3, Flow C precondition). Agent.spec.model is
+      // `omitempty`/optional on the CRD (ISI-4430): a blank model means "inherit" — the Model-Per-Role
+      // resolver falls through to the Role tier, then the org-default ModelConfig. The server stays the
+      // fail-closed authority (admission webhook rejects an agent that resolves empty at EVERY tier), so
+      // the console no longer double-guards the agent tier; the EffectiveModelReadout shows what a blank
+      // field will actually resolve to. `toWire` already omits a blank model on submit.
       // BYO endpoint (Story B / AC3, AC5): when the toggle is on, an endpoint Secret ref must be
       // provided — an enabled-but-empty BYO is a half-configured apply and blocks submit. When the
       // toggle is off the ref is ignored (treated absent by toWire's blank-omit).

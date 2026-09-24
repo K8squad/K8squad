@@ -152,8 +152,28 @@ describe("validate mirrors the server field checks", () => {
 
   it("requires all mandatory agent fields", () => {
     const errs = validate(agent({ name: "a" }));
-    for (const f of ["project", "runtimeRef.name", "roleRef.name", "credentialSecretRef.name", "model"])
+    for (const f of ["project", "runtimeRef.name", "roleRef.name", "credentialSecretRef.name"])
       expect(errs[f]).toBe("is required");
+  });
+
+  it("does NOT require the agent model — blank submits cleanly and is omitted from the wire (ISI-4892 / S3, AC5)", () => {
+    // Flow C precondition: a blank model means "inherit" (Agent.spec.model is optional, ISI-4430).
+    // The server stays the fail-closed authority; the form no longer double-guards the agent tier.
+    const base = {
+      project: "p",
+      name: "a1",
+      runtimeRef: "rt",
+      roleRef: "r",
+      credentialSecretRef: "cred/token",
+      model: "",
+    };
+    expect(validate(agent({ ...base }))["model"]).toBeUndefined();
+    expect(isValid(agent({ ...base }))).toBe(true);
+    // A blank model is OMITTED from the write wire (not sent as model:"").
+    const w = toWire(agent({ ...base }));
+    expect("model" in w).toBe(false);
+    // An inherited agent round-trips: a set model still rides through unchanged.
+    expect(toWire(agent({ ...base, model: "claude-opus-4-8" }))).toMatchObject({ model: "claude-opus-4-8" });
   });
 
   it("requires an endpoint Secret ref only when BYO is enabled (Story B / AC3, AC5)", () => {

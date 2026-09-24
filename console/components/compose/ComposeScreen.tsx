@@ -874,7 +874,13 @@ export function ComposeScreen() {
               </div>
             )}
             <fieldset className="compose__fieldset" disabled={hydration.kind === "loading"}>
-              <KindFields cf={cf} errors={errors} patch={patch} />
+              <KindFields
+                cf={cf}
+                errors={errors}
+                patch={patch}
+                effectiveModelName={mode === "edit" ? editTarget?.name : undefined}
+                effectiveModelTeam={mode === "edit" ? editTarget?.team : undefined}
+              />
             </fieldset>
 
             <div className="compose__actions">
@@ -959,10 +965,16 @@ function KindFields({
   cf,
   errors,
   patch,
+  effectiveModelName,
+  effectiveModelTeam,
 }: {
   cf: ComposeForm;
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
+  // Persisted agent name + team for the S3 effective-model read-out (ISI-4892);
+  // set only when editing an existing agent, undefined in create mode.
+  effectiveModelName?: string;
+  effectiveModelTeam?: string;
 }) {
   switch (cf.kind) {
     case "teams":
@@ -970,7 +982,15 @@ function KindFields({
     case "projects":
       return <ProjectForm cf={cf} errors={errors} patch={patch} />;
     case "agents":
-      return <AgentForm cf={cf} errors={errors} patch={patch} />;
+      return (
+        <AgentForm
+          cf={cf}
+          errors={errors}
+          patch={patch}
+          effectiveModelName={effectiveModelName}
+          effectiveModelTeam={effectiveModelTeam}
+        />
+      );
     case "roles": {
       const f = cf.form;
       return (
