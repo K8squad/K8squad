@@ -17,11 +17,7 @@
 // proves. When no dispatch is in flight the chip renders the caller's static fallback unchanged.
 
 import type React from "react";
-import {
-  useDispatchWatch,
-  type DispatchState,
-  type DispatchWatch,
-} from "@/lib/tickets/useDispatchWatch";
+import type { DispatchState, DispatchWatch } from "@/lib/tickets/useDispatchWatch";
 
 /** The chip view derived from the ladder: the localRunBadge-grammar label + a verbatim status hue. */
 export interface AssigneeChipView {
@@ -111,22 +107,7 @@ export function AssigneeChipView({
   );
 }
 
-/**
- * The rail assignee chip. Watches the dispatch ladder for `agent` on `workItemId` via the shared S1
- * hook and renders the tri-state chip; when `agent` is null/empty there is no dispatch to watch, so
- * the hook is inert (null workItemId) and the static `fallback` stands unchanged.
- */
-export function RailAssigneeChip({
-  workItemId,
-  agent,
-  fallback,
-}: {
-  workItemId: string;
-  agent: string | null;
-  fallback: React.ReactNode;
-}) {
-  // Only seed the watch when there is a dispatched agent — a null workItemId keeps the hook inert
-  // (returns null), so no poll / EventSource is opened for a ticket with nothing in flight.
-  const watch = useDispatchWatch(agent ? workItemId : null, agent ?? "");
-  return <AssigneeChipView agent={agent} watch={watch} fallback={fallback} />;
-}
+// NOTE: the rail chip is driven by the parent's SINGLE `useDispatchWatch` (TicketDetail seeds it only
+// on a real dispatch 200 — composer OR rail select) and passed in as `watch`. It is deliberately NOT a
+// self-mounting hook keyed on `requestedAgent`: a passively-viewed ticket has a stamped requested agent
+// but nothing in flight, and must show its static fallback, never a fabricated "queued" chip.

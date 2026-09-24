@@ -71,7 +71,7 @@ import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/t
 import { STATUS_META } from "@/lib/tickets/statusColor";
 import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
-import { RailAssigneeChip } from "./RailAssigneeChip";
+import { AssigneeChipView } from "./RailAssigneeChip";
 import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
 import { DispatchPendingCard } from "./DispatchPendingCard";
 
@@ -268,6 +268,8 @@ function AssigneeControl({
   workItemId,
   canEdit,
   onAssigned,
+  dispatchWatch,
+  onDispatched,
 }: {
   state: string;
   holder: string;
@@ -275,6 +277,12 @@ function AssigneeControl({
   workItemId: string;
   canEdit: boolean;
   onAssigned: () => void;
+  // ISI-4882 (S4): the honest ladder from the parent's SINGLE useDispatchWatch — seeded only on a
+  // real dispatch 200, so a passively-viewed ticket (requested agent stamped, nothing in flight)
+  // reads null here and the chip stays on its static fallback. Never a second self-armed hook.
+  dispatchWatch: DispatchWatch | null;
+  // Seed the parent ladder when the dispatch originates from THIS rail select (not just the composer).
+  onDispatched: (agent: string) => void;
 }) {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [busy, setBusy] = useState(false);
@@ -311,9 +319,9 @@ function AssigneeControl({
             // ISI-4882 (S4): while the dispatch is in flight the chip tracks the honest ladder
             // (queued → picking up… → working… → finished); it falls back to today's static
             // "Requested: <agent> · dispatch pending" text whenever nothing is in flight.
-            <RailAssigneeChip
-              workItemId={workItemId}
+            <AssigneeChipView
               agent={requestedAgent}
+              watch={dispatchWatch}
               fallback={
                 <span className="muted" data-testid="detail-requested">
                   Requested: <code className="ksq-ticket-id">{requestedAgent}</code> · dispatch pending
@@ -336,6 +344,7 @@ function AssigneeControl({
     setErr(null);
     try {
       await dispatchWorkItem(workItemId, name);
+      onDispatched(name); // seed the honest ladder BEFORE the re-fetch (S4 mirror of the composer path)
       onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
@@ -386,9 +395,9 @@ function AssigneeControl({
       {state === "todo" && requestedAgent && (
         // ISI-4882 (S4): the pending hint becomes the live tri-state ladder chip once the dispatch is
         // in flight; the static "dispatch pending" hint is the clean fallback (zero new tokens).
-        <RailAssigneeChip
-          workItemId={workItemId}
+        <AssigneeChipView
           agent={requestedAgent}
+          watch={dispatchWatch}
           fallback={
             <span className="ksq-field__hint muted" data-testid="detail-requested-pending">
               dispatch pending
@@ -1224,6 +1233,8 @@ function TicketBody({
                 workItemId={thread.workItemId}
                 canEdit={canComment(role)}
                 onAssigned={onCommentPosted}
+                dispatchWatch={dispatchWatch}
+                onDispatched={(agent) => setDispatch({ agent })}
               />
             </dd>
 
