@@ -75,6 +75,42 @@ describe("RoleForm — validate mirrors the webhook", () => {
   });
 });
 
+describe("RoleForm — role-tier model wire (ISI-4891 S2, Flow B)", () => {
+  it("omits model entirely when blank (inherit the org default)", () => {
+    const wire = toWire(baseRole({ model: "" }));
+    expect(wire).not.toHaveProperty("model");
+    expect(wire).not.toHaveProperty("fallbackModel");
+  });
+
+  it("emits a trimmed role-tier model when set", () => {
+    const wire = toWire(baseRole({ model: "  claude-opus-4-8  " }));
+    expect(wire.model).toBe("claude-opus-4-8");
+  });
+
+  it("emits fallbackModel with its own BYO endpoint ref when both are set", () => {
+    const wire = toWire(
+      baseRole({ model: "claude-opus-4-8", fallbackModel: "claude-haiku-4-5", fallbackModelEndpointRef: "fb/url" }),
+    );
+    expect(wire.fallbackModel).toEqual({ model: "claude-haiku-4-5", modelEndpointRef: { name: "fb", key: "url" } });
+  });
+
+  it("emits a bare fallbackModel (no endpoint ref) when the ref is blank", () => {
+    const wire = toWire(baseRole({ fallbackModel: "claude-haiku-4-5", fallbackModelEndpointRef: "" }));
+    expect(wire.fallbackModel).toEqual({ model: "claude-haiku-4-5" });
+  });
+
+  it("drops a fallback endpoint ref when no fallback model is set (never rides alone)", () => {
+    const wire = toWire(baseRole({ fallbackModel: "", fallbackModelEndpointRef: "orphan/url" }));
+    expect(wire).not.toHaveProperty("fallbackModel");
+  });
+
+  it("accepts a role with a model + fallback (no primary modelEndpointRef exists)", () => {
+    expect(
+      validate(baseRole({ model: "claude-opus-4-8", fallbackModel: "claude-haiku-4-5" })),
+    ).toEqual({});
+  });
+});
+
 describe("workingPhaseOf — honest empty phase (FR-7)", () => {
   it("returns the working phase for the six middle statuses", () => {
     expect(workingPhaseOf("design")).toBe("design");

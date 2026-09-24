@@ -82,6 +82,10 @@ describe("fromWire ∘ toWire round-trip", () => {
         activePhases: ["design", "planning"],
         coordinator: true,
         coordinatorMode: "propose",
+        // ISI-4891 S2 role-tier model + fallback (its own BYO endpoint ref).
+        model: "claude-opus-4-8",
+        fallbackModel: "claude-haiku-4-5",
+        fallbackModelEndpointRef: "fb/url",
       },
     };
     expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);
@@ -99,6 +103,10 @@ describe("fromWire ∘ toWire round-trip", () => {
         activePhases: [],
         coordinator: false,
         coordinatorMode: "",
+        // ISI-4891 S2: blank model ⇒ inherit the org default; no fallback.
+        model: "",
+        fallbackModel: "",
+        fallbackModelEndpointRef: "",
       },
     };
     expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);

@@ -297,6 +297,18 @@ type roleRequest struct {
 	PromptRef        objectRefWire   `json:"promptRef"`
 	DefaultSkills    []objectRefWire `json:"defaultSkills,omitempty"`
 	RuntimeClassHint string          `json:"runtimeClassHint,omitempty"`
+	// Model is the role-tier model applied to any agent assuming this role that
+	// leaves Agent.spec.model blank (Model-Per-Role, ISI-4430; role_types.go:54).
+	// Empty ⇒ the role does not pin a model and resolution falls through to the
+	// system-default ModelConfig singleton. Note: RoleSpec has NO primary
+	// modelEndpointRef (unlike Agent/ModelConfig), so the role's primary model
+	// resolves against the inherited/provider-default endpoint — a BYO endpoint is
+	// only expressible on the fallback below (ISI-4891 S2 / plan §14.1).
+	Model string `json:"model,omitempty"`
+	// FallbackModel persists spec.fallbackModel (role_types.go:64) — the role-tier
+	// secondary model for mid-Run rate_limited recovery. Reuses fallbackModelWire
+	// verbatim (its own optional modelEndpointRef is the role's ONE BYO endpoint seam).
+	FallbackModel *fallbackModelWire `json:"fallbackModel,omitempty"`
 }
 
 type skillRequest struct {
@@ -795,9 +807,15 @@ func (s *ComposeService) planRole(req roleRequest) applyPlan {
 	spec := ksquadv1.RoleSpec{
 		PromptRef:        req.PromptRef.toRef(),
 		RuntimeClassHint: req.RuntimeClassHint,
+		Model:            req.Model,
 	}
 	for _, ds := range req.DefaultSkills {
 		spec.DefaultSkills = append(spec.DefaultSkills, ds.toRef())
+	}
+	// Role-tier fallback rides the shared fallbackModelWire (its optional
+	// modelEndpointRef is the role's only BYO-endpoint seam; the primary has none).
+	if req.FallbackModel != nil {
+		spec.FallbackModel = req.FallbackModel.toSpec()
 	}
 	role := &ksquadv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},

@@ -54,6 +54,8 @@ export function ModelSelector({
   errors,
   patch,
   onApplyToAll,
+  hidePrimaryByo = false,
+  blankMeansInherit = false,
 }: {
   model: string;
   modelEndpointRef: string;
@@ -62,6 +64,15 @@ export function ModelSelector({
   fallbackModelEndpointRef: string;
   errors: FieldErrors;
   patch: (p: Record<string, unknown>) => void;
+  // hidePrimaryByo suppresses the primary "Bring your own endpoint" control. The
+  // Role tier (ISI-4891 S2) sets this: RoleSpec has no primary modelEndpointRef, so
+  // the role's primary model can only be curated/typed — a BYO endpoint is bindable
+  // solely on the fallback (plan §14.1). The fallback BYO stays available.
+  hidePrimaryByo?: boolean;
+  // blankMeansInherit re-labels an empty selection as "inherit the org default" rather
+  // than an unset Agent model. Role tier uses it: a blank Role.spec.model is valid and
+  // means resolution falls through to the system-default ModelConfig.
+  blankMeansInherit?: boolean;
   // FR-4.4 "apply a default to all agents": when supplied, the shortcut is rendered and invoked with
   // the current primary+fallback selection so the parent can fan it across the squad. Absent ⇒ the
   // shortcut is not rendered (a single-Agent compose form has no squad to fan across).
@@ -160,8 +171,10 @@ export function ModelSelector({
         label="Model"
         hint={
           customMode
-            ? shapeHint ?? "Any model id — written verbatim to the Agent."
-            : "Pick a curated Claude model, or choose “Custom model…” for any other id."
+            ? shapeHint ?? "Any model id — written verbatim."
+            : blankMeansInherit
+              ? "Pick a curated Claude model, or “Custom model…”. Leave blank to inherit the org default."
+              : "Pick a curated Claude model, or choose “Custom model…” for any other id."
         }
         error={errors["model"]}
       >
@@ -181,7 +194,7 @@ export function ModelSelector({
             aria-invalid={!!errors["model"]}
             aria-label="Model"
           >
-            <option value="">— Select a model —</option>
+            <option value="">{blankMeansInherit ? "— Inherit org default —" : "— Select a model —"}</option>
             {hints.map((h) => (
               <option key={h.id} value={h.id}>
                 {h.label}
@@ -201,41 +214,46 @@ export function ModelSelector({
         </button>
       )}
 
-      <div className="compose__byo">
-        <button
-          type="button"
-          className={`btn ${byoEnabled ? "btn--primary" : ""}`}
-          aria-pressed={byoEnabled}
-          aria-expanded={byoEnabled}
-          aria-controls={BYO_REGION_ID}
-          onClick={toggleByo}
-        >
-          {byoEnabled ? "✓ Bring your own endpoint" : "Bring your own endpoint"}
-        </button>
+      {/* Primary BYO endpoint. Suppressed for the Role tier (hidePrimaryByo): RoleSpec has
+          no primary modelEndpointRef, so a role's primary model can't persist a BYO endpoint
+          (plan §14.1). The fallback below still offers its own BYO seam. */}
+      {!hidePrimaryByo && (
+        <div className="compose__byo">
+          <button
+            type="button"
+            className={`btn ${byoEnabled ? "btn--primary" : ""}`}
+            aria-pressed={byoEnabled}
+            aria-expanded={byoEnabled}
+            aria-controls={BYO_REGION_ID}
+            onClick={toggleByo}
+          >
+            {byoEnabled ? "✓ Bring your own endpoint" : "Bring your own endpoint"}
+          </button>
 
-        {byoEnabled && (
-          <div id={BYO_REGION_ID} className="compose__byo-region" role="group" aria-label="Bring your own endpoint">
-            <Field
-              label="Endpoint Secret ref"
-              hint="name or name/key of an existing endpoint Secret (self-hosted / Ollama / non-Anthropic)"
-              error={errors["modelEndpointRef.name"]}
-            >
-              <input
-                value={modelEndpointRef}
-                onChange={(e) => patch({ modelEndpointRef: e.target.value })}
-                aria-invalid={!!errors["modelEndpointRef.name"]}
-                aria-label="Endpoint Secret ref"
-                placeholder="my-endpoint or my-endpoint/url"
-              />
-            </Field>
-            <p className="muted compose__byo-note">
-              Select an existing endpoint Secret — this sets <code>modelEndpointRef</code> only and writes no
-              Secret. Creating a new endpoint inline (URL + token) is coming soon and will go through the
-              credentials surface, never the compose service account.
-            </p>
-          </div>
-        )}
-      </div>
+          {byoEnabled && (
+            <div id={BYO_REGION_ID} className="compose__byo-region" role="group" aria-label="Bring your own endpoint">
+              <Field
+                label="Endpoint Secret ref"
+                hint="name or name/key of an existing endpoint Secret (self-hosted / Ollama / non-Anthropic)"
+                error={errors["modelEndpointRef.name"]}
+              >
+                <input
+                  value={modelEndpointRef}
+                  onChange={(e) => patch({ modelEndpointRef: e.target.value })}
+                  aria-invalid={!!errors["modelEndpointRef.name"]}
+                  aria-label="Endpoint Secret ref"
+                  placeholder="my-endpoint or my-endpoint/url"
+                />
+              </Field>
+              <p className="muted compose__byo-note">
+                Select an existing endpoint Secret — this sets <code>modelEndpointRef</code> only and writes no
+                Secret. Creating a new endpoint inline (URL + token) is coming soon and will go through the
+                credentials surface, never the compose service account.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Fallback model (ISI-3681 E3-S3 / AD-4): a single secondary model the shim switches to on a
           rate_limited signal → Agent.spec.fallbackModel.{model,modelEndpointRef}. */}
