@@ -1,25 +1,27 @@
 "use client";
 
 // components/settings/ProjectSettingsScreen.tsx — ISI-4000 S2: the project
-// Settings tab.
+// Settings tab. ISI-4830 redesign (S1–S4): a real settings IA over the SAME
+// read/compose surface — no behaviour change, no new backend.
 //
-// Renders the S1 read projection (GET /api/projects/{id}/settings) and, for a
-// viewer with canEdit, lets an operator (a) set the repo URL + tracked ref,
-// (b) set/replace the SCM PAT, and (c) test the connection — composing ONLY
-// endpoints that already exist (compose PUT + POST /api/credentials + repo-auth
-// test). No new cluster write. Honesty rules, top to bottom:
-//   • The credential status is a tri-state badge derived STRICTLY off
-//     auth.{connected,lastTest} — a ref's presence alone never reads "healthy".
-//   • The PAT is write-only: it is POSTed once, referenced by NAME, and the input
-//     clears on submit — the token is never read back, never rendered.
-//   • A write is a FULL-SPEC compose PUT, so we round-trip the whole authoring
-//     detail (goals/egress preserved) via buildProjectPutBody — a repo save never
-//     silently wipes a project's goals.
-//   • Every terminal state is honest: loading / 401 / 404 / 501 (not wired) /
-//     no-repo / 5xx get distinct frames; a validation 422 surfaces the
-//     apiserver's field error VERBATIM; the repo-auth {ok,detail} renders VERBATIM
-//     (an honest red is a valid outcome, never rewritten to success).
-//   • canEdit gates the UI (defense in depth); the apiserver still gates the write.
+// Layout (§2 of DESIGN-SPEC-ISI-4830): project header → section nav (left) →
+// concern cards (middle) → connection-health rail (right). The flat vertical
+// stack of five disconnected cards (repo read + duplicate repo form + lone badge
+// + orphan replace-form + orphan test button) is collapsed into three concerns:
+//   • RepositoryCard — unified read+edit (kills the duplicate URL/ref fields).
+//   • AccessCredentialCard — status strip (badge + secret + Test) + Replace-token,
+//     one concern instead of three cards.
+//   • ConnectionHealthRail — a pure re-projection of the S1 payload; no new call.
+//
+// Honesty rules are UNCHANGED (ISI-4000): the credential badge is derived strictly
+// off auth.{connected,lastTest}; the PAT is write-only (POSTed once, referenced by
+// name, input cleared on submit); a write is a full-spec compose PUT that
+// round-trips goals/egress; every terminal state has its own honest frame; repo-auth
+// {ok,detail} renders VERBATIM; canEdit gates the UI (apiserver still gates the write).
+//
+// Deferred to follow-up stories (§4): editable Sync (needs a compose-PUT sync seam,
+// ISI-4843) and the Danger zone (needs backend delete endpoints, ISI-4844). Sync is
+// shown read-only in the rail, matching what the backend can actually round-trip today.
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { EmptyState } from "@/components/forms/EmptyState";
@@ -40,6 +42,13 @@ import {
 } from "@/lib/projectSettings";
 
 type Msg = { tone: "ok" | "bad"; text: string };
+
+/** The left-rail section anchors — id must match each card's id for scroll-spy. */
+const SECTIONS = [
+  { id: "repository", label: "Repository" },
+  { id: "access", label: "Access & credentials" },
+  { id: "sync", label: "Sync" },
+] as const;
 
 /** Parse the compose error body ({error?, fields?}) into a single verbatim line
  *  (AC3: the apiserver's field message, never a generic toast). */
@@ -143,82 +152,83 @@ function ReadyView({
   projectId: string;
   onReload: () => Promise<void>;
 }) {
-  const { repo, auth, canEdit } = data;
-  const badge = useMemo(() => credentialStatusLabel(auth.connected, auth.lastTest), [auth]);
-  const hasRepo = repo.url.trim().length > 0;
+  const { project } = data;
+
+  // Scroll-spy: highlight the section nearest the top of the viewport. Guarded
+  // because jsdom (unit tests) and pre-observer browsers have no IntersectionObserver
+  // — there the nav simply keeps the first section active (its initial state).
+  const [activeSection, setActiveSection] = useState<string>(SECTIONS[0].id);
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const els = SECTIONS.map((s) => document.getElementById(`settings-${s.id}`)).filter(
+      (el): el is HTMLElement => el !== null,
+    );
+    if (els.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        // Of the sections crossing the trigger band, pick the topmost.
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          setActiveSection(visible[0].target.id.replace(/^settings-/, ""));
+        }
+      },
+      // Trigger band ~top quarter of the viewport so the active link flips as a
+      // section's heading scrolls under the header, not only when it fully fills the view.
+      { rootMargin: "-15% 0px -75% 0px", threshold: 0 },
+    );
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <section className="settings" data-testid="settings-ready">
+    <section className="settings settings--redesign" data-testid="settings-ready">
       <header className="settings__header">
-        <h1 className="settings__title">Settings</h1>
-        <p className="muted">{data.project.namespace}/{data.project.name}</p>
+        <div className="settings__crumb">
+          <span className="settings__avatar" aria-hidden="true">
+            {(project.name[0] ?? "?").toUpperCase()}
+          </span>
+          <div>
+            <h1 className="settings__title">Settings</h1>
+            <p className="muted settings__subtitle" data-testid="settings-project-slug">
+              {project.namespace}/{project.name}
+            </p>
+          </div>
+        </div>
       </header>
 
-      {/* Repo panel — always read; edit affordances only when canEdit (AC1/AC6). */}
-      <div className="card settings__panel" data-testid="settings-repo-panel">
-        <h2>Repository</h2>
-        {hasRepo ? (
-          <dl className="settings__facts">
-            <div>
-              <dt>Repo URL</dt>
-              <dd data-testid="repo-url">{repo.url}</dd>
-            </div>
-            <div>
-              <dt>Tracked ref</dt>
-              <dd data-testid="repo-ref">{repo.ref ? repo.ref : "default branch"}</dd>
-            </div>
-            <div>
-              <dt>Provider</dt>
-              <dd data-testid="repo-provider">{repo.provider}</dd>
-            </div>
-          </dl>
-        ) : (
-          <EmptyState
-            testId="settings-no-repo"
-            title="No repo connected"
-            why="This project has no repository configured yet."
-          />
-        )}
+      <div className="settings__grid">
+        <nav className="settings__nav" aria-label="Settings sections">
+          {SECTIONS.map((s) => (
+            <a
+              key={s.id}
+              href={`#settings-${s.id}`}
+              className={`settings__nav-link${s.id === activeSection ? " settings__nav-link--active" : ""}`}
+              aria-current={s.id === activeSection ? "true" : undefined}
+              data-testid={`settings-nav-${s.id}`}
+            >
+              {s.label}
+            </a>
+          ))}
+        </nav>
 
-        {/* Sync summary — the honest muted line for read-only viewers; editors get
-            the real SyncCard control below (§5.5, ISI-4843). */}
-        {!canEdit ? (
-          <p className="muted settings__sync" data-testid="repo-sync">
-            Sync {repo.syncEnabled ? `enabled (poll ${repo.pollIntervalSeconds}s)` : "not configured"}
-            {repo.reflectOutbound ? " · reflects outbound" : ""}
-          </p>
-        ) : null}
+        <div className="settings__main">
+          <RepositoryAndCredentials data={data} projectId={projectId} onReload={onReload} />
+        </div>
+
+        <aside className="settings__rail" aria-label="Connection health">
+          <ConnectionHealthRail data={data} />
+        </aside>
       </div>
-
-      {/* Credential status — honest tri-state (AC2). */}
-      <div className="card settings__panel" data-testid="settings-cred-panel">
-        <h2>SCM credential</h2>
-        <span
-          className={`settings__badge settings__badge--${badge.tone}`}
-          data-testid="cred-status-badge"
-          data-tone={badge.tone}
-        >
-          {badge.label}
-        </span>
-        {auth.connected && auth.credentialSecretRefName ? (
-          <p className="muted" data-testid="cred-ref">
-            Secret: {auth.credentialSecretRefName}
-          </p>
-        ) : null}
-      </div>
-
-      {canEdit ? (
-        <EditPanels data={data} projectId={projectId} onReload={onReload} />
-      ) : (
-        <p className="muted settings__readonly" data-testid="settings-readonly-note">
-          You don&apos;t have permission to change these settings.
-        </p>
-      )}
     </section>
   );
 }
 
-function EditPanels({
+/** The two editable concerns (Repository, Access & credentials) plus the read-only
+ *  Sync card. Split out so the credential badge/state lives beside its Test button
+ *  and Replace-token form — one concern, one card (§2). */
+function RepositoryAndCredentials({
   data,
   projectId,
   onReload,
@@ -227,7 +237,10 @@ function EditPanels({
   projectId: string;
   onReload: () => Promise<void>;
 }) {
-  const { repo, auth } = data;
+  const { repo, auth, canEdit } = data;
+  const badge = useMemo(() => credentialStatusLabel(auth.connected, auth.lastTest), [auth]);
+  const hasRepo = repo.url.trim().length > 0;
+
   const [repoUrl, setRepoUrl] = useState(repo.url);
   const [repoRef, setRepoRef] = useState(repo.ref);
   const [repoBusy, setRepoBusy] = useState(false);
@@ -346,90 +359,125 @@ function EditPanels({
 
   return (
     <>
-      <form className="card settings__panel" data-testid="settings-repo-form" onSubmit={onSaveRepo}>
-        <h2>Set repository</h2>
-        <label className="settings__field">
-          <span>Repo URL</span>
-          <input
-            type="text"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            placeholder="https://github.com/org/repo"
-            data-testid="repo-url-input"
-            autoComplete="off"
-          />
-        </label>
-        <label className="settings__field">
-          <span>Tracked ref (optional)</span>
-          <input
-            type="text"
-            value={repoRef}
-            onChange={(e) => setRepoRef(e.target.value)}
-            placeholder="default branch"
-            data-testid="repo-ref-input"
-            autoComplete="off"
-          />
-        </label>
-        <button className="btn btn--primary" type="submit" disabled={repoBusy} data-testid="repo-save">
-          {repoBusy ? "Saving…" : "Save repository"}
-        </button>
-        {repoMsg ? (
-          <p className={`settings__msg settings__msg--${repoMsg.tone}`} data-testid="repo-msg" role="status">
-            {repoMsg.text}
-          </p>
-        ) : null}
-      </form>
+      {/* ── Repository — unified read + edit (kills the duplicate URL/ref). ── */}
+      <section id="settings-repository" className="card settings__card" data-testid="settings-repo-panel">
+        <div className="settings__card-head">
+          <h2 className="settings__card-title">Repository</h2>
+          {hasRepo ? (
+            <span className="settings__chip settings__chip--ok" data-testid="repo-linked-chip">
+              Linked
+            </span>
+          ) : null}
+        </div>
 
-      <form className="card settings__panel" data-testid="settings-pat-form" onSubmit={onSavePat}>
-        <h2>{auth.connected ? "Replace SCM credential" : "Attach SCM credential"}</h2>
-        <p className="muted">
-          Paste a personal access token — it&apos;s stored as a Kubernetes Secret and never shown back.
-        </p>
-        <label className="settings__field">
-          <span>Credential name</span>
-          <input
-            type="text"
-            value={credName}
-            onChange={(e) => setCredName(e.target.value)}
-            placeholder="e.g. project-scm-pat"
-            data-testid="pat-name-input"
-            autoComplete="off"
+        {canEdit ? (
+          <form className="settings__form" data-testid="settings-repo-form" onSubmit={onSaveRepo}>
+            {!hasRepo ? (
+              <EmptyState
+                testId="settings-no-repo"
+                title="No repo connected"
+                why="This project has no repository configured yet — add one below."
+              />
+            ) : null}
+            <label className="settings__field">
+              <span>Repository URL</span>
+              <input
+                type="text"
+                value={repoUrl}
+                onChange={(e) => setRepoUrl(e.target.value)}
+                placeholder="https://github.com/org/repo"
+                data-testid="repo-url-input"
+                autoComplete="off"
+              />
+            </label>
+            <div className="settings__field-row">
+              <label className="settings__field">
+                <span>Tracked ref</span>
+                <input
+                  type="text"
+                  value={repoRef}
+                  onChange={(e) => setRepoRef(e.target.value)}
+                  placeholder="default branch"
+                  data-testid="repo-ref-input"
+                  autoComplete="off"
+                />
+              </label>
+              <div className="settings__field settings__field--static">
+                <span>Provider</span>
+                <span className="settings__chip settings__chip--muted" data-testid="repo-provider">
+                  {repo.provider}
+                </span>
+              </div>
+            </div>
+            <p className="muted settings__note">
+              Full spec is round-tripped on save — changing the URL never wipes the project&apos;s goals or egress.
+            </p>
+            <div className="settings__actions">
+              <button className="btn btn--primary" type="submit" disabled={repoBusy} data-testid="repo-save">
+                {repoBusy ? "Saving…" : "Save repository"}
+              </button>
+              {repoMsg ? (
+                <span className={`settings__msg settings__msg--${repoMsg.tone}`} data-testid="repo-msg" role="status">
+                  {repoMsg.text}
+                </span>
+              ) : null}
+            </div>
+          </form>
+        ) : hasRepo ? (
+          <dl className="settings__facts">
+            <div>
+              <dt>Repository URL</dt>
+              <dd data-testid="repo-url">{repo.url}</dd>
+            </div>
+            <div>
+              <dt>Tracked ref</dt>
+              <dd data-testid="repo-ref">{repo.ref ? repo.ref : "default branch"}</dd>
+            </div>
+            <div>
+              <dt>Provider</dt>
+              <dd data-testid="repo-provider">{repo.provider}</dd>
+            </div>
+          </dl>
+        ) : (
+          <EmptyState
+            testId="settings-no-repo"
+            title="No repo connected"
+            why="This project has no repository configured yet."
           />
-        </label>
-        <label className="settings__field">
-          <span>Personal access token</span>
-          <input
-            type="password"
-            value={pat}
-            onChange={(e) => setPat(e.target.value)}
-            placeholder="Paste the PAT"
-            data-testid="pat-value-input"
-            autoComplete="off"
-          />
-        </label>
-        <button className="btn btn--primary" type="submit" disabled={credBusy} data-testid="pat-save">
-          {credBusy ? "Saving…" : "Save credential"}
-        </button>
-        {credMsg ? (
-          <p className={`settings__msg settings__msg--${credMsg.tone}`} data-testid="pat-msg" role="status">
-            {credMsg.text}
-          </p>
-        ) : null}
-      </form>
+        )}
+      </section>
 
-      <div className="card settings__panel" data-testid="settings-test-panel">
-        <h2>Test connection</h2>
-        <button
-          className="btn"
-          type="button"
-          onClick={() => void onTest()}
-          disabled={testBusy || !canTest}
-          data-testid="test-connection"
-        >
-          {testBusy ? "Testing…" : "Test connection"}
-        </button>
+      {/* ── Access & credentials — status strip + Replace-token (one concern). ── */}
+      <section id="settings-access" className="card settings__card" data-testid="settings-cred-panel">
+        <div className="settings__card-head">
+          <h2 className="settings__card-title">Access &amp; credentials</h2>
+        </div>
+
+        <div className="settings__cred-strip" data-testid="settings-cred-strip">
+          <span
+            className={`settings__badge settings__badge--${badge.tone}`}
+            data-testid="cred-status-badge"
+            data-tone={badge.tone}
+          >
+            {badge.label}
+          </span>
+          {auth.connected && auth.credentialSecretRefName ? (
+            <span className="settings__chip settings__chip--muted" data-testid="cred-ref">
+              Secret: {auth.credentialSecretRefName}
+            </span>
+          ) : null}
+          <button
+            className="btn"
+            type="button"
+            onClick={() => void onTest()}
+            disabled={testBusy || !canTest || !canEdit}
+            data-testid="test-connection"
+          >
+            {testBusy ? "Testing…" : "Test connection"}
+          </button>
+        </div>
         {!canTest ? (
-          <p className="muted" data-testid="test-hint">
+          <p className="muted settings__note" data-testid="test-hint">
             Connect a credential and set a repo URL to test.
           </p>
         ) : null}
@@ -442,10 +490,133 @@ function EditPanels({
             {testResult.detail}
           </p>
         ) : null}
-      </div>
 
-      <SyncCard repo={repo} projectId={projectId} onReload={onReload} />
+        {canEdit ? (
+          <form className="settings__form settings__replace" data-testid="settings-pat-form" onSubmit={onSavePat}>
+            <h3 className="settings__sub-title">{auth.connected ? "Replace token" : "Attach token"}</h3>
+            <p className="muted settings__note">
+              Paste a personal access token — it&apos;s stored as a Kubernetes Secret and never shown back.
+            </p>
+            <div className="settings__field-row">
+              <label className="settings__field">
+                <span>Credential name</span>
+                <input
+                  type="text"
+                  value={credName}
+                  onChange={(e) => setCredName(e.target.value)}
+                  placeholder="e.g. project-scm-pat"
+                  data-testid="pat-name-input"
+                  autoComplete="off"
+                />
+              </label>
+              <label className="settings__field">
+                <span>Personal access token</span>
+                <input
+                  type="password"
+                  value={pat}
+                  onChange={(e) => setPat(e.target.value)}
+                  placeholder="Paste the PAT"
+                  data-testid="pat-value-input"
+                  autoComplete="off"
+                />
+              </label>
+            </div>
+            <div className="settings__actions">
+              <button className="btn btn--primary" type="submit" disabled={credBusy} data-testid="pat-save">
+                {credBusy ? "Saving…" : "Save credential"}
+              </button>
+              {credMsg ? (
+                <span className={`settings__msg settings__msg--${credMsg.tone}`} data-testid="pat-msg" role="status">
+                  {credMsg.text}
+                </span>
+              ) : null}
+            </div>
+          </form>
+        ) : (
+          <p className="muted settings__readonly" data-testid="settings-readonly-note">
+            You don&apos;t have permission to change these settings.
+          </p>
+        )}
+      </section>
+
+      {/* ── Sync — editable write (ISI-4843, S5): editors get the SyncCard control;
+          non-editors keep the honest read-only summary. The write is a full-spec
+          compose PUT (buildProjectPutBody) that round-trips goals/egress + the
+          opaque sync passthrough (webhookSecretRef/mirror/issueSync). ── */}
+      {canEdit ? (
+        <SyncCard repo={repo} projectId={projectId} onReload={onReload} />
+      ) : (
+        <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+          <div className="settings__card-head">
+            <h2 className="settings__card-title">Sync</h2>
+            <span
+              className={`settings__chip settings__chip--${repo.syncEnabled ? "ok" : "muted"}`}
+              data-testid="sync-state-chip"
+            >
+              {repo.syncEnabled ? "On" : "Off"}
+            </span>
+          </div>
+          <p className="muted settings__note" data-testid="repo-sync">
+            {repo.syncEnabled
+              ? `Polling every ${repo.pollIntervalSeconds}s`
+              : "Not configured"}
+            {repo.reflectOutbound ? " · reflects outbound" : ""}
+          </p>
+        </section>
+      )}
     </>
+  );
+}
+
+/** ConnectionHealthRail — a pure re-projection of the S1 settings payload (no new
+ *  endpoint). At-a-glance status-coloured readout of the whole connection (§2). */
+function ConnectionHealthRail({ data }: { data: ProjectSettings }) {
+  const { repo, auth } = data;
+  const badge = credentialStatusLabel(auth.connected, auth.lastTest);
+  const hasRepo = repo.url.trim().length > 0;
+
+  const lastTestTone =
+    auth.lastTest === "passed" ? "ok" : auth.lastTest === "failed" ? "bad" : "muted";
+  const lastTestLabel =
+    auth.lastTest === "passed"
+      ? "Passed"
+      : auth.lastTest === "failed"
+        ? "Failed"
+        : "Not run";
+
+  const rows: Array<{ label: string; value: string; tone: string; testId: string }> = [
+    {
+      label: "Repository",
+      value: hasRepo ? "Linked" : "Not linked",
+      tone: hasRepo ? "ok" : "muted",
+      testId: "health-repo",
+    },
+    { label: "Credential", value: badge.label, tone: badge.tone, testId: "health-cred" },
+    { label: "Last test", value: lastTestLabel, tone: lastTestTone, testId: "health-test" },
+    {
+      label: "Sync",
+      value: repo.syncEnabled ? `Every ${repo.pollIntervalSeconds}s` : "Off",
+      tone: repo.syncEnabled ? "ok" : "muted",
+      testId: "health-sync",
+    },
+    { label: "Provider", value: repo.provider, tone: "muted", testId: "health-provider" },
+  ];
+
+  return (
+    <div className="card settings__card settings__health" data-testid="settings-health-rail">
+      <h2 className="settings__card-title">Connection health</h2>
+      <dl className="settings__health-list">
+        {rows.map((r) => (
+          <div key={r.testId} className="settings__health-row">
+            <dt>{r.label}</dt>
+            <dd className={`settings__health-value settings__health-value--${r.tone}`} data-testid={r.testId}>
+              <span className={`settings__dot settings__dot--${r.tone}`} aria-hidden="true" />
+              {r.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
 }
 
@@ -515,52 +686,64 @@ function SyncCard({
   );
 
   return (
-    <form className="card settings__panel" data-testid="settings-sync-form" onSubmit={onSave}>
-      <h2>Sync</h2>
-      <p className="muted">
+    <section id="settings-sync" className="card settings__card" data-testid="settings-sync-panel">
+      <div className="settings__card-head">
+        <h2 className="settings__card-title">Sync</h2>
+        <span
+          className={`settings__chip settings__chip--${enabled ? "ok" : "muted"}`}
+          data-testid="sync-state-chip"
+        >
+          {enabled ? "On" : "Off"}
+        </span>
+      </div>
+      <p className="muted settings__note">
         Mirror this repository&apos;s issues, pull requests and check runs on a poll fallback. Reflect-outbound
         posts KSquad run status back to the provider.
       </p>
-      <label className="settings__toggle">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-          data-testid="sync-enabled-input"
-        />
-        <span>Sync enabled</span>
-      </label>
-      <label className="settings__field">
-        <span>Poll interval (seconds)</span>
-        <input
-          type="number"
-          min={MIN_POLL_SECONDS}
-          step={1}
-          value={poll}
-          onChange={(e) => setPoll(e.target.valueAsNumber)}
-          disabled={!enabled}
-          data-testid="sync-poll-input"
-        />
-      </label>
-      <label className="settings__toggle">
-        <input
-          type="checkbox"
-          checked={reflect}
-          onChange={(e) => setReflect(e.target.checked)}
-          disabled={!enabled}
-          data-testid="sync-reflect-input"
-        />
-        <span>Reflect outbound (post run status back to the provider)</span>
-      </label>
-      <button className="btn btn--primary" type="submit" disabled={busy} data-testid="sync-save">
-        {busy ? "Saving…" : "Save sync settings"}
-      </button>
-      {msg ? (
-        <p className={`settings__msg settings__msg--${msg.tone}`} data-testid="sync-msg" role="status">
-          {msg.text}
-        </p>
-      ) : null}
-    </form>
+      <form className="settings__form" data-testid="settings-sync-form" onSubmit={onSave}>
+        <label className="settings__toggle">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            data-testid="sync-enabled-input"
+          />
+          <span>Sync enabled</span>
+        </label>
+        <label className="settings__field">
+          <span>Poll interval (seconds)</span>
+          <input
+            type="number"
+            min={MIN_POLL_SECONDS}
+            step={1}
+            value={poll}
+            onChange={(e) => setPoll(e.target.valueAsNumber)}
+            disabled={!enabled}
+            data-testid="sync-poll-input"
+          />
+        </label>
+        <label className="settings__toggle">
+          <input
+            type="checkbox"
+            checked={reflect}
+            onChange={(e) => setReflect(e.target.checked)}
+            disabled={!enabled}
+            data-testid="sync-reflect-input"
+          />
+          <span>Reflect outbound (post run status back to the provider)</span>
+        </label>
+        <div className="settings__actions">
+          <button className="btn btn--primary" type="submit" disabled={busy} data-testid="sync-save">
+            {busy ? "Saving…" : "Save sync settings"}
+          </button>
+          {msg ? (
+            <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="sync-msg" role="status">
+              {msg.text}
+            </span>
+          ) : null}
+        </div>
+      </form>
+    </section>
   );
 }
 
