@@ -205,6 +205,12 @@ export type RoleForm = {
   // fallback fields and only ride the wire when a fallbackModel is set.
   fallbackModel: string;
   fallbackModelEndpointRef: string;
+  // adapter is the Frame-4 runtime-adapter credential branch (RuntimeAdapterStep),
+  // shared verbatim with the Agent/Settings surfaces (ISI-4890 S1). It is UI-ONLY —
+  // the credential path differs per adapter but the persisted model triple does not,
+  // so `adapter` is NEVER serialized (toWire ignores it) and always resets to
+  // "claude" on load.
+  adapter: RuntimeAdapter;
 };
 
 export type SkillSourceType = "inline" | "git";
@@ -271,6 +277,7 @@ export function emptyForm(kind: ComposeKind): ComposeForm {
           model: "",
           fallbackModel: "",
           fallbackModelEndpointRef: "",
+          adapter: "claude",
         },
       };
     case "skills":
@@ -579,6 +586,9 @@ export function fromWire(kind: ComposeKind, wire: unknown): ComposeForm {
           model: r.model ?? "",
           fallbackModel: r.fallbackModel?.model ?? "",
           fallbackModelEndpointRef: secretRefToString(r.fallbackModel?.modelEndpointRef),
+          // adapter is UI-only and adapter-agnostic in the persisted spec, so the
+          // credential branch always resets to the primary "claude" path on load.
+          adapter: "claude",
         },
       };
     }

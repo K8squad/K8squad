@@ -86,6 +86,9 @@ describe("fromWire ∘ toWire round-trip", () => {
         model: "claude-opus-4-8",
         fallbackModel: "claude-haiku-4-5",
         fallbackModelEndpointRef: "fb/url",
+        // ISI-4891 Frame-4 fold: adapter is UI-only, never serialized, always
+        // resets to "claude" on hydration — so the round-trip default is "claude".
+        adapter: "claude",
       },
     };
     expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);
@@ -107,6 +110,7 @@ describe("fromWire ∘ toWire round-trip", () => {
         model: "",
         fallbackModel: "",
         fallbackModelEndpointRef: "",
+        adapter: "claude",
       },
     };
     expectFormsEqualIgnoringProject(fromWire("roles", toWire(form)), form);
