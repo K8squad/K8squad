@@ -81,6 +81,7 @@ import (
 	teamctrl "github.com/K8squad/K8squad/pkg/controller/team"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/issuesync"
+	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 	networkpkg "github.com/K8squad/K8squad/pkg/networkpolicy"
 	"github.com/K8squad/K8squad/pkg/scm"
 	"github.com/K8squad/K8squad/pkg/scmwriteback"
@@ -524,11 +525,26 @@ func main() {
 			ctrl.Log.Error(err, "unable to bind settlement reader for Run status projection")
 			os.Exit(1)
 		}
+		assembler := runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv())
+		// ADR-0024a S3 (ISI-4869): mint per-run authoring capability tokens with
+		// the SAME shared HS256 key cmd/memory verifies with (KSQUAD_JWT_SIGNING_KEY,
+		// D2 option (a)) — one configured Secret covers mint (operator) and verify
+		// (memory). Absent/invalid key ⇒ nil minter ⇒ no token minted or projected;
+		// the built-in authoring endpoint carries no credential and the memory edge
+		// serves authoring on the trusted BFF header path only (S3 inert, symmetric
+		// with cmd/memory's own degrade).
+		if raw := os.Getenv("KSQUAD_JWT_SIGNING_KEY"); raw != "" {
+			if m, merr := mcpauthtoken.NewMinter(decodeSigningKey(raw), 0); merr != nil {
+				ctrl.Log.Error(merr, "run authoring-token minter disabled: KSQUAD_JWT_SIGNING_KEY invalid (granted agents get no authoring token)")
+			} else {
+				assembler.Minter = m
+			}
+		}
 		if err := (&runctrl.Reconciler{
 			Source:            coord.NewReconcileStepReader(db),
 			Settlement:        phaseSettleReader,
 			RBAC:              runctrl.NewRBACRenderer(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
-			Assembler:         runctrl.NewAssembler(mgr.GetClient(), toolchain.PlatformConfigFromEnv()),
+			Assembler:         assembler,
 			ContextAssemblers: ctxDeps,
 			Health:            health,
 			PhaseKicks:        phaseKicks,
