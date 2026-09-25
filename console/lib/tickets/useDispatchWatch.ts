@@ -232,14 +232,13 @@ interface RunListRow {
   workItemRef?: string;
   agents?: string[];
   startedAt?: string | null;
-  endedAt?: string | null;
 }
 
 /**
- * Clock-skew allowance when comparing a row's server-stamped timestamps against the client's
+ * Clock-skew allowance when comparing a row's server-stamped `startedAt` against the client's
  * dispatch wall-clock: the fleet NTP-syncs to within seconds, so a minute of slack admits a
- * genuinely-new run without ever re-admitting the previous dispatch's run (whose timestamps
- * sit minutes or more in the past).
+ * genuinely-new run without ever re-admitting the previous dispatch's run (whose `startedAt`
+ * sits minutes or more in the past).
  */
 const DISPATCH_STALE_SKEW_MS = 60_000;
 
@@ -251,9 +250,15 @@ const DISPATCH_STALE_SKEW_MS = 60_000;
  * `notBeforeMs` (ISI-4918): a re-dispatched ticket — a plain-comment nudge or a rail re-assign —
  * already carries run rows from its PREVIOUS dispatch. Matching one of those collapses the ladder
  * straight to that old run's terminal state ("Finished") while the NEW run is still minting: the
- * exact dishonest dead-air this ladder exists to kill. Rows whose own `startedAt`/`endedAt` prove
- * they predate the dispatch are therefore ignored. A row with NO timestamps is a just-minted
- * Pending run (or one that never started) — kept, per the original fallback-to-order contract.
+ * exact dishonest dead-air this ladder exists to kill. A row whose own `startedAt` proves it
+ * predates the dispatch is therefore ignored. A row with no real `startedAt` (never claimed /
+ * just minted) is kept, per the original fallback-to-order contract.
+ *
+ * Only `startedAt` is trusted as the staleness signal. `endedAt` is deliberately NOT used: the
+ * apiserver's `runListItem` emits Go zero-time (`0001-01-01T00:00:00Z`) for every run not in the
+ * `complete`/`failed` phase — which in practice is every run in this listing — and even then it is
+ * `time.Now()`, not the real end time. Parsing that zero-time yields a year-1 (negative) epoch that
+ * would make EVERY row look "stale" and pin the ladder at `queued` forever.
  */
 export function pickDispatchRun(
   rows: RunListRow[],
@@ -266,11 +271,10 @@ export function pickDispatchRun(
   );
   const fresh = (r: RunListRow): boolean => {
     if (notBeforeMs === undefined) return true;
-    const floor = notBeforeMs - DISPATCH_STALE_SKEW_MS;
-    for (const t of [r.startedAt, r.endedAt]) {
-      const ms = t ? Date.parse(t) : NaN;
-      if (!Number.isNaN(ms) && ms < floor) return false;
-    }
+    const ms = r.startedAt ? Date.parse(r.startedAt) : NaN;
+    // `ms > 0` guards a zero-time / negative epoch (Go zero time, or a never-claimed run) so an
+    // absent or zero `startedAt` is treated as "no real timestamp", never as "stale".
+    if (!Number.isNaN(ms) && ms > 0 && ms < notBeforeMs - DISPATCH_STALE_SKEW_MS) return false;
     return true;
   };
   const candidates = forItem.filter(fresh);
