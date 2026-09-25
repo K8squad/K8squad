@@ -33,6 +33,7 @@ import (
 
 	"github.com/K8squad/K8squad/pkg/events"
 	"github.com/K8squad/K8squad/pkg/events/jetstream"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 func main() {
@@ -50,6 +51,32 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Telemetry spine (ISI-4540): without telemetry.Setup here the relay's NATS
+	// producer spans (`nats publish <subject>`, pkg/events/relay.go) are opened
+	// on a no-op tracer and never exported — the exact "no NATS hop in the
+	// trace" gap. The chart injects OTEL_EXPORTER_OTLP_* (k8squad.otelEnv) into
+	// this pod, but this process never read them, so the env was inert and the
+	// relay's spans died on stdout. Mirror the scm-webhook spine: honor the env
+	// fallback so the producer spans reach the same gateway the operator uses.
+	// Setup is fail-open — a bad exporter config must never keep the relay from
+	// delivering events (at-least-once buffering is the relay's only contract).
+	telemetryOpts := telemetry.Options{ServiceName: "ksquad-event-relay"}
+	if env := telemetry.EnvSignalExport(os.Getenv); env != nil {
+		telemetry.ApplyEnvOTLPFallback(&telemetryOpts, env)
+	}
+	_, otelShutdown, terr := telemetry.Setup(ctx, telemetryOpts)
+	if terr != nil {
+		log.Warn("event-relay: telemetry spine setup failed (NATS producer spans will not export)", "err", terr)
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := otelShutdown(shutdownCtx); err != nil {
+				log.Warn("event-relay: telemetry shutdown flush failed", "err", err)
+			}
+		}()
+	}
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
