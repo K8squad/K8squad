@@ -197,6 +197,27 @@ func TestParseOpenCodeStepFinishUsageLive(t *testing.T) {
 	assert.Equal(t, 0, u.CacheWrite)
 	assert.InDelta(t, 0.001, u.CostUSD, 1e-9)
 	assert.Equal(t, int64(0), u.DurationMS, "no duration on the v1.18.27 step-finish wire")
+	assert.Equal(t, "stop", u.FinishReason, "live step_finish reason:stop maps to gen_ai.response.finish_reasons")
+	assert.Empty(t, u.ResponseModel, "v1.18.27 step-finish part carries no served-model; intentionally empty")
+	assert.Empty(t, u.ResponseID, "v1.18.27 step-finish part carries no provider response id; intentionally empty")
+}
+
+// TestParseOpenCodeStepFinishReason (GH #635): a non-stop step-finish reason
+// ("length") still maps onto FinishReason, and ResponseModel/ResponseID stay
+// empty — the v1.18.27 step-finish part carries no served model or provider
+// response id, so those are an explicit, documented no-op for this runtime.
+func TestParseOpenCodeStepFinishReason(t *testing.T) {
+	line := `{"type":"step_finish","part":{"type":"step-finish","reason":"length","tokens":{"input":900,"output":256}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	assert.Equal(t, a2a.EventUsage, out[0].Kind)
+	require.NotNil(t, out[0].Usage)
+	u := out[0].Usage
+	assert.Equal(t, "length", u.FinishReason)
+	assert.Equal(t, 900, u.Input)
+	assert.Equal(t, 256, u.Output)
+	assert.Empty(t, u.ResponseModel)
+	assert.Empty(t, u.ResponseID)
 }
 
 // TestParseOpenCodeStepFinishLegacyCostObject: the costUSD tolerance keeps the
