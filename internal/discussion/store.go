@@ -16,6 +16,7 @@ package discussion
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -72,15 +73,18 @@ type Thread struct {
 
 // Message is an append-only, provenance-tagged entry (discussion.message).
 type Message struct {
-	ID              uuid.UUID  `json:"id"`
-	ThreadID        uuid.UUID  `json:"threadId"`
-	ParentID        *uuid.UUID `json:"parentId,omitempty"`
-	AuthorPrincipal string     `json:"authorPrincipal"`
-	AuthorAgentID   *string    `json:"authorAgentId,omitempty"`
-	AuthorRunID     *string    `json:"authorRunId,omitempty"`
-	Body            string     `json:"body"`
-	CreatedAt       time.Time  `json:"createdAt"`
-	InvalidatedAt   *time.Time `json:"invalidatedAt,omitempty"`
+	ID              uuid.UUID      `json:"id"`
+	ThreadID        uuid.UUID      `json:"threadId"`
+	ParentID        *uuid.UUID     `json:"parentId,omitempty"`
+	AuthorPrincipal string         `json:"authorPrincipal"`
+	AuthorAgentID   *string        `json:"authorAgentId,omitempty"`
+	AuthorRunID     *string        `json:"authorRunId,omitempty"`
+	Body            string         `json:"body"`
+	Audience        string         `json:"audience"`
+	Kind            string         `json:"kind"`
+	Payload         *json.RawMessage `json:"payload,omitempty"`
+	CreatedAt       time.Time      `json:"createdAt"`
+	InvalidatedAt   *time.Time     `json:"invalidatedAt,omitempty"`
 
 	// Derived (not stored): threaded replies, built by GetThread.
 	Replies []Message `json:"replies,omitempty"`
@@ -338,7 +342,7 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID,
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
-	const q = `
+	q := `
 		SELECT m.id, m.thread_id, t.project_id, t.team_id, m.author_principal,
 		       m.author_agent_id, m.author_run_id, m.body, m.created_at
 		FROM discussion.message m
