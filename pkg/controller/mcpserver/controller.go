@@ -144,6 +144,9 @@ type Reconciler struct {
 // SetupWithManager registers the controller: MCPServer primary, probe Jobs
 // and result ConfigMaps mapped back via owner references.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if r.Client == nil {
+		r.Client = mgr.GetClient()
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("mcpserver").
 		For(&ksquadv1alpha1.MCPServer{}).

@@ -34,9 +34,15 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	"github.com/go-logr/logr/funcr"
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 
@@ -477,3 +483,24 @@ func probeResultCM(ns, name, toolsJSON string) *corev1.ConfigMap {
 
 // int32p keeps fixture literals one-line.
 func int32p(i int32) *int32 { return &i }
+
+// Regression (ISI-4916 live diagnosis): cmd/operator constructs the
+// reconciler WITHOUT a client (`&mcpserverctrl.Reconciler{}`), and
+// SetupWithManager never defaulted the embedded client.Client — so the very
+// first r.Get in Reconcile panicked on EVERY MCPServer event (observed as a
+// recovered-panic loop on k8squad-test for all three ksquad-memory-authoring
+// servers, which never reached Ready). SetupWithManager must default the
+// client so that constructor shape can never crash again.
+func TestSetupWithManagerDefaultsNilClient(t *testing.T) {
+	log.SetLogger(funcr.New(func(_, _ string) {}, funcr.Options{}))
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "localhost"}, ctrl.Options{
+		Scheme:  mcpserverScheme(t),
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	require.NoError(t, err)
+	r := &Reconciler{} // the crash shape: no Client
+	require.NoError(t, r.SetupWithManager(mgr))
+	if r.Client == nil {
+		t.Fatal("SetupWithManager left the embedded client nil — every reconcile panics at the first r.Get")
+	}
+}
