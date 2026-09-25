@@ -5,9 +5,9 @@
 //
 //	go test -tags=discussion_integration ./internal/discussion/...
 //
-// It applies the SHIPPED migration (db/migrations/0004_discussion_schema.sql) — not inline DDL — so a
-// drift between the migration and the code goes RED here. When DATABASE_URL is unset the test SKIPS
-// (mirrors the coord chaos gate), so a developer without Postgres is not blocked.
+// It applies the SHIPPED migrations (0004_discussion_schema.sql + 0024_discussion_message_fields.sql)
+// — not inline DDL — so a drift between the migration and the code goes RED here. When DATABASE_URL is
+// unset the test SKIPS (mirrors the coord chaos gate), so a developer without Postgres is not blocked.
 package discussion
 
 import (
@@ -70,7 +70,10 @@ func openTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// applyMigration applies the SHIPPED 0004 migration into a clean `discussion` schema.
+// applyMigration applies the SHIPPED discussion migrations into a clean `discussion` schema:
+// 0004 (base schema) then 0024 (message audience/kind/payload, ISI-4925) — the same forward-only
+// chain production walks, so the fence suite asserts against the schema PostMessage actually
+// writes to (first exercised on CI pgvector by ISI-4953).
 func applyMigration(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -78,25 +81,27 @@ func applyMigration(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS discussion CASCADE`); err != nil {
 		t.Fatalf("reset discussion schema: %v", err)
 	}
-	candidates := []string{
-		filepath.Join("..", "..", "db", "migrations", "0004_discussion_schema.sql"),
-		filepath.Join("db", "migrations", "0004_discussion_schema.sql"),
-	}
-	if d := os.Getenv("DISCUSSION_MIGRATIONS_DIR"); d != "" {
-		candidates = append([]string{filepath.Join(d, "0004_discussion_schema.sql")}, candidates...)
-	}
-	var sqlBytes []byte
-	var err error
-	for _, c := range candidates {
-		if sqlBytes, err = os.ReadFile(c); err == nil {
-			break
+	for _, name := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql"} {
+		candidates := []string{
+			filepath.Join("..", "..", "db", "migrations", name),
+			filepath.Join("db", "migrations", name),
 		}
-	}
-	if sqlBytes == nil {
-		t.Fatalf("could not locate 0004_discussion_schema.sql (tried %v); set DISCUSSION_MIGRATIONS_DIR", candidates)
-	}
-	if _, err := db.ExecContext(ctx, string(sqlBytes)); err != nil {
-		t.Fatalf("the shipped discussion migration failed to apply against real Postgres: %v", err)
+		if d := os.Getenv("DISCUSSION_MIGRATIONS_DIR"); d != "" {
+			candidates = append([]string{filepath.Join(d, name)}, candidates...)
+		}
+		var sqlBytes []byte
+		var err error
+		for _, c := range candidates {
+			if sqlBytes, err = os.ReadFile(c); err == nil {
+				break
+			}
+		}
+		if sqlBytes == nil {
+			t.Fatalf("could not locate %s (tried %v); set DISCUSSION_MIGRATIONS_DIR", name, candidates)
+		}
+		if _, err := db.ExecContext(ctx, string(sqlBytes)); err != nil {
+			t.Fatalf("the shipped migration %s failed to apply against real Postgres: %v", name, err)
+		}
 	}
 	t.Cleanup(func() {
 		cctx, ccancel := context.WithTimeout(context.Background(), 10*time.Second)

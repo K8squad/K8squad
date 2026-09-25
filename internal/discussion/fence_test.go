@@ -85,6 +85,11 @@ var (
 	allowedMessageColumns = []string{
 		"id", "thread_id", "parent_id", "author_principal", "author_agent_id",
 		"author_run_id", "body", "created_at", "invalidated_at",
+		// 0024 (ISI-4925, landed via ISI-4931): message typing/visibility fields — audience
+		// ('party' | 'direct:*'), kind ('text' | structured extension), payload (jsonb). Deliberate,
+		// custody-free extension reviewed under the ISI-4944 fence review; none of the three names
+		// carries a forbidden custody token (ADR-0019 AC4, R13).
+		"audience", "kind", "payload",
 	}
 	// forbiddenCustodyTokens are substrings that would signal a custody/coordination affordance
 	// creeping into the discussion schema. Case-insensitive substring guard (belt-and-suspenders
@@ -113,6 +118,7 @@ func TestDiscussionFenceSchemaHasNoCustodyColumn(t *testing.T) {
 	}
 	for _, c := range cases {
 		got := parseCreateTableColumns(t, sqlText, c.table)
+		got = append(got, parseAlterAddColumns(t, sqlText, c.table)...)
 		assertColumnAllowList(t, c.table, got, c.allowed)
 		for _, col := range got {
 			assertNoForbiddenToken(t, c.table, col)
@@ -120,24 +126,34 @@ func TestDiscussionFenceSchemaHasNoCustodyColumn(t *testing.T) {
 	}
 }
 
-// readDiscussionMigration loads db/migrations/0004_discussion_schema.sql relative to the package dir
-// (mirrors the candidate list used by the integration lane's applyMigration).
+// readDiscussionMigration loads the shipped discussion migration chain (0004 base schema + 0024
+// message fields) relative to the package dir, concatenated in apply order (mirrors the candidate
+// list used by the integration lane's applyMigration).
 func readDiscussionMigration(t *testing.T) string {
 	t.Helper()
-	candidates := []string{
-		filepath.Join("..", "..", "db", "migrations", "0004_discussion_schema.sql"),
-		filepath.Join("db", "migrations", "0004_discussion_schema.sql"),
-	}
-	if d := os.Getenv("DISCUSSION_MIGRATIONS_DIR"); d != "" {
-		candidates = append([]string{filepath.Join(d, "0004_discussion_schema.sql")}, candidates...)
-	}
-	for _, c := range candidates {
-		if b, err := os.ReadFile(c); err == nil {
-			return string(b)
+	var out []byte
+	for _, name := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql"} {
+		candidates := []string{
+			filepath.Join("..", "..", "db", "migrations", name),
+			filepath.Join("db", "migrations", name),
+		}
+		if d := os.Getenv("DISCUSSION_MIGRATIONS_DIR"); d != "" {
+			candidates = append([]string{filepath.Join(d, name)}, candidates...)
+		}
+		var found bool
+		for _, c := range candidates {
+			if b, err := os.ReadFile(c); err == nil {
+				out = append(out, b...)
+				out = append(out, '\n')
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("could not locate %s (tried %v); set DISCUSSION_MIGRATIONS_DIR", name, candidates)
 		}
 	}
-	t.Fatalf("could not locate 0004_discussion_schema.sql (tried %v); set DISCUSSION_MIGRATIONS_DIR", candidates)
-	return ""
+	return string(out)
 }
 
 // parseCreateTableColumns extracts the declared column names from the `CREATE TABLE <table> ( ... );`
@@ -180,6 +196,37 @@ func parseCreateTableColumns(t *testing.T, sqlText, table string) []string {
 	}
 	if len(cols) == 0 {
 		t.Fatalf("parsed zero columns for %s — parser or schema shape changed", table)
+	}
+	return cols
+}
+
+// parseAlterAddColumns extracts column names from `ALTER TABLE <table> ... ADD COLUMN <name>` lines
+// across every ALTER statement for the table (0024-style additive migrations). Deliberately simple,
+// like parseCreateTableColumns: statement text from the ALTER marker to the terminating `;`, first
+// token after ADD COLUMN on each line. ADD CONSTRAINT / indexes do not match and are ignored.
+func parseAlterAddColumns(t *testing.T, sqlText, table string) []string {
+	t.Helper()
+	var cols []string
+	rest := sqlText
+	marker := "ALTER TABLE " + table
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			break
+		}
+		stmt := rest[i:]
+		if end := strings.Index(stmt, ";"); end >= 0 {
+			stmt = stmt[:end]
+			rest = rest[i+end+1:]
+		} else {
+			rest = ""
+		}
+		for _, raw := range strings.Split(stmt, "\n") {
+			f := strings.Fields(strings.TrimSpace(raw))
+			if len(f) >= 3 && strings.ToUpper(f[0]) == "ADD" && strings.ToUpper(f[1]) == "COLUMN" {
+				cols = append(cols, strings.ToLower(f[2]))
+			}
+		}
 	}
 	return cols
 }
