@@ -167,6 +167,11 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 		if tk.project != "" {
 			l.Project = tk.project
 		}
+		// ISI-4973: the run's resolved BYO/Ollama route endpoint rides the
+		// llm.call span's network attribution (server.address / url.full). It
+		// is a per-task fact (ModelRoute.Endpoint on the submit payload), so it
+		// travels via Labels like the identity fields — never on the wire.
+		l.Endpoint = tk.endpoint
 	}
 	return l
 }
@@ -200,14 +205,16 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		return a2a.Status{}, fmt.Errorf("shim: build command for %s: %w", e.rt.Type(), err)
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
+	resolvedModel := e.runModel(t)
 	tk := &task{
 		id:        t.A2ATaskID,
 		workItem:  t.WorkItemID,
 		agent:     t.Identity.Name,
 		team:      t.Identity.Squad,
 		project:   t.Identity.Project,
-		model:     e.runModel(t),
+		model:     resolvedModel,
 		modelTier: t.ModelTier,
+		endpoint:  t.ModelRoute.Endpoint,
 		state:     a2a.TaskSubmitted,
 		stream:    newTaskStream(),
 		cancel:    cancel,

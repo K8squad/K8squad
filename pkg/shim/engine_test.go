@@ -594,6 +594,64 @@ func TestDriveModellessUsageAttributedToRouteModel(t *testing.T) {
 	}
 }
 
+// TestDriveStampsEndpointAttribution (ISI-4973): an llm.call span for a
+// BYO/Ollama-routed run carries non-empty server.address + url.full derived
+// from the submit payload's ModelRoute.Endpoint, so the backend can attribute
+// the network hop (previously llm.call carried zero network fields).
+func TestDriveStampsEndpointAttribution(t *testing.T) {
+	runner := &fakeRunner{
+		emits:   []Progress{{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{Model: "ollama/qwen2.5-coder", Input: 1, Output: 2}}},
+		outcome: Outcome{State: a2a.TaskCompleted},
+	}
+	e := testEngine(t, runner)
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	e.SetTelemetry(toolusage.NewMapper(tp.Tracer("test"), nil))
+
+	if _, err := e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID:  "run-ep",
+		WorkItemID: "wi",
+		ModelRoute: a2a.ModelRoute{Model: "ollama/qwen2.5-coder", Endpoint: "http://ollama:11434/v1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := e.StreamEvents(context.Background(), "run-ep", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drain(t, ch)
+
+	var attrs map[string]string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, s := range sr.Ended() {
+			if s.Name() != "llm.call" {
+				continue
+			}
+			attrs = map[string]string{}
+			for _, a := range s.Attributes() {
+				attrs[string(a.Key)] = a.Value.AsString()
+			}
+			break
+		}
+		if attrs != nil || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if attrs == nil {
+		t.Fatal("no llm.call span recorded")
+	}
+	if attrs["server.address"] != "ollama" {
+		t.Errorf("server.address = %q, want %q", attrs["server.address"], "ollama")
+	}
+	if attrs["url.full"] != "http://ollama:11434/v1" {
+		t.Errorf("url.full = %q, want %q", attrs["url.full"], "http://ollama:11434/v1")
+	}
+}
+
 // TestDriveJoinsSubmitTraceContext (ISI-4238): a valid trace context on the
 // SubmitTask ctx (the extracted W3C carrier) becomes the run root's parent,
 // so the run's spans join the dispatcher's distributed trace instead of

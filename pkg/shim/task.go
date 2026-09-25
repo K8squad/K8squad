@@ -51,7 +51,12 @@ type task struct {
 	// run.start span so an operator sees WHY the run used its model. Empty on
 	// runtime-default runs and on pre-S5 dispatchers.
 	modelTier string
-	now       func() time.Time
+	// endpoint is the resolved model-provider route endpoint (ModelRoute.Endpoint,
+	// e.g. http://ollama:11434/v1) for BYO/Ollama-routed runs (ISI-4973). It is
+	// the run's network attribution source for the llm.call span (server.address
+	// / url.full). Empty on vendor-routed runs.
+	endpoint string
+	now      func() time.Time
 
 	mu      sync.Mutex
 	state   a2a.TaskState
