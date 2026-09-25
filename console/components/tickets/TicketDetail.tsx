@@ -1023,8 +1023,12 @@ function TicketBody({
   // 200. `useDispatchWatch` turns it into the honest ladder (Queued → Picking up… →
   // Working… → terminal) that drives BOTH surfaces the board asked for (OQ1): the
   // placeholder card at the stream head + the composer status line. Null ⇒ no dispatch
-  // in flight ⇒ the hook returns null and both surfaces stay dark.
-  const [dispatch, setDispatch] = useState<{ agent: string } | null>(null);
+  // in flight ⇒ the hook returns null and both surfaces stay dark. The `at` nonce is the
+  // hook's rearm key (ISI-4918): a SECOND nudge on the same ticket re-seeds the ladder
+  // instead of leaving it parked on the previous dispatch's terminal state.
+  const [dispatch, setDispatch] = useState<{ agent: string; at: number } | null>(
+    null,
+  );
   // Clear ONLY on navigation to a different ticket — NOT on the reconciling re-fetch
   // that fires right after a dispatch (a new `thread` object with the SAME workItemId),
   // which would otherwise yank the just-seeded card out within a frame of the 200.
@@ -1034,6 +1038,7 @@ function TicketBody({
   const dispatchWatch = useDispatchWatch(
     dispatch ? thread.workItemId : null,
     dispatch?.agent ?? "",
+    dispatch?.at ?? 0,
   );
   // Single pending-inclusive projection drives both the chronological Activity
   // timeline and the S3 run-meta map, so an optimistically-posted comment and its
@@ -1176,7 +1181,7 @@ function TicketBody({
             canComment={canComment(role)}
             onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
             onPosted={onCommentPosted}
-            onDispatched={(agent) => setDispatch({ agent })}
+            onDispatched={(agent) => setDispatch({ agent, at: Date.now() })}
             dispatchWatch={dispatchWatch}
             dispatchAgent={dispatch?.agent ?? ""}
             reTriggerAgent={thread.requestedAgent ?? thread.assignee ?? ""}
@@ -1238,7 +1243,7 @@ function TicketBody({
                 canEdit={canComment(role)}
                 onAssigned={onCommentPosted}
                 dispatchWatch={dispatchWatch}
-                onDispatched={(agent) => setDispatch({ agent })}
+                onDispatched={(agent) => setDispatch({ agent, at: Date.now() })}
               />
             </dd>
 

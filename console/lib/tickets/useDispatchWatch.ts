@@ -232,24 +232,51 @@ interface RunListRow {
   workItemRef?: string;
   agents?: string[];
   startedAt?: string | null;
+  endedAt?: string | null;
 }
+
+/**
+ * Clock-skew allowance when comparing a row's server-stamped timestamps against the client's
+ * dispatch wall-clock: the fleet NTP-syncs to within seconds, so a minute of slack admits a
+ * genuinely-new run without ever re-admitting the previous dispatch's run (whose timestamps
+ * sit minutes or more in the past).
+ */
+const DISPATCH_STALE_SKEW_MS = 60_000;
 
 /**
  * Pick the Run row for this dispatch out of a `GET /api/runs` array. Matches on `workItemRef`, prefers
  * a row whose `agents` include the dispatched agent (disambiguates a re-assign to a different agent),
  * and takes the newest by `startedAt` (a just-minted Pending run may have none → falls back to order).
+ *
+ * `notBeforeMs` (ISI-4918): a re-dispatched ticket — a plain-comment nudge or a rail re-assign —
+ * already carries run rows from its PREVIOUS dispatch. Matching one of those collapses the ladder
+ * straight to that old run's terminal state ("Finished") while the NEW run is still minting: the
+ * exact dishonest dead-air this ladder exists to kill. Rows whose own `startedAt`/`endedAt` prove
+ * they predate the dispatch are therefore ignored. A row with NO timestamps is a just-minted
+ * Pending run (or one that never started) — kept, per the original fallback-to-order contract.
  */
 export function pickDispatchRun(
   rows: RunListRow[],
   workItemId: string,
   agent: string,
+  notBeforeMs?: number,
 ): RunListRow | null {
   const forItem = rows.filter(
     (r) => r.workItemRef === workItemId && typeof r.id === "string" && r.id,
   );
-  if (forItem.length === 0) return null;
-  const matchesAgent = forItem.filter((r) => (r.agents ?? []).includes(agent));
-  const pool = matchesAgent.length > 0 ? matchesAgent : forItem;
+  const fresh = (r: RunListRow): boolean => {
+    if (notBeforeMs === undefined) return true;
+    const floor = notBeforeMs - DISPATCH_STALE_SKEW_MS;
+    for (const t of [r.startedAt, r.endedAt]) {
+      const ms = t ? Date.parse(t) : NaN;
+      if (!Number.isNaN(ms) && ms < floor) return false;
+    }
+    return true;
+  };
+  const candidates = forItem.filter(fresh);
+  if (candidates.length === 0) return null;
+  const matchesAgent = candidates.filter((r) => (r.agents ?? []).includes(agent));
+  const pool = matchesAgent.length > 0 ? matchesAgent : candidates;
   return pool.reduce((newest, r) => {
     const a = r.startedAt ? Date.parse(r.startedAt) : NaN;
     const b = newest.startedAt ? Date.parse(newest.startedAt) : NaN;
@@ -287,10 +314,15 @@ function lifecycleName(summary: string | undefined): LifecycleName | null {
  *
  * @param workItemId the dispatched work item's id (null/"" ⇒ inert)
  * @param agent      the dispatched agent NAME (disambiguates the Run row on a re-assign)
+ * @param rearmKey   rearms the machine when it changes even if `workItemId` is unchanged —
+ *                   the caller stamps one value per dispatch (ISI-4918: a second plain-comment
+ *                   nudge on the SAME ticket must re-seed the ladder, not leave it parked on
+ *                   the previous dispatch's terminal state).
  */
 export function useDispatchWatch(
   workItemId: string | null,
   agent: string,
+  rearmKey: string | number = "",
 ): DispatchWatch | null {
   const active = !!workItemId;
   const [machine, dispatch] = useReducer(
@@ -299,11 +331,13 @@ export function useDispatchWatch(
     initialDispatchMachine,
   );
 
-  // Rearm synchronously when a NEW dispatch starts (workItemId changed) — so the first render after a
-  // dispatch already reads `queued`, never a stale prior ladder. (React "reset state on prop change".)
-  const prevId = useRef<string | null>(workItemId);
-  if (prevId.current !== workItemId) {
-    prevId.current = workItemId;
+  // Rearm synchronously when a NEW dispatch starts (workItemId/rearmKey changed) — so the first
+  // render after a dispatch already reads `queued`, never a stale prior ladder. (React "reset
+  // state on prop change".)
+  const armKey = workItemId ? `${workItemId}|${rearmKey}` : null;
+  const prevId = useRef<string | null>(armKey);
+  if (prevId.current !== armKey) {
+    prevId.current = armKey;
     dispatch({ type: "reset" });
   }
 
@@ -330,11 +364,12 @@ export function useDispatchWatch(
 
   // Run-discovery poll (OQ4 bridge): while active, not terminal, and no runId yet, poll the existing
   // listing until the Run row for this work item appears, then STOP (hand off to SSE below). Bounded
-  // by DISPATCH_POLL_CAP_MS so a never-minted run can't leak an interval.
+  // by DISPATCH_POLL_CAP_MS so a never-minted run can't leak an interval. The poll's start time is
+  // also the notBefore floor for run matching (ISI-4918): rows predating this dispatch are ignored.
   useEffect(() => {
     if (!active || terminal || haveRun || !workItemId) return;
     let cancelled = false;
-    const startedAt = Date.now();
+    const seededAt = Date.now();
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const poll = async () => {
@@ -346,7 +381,7 @@ export function useDispatchWatch(
         if (res.ok) {
           const body = (await res.json()) as unknown;
           const rows = Array.isArray(body) ? (body as RunListRow[]) : [];
-          const row = pickDispatchRun(rows, workItemId, agent);
+          const row = pickDispatchRun(rows, workItemId, agent, seededAt);
           if (row && row.id && !cancelled) {
             dispatch({ type: "run_discovered", runId: row.id });
             if (row.phase) dispatch({ type: "phase", phase: row.phase });
@@ -357,7 +392,7 @@ export function useDispatchWatch(
         // best-effort bridge — swallow and retry until the cap
       }
       if (cancelled) return;
-      if (Date.now() - startedAt >= DISPATCH_POLL_CAP_MS) return; // bounded
+      if (Date.now() - seededAt >= DISPATCH_POLL_CAP_MS) return; // bounded
       timer = setTimeout(poll, DISPATCH_POLL_INTERVAL_MS);
     };
     poll();
@@ -366,7 +401,7 @@ export function useDispatchWatch(
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [active, terminal, haveRun, workItemId, agent]);
+  }, [active, terminal, haveRun, workItemId, agent, rearmKey]);
 
   // SSE hand-off: once a runId is known, ride the SHARED run stream for live lifecycle milestones.
   // useRunStream no-ops on an empty id, so this is inert until discovery lands a runId.

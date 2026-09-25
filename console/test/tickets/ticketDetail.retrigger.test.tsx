@@ -160,6 +160,40 @@ describe("TicketDetail — plain-comment re-trigger ladder (ISI-4918 / S7)", () 
     expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Picking up…");
   });
 
+  // ISI-4918 follow-up, found in LIVE verification: a nudged ticket carries run rows from its
+  // PREVIOUS dispatch. Matching one collapsed the ladder straight to the old run's "Finished"
+  // while the new run was still minting — the discovery must ignore rows that predate the nudge.
+  it("AC1: a previous dispatch's SUCCEEDED run row never collapses the ladder to Finished", async () => {
+    routeFetch({
+      runs: [
+        {
+          id: "run-prev",
+          phase: "Succeeded",
+          workItemRef: "wi-1",
+          agents: ["agent:builder"],
+          startedAt: "2026-01-01T00:00:00Z",
+          endedAt: "2026-01-01T00:01:00Z",
+        },
+      ],
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await plainComment();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+        "data-state",
+        "queued",
+      ),
+    );
+    // Give the poll a beat — the stale row must keep being ignored, not "discovered".
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+      "data-state",
+      "queued",
+    );
+    expect(screen.getByTestId("dispatch-label")).toHaveTextContent("Queued");
+  });
+
   it("AC3: no static '▶ Agent re-triggered' note competes with the ladder", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

@@ -175,6 +175,44 @@ describe("pickDispatchRun", () => {
     );
     expect(row?.id).toBe("new");
   });
+
+  // ISI-4918: a re-dispatched ticket carries run rows from its PREVIOUS dispatch — the
+  // matcher must ignore them or the ladder collapses to the old run's terminal state.
+  it("ignores rows that predate the dispatch (notBeforeMs)", () => {
+    const now = Date.parse("2026-09-25T10:06:00Z");
+    const stale = { id: "prev", workItemRef: "wi-1", agents: ["alice"], phase: "Succeeded",
+                    startedAt: "2026-09-25T09:58:00Z", endedAt: "2026-09-25T09:59:00Z" };
+    const freshPending = { id: "next", workItemRef: "wi-1", agents: ["alice"], phase: "Pending" };
+
+    // No notBefore → legacy behavior (matches the newest row, even a stale one).
+    expect(pickDispatchRun([stale], "wi-1", "alice")?.id).toBe("prev");
+    // With notBefore: the stale Succeeded row is excluded, the timestamp-less Pending row wins.
+    expect(pickDispatchRun([stale, freshPending], "wi-1", "alice", now)?.id).toBe("next");
+    // Only stale rows → nothing eligible yet (ladder stays queued until the new Run mints).
+    expect(pickDispatchRun([stale], "wi-1", "alice", now)).toBeNull();
+  });
+
+  it("admits a row started slightly before the dispatch (clock-skew floor)", () => {
+    const now = Date.parse("2026-09-25T10:06:00Z");
+    // Started 30s before the client's dispatch stamp — inside the 60s skew allowance.
+    const row = pickDispatchRun(
+      [{ id: "just-now", workItemRef: "wi-1", agents: ["alice"], phase: "Running",
+         startedAt: "2026-09-25T10:05:30Z" }],
+      "wi-1",
+      "alice",
+      now,
+    );
+    expect(row?.id).toBe("just-now");
+  });
+
+  it("never falls back into stale rows when only the stale ones match the agent", () => {
+    const now = Date.parse("2026-09-25T10:06:00Z");
+    const staleAlice = { id: "prev", workItemRef: "wi-1", agents: ["alice"], phase: "Succeeded",
+                         startedAt: "2026-09-25T09:58:00Z" };
+    const freshBob = { id: "next", workItemRef: "wi-1", agents: ["bob"], phase: "Pending" };
+    // Agent match exists only among stale rows → the fallback pool is the FRESH rows, not stale.
+    expect(pickDispatchRun([staleAlice, freshBob], "wi-1", "alice", now)?.id).toBe("next");
+  });
 });
 
 // ── Layer 2: the hook ────────────────────────────────────────────────────────────────────────────
@@ -314,6 +352,74 @@ describe("useDispatchWatch — hook wiring", () => {
     });
     expect(result.current?.state).toBe("working");
     expect(result.current?.label).toBe("Working…");
+  });
+
+  it("ignores the PREVIOUS dispatch's run row and stays queued until the new Run mints (ISI-4918)", async () => {
+    vi.useFakeTimers();
+    stubEventSource();
+    let rows: unknown[] = [
+      {
+        id: "prev-run", workItemRef: "wi-1", phase: "Succeeded", agents: ["alice"],
+        startedAt: "2026-01-01T00:00:00Z", endedAt: "2026-01-01T00:01:00Z",
+      },
+    ];
+    const fetchMock = vi.fn(async () => jsonResponse(rows));
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const { result } = renderHook(() => useDispatchWatch("wi-1", "alice"));
+
+    // First poll sees only the PREVIOUS dispatch's Succeeded row → NOT a match: the ladder
+    // must stay queued (never collapse to the old run's "Finished" while the new one mints).
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.runOnlyPendingTimersAsync();
+    });
+    expect(result.current?.state).toBe("queued");
+    expect(result.current?.runId).toBeUndefined();
+
+    // The operator mints the new Run (Pending, no startedAt yet) → discovered → picking_up.
+    rows = [
+      ...rows,
+      { id: "new-run", workItemRef: "wi-1", phase: "Pending", agents: ["alice"] },
+    ];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DISPATCH_POLL_INTERVAL_MS + 5);
+    });
+    expect(result.current?.state).toBe("picking_up");
+    expect(result.current?.runId).toBe("new-run");
+  });
+
+  it("re-seeds on a new rearmKey even for the SAME work item (second nudge, ISI-4918)", async () => {
+    stubEventSource();
+    const justNow = new Date(Date.now() - 1_000).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse([
+          {
+            id: "run-1", workItemRef: "wi-1", phase: "Succeeded", agents: ["alice"],
+            startedAt: justNow, endedAt: justNow,
+          },
+        ]),
+      ) as unknown as typeof fetch,
+    );
+
+    const { result, rerender } = renderHook(
+      ({ key }: { key: number }) => useDispatchWatch("wi-1", "alice", key),
+      { initialProps: { key: 1 } },
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current?.state).toBe("succeeded"); // first dispatch ran to terminal
+
+    // A second plain-comment nudge on the SAME ticket: new nonce → the ladder re-seeds at
+    // queued instead of staying parked on the previous dispatch's terminal state.
+    rerender({ key: 2 });
+    expect(result.current?.state).toBe("queued");
+    expect(result.current?.label).toBe("Queued");
   });
 
   it("closes the EventSource on terminal and on unmount (no zombie stream)", async () => {
