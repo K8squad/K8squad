@@ -101,3 +101,46 @@ func TestReconcileBootstrapAdmin(t *testing.T) {
 		}
 	})
 }
+
+// stubOrgReader satisfies apiserver.OrgReader with just enough to drive the mention roster seam.
+type stubOrgReader struct{ agents []apiserver.OrgAgent }
+
+func (s stubOrgReader) Org(_ context.Context, teamUID string) (apiserver.TeamOrg, error) {
+	return apiserver.TeamOrg{TeamID: teamUID, Agents: s.agents}, nil
+}
+func (stubOrgReader) Agent(context.Context, string, string, bool) (apiserver.OrgAgent, error) {
+	return apiserver.OrgAgent{}, nil
+}
+func (stubOrgReader) AgentRuns(context.Context, string, string, int, int, bool) ([]apiserver.RunSummary, error) {
+	return nil, nil
+}
+func (stubOrgReader) AgentStatuses(context.Context, string) ([]apiserver.AgentStatusDelta, error) {
+	return nil, nil
+}
+
+// TestRosterForMentionsNilOrg is the ISI-4926 regression: on the cache-less boot shape org is a nil
+// apiserver.OrgReader, and wrapping it in a non-nil mentionRoster would pass the handler's
+// `h.org != nil` guard and then panic inside TeamAgents. rosterForMentions must collapse a nil org
+// to a nil discussion.OrgReader so the /mentions route degrades to ticket-only instead.
+func TestRosterForMentionsNilOrg(t *testing.T) {
+	if got := rosterForMentions(nil); got != nil {
+		t.Fatalf("rosterForMentions(nil) = %#v, want nil discussion.OrgReader", got)
+	}
+}
+
+func TestRosterForMentionsDelegates(t *testing.T) {
+	org := stubOrgReader{agents: []apiserver.OrgAgent{
+		{ID: "a-1", Name: "Robo-Coder", Status: "working"},
+	}}
+	roster := rosterForMentions(org)
+	if roster == nil {
+		t.Fatal("rosterForMentions(org) = nil, want a wired seam")
+	}
+	agents, err := roster.TeamAgents(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("TeamAgents: %v", err)
+	}
+	if len(agents) != 1 || agents[0].Name != "Robo-Coder" || agents[0].Status != "working" {
+		t.Fatalf("TeamAgents = %+v, want the delegated Robo-Coder (working)", agents)
+	}
+}

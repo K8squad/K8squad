@@ -6,10 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 // ============================================================================
@@ -66,11 +69,38 @@ func BFFAuthz(auth Authenticator) mux.MiddlewareFunc {
 // which supplies the AuthorContext (principal + Team scope) — this handler never trusts the body for
 // identity or tenancy.
 type Handler struct {
-	store *Store
+	store    *Store
+	searcher search.Searcher
+	org      OrgReader
 }
 
 // NewHandler creates the discussion HTTP handler group.
 func NewHandler(store *Store) *Handler { return &Handler{store: store} }
+
+// NewHandlerWithDeps creates the discussion HTTP handler with additional dependencies for mention
+// search (ISI-4926): `searcher` is the work-item FTS read model (pkg/search — the same searcher
+// /api/search rides), `org` is the Team roster seam below. Either may be nil (DB-less dev runs):
+// the mentions route then degrades to whatever sources are wired, mirroring the documented-501
+// discipline of the sibling read models without unmounting the discussion group.
+func NewHandlerWithDeps(store *Store, searcher search.Searcher, org OrgReader) *Handler {
+	return &Handler{store: store, searcher: searcher, org: org}
+}
+
+// TeamAgent is one agent on the caller's Team as the mention composer renders it: the mention
+// token (@Name) plus the derived presence bucket, so the popover can badge it (§5 roster).
+type TeamAgent struct {
+	Name   string
+	Status string
+}
+
+// OrgReader is the roster seam the §13 BFF supplies for mention resolution (ISI-4926): it lists
+// the agents of ONE Team (the caller's authorized scope) and nothing else. Production adapts the
+// apiserver org projection (cmd/apiserver); tests wire a fake. It is deliberately blind to work
+// items — those come from the search.Searcher seam — so each source keeps its own fence: the
+// roster is Team-scoped by construction, the FTS query carries the ADR-039 tenancy predicate.
+type OrgReader interface {
+	TeamAgents(ctx context.Context, teamID uuid.UUID) ([]TeamAgent, error)
+}
 
 // Mount wires the discussion surface onto a parent router at the canonical §7.5 prefix
 // /api/projects/{projectId}/discussion, behind the §13 BFF authz choke point. This is the one call the
@@ -93,6 +123,8 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/threads/{threadId}/messages/{messageId}", h.retractMessage).Methods(http.MethodPatch) // 5. soft-retract
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
+	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
+	r.HandleFunc("/mentions", h.searchMentions).Methods(http.MethodGet)
 }
 
 // ============================================================================
@@ -342,4 +374,145 @@ func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
 		records = []MemoryIndexable{}
 	}
 	writeJSON(w, http.StatusOK, records)
+}
+
+// MentionSuggestion is one result from the mention search — either an agent or a work item.
+type MentionSuggestion struct {
+	Type        string  `json:"type"`        // "agent" or "work_item"
+	ID          string  `json:"id"`          // Agent name (the @-mention token) or work item UUID
+	DisplayName string  `json:"displayName"` // Agent name or work item title
+	ProjectID   string  `json:"projectId"`   // Owning project UUID (for work items only)
+	State       string  `json:"state"`       // Work item lane, or the agent's presence bucket
+	Rank        float64 `json:"rank"`        // Relevance rank (work items only; 0 for agents)
+}
+
+// MentionSearchResponse is the GET /api/projects/{projectId}/discussion/mentions payload. Results
+// is always a JSON array (never null) so the composer can render an empty state without a nil guard.
+type MentionSearchResponse struct {
+	Query   string              `json:"query"`
+	Results []MentionSuggestion `json:"results"`
+}
+
+// Composer-sized caps: a mention popover is a short list, not a search page.
+const (
+	mentionWorkItemLimit = 10
+	mentionAgentLimit    = 5
+)
+
+// searchMentions answers GET /api/projects/{projectId}/discussion/mentions?q=… with agent + work
+// item suggestions scoped to the project/team (ISI-4926, plan §4.3). It rides the same §13 BFF
+// authz choke point as every discussion route; the tenancy scope is derived from the
+// server-stamped AuthorContext, never from the request. Agents come first (a mention popover
+// leads with people); work items follow, fenced by the ADR-039 in-query predicate and then
+// narrowed to the path's project.
+func (h *Handler) searchMentions(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+
+	text := r.URL.Query().Get("q")
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "q (search text) required")
+		return
+	}
+
+	results := make([]MentionSuggestion, 0)
+
+	// Agents first, from the Team roster seam. A roster error degrades to ticket-only
+	// suggestions — the composer stays usable; the roster is a projection, not the fence.
+	if h.org != nil {
+		agentResults, err := h.searchAgents(r.Context(), text, auth)
+		if err == nil {
+			results = append(results, agentResults...)
+		}
+	}
+
+	// Work items via the global-search read model (pkg/search): the RBAC scope rides the query
+	// (AllTeams ONLY for admins, TeamID otherwise — exactly the /api/search contract), then the
+	// handler narrows to the path's project. A searcher failure is the search plane failing —
+	// surface it (502) rather than silently answering with agents only.
+	if h.searcher != nil {
+		searchResults, err := h.searchWorkItems(r.Context(), text, projectID.String(), auth)
+		switch {
+		case errors.Is(err, search.ErrEmptyQuery):
+			// A query of only stopwords/punctuation parses to an empty tsquery — same contract
+			// as /api/search (400, not 500).
+			writeError(w, http.StatusBadRequest, "q (search text) required")
+			return
+		case err != nil:
+			writeError(w, http.StatusBadGateway, "mention search unavailable")
+			return
+		default:
+			results = append(results, searchResults...)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, MentionSearchResponse{Query: text, Results: results})
+}
+
+// searchWorkItems searches the work-item corpus via the global search service, scoped to the
+// caller's Team (or fleet-wide for admins — ADR-039) and then narrowed to the path's project.
+func (h *Handler) searchWorkItems(ctx context.Context, text, projectID string, auth AuthorContext) ([]MentionSuggestion, error) {
+	q := search.Query{
+		Text:     text,
+		Limit:    mentionWorkItemLimit,
+		AllTeams: auth.IsAdmin,         // admin: fleet-wide (ADR-039)…
+		TeamID:   auth.TeamID.String(), // …everyone else: fenced to their Team (§12.1)
+	}
+
+	searchResults, err := h.searcher.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+
+	suggestions := make([]MentionSuggestion, 0, len(searchResults))
+	for _, result := range searchResults {
+		// The mention composer suggests tickets of THIS project; rows that predate project
+		// scoping (ProjectID "") are dropped rather than guessed at.
+		if projectID != "" && result.ProjectID != projectID {
+			continue
+		}
+		suggestions = append(suggestions, MentionSuggestion{
+			Type:        "work_item",
+			ID:          result.ID,
+			DisplayName: result.Title,
+			ProjectID:   result.ProjectID,
+			State:       result.State,
+			Rank:        result.Rank,
+		})
+	}
+	return suggestions, nil
+}
+
+// searchAgents resolves @agent suggestions from the Team roster: a case-insensitive substring
+// match on the agent name — mention typing is fragment matching, not FTS. The roster itself is
+// already Team-scoped (the seam takes the caller's TeamID), so no cross-team name can appear.
+func (h *Handler) searchAgents(ctx context.Context, text string, auth AuthorContext) ([]MentionSuggestion, error) {
+	agents, err := h.org.TeamAgents(ctx, auth.TeamID)
+	if err != nil {
+		return nil, err
+	}
+	needle := strings.ToLower(text)
+	out := make([]MentionSuggestion, 0, mentionAgentLimit)
+	for _, a := range agents {
+		if a.Name == "" || !strings.Contains(strings.ToLower(a.Name), needle) {
+			continue
+		}
+		out = append(out, MentionSuggestion{
+			Type:        "agent",
+			ID:          a.Name, // the @-mention token is the agent name
+			DisplayName: a.Name,
+			State:       a.Status,
+		})
+		if len(out) >= mentionAgentLimit {
+			break
+		}
+	}
+	return out, nil
 }
