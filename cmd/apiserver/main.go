@@ -603,7 +603,7 @@ func main() {
 
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
-		Discussion:          discussion.NewHandler(discussion.NewStore(db)),
+		Discussion:          discussion.NewHandlerWithDeps(discussion.NewStore(db), searcher, mentionRoster{org}),
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,
@@ -685,6 +685,24 @@ func main() {
 type dbReady struct{ db *sql.DB }
 
 func (d dbReady) Ready(ctx context.Context) error { return d.db.PingContext(ctx) }
+
+// mentionRoster adapts the cache-backed Team→Agent org projection (apiserver.OrgReader) to the
+// discussion surface's narrow mention seam (discussion.OrgReader, ISI-4926). The roster read is
+// Team-scoped by construction — it answers for the caller's AuthorContext.TeamID only — so the
+// @-mention composer can never surface another Team's agents.
+type mentionRoster struct{ org apiserver.OrgReader }
+
+func (m mentionRoster) TeamAgents(ctx context.Context, teamID uuid.UUID) ([]discussion.TeamAgent, error) {
+	o, err := m.org.Org(ctx, teamID.String())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]discussion.TeamAgent, 0, len(o.Agents))
+	for _, a := range o.Agents {
+		out = append(out, discussion.TeamAgent{Name: a.Name, Status: a.Status})
+	}
+	return out, nil
+}
 
 // buildAuthService assembles the pkg/auth core (15.1): stores over the shared DSN,
 // the HS256 JWT issuer, the per-IP login brake, and the 15.9 groupMapping seam.
