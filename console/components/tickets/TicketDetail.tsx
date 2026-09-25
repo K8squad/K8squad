@@ -657,6 +657,7 @@ function Composer({
   onDispatched,
   dispatchWatch,
   dispatchAgent,
+  reTriggerAgent,
 }: {
   workItemId: string;
   canComment: boolean;
@@ -671,6 +672,12 @@ function Composer({
   dispatchWatch: DispatchWatch | null;
   // The agent this dispatch went to — surfaced in the status-line copy.
   dispatchAgent: string;
+  // ISI-4918 (S7 of ISI-4853): the agent Intake will mint the re-triggered Run for
+  // when a PLAIN comment re-dispatches a parked ticket (reTriggered=true). Derived by
+  // the parent from the thread's requested/last-run agent (the comment path itself
+  // picks no agent — it just re-enters the dispatch lane). Empty ⇒ the ladder still
+  // seeds, the card header just carries no name.
+  reTriggerAgent: string;
 }) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState<ComposerStatus>({ kind: "idle" });
@@ -772,6 +779,13 @@ function Composer({
     onOptimisticAppend(comment);
     setText("");
     setStatus({ kind: "idle" });
+    // ISI-4918 (S7 of ISI-4853): a PLAIN comment that re-dispatched a parked ticket
+    // (reTriggered=true — pkg/coord AppendHumanComment moved it → todo) mints a Run
+    // exactly like an explicit assign, so seed the SAME honest ladder. The comment
+    // path picks no agent; the re-triggered Run goes to the ticket's requested/last
+    // agent, which the parent hands us as `reTriggerAgent`. reTriggered=false (todo/
+    // backlog comment, or the live-holder guard) seeds nothing — no ladder (AC4).
+    if (comment.reTriggered) onDispatched(reTriggerAgent);
     onPosted(comment);
   }
 
@@ -998,11 +1012,6 @@ function TicketBody({
 }) {
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
   const [addingSub, setAddingSub] = useState(false);
-  // The ISI-4495 comment-nudge receipt: when a posted comment re-dispatched the
-  // ticket (parked → todo), we surface the "agent re-triggered" line above the
-  // composer. It stays while the ticket sits in the dispatch lane and fades
-  // naturally the moment the run claims it (state leaves todo).
-  const [nudge, setNudge] = useState<{ from: string } | null>(null);
   // Optimistically-appended comments shown immediately after a successful POST;
   // cleared once the reconciling thread re-fetch lands (a new `thread` object),
   // which by then carries the same comment as server truth (no double-render).
@@ -1149,14 +1158,11 @@ function TicketBody({
             </ul>
           )}
 
-          {/* ISI-4495 receipt: the comment re-triggered work — show it while the
-              ticket waits in the dispatch lane (cleared by the claim itself). */}
-          {nudge && thread.state === "todo" && (
-            <p className="ksq-notice" role="status" data-testid="detail-retrigger-note">
-              ▶ Agent re-triggered — moved {stateLabel(nudge.from)} → Todo. The squad
-              picks this up on the next intake sweep.
-            </p>
-          )}
+          {/* ISI-4918 (S7 of ISI-4853): the ISI-4495 "▶ Agent re-triggered" receipt is
+              FOLDED INTO the honest ladder above — a plain comment that re-dispatches a
+              parked ticket now seeds the same DispatchPendingCard (Queued → Picking up…
+              → Working…) the explicit-assign path uses, so there is ONE coherent run
+              signal, never a static line competing with the live card. */}
 
           {/* S4 mount region — the human comment composer (ISI-4454). Posts to
               POST /api/work-items/{id}/comments (ISI-4406); contributor+ only, a
@@ -1169,13 +1175,11 @@ function TicketBody({
             workItemId={thread.workItemId}
             canComment={canComment(role)}
             onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
-            onPosted={(posted) => {
-              onCommentPosted();
-              if (posted.reTriggered) setNudge({ from: posted.fromState ?? "" });
-            }}
+            onPosted={onCommentPosted}
             onDispatched={(agent) => setDispatch({ agent })}
             dispatchWatch={dispatchWatch}
             dispatchAgent={dispatch?.agent ?? ""}
+            reTriggerAgent={thread.requestedAgent ?? thread.assignee ?? ""}
           />
         </section>
       </div>
