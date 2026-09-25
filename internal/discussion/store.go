@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -73,18 +74,18 @@ type Thread struct {
 
 // Message is an append-only, provenance-tagged entry (discussion.message).
 type Message struct {
-	ID              uuid.UUID      `json:"id"`
-	ThreadID        uuid.UUID      `json:"threadId"`
-	ParentID        *uuid.UUID     `json:"parentId,omitempty"`
-	AuthorPrincipal string         `json:"authorPrincipal"`
-	AuthorAgentID   *string        `json:"authorAgentId,omitempty"`
-	AuthorRunID     *string        `json:"authorRunId,omitempty"`
-	Body            string         `json:"body"`
-	Audience        string         `json:"audience"`
-	Kind            string         `json:"kind"`
+	ID              uuid.UUID        `json:"id"`
+	ThreadID        uuid.UUID        `json:"threadId"`
+	ParentID        *uuid.UUID       `json:"parentId,omitempty"`
+	AuthorPrincipal string           `json:"authorPrincipal"`
+	AuthorAgentID   *string          `json:"authorAgentId,omitempty"`
+	AuthorRunID     *string          `json:"authorRunId,omitempty"`
+	Body            string           `json:"body"`
+	Audience        string           `json:"audience"`
+	Kind            string           `json:"kind"`
 	Payload         *json.RawMessage `json:"payload,omitempty"`
-	CreatedAt       time.Time      `json:"createdAt"`
-	InvalidatedAt   *time.Time     `json:"invalidatedAt,omitempty"`
+	CreatedAt       time.Time        `json:"createdAt"`
+	InvalidatedAt   *time.Time       `json:"invalidatedAt,omitempty"`
 
 	// Derived (not stored): threaded replies, built by GetThread.
 	Replies []Message `json:"replies,omitempty"`
@@ -116,6 +117,8 @@ var (
 	ErrEmptyTitle       = errors.New("discussion: thread title is required")
 	ErrNotAuthor        = errors.New("discussion: only the author or an admin may retract a message")
 	ErrAlreadyRetracted = errors.New("discussion: message already retracted")
+	ErrInvalidAudience  = errors.New("discussion: audience must be 'party' or 'direct:{agentId}'")
+	ErrInvalidKind      = errors.New("discussion: kind must be one of text, structured, task, decision, vote")
 )
 
 // ============================================================================
@@ -130,7 +133,7 @@ type Store struct {
 // NewStore wraps a database connection.
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
-const messageCols = `id, thread_id, parent_id, author_principal, author_agent_id, author_run_id, body, created_at, invalidated_at`
+const messageCols = `id, thread_id, parent_id, author_principal, author_agent_id, author_run_id, body, audience, kind, payload, created_at, invalidated_at`
 
 // ----------------------------------------------------------------------------
 // Threads
@@ -196,7 +199,7 @@ func (s *Store) OpenThread(ctx context.Context, projectID uuid.UUID, auth Author
 		return nil, fmt.Errorf("open thread: %w", err)
 	}
 
-	first, err := insertMessage(ctx, tx, t.ID, nil, auth, body)
+	first, err := insertMessage(ctx, tx, t.ID, nil, auth, body, "party", "text", nil)
 	if err != nil {
 		return nil, fmt.Errorf("open thread first message: %w", err)
 	}
@@ -248,9 +251,20 @@ func (s *Store) GetThread(ctx context.Context, projectID, teamID, threadID uuid.
 // PostMessage appends a message (or reply) to a thread. The thread must be within the caller's Team
 // scope (else ErrThreadNotFound, AC5). Provenance is stamped from auth (AC3); the parent-same-thread
 // invariant is enforced by the DB trigger and re-checked here for a clean error.
-func (s *Store) PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth AuthorContext, body string, parentID *uuid.UUID) (*Message, error) {
+//
+// audience, kind, and payload are optional (nil) wire fields: audience defaults to 'party',
+// kind to 'text'; payload (structured message data) stays NULL unless supplied.
+func (s *Store) PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*Message, error) {
 	if body == "" {
 		return nil, ErrEmptyBody
+	}
+	a, err := normalizeAudience(audience)
+	if err != nil {
+		return nil, err
+	}
+	k, err := normalizeKind(kind)
+	if err != nil {
+		return nil, err
 	}
 	if err := s.assertThreadInScope(ctx, projectID, teamID, threadID); err != nil {
 		return nil, err
@@ -268,7 +282,35 @@ func (s *Store) PostMessage(ctx context.Context, projectID, teamID, threadID uui
 			return nil, fmt.Errorf("discussion: parent %s belongs to a different thread", *parentID)
 		}
 	}
-	return insertMessage(ctx, s.db, threadID, parentID, auth, body)
+	return insertMessage(ctx, s.db, threadID, parentID, auth, body, a, k, payload)
+}
+
+// normalizeAudience applies the 'party' default and enforces the wire contract: audience is either
+// 'party' (everyone in the room) or 'direct:{agentId}' targeting exactly one agent.
+func normalizeAudience(audience *string) (string, error) {
+	if audience == nil || *audience == "" {
+		return "party", nil
+	}
+	if *audience == "party" {
+		return *audience, nil
+	}
+	if target, ok := strings.CutPrefix(*audience, "direct:"); ok && target != "" {
+		return *audience, nil
+	}
+	return "", ErrInvalidAudience
+}
+
+// normalizeKind applies the 'text' default and enforces the migration-0024 CHECK set.
+func normalizeKind(kind *string) (string, error) {
+	if kind == nil || *kind == "" {
+		return "text", nil
+	}
+	switch *kind {
+	case "text", "structured", "task", "decision", "vote":
+		return *kind, nil
+	default:
+		return "", ErrInvalidKind
+	}
 }
 
 // Retract soft-retracts a message (§7.4 — sets invalidated_at; no hard delete). Author-or-admin only.
@@ -336,11 +378,13 @@ type MemoryIndexable struct {
 	CreatedAt       time.Time `json:"createdAt"`
 }
 
-// ForMemoryIndex returns live messages in a Project's room (tenancy-scoped) created at/after `since`,
-// oldest-first, for incremental indexing by the memory service.
-// Includes audience-based visibility: party messages are always visible, direct messages are only visible
-// to the targeted agent, and authors can see their own messages.
-func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID, since time.Time, limit int, authorPrincipal string) ([]MemoryIndexable, error) {
+// ForMemoryIndex returns the live messages of one room created at/after `since`, oldest-first, for
+// incremental indexing by the memory service. Visibility (ISI-4925 semantic flag, resolved): a message
+// is indexable for a caller only if it is 'party' (the whole room), the caller authored it, or it is
+// 'direct:'-targeted at the caller — by principal OR, for an agent caller, by agent id (agentID nil ⇒
+// that arm is inert). The previous `m.audience LIKE 'direct:%'` arm matched every allowed audience
+// value and therefore filtered nothing.
+func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID, since time.Time, limit int, authorPrincipal string, agentID *string) ([]MemoryIndexable, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -351,10 +395,15 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID,
 		JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE t.project_id = $1 AND t.team_id = $2
 		  AND m.invalidated_at IS NULL AND m.created_at >= $3
-		  AND (m.audience = 'party' OR m.audience LIKE 'direct:%' OR m.author_principal = $4)
+		  AND (
+		      m.audience = 'party'
+		      OR m.author_principal = $4
+		      OR m.audience = 'direct:' || $4
+		      OR ($5::text IS NOT NULL AND m.audience = 'direct:' || $5::text)
+		  )
 		ORDER BY m.created_at ASC
-		LIMIT $5`
-	rows, err := s.db.QueryContext(ctx, q, projectID, teamID, since, authorPrincipal, limit)
+		LIMIT $6`
+	rows, err := s.db.QueryContext(ctx, q, projectID, teamID, since, authorPrincipal, agentID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -420,8 +469,9 @@ type execer interface {
 }
 
 // insertMessage writes one provenance-stamped message. author_* / created_at are server-provided; the
-// caller CANNOT influence them (AC3).
-func insertMessage(ctx context.Context, e execer, threadID uuid.UUID, parentID *uuid.UUID, auth AuthorContext, body string) (*Message, error) {
+// caller CANNOT influence them (AC3). audience and kind arrive already normalized (normalizeAudience /
+// normalizeKind); payload stays NULL unless supplied.
+func insertMessage(ctx context.Context, e execer, threadID uuid.UUID, parentID *uuid.UUID, auth AuthorContext, body, audience, kind string, payload *json.RawMessage) (*Message, error) {
 	m := Message{
 		ThreadID:        threadID,
 		ParentID:        parentID,
@@ -429,12 +479,19 @@ func insertMessage(ctx context.Context, e execer, threadID uuid.UUID, parentID *
 		AuthorAgentID:   auth.AgentID,
 		AuthorRunID:     auth.RunID,
 		Body:            body,
+		Audience:        audience,
+		Kind:            kind,
+		Payload:         payload,
+	}
+	var payloadArg any
+	if payload != nil {
+		payloadArg = []byte(*payload)
 	}
 	err := e.QueryRowContext(ctx, `
-		INSERT INTO discussion.message (thread_id, parent_id, author_principal, author_agent_id, author_run_id, body)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO discussion.message (thread_id, parent_id, author_principal, author_agent_id, author_run_id, body, audience, kind, payload)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at`,
-		threadID, parentID, auth.Principal, auth.agentID(), auth.runID(), body,
+		threadID, parentID, auth.Principal, auth.agentID(), auth.runID(), body, audience, kind, payloadArg,
 	).Scan(&m.ID, &m.CreatedAt)
 	if err != nil {
 		return nil, err
@@ -447,10 +504,10 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		var parentID uuid.NullUUID
-		var agentID, runID sql.NullString
+		var agentID, runID, payload sql.NullString
 		var invalidatedAt sql.NullTime
 		if err := rows.Scan(&m.ID, &m.ThreadID, &parentID, &m.AuthorPrincipal,
-			&agentID, &runID, &m.Body, &m.CreatedAt, &invalidatedAt); err != nil {
+			&agentID, &runID, &m.Body, &m.Audience, &m.Kind, &payload, &m.CreatedAt, &invalidatedAt); err != nil {
 			return nil, err
 		}
 		if parentID.Valid {
@@ -462,6 +519,10 @@ func scanMessages(rows *sql.Rows) ([]Message, error) {
 		}
 		if runID.Valid {
 			m.AuthorRunID = &runID.String
+		}
+		if payload.Valid {
+			p := json.RawMessage(payload.String)
+			m.Payload = &p
 		}
 		if invalidatedAt.Valid {
 			t := invalidatedAt.Time

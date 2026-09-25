@@ -64,7 +64,7 @@ func (f *fakeDiscussionWriter) OpenThread(_ context.Context, projectID uuid.UUID
 	}, nil
 }
 
-func (f *fakeDiscussionWriter) PostMessage(_ context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID) (*discussion.Message, error) {
+func (f *fakeDiscussionWriter) PostMessage(_ context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, _ *string, _ *string, _ *json.RawMessage) (*discussion.Message, error) {
 	f.postCalled = true
 	f.postProject, f.postTeam, f.postThread, f.postAuth, f.postBody, f.postParentID = projectID, teamID, threadID, auth, body, parentID
 	if f.postErr != nil {

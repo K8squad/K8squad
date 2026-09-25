@@ -38,7 +38,7 @@ type ToolHTTP struct {
 // a read-only deployment, which leaves discussion_post unmounted (AC5).
 type DiscussionWriter interface {
 	OpenThread(ctx context.Context, projectID uuid.UUID, auth discussion.AuthorContext, title, body string) (*discussion.Thread, error)
-	PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID) (*discussion.Message, error)
+	PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*discussion.Message, error)
 }
 
 // NewToolHTTP wires the HTTP tool surface to a ReadService and (optionally) a WriteService plus a
@@ -343,7 +343,7 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 		}
 		parentID = &pid
 	}
-	msg, err := h.discuss.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID)
+	msg, err := h.discuss.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID, nil, nil, nil)
 	if err != nil {
 		writeDiscussionErr(w, err)
 		return

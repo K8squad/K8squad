@@ -31,10 +31,10 @@ func TestMessageAudienceKindFields(t *testing.T) {
 }
 
 func TestPostMessageWithDirectAudience(t *testing.T) {
-	// This test would require a real database, so we'll just test the validation logic
-	// In a real test, you'd set up a test database and test the full flow
+	// Validation-level coverage for the wire fields (no DB required): the store's
+	// normalizeAudience / normalizeKind enforce the same contract as migration 0024's
+	// CHECK constraints, so a bad value fails with a 400-mapped sentinel, not a 500.
 
-	// Test audience validation scenarios
 	testCases := []struct {
 		name        string
 		audience    string
@@ -71,6 +71,13 @@ func TestPostMessageWithDirectAudience(t *testing.T) {
 			shouldError: true,
 		},
 		{
+			name:        "empty direct target rejected",
+			audience:    "direct:",
+			kind:        "text",
+			payload:     nil,
+			shouldError: true,
+		},
+		{
 			name:        "valid structured kind",
 			audience:    "party",
 			kind:        "structured",
@@ -98,15 +105,27 @@ func TestPostMessageWithDirectAudience(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// In a real implementation, this would test the actual PostMessage logic
-			// Here we're just demonstrating the validation structure
-
-			// Validate audience
+			audience, kind := tc.audience, tc.kind
+			a, aerr := normalizeAudience(&audience)
+			k, kerr := normalizeKind(&kind)
 			if tc.shouldError {
-				// This would contain the actual validation logic
-				// For now, just verify the test structure
-			} else {
-				// Valid scenario
+				if aerr == nil && kerr == nil {
+					t.Fatalf("expected validation error, got audience=%q kind=%q", a, k)
+				}
+				return
+			}
+			if aerr != nil {
+				t.Fatalf("unexpected audience error: %v", aerr)
+			}
+			if kerr != nil {
+				t.Fatalf("unexpected kind error: %v", kerr)
+			}
+			// Defaults: absent audience ⇒ party, absent kind ⇒ text.
+			if audience == "" && a != "party" {
+				t.Errorf("default audience: want party, got %q", a)
+			}
+			if kind == "" && k != "text" {
+				t.Errorf("default kind: want text, got %q", k)
 			}
 		})
 	}

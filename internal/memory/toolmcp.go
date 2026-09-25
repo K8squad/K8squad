@@ -665,7 +665,7 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 		}
 		parentID = &pid
 	}
-	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID)
+	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID, nil, nil, nil)
 	if err != nil {
 		return toolError(err.Error())
 	}
