@@ -69,8 +69,14 @@ const (
 // Service in the control-plane namespace. The Service is a control-plane
 // singleton (not per-namespace), so the endpoint targets the control-plane
 // namespace the reconciler was told the platform runs in.
+//
+// The host MUST be the full cluster-local FQDN (<svc>.<ns>.svc.cluster.local):
+// sandbox pods live in squad namespaces whose DNS search path only expands
+// their own namespace, so the shorter <svc>.<ns>.svc form does not resolve
+// from a squad sandbox (ISI-4873: NXDOMAIN from ksquad-team-* pods; the
+// authoring MCP never connected and runs terminal-failed).
 func authoringEndpoint(controlPlaneNS string) string {
-	return fmt.Sprintf("http://%s.%s.svc:%d%s", memoryServiceName, controlPlaneNS, memoryServicePort, memory.MCPEndpoint)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d%s", memoryServiceName, controlPlaneNS, memoryServicePort, memory.MCPEndpoint)
 }
 
 // authoringMCPServer renders the desired built-in server for a squad namespace:
