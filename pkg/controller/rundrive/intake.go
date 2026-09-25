@@ -366,10 +366,12 @@ func (i *Intake) sweep(ctx context.Context) {
 		if dispatched >= limit {
 			break // a source that ignored its LIMIT must not stampede the pass
 		}
-		dispatched++
+
+		// A non-terminal Run owns the ticket: suppress intake entirely.
 		if liveRun[item.ID] {
 			continue
 		}
+
 		// ISI-4556: re-arm a settled claim BEFORE minting over it. The order is
 		// load-bearing: the minted Run must be born into a world whose durable
 		// step is already 'pending', or the projector (which keys on the work
@@ -381,47 +383,130 @@ func (i *Intake) sweep(ctx context.Context) {
 			i.logf("rundrive.intake: work item %s not re-armed: %v", item.ID, err)
 			continue
 		}
-		run, err := i.buildRun(ctx, item, teamByUID, highestGen[item.ID])
-		if err != nil {
-			// Honest degraded: log and leave the item in todo for the next
-			// tick — a not-yet-reconciled Team or a dangling reference is a
-			// world state, not an intake failure.
-			i.logf("rundrive.intake: work item %s not dispatched: %v", item.ID, err)
+
+		// ISI-4927 fan-out: a work item with NO requested agent mints one Run
+		// per Team.Spec.Agents entry; a work item WITH one mints exactly one
+		// Run (single-agent behaviour unchanged).
+		team, ok := teamByUID[item.TeamID]
+		if !ok {
+			i.logf("rundrive.intake: team uid %s resolves to no Team CR", item.TeamID)
 			continue
 		}
-		if err := i.Client.Create(ctx, run); err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				// A racing tick (or a same-named human Run) got there first:
-				// the ticket is on the Run plane, which is all intake owes.
-				created++
+
+		var runsToCreate []api.Run
+		if item.RequestedAgent != "" {
+			// Single-agent behaviour: one Run for the requested agent — but
+			// only if it is STILL a member of the composition (§7.4 defensive
+			// check): the composition can change between dispatch and this
+			// tick, so a stale choice falls back to Agents[0] rather than
+			// minting a Run for an agent no longer on the team.
+			target := item.RequestedAgent
+			if !teamHasAgent(team, target) {
+				if len(team.Spec.Agents) == 0 {
+					i.logf("rundrive.intake: team %s/%s composition names no agent to dispatch to", team.Namespace, team.Name)
+					continue
+				}
+				fallback := team.Spec.Agents[0].Name
+				i.logf("rundrive.intake: work item %s requested agent %q no longer in team %s/%s composition; falling back to %s",
+					item.ID, item.RequestedAgent, team.Namespace, team.Name, fallback)
+				target = fallback
+			}
+			run, err := i.buildRunForAgent(ctx, item, team, highestGen[item.ID], target, false)
+			if err != nil {
+				i.logf("rundrive.intake: work item %s not dispatched (agent %s): %v", item.ID, target, err)
 				continue
 			}
-			i.logf("rundrive.intake: create run for %s: %v", item.ID, err)
-			continue
+			runsToCreate = []api.Run{*run}
+			dispatched++
+		} else {
+			// Fan-out behaviour (ISI-4927): one Run per team agent.
+			teamAgents := team.Spec.Agents
+			if len(teamAgents) == 0 {
+				i.logf("rundrive.intake: team %s/%s composition names no agent to dispatch to", team.Namespace, team.Name)
+				continue
+			}
+
+			// Bound fan-out by remaining pass capacity (risk R3): a party
+			// item must not stampede the pass. Capacity is shared with the
+			// per-item dispatches above; a team larger than what remains is
+			// capped and the un-dispatched agents wait for the item to
+			// re-enter 'todo'.
+			maxFanOutRuns := limit - dispatched
+			if maxFanOutRuns <= 0 {
+				break // No capacity left in this pass
+			}
+
+			if len(teamAgents) > maxFanOutRuns {
+				i.logf("rundrive.intake: team %s/%s has %d agents but only %d runs left in pass; capping fan-out",
+					team.Namespace, team.Name, len(teamAgents), maxFanOutRuns)
+			}
+
+			fanOutLimit := len(teamAgents)
+			if fanOutLimit > maxFanOutRuns {
+				fanOutLimit = maxFanOutRuns
+			}
+
+			// Create one Run per team agent
+			for j := 0; j < fanOutLimit; j++ {
+				agentRef := teamAgents[j]
+				run, err := i.buildRunForAgent(ctx, item, team, highestGen[item.ID], agentRef.Name, true)
+				if err != nil {
+					i.logf("rundrive.intake: work item %s not dispatched to agent %s: %v", item.ID, agentRef.Name, err)
+					continue
+				}
+				runsToCreate = append(runsToCreate, *run)
+				dispatched++
+			}
 		}
-		created++
-		i.logf("rundrive.intake: dispatched work item %s to agent %s (run %s/%s)",
-			item.ID, run.Spec.Agents[0].Name, run.Namespace, run.Name)
+
+		// Create all the Runs for this work item
+		for _, run := range runsToCreate {
+			if err := i.Client.Create(ctx, &run); err != nil {
+				if apierrors.IsAlreadyExists(err) {
+					// A racing tick (or a same-named human Run) got there first:
+					// the ticket is on the Run plane, which is all intake owes.
+					created++
+					continue
+				}
+				i.logf("rundrive.intake: create run for %s: %v", item.ID, err)
+				continue
+			}
+			created++
+			i.logf("rundrive.intake: dispatched work item %s to agent %s (run %s/%s)",
+				item.ID, run.Spec.Agents[0].Name, run.Namespace, run.Name)
+		}
 	}
 	if created > 0 {
 		i.logf("rundrive.intake: pass dispatched %d/%d due work item(s)", created, len(items))
 	}
 }
 
-// buildRun resolves one ticket's squad graph and renders its Run CR. It errors
-// (never panics, never half-builds) when the graph does not resolve, so sweep
-// can log-and-retry the item. highestGen is the HIGHEST existing Run generation
+// teamHasAgent reports whether name matches an entry of the team composition.
+func teamHasAgent(team api.Team, name string) bool {
+	for _, a := range team.Spec.Agents {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRunForAgent resolves one ticket's squad graph for a SPECIFIC agent and
+// renders its Run CR (ISI-4927: called once per fan-out target, or once for
+// the requested/derived agent on single-agent items). It errors (never
+// panics, never half-builds) when the graph does not resolve, so sweep can
+// log-and-retry the item. highestGen is the HIGHEST existing Run generation
 // for this work item (0 on first mint, 1 when only the base Run exists): the
 // deterministic name suffixes -r<highestGen+1> from the second mint on, so a
-// re-entered 'todo' ticket (a human reopen, or the ISI-4495 comment re-dispatch)
-// gets a FRESH Run CR beside the terminal one instead of colliding on the
-// first-born name (intake-<id>) — or, once old generations are GC-pruned, on a
-// surviving high-suffix generation (ISI-4829).
-func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[string]api.Team, highestGen int) (*api.Run, error) {
-	team, ok := teamByUID[item.TeamID]
-	if !ok {
-		return nil, fmt.Errorf("team uid %s resolves to no Team CR", item.TeamID)
-	}
+// re-entered 'todo' ticket (a human reopen, or the ISI-4495 comment
+// re-dispatch) gets a FRESH Run CR beside the terminal one instead of
+// colliding on the first-born name (intake-<id>) — or, once old generations
+// are GC-pruned, on a surviving high-suffix generation (ISI-4829).
+// fanOut selects the agent-scoped name (intake-<id>-<agent>): N Runs of one
+// fan-out share item+generation but must not collide on intake-<id>, where
+// only the first Create would survive and the rest would be silently
+// swallowed as AlreadyExists.
+func (i *Intake) buildRunForAgent(ctx context.Context, item IntakeItem, team api.Team, highestGen int, targetAgentName string, fanOut bool) (*api.Run, error) {
 	// The write-model namespace discipline (mirrors the compose write path):
 	// a Run is written into the RECONCILED squad namespace (Status.Namespace),
 	// not wherever the Team CR happens to sit. An unreconciled Team has no
@@ -436,34 +521,20 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 		return nil, err
 	}
 
-	// Agent selection (M1: one agent, one ticket). The default is the Team
-	// composition's first entry; spec.agents empty would defer to a reconciler
-	// default (story 1.3) that has not landed — selecting the composition here
-	// keeps the dispatch concrete instead of relying on an unimplemented default.
-	if len(team.Spec.Agents) == 0 {
-		return nil, fmt.Errorf("team %s/%s composition names no agent to dispatch to", team.Namespace, team.Name)
-	}
-	agentRef := team.Spec.Agents[0]
-	// The human's pre-run choice (mig 0021, ADR-0022 §3 D2) wins over the default
-	// — but only if it is STILL a member of the composition. Validating membership
-	// here (not just trusting the column) is the §7.4 "defensive" check: the
-	// dispatch write already enforced agent-∈-Team, yet the composition can change
-	// between dispatch and this tick, so a stale choice falls back to Agents[0]
-	// rather than minting a Run for an agent no longer on the team.
-	if item.RequestedAgent != "" {
-		matched := false
-		for _, a := range team.Spec.Agents {
-			if a.Name == item.RequestedAgent {
-				agentRef = a
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			i.logf("rundrive.intake: work item %s requested agent %q no longer in team %s/%s composition; falling back to %s",
-				item.ID, item.RequestedAgent, team.Namespace, team.Name, team.Spec.Agents[0].Name)
+	// Find the target agent in the team composition
+	var targetAgentRef api.ObjectRef
+	targetAgentFound := false
+	for _, agentRef := range team.Spec.Agents {
+		if agentRef.Name == targetAgentName {
+			targetAgentRef = agentRef
+			targetAgentFound = true
+			break
 		}
 	}
+	if !targetAgentFound {
+		return nil, fmt.Errorf("team %s/%s composition does not contain agent %s", team.Namespace, team.Name, targetAgentName)
+	}
+
 	// ISI-4820: resolve the Agent CR where a composition's agents actually
 	// live. The Team.Spec.Agents entries carry an EMPTY namespace, and the old
 	// fallback resolved them in the EXEC/run namespace (Status.Namespace) — but
@@ -476,13 +547,20 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 	// Try, in order: an EXPLICIT ref namespace (honored as authored), then the
 	// HOME ns (canonical composition home), then the EXEC ns (the mirrored case
 	// — keeps `sam`, which exists in both, resolving).
-	agentNS, err := i.resolveAgent(ctx, agentRef, team.Namespace, ns)
+	agentNS, err := i.resolveAgent(ctx, targetAgentRef, team.Namespace, ns)
 	if err != nil {
 		return nil, err
 	}
 
+	// ISI-4927: fan-out Runs carry the agent in their name so N Runs of one
+	// work item coexist; single-agent Runs keep the legacy intake-<id> name.
+	agentNameSegment := ""
+	if fanOut {
+		agentNameSegment = targetAgentRef.Name
+	}
+
 	return &api.Run{
-		ObjectMeta: runObjectMeta(item.ID, ns, highestGen),
+		ObjectMeta: runObjectMeta(item.ID, ns, highestGen, agentNameSegment),
 		Spec: api.RunSpec{
 			// M1.2 (ISI-4128): like projectRef — a Team CR living outside the
 			// squad namespace must be referenced by namespace or later
@@ -501,7 +579,7 @@ func (i *Intake) buildRun(ctx context.Context, item IntakeItem, teamByUID map[st
 			// with the SAME empty-ns→run.Namespace fallback, so without this the
 			// run would mint but then fail agent resolution at dispatch for any
 			// home-ns (non-mirrored) agent.
-			Agents:  []api.ObjectRef{agentRefForRun(agentRef.Name, agentNS, ns)},
+			Agents:  []api.ObjectRef{agentRefForRun(targetAgentRef.Name, agentNS, ns)},
 			OwnedBy: api.PrincipalRef(IntakePrincipal),
 		},
 	}, nil
@@ -594,11 +672,20 @@ func (i *Intake) resolveProject(ctx context.Context, ns, projectID string) (*api
 // so the mint always lands one above the highest surviving Run and never
 // collides with a GC-pruned gap (ISI-4829). The deterministic name IS the
 // create idempotency: two racing sweeps read the same highest generation and
-// converge on AlreadyExists instead of duplicate Runs.
-func runObjectMeta(workItemID, ns string, highestGen int) metav1.ObjectMeta {
-	name := "intake-" + workItemID
+// converge on AlreadyExists instead of duplicate Runs. agentName (ISI-4927
+// fan-out, non-empty only for fan-out Runs) inserts an agent segment before
+// the generation suffix — intake-<id>-<agent>[-r<N>] — so the N Runs of one
+// fan-out share item and generation yet stay distinct; a fan-out where every
+// Run were named intake-<id> would mint exactly one (the rest silently
+// swallowed as AlreadyExists), which is the bug this segment closes.
+func runObjectMeta(workItemID, ns string, highestGen int, agentName string) metav1.ObjectMeta {
+	agentSegment := ""
+	if agentName != "" {
+		agentSegment = "-" + agentName
+	}
+	name := "intake-" + workItemID + agentSegment
 	if highestGen > 0 {
-		name = fmt.Sprintf("intake-%s-r%d", workItemID, highestGen+1)
+		name = fmt.Sprintf("intake-%s%s-r%d", workItemID, agentSegment, highestGen+1)
 	}
 	return metav1.ObjectMeta{
 		Name:      name,
@@ -625,12 +712,16 @@ func runPhaseTerminal(phase api.RunPhase) bool {
 
 // runGeneration reads the generation of an intake Run from its name. The base
 // Run "intake-<id>" is generation 1; a re-mint "intake-<id>-rN" is generation N.
-// A work-item uuid is hex+hyphens (no 'r'), so the only "-r<digits>" tail is the
-// generation suffix — anything else (including a name intake never authored)
-// falls back to 1, the first-born generation. This is the inverse of
-// runObjectMeta and MUST stay in lockstep with it (ISI-4829): sweep takes the
-// max over surviving Runs so the next mint clears every existing suffix rather
-// than colliding on a GC-pruned gap.
+// A fan-out name "intake-<id>-<agent>[-r<N>]" (ISI-4927) parses identically —
+// the agent segment sits BEFORE the generation suffix, and LastIndex finds the
+// trailing "-r<digits>" whether or not the agent segment is present. A work-item
+// uuid is hex+hyphens and an agent name is DNS-1123 (lowercase alphanumeric +
+// hyphens, no trailing digits), so the only "-r<digits>" tail is the generation
+// suffix — anything else (including a name intake never authored) falls back to
+// 1, the first-born generation. This is the inverse of runObjectMeta and MUST
+// stay in lockstep with it (ISI-4829): sweep takes the max over surviving Runs
+// so the next mint clears every existing suffix rather than colliding on a
+// GC-pruned gap.
 func runGeneration(name string) int {
 	if idx := strings.LastIndex(name, "-r"); idx >= 0 {
 		if n, err := strconv.Atoi(name[idx+2:]); err == nil && n > 0 {
