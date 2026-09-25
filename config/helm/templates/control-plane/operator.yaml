@@ -51,6 +51,7 @@ spec:
               fieldPath: metadata.namespace
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         {{- include "k8squad.otelEnv" . | nindent 8 }}
+        {{- include "k8squad.jwtSigningEnv" . | nindent 8 }}
         {{- /* ISI-3680 (E3-S2, AD-7): exact apiserver ServiceAccount name and
                control-plane namespace for the get-only credential-tester
                RoleBinding the Team reconciler provisions inside every squad

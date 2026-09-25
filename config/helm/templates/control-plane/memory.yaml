@@ -33,6 +33,7 @@ spec:
           value: "8080"
         {{- include "k8squad.databaseEnv" . | nindent 8 }}
         {{- include "k8squad.otelEnv" . | nindent 8 }}
+        {{- include "k8squad.jwtSigningEnv" . | nindent 8 }}
         {{- with .Values.controlPlane.memory.extraEnv }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

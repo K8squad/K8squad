@@ -31,6 +31,15 @@ rules:
   - apiGroups: ["ksquad.io"]
     resources: ["agentruntimes", "mcpservers", "modelconfigs", "skills", "prompts", "toolchains", "otelconfigs", "credentials", "roles"]
     verbs: ["get", "list", "watch"]
+  # ADR-0024a S1 (ISI-4922): the team reconciler's ensureAuthoringMCPServer
+  # upserts the singleton ksquad-memory-authoring MCPServer per squad namespace
+  # (create + spec-drift Update). Scoped to mcpservers only so the read-only
+  # watch surface above is not widened; matches the generated config/rbac/role.yaml
+  # and the +kubebuilder:rbac marker on pkg/controller/team/controller.go.
+  # (mcpservers/status create/patch is covered by the status block below.)
+  - apiGroups: ["ksquad.io"]
+    resources: ["mcpservers"]
+    verbs: ["create", "update", "patch"]
   # Status subresources the reconcilers write (otelgate stamps OTelConfig
   # status, the credential controller stamps credential status, ...).
   - apiGroups: ["ksquad.io"]
