@@ -66,6 +66,7 @@ import {
   runCommentKey,
   type RunComment,
 } from "@/lib/tickets/runComments";
+import { runHref } from "@/lib/discussion/provenance";
 import type { CSSProperties } from "react";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
 import { STATUS_META } from "@/lib/tickets/statusColor";
@@ -94,6 +95,24 @@ function stateLabel(state: string): string {
 function shortId(id: string): string {
   // The board renders a short mono id; the full id stays in the title attr.
   return id.length > 10 ? id.slice(0, 8) : id;
+}
+
+// ISI-4962 (S8 of ISI-4853): the sidebar "Agent run & trace" row shows the
+// holding agent's display name + a short run id, deep-linked to the Run-detail
+// route via the SAME Story-8.11 runHref helper the run-comment trace ribbon
+// uses — a bare run UUID row is unnavigable for the board. The full run id
+// stays in the title tooltip for debugging.
+function AgentRunTraceItem({ runId, agentName }: { runId: string; agentName: string }) {
+  return (
+    <a
+      href={runHref(runId)}
+      className="agent-run-trace-item"
+      title={`Full run ID: ${runId}`}
+    >
+      <span className="agent-run-trace__agent">{agentName}</span>
+      <span className="agent-run-trace__run">{shortId(runId)}</span>
+    </a>
+  );
 }
 
 function fmt(ts: string): string {
@@ -1286,17 +1305,23 @@ function TicketBody({
         <section className="card" data-testid="detail-run-trace">
           <h2>Agent run &amp; trace</h2>
           {thread.runId ? (
-            <p>
-              Run <code className="ksq-ticket-id">{thread.runId}</code>
-            </p>
+            <div className="agent-run-trace-list">
+              {/* ISI-4962: agent name + run deep-link rows. displayName strips the
+                  agent:/user: principal prefix (ISI-4567) and "" degrades to
+                  "unknown" — never a fabricated agent. */}
+              <AgentRunTraceItem
+                runId={thread.runId}
+                agentName={displayName(thread.holder)}
+              />
+              {/* The Dynatrace deep-link renders here once the OBS contract
+                  (OBSERVABILITY_TRACE_URL + ksquad.work_item.ref) lands. Deferred. */}
+              <p className="muted" data-testid="detail-trace-pending">
+                End-to-end trace deep-link coming with the observability wiring.
+              </p>
+            </div>
           ) : (
             <p className="muted">No run linked yet.</p>
           )}
-          {/* The Dynatrace deep-link renders here once the OBS contract
-              (OBSERVABILITY_TRACE_URL + ksquad.work_item.ref) lands. Deferred. */}
-          <p className="muted" data-testid="detail-trace-pending">
-            End-to-end trace deep-link coming with the observability wiring.
-          </p>
         </section>
       </aside>
 

@@ -1448,6 +1448,40 @@
   text-decoration: underline;
 }
 
+/* Agent run & trace panel - agent names + run deep-links */
+.agent-run-trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-run-trace-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  text-decoration: none;
+  color: var(--text-1);
+  transition: all 0.2s ease;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+}
+.agent-run-trace-item:hover {
+  background: var(--inset);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.agent-run-trace__agent {
+  font-weight: 600;
+  color: var(--ksq-run);
+}
+.agent-run-trace__run {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
 /* ---- Dispatch pending placeholder card (ISI-4880 · S2 of ISI-4853) ---- */
 /* Reuses the .ksq-runcomment shell above so the real run card mutates in place with ZERO layout
    shift. ZERO new hues: every tone keys a LOCKED status token (globals.css §status) and every motion

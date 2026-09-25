@@ -219,6 +219,28 @@ describe("TicketDetail", () => {
     expect(within(screen.getByTestId("detail-run-trace")).getByText("run-9")).toBeTruthy();
   });
 
+  it("renders the Agent run & trace row as agent name + run deep-link (ISI-4962)", async () => {
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    // AC1: the row shows the holder's display name (principal prefix stripped,
+    // ISI-4567) — never the raw "agent:builder" — plus the run id.
+    const panel = screen.getByTestId("detail-run-trace");
+    expect(within(panel).getByText("builder")).toBeTruthy();
+    expect(within(panel).queryByText("agent:builder")).toBeNull();
+    expect(within(panel).getByText("run-9")).toBeTruthy();
+
+    // AC2: the row deep-links to the Run-detail route (same runHref convention
+    // as the run-comment trace ribbon) — not a bare UUID paragraph.
+    const row = within(panel).getByRole("link");
+    expect(row.getAttribute("href")).toBe("/runs/run-9");
+
+    // AC3: the full run id stays reachable on hover for debugging.
+    expect(row.getAttribute("title")).toBe("Full run ID: run-9");
+  });
+
   it("renders the newest agent comment as a GitHub-style run bubble (S3 anatomy)", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
