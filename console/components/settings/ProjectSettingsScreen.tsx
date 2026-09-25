@@ -302,7 +302,20 @@ function RepositoryAndCredentials({
       }
       setCredBusy(true);
       try {
-        const credRes = await createScmCredential({ name: credName.trim(), value: pat });
+        // Read the project first: its teamId pins the fleet-admin credential
+        // store to the project's OWN team (ISI-4917) — without it an unbound
+        // admin 400s with "select a team" and no picker — and the same fresh
+        // detail round-trips the full authoring spec on the attach PUT below.
+        const detail = await fetchProjectDetail(projectId);
+        if (!detail) {
+          setCredMsg({ tone: "bad", text: "Couldn't read the current project to store the credential — try again." });
+          return;
+        }
+        const credRes = await createScmCredential({
+          name: credName.trim(),
+          value: pat,
+          teamId: detail.teamId,
+        });
         const outcome = classifyCreateStatus(credRes.status);
         // Clear the token from state the moment the write returns — never held longer.
         setPat("");
@@ -311,11 +324,6 @@ function RepositoryAndCredentials({
           return;
         }
         // Reference the new Secret on the repo spec (key pinned to the write's key).
-        const detail = await fetchProjectDetail(projectId);
-        if (!detail) {
-          setCredMsg({ tone: "bad", text: "Credential stored, but couldn't read the project to attach it — retry." });
-          return;
-        }
         const body = buildProjectPutBody(detail, {
           repoUrl,
           repoRef,
@@ -343,17 +351,22 @@ function RepositoryAndCredentials({
     setTestBusy(true);
     setTestResult(null);
     try {
-      const result = await testRepoAuth(repo.url, {
-        name: auth.credentialSecretRefName,
-        key: SCM_PAT_SECRET_KEY,
-      });
+      // The project's teamId pins the probe to its own team so a fleet admin
+      // (no home tenancy) no longer 404s (ISI-4917); a read miss just omits the
+      // hint and a bound caller falls back to its own team scope.
+      const detail = await fetchProjectDetail(projectId);
+      const result = await testRepoAuth(
+        repo.url,
+        { name: auth.credentialSecretRefName, key: SCM_PAT_SECRET_KEY },
+        detail?.teamId,
+      );
       setTestResult(result);
     } catch {
       setTestResult({ ok: false, detail: "Couldn't reach the test probe — try again." });
     } finally {
       setTestBusy(false);
     }
-  }, [repo.url, auth.credentialSecretRefName]);
+  }, [projectId, repo.url, auth.credentialSecretRefName]);
 
   const canTest = repo.url.trim().length > 0 && auth.connected;
 

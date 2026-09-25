@@ -245,6 +245,12 @@ type ProjectDetail struct {
 	Repo            projectRepoWire `json:"repo"`
 	Goals           []string        `json:"goals,omitempty"`
 	EgressPolicyRef *objectRefWire  `json:"egressPolicyRef,omitempty"`
+	// TeamID is the owning Team's UID — the namespace the project lives in is the
+	// §12.1 tenancy root, so the Team in that namespace owns its credentials. The
+	// project-settings page forwards it as the fleet-admin routing hint for the
+	// credential store/test so an unbound admin needs no redundant manual team
+	// pick (ISI-4917). Empty when the project's namespace has no Team CR.
+	TeamID string `json:"teamId,omitempty"`
 }
 
 // RoleListEntry is one Role row in the fleet role list. Prompt is the referenced
@@ -743,7 +749,15 @@ func (r *ClientFleetListReader) ProjectDetail(ctx context.Context, teamUID, name
 		if p.Name != name {
 			continue
 		}
-		return projectDetail(p), nil
+		d := projectDetail(p)
+		// Stamp the owning Team UID (namespace = §12.1 tenancy root) so a fleet
+		// admin's credential store/test routes to the project's own team without
+		// a manual pick (ISI-4917). Best-effort: a resolution miss leaves teamId
+		// empty (omitempty) and the caller falls back to its own team scope.
+		if teamsByNS, terr := r.nsTeamMap(ctx); terr == nil {
+			d.TeamID = teamsByNS[p.Namespace].uid
+		}
+		return d, nil
 	}
 	return ProjectDetail{}, ErrTeamNotFound
 }

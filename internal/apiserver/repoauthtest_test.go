@@ -292,6 +292,60 @@ func TestRepoAuthTestTeamScope(t *testing.T) {
 	}
 }
 
+// TestRepoAuthTestFleetAdminTeamHint — a fleet-wide admin (own team_id backs no
+// Team CR, ISI-3937) probes a project's credential by naming the project's team
+// via the teamId hint (ISI-4917). This is the sympozium shape: more than one
+// squad on the install, so without a hint the admin must choose (400, not 404),
+// and with the project's team pinned the probe resolves that team's namespace
+// and runs — no more dead-end 404.
+func TestRepoAuthTestFleetAdminTeamHint(t *testing.T) {
+	tm, sec, teamID := repoTestTeamAndSecret(t)
+	// A SECOND reconciled team makes the fleet-admin path ambiguous without a
+	// hint — the multi-squad install where bmad-demo-project looked fine but
+	// sympozium 404'd (ISI-4917).
+	beta := teamWithStatus("teams", "beta", "88888888-8888-8888-8888-888888888888", "ksquad-team-beta")
+	svc, prober, _ := newRepoAuthTester(t, tm, sec, beta)
+
+	const adminToken = "admin-token"
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		// Fleet admin: a team_id that resolves to no Team CR, IsAdmin set.
+		adminToken: {
+			Principal: "user:root",
+			TeamID:    uuid.MustParse("99999999-9999-9999-9999-999999999999"),
+			IsAdmin:   true,
+		},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		RepoAuthTest:  svc,
+	})
+	h := srv.Handler()
+	post := func(body string) *httptest.ResponseRecorder {
+		req := withSession(httptest.NewRequest(http.MethodPost, "/api/projects/repo-auth/test", strings.NewReader(body)), adminToken)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// No hint, >1 reconciled team ⇒ the admin must name a target (400 select-team),
+	// NOT a dead-end 404.
+	noHint := post(`{"url":"https://github.com/acme/widget","credentialSecretRef":{"name":"alpha-repo-pat"}}`)
+	if noHint.Code != http.StatusBadRequest {
+		t.Fatalf("no-hint fleet admin: got %d, want 400 select-team (body %s)", noHint.Code, noHint.Body.String())
+	}
+
+	// With the project's team pinned via teamId, the probe resolves alpha's
+	// namespace and runs green against the stored PAT — the ISI-4917 fix.
+	withHint := post(`{"url":"https://github.com/acme/widget","credentialSecretRef":{"name":"alpha-repo-pat"},"teamId":"` + teamID.String() + `"}`)
+	if withHint.Code != http.StatusOK {
+		t.Fatalf("hinted fleet admin: got %d, want 200 (body %s)", withHint.Code, withHint.Body.String())
+	}
+	if prober.token != repoPatCanary {
+		t.Fatalf("prober received %q, want the stored material (wrong team namespace resolved)", prober.token)
+	}
+}
+
 // TestRepoAuthTestForbiddenRead — a Forbidden Secret read (the apiserver SA
 // without its secrets:get grant) is a 502 naming the configuration gap, never
 // a raw RBAC error body.
