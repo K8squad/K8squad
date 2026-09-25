@@ -8,6 +8,7 @@
 
 import type { Message } from "@/lib/discussion/types";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
+import { parseAudience } from "@/lib/discussion/audience";
 import { AuthorBadge } from "./AuthorBadge";
 
 export function isRetracted(m: Message): boolean {
@@ -17,15 +18,26 @@ export function isRetracted(m: Message): boolean {
 export function MessageItem({ message }: { message: Message }) {
   const retracted = isRetracted(message);
   const badge = deriveAuthorBadge(message);
+  const audience = parseAudience(message.audience);
 
   return (
     <li
       className="ksq-message"
       data-testid="message"
       data-message-id={message.id}
+      data-audience={audience.kind}
     >
       <div className="ksq-message__head">
         <AuthorBadge badge={badge} />
+        {audience.kind === "direct" ? (
+          <span
+            className="ksq-chip ksq-chip--direct"
+            data-testid="audience-chip"
+            title={`Direct to ${audience.agentId}`}
+          >
+            direct
+          </span>
+        ) : null}
         <time className="ksq-message__ts" dateTime={message.createdAt}>
           {message.createdAt}
         </time>

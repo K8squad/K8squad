@@ -44,7 +44,6 @@ describe("<MessageItem> — retraction rendering", () => {
     expect(screen.getByText("hello room")).toBeTruthy();
     expect(screen.queryByTestId("tombstone")).toBeNull();
   });
-
   it("renders a tombstone (not the body) for a retracted message", () => {
     render(
       <ul>
@@ -66,6 +65,45 @@ describe("<MessageItem> — retraction rendering", () => {
     expect(screen.getByTestId("author-chip")).toHaveAttribute(
       "data-kind",
       "agent",
+    );
+  });
+});
+
+describe("<MessageItem> — audience chip (ISI-4929, plan §4.2)", () => {
+  it("a direct message renders a direct chip and data-audience=direct", () => {
+    render(
+      <ul>
+        <MessageItem message={msg({ audience: "direct:agent-7" })} />
+      </ul>,
+    );
+    const chip = screen.getByTestId("audience-chip");
+    expect(chip.textContent).toBe("direct");
+    expect(screen.getByTestId("message")).toHaveAttribute(
+      "data-audience",
+      "direct",
+    );
+  });
+
+  it("a party message (and pre-v2 messages with no audience) render no chip", () => {
+    const { rerender } = render(
+      <ul>
+        <MessageItem message={msg({ audience: "party" })} />
+      </ul>,
+    );
+    expect(screen.queryByTestId("audience-chip")).toBeNull();
+    expect(screen.getByTestId("message")).toHaveAttribute(
+      "data-audience",
+      "party",
+    );
+    rerender(
+      <ul>
+        <MessageItem message={msg({ audience: undefined })} />
+      </ul>,
+    );
+    expect(screen.queryByTestId("audience-chip")).toBeNull();
+    expect(screen.getByTestId("message")).toHaveAttribute(
+      "data-audience",
+      "party",
     );
   });
 });

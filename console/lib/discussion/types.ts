@@ -47,8 +47,45 @@ export interface Message {
   authorRunId?: string | null;
   body: string;
   createdAt: string;
+  /**
+   * Audience wire token — `"party"` (room-visible, the default) or
+   * `"direct:{agentId}"` (scoped server-side to author + recipient + admins;
+   * plan §4.1/§4.2, ISI-4929). Optional because messages fetched before the
+   * v2 wire widening pre-date the column; the server stamps `"party"` there.
+   */
+  audience?: string;
+  /** Message kind — `"text"` (default) or `"proposal"` (plan §4.1). */
+  kind?: string;
+  /** Structured payload, present only for non-text kinds (e.g. proposals). */
+  payload?: unknown;
   /** Soft-retraction tombstone timestamp; present ⇒ the message was retracted. */
   invalidatedAt?: string | null;
   /** Derived: children nested by `parentId` (adjacency). */
   replies?: Message[];
+}
+
+/**
+ * One suggestion from the @-mention search endpoint
+ * (`GET /api/projects/{projectId}/discussion/mentions?q=…`, ISI-4926).
+ * Field names match the Go JSON tags on
+ * `internal/discussion/handler.go#MentionSuggestion`.
+ */
+export interface MentionSuggestion {
+  /** `"agent"` (led first) or `"work_item"`. */
+  type: "agent" | "work_item";
+  /** Agent name (the @-mention token) or work-item UUID. */
+  id: string;
+  displayName: string;
+  /** Owning project UUID (work items only). */
+  projectId?: string;
+  /** Work-item lane, or the agent's presence bucket. */
+  state?: string;
+  /** Relevance rank (work items only; 0 for agents). */
+  rank?: number;
+}
+
+/** The mention-search response envelope; `results` is always an array. */
+export interface MentionSearchResponse {
+  query: string;
+  results: MentionSuggestion[];
 }

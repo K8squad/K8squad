@@ -10,7 +10,11 @@
 // leak the existence of a foreign room.
 
 import { encodeProjectId } from "@/lib/projectId";
-import type { Message, Thread } from "./types";
+import type {
+  MentionSuggestion,
+  Message,
+  Thread,
+} from "./types";
 import {
   buildOpenThreadBody,
   buildPostBody,
@@ -67,14 +71,31 @@ export interface DiscussionClient {
    * `nestMessages` and the live/optimistic-append machinery stays flat).
    */
   getThread(projectId: string, threadId: string): Promise<Message[]>;
+  /**
+   * Fetch the thread record itself (title + `teamId` + timestamps) — the team
+   * scopes the room's agent roster (ISI-4929). Messages are omitted.
+   */
+  getThreadInfo(projectId: string, threadId: string): Promise<Thread>;
   /** Open a new thread with `{ title, body }` (AC2); provenance is server-stamped. */
   openThread(projectId: string, input: OpenThreadInput): Promise<Thread>;
-  /** Post a message / reply-in-thread with `{ body, parentId? }` (AC3). */
+  /**
+   * Post a message / reply-in-thread with `{ body, parentId?, audience? }`
+   * (AC3; audience scopes delivery — party default or `direct:{agentId}`,
+   * ISI-4929). Provenance is still server-stamped.
+   */
   postMessage(
     projectId: string,
     threadId: string,
     input: ComposerInput,
   ): Promise<Message>;
+  /**
+   * @-mention search (ISI-4926): agent + work-item suggestions for the
+   * composer popover, agents first, tenancy-fenced server-side.
+   */
+  searchMentions(
+    projectId: string,
+    q: string,
+  ): Promise<MentionSuggestion[]>;
   /** Soft-retract a message (AC4). Author-or-admin only; no hard-delete exists. */
   retractMessage(
     projectId: string,
@@ -83,9 +104,14 @@ export interface DiscussionClient {
   ): Promise<void>;
 }
 
+/** The BFF base path for a Project's discussion room (the §7.5 prefix). */
+function discussionBase(projectId: string): string {
+  return `/api/projects/${encodeProjectId(projectId)}/discussion`;
+}
+
 /** The BFF base path for a Project's discussion threads (server enforces the authz choke). */
 function threadsBase(projectId: string): string {
-  return `/api/projects/${encodeProjectId(projectId)}/discussion/threads`;
+  return `${discussionBase(projectId)}/threads`;
 }
 
 async function readJson<T>(res: {
@@ -135,6 +161,12 @@ export function createDiscussionClient(
       return flattenMessages(thread.messages);
     },
 
+    async getThreadInfo(projectId, threadId) {
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(threadId)}`;
+      const res = await fetchImpl(url, { method: "GET" });
+      return readJson<Thread>(res);
+    },
+
     async openThread(projectId, input) {
       // AC2/AC3: the wire body is ONLY { title, body } — thread creator and
       // message provenance are server-stamped. buildOpenThreadBody is the single
@@ -149,7 +181,7 @@ export function createDiscussionClient(
     },
 
     async postMessage(projectId, threadId, input) {
-      // AC3: the wire body is ONLY { body, parentId? } — provenance is
+      // AC3: the wire body is ONLY { body, parentId?, audience? } — provenance is
       // server-stamped. buildPostBody is the single enforcement point.
       const body = JSON.stringify(buildPostBody(input));
       const url = `${threadsBase(projectId)}/${encodeURIComponent(
@@ -161,6 +193,17 @@ export function createDiscussionClient(
         body,
       });
       return readJson<Message>(res);
+    },
+
+    async searchMentions(projectId, q) {
+      // The mention endpoint requires a non-empty q (400 otherwise); callers
+      // (the composer popover) never query on an empty fragment.
+      const url = `${discussionBase(projectId)}/mentions?q=${encodeURIComponent(
+        q,
+      )}`;
+      const res = await fetchImpl(url, { method: "GET" });
+      const out = await readJson<{ results?: MentionSuggestion[] }>(res);
+      return out.results ?? [];
     },
 
     async retractMessage(projectId, threadId, messageId) {
