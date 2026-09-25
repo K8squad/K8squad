@@ -335,3 +335,86 @@
   font-size: 13px;
   opacity: 0.75;
 }
+
+/* ISI-4930 (plan §4.4/§4.7): the dashed accent proposal card + result post-back
+ * chip. The card inherits the room palette — the dashed accent border keys off
+ * --accent, and each phase badge re-tints the chip base from a locked status
+ * token so the card stays theme-invariant. */
+.ksq-proposal {
+  border: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+.ksq-proposal__action {
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 4px;
+}
+.ksq-proposal__body {
+  margin: 0 0 8px;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+.ksq-proposal__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ksq-proposal__phase {
+  --chip-base: var(--status-idle);
+}
+.ksq-proposal__phase[data-phase="proposed"] {
+  --chip-base: var(--accent);
+}
+.ksq-proposal__phase[data-phase="confirmed"] {
+  --chip-base: var(--status-paused);
+}
+.ksq-proposal__phase[data-phase="dismissed"] {
+  --chip-base: var(--status-idle);
+}
+.ksq-proposal__phase[data-phase="executed"] {
+  --chip-base: var(--status-running);
+}
+.ksq-proposal__decided {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ksq-proposal__actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+.ksq-proposal__btn {
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ksq-proposal__btn--confirm {
+  background: var(--accent);
+  color: #ffffff;
+  border: 1px solid var(--accent);
+}
+.ksq-proposal__btn--dismiss {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.ksq-proposal__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The result post-back chip: deep-links the fan-out outcome to its work item
+ * (the ticket that becomes a Run). Run-hued so it reads as "a run is coming". */
+.ksq-result-chip {
+  --chip-base: var(--ksq-badge-run);
+  text-decoration: none;
+  margin-top: 6px;
+}
+.ksq-result-chip:hover {
+  border-color: var(--chip-base);
+  text-decoration: none;
+}
