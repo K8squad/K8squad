@@ -124,6 +124,9 @@ func (h *Handler) Register(r *mux.Router) {
 	// ISI-4928 (plan §4.4): the inert action-proposal card. Any authenticated principal may
 	// propose; the confirm/dismiss shells (apiserver) are what gate execution.
 	r.HandleFunc("/threads/{threadId}/proposals", h.postProposal).Methods(http.MethodPost)
+	// ISI-4930 (plan §4.7 story 6 read side): the thread's proposal cards + lifecycle phase.
+	// The message read stays phase-less; this join is the durable card state after a reload.
+	r.HandleFunc("/threads/{threadId}/proposals", h.listProposals).Methods(http.MethodGet)
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
@@ -395,6 +398,32 @@ func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, msg)
+}
+
+// listProposals answers GET /threads/{threadId}/proposals: every proposal card in the thread with
+// its lifecycle phase (story 6 read side). Tenancy misses are indistinguishable from an empty
+// thread of another team — a foreign thread id yields 404 via the store's scope probe.
+func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	proposals, err := h.store.ListProposals(r.Context(), projectID, auth.TeamID, threadID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, proposals)
 }
 
 // ============================================================================

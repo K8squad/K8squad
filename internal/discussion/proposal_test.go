@@ -57,6 +57,17 @@ func TestPostProposalUnauthenticated(t *testing.T) {
 	}
 }
 
+// TestListProposalsUnauthenticated — the story-6 read route rides the same choke point.
+func TestListProposalsUnauthenticated(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/projects/"+uuid.NewString()+"/discussion/threads/"+uuid.NewString()+"/proposals", nil)
+	rec := httptest.NewRecorder()
+	mountedRouter(t).ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", rec.Code)
+	}
+}
+
 // TestPostProposalIgnoresBodyAuthor — the proposal wire struct carries NO author_* field, so a
 // forged author in the body has no path into the stored row (AC3, structural).
 func TestPostProposalIgnoresBodyAuthor(t *testing.T) {

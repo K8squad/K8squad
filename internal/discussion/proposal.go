@@ -212,6 +212,66 @@ func (s *Store) GetProposal(ctx context.Context, projectID, teamID, messageID uu
 	return &p, nil
 }
 
+// ListProposals returns EVERY proposal card in a thread with its lifecycle phase, tenancy-scoped
+// through the thread, oldest first (transcript order). This is the story-6 read side (ISI-4930):
+// the thread message read stays custody-free and phase-less; the console joins this list onto the
+// messages by id to render durable card state (proposed/confirmed/dismissed/executed) after a
+// reload — dismissals and executions are otherwise un-derivable from the append-only transcript.
+func (s *Store) ListProposals(ctx context.Context, projectID, teamID, threadID uuid.UUID) ([]Proposal, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id, m.thread_id, m.parent_id, m.author_principal, m.author_agent_id, m.author_run_id,
+		       m.body, m.audience, m.kind, m.payload, m.created_at, m.invalidated_at,
+		       t.team_id, p.phase, p.decided_by, p.decided_at
+		FROM discussion.proposal p
+		JOIN discussion.message m ON m.id = p.message_id
+		JOIN discussion.thread t  ON t.id = m.thread_id
+		WHERE m.thread_id = $1 AND t.project_id = $2 AND t.team_id = $3
+		  AND m.invalidated_at IS NULL
+		ORDER BY m.created_at ASC`, threadID, projectID, teamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Proposal{}
+	for rows.Next() {
+		var p Proposal
+		var payload []byte
+		var parentID uuid.NullUUID
+		var agentID, runID, decidedBy sql.NullString
+		var decidedAt sql.NullTime
+		if err := rows.Scan(
+			&p.Message.ID, &p.Message.ThreadID, &parentID, &p.Message.AuthorPrincipal,
+			&agentID, &runID, &p.Message.Body, &p.Message.Audience, &p.Message.Kind,
+			&payload, &p.Message.CreatedAt, &p.Message.InvalidatedAt,
+			&p.TeamID, &p.Phase, &decidedBy, &decidedAt,
+		); err != nil {
+			return nil, err
+		}
+		if parentID.Valid {
+			pid := parentID.UUID
+			p.Message.ParentID = &pid
+		}
+		if agentID.Valid {
+			p.Message.AuthorAgentID = &agentID.String
+		}
+		if runID.Valid {
+			p.Message.AuthorRunID = &runID.String
+		}
+		if err := json.Unmarshal(payload, &p.Payload); err != nil {
+			return nil, fmt.Errorf("discussion: proposal %s has a malformed payload: %w", p.Message.ID, err)
+		}
+		if decidedBy.Valid {
+			p.DecidedBy = decidedBy.String
+		}
+		if decidedAt.Valid {
+			t := decidedAt.Time
+			p.DecidedAt = &t
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // ConfirmProposal CAS-advances proposed→confirmed, stamping the deciding human. It is the
 // single-winner lock for the fan-out: the loser of a concurrent confirm gets ErrProposalNotProposed.
 // Returns the full proposal (payload included) so the shell can fan out without a re-read.

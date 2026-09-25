@@ -194,6 +194,70 @@ func TestProposalFailRollsBackForRetry(t *testing.T) {
 	}
 }
 
+// TestListProposalsReadSide — the story-6 read (ISI-4930): every card in the thread lists with its
+// DURABLE phase in transcript order (the transcript itself stays phase-less — dismissals and
+// executions are otherwise un-derivable after a reload), and a foreign Team's list read sees
+// nothing (the team filter empties the result; the thread read remains the existence gate).
+func TestListProposalsReadSide(t *testing.T) {
+	store, projectID, teamID, threadID, agent, human := proposalFixtures(t)
+	ctx := context.Background()
+
+	m1, err := store.PostProposal(ctx, projectID, teamID, threadID, agent, "stay proposed",
+		ProposalPayload{Action: ProposalActionCreateTicket, Title: "one"}, nil)
+	if err != nil {
+		t.Fatalf("post 1: %v", err)
+	}
+	m2, err := store.PostProposal(ctx, projectID, teamID, threadID, agent, "dismiss me",
+		ProposalPayload{Action: ProposalActionAssignAgent, TicketID: "wi-2", AssigneeAgentID: "a:kimi"}, nil)
+	if err != nil {
+		t.Fatalf("post 2: %v", err)
+	}
+	if err := store.DismissProposal(ctx, projectID, teamID, m2.ID, human); err != nil {
+		t.Fatalf("dismiss: %v", err)
+	}
+	m3, err := store.PostProposal(ctx, projectID, teamID, threadID, agent, "execute me",
+		ProposalPayload{Action: ProposalActionPartyRun, Title: "three"}, nil)
+	if err != nil {
+		t.Fatalf("post 3: %v", err)
+	}
+	if _, err := store.ConfirmProposal(ctx, projectID, teamID, m3.ID, human); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	result, _ := json.Marshal(map[string]any{"action": "party_run", "workItemId": "wi-3"})
+	if _, err := store.CompleteProposal(ctx, projectID, teamID, m3.ID, human, result, "done"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	list, err := store.ListProposals(ctx, projectID, teamID, threadID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("want 3 proposals, got %d: %+v", len(list), list)
+	}
+	wantPhases := map[string]string{m1.ID.String(): ProposalPhaseProposed, m2.ID.String(): ProposalPhaseDismissed, m3.ID.String(): ProposalPhaseExecuted}
+	for _, p := range list {
+		if p.Message.Kind != KindProposal {
+			t.Fatalf("non-proposal row in list: %+v", p.Message)
+		}
+		if wantPhases[p.Message.ID.String()] != p.Phase {
+			t.Fatalf("card %s phase: got %q want %q", p.Message.ID, p.Phase, wantPhases[p.Message.ID.String()])
+		}
+	}
+	if list[0].Message.ID != m1.ID || list[1].Message.ID != m2.ID || list[2].Message.ID != m3.ID {
+		t.Fatalf("list not in transcript order: %s, %s, %s", list[0].Message.ID, list[1].Message.ID, list[2].Message.ID)
+	}
+	if list[1].DecidedBy != human.Principal || list[2].Payload.Action != ProposalActionPartyRun {
+		t.Fatalf("decision provenance / payload lost: %+v %+v", list[1], list[2])
+	}
+
+	// Cross-team: the list is empty for a foreign team — no existence leak, no rows.
+	foreign, err := store.ListProposals(ctx, projectID, uuid.New(), threadID)
+	if err != nil || len(foreign) != 0 {
+		t.Fatalf("cross-team list: want empty nil-err, got %d %v", len(foreign), err)
+	}
+}
+
 // TestProposalTenancyFence — a proposal in another Team's room is invisible (404-not-403, AC5):
 // get, confirm, and dismiss all hide existence cross-tenant.
 func TestProposalTenancyFence(t *testing.T) {
