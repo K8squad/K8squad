@@ -118,7 +118,7 @@ var (
 	ErrNotAuthor        = errors.New("discussion: only the author or an admin may retract a message")
 	ErrAlreadyRetracted = errors.New("discussion: message already retracted")
 	ErrInvalidAudience  = errors.New("discussion: audience must be 'party' or 'direct:{agentId}'")
-	ErrInvalidKind      = errors.New("discussion: kind must be one of text, structured, task, decision, vote")
+	ErrInvalidKind      = errors.New("discussion: kind must be one of text, structured, task, decision, vote, proposal")
 )
 
 // ============================================================================
@@ -306,7 +306,7 @@ func normalizeKind(kind *string) (string, error) {
 		return "text", nil
 	}
 	switch *kind {
-	case "text", "structured", "task", "decision", "vote":
+	case "text", "structured", "task", "decision", "vote", "proposal":
 		return *kind, nil
 	default:
 		return "", ErrInvalidKind

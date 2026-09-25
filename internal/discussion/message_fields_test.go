@@ -85,6 +85,13 @@ func TestPostMessageWithDirectAudience(t *testing.T) {
 			shouldError: false,
 		},
 		{
+			name:        "valid proposal kind",
+			audience:    "party",
+			kind:        "proposal",
+			payload:     nil,
+			shouldError: false,
+		},
+		{
 			name:        "invalid kind",
 			audience:    "party",
 			kind:        "invalid",

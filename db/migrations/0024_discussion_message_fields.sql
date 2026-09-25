@@ -32,5 +32,5 @@ ALTER TABLE discussion.message
 -- Ensure kind has reasonable defaults (can be extended in future)
 ALTER TABLE discussion.message
     ADD CONSTRAINT kind_must_be_text_or_extension CHECK (
-        kind = 'text' OR kind IN ('structured', 'task', 'decision', 'vote')  -- extend as needed
+        kind = 'text' OR kind IN ('structured', 'task', 'decision', 'vote', 'proposal')  -- extend as needed
     );
