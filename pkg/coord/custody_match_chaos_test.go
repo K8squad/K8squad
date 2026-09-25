@@ -67,8 +67,10 @@ const (
 	custodyRunUID = "00000000-0000-0000-0000-0000000000c5"
 	// >= 32 bytes: the HS256 test signing key. In production the same
 	// KSQUAD_JWT_SIGNING_KEY reaches the control plane (mint) and cmd/memory
-	// (verify) via Helm (ADR-0024a D2 option (a)).
-	custodySigningKey = "0123456789abcdef0123456789abcdef"
+	// (verify) via Helm (ADR-0024a D2 option (a)). The literal below is an
+	// obvious throwaway (0123…abcdef), never a real credential, so it is
+	// exempted from the gitleaks working-tree scan on this line only.
+	custodySigningKey = "0123456789abcdef0123456789abcdef" // gitleaks:allow
 	// The operator principal that performs the §6.2 checkout acquire.
 	custodyOperatorPrincipal = "principal:operator"
 )

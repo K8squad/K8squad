@@ -32,13 +32,19 @@ const (
 )
 
 // resetAuthorSchema re-applies the base spine (0001) + the assignee_agent column
-// (0018) into a clean coord schema — the teeth bite the real DDL exactly as the
-// apiserver migration runner provisions it.
+// (0018) + the create-time attribute columns (0020) into a clean coord schema —
+// the teeth bite the real DDL exactly as the apiserver migration runner provisions
+// it. 0020 is mandatory: AgentCreateWorkItem INSERTs/RETURNs
+// work_item.priority/work_mode/labels (workitemauthor.go), so a bare 0001+0018
+// schema fails the create outright — this is why ISI-4913 pairs the 0020 fix with
+// making these tests actually run in the chaos lane (TestSpine-named). Matches the
+// S5 custody test's 0001+0018+0020 shape.
 func resetAuthorSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 	mustExec(t, db, `DROP SCHEMA IF EXISTS coord CASCADE`)
 	mustExec(t, db, coordMigrationSQL(t))
 	mustExec(t, db, assigneeMigrationSQL(t))
+	mustExec(t, db, migrationFile(t, "0020_work_item_create_fields.sql"))
 }
 
 // assigneeMigrationSQL locates the shipped 0018 migration, mirroring
@@ -102,10 +108,10 @@ func authorInput(parent string) coord.AgentCreateWorkItemInput {
 	}
 }
 
-// TestAgentCreate_WithCustody_CreatesChild_HonestAudit — the happy path: an agent
+// TestSpineAuthorCreate_WithCustody_CreatesChild_HonestAudit — the happy path: an agent
 // holding the parent's claim creates a child in 'backlog', inheriting the parent's
 // team, with an audit row stamped agent-principal + run_id + initiated_by NULL.
-func TestAgentCreate_WithCustody_CreatesChild_HonestAudit(t *testing.T) {
+func TestSpineAuthorCreate_WithCustody_CreatesChild_HonestAudit(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	parent := authorSeedItem(t, db, "", "epic")
@@ -150,10 +156,10 @@ func TestAgentCreate_WithCustody_CreatesChild_HonestAudit(t *testing.T) {
 	}
 }
 
-// TestAgentCreate_NoCustody_Denied — an agent with no claim on the parent is
+// TestSpineAuthorCreate_NoCustody_Denied — an agent with no claim on the parent is
 // refused, and nothing is written. Existence-hiding: same refusal whether the
 // parent is unheld or absent.
-func TestAgentCreate_NoCustody_Denied(t *testing.T) {
+func TestSpineAuthorCreate_NoCustody_Denied(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	parent := authorSeedItem(t, db, "", "epic") // no grantCustody
@@ -170,8 +176,8 @@ func TestAgentCreate_NoCustody_Denied(t *testing.T) {
 	assertChildCount(t, db, parent, 0)
 }
 
-// TestAgentCreate_DepthCapExceeded — a chain at the cap refuses a deeper child.
-func TestAgentCreate_DepthCapExceeded(t *testing.T) {
+// TestSpineAuthorCreate_DepthCapExceeded — a chain at the cap refuses a deeper child.
+func TestSpineAuthorCreate_DepthCapExceeded(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	// Build epic(1)→story(2)→task(3)→subtask(4) directly, custody on the deepest.
@@ -195,10 +201,10 @@ func TestAgentCreate_DepthCapExceeded(t *testing.T) {
 	}
 }
 
-// TestAgentCreate_RunBudgetExceeded — a run at its create budget refuses the next
+// TestSpineAuthorCreate_RunBudgetExceeded — a run at its create budget refuses the next
 // create. We drive the boundary with a tiny synthetic budget by pre-seeding
 // AgentAuthorRunBudget prior authored-create audit rows for the run.
-func TestAgentCreate_RunBudgetExceeded(t *testing.T) {
+func TestSpineAuthorCreate_RunBudgetExceeded(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	parent := authorSeedItem(t, db, "", "epic")
@@ -225,9 +231,9 @@ func TestAgentCreate_RunBudgetExceeded(t *testing.T) {
 	}
 }
 
-// TestAgentUpdate_DescendantOfCustody_Allowed — update reaches the in-custody item
+// TestSpineAuthorUpdate_DescendantOfCustody_Allowed — update reaches the in-custody item
 // AND its descendants (O-3); an item under no held ancestor is refused.
-func TestAgentUpdate_DescendantOfCustody_Allowed(t *testing.T) {
+func TestSpineAuthorUpdate_DescendantOfCustody_Allowed(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	epic := authorSeedItem(t, db, "", "epic")
@@ -255,10 +261,10 @@ func TestAgentUpdate_DescendantOfCustody_Allowed(t *testing.T) {
 	}
 }
 
-// TestAgentUpdate_DetachToRoot_Denied (F1 / I1, ISI-4746) — a reparent to parent_id:""
+// TestSpineAuthorUpdate_DetachToRoot_Denied (F1 / I1, ISI-4746) — a reparent to parent_id:""
 // would NULL the parent and promote an in-custody sub-ticket to an agent-controlled
 // ROOT item. It is refused ErrAgentAuthorRootDenied and the parent link is untouched.
-func TestAgentUpdate_DetachToRoot_Denied(t *testing.T) {
+func TestSpineAuthorUpdate_DetachToRoot_Denied(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	epic := authorSeedItem(t, db, "", "epic")
@@ -275,10 +281,10 @@ func TestAgentUpdate_DetachToRoot_Denied(t *testing.T) {
 	assertParent(t, db, story, epic) // parent link untouched
 }
 
-// TestAgentUpdate_ReparentToUnheld_Denied (F1 / I2 dest, ISI-4746) — a reparent whose
+// TestSpineAuthorUpdate_ReparentToUnheld_Denied (F1 / I2 dest, ISI-4746) — a reparent whose
 // DESTINATION the agent does not hold is refused: only source custody is settled by
 // the frontier walk, so the destination gate must bite. Existence-hiding refusal.
-func TestAgentUpdate_ReparentToUnheld_Denied(t *testing.T) {
+func TestSpineAuthorUpdate_ReparentToUnheld_Denied(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	epic := authorSeedItem(t, db, "", "epic")
@@ -295,10 +301,10 @@ func TestAgentUpdate_ReparentToUnheld_Denied(t *testing.T) {
 	assertParent(t, db, story, epic) // parent link untouched
 }
 
-// TestAgentUpdate_ReparentDepthCapExceeded (F1 / I3, ISI-4746) — a reparent whose
+// TestSpineAuthorUpdate_ReparentDepthCapExceeded (F1 / I3, ISI-4746) — a reparent whose
 // destination would push the moved item past the depth cap is refused; the same move
 // under a shallower held destination is allowed.
-func TestAgentUpdate_ReparentDepthCapExceeded(t *testing.T) {
+func TestSpineAuthorUpdate_ReparentDepthCapExceeded(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	// epic(1)→story(2)→task(3)→subtask(4), whole subtree held via the root epic.
@@ -327,12 +333,12 @@ func TestAgentUpdate_ReparentDepthCapExceeded(t *testing.T) {
 	assertParent(t, db, itemX, task)
 }
 
-// TestAgentUpdate_ReparentSubtreeDepthCapExceeded — the depth cap must bound the
+// TestSpineAuthorUpdate_ReparentSubtreeDepthCapExceeded — the depth cap must bound the
 // WHOLE moved subtree, not just the moved node (ADR-0024 I3). A movable(2)→mchild(3)
 // pair grafted under a d3 parent would seat the node at the cap (d4) while its child
 // spills to d5; the per-node check would wave it through, so this pins the
 // subtree-height bound.
-func TestAgentUpdate_ReparentSubtreeDepthCapExceeded(t *testing.T) {
+func TestSpineAuthorUpdate_ReparentSubtreeDepthCapExceeded(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
 	resetAuthorSchema(t, db)
 	epic := authorSeedItem(t, db, "", "epic")
