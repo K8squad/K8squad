@@ -181,7 +181,7 @@ describe("pickDispatchRun", () => {
   it("ignores rows that predate the dispatch (notBeforeMs)", () => {
     const now = Date.parse("2026-09-25T10:06:00Z");
     const stale = { id: "prev", workItemRef: "wi-1", agents: ["alice"], phase: "Succeeded",
-                    startedAt: "2026-09-25T09:58:00Z", endedAt: "2026-09-25T09:59:00Z" };
+                    startedAt: "2026-09-25T09:58:00Z" };
     const freshPending = { id: "next", workItemRef: "wi-1", agents: ["alice"], phase: "Pending" };
 
     // No notBefore → legacy behavior (matches the newest row, even a stale one).
@@ -190,6 +190,22 @@ describe("pickDispatchRun", () => {
     expect(pickDispatchRun([stale, freshPending], "wi-1", "alice", now)?.id).toBe("next");
     // Only stale rows → nothing eligible yet (ladder stays queued until the new Run mints).
     expect(pickDispatchRun([stale], "wi-1", "alice", now)).toBeNull();
+  });
+
+  // ISI-4918 live regression: the apiserver's runListItem emits Go zero-time endedAt
+  // ("0001-01-01T00:00:00Z") for every non-complete/failed run. A staleness check over that
+  // field makes EVERY row look stale and pins the ladder at queued forever. We must only trust
+  // startedAt, and treat zero/negative epochs as "no timestamp".
+  it("does not treat Go zero-time startedAt as stale (live regression)", () => {
+    const now = Date.parse("2026-09-25T10:06:00Z");
+    const freshClaiming = { id: "r22", workItemRef: "wi-1", agents: ["alice"], phase: "Claiming",
+                            startedAt: "2026-09-25T10:05:58Z" };
+    // A just-minted run whose startedAt is the Go zero time (never claimed yet) must still match.
+    const zeroStarted = { id: "r23", workItemRef: "wi-1", agents: ["alice"], phase: "Pending",
+                          startedAt: "0001-01-01T00:00:00Z" };
+    expect(pickDispatchRun([freshClaiming, zeroStarted], "wi-1", "alice", now)?.id).toBe("r22");
+    // With ONLY a zero-time row (and no real staleness signal), the row is kept, not filtered.
+    expect(pickDispatchRun([zeroStarted], "wi-1", "alice", now)?.id).toBe("r23");
   });
 
   it("admits a row started slightly before the dispatch (clock-skew floor)", () => {
