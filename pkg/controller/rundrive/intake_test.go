@@ -208,8 +208,8 @@ func TestIntakeSweepDispatchesTodoWorkItem(t *testing.T) {
 		t.Fatalf("want exactly 1 dispatched Run, got %d", len(runs.Items))
 	}
 	run := runs.Items[0]
-	if run.Name != "intake-"+itemID {
-		t.Fatalf("deterministic name: got %q want intake-%s", run.Name, itemID)
+	if run.Name != "intake-"+itemID+"-"+agentName {
+		t.Fatalf("deterministic name: got %q want intake-%s-%s (1-agent fan-out)", run.Name, itemID, agentName)
 	}
 	if run.Namespace != squadNS {
 		t.Fatalf("run namespace: got %q want squad namespace %q", run.Namespace, squadNS)
@@ -421,6 +421,119 @@ func TestIntakeSweepStaleRequestedAgentFallsBack(t *testing.T) {
 	}
 }
 
+// ISI-4927: a party (team-targeted) work item — team set, requested_agent
+// NULL — mints ONE Run per Team.Spec.Agents entry. Each minted Run is a
+// normal single-agent Run addressed to exactly its agent, and the names are
+// agent-scoped (intake-<id>-<agent>) so the N Runs of one ticket coexist: a
+// fan-out where every Run were named intake-<id> would mint exactly one (the
+// rest silently swallowed as AlreadyExists).
+func TestIntakeSweepFanOutTeamWorkItem(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		squadNS = "squad-alpha"
+	)
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha", UID: types.UID(teamUID)},
+		Spec: api.TeamSpec{
+			NamespaceStrategy: "dedicated",
+			Agents:            []api.ObjectRef{{Name: "coder"}, {Name: "reviewer"}, {Name: "sam"}},
+		},
+	}
+	team.Status.Namespace = squadNS
+	objs := []client.Object{
+		team,
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: squadNS}},
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", Namespace: squadNS}},
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "sam", Namespace: squadNS}},
+		&api.Project{ObjectMeta: metav1.ObjectMeta{Name: "proj", Namespace: squadNS}},
+	}
+	in, cl, logs := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"}, // no RequestedAgent: fan-out
+	}}, objs...)
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 3 {
+		t.Fatalf("fan-out must mint one Run per team agent: got %d; logs=%v", len(runs.Items), *logs)
+	}
+	byAgent := map[string]api.Run{}
+	for _, r := range runs.Items {
+		if len(r.Spec.Agents) != 1 {
+			t.Fatalf("each fan-out Run is single-agent: %s carries %+v", r.Name, r.Spec.Agents)
+		}
+		byAgent[r.Spec.Agents[0].Name] = r
+		if r.Name != "intake-"+itemID+"-"+r.Spec.Agents[0].Name {
+			t.Fatalf("fan-out Run name must be agent-scoped: got %q", r.Name)
+		}
+		if r.Spec.WorkItemRef != itemID {
+			t.Fatalf("workItemRef: got %q want %q", r.Spec.WorkItemRef, itemID)
+		}
+		if r.Namespace != squadNS {
+			t.Fatalf("run namespace: got %q want %q", r.Namespace, squadNS)
+		}
+	}
+	for _, want := range []string{"coder", "reviewer", "sam"} {
+		if _, ok := byAgent[want]; !ok {
+			t.Fatalf("fan-out missed agent %q; runs=%+v", want, runs.Items)
+		}
+	}
+
+	// Idempotency: the minted fan-out is live (phase unset ⇒ suppresses) — a
+	// re-sweep must not mint anything more.
+	in.sweep(context.Background())
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("re-list runs: %v", err)
+	}
+	if len(runs.Items) != 3 {
+		t.Fatalf("re-sweep must not over-mint: got %d Runs", len(runs.Items))
+	}
+}
+
+// ISI-4927 risk R3: fan-out shares the per-pass Run budget (MaxPerPass /
+// DefaultIntakeMaxPerPass) — a party item cannot stampede the pass with more
+// Creates than the budget allows.
+func TestIntakeSweepFanOutCappedByPassLimit(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+		squadNS = "squad-alpha"
+	)
+	team := &api.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "alpha", UID: types.UID(teamUID)},
+		Spec: api.TeamSpec{
+			NamespaceStrategy: "dedicated",
+			Agents:            []api.ObjectRef{{Name: "coder"}, {Name: "reviewer"}, {Name: "sam"}},
+		},
+	}
+	team.Status.Namespace = squadNS
+	objs := []client.Object{
+		team,
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "coder", Namespace: squadNS}},
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "reviewer", Namespace: squadNS}},
+		&api.Agent{ObjectMeta: metav1.ObjectMeta{Name: "sam", Namespace: squadNS}},
+		&api.Project{ObjectMeta: metav1.ObjectMeta{Name: "proj", Namespace: squadNS}},
+	}
+	in, cl, logs := newIntake(t, &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}, objs...)
+	in.MaxPerPass = 2
+
+	in.sweep(context.Background())
+
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 2 {
+		t.Fatalf("MaxPerPass=2 must cap a 3-agent fan-out: got %d Runs; logs=%v", len(runs.Items), *logs)
+	}
+}
+
 // A ticket the Run plane already owns — by ANY author, any name — is never
 // given a second Run (the suppress rule that makes re-sweeps free).
 func TestIntakeSweepSkipsWorkItemWithExistingRun(t *testing.T) {
@@ -507,7 +620,7 @@ func TestIntakeSweepRemintsAfterTerminalRun(t *testing.T) {
 			t.Fatalf("first-born Run must be untouched, got phase %q", r.Status.Phase)
 		}
 	}
-	want := "intake-" + itemID + "-r2"
+	want := "intake-" + itemID + "-coder-r2"
 	found := false
 	for _, r := range runs.Items {
 		if r.Name == want {
@@ -537,7 +650,8 @@ func TestIntakeSweepRemintsAfterTerminalRun(t *testing.T) {
 // on "-r3", which still exists — Create answers AlreadyExists every tick and no
 // fresh Run is ever minted: the ticket freezes on 'todo' ("impossible to trigger
 // an agent run from the UI"). The next mint must clear the HIGHEST surviving
-// suffix (r3) → "-r4", never the count.
+// suffix (r3) → "-r4", never the count. Fan-out names are agent-scoped
+// (ISI-4927), so the survivors and the re-mint all carry the agent segment.
 func TestIntakeSweepRemintClearsHighestSurvivingGeneration(t *testing.T) {
 	const (
 		itemID  = "11111111-1111-1111-1111-111111111111"
@@ -548,12 +662,12 @@ func TestIntakeSweepRemintClearsHighestSurvivingGeneration(t *testing.T) {
 	// high generation (r3). Intermediate r2 was GC'd. Count == 2.
 	objs = append(objs,
 		&api.Run{
-			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID, Namespace: "squad-alpha"},
+			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-coder", Namespace: "squad-alpha"},
 			Spec:       api.RunSpec{WorkItemRef: itemID},
 			Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
 		},
 		&api.Run{
-			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-r3", Namespace: "squad-alpha"},
+			ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-coder-r3", Namespace: "squad-alpha"},
 			Spec:       api.RunSpec{WorkItemRef: itemID},
 			Status:     api.RunStatus{Phase: api.RunPhaseSucceeded},
 		},
@@ -571,7 +685,7 @@ func TestIntakeSweepRemintClearsHighestSurvivingGeneration(t *testing.T) {
 	if len(runs.Items) != 3 {
 		t.Fatalf("want the 2 survivors + one re-mint, got %d Runs", len(runs.Items))
 	}
-	want := "intake-" + itemID + "-r4"
+	want := "intake-" + itemID + "-coder-r4"
 	found := false
 	for _, r := range runs.Items {
 		if r.Name == want {
@@ -824,7 +938,7 @@ func TestIntakeSweepRearmsSettledClaimBeforeMint(t *testing.T) {
 	if len(runs.Items) != 2 {
 		t.Fatalf("want terminal gen-1 + exactly one re-mint, got %d Runs", len(runs.Items))
 	}
-	want := "intake-" + itemID + "-r2"
+	want := "intake-" + itemID + "-coder-r2"
 	found := false
 	for _, r := range runs.Items {
 		if r.Name == want {
