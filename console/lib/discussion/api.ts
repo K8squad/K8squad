@@ -13,6 +13,10 @@ import { encodeProjectId } from "@/lib/projectId";
 import type {
   MentionSuggestion,
   Message,
+  Proposal,
+  ProposalConfirmResponse,
+  ProposalDismissResponse,
+  ProposalPayload,
   Thread,
 } from "./types";
 import {
@@ -102,6 +106,35 @@ export interface DiscussionClient {
     threadId: string,
     messageId: string,
   ): Promise<void>;
+  /**
+   * List the thread's proposal cards joined with their lifecycle phase
+   * (ISI-4930 story-6 read side). The transcript read stays phase-less; the
+   * console joins this list onto the messages by id to render durable card
+   * state (proposed/confirmed/dismissed/executed) after a reload.
+   */
+  listProposals(projectId: string, threadId: string): Promise<Proposal[]>;
+  /**
+   * Post an inert action-proposal (kind='proposal', plan §4.4). Any principal
+   * may propose; execution happens only through the human confirm shell.
+   */
+  postProposal(
+    projectId: string,
+    threadId: string,
+    input: { body: string; payload: ProposalPayload },
+  ): Promise<Message>;
+  /**
+   * Human confirm (plan §4.4): fans the proposal into the existing authoring
+   * seams and posts back the executed outcome under the card.
+   */
+  confirmProposal(
+    projectId: string,
+    messageId: string,
+  ): Promise<ProposalConfirmResponse>;
+  /** Human dismiss (plan §4.4): records the decision, no fan-out. */
+  dismissProposal(
+    projectId: string,
+    messageId: string,
+  ): Promise<ProposalDismissResponse>;
 }
 
 /** The BFF base path for a Project's discussion room (the §7.5 prefix). */
@@ -216,6 +249,54 @@ export function createDiscussionClient(
       if (!res.ok) {
         throw new DiscussionApiError(res.status, classifyStatus(res.status));
       }
+    },
+
+    async listProposals(projectId, threadId) {
+      // ISI-4930: durable card state joined onto the phase-less transcript.
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/proposals`;
+      const res = await fetchImpl(url, { method: "GET" });
+      return readJson<Proposal[]>(res);
+    },
+
+    async postProposal(projectId, threadId, input) {
+      // Plan §4.4/§6: the wire body is { body, payload }. Provenance of the
+      // proposer is server-stamped; the payload names the authorizable action.
+      const body = JSON.stringify({ body: input.body, payload: input.payload });
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/proposals`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      return readJson<Message>(res);
+    },
+
+    async confirmProposal(projectId, messageId) {
+      const url = `${discussionBase(projectId)}/proposals/${encodeURIComponent(
+        messageId,
+      )}/confirm`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      return readJson<ProposalConfirmResponse>(res);
+    },
+
+    async dismissProposal(projectId, messageId) {
+      const url = `${discussionBase(projectId)}/proposals/${encodeURIComponent(
+        messageId,
+      )}/dismiss`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      return readJson<ProposalDismissResponse>(res);
     },
   };
 }

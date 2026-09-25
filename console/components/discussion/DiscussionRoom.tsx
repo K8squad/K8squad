@@ -13,7 +13,7 @@
 // SERVER decision (Store reads); the room only renders what it is given.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { MentionSuggestion, Message } from "@/lib/discussion/types";
+import type { MentionSuggestion, Message, Proposal } from "@/lib/discussion/types";
 import { nestMessages } from "@/lib/discussion/thread";
 import { applyRoomEvent, type RoomEvent } from "@/lib/discussion/liveFeed";
 import type { DiscussionClient } from "@/lib/discussion/api";
@@ -55,12 +55,28 @@ export function DiscussionRoom({
   const [state, setState] = useState<LoadState>("loading");
   const [messages, setMessages] = useState<Message[]>([]);
   const [rosterAgents, setRosterAgents] = useState<RosterAgent[]>([]);
+  // messageId → joined proposal card (list-proposals). The transcript stays
+  // phase-less; this join is the durable card state after a reload (ISI-4930).
+  const [proposals, setProposals] = useState<Record<string, Proposal>>({});
+  // Message id whose confirm/dismiss round-trip is in flight.
+  const [busyMessageId, setBusyMessageId] = useState<string>();
 
   const load = useCallback(async () => {
     try {
       const flat = await client.getThread(projectId, threadId);
       setMessages(flat);
       setState("ready");
+      // Proposal cards + lifecycle phase (story 6 read side). A failure here
+      // degrades silently to plain transcript rendering — the room already
+      // rendered, and the cards rejoin on the next load.
+      try {
+        const list = await client.listProposals(projectId, threadId);
+        const next: Record<string, Proposal> = {};
+        for (const p of list) next[p.Message.id] = p;
+        setProposals(next);
+      } catch {
+        setProposals({});
+      }
       // The thread's Team scopes the roster (§4.5). A roster failure degrades
       // silently to a roster-less room — the thread itself already rendered.
       try {
@@ -108,6 +124,52 @@ export function DiscussionRoom({
     [client, projectId, threadId],
   );
 
+  // Human confirm (plan §4.4): fan into the authoring seams, then advance the
+  // card to executed and append the result post-back message under it.
+  const confirmProposal = useCallback(
+    async (messageId: string) => {
+      setBusyMessageId(messageId);
+      try {
+        const res = await client.confirmProposal(projectId, messageId);
+        setProposals((cur) => {
+          const existing = cur[messageId];
+          if (!existing) return cur;
+          return { ...cur, [messageId]: { ...existing, phase: res.status } };
+        });
+        const postBack = res.postBack;
+        if (postBack) {
+          setMessages((cur) =>
+            applyRoomEvent(cur, {
+              type: "message.created",
+              message: postBack,
+            }),
+          );
+        }
+      } finally {
+        setBusyMessageId(undefined);
+      }
+    },
+    [client, projectId],
+  );
+
+  // Human dismiss (plan §4.4): record the decision, no fan-out.
+  const dismissProposal = useCallback(
+    async (messageId: string) => {
+      setBusyMessageId(messageId);
+      try {
+        await client.dismissProposal(projectId, messageId);
+        setProposals((cur) => {
+          const existing = cur[messageId];
+          if (!existing) return cur;
+          return { ...cur, [messageId]: { ...existing, phase: "dismissed" } };
+        });
+      } finally {
+        setBusyMessageId(undefined);
+      }
+    },
+    [client, projectId],
+  );
+
   if (state === "loading") {
     return <div data-testid="room-loading">Loading discussion…</div>;
   }
@@ -130,7 +192,15 @@ export function DiscussionRoom({
       <div className="ksq-room__main">
         <ul className="ksq-thread ksq-thread--roots" data-testid="threads">
           {threads.map((t) => (
-            <MessageItem key={t.id} message={t} />
+            <MessageItem
+              key={t.id}
+              message={t}
+              projectId={projectId}
+              proposalByMessageId={proposals}
+              onConfirmProposal={confirmProposal}
+              onDismissProposal={dismissProposal}
+              busyMessageId={busyMessageId}
+            />
           ))}
         </ul>
         <Composer

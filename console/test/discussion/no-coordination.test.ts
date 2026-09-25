@@ -33,6 +33,15 @@ const COORDINATION_VERBS = [
   "take[- ]?over",
 ];
 
+// OQ1 / plan ISI-4919 §8 R1 — the board deliberately reversed AC5 for the room:
+// propose→authorize coordination DOES happen here. The proposal card
+// (ProposalCard.tsx, ISI-4930) is the sanctioned surface: it renders an action
+// label (e.g. "Assign an agent to ticket …") and Confirm/Dismiss verbs that fan
+// into the existing authoring shells SERVER-SIDE — the console still never
+// moves custody itself. Exempt it from the verb scan so the descriptive action
+// label doesn't false-positive as a custody affordance.
+const PROPOSAL_CARD_FILES = new Set(["ProposalCard.tsx"]);
+
 function walk(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
@@ -65,7 +74,10 @@ describe("AC5 — no coordination affordance in the room UI", () => {
   for (const verb of COORDINATION_VERBS) {
     it(`exposes no "${verb}" affordance`, () => {
       const re = new RegExp(`\\b${verb}\\b`, "i");
-      const offenders = files.filter((f) => re.test(code(f)));
+      const offenders = files.filter(
+        (f) => !PROPOSAL_CARD_FILES.has(f.split("/").pop() ?? "") &&
+          re.test(code(f)),
+      );
       expect(offenders).toEqual([]);
     });
   }

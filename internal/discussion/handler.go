@@ -121,6 +121,12 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/threads/{threadId}", h.getThread).Methods(http.MethodGet)                             // 3. get thread + messages
 	r.HandleFunc("/threads/{threadId}/messages", h.postMessage).Methods(http.MethodPost)                 // 4. post / reply
 	r.HandleFunc("/threads/{threadId}/messages/{messageId}", h.retractMessage).Methods(http.MethodPatch) // 5. soft-retract
+	// ISI-4928 (plan §4.4): the inert action-proposal card. Any authenticated principal may
+	// propose; the confirm/dismiss shells (apiserver) are what gate execution.
+	r.HandleFunc("/threads/{threadId}/proposals", h.postProposal).Methods(http.MethodPost)
+	// ISI-4930 (plan §4.7 story 6 read side): the thread's proposal cards + lifecycle phase.
+	// The message read stays phase-less; this join is the durable card state after a reload.
+	r.HandleFunc("/threads/{threadId}/proposals", h.listProposals).Methods(http.MethodGet)
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
@@ -173,14 +179,16 @@ func requireAuth(w http.ResponseWriter, r *http.Request) (AuthorContext, bool) {
 // writeStoreErr maps store errors to status codes. Tenancy misses are 404-not-403 (AC5).
 func writeStoreErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound):
+	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound),
+		errors.Is(err, ErrProposalNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle),
-		errors.Is(err, ErrInvalidAudience), errors.Is(err, ErrInvalidKind):
+		errors.Is(err, ErrInvalidAudience), errors.Is(err, ErrInvalidKind),
+		errors.Is(err, ErrInvalidProposalPayload):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotAuthor):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrAlreadyRetracted):
+	case errors.Is(err, ErrAlreadyRetracted), errors.Is(err, ErrProposalNotProposed):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -348,6 +356,74 @@ func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "retracted"})
+}
+
+// ============================================================================
+// Proposal endpoint (ISI-4928, plan §4.4)
+// ============================================================================
+
+// postProposalReq — no author_* fields (AC3, same as every write here); the structured payload is
+// the action contract from plan §6. Provenance of the PROPOSER is server-stamped; an agent may
+// propose (that is the point — propose, never execute).
+type postProposalReq struct {
+	Body    string          `json:"body"`
+	Payload ProposalPayload `json:"payload"`
+}
+
+// postProposal appends an inert kind='proposal' message (phase='proposed'). It writes no coord row
+// and moves no custody — the fan-out happens only in the human-gated confirm shell.
+func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	var req postProposalReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	msg, err := h.store.PostProposal(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, req.Payload, nil)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, msg)
+}
+
+// listProposals answers GET /threads/{threadId}/proposals: every proposal card in the thread with
+// its lifecycle phase (story 6 read side). Tenancy misses are indistinguishable from an empty
+// thread of another team — a foreign thread id yields 404 via the store's scope probe.
+func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(r, "projectId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	proposals, err := h.store.ListProposals(r.Context(), projectID, auth.TeamID, threadID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, proposals)
 }
 
 // ============================================================================

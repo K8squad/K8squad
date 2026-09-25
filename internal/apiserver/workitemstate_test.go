@@ -17,10 +17,10 @@ import (
 // fakeTransitioner records the last call and returns a canned result/error so the
 // handler's auth, body-parsing, and error-mapping can be exercised without a DB.
 type fakeTransitioner struct {
-	called bool
+	called                                             bool
 	gotItem, gotTeam, gotTarget, gotFrom, gotPrincipal string
-	result coord.StateTransition
-	err    error
+	result                                             coord.StateTransition
+	err                                                error
 }
 
 func (f *fakeTransitioner) TransitionState(_ context.Context, item, team, target, from, principal, _ string) (coord.StateTransition, error) {

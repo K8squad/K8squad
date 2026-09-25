@@ -89,3 +89,67 @@ export interface MentionSearchResponse {
   query: string;
   results: MentionSuggestion[];
 }
+
+// ---------------------------------------------------------------------------
+// Proposals (ISI-4928 / ISI-4930, plan §4.4/§4.7). Field names match the Go
+// JSON tags on `internal/discussion/proposal.go`. A proposal is an inert
+// kind='proposal' message whose structured payload names an action a human may
+// authorize; its decision lifecycle (`phase`) lives in the proposal side table
+// and is joined by the list-proposals read endpoint — the transcript itself
+// stays phase-less.
+// ---------------------------------------------------------------------------
+
+/** The fan-out action a proposal names (plan §6). */
+export type ProposalAction = "create_ticket" | "assign_agent" | "party_run";
+
+/** The decision lifecycle of a proposal card (proposed → confirmed|dismissed → executed). */
+export type ProposalPhase = "proposed" | "confirmed" | "dismissed" | "executed";
+
+/** The structured payload of a kind='proposal' message (`ProposalPayload`). */
+export interface ProposalPayload {
+  action: ProposalAction;
+  title?: string;
+  body?: string;
+  assigneeAgentId?: string;
+  ticketId?: string;
+}
+
+/**
+ * One proposal card joined with its lifecycle row (`list-proposals` response
+ * element). The Go `Proposal` struct embeds `Message` under the literal key
+ * `Message` (not flattened) and carries `TeamID`/`Payload`/`phase` beside it —
+ * the console consumes that exact wire shape.
+ */
+export interface Proposal {
+  Message: Message;
+  TeamID: string;
+  Payload: ProposalPayload;
+  phase: ProposalPhase;
+  decidedBy?: string;
+  decidedAt?: string;
+}
+
+/** The fan-out outcome posted back under an executed card (plan §4.7). */
+export interface ProposalResult {
+  action: ProposalAction;
+  workItemId?: string;
+  state?: string;
+  teamRun?: boolean;
+  fromState?: string;
+  toState?: string;
+  requestedAgent?: string;
+}
+
+/** The confirm shell's 200 response body. */
+export interface ProposalConfirmResponse {
+  status: ProposalPhase;
+  proposalId: string;
+  alreadyExecuted?: boolean;
+  result?: ProposalResult;
+  postBack?: Message;
+}
+
+/** The dismiss shell's 200 response body. */
+export interface ProposalDismissResponse {
+  status: "dismissed";
+}
