@@ -251,7 +251,6 @@ func (s *Store) GetThread(ctx context.Context, projectID, teamID, threadID uuid.
 // PostMessage appends a message (or reply) to a thread. The thread must be within the caller's Team
 // scope (else ErrThreadNotFound, AC5). Provenance is stamped from auth (AC3); the parent-same-thread
 // invariant is enforced by the DB trigger and re-checked here for a clean error.
-//
 // audience, kind, and payload are optional (nil) wire fields: audience defaults to 'party',
 // kind to 'text'; payload (structured message data) stays NULL unless supplied.
 func (s *Store) PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*Message, error) {

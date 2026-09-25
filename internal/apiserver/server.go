@@ -165,6 +165,12 @@ type Options struct {
 	// and dispatch the chosen agent in one call. Nil ⇒ the route keeps the documented
 	// 501 (a DB-less/cache-less dev run), exactly like the dispatch sibling.
 	GithubIssueDispatch GithubIssueDispatcher
+	// DiscussionProposals is the ISI-4928 proposal confirm/dismiss seam: the discussion
+	// Store's decision-lifecycle ops (proposed → confirmed|dismissed|executed) driven by
+	// proposalConfirmHandler/proposalDismissHandler, which fan ONLY into the existing
+	// authoring seams above (WorkItemWrites + WorkItemDispatch). Set together with those
+	// two; nil (or a missing seam) ⇒ the proposal routes keep the documented 501.
+	DiscussionProposals ProposalLifecycle
 	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
 	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
 	// /api/work-items/{id} (ticket thread — comments, status history, change
@@ -1116,6 +1122,46 @@ func (s *Server) routes(opts Options) {
 		} else {
 			ghAssign.HandleFunc("", notImplemented("github-issue dispatch bridge", "ISI-4783: wire a coord.WorkItemWriteStore + WorkItemDispatchStore to enable")).
 				Methods(http.MethodPost)
+		}
+
+		// ISI-4928 proposal confirm/dismiss shells (plan ISI-4919 §4.4): the human
+		// decision verbs on an action-proposal card. They fan ONLY into the two
+		// authoring seams above (create + dispatch) — the room introduces zero new
+		// custody semantics. Human-only + requireProjectRole(Contributor), same
+		// wall as the create/dispatch verbs they mirror; sameOrigin-guarded like
+		// every other state-changing board verb. Needs the discussion lifecycle
+		// store AND both authoring seams; otherwise the documented 501.
+		if opts.DiscussionProposals != nil && opts.WorkItemWrites != nil && opts.WorkItemDispatch != nil {
+			fanout := proposalFanout{
+				lifecycle: opts.DiscussionProposals,
+				create:    opts.WorkItemWrites,
+				dispatch:  opts.WorkItemDispatch,
+				refs:      opts.ProjectRefs,
+			}
+			for _, verb := range []struct {
+				segment string
+				handler http.HandlerFunc
+			}{
+				{"confirm", proposalConfirmHandler(fanout)},
+				{"dismiss", proposalDismissHandler(fanout)},
+			} {
+				prop := s.router.Path("/api/projects/{projectId:.+}/discussion/proposals/{messageId}/" + verb.segment).Subrouter()
+				prop.Use(authz)
+				prop.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+				prop.Use(maxBytesBody(4 << 10))
+				if opts.ProjectRoles != nil {
+					prop.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+				}
+				prop.HandleFunc("", verb.handler).Methods(http.MethodPost)
+			}
+		} else {
+			for _, segment := range []string{"confirm", "dismiss"} {
+				prop := s.router.Path("/api/projects/{projectId:.+}/discussion/proposals/{messageId}/" + segment).Subrouter()
+				prop.Use(authz)
+				prop.HandleFunc("", notImplemented("proposal "+segment+" seam",
+					"ISI-4928: wire the discussion Store + coord.WorkItemWriteStore + WorkItemDispatchStore to enable")).
+					Methods(http.MethodPost)
+			}
 		}
 
 		// Audit log query (ISI-2881): the RBAC-scoped coord.audit_log query API.

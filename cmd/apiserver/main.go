@@ -601,9 +601,16 @@ func main() {
 		log.Printf("ksquad-apiserver: org-ops seam disabled — needs both a >=32B JWT signing key and a CRD write client")
 	}
 
+	// ISI-4928: the discussion Store doubles as the proposal decision-lifecycle seam
+	// (ProposalLifecycle). The confirm/dismiss routes also need the two authoring seams
+	// (WorkItemWrites above, WorkItemDispatch when the informer cache is up) — they fan
+	// only into those, and stay documented-501 otherwise (server.go enforces the pair).
+	discussionStore := discussion.NewStore(db)
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
-		Discussion:          discussion.NewHandlerWithDeps(discussion.NewStore(db), searcher, rosterForMentions(org)),
+		Discussion:          discussion.NewHandlerWithDeps(discussionStore, searcher, rosterForMentions(org)),
+		DiscussionProposals: discussionStore,
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,
