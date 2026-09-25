@@ -603,7 +603,7 @@ func main() {
 
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
-		Discussion:          discussion.NewHandlerWithDeps(discussion.NewStore(db), searcher, mentionRoster{org}),
+		Discussion:          discussion.NewHandlerWithDeps(discussion.NewStore(db), searcher, rosterForMentions(org)),
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,
@@ -702,6 +702,18 @@ func (m mentionRoster) TeamAgents(ctx context.Context, teamID uuid.UUID) ([]disc
 		out = append(out, discussion.TeamAgent{Name: a.Name, Status: a.Status})
 	}
 	return out, nil
+}
+
+// rosterForMentions returns the mention roster seam, or nil when the org projection is unavailable
+// (the cache-less boot shape — org is a nil apiserver.OrgReader). It MUST return a nil
+// discussion.OrgReader rather than a non-nil mentionRoster wrapping the nil interface: the handler's
+// `h.org != nil` guard would otherwise pass and then panic on m.org.Org(...) for every GET /mentions,
+// breaking the documented ticket-only degrade.
+func rosterForMentions(org apiserver.OrgReader) discussion.OrgReader {
+	if org == nil {
+		return nil
+	}
+	return mentionRoster{org}
 }
 
 // buildAuthService assembles the pkg/auth core (15.1): stores over the shared DSN,
