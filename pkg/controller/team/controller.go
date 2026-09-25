@@ -28,6 +28,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,6 +51,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 )
 
 const (
@@ -231,6 +234,8 @@ func TelemetryTargetFromEndpoint(endpoint string) *TelemetryTarget {
 //+kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=ksquad.io,resources=mcpservers,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=ksquad.io,resources=mcpservers/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=ksquad.io,resources=agents,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile drives a Team to its provisioned squad namespace (or through
 // finalizer teardown on deletion). It is idempotent: a steady-state requeue
@@ -349,6 +354,17 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 	// policy then allows egress to a target nothing dials.
 	if tt := r.TelemetryTarget; tt != nil {
 		objects = append(objects, allowTelemetryNetworkPolicy(nsName, teamObj, tt))
+	}
+	// ISI-4920: BYO-model egress companion — a team whose composition agents
+	// dial a BYO endpoint (Agent.spec.modelEndpointRef, e.g. a LAN Ollama at
+	// 10.0.0.185:11434) needs egress to it re-opened past ksquad-default-deny,
+	// exactly as the telemetry companion re-opens the OTLP gateway. Without it
+	// the agent CLI fails every run with "Cannot connect to API" and the
+	// operator loops retry→settle forever (the ISI-4829 symptom). Resolution
+	// is best-effort (see byoModelTargets); no target ⇒ no policy, so a
+	// paid-provider team gets no hole.
+	if byo := byoModelEgressNetworkPolicy(nsName, teamObj, r.byoModelTargets(ctx, teamObj)); byo != nil {
+		objects = append(objects, byo)
 	}
 	for _, obj := range objects {
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
@@ -852,6 +868,160 @@ func allowTelemetryNetworkPolicy(ns string, teamObj *api.Team, tt *TelemetryTarg
 				To:    []networkingv1.NetworkPolicyPeer{peer},
 				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcpProtocol, Port: &port}},
 			}},
+		},
+	}
+}
+
+// byoTarget is one parsed egress destination for a team's BYO model endpoint
+// (ISI-4920): a bare-IP host — the LAN-Ollama case — maps to an ipBlock/32
+// peer; an in-cluster Service DNS name maps to a namespaceSelector peer.
+// Namespace and IP are mutually exclusive. Structurally a TelemetryTarget
+// ("one host:port egress hole"), kept a distinct type so the two companions
+// never share a mutable target list.
+type byoTarget struct {
+	Namespace string
+	IP        string
+	Port      int32
+}
+
+// byoEgressTargetFromURL parses a resolved BYO endpoint BaseURL (a validated
+// http(s) URL, per modelendpoint.ResolveRef) into an egress target. A bare-IP
+// host → ipBlock/32 (the actual ISI-4829 defect: LAN Ollama by IP); an
+// explicit in-cluster Service DNS name (contains ".svc") → the namespace peer.
+// A non-cluster hostname returns nil: core NetworkPolicy cannot match egress
+// by DNS name, so an FQDN endpoint would need an explicit operator-configured
+// CIDR (out of scope) rather than a silently-wrong namespace hole. The port is
+// the URL's explicit port, else the scheme default (443 https / 80 http).
+func byoEgressTargetFromURL(rawURL string) *byoTarget {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	host := u.Hostname()
+	var port int32
+	if ps := u.Port(); ps != "" {
+		if p, err := strconv.ParseInt(ps, 10, 32); err == nil && p > 0 {
+			port = int32(p)
+		}
+	}
+	if port == 0 {
+		port = 80
+		if u.Scheme == "https" {
+			port = 443
+		}
+	}
+	if net.ParseIP(host) != nil {
+		return &byoTarget{IP: host, Port: port}
+	}
+	// In-cluster Service DNS only when unambiguous (…svc[.cluster.local]);
+	// a public FQDN (api.example.com) is deliberately NOT treated as an
+	// in-cluster namespace.
+	labels := strings.Split(host, ".")
+	for i, l := range labels {
+		if l == "svc" && i >= 1 && labels[i-1] != "" {
+			return &byoTarget{Namespace: labels[i-1], Port: port}
+		}
+	}
+	return nil
+}
+
+// byoModelTargets resolves the DISTINCT BYO model endpoints the team's
+// composition agents dial (ISI-4920). Each Agent.spec.modelEndpointRef → a
+// per-user Secret (endpointURL) → a host:port egress target, resolved through
+// the same modelendpoint seam the dispatcher uses. Resolution is best-effort:
+// an agent whose endpoint Secret is missing/dangling/DNS-only is LOGGED and
+// skipped rather than wedging the whole namespace provision — the agent
+// admission webhook already fail-closes a dangling endpoint at author time, so
+// a steady-state member resolves, and a transient miss self-heals on the next
+// reconcile (the NetworkPolicy Watch requeues). An agent on a paid provider
+// (no modelEndpointRef ⇒ BaseURL "") contributes no target. Results are sorted
+// so the rendered policy is invariant to composition ordering (idempotent).
+func (r *Reconciler) byoModelTargets(ctx context.Context, teamObj *api.Team) []byoTarget {
+	log := log.FromContext(ctx)
+	resolver := modelendpoint.Resolver{Reader: r.Client}
+	seen := map[string]bool{}
+	var targets []byoTarget
+	for _, ref := range teamObj.Spec.Agents {
+		agentNS := ref.Namespace
+		if agentNS == "" {
+			agentNS = teamObj.Namespace
+		}
+		var agent api.Agent
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: agentNS}, &agent); err != nil {
+			log.V(1).Info("byo-egress: skip composition agent (get failed)", "agent", ref.Name, "namespace", agentNS, "err", err)
+			continue
+		}
+		ep, err := resolver.Resolve(ctx, &agent)
+		if err != nil {
+			log.V(1).Info("byo-egress: skip agent (endpoint unresolved)", "agent", ref.Name, "err", err)
+			continue
+		}
+		if ep.BaseURL == "" {
+			continue // paid provider / provider-default — no egress hole needed
+		}
+		t := byoEgressTargetFromURL(ep.BaseURL)
+		if t == nil {
+			log.V(1).Info("byo-egress: skip agent (endpoint host not IP/in-cluster; core NetworkPolicy cannot match a DNS name)", "agent", ref.Name, "endpoint", ep.BaseURL)
+			continue
+		}
+		key := fmt.Sprintf("%s|%s|%d", t.Namespace, t.IP, t.Port)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		targets = append(targets, *t)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].Namespace != targets[j].Namespace {
+			return targets[i].Namespace < targets[j].Namespace
+		}
+		if targets[i].IP != targets[j].IP {
+			return targets[i].IP < targets[j].IP
+		}
+		return targets[i].Port < targets[j].Port
+	})
+	return targets
+}
+
+// byoModelEgressNetworkPolicy re-opens egress from every sandbox pod to the
+// team's BYO model endpoints (ISI-4920). A team whose composition agents dial a
+// BYO / Ollama / OpenAI-compatible endpoint via spec.modelEndpointRef would
+// otherwise have that dial silently dropped by ksquad-default-deny — the agent
+// CLI fails every run with "Cannot connect to API" and the operator loops
+// retry→settle forever (root-caused live on k8squad-test: bmad's squad reached
+// Ollama ONLY via a hand-created policy this method now makes operator-driven).
+// Port-scoped TCP only, one egress rule per distinct target; mirrors
+// allowTelemetryNetworkPolicy. Returns nil when the team has no BYO target.
+func byoModelEgressNetworkPolicy(ns string, teamObj *api.Team, targets []byoTarget) *networkingv1.NetworkPolicy {
+	if len(targets) == 0 {
+		return nil
+	}
+	rules := make([]networkingv1.NetworkPolicyEgressRule, 0, len(targets))
+	for _, t := range targets {
+		peer := networkingv1.NetworkPolicyPeer{}
+		if t.Namespace != "" {
+			peer.NamespaceSelector = &metav1.LabelSelector{
+				MatchLabels: map[string]string{"kubernetes.io/metadata.name": t.Namespace},
+			}
+		} else {
+			peer.IPBlock = &networkingv1.IPBlock{CIDR: t.IP + "/32"}
+		}
+		port := intstr.FromInt32(t.Port)
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To:    []networkingv1.NetworkPolicyPeer{peer},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcpProtocol, Port: &port}},
+		})
+	}
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      "ksquad-allow-byo-model",
+			Labels:    managedLabels(teamObj),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress:      rules,
 		},
 	}
 }
