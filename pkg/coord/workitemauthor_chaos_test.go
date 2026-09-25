@@ -176,6 +176,39 @@ func TestSpineAuthorCreate_NoCustody_Denied(t *testing.T) {
 	assertChildCount(t, db, parent, 0)
 }
 
+// TestSpineAuthorCreate_GrandparentCustody_Denied pins the DIRECT-PARENT-ONLY rule
+// for create (ADR-0024 §4.1) and the deliberate asymmetry against the O-3 descendant
+// scope the edit paths use (ISI-4912, follow-up to ISI-4907 / PR #614). Holding an
+// ANCESTOR is enough to EDIT a descendant (TestSpineAuthorUpdate_DescendantOfCustody_Allowed)
+// but is NOT enough to CREATE a child under that descendant: create authorizes with
+// agentHoldsClaim (this parent, or its assignee), never the ancestor walk. Custody on
+// the epic alone must therefore refuse a create under its (unheld) story child; adding
+// direct custody on the story then permits it. A regression here (e.g. a switch to
+// agentHoldsCustodyScope) reopens §4.1 and fails this test.
+func TestSpineAuthorCreate_GrandparentCustody_Denied(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	epic := authorSeedItem(t, db, "", "epic")
+	story := authorSeedItem(t, db, epic, "story")
+	grantCustody(t, db, epic) // custody on the ANCESTOR only — not the direct parent
+	s := newAuthorStore(t, db)
+
+	// Create under the story (a descendant of held custody, but NOT directly held) is
+	// refused: create is direct-parent-only, unlike update which reaches descendants.
+	if _, err := s.AgentCreateWorkItem(context.Background(), authorInput(story)); !errors.Is(err, coord.ErrAgentAuthorNotInCustody) {
+		t.Fatalf("create under grandparent-only custody: got %v, want ErrAgentAuthorNotInCustody", err)
+	}
+	assertChildCount(t, db, story, 0)
+
+	// Direct custody on the story itself then permits the create — proving the refusal
+	// above was the direct-parent rule, not an unrelated block.
+	grantCustody(t, db, story)
+	if _, err := s.AgentCreateWorkItem(context.Background(), authorInput(story)); err != nil {
+		t.Fatalf("create under directly-held parent should be allowed: %v", err)
+	}
+	assertChildCount(t, db, story, 1)
+}
+
 // TestSpineAuthorCreate_DepthCapExceeded — a chain at the cap refuses a deeper child.
 func TestSpineAuthorCreate_DepthCapExceeded(t *testing.T) {
 	db := openDB(t, dsnOrFatal(t))
