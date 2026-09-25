@@ -665,6 +665,11 @@ func TestProjectDetailScoping(t *testing.T) {
 	if len(d.Goals) != 2 || d.EgressPolicyRef == nil || d.EgressPolicyRef.Name != "default-egress" {
 		t.Fatalf("goals/egress: %+v", d)
 	}
+	// teamId is the owning Team UID (namespace = tenancy root) — the fleet-admin
+	// credential routing hint (ISI-4917). squad-a's widget is owned by alpha.
+	if d.TeamID != fleetUIDA {
+		t.Fatalf("project detail teamId: got %q, want %q", d.TeamID, fleetUIDA)
+	}
 	// JSON must decode back into projectRequest (write wire, project-free is N/A here).
 	b, _ := json.Marshal(d)
 	var back projectRequest
@@ -675,6 +680,9 @@ func TestProjectDetailScoping(t *testing.T) {
 	dB, err := r.ProjectDetail(ctx, "", "widget", fleetUIDB, true)
 	if err != nil || dB.Repo.URL != "https://github.com/acme/other" {
 		t.Fatalf("admin+team: %+v err=%v", dB, err)
+	}
+	if dB.TeamID != fleetUIDB {
+		t.Fatalf("admin+team teamId: got %q, want %q", dB.TeamID, fleetUIDB)
 	}
 	if _, err := r.ProjectDetail(ctx, "", "widget", "", true); !errors.Is(err, ErrTeamNotFound) {
 		t.Fatalf("admin missing team: want ErrTeamNotFound, got %v", err)

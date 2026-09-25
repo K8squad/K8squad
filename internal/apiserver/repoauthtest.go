@@ -125,6 +125,12 @@ func (GitHubRepoProber) Probe(ctx context.Context, repoURL, token string) (strin
 type repoAuthTestRequest struct {
 	URL                 string        `json:"url"`
 	CredentialSecretRef secretRefWire `json:"credentialSecretRef"`
+	// TeamID is a fleet-wide-admin routing hint (ISI-3937 / ISI-4917): honoured
+	// ONLY for an admin whose own team is unresolvable, ignored on every bound
+	// caller's path (no tenancy hijack). The project-settings page supplies it
+	// from ProjectDetail.teamId so a fleet admin probes the project's own team
+	// instead of 404ing with no home tenancy.
+	TeamID string `json:"teamId,omitempty"`
 }
 
 // repoAuthTestResult is the response: {ok, detail} only (AD-7). detail is
@@ -232,6 +238,24 @@ func (s *RepoAuthTestService) handleRepoAuthTest(w http.ResponseWriter, r *http.
 	funnelAttrs(span, attribute.String("repo.url", redactRepoURL(req.URL)))
 
 	team, ns, err := s.resolveTeam(r.Context(), author.TeamID.String())
+	if errors.Is(err, ErrTeamNamespaceUnresolved) && author.IsAdmin {
+		// Fleet-wide admin (ISI-3937 / ISI-4917): no home tenancy, so the probe
+		// targets an explicit team from the fleet (defaulting to the single
+		// team). Reached only when the caller's own team is unresolvable, so
+		// req.TeamID cannot widen a bound caller's scope.
+		team, err = s.resolveFleetTeam(r.Context(), req.TeamID)
+		if err == nil {
+			ns = team.Status.Namespace
+		}
+	}
+	if errors.Is(err, ErrSelectTeam) {
+		// The surface exists; the admin simply must name which team to target
+		// (400, a picker prompt — never 404). The project-settings page pins
+		// this from the project's own team, so it should not be reached there.
+		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestNoNamespace)
+		writeJSONError(w, http.StatusBadRequest, "select a team for this credential")
+		return
+	}
 	if errors.Is(err, ErrTeamNamespaceUnresolved) {
 		funnelOutcome(ctx, span, fn.repoAuthTest, outcomeRepoTestNoNamespace)
 		writeJSONError(w, http.StatusNotFound, "no team namespace for this caller")
@@ -353,4 +377,17 @@ func (s *RepoAuthTestService) resolveTeam(ctx context.Context, teamUID string) (
 		}
 	}
 	return nil, "", ErrTeamNamespaceUnresolved
+}
+
+// resolveFleetTeam picks the Team a fleet-wide admin's probe targets once the
+// admin's own team has proven unresolvable (ISI-3937), through the shared
+// fleetAdminTeam discipline every credential store/test path uses (secretwrite,
+// credentialtest). requestedTeamID is honoured here only — reached solely on the
+// admin-with-no-home-team path, so it can never widen a bound caller's scope.
+func (s *RepoAuthTestService) resolveFleetTeam(ctx context.Context, requestedTeamID string) (*ksquadv1.Team, error) {
+	var teams ksquadv1.TeamList
+	if err := s.client.List(ctx, &teams); err != nil {
+		return nil, err
+	}
+	return fleetAdminTeam(teams.Items, requestedTeamID)
 }

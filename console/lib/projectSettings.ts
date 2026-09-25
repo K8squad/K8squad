@@ -127,6 +127,10 @@ export interface RepoSyncWire {
 /** ProjectDetail authoring wire (mirror of fleetlist.go ProjectDetail). */
 export interface ProjectDetail {
   name: string;
+  /** Owning Team UID — the fleet-admin routing hint for the credential store/test
+   *  so an unbound admin needs no manual team pick (ISI-4917). Absent when the
+   *  project's namespace has no Team CR. */
+  teamId?: string;
   repo: {
     url: string;
     ref?: string;
@@ -276,6 +280,7 @@ export async function createScmCredential(
 export async function testRepoAuth(
   url: string,
   credentialSecretRef: WireSecretRef,
+  teamId?: string,
 ): Promise<RepoAuthTestResult> {
   const res = await fetch("/api/projects/repo-auth/test", {
     method: "POST",
@@ -285,6 +290,9 @@ export async function testRepoAuth(
       credentialSecretRef: credentialSecretRef.key
         ? { name: credentialSecretRef.name, key: credentialSecretRef.key }
         : { name: credentialSecretRef.name },
+      // Fleet-admin routing hint (ISI-4917): pins the probe to the project's own
+      // team so an unbound admin no longer 404s. Inert for a bound caller.
+      ...(teamId ? { teamId } : {}),
     }),
     cache: "no-store",
   });
