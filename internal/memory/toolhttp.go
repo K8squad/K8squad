@@ -76,6 +76,16 @@ type searchResponse struct {
 	Results []Envelope `json:"results"`
 }
 
+// readerIdentity derives the R2 reader scope from the server-stamped session headers — the same
+// X-Principal-Id / X-Agent-Id discipline the write tools use (WINV1/WINV2). Missing headers ⇒ a
+// party-only reader: direct-audience discussion records cannot surface for that caller.
+func readerIdentity(r *http.Request) ReaderIdentity {
+	return ReaderIdentity{
+		Principal: r.Header.Get("X-Principal-Id"),
+		AgentID:   r.Header.Get("X-Agent-Id"),
+	}
+}
+
 func (h *ToolHTTP) discussionSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -91,7 +101,7 @@ func (h *ToolHTTP) discussionSearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	out, err := h.read.DiscussionSearch(r.Context(), team, req.ProjectID, req.Query, req.TopK)
+	out, err := h.read.DiscussionSearch(r.Context(), team, req.ProjectID, readerIdentity(r), req.Query, req.TopK)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -114,7 +124,7 @@ func (h *ToolHTTP) memorySearch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	out, err := h.read.MemorySearch(r.Context(), team, req.Query, req.TopK)
+	out, err := h.read.MemorySearch(r.Context(), team, readerIdentity(r), req.Query, req.TopK)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

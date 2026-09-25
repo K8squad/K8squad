@@ -473,6 +473,17 @@ type searchArgs struct {
 	TopK      int    `json:"top_k,omitempty"`
 }
 
+// sessReader derives the R2 reader scope from the server-stamped session headers — the same
+// X-Principal-Id / X-Agent-Id the write tools stamp authorship from (WINV1/WINV2). Absent headers ⇒
+// a party-only reader: direct-audience discussion records cannot surface for that session.
+func sessReader(sess mcpSession) ReaderIdentity {
+	rd := ReaderIdentity{Principal: sess.principal}
+	if sess.agentID != nil {
+		rd.AgentID = *sess.agentID
+	}
+	return rd
+}
+
 func (m *ToolMCP) callMemorySearch(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
 	var a searchArgs
 	if len(raw) > 0 {
@@ -480,7 +491,7 @@ func (m *ToolMCP) callMemorySearch(ctx context.Context, sess mcpSession, raw jso
 			return toolError("invalid arguments")
 		}
 	}
-	out, err := m.read.MemorySearch(ctx, sess.team, a.Query, a.TopK)
+	out, err := m.read.MemorySearch(ctx, sess.team, sessReader(sess), a.Query, a.TopK)
 	if err != nil {
 		return toolError(err.Error())
 	}
@@ -494,7 +505,7 @@ func (m *ToolMCP) callDiscussionSearch(ctx context.Context, sess mcpSession, raw
 			return toolError("invalid arguments")
 		}
 	}
-	out, err := m.read.DiscussionSearch(ctx, sess.team, a.ProjectID, a.Query, a.TopK)
+	out, err := m.read.DiscussionSearch(ctx, sess.team, a.ProjectID, sessReader(sess), a.Query, a.TopK)
 	if err != nil {
 		return toolError(err.Error())
 	}

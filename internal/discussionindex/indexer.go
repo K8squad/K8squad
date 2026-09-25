@@ -12,6 +12,7 @@ package discussionindex
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -184,15 +185,22 @@ func (ix *Indexer) advance(t time.Time, id uuid.UUID) {
 // 10.1 server-stamped columns (principal/agent/run) into `provenance`; the uuid substrate columns get
 // deterministic derivations. Kind is the constant "discussion" so the read tool can narrow on it. The
 // embedding is computed by the seam embedder (§7.1).
+//
+// Story 7 (ISI-4931, plan §4.1/§5): the v2 wire fields ride along. A structured message (kind ≠ "text"
+// carrying a payload — a proposal) gets its payload folded into the indexed content so the STRUCTURE is
+// semantically findable, not just the prose body; the record stays one row, kind stays "discussion"
+// (the one search plan is unchanged), and the message's own kind/audience/payload are stamped verbatim
+// into `provenance` — audience is what the store's R2 party-visibility predicate reads back out.
 func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) error {
-	vec, err := ix.embed.Embed(ctx, m.Body)
+	content := indexedContent(m)
+	vec, err := ix.embed.Embed(ctx, content)
 	if err != nil {
 		return err
 	}
 
 	prov := memory.NewDiscussionProvenance(
 		m.MessageID.String(), m.ThreadID.String(), m.AuthorPrincipal,
-		m.AuthorAgentID, m.AuthorRunID, m.CreatedAt)
+		m.AuthorAgentID, m.AuthorRunID, m.Audience, m.Kind, m.Payload, m.CreatedAt)
 
 	projectID := m.ProjectID.String()
 	// The record id is DERIVED deterministically from the message id (same UUIDv5 namespace as the
@@ -204,7 +212,7 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		ProjectID:   &projectID,
 		PrincipalID: deriveUUID("principal", m.AuthorPrincipal),
 		Kind:        memory.KindDiscussion,
-		Content:     m.Body,
+		Content:     content,
 		Embedding:   vec,
 		Provenance:  prov,
 		DedupeID:    &recordID,
@@ -219,6 +227,17 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 	}
 	_, err = ix.sink.Write(ctx, req)
 	return err
+}
+
+// indexedContent composes the searchable text for one message: the body verbatim, plus — for a
+// structured kind carrying a payload — a "[kind] payload" suffix so a proposal's action/title fields
+// land in the embedding (and surface legibly in the read envelope's content). A plain text message
+// indexes its body alone, exactly as before story 7.
+func indexedContent(m discussion.MemoryIndexable) string {
+	if m.Kind == "" || m.Kind == "text" || len(m.Payload) == 0 {
+		return m.Body
+	}
+	return fmt.Sprintf("%s\n[%s] %s", m.Body, m.Kind, string(m.Payload))
 }
 
 // Run drives the sweep on an interval until ctx is cancelled. Errors are logged and the loop continues:

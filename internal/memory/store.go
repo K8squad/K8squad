@@ -165,6 +165,13 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 	// project/kind narrowing predicates ($4/$5) are pushed INTO the query — a NULL param means "don't
 	// narrow", so a discussion read (project + kind="discussion") and a plain memory read share this one
 	// index-backed plan. The scope and retraction filters are never app-side afterthoughts (AC1/AC3/AC4).
+	//
+	// The R2 party-visibility predicate ($6/$7, ISI-4931) is likewise pushed into the plan — a post-ANN
+	// app-side filter would silently shrink top-K. A discussion-projected row is visible unless its
+	// provenance audience is a DIRECT audience addressed to someone else: `direct:{agentId}` surfaces
+	// only for the recipient agent ($6) or the author ($6 agent / $7 principal). Non-discussion rows,
+	// and discussion rows with no audience stamped (legacy pre-v2 projections, native memory), are
+	// unaffected. NULL reader params ⇒ no direct row can match — deny-by-default, never a widening.
 	const q = `
 		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
 		       created_at, invalidated_at, provenance,
@@ -173,10 +180,18 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 		WHERE squad_id = $1 AND invalidated_at IS NULL
 		  AND ($4::uuid IS NULL OR project_id = $4::uuid)
 		  AND ($5::text IS NULL OR kind = $5::text)
+		  AND (
+		      kind IS DISTINCT FROM 'discussion'
+		      OR provenance->>'audience' IS NULL
+		      OR provenance->>'audience' = 'party'
+		      OR ($6::text IS NOT NULL AND provenance->>'audience' = 'direct:' || $6::text)
+		      OR ($6::text IS NOT NULL AND provenance->>'author_agent_id' = $6::text)
+		      OR ($7::text IS NOT NULL AND provenance->>'author_principal' = $7::text)
+		  )
 		ORDER BY embedding <=> $2::vector
 		LIMIT $3`
 	rows, err := s.pool.Query(ctx, q, query.SquadID, encodeVector(query.Embedding), limit,
-		query.ProjectID, query.Kind)
+		query.ProjectID, query.Kind, query.ReaderAgentID, query.ReaderPrincipal)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search: %w", err)
 	}
