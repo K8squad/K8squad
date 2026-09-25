@@ -6,15 +6,23 @@
 // 8.2 SSE subscription. Kept separate from page.tsx so the server component
 // stays thin. There is no backend room object or `roomId`; the thread id is the
 // sub-resource id (migration 0004 superseded the naive rooms shape).
+//
+// ISI-4929: also wires the roster loader (Team org read model → the room's
+// roster/presence sidebar + the composer's direct-target selector) and the
+// mention search (ISI-4926 endpoint) into the room. Both are optional props on
+// <DiscussionRoom>; failures degrade to a roster-less, popover-less composer.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createDiscussionClient } from "@/lib/discussion/api";
 import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
 import type { RoomEvent } from "@/lib/discussion/liveFeed";
+import type { RosterAgent } from "@/components/discussion/Roster";
+import { createAgentsClient } from "@/lib/agents/api";
 import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
 
 export function DiscussionRoomClient({ projectId }: { projectId: string }) {
   const client = useMemo(() => createDiscussionClient(), []);
+  const agentsClient = useMemo(() => createAgentsClient(), []);
   const [threadId, setThreadId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -35,6 +43,27 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
       subscribeRoom(projectId, threadId, onEvent, factory);
   }, [projectId, threadId]);
 
+  // Roster: the Team org read model (8.10) projected onto the room's roster
+  // rows. A Team read failure rejects and the room degrades to roster-less.
+  const loadRoster = useCallback(
+    (teamId: string): Promise<RosterAgent[]> =>
+      agentsClient
+        .getTeamOrg(teamId)
+        .then((org) =>
+          org.agents.map((a) => ({
+            id: a.id,
+            name: a.name,
+            status: a.status,
+          })),
+        ),
+    [agentsClient],
+  );
+
+  const searchMentions = useCallback(
+    (q: string) => client.searchMentions(projectId, q),
+    [client, projectId],
+  );
+
   if (threadId == null) return <div data-testid="room-resolving">Loading…</div>;
 
   return (
@@ -43,6 +72,8 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
       threadId={threadId}
       client={client}
       subscribe={subscribe}
+      loadRoster={loadRoster}
+      searchMentions={searchMentions}
     />
   );
 }

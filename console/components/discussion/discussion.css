@@ -32,6 +32,94 @@
   gap: 16px;
 }
 
+/* ISI-4929: the room gains a roster rail once the Team read model resolves.
+ * Narrow viewports collapse it under the thread column. */
+.ksq-room__main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+@media (min-width: 900px) {
+  .ksq-room {
+    flex-direction: row;
+    align-items: flex-start;
+  }
+  .ksq-room__main {
+    flex: 1 1 auto;
+  }
+  .ksq-roster {
+    flex: 0 0 240px;
+  }
+}
+
+/* Roster (§4.5): presence dots ride the shell's status tokens — no new hues. */
+.ksq-roster {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin: 0;
+}
+.ksq-roster__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ksq-roster__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ksq-roster__agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.ksq-roster__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--status-blocked);
+}
+.ksq-roster__dot--online {
+  background: var(--status-succeeded);
+}
+.ksq-roster__dot--working {
+  background: var(--status-running);
+}
+.ksq-roster__dot--offline {
+  background: var(--status-blocked);
+}
+.ksq-roster__name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ksq-roster__status {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  opacity: 0.75;
+}
+.ksq-roster__empty {
+  margin: 0;
+  font-size: 13px;
+  opacity: 0.75;
+}
+.ksq-roster__hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  opacity: 0.6;
+}
+
 .ksq-thread {
   list-style: none;
   margin: 0;
@@ -111,6 +199,32 @@
   border-radius: var(--radius);
   padding: 12px;
 }
+/* ISI-4929: audience selector + textarea + submit share one row; the popover
+ * drops below it. */
+.ksq-composer__row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.ksq-composer__audience {
+  background: var(--canvas);
+  color: var(--text-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 8px;
+  font-size: 13px;
+  min-height: 36px;
+  flex: 0 0 auto;
+  align-self: flex-end;
+}
+.ksq-composer__audience:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.ksq-composer__row .ksq-composer__body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 .ksq-composer__body {
   background: var(--canvas);
   color: var(--text-1);
@@ -139,4 +253,85 @@
 .ksq-composer__submit:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ISI-4929: @-mention popover (§4.3) + direct-audience chip (§4.2). */
+.ksq-chip--direct {
+  font-size: 11px;
+  padding: 1px 8px;
+  border: 1px dashed var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  background: transparent;
+}
+
+.ksq-mention-popover {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 20%);
+  max-width: 360px;
+}
+.ksq-mention-popover__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+.ksq-mention-popover__close {
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.ksq-mention-popover__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.ksq-mention-popover__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-1);
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ksq-mention-popover__option[data-active="true"] {
+  background: var(--accent);
+  color: #ffffff;
+}
+.ksq-mention-popover__glyph {
+  font-family: var(--font-mono);
+  opacity: 0.75;
+}
+.ksq-mention-popover__name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ksq-mention-popover__state {
+  font-size: 11px;
+  opacity: 0.75;
+}
+.ksq-mention-popover__empty {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  opacity: 0.75;
 }

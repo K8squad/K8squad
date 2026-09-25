@@ -174,3 +174,58 @@ describe("createDiscussionClient — existence-hiding (AC5)", () => {
     ).rejects.toMatchObject({ outcome: "not-found" });
   });
 });
+
+describe("createDiscussionClient — v2 wire (ISI-4929 / ISI-4926)", () => {
+  it("postMessage sends audience: direct:{agentId} for a direct audience", async () => {
+    const { fetchImpl, urls, inits } = recorder(201, { id: "m1" });
+    const client = createDiscussionClient(fetchImpl);
+    await client.postMessage("p", "t", {
+      body: "psst",
+      audience: { kind: "direct", agentId: "agent-7" },
+    });
+    expect(urls[0]).toBe("/api/projects/p/discussion/threads/t/messages");
+    expect(JSON.parse(String(inits[0]?.body))).toEqual({
+      body: "psst",
+      audience: "direct:agent-7",
+    });
+  });
+
+  it("getThreadInfo GETs the thread record (teamId for the roster scope)", async () => {
+    const { fetchImpl, urls } = recorder(200, {
+      id: "t-1",
+      teamId: "team-9",
+      title: "Room",
+    });
+    const client = createDiscussionClient(fetchImpl);
+    const thread = await client.getThreadInfo("p", "t-1");
+    expect(urls[0]).toBe("/api/projects/p/discussion/threads/t-1");
+    expect(thread.teamId).toBe("team-9");
+  });
+
+  it("searchMentions GETs the mentions endpoint with the encoded q", async () => {
+    const { fetchImpl, urls } = recorder(200, {
+      query: "am",
+      results: [{ type: "agent", id: "Amelia", displayName: "Amelia" }],
+    });
+    const client = createDiscussionClient(fetchImpl);
+    const results = await client.searchMentions("p", "am");
+    expect(urls[0]).toBe("/api/projects/p/discussion/mentions?q=am");
+    expect(results).toHaveLength(1);
+    expect(results[0].type).toBe("agent");
+  });
+
+  it("searchMentions encodes special characters in q", async () => {
+    const { fetchImpl, urls } = recorder(200, { results: [] });
+    const client = createDiscussionClient(fetchImpl);
+    await client.searchMentions("p", "fix the bug");
+    expect(urls[0]).toBe(
+      "/api/projects/p/discussion/mentions?q=fix%20the%20bug",
+    );
+  });
+
+  it("searchMentions coerces a missing results array to empty", async () => {
+    const client = createDiscussionClient(stub(200, { query: "x" }));
+    const results = await client.searchMentions("p", "x");
+    expect(results).toEqual([]);
+  });
+});

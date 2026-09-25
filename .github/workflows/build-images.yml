@@ -45,12 +45,40 @@ jobs:
   components:
     uses: ./.github/workflows/component-matrix.yml
 
+  # Cleanup job to free up disk space before builds
+  cleanup:
+    name: cleanup disk space
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - name: Free up disk space
+        run: |
+          set -euo pipefail
+          echo "=== Disk space before cleanup ==="
+          df -h
+          
+          # Remove old Docker images and build cache
+          docker system prune -af --volumes
+          
+          # Remove build cache directories
+          sudo rm -rf /tmp/*
+          sudo rm -rf /var/tmp/*
+          
+          # Clean up GitHub Actions cache directories
+          sudo rm -rf ~/.cache/gha/*
+          sudo rm -rf ~/.cache/docker/*
+          
+          # Remove old log files
+          sudo find /home/ubuntu/actions-runner/_diag -name "*.log" -mtime +1 -delete
+          
+          echo "=== Disk space after cleanup ==="
+          df -h
+
   # Fold the two image-producing families into one build matrix, deriving each component's
   # Dockerfile and a source-presence srcprobe from the authoritative path. Keeping this here
   # (rather than in the shared primitive) leaves component-matrix.yml generic for every lane.
   plan:
     name: plan image matrix
-    needs: components
+    needs: [components, cleanup]
     # R1 (ISI-2748 epic-14-ci-runner-constraints): K8squad has no hosted-runner minutes, so a
     # `ubuntu-latest` job queues forever and wedges downstream. This is a trivial JSON-shaping
     # leg — rides either self-hosted box as a light leg.
@@ -257,9 +285,18 @@ jobs:
           PY
           echo "::notice::shim image matrix planned from component-matrix shims family"
 
+      - name: Cleanup planning artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          # Clean up temporary files created during planning
+          rm -f /tmp/*.json /tmp/*.py
+          # Force garbage collection
+          docker system prune -f
+
   build:
     name: image / ${{ matrix.component }}
-    needs: plan
+    needs: [plan, cleanup]
     runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
@@ -409,6 +446,16 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      - name: Cleanup build artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          # Clean up Docker build cache and temporary files
+          docker system prune -af --volumes
+          rm -rf /tmp/* /var/tmp/*
+          # Force garbage collection
+          echo 3 | sudo tee /proc/sys/vm/drop_caches
+
   # ISI-3413 toolchain image lane. Builds and publishes every image the default Toolchain
   # catalog references (ghcr.io/k8squad/toolchains/<tool>:<catalog-version>). The matrix
   # comes from the plan leg (component-matrix toolchains family × images/toolchains/
@@ -418,7 +465,7 @@ jobs:
   # artifact, so an unsigned main-publish would leave the catalog unverifiable.
   build-toolchain:
     name: toolchain / ${{ matrix.tool }}
-    needs: plan
+    needs: [plan, cleanup]
     if: ${{ needs.plan.outputs.toolchains != '[]' && needs.plan.outputs.toolchains != '' }}
     runs-on: [self-hosted, linux, x64]
     strategy:
@@ -530,6 +577,16 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+      - name: Cleanup build artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          # Clean up Docker build cache and temporary files
+          docker system prune -af --volumes
+          rm -rf /tmp/* /var/tmp/*
+          # Force garbage collection
+          echo 3 | sudo tee /proc/sys/vm/drop_caches
+
   # ISI-3653 shim image lane. Builds and publishes the per-runtime A2A shim sidecars
   # (ghcr.io/k8squad/ksquad-shim-<runtime>) from the single Dockerfile.shim, selecting the
   # CLI layer with a RUNTIME build-arg. The matrix comes from the plan leg (component-matrix
@@ -540,7 +597,7 @@ jobs:
   # codex@rust-v0.152.0 + ksquad-codex-exec on $PATH, referenced downstream by digest.
   build-shim:
     name: shim-image / ${{ matrix.runtime }}
-    needs: plan
+    needs: [plan, cleanup]
     if: ${{ needs.plan.outputs.shims != '[]' && needs.plan.outputs.shims != '' }}
     runs-on: [self-hosted, linux, x64]
     strategy:
@@ -662,3 +719,13 @@ jobs:
           subject-name: ${{ steps.imgref.outputs.name }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Cleanup build artifacts
+        if: always()
+        run: |
+          set -euo pipefail
+          # Clean up Docker build cache and temporary files
+          docker system prune -af --volumes
+          rm -rf /tmp/* /var/tmp/*
+          # Force garbage collection
+          echo 3 | sudo tee /proc/sys/vm/drop_caches

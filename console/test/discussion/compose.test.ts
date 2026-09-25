@@ -50,6 +50,37 @@ describe("buildPostBody — AC3 server-stamp boundary", () => {
   });
 });
 
+describe("buildPostBody — audience (ISI-4929, plan §4.1/§4.2)", () => {
+  it("party default keeps the body minimal — no audience key", () => {
+    const out = buildPostBody({ body: "hi", audience: { kind: "party" } });
+    expect(Object.keys(out).sort()).toEqual(["body"]);
+  });
+
+  it("a direct audience emits audience: direct:{agentId}", () => {
+    const out = buildPostBody({
+      body: "psst",
+      audience: { kind: "direct", agentId: "agent-7" },
+    });
+    expect(out).toEqual({ body: "psst", audience: "direct:agent-7" });
+  });
+
+  it("is idempotent over an already-built wire body (double-build is a no-op)", () => {
+    const once = buildPostBody({
+      body: "b",
+      audience: { kind: "direct", agentId: "a-1" },
+    });
+    expect(buildPostBody(once)).toEqual(once);
+  });
+
+  it("audience never widens the wire with author fields", () => {
+    const out = buildPostBody({
+      body: "x",
+      audience: { kind: "direct", agentId: "a" },
+    }) as unknown as Record<string, unknown>;
+    for (const k of FORBIDDEN) expect(out).not.toHaveProperty(k);
+  });
+});
+
 describe("canSubmit", () => {
   it("rejects empty/whitespace bodies", () => {
     expect(canSubmit({ body: "" })).toBe(false);
