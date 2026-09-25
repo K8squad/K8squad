@@ -70,7 +70,7 @@ func TestAuthoringMCPServerProvisioned(t *testing.T) {
 	if srv.Spec.Transport != api.MCPTransportStreamableHTTP {
 		t.Errorf("transport = %q, want streamable-http", srv.Spec.Transport)
 	}
-	wantEndpoint := "http://ksquad-memory." + SystemNamespace + ".svc:8080/mcp"
+	wantEndpoint := "http://ksquad-memory." + SystemNamespace + ".svc.cluster.local:8080/mcp"
 	if srv.Spec.Endpoint != wantEndpoint {
 		t.Errorf("endpoint = %q, want %q", srv.Spec.Endpoint, wantEndpoint)
 	}
