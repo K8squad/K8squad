@@ -46,7 +46,7 @@ func discussionHit(team, project, principal string, agentID, runID *string, body
 	h.Kind = KindDiscussion
 	h.Content = body
 	h.CreatedAt = time.Now() // index time — the envelope must instead surface `written` from provenance
-	h.Provenance = NewDiscussionProvenance("msg-1", "thread-1", principal, agentID, runID, written)
+	h.Provenance = NewDiscussionProvenance("msg-1", "thread-1", principal, agentID, runID, "party", "text", nil, written)
 	return h
 }
 
@@ -61,7 +61,7 @@ func TestEnvelope_AlwaysUntrusted_Crux(t *testing.T) {
 	}}
 	svc := NewReadService(fake, NewHashingEmbedder())
 
-	out, err := svc.MemorySearch(context.Background(), "team-1", "deploy", 10)
+	out, err := svc.MemorySearch(context.Background(), "team-1", ReaderIdentity{}, "deploy", 10)
 	if err != nil {
 		t.Fatalf("MemorySearch: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEnvelope_HumanAuthorDerived(t *testing.T) {
 		discussionHit("team-1", "proj-A", "alice@corp", nil, nil, "deploy target is cluster-prod", written),
 	}}
 	svc := NewReadService(fake, NewHashingEmbedder())
-	out, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", "deploy", 10)
+	out, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", ReaderIdentity{}, "deploy", 10)
 	if err != nil {
 		t.Fatalf("DiscussionSearch: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestEnvelope_HumanAuthorDerived(t *testing.T) {
 func TestDiscussionSearch_ReadPlanScoped(t *testing.T) {
 	fake := &fakeSearcher{}
 	svc := NewReadService(fake, NewHashingEmbedder())
-	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", "deploy", 7); err != nil {
+	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", ReaderIdentity{}, "deploy", 7); err != nil {
 		t.Fatalf("DiscussionSearch: %v", err)
 	}
 	q := fake.got
@@ -154,7 +154,7 @@ func TestDiscussionSearchUntrustedEnvelope(t *testing.T) {
 	}}
 	svc := NewReadService(fake, NewHashingEmbedder())
 
-	out, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", "deploy", 10)
+	out, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", ReaderIdentity{}, "deploy", 10)
 	if err != nil {
 		t.Fatalf("DiscussionSearch: %v", err)
 	}
@@ -189,10 +189,10 @@ func TestDiscussionSearchUntrustedEnvelope(t *testing.T) {
 // TestReadService_RequiresCallerTenant asserts an unscoped read is refused (no accidental global read).
 func TestReadService_RequiresCallerTenant(t *testing.T) {
 	svc := NewReadService(&fakeSearcher{}, NewHashingEmbedder())
-	if _, err := svc.MemorySearch(context.Background(), "", "q", 10); err == nil {
+	if _, err := svc.MemorySearch(context.Background(), "", ReaderIdentity{}, "q", 10); err == nil {
 		t.Fatal("expected an error when the caller team scope is empty")
 	}
-	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "", "q", 10); err == nil {
+	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "", ReaderIdentity{}, "q", 10); err == nil {
 		t.Fatal("expected an error when the project id is empty")
 	}
 }
@@ -262,5 +262,40 @@ func TestDiaryRead_RequiresTeamAndAgent(t *testing.T) {
 	}
 	if _, err := svc.DiaryRead(context.Background(), "team-1", "", 5); err == nil {
 		t.Fatal("expected an error when the agent is empty")
+	}
+}
+
+// TestRead_ReaderScopeR2 is the plan-level half of risk R2 (ISI-4931, plan §5/§8): the authenticated
+// reader identity is pushed INTO the store query as the recipient/author scope the SQL party-visibility
+// predicate keys on — never an app-side post-filter. A populated reader carries its agent id and
+// principal; a zero reader (a human party read with no agent linkage) carries NEITHER, so no
+// direct-audience row can match — deny-by-default, never a widening.
+func TestRead_ReaderScopeR2(t *testing.T) {
+	fake := &fakeSearcher{}
+	svc := NewReadService(fake, NewHashingEmbedder())
+	rd := ReaderIdentity{Principal: "agent:planner", AgentID: "agent:planner"}
+	if _, err := svc.DiscussionSearch(context.Background(), "team-1", "proj-A", rd, "deploy", 5); err != nil {
+		t.Fatalf("DiscussionSearch: %v", err)
+	}
+	q := fake.got
+	if q.ReaderAgentID == nil || *q.ReaderAgentID != "agent:planner" {
+		t.Fatalf("ReaderAgentID = %v, want agent:planner pushed into the query (recipient scope)", q.ReaderAgentID)
+	}
+	if q.ReaderPrincipal == nil || *q.ReaderPrincipal != "agent:planner" {
+		t.Fatalf("ReaderPrincipal = %v, want agent:planner pushed into the query (author scope)", q.ReaderPrincipal)
+	}
+
+	if _, err := svc.MemorySearch(context.Background(), "team-1", rd, "deploy", 5); err != nil {
+		t.Fatalf("MemorySearch: %v", err)
+	}
+	if fake.got.ReaderAgentID == nil || fake.got.ReaderPrincipal == nil {
+		t.Fatal("memory_search must carry the reader scope too (the one shared read path)")
+	}
+
+	if _, err := svc.MemorySearch(context.Background(), "team-1", ReaderIdentity{}, "deploy", 5); err != nil {
+		t.Fatalf("MemorySearch (party reader): %v", err)
+	}
+	if fake.got.ReaderAgentID != nil || fake.got.ReaderPrincipal != nil {
+		t.Fatalf("zero reader scope = %v/%v, want nil/nil (party-only, deny-by-default)", fake.got.ReaderAgentID, fake.got.ReaderPrincipal)
 	}
 }

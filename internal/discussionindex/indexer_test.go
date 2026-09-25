@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,5 +328,101 @@ func TestCrashBeforeCursorSave_ExactlyOnce(t *testing.T) {
 	}
 	if cur.saved == nil {
 		t.Fatal("AC1: the restart sweep must persist the watermark once the DB is back")
+	}
+}
+
+// TestIndex_ProposalKindPayloadIndexed is story 7 / plan §5 (ISI-4931): a proposal message folds its
+// structured payload into the INDEXED content (the embedding input — the proposal's action/title are
+// semantically findable, not just the prose body) and stamps kind/audience/payload verbatim into the
+// provenance jsonb (identifiable at read time; audience is the R2 predicate's key).
+func TestIndex_ProposalKindPayloadIndexed(t *testing.T) {
+	team, project := uuid.New(), uuid.New()
+	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	payload := json.RawMessage(`{"action":"create_ticket","title":"Harden the R2 memory-index fence"}`)
+	src := &fakeSource{msgs: []discussion.MemoryIndexable{
+		{
+			MessageID: uuid.New(), ThreadID: uuid.New(), ProjectID: project, TeamID: team,
+			AuthorPrincipal: "agent:planner", AuthorAgentID: str("agent-planner"),
+			Body:     "propose we file the hardening ticket",
+			Audience: "party", Kind: "proposal", Payload: payload, CreatedAt: at,
+		},
+	}}
+	sink := &fakeSink{}
+	ix := NewIndexer(src, sink, memory.NewHashingEmbedder(), 0)
+
+	if n, err := ix.Sweep(context.Background()); err != nil || n != 1 {
+		t.Fatalf("Sweep indexed %d (err %v), want 1", n, err)
+	}
+	w := sink.writes[0]
+	for _, want := range []string{
+		"propose we file the hardening ticket", // body verbatim
+		"[proposal]",                           // structured-kind marker
+		"create_ticket",                        // payload action
+		"Harden the R2 memory-index fence",     // payload title
+	} {
+		if !strings.Contains(w.Content, want) {
+			t.Fatalf("indexed content = %q, want it to contain %q (payload folded in for findability)", w.Content, want)
+		}
+	}
+	var p struct {
+		Audience string          `json:"audience"`
+		Kind     string          `json:"kind"`
+		Payload  json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(w.Provenance, &p); err != nil {
+		t.Fatalf("provenance not json: %v", err)
+	}
+	if p.Audience != "party" || p.Kind != "proposal" || string(p.Payload) != string(payload) {
+		t.Fatalf("provenance = audience %q kind %q payload %s, want party/proposal/verbatim", p.Audience, p.Kind, p.Payload)
+	}
+}
+
+// TestIndex_PlainTextContentUnchanged pins the backward-compat half: a plain text message (kind "text",
+// no payload — the pre-v2 shape every existing row has) indexes its body ALONE; story 7 must not change
+// what legacy messages project.
+func TestIndex_PlainTextContentUnchanged(t *testing.T) {
+	team, project := uuid.New(), uuid.New()
+	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	src := &fakeSource{msgs: []discussion.MemoryIndexable{
+		msg(uuid.New(), project, team, "alice@corp", nil, nil, "just a plain message", at),
+	}}
+	sink := &fakeSink{}
+	ix := NewIndexer(src, sink, memory.NewHashingEmbedder(), 0)
+	if n, err := ix.Sweep(context.Background()); err != nil || n != 1 {
+		t.Fatalf("Sweep indexed %d (err %v), want 1", n, err)
+	}
+	if w := sink.writes[0]; w.Content != "just a plain message" {
+		t.Fatalf("plain-text content = %q, want the body alone", w.Content)
+	}
+}
+
+// TestIndex_DirectAudienceStamped is the write-side half of R2 (plan §8): a direct-audience message is
+// still projected (its recipient must be able to recall it), but the audience rides VERBATIM in the
+// provenance jsonb — the store search predicate keys on exactly this field to keep the message out of
+// party-visible results for everyone else.
+func TestIndex_DirectAudienceStamped(t *testing.T) {
+	team, project := uuid.New(), uuid.New()
+	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+	src := &fakeSource{msgs: []discussion.MemoryIndexable{
+		{
+			MessageID: uuid.New(), ThreadID: uuid.New(), ProjectID: project, TeamID: team,
+			AuthorPrincipal: "alice@corp", AuthorAgentID: str("agent-reviewer"),
+			Body: "between us: the rollout key is rotate-me", Audience: "direct:agent:auditor",
+			Kind: "text", CreatedAt: at,
+		},
+	}}
+	sink := &fakeSink{}
+	ix := NewIndexer(src, sink, memory.NewHashingEmbedder(), 0)
+	if n, err := ix.Sweep(context.Background()); err != nil || n != 1 {
+		t.Fatalf("Sweep indexed %d (err %v), want 1 (direct messages ARE projected)", n, err)
+	}
+	var p struct {
+		Audience string `json:"audience"`
+	}
+	if err := json.Unmarshal(sink.writes[0].Provenance, &p); err != nil {
+		t.Fatalf("provenance not json: %v", err)
+	}
+	if p.Audience != "direct:agent:auditor" {
+		t.Fatalf("provenance audience = %q, want direct:agent:auditor stamped verbatim (the R2 key)", p.Audience)
 	}
 }

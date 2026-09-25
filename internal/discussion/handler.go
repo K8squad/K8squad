@@ -175,7 +175,8 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle):
+	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle),
+		errors.Is(err, ErrInvalidAudience), errors.Is(err, ErrInvalidKind):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotAuthor):
 		writeError(w, http.StatusForbidden, err.Error())
@@ -272,10 +273,14 @@ func (h *Handler) getThread(w http.ResponseWriter, r *http.Request) {
 // Message endpoints
 // ============================================================================
 
-// postMessageReq — again, no author_* fields: provenance is server-stamped (AC3).
+// postMessageReq — no author_* fields: provenance is server-stamped (AC3). audience, kind, and
+// payload are optional wire fields; the store applies 'party'/'text' defaults and validation.
 type postMessageReq struct {
-	Body     string  `json:"body"`
-	ParentID *string `json:"parentId,omitempty"`
+	Body     string           `json:"body"`
+	ParentID *string          `json:"parentId,omitempty"`
+	Audience *string          `json:"audience,omitempty"`
+	Kind     *string          `json:"kind,omitempty"`
+	Payload  *json.RawMessage `json:"payload,omitempty"`
 }
 
 func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
@@ -309,7 +314,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		parentID = &pid
 	}
-	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID)
+	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -365,7 +370,7 @@ func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
 			since = t
 		}
 	}
-	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200))
+	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200), auth.Principal, auth.AgentID)
 	if err != nil {
 		writeStoreErr(w, err)
 		return

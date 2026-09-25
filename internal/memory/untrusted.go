@@ -57,14 +57,19 @@ type Envelope struct {
 // discussionProvenance is the honest 10.1 triple carried in a projected discussion record's provenance
 // jsonb (the memory uuid columns can't hold the text principal, so the source-of-truth attribution
 // rides here — "provenance in = provenance out", never client-supplied). Written by the indexer.
+// The v2 wire fields (ISI-4931, plan §4.1): Audience is the R2 party-visibility key the store's search
+// predicate reads back out of this jsonb; Kind/Payload identify proposal messages in the index.
 type discussionProvenance struct {
-	Source          string  `json:"source"`
-	MessageID       string  `json:"message_id"`
-	ThreadID        string  `json:"thread_id"`
-	AuthorPrincipal string  `json:"author_principal"`
-	AuthorAgentID   *string `json:"author_agent_id"`
-	AuthorRunID     *string `json:"author_run_id"`
-	WrittenAt       string  `json:"written_at"` // RFC3339 — the message's original authored time
+	Source          string          `json:"source"`
+	MessageID       string          `json:"message_id"`
+	ThreadID        string          `json:"thread_id"`
+	AuthorPrincipal string          `json:"author_principal"`
+	AuthorAgentID   *string         `json:"author_agent_id"`
+	AuthorRunID     *string         `json:"author_run_id"`
+	Audience        string          `json:"audience,omitempty"` // "party" | "direct:{agentId}" — omitted on legacy rows (pre-v2 projections ⇒ party)
+	Kind            string          `json:"kind,omitempty"`     // "text" | "proposal" | …
+	Payload         json.RawMessage `json:"payload,omitempty"`  // structured payload, nil unless kind carries one
+	WrittenAt       string          `json:"written_at"`         // RFC3339 — the message's original authored time
 }
 
 // ProvenanceSourceDiscussion is the provenance.source value the indexer stamps on discussion rows.
@@ -123,7 +128,9 @@ func NewHandoffProvenance(uri, sha256, workItemID, runID string, auditID int64, 
 // NewDiscussionProvenance builds the provenance jsonb the 10.2 indexer stamps on a projected discussion
 // record. buildEnvelope reads exactly these fields back out — provenance in = provenance out, no
 // laundering. Taking primitives (not the discussion type) keeps this package decoupled from discussion.
-func NewDiscussionProvenance(messageID, threadID, principal string, agentID, runID *string, writtenAt time.Time) json.RawMessage {
+// audience/kind/payload are the v2 wire fields (ISI-4931): audience feeds the R2 read predicate,
+// kind/payload make proposals findable. An empty audience omits the field (legacy rows read as party).
+func NewDiscussionProvenance(messageID, threadID, principal string, agentID, runID *string, audience, kind string, payload json.RawMessage, writtenAt time.Time) json.RawMessage {
 	p := discussionProvenance{
 		Source:          ProvenanceSourceDiscussion,
 		MessageID:       messageID,
@@ -131,6 +138,9 @@ func NewDiscussionProvenance(messageID, threadID, principal string, agentID, run
 		AuthorPrincipal: principal,
 		AuthorAgentID:   agentID,
 		AuthorRunID:     runID,
+		Audience:        audience,
+		Kind:            kind,
+		Payload:         payload,
 		WrittenAt:       writtenAt.Format(time.RFC3339Nano),
 	}
 	b, err := json.Marshal(p)
@@ -224,17 +234,45 @@ func NewReadService(backend searcher, embed Embedder) *ReadService {
 	return &ReadService{backend: backend, embed: embed}
 }
 
+// ReaderIdentity is the authenticated READER of the shared index (risk R2, plan §5/§8 — ISI-4931). The
+// transports derive it from the server-stamped session headers (X-Principal-Id / X-Agent-Id), never
+// from tool arguments — exactly the WINV1/WINV2 discipline the write path uses. It scopes
+// direct-audience discussion records: a `direct:{agentId}` projection is excluded from this reader's
+// results unless the reader IS the recipient agent or the message's author. A zero value is a
+// party-only reader (every human read without an agent linkage behaves this way) — deny-by-default.
+type ReaderIdentity struct {
+	Principal string // reader's principal ("" ⇒ no author-visibility match)
+	AgentID   string // reader's agent id ("" ⇒ no direct-audience record can surface for this reader)
+}
+
+// readerScope projects the ReaderIdentity into the store query's narrowing fields. Empty components
+// stay nil so the SQL predicate treats them as "no match possible", never as a widening wildcard.
+func (rd ReaderIdentity) readerScope() (readerAgentID, readerPrincipal *string) {
+	if rd.AgentID != "" {
+		a := rd.AgentID
+		readerAgentID = &a
+	}
+	if rd.Principal != "" {
+		p := rd.Principal
+		readerPrincipal = &p
+	}
+	return readerAgentID, readerPrincipal
+}
+
 // MemorySearch is the `memory_search` tool: Team-scoped semantic recall across ALL knowledge (native
 // memory + projected discussion), returned under the untrusted envelope. `callerTeamID` is the caller's
-// authenticated tenant; there is no argument to widen past it (INV3).
-func (s *ReadService) MemorySearch(ctx context.Context, callerTeamID, queryText string, topK int) ([]Envelope, error) {
-	return s.read(ctx, SearchQuery{SquadID: callerTeamID, Limit: topK}, queryText)
+// authenticated tenant; there is no argument to widen past it (INV3). `rd` is the authenticated reader
+// the R2 direct-audience predicate scopes (a zero value ⇒ party-visible records only).
+func (s *ReadService) MemorySearch(ctx context.Context, callerTeamID string, rd ReaderIdentity, queryText string, topK int) ([]Envelope, error) {
+	readerAgentID, readerPrincipal := rd.readerScope()
+	return s.read(ctx, SearchQuery{SquadID: callerTeamID, ReaderAgentID: readerAgentID, ReaderPrincipal: readerPrincipal, Limit: topK}, queryText)
 }
 
 // DiscussionSearch is the scoped `discussion_search(project)` MCP tool: narrowed to ONE Project's room
 // (kind="discussion"), Team-scoped, retracted-excluded, under the untrusted envelope. Same read path as
-// MemorySearch — no bespoke room read shape, no second trust model.
-func (s *ReadService) DiscussionSearch(ctx context.Context, callerTeamID, projectID, queryText string, topK int) ([]Envelope, error) {
+// MemorySearch — no bespoke room read shape, no second trust model. `rd` is the authenticated reader
+// the R2 direct-audience predicate scopes (a zero value ⇒ party-visible records only).
+func (s *ReadService) DiscussionSearch(ctx context.Context, callerTeamID, projectID string, rd ReaderIdentity, queryText string, topK int) ([]Envelope, error) {
 	if callerTeamID == "" {
 		return nil, fmt.Errorf("discussion_search: caller team scope is required (server-authenticated, §7.3.3)")
 	}
@@ -242,11 +280,14 @@ func (s *ReadService) DiscussionSearch(ctx context.Context, callerTeamID, projec
 		return nil, fmt.Errorf("discussion_search: project id is required (the room key)")
 	}
 	kind := KindDiscussion
+	readerAgentID, readerPrincipal := rd.readerScope()
 	return s.read(ctx, SearchQuery{
-		SquadID:   callerTeamID,
-		ProjectID: &projectID,
-		Kind:      &kind,
-		Limit:     topK,
+		SquadID:         callerTeamID,
+		ProjectID:       &projectID,
+		Kind:            &kind,
+		ReaderAgentID:   readerAgentID,
+		ReaderPrincipal: readerPrincipal,
+		Limit:           topK,
 	}, queryText)
 }
 
