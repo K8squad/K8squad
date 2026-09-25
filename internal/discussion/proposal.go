@@ -232,20 +232,48 @@ func (s *Store) DismissProposal(ctx context.Context, projectID, teamID, messageI
 
 // CompleteProposal advances confirmed→executed with the fan-out result and appends the post-back
 // message (kind='structured', parented to the proposal card) the room renders with a run chip.
+//
+// The transition, result write, and post-back insert are ONE transaction: a partial failure rolls
+// the card back to `confirmed` rather than leaving a half-executed row (executed-but-no-result, or
+// result-but-no-post-back). The confirm shell's resume path (ISI-4945) then recovers it. The CAS is
+// still one-shot — a card already in `executed` is refused with ErrProposalNotProposed (the shell
+// treats that as an idempotent success before ever calling back in here).
 func (s *Store) CompleteProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth AuthorContext, result json.RawMessage, resultBody string) (*Message, error) {
-	if err := s.transitionProposal(ctx, projectID, teamID, messageID, auth.Principal,
-		ProposalPhaseConfirmed, ProposalPhaseExecuted); err != nil {
-		return nil, err
-	}
-	if _, err := s.db.ExecContext(ctx, `
-		UPDATE discussion.proposal SET result = $1, updated_at = now() WHERE message_id = $2`,
-		[]byte(result), messageID); err != nil {
-		return nil, err
-	}
 	if resultBody == "" {
 		resultBody = "Proposal executed."
 	}
-	return s.postResultMessage(ctx, projectID, teamID, messageID, auth, result, resultBody)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	tag, err := tx.ExecContext(ctx, `
+		UPDATE discussion.proposal p
+		   SET phase = 'executed', decided_by = $4, decided_at = now(), result = $5, updated_at = now()
+		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
+		WHERE p.message_id = m.id AND t.project_id = $1 AND t.team_id = $2
+		  AND p.message_id = $3 AND m.invalidated_at IS NULL AND p.phase = 'confirmed'`,
+		projectID, teamID, messageID, auth.Principal, []byte(result))
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := tag.RowsAffected(); n == 0 {
+		// Distinguish "invisible" (404) from "visible but not in confirmed" (409) with a scope probe.
+		if _, gerr := s.GetProposal(ctx, projectID, teamID, messageID); gerr != nil {
+			return nil, gerr
+		}
+		return nil, ErrProposalNotProposed
+	}
+
+	postBack, err := s.postResultMessage(ctx, tx, projectID, teamID, messageID, auth, result, resultBody)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return postBack, nil
 }
 
 // FailProposal rolls confirmed back to proposed after a failed fan-out so the human can retry or
@@ -282,11 +310,17 @@ func (s *Store) transitionProposal(ctx context.Context, projectID, teamID, messa
 	return nil
 }
 
+// rowQuerier is the one-row query surface shared by *sql.DB and *sql.Tx, so the post-back insert
+// can run inside the CompleteProposal transaction (atomic with the phase transition).
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // postResultMessage appends the confirm post-back: a kind='structured' reply pinned to the
 // proposal card whose payload carries the fan-out outcome (the run-chip data, plan §4.7).
-func (s *Store) postResultMessage(ctx context.Context, projectID, teamID, proposalID uuid.UUID, auth AuthorContext, result json.RawMessage, body string) (*Message, error) {
+func (s *Store) postResultMessage(ctx context.Context, db rowQuerier, projectID, teamID, proposalID uuid.UUID, auth AuthorContext, result json.RawMessage, body string) (*Message, error) {
 	var threadID uuid.UUID
-	err := s.db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
 		SELECT m.thread_id FROM discussion.message m
 		JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE m.id = $1 AND t.project_id = $2 AND t.team_id = $3 AND m.invalidated_at IS NULL`,
@@ -308,7 +342,7 @@ func (s *Store) postResultMessage(ctx context.Context, projectID, teamID, propos
 		Kind:            KindStructured,
 		Payload:         &result,
 	}
-	err = s.db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
 		INSERT INTO discussion.message
 		    (thread_id, parent_id, author_principal, author_agent_id, author_run_id, body, audience, kind, payload)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)

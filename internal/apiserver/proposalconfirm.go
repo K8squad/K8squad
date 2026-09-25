@@ -37,6 +37,7 @@ import (
 // ProposalLifecycle is the discussion-room decision seam these shells drive (implemented by
 // *discussion.Store; the interface keeps the room's persistence out of the unit-test lane).
 type ProposalLifecycle interface {
+	GetProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID) (*discussion.Proposal, error)
 	ConfirmProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext) (*discussion.Proposal, error)
 	DismissProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext) error
 	CompleteProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext, result json.RawMessage, resultBody string) (*discussion.Message, error)
@@ -118,8 +119,14 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 		}
 
 		// 1. Win the one-shot decision lock: proposed → confirmed. The loser of a concurrent
-		//    confirm gets 409 and nothing below runs twice.
+		//    confirm gets 409 and nothing below runs twice. A card that already left `proposed`
+		//    is resumed rather than refused — see resumeProposal (ISI-4945: a wedged `confirmed`
+		//    card from a post-back failure must still be able to reach `executed`).
 		proposal, err := f.lifecycle.ConfirmProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth)
+		if errors.Is(err, discussion.ErrProposalNotProposed) {
+			f.resumeProposal(w, r, auth, projectUUID, messageID)
+			return
+		}
 		if mapProposalErr(w, err) {
 			return
 		}
@@ -127,31 +134,66 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 		// 2. Fan into the existing authoring seam for the proposal's action. The room's own team
 		//    (proposal.TeamID, from the thread) is the tenancy the mint lands in — the same team
 		//    the console create path resolves for this Project.
-		result, fanErr := f.execute(r.Context(), auth, projectUUID.String(), proposal)
-
-		// 3. Record the truth: executed + post-back on success, roll back to proposed (retryable)
-		//    on failure. The lifecycle never claims an execution that did not happen.
-		if fanErr != nil {
-			_ = f.lifecycle.FailProposal(r.Context(), projectUUID, auth.TeamID, messageID)
-			if mapWorkItemWriteError(w, fanErr) {
-				return
-			}
-			writeJSONError(w, http.StatusInternalServerError, fanErr.Error())
-			return
-		}
-		body := "Proposal confirmed: " + proposalResultLine(proposal.Payload.Action, result)
-		postBack, err := f.lifecycle.CompleteProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth, result, body)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "proposal executed but the result post-back failed: "+err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     discussion.ProposalPhaseExecuted,
-			"proposalId": messageID.String(),
-			"result":     result,
-			"postBack":   postBack,
-		})
+		f.fanoutAndComplete(w, r, auth, projectUUID, messageID, proposal)
 	}
+}
+
+// resumeProposal handles a confirm that lost the proposed→confirmed CAS. The card already left
+// `proposed`, which is either a real decision or a recovery opportunity (ISI-4945):
+//
+//   - `executed`  → idempotent success: the earlier Complete committed but its response was lost;
+//     re-running the fan-out would duplicate the effect, so answer 200 and stop.
+//   - `confirmed` → wedged: the fan-out ran (or was in-flight) but CompleteProposal failed / the
+//     process died before the executed transition. Re-run the fan-out and complete. NOTE: the
+//     fan-out is not idempotent, so a process crash strictly between the effect and the commit can
+//     still double the effect on resume — accepted here (low-severity, narrow window) rather than
+//     silently losing the human's confirm intent; full dedup needs an idempotency key on the coord
+//     authoring seams, out of scope for this recovery.
+//   - `dismissed` → genuinely decided; 409.
+func (f proposalFanout) resumeProposal(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectUUID, messageID uuid.UUID) {
+	proposal, err := f.lifecycle.GetProposal(r.Context(), projectUUID, auth.TeamID, messageID)
+	if mapProposalErr(w, err) {
+		return
+	}
+	switch proposal.Phase {
+	case discussion.ProposalPhaseExecuted:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":          discussion.ProposalPhaseExecuted,
+			"proposalId":      messageID.String(),
+			"alreadyExecuted": true,
+		})
+	case discussion.ProposalPhaseConfirmed:
+		f.fanoutAndComplete(w, r, auth, projectUUID, messageID, proposal)
+	default:
+		writeJSONError(w, http.StatusConflict, "proposal already decided")
+	}
+}
+
+// fanoutAndComplete runs the fan-out for the proposal's action and records the truth: executed +
+// post-back on success, roll back to proposed (retryable) on failure. Shared by the fresh-confirm
+// and the resume paths so the two stay identical.
+func (f proposalFanout) fanoutAndComplete(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectUUID, messageID uuid.UUID, proposal *discussion.Proposal) {
+	result, fanErr := f.execute(r.Context(), auth, projectUUID.String(), proposal)
+	if fanErr != nil {
+		_ = f.lifecycle.FailProposal(r.Context(), projectUUID, auth.TeamID, messageID)
+		if mapWorkItemWriteError(w, fanErr) {
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, fanErr.Error())
+		return
+	}
+	body := "Proposal confirmed: " + proposalResultLine(proposal.Payload.Action, result)
+	postBack, err := f.lifecycle.CompleteProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth, result, body)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "proposal executed but the result post-back failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     discussion.ProposalPhaseExecuted,
+		"proposalId": messageID.String(),
+		"result":     result,
+		"postBack":   postBack,
+	})
 }
 
 // execute performs the single fan-out for the proposal's action. It writes ONLY through the

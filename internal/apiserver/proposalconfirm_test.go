@@ -28,6 +28,8 @@ type fakeProposalLifecycle struct {
 	complete    *discussion.Message
 	completeErr error
 	payload     discussion.ProposalPayload // the proposal served after a successful CAS
+	get         *discussion.Proposal       // the proposal served by GetProposal (resume path)
+	getErr      error
 
 	confirmCalled  bool
 	confirmGot     [4]uuid.UUID
@@ -39,6 +41,22 @@ type fakeProposalLifecycle struct {
 	completeBody   string
 	failCalled     bool
 	failGot        [3]uuid.UUID
+	getCalled      bool
+}
+
+func (f *fakeProposalLifecycle) GetProposal(_ context.Context, projectID, teamID, messageID uuid.UUID) (*discussion.Proposal, error) {
+	f.getCalled = true
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.get != nil {
+		return f.get, nil
+	}
+	return &discussion.Proposal{
+		Message: discussion.Message{ID: messageID},
+		TeamID:  teamID,
+		Phase:   discussion.ProposalPhaseDismissed,
+	}, nil
 }
 
 func (f *fakeProposalLifecycle) ConfirmProposal(_ context.Context, projectID, teamID, messageID uuid.UUID, _ discussion.AuthorContext) (*discussion.Proposal, error) {
@@ -293,6 +311,93 @@ func TestProposalConfirmNotFound(t *testing.T) {
 	h.ServeHTTP(rec, postProposalVerb(projUUID, uuid.NewString(), "confirm", devToken))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("got %d, want 404", rec.Code)
+	}
+}
+
+// TestProposalConfirmResumeFromConfirmed — a card stranded in `confirmed` (fan-out ran but
+// CompleteProposal failed / the process died) is recoverable: re-POST confirm resumes by re-running
+// the fan-out and completing, reaching `executed` instead of a permanent 409. ISI-4945.
+func TestProposalConfirmResumeFromConfirmed(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{confirmErr: discussion.ErrProposalNotProposed}
+	life.get = &discussion.Proposal{
+		Message: discussion.Message{ID: uuid.New()},
+		TeamID:  teamID,
+		Payload: discussion.ProposalPayload{Action: discussion.ProposalActionCreateTicket, Title: "resume me", Body: "b"},
+		Phase:   discussion.ProposalPhaseConfirmed,
+	}
+	writer := &fakeWorkItemWriter{result: coord.WorkItemRecord{ID: "wi-resume", State: "backlog"}}
+	h := testProposalServer(t, teamID, life, writer, &fakeDispatcher{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, uuid.NewString(), "confirm", devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if !life.getCalled {
+		t.Fatal("resume must re-read the proposal's phase")
+	}
+	if !writer.createCalled {
+		t.Fatal("resume from confirmed must re-run the fan-out")
+	}
+	if !life.completeCalled {
+		t.Fatal("resume from confirmed must complete the lifecycle to executed")
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res["status"] != discussion.ProposalPhaseExecuted {
+		t.Fatalf("body: %v %+v", err, res)
+	}
+}
+
+// TestProposalConfirmAlreadyExecutedIdempotent — a card whose Complete committed but whose
+// response was lost re-POSTs confirm: answer an idempotent 200 WITHOUT re-running the fan-out
+// (a second execution would duplicate the effect). ISI-4945.
+func TestProposalConfirmAlreadyExecutedIdempotent(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{confirmErr: discussion.ErrProposalNotProposed}
+	life.get = &discussion.Proposal{
+		Message: discussion.Message{ID: uuid.New()},
+		TeamID:  teamID,
+		Payload: discussion.ProposalPayload{Action: discussion.ProposalActionCreateTicket, Title: "done"},
+		Phase:   discussion.ProposalPhaseExecuted,
+	}
+	writer := &fakeWorkItemWriter{}
+	h := testProposalServer(t, teamID, life, writer, &fakeDispatcher{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, uuid.NewString(), "confirm", devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if writer.createCalled || life.completeCalled {
+		t.Fatal("already-executed must not re-run the fan-out or complete again")
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res["alreadyExecuted"] != true {
+		t.Fatalf("body: %v %+v", err, res)
+	}
+}
+
+// TestProposalConfirmResumeDismissed — a card that was dismissed (a real decision) still 409s on
+// confirm; resume only rescues `confirmed`/`executed`, never a dismissal.
+func TestProposalConfirmResumeDismissed(t *testing.T) {
+	teamID := uuid.MustParse("44444444-4444-4444-4444-444444444444")
+	life := &fakeProposalLifecycle{confirmErr: discussion.ErrProposalNotProposed}
+	life.get = &discussion.Proposal{
+		Message: discussion.Message{ID: uuid.New()},
+		TeamID:  teamID,
+		Phase:   discussion.ProposalPhaseDismissed,
+	}
+	writer := &fakeWorkItemWriter{}
+	h := testProposalServer(t, teamID, life, writer, &fakeDispatcher{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postProposalVerb(projUUID, uuid.NewString(), "confirm", devToken))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409 (body %s)", rec.Code, rec.Body.String())
+	}
+	if writer.createCalled || life.completeCalled {
+		t.Fatal("dismissed card must not resume execution")
 	}
 }
 
