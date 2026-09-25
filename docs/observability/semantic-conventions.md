@@ -66,6 +66,7 @@ One model round-trip (step). Carries OTel gen-AI semconv model + token attribute
 | `gen_ai.usage.cache_read_tokens` | int | conditional | stable |  | Prompt-cache read tokens, when the runtime reports them. |
 | `gen_ai.usage.cache_write_tokens` | int | conditional | stable |  | Prompt-cache write tokens, when the runtime reports them. |
 | `ksquad.llm.cost.usd` | double | conditional | stable |  | Provider-reported step cost in USD, when reported. Best-effort, not authoritative for billing. |
+| `ksquad.step.index` | int | required | stable |  | The run's 1-based model-turn counter: a model round-trip increments it, and every gen_ai.tool.call / mcp.call span emitted before the next round-trip shares it, so a backend can group a turn's model call with the tool calls it triggered (ISI-4970, GH #636). |
 | `gen_ai.system` | string | recommended | planned | WS-B | The gen-AI system/provider (e.g. anthropic, openai). |
 | `gen_ai.operation.name` | string | recommended | planned | WS-B | The gen-AI operation (e.g. chat). |
 | `gen_ai.response.model` | string | recommended | planned | WS-B | The model that actually served the response. Differs from gen_ai.request.model when the backup/fallback model served it. |
@@ -87,9 +88,11 @@ A local/CLI tool call. Follows OTel gen-AI tool-call conventions; raw arguments 
 | `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
 | `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked. |
+| `gen_ai.operation.name` | string | required | stable |  | The gen-AI operation; always "execute_tool" on a tool-execution span (ISI-4970, GH #636). |
 | `ksquad.tool.type` | string | required | stable | WS-C | Tool category (bash|git|docker|kubectl|helm|node|python|mcp|system) so traces group by tool kind (ISI-4540). |
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments (the hash IS the argument surface; raw args never leave the process). |
 | `ksquad.skill.name` | string | conditional | stable |  | The skill this tool call belongs to, when the call is skill-scoped. |
+| `ksquad.step.index` | int | required | stable |  | The model-turn index this tool call belongs to — shares the value of the llm.call that requested it (ISI-4970, GH #636). |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |
 | `ksquad.duration.ms` | int | required | stable | WS-C | Wall-clock call duration in ms, measured start→result (ISI-4385). |
 
@@ -106,9 +109,11 @@ A tool call served by an MCPServer. Same shape as gen_ai.tool.call plus the serv
 | `ksquad.work_item.ref` | string | required | planned | WS-A | The work item / ticket the run is servicing. Ticket→run→spans drill-down key. |
 | `ksquad.sandbox.pod` | string | recommended | planned | WS-A | The sandbox pod hosting the run (data-plane locality). |
 | `gen_ai.tool.name` | string | required | stable |  | The tool invoked via MCP. |
+| `gen_ai.operation.name` | string | required | stable |  | The gen-AI operation; always "execute_tool" on a tool-execution span (ISI-4970, GH #636). |
 | `ksquad.tool.type` | string | required | stable | WS-C | Tool category; always "mcp" on this span (ISI-4540). |
 | `gen_ai.tool.call.arguments` | string | conditional | stable |  | Hex SHA-256 of the call arguments. |
 | `ksquad.mcp.server` | string | required | stable |  | The MCPServer that served the call. |
+| `ksquad.step.index` | int | required | stable |  | The model-turn index this MCP call belongs to — shares the value of the llm.call that requested it (ISI-4970, GH #636). |
 | `ksquad.outcome` | string | required | stable |  | Call outcome on the result phase (success|error|unknown). |
 | `ksquad.duration.ms` | int | required | stable | WS-C | Wall-clock call duration in ms, measured start→result (ISI-4385). |
 

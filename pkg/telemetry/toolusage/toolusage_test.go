@@ -62,6 +62,19 @@ func findSpan(t *testing.T, sr *tracetest.SpanRecorder, name string) sdktrace.Re
 	return nil
 }
 
+// spansByName returns all ended spans with the given name, in end order, so a
+// test can assert monotonic attribute progression across multiple spans of the
+// same kind (ISI-4970 step.index).
+func spansByName(sr *tracetest.SpanRecorder, name string) []sdktrace.ReadOnlySpan {
+	var out []sdktrace.ReadOnlySpan
+	for _, s := range sr.Ended() {
+		if s.Name() == name {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // TestToolEventSpan covers D1 AC1: an EventTool start+result fixture maps to
 // one gen_ai.tool.call span carrying ALL required attributes — tool name,
 // hashed args, outcome, run/agent correlation — with a settled status.
@@ -861,5 +874,95 @@ func TestToolEventMCPIgnoresCommand(t *testing.T) {
 	}
 	if _, ok := attrs["ksquad.tool.command"]; ok {
 		t.Errorf("ksquad.tool.command must be absent on an MCP call, got %v", attrs["ksquad.tool.command"])
+	}
+}
+
+// TestToolEventOperationName (ISI-4970, GH #636): both gen_ai.tool.call and
+// mcp.call spans carry gen_ai.operation.name="execute_tool", so a backend can
+// tell a tool-execution span from a model round-trip (whose operation is chat).
+func TestToolEventOperationName(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "run-42", Agent: "coder"}
+
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Server: "gh", Phase: "result", OK: boolPtr(true)})
+
+	for _, name := range []string{SpanToolCall, SpanMCPCall} {
+		if got := attrMap(findSpan(t, sr, name).Attributes())["gen_ai.operation.name"]; got != "execute_tool" {
+			t.Errorf("%s gen_ai.operation.name = %q, want execute_tool", name, got)
+		}
+	}
+}
+
+// TestStepIndexMonotonicAcrossTurns (ISI-4970, GH #636): ksquad.step.index is
+// stamped on llm.call + tool spans within a run and advances monotonically
+// across turns — one llm.call and every tool call it triggered share the same
+// index; the next llm.call increments it.
+func TestStepIndexMonotonicAcrossTurns(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "run-1", Agent: "dev"}
+
+	runCtx, _ := m.RunStart(ctx, labels, "run-1")
+
+	// Turn 1: llm.call → step.index 1; two tool calls share it.
+	m.UsageEvent(runCtx, labels, "run-1", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.ToolEvent(runCtx, labels, "run-1", a2a.ToolPayload{Name: "read", Phase: "start"})
+	m.ToolEvent(runCtx, labels, "run-1", a2a.ToolPayload{Name: "read", Phase: "result", OK: boolPtr(true)})
+	m.ToolEvent(runCtx, labels, "run-1", a2a.ToolPayload{Name: "glob", Phase: "result", OK: boolPtr(true)})
+
+	// Turn 2: llm.call → step.index 2; the next tool call shares it.
+	m.UsageEvent(runCtx, labels, "run-1", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.ToolEvent(runCtx, labels, "run-1", a2a.ToolPayload{Name: "bash", Phase: "result", OK: boolPtr(true)})
+
+	m.RunEnd(runCtx, "run-1", "completed", "")
+
+	llm := spansByName(sr, SpanLLMCall)
+	if len(llm) != 2 {
+		t.Fatalf("llm.call spans = %d, want 2", len(llm))
+	}
+	if got := attrMap(llm[0].Attributes())["ksquad.step.index"]; got != "1" {
+		t.Errorf("llm.call #1 ksquad.step.index = %q, want 1", got)
+	}
+	if got := attrMap(llm[1].Attributes())["ksquad.step.index"]; got != "2" {
+		t.Errorf("llm.call #2 ksquad.step.index = %q, want 2", got)
+	}
+
+	tools := spansByName(sr, SpanToolCall)
+	if len(tools) != 3 {
+		t.Fatalf("tool.call spans = %d, want 3", len(tools))
+	}
+	for i, want := range []string{"1", "1", "2"} {
+		if got := attrMap(tools[i].Attributes())["ksquad.step.index"]; got != want {
+			t.Errorf("tool.call #%d ksquad.step.index = %q, want %s", i+1, got, want)
+		}
+	}
+}
+
+// TestStepIndexResetPerRun (ISI-4970, GH #636): the turn counter resets per
+// run — RunStart arms it fresh, so two runs each start at step.index 1 rather
+// than continuing a shared unbounded counter.
+func TestStepIndexResetPerRun(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+
+	run1Ctx, _ := m.RunStart(ctx, Labels{RunID: "run-a", Agent: "dev"}, "run-a")
+	m.UsageEvent(run1Ctx, Labels{RunID: "run-a", Agent: "dev"}, "run-a", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.RunEnd(run1Ctx, "run-a", "completed", "")
+
+	run2Ctx, _ := m.RunStart(ctx, Labels{RunID: "run-b", Agent: "dev"}, "run-b")
+	m.UsageEvent(run2Ctx, Labels{RunID: "run-b", Agent: "dev"}, "run-b", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.RunEnd(run2Ctx, "run-b", "completed", "")
+
+	llm := spansByName(sr, SpanLLMCall)
+	if len(llm) != 2 {
+		t.Fatalf("llm.call spans = %d, want 2", len(llm))
+	}
+	if got := attrMap(llm[0].Attributes())["ksquad.step.index"]; got != "1" {
+		t.Errorf("run-a llm.call ksquad.step.index = %q, want 1 (fresh counter)", got)
+	}
+	if got := attrMap(llm[1].Attributes())["ksquad.step.index"]; got != "1" {
+		t.Errorf("run-b llm.call ksquad.step.index = %q, want 1 (reset, not 2)", got)
 	}
 }
