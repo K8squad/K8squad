@@ -338,7 +338,9 @@ type MemoryIndexable struct {
 
 // ForMemoryIndex returns live messages in a Project's room (tenancy-scoped) created at/after `since`,
 // oldest-first, for incremental indexing by the memory service.
-func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID, since time.Time, limit int) ([]MemoryIndexable, error) {
+// Includes audience-based visibility: party messages are always visible, direct messages are only visible
+// to the targeted agent, and authors can see their own messages.
+func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID, since time.Time, limit int, authorPrincipal string) ([]MemoryIndexable, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -349,9 +351,10 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID,
 		JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE t.project_id = $1 AND t.team_id = $2
 		  AND m.invalidated_at IS NULL AND m.created_at >= $3
+		  AND (m.audience = 'party' OR m.audience LIKE 'direct:%' OR m.author_principal = $4)
 		ORDER BY m.created_at ASC
-		LIMIT $4`
-	rows, err := s.db.QueryContext(ctx, q, projectID, teamID, since, limit)
+		LIMIT $5`
+	rows, err := s.db.QueryContext(ctx, q, projectID, teamID, since, authorPrincipal, limit)
 	if err != nil {
 		return nil, err
 	}

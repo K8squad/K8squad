@@ -333,7 +333,7 @@ func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
 			since = t
 		}
 	}
-	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200))
+	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200), auth.Principal)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
