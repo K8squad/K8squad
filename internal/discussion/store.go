@@ -365,17 +365,22 @@ func (s *Store) assertThreadInScope(ctx context.Context, projectID, teamID, thre
 
 // MemoryIndexable is a flat, tenancy-scoped projection of a live message for the memory service's
 // pgvector index (10.2). It carries the SAME provenance triple as memory writes so 10.2's shared index
-// and untrusted-read envelope apply unchanged.
+// and untrusted-read envelope apply unchanged. The v2 wire fields (ISI-4931, plan §4.1/§5) ride along:
+// Audience feeds the R2 party-visibility predicate on the read side; Kind/Payload make `proposal`
+// messages findable in semantic search (story 7).
 type MemoryIndexable struct {
-	MessageID       uuid.UUID `json:"messageId"`
-	ThreadID        uuid.UUID `json:"threadId"`
-	ProjectID       uuid.UUID `json:"projectId"`
-	TeamID          uuid.UUID `json:"teamId"`
-	AuthorPrincipal string    `json:"authorPrincipal"`
-	AuthorAgentID   *string   `json:"authorAgentId,omitempty"`
-	AuthorRunID     *string   `json:"authorRunId,omitempty"`
-	Body            string    `json:"body"`
-	CreatedAt       time.Time `json:"createdAt"`
+	MessageID       uuid.UUID       `json:"messageId"`
+	ThreadID        uuid.UUID       `json:"threadId"`
+	ProjectID       uuid.UUID       `json:"projectId"`
+	TeamID          uuid.UUID       `json:"teamId"`
+	AuthorPrincipal string          `json:"authorPrincipal"`
+	AuthorAgentID   *string         `json:"authorAgentId,omitempty"`
+	AuthorRunID     *string         `json:"authorRunId,omitempty"`
+	Body            string          `json:"body"`
+	Audience        string          `json:"audience"`
+	Kind            string          `json:"kind"`
+	Payload         json.RawMessage `json:"payload,omitempty"`
+	CreatedAt       time.Time       `json:"createdAt"`
 }
 
 // ForMemoryIndex returns the live messages of one room created at/after `since`, oldest-first, for
@@ -390,7 +395,7 @@ func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID,
 	}
 	q := `
 		SELECT m.id, m.thread_id, t.project_id, t.team_id, m.author_principal,
-		       m.author_agent_id, m.author_run_id, m.body, m.created_at
+		       m.author_agent_id, m.author_run_id, m.body, m.audience, m.kind, m.payload, m.created_at
 		FROM discussion.message m
 		JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE t.project_id = $1 AND t.team_id = $2
@@ -424,7 +429,7 @@ func (s *Store) AllForMemoryIndex(ctx context.Context, since time.Time, limit in
 	}
 	const q = `
 		SELECT m.id, m.thread_id, t.project_id, t.team_id, m.author_principal,
-		       m.author_agent_id, m.author_run_id, m.body, m.created_at
+		       m.author_agent_id, m.author_run_id, m.body, m.audience, m.kind, m.payload, m.created_at
 		FROM discussion.message m
 		JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE m.invalidated_at IS NULL AND m.created_at >= $1
@@ -438,14 +443,17 @@ func (s *Store) AllForMemoryIndex(ctx context.Context, since time.Time, limit in
 	return scanIndexables(rows)
 }
 
-// scanIndexables reads MemoryIndexable projection rows carrying the server-stamped provenance triple.
+// scanIndexables reads MemoryIndexable projection rows carrying the server-stamped provenance triple
+// plus the v2 audience/kind/payload wire fields (nullable payload scans as nil).
 func scanIndexables(rows *sql.Rows) ([]MemoryIndexable, error) {
 	var out []MemoryIndexable
 	for rows.Next() {
 		var mi MemoryIndexable
 		var agentID, runID sql.NullString
+		var payload []byte
 		if err := rows.Scan(&mi.MessageID, &mi.ThreadID, &mi.ProjectID, &mi.TeamID,
-			&mi.AuthorPrincipal, &agentID, &runID, &mi.Body, &mi.CreatedAt); err != nil {
+			&mi.AuthorPrincipal, &agentID, &runID, &mi.Body,
+			&mi.Audience, &mi.Kind, &payload, &mi.CreatedAt); err != nil {
 			return nil, err
 		}
 		if agentID.Valid {
@@ -453,6 +461,9 @@ func scanIndexables(rows *sql.Rows) ([]MemoryIndexable, error) {
 		}
 		if runID.Valid {
 			mi.AuthorRunID = &runID.String
+		}
+		if payload != nil {
+			mi.Payload = json.RawMessage(payload)
 		}
 		out = append(out, mi)
 	}

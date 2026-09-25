@@ -53,12 +53,19 @@ type WriteRequest struct {
 // ProjectID and Kind are OPTIONAL narrowing predicates (§7.3.3) pushed INTO the store query — the
 // discussion read tool (10.2) narrows to one Project's room + kind="discussion" without ever widening
 // past SquadID. They only ever tighten the tenancy scope; they can never widen it.
+//
+// ReaderAgentID/ReaderPrincipal are the R2 party-visibility scope (ISI-4931, plan §8 risk R2): a
+// discussion-projected record whose provenance audience is `direct:{agentId}` is excluded unless the
+// reader is the recipient agent or the author. Nil reader params (or a legacy row with no audience
+// stamped) means party-visible — they can only ever hide rows, never widen past the scope above.
 type SearchQuery struct {
-	SquadID   string
-	ProjectID *string // narrow to one Project (nil ⇒ all projects in the squad)
-	Kind      *string // narrow to one record kind, e.g. "discussion" (nil ⇒ all kinds)
-	Embedding []float32
-	Limit     int
+	SquadID         string
+	ProjectID       *string // narrow to one Project (nil ⇒ all projects in the squad)
+	Kind            *string // narrow to one record kind, e.g. "discussion" (nil ⇒ all kinds)
+	ReaderAgentID   *string // R2: recipient-agent match for direct-audience discussion rows (nil ⇒ no direct row matches)
+	ReaderPrincipal *string // R2: author-principal match for direct-audience discussion rows (nil ⇒ no match)
+	Embedding       []float32
+	Limit           int
 }
 
 // SearchHit is a ranked result — the record plus its pgvector cosine distance to the query.
