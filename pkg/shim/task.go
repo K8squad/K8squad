@@ -56,6 +56,14 @@ type task struct {
 	// the run's network attribution source for the llm.call span (server.address
 	// / url.full). Empty on vendor-routed runs.
 	endpoint string
+	// provider is the resolved gen_ai.system (serving provider) for this run
+	// (GH #634), derived at submit from the resolved ModelRoute + launch model
+	// (see providerForRoute). It is the truthful backfill for usage events whose
+	// runtime wire omits the serving provider (opencode v1.18.27's step-finish
+	// carries no providerID), so llm.call spans carry a non-empty gen_ai.system.
+	// Empty when neither the route nor the launch model yields a confident
+	// provider — the span then omits the attribute rather than fabricating one.
+	provider string
 	now      func() time.Time
 
 	mu      sync.Mutex

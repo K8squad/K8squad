@@ -30,6 +30,7 @@ import (
 
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/shim/runtimes"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -826,6 +827,96 @@ func TestDrivePrefersPerTaskIdentity(t *testing.T) {
 	}
 	if checked < 2 {
 		t.Fatalf("expected run.start + gen_ai.tool.call spans, checked %d", checked)
+	}
+}
+
+// TestDriveProviderBackfill (GH #634): usage payloads without a provider are
+// backfilled with gen_ai.system derived from the resolved ModelRoute — "ollama"
+// for an Ollama-suggesting endpoint host, the fixed BYO provider id for a
+// generic BYO endpoint, and an inferred vendor provider for a vendor run.
+// Never fabricated: a vendor run with no confident inference, and an already-
+// populated provider, are left untouched.
+func TestDriveProviderBackfill(t *testing.T) {
+	cases := []struct {
+		name         string
+		cfgModel     string
+		route        a2a.ModelRoute
+		emitProvider string
+		wantProvider string
+	}{
+		{
+			name:         "ollama endpoint by hostname",
+			route:        a2a.ModelRoute{Endpoint: "http://ollama:11434/v1", Model: "qwen3.6:latest"},
+			wantProvider: "ollama",
+		},
+		{
+			name:         "ollama endpoint by local 11434 port",
+			route:        a2a.ModelRoute{Endpoint: "http://10.0.0.185:11434/v1", Model: "qwen3.6:latest"},
+			wantProvider: "ollama",
+		},
+		{
+			name:         "generic BYO endpoint",
+			route:        a2a.ModelRoute{Endpoint: "https://byo.example.com/v1", Model: "qwen3.8"},
+			wantProvider: capability.OpenCodeBYOProviderID,
+		},
+		{
+			name:         "vendor run infers anthropic",
+			cfgModel:     "claude-sonnet-4",
+			wantProvider: "anthropic",
+		},
+		{
+			name:         "vendor run no confident inference",
+			cfgModel:     "opaque-model-xyz",
+			wantProvider: "",
+		},
+		{
+			name:         "runtime-reported provider preserved",
+			cfgModel:     "claude-sonnet-4",
+			emitProvider: "anthropic",
+			wantProvider: "anthropic",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := New(rt, &fakeRunner{
+				emits: []Progress{{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{
+					Input:    1,
+					Output:   2,
+					Model:    "some-model", // preserved for model backfill test
+					Provider: tc.emitProvider,
+				}}},
+				outcome: Outcome{State: a2a.TaskCompleted},
+			}, Config{Identity: Identity{Name: "coder-1"}, Model: tc.cfgModel, ShimVersion: "test"})
+
+			if _, err := e.SubmitTask(context.Background(), a2a.Task{
+				A2ATaskID:  "run-provider",
+				ModelRoute: tc.route,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ch, err := e.StreamEvents(context.Background(), "run-provider", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotProvider string
+			for _, ev := range drain(t, ch) {
+				if ev.Type != a2a.EventUsage {
+					continue
+				}
+				p, ok := ev.Payload.(a2a.UsagePayload)
+				if !ok {
+					t.Fatalf("usage payload type %T", ev.Payload)
+				}
+				gotProvider = p.Provider
+			}
+			if gotProvider != tc.wantProvider {
+				t.Errorf("provider = %q, want %q", gotProvider, tc.wantProvider)
+			}
+		})
 	}
 }
 
