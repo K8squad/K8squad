@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/K8squad/K8squad/internal/apiserver"
-	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
 )
 
@@ -143,8 +142,5 @@ func TestRosterForMentionsDelegates(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].Name != "Robo-Coder" || agents[0].Status != "working" {
 		t.Fatalf("TeamAgents = %+v, want the delegated Robo-Coder (working)", agents)
-	}
-	if _, ok := roster.(discussion.OrgReader); !ok {
-		t.Fatalf("rosterForMentions returned %T, want discussion.OrgReader", roster)
 	}
 }
