@@ -130,7 +130,13 @@ func TestProposalRoundTripAndLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("thread: %v", err)
 	}
-	if len(th.Messages) != 2 || len(th.Messages[0].Replies) != 1 || th.Messages[0].Replies[0].ID != postBack.ID {
+	var card *Message
+	for i := range th.Messages {
+		if th.Messages[i].ID == msg.ID {
+			card = &th.Messages[i]
+		}
+	}
+	if len(th.Messages) != 2 || card == nil || len(card.Replies) != 1 || card.Replies[0].ID != postBack.ID {
 		t.Fatalf("post-back not threaded under the proposal: %+v", th.Messages)
 	}
 }
