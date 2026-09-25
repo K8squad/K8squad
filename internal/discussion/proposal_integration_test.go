@@ -24,10 +24,12 @@ import (
 
 func applyProposalMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
-	applyMigration(t, db) // 0004: schema reset + thread/message + append-only triggers
+	// applyMigration drops the schema and applies 0004 + 0024; only the proposal
+	// side table (0025) remains to be applied on top of that shared chain.
+	applyMigration(t, db)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, name := range []string{"0024_discussion_message_fields.sql", "0025_discussion_proposal.sql"} {
+	for _, name := range []string{"0025_discussion_proposal.sql"} {
 		var sqlBytes []byte
 		var err error
 		candidates := []string{
