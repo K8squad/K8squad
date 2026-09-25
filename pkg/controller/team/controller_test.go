@@ -969,3 +969,160 @@ func TestTelemetryEgressPolicyScoped(t *testing.T) {
 		t.Error("allow-telemetry policy rendered without a telemetry target")
 	}
 }
+
+// byoAgent is an Agent CR in the Team's home namespace ("default") whose
+// modelEndpointRef points at a per-user endpoint Secret in the same namespace.
+func byoAgent(name, secretName string) *api.Agent {
+	return &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: api.AgentSpec{
+			Model:            "qwen3.6:latest",
+			ModelEndpointRef: &api.SecretRef{Name: secretName},
+		},
+	}
+}
+
+// byoEndpointSecret is the 7.5 BYO-endpoint credential Secret (endpointURL key).
+func byoEndpointSecret(name, url string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Data:       map[string][]byte{"endpointURL": []byte(url)},
+	}
+}
+
+func teamWithAgents(name, uid string, agents ...string) *api.Team {
+	tm := newTeam(name, uid)
+	for _, a := range agents {
+		tm.Spec.Agents = append(tm.Spec.Agents, api.ObjectRef{Name: a})
+	}
+	return tm
+}
+
+// TestBYOModelEgressPolicy (ISI-4920): a team whose composition agent dials a
+// BYO endpoint (Agent.spec.modelEndpointRef → a LAN Ollama at 10.0.0.185:11434)
+// gains the ksquad-allow-byo-model companion — port-scoped TCP egress to that
+// /32 only — so the sandbox is no longer blocked by ksquad-default-deny (the
+// ISI-4829 "Cannot connect to API" symptom). A team with no BYO endpoint gets
+// no hole.
+func TestBYOModelEgressPolicy(t *testing.T) {
+	r, c := newReconciler(t,
+		teamWithAgents("alpha", "uid-alpha", "john"),
+		byoAgent("john", "ollama-endpoint"),
+		byoEndpointSecret("ollama-endpoint", "http://10.0.0.185:11434/v1"),
+	)
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var pol networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-byo-model", Namespace: team.Status.Namespace}, &pol); err != nil {
+		t.Fatalf("get allow-byo-model NetworkPolicy: %v", err)
+	}
+	if len(pol.Spec.PolicyTypes) != 1 || pol.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+		t.Errorf("policyTypes = %v, want [Egress]", pol.Spec.PolicyTypes)
+	}
+	if len(pol.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1", len(pol.Spec.Egress))
+	}
+	rule := pol.Spec.Egress[0]
+	if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
+		t.Fatalf("byo peer = %+v, want an ipBlock", rule.To)
+	}
+	if got := rule.To[0].IPBlock.CIDR; got != "10.0.0.185/32" {
+		t.Errorf("byo CIDR = %q, want 10.0.0.185/32", got)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 11434 {
+		t.Errorf("byo ports = %+v, want TCP 11434 only", rule.Ports)
+	}
+
+	// Self-heal: delete the policy; the next reconcile recreates it (the
+	// NetworkPolicy Watch scaffolds this like every other companion).
+	if err := c.Delete(context.Background(), &pol); err != nil {
+		t.Fatalf("delete byo policy: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile (self-heal): %v", err)
+	}
+	var healed networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-byo-model", Namespace: team.Status.Namespace}, &healed); err != nil {
+		t.Fatalf("allow-byo-model not self-healed: %v", err)
+	}
+
+	// A team with no BYO endpoint → no companion.
+	r2, c2 := newReconciler(t, newTeam("beta", "uid-beta"))
+	if err := reconcileTeam(t, r2, "beta"); err != nil {
+		t.Fatalf("reconcile beta: %v", err)
+	}
+	var teamB api.Team
+	_ = c2.Get(context.Background(), types.NamespacedName{Name: "beta", Namespace: "default"}, &teamB)
+	var absent networkingv1.NetworkPolicy
+	if err := c2.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-byo-model", Namespace: teamB.Status.Namespace}, &absent); err == nil {
+		t.Error("allow-byo-model policy rendered for a team with no BYO endpoint")
+	}
+}
+
+// TestBYOModelEgressDedup (ISI-4920): two composition agents sharing one BYO
+// endpoint collapse to a single egress rule (dedup), and an agent whose
+// endpoint Secret is dangling is skipped best-effort rather than wedging the
+// whole namespace provision.
+func TestBYOModelEgressDedup(t *testing.T) {
+	r, c := newReconciler(t,
+		teamWithAgents("alpha", "uid-alpha", "john", "jane", "ghost"),
+		byoAgent("john", "ollama-endpoint"),
+		byoAgent("jane", "ollama-endpoint"),
+		byoAgent("ghost", "missing-secret"), // dangling → skipped, not fatal
+		byoEndpointSecret("ollama-endpoint", "http://10.0.0.185:11434"),
+	)
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+	var pol networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-byo-model", Namespace: team.Status.Namespace}, &pol); err != nil {
+		t.Fatalf("get allow-byo-model NetworkPolicy: %v", err)
+	}
+	if len(pol.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1 (deduped)", len(pol.Spec.Egress))
+	}
+}
+
+// TestByoEgressTargetFromURL (ISI-4920): the resolved BaseURL → egress target
+// parse — IP → /32, scheme default ports, explicit in-cluster Service DNS →
+// namespace peer, and a public FQDN → nil (core NetworkPolicy cannot match
+// egress by DNS name).
+func TestByoEgressTargetFromURL(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantNS  string
+		wantIP  string
+		wantPt  int32
+		wantNil bool
+	}{
+		{in: "http://10.0.0.185:11434/v1", wantIP: "10.0.0.185", wantPt: 11434},
+		{in: "https://10.0.0.185", wantIP: "10.0.0.185", wantPt: 443},
+		{in: "http://10.0.0.185", wantIP: "10.0.0.185", wantPt: 80},
+		{in: "http://ollama.mlns.svc.cluster.local:11434", wantNS: "mlns", wantPt: 11434},
+		{in: "https://api.example.com/v1", wantNil: true},
+		{in: "https://api.openai.com", wantNil: true},
+		{in: "not a url", wantNil: true},
+	}
+	for _, tc := range cases {
+		got := byoEgressTargetFromURL(tc.in)
+		if tc.wantNil {
+			if got != nil {
+				t.Errorf("byoEgressTargetFromURL(%q) = %+v, want nil", tc.in, got)
+			}
+			continue
+		}
+		if got == nil {
+			t.Errorf("byoEgressTargetFromURL(%q) = nil, want ns=%q ip=%q port=%d", tc.in, tc.wantNS, tc.wantIP, tc.wantPt)
+			continue
+		}
+		if got.Namespace != tc.wantNS || got.IP != tc.wantIP || got.Port != tc.wantPt {
+			t.Errorf("byoEgressTargetFromURL(%q) = %+v, want ns=%q ip=%q port=%d", tc.in, got, tc.wantNS, tc.wantIP, tc.wantPt)
+		}
+	}
+}
