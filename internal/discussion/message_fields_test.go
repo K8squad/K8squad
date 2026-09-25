@@ -103,7 +103,7 @@ func TestPostMessageWithDirectAudience(t *testing.T) {
 			audience: "party",
 			kind:     "structured",
 			payload: func() *json.RawMessage {
-				var p json.RawMessage = json.RawMessage(`{"key": "value"}`)
+				p := json.RawMessage(`{"key": "value"}`)
 				return &p
 			}(),
 			shouldError: false,

@@ -128,11 +128,11 @@ func TestDiscussionFenceWriteMovesNoCoordState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenThread: %v", err)
 	}
-	msg, err := store.PostMessage(ctx, project, team, th.ID, auth, "second message", nil)
+	msg, err := store.PostMessage(ctx, project, team, th.ID, auth, "second message", nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
-	reply, err := store.PostMessage(ctx, project, team, th.ID, auth, "a reply", &msg.ID)
+	reply, err := store.PostMessage(ctx, project, team, th.ID, auth, "a reply", &msg.ID, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("PostMessage(reply): %v", err)
 	}
