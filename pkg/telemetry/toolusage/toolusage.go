@@ -26,7 +26,9 @@ See the limitations under the License.
 //	                     failing Run is one end-to-end debuggable unit
 //	gen_ai.tool.call   — a local/CLI tool call: gen_ai.tool.name, hashed
 //	                     args (gen_ai.tool.call.arguments carries the hex
-//	                     sha256 — raw arguments NEVER travel), outcome, duration
+//	                     sha256 — raw arguments NEVER travel), outcome, duration,
+//	                     gen_ai.operation.name=execute_tool + ksquad.step.index
+//	                     (the turn that requested it, ISI-4970)
 //	llm.call           — one model round-trip (step) with the full gen-AI
 //	                     semconv surface (ISI-4238, ISI-4383): gen_ai.system
 //	                     (provider), gen_ai.operation.name, request + response
@@ -40,7 +42,9 @@ See the limitations under the License.
 //	skill.load         — a skill entering the runtime session: skill name +
 //	                     pinned source SHA
 //	mcp.call           — a tool call served by an MCPServer: mcp server +
-//	                     gen_ai.tool.name, outcome, duration
+//	                     gen_ai.tool.name, outcome, duration,
+//	                     gen_ai.operation.name=execute_tool + ksquad.step.index
+//	                     (the turn that requested it, ISI-4970)
 //
 // Metrics (13.x bounded-cardinality style; run.id is an attribute, never a
 // metric label):
@@ -145,6 +149,14 @@ const (
 	// (completed|failed|canceled) so the trace answers "how did it end"
 	// without joining back to the CR (ISI-4238).
 	attrRunState = attribute.Key("ksquad.run.state")
+	// attrStepIndex is the bounded per-run llm.call turn counter (ISI-4970,
+	// GH #636): a model round-trip increments it, and both the llm.call span
+	// and every gen_ai.tool.call / mcp.call span emitted before the next
+	// round-trip share that index, so a backend can group a turn's model call
+	// with the tool calls it triggered without parent/child nesting changes.
+	// Reset per run (RunStart arms it, RunEnd/FinishTask clear it) to keep the
+	// value bounded within a run's lifetime.
+	attrStepIndex = attribute.Key("ksquad.step.index")
 	// GenAI semconv keys the v1.40 stable set does not export as typed
 	// constants yet (ISI-4238 / ISI-4383 llm.call spans). Kept as raw keys
 	// so the whole gen_ai.* surface reads in one place.
@@ -174,6 +186,10 @@ const (
 	// operationChat is the gen_ai.operation.name for a model round-trip
 	// (llm.call). The OTel gen-AI semconv "chat" operation.
 	operationChat = "chat"
+	// operationExecuteTool is the gen_ai.operation.name for a tool-execution
+	// span (gen_ai.tool.call / mcp.call). The OTel gen-AI semconv
+	// "execute_tool" operation (ISI-4970, GH #636).
+	operationExecuteTool = "execute_tool"
 
 	outcomeSuccess = "success"
 	outcomeError   = "error"
@@ -396,6 +412,11 @@ type pendingSpan struct {
 type stepTimer struct {
 	elapsed func() float64
 	last    float64
+	// index is the run's current llm.call turn counter (ISI-4970, GH #636):
+	// it advances once per UsageEvent and is stamped on that llm.call span and
+	// every tool/MCP span emitted before the next UsageEvent, so a turn's model
+	// call and its tool calls share a correlation index.
+	index int64
 }
 
 // measureStepMS advances the run's step clock and returns the measured latency
@@ -424,6 +445,36 @@ func (m *Mapper) measureStepMS(taskID string) int64 {
 	}
 
 	return ms
+}
+
+// advanceStep increments the run's llm.call turn counter and returns the new
+// index (1-based within the run). It returns 0 when no run is armed for taskID
+// (a UsageEvent without a preceding RunStart), so the caller omits the
+// ksquad.step.index attribute rather than fabricating a step number.
+func (m *Mapper) advanceStep(taskID string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.steps[taskID]
+	if st == nil {
+		return 0
+	}
+	st.index++
+	return st.index
+}
+
+// stepIndex reports the run's current llm.call turn counter WITHOUT advancing
+// it: a tool/MCP span carries the index of the model turn that requested it
+// (the most recent llm.call). It returns 0 when no run is armed for taskID
+// (a ToolEvent without a preceding RunStart / before the first llm.call), so
+// the caller omits ksquad.step.index rather than emitting a spurious 0.
+func (m *Mapper) stepIndex(taskID string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.steps[taskID]
+	if st == nil {
+		return 0
+	}
+	return st.index
 }
 
 // NewMapper builds a Mapper over tracer. reg non-nil registers the metric
@@ -506,6 +557,14 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 	}
 
 	attrs := labels.spanAttrs()
+	// ISI-4970 (GH #636): tool/MCP spans carry gen_ai.operation.name
+	// ("execute_tool") so a backend can tell a tool-execution span apart from
+	// a model round-trip, and ksquad.step.index so it can group the tool call
+	// with the llm.call turn that requested it.
+	attrs = append(attrs, attrGenAIOperationName.String(operationExecuteTool))
+	if idx := m.stepIndex(taskID); idx > 0 {
+		attrs = append(attrs, attrStepIndex.Int64(idx))
+	}
 	// ISI-4720: a shell-family call (bash) whose real executable the shim
 	// resolved (p.Command: git|kubectl|npm|…) is categorized by what it RAN,
 	// and the executable rides ksquad.tool.command, so a bash-wrapped git call
@@ -710,6 +769,10 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	if !enabled.Load() || p.Model == "" {
 		return
 	}
+	// ISI-4970 (GH #636): each model round-trip advances the run's turn
+	// counter; the llm.call span carries the new index and every tool/MCP span
+	// emitted before the next round-trip shares it.
+	stepIndex := m.advanceStep(taskID)
 	attrs := labels.spanAttrs()
 	attrs = append(attrs,
 		attrGenAIOperationName.String(operationChat),
@@ -717,6 +780,9 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 		attrGenAIInputTokens.Int(p.Input),
 		attrGenAIOutputTokens.Int(p.Output),
 	)
+	if stepIndex > 0 {
+		attrs = append(attrs, attrStepIndex.Int64(stepIndex))
+	}
 	if p.Provider != "" {
 		attrs = append(attrs, attrGenAISystem.String(p.Provider))
 	}
