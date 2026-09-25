@@ -223,3 +223,26 @@ controlPlane.apiserver.secureCookies:
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Run-capability JWT signing-key env (ADR-0024a S3/D2, ISI-4922). The apiserver
+MINTS short-lived run-capability tokens, the operator INJECTS them into
+sandboxes, and the memory service VERIFIES them to gate the authoring lane — all
+three consumers MUST resolve the SAME KSQUAD_JWT_SIGNING_KEY or the token path
+stays inert (memory logs "run-capability-token auth off"). DEGRADE-BY-DEFAULT:
+renders nothing unless controlPlane.auth.jwtSigningKey.existingSecret is set, so
+token-auth is opt-in and every component keeps its auth-disabled in-code default
+when unset. The Secret is created out-of-band (never inlined in values), e.g.:
+  kubectl -n <ns> create secret generic ksquad-taskio-jwt \
+    --from-literal=key='<random-signing-key>'
+*/}}
+{{- define "k8squad.jwtSigningEnv" -}}
+{{- $j := (.Values.controlPlane.auth | default dict).jwtSigningKey | default dict -}}
+{{- with $j.existingSecret }}
+- name: KSQUAD_JWT_SIGNING_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ . | quote }}
+      key: {{ ($j.key | default "key") | quote }}
+{{- end }}
+{{- end -}}

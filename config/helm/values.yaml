@@ -98,6 +98,23 @@ controlPlane:
   #   controlPlane.operator.replicas: 0
   # so they do not reconcile Teams. A cross-install leader-elected / namespace-
   # scoped Team reconciler is tracked as the durable operator-code fix.
+  # Run-capability token auth (ADR-0024a S3/D2, ISI-4922). Shared signing key for
+  # the run-capability JWTs the apiserver MINTS, the operator INJECTS into
+  # sandboxes, and the memory service VERIFIES to gate the authoring lane. All
+  # three components read KSQUAD_JWT_SIGNING_KEY from the SAME Secret — if they
+  # disagree (or it is unset) the token path stays inert and memory logs
+  # "run-capability-token auth off". OFF by default (opt-in): when existingSecret
+  # is empty nothing is rendered and every component keeps its auth-disabled
+  # in-code default. Create the Secret out-of-band (never inline the key), e.g.:
+  #   kubectl -n <ns> create secret generic ksquad-taskio-jwt \
+  #     --from-literal=key='<random-signing-key>'
+  auth:
+    jwtSigningKey:
+      # Name of an existing Secret holding the shared JWT signing key. Empty → off.
+      existingSecret: ""
+      # Key within existingSecret holding the signing key.
+      key: key
+
   operator:
     replicas: 1
     leaderElect: true
