@@ -181,6 +181,10 @@ type openCodePart struct {
 	Tool       string `json:"tool"`
 	ProviderID string `json:"providerID"`
 	ModelID    string `json:"modelID"`
+	// Reason is the step-finish stop reason ("stop", "length", …), mapped
+	// onto gen_ai.response.finish_reasons (GH #635). Empty on parts that do
+	// not carry it.
+	Reason string `json:"reason"`
 	State      *struct {
 		Status string          `json:"status"`
 		Input  json.RawMessage `json:"input"`
@@ -410,11 +414,16 @@ func usageFromStepFinish(part *openCodePart) *a2a.UsagePayload {
 	default:
 		u.Model = part.ModelID
 	}
-	// ISI-4383: carry the provider distinctly as gen_ai.system. opencode
-	// reports one served model per step, so ResponseModel/FinishReason/
-	// ResponseID and the fallback marker stay for runtimes that report
-	// requested-vs-served separately (ADR-0021 D2 limitation §74).
+	// ISI-4383: carry the provider distinctly as gen_ai.system.
 	u.Provider = part.ProviderID
+	// GH #635: surface the wire's step-finish `reason` as
+	// gen_ai.response.finish_reasons. ResponseModel and ResponseID stay empty
+	// for this runtime by design: opencode v1.18.27's step-finish part carries
+	// no provider response id and reports a single model (requested == served),
+	// so there is nothing to map them from. This is an explicit, tested no-op —
+	// the fallback marker and response-model/response-id fields exist for
+	// runtimes that report requested-vs-served separately (ADR-0021 D2 §74).
+	u.FinishReason = part.Reason
 	if part.Tokens.Cache != nil {
 		u.CacheRead = part.Tokens.Cache.Read
 		u.CacheWrite = part.Tokens.Cache.Write
