@@ -20,20 +20,57 @@ import type { RosterAgent } from "@/components/discussion/Roster";
 import { createAgentsClient } from "@/lib/agents/api";
 import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
 
+// R1 empty-room bootstrap: a fresh Project has no threads, and nothing else in
+// the UI can open the first one (the composer only mounts once a threadId
+// resolves) — without this the route sat on "Loading…" forever. The room IS
+// the Project, so the first visitor auto-opens the default General thread.
+const DEFAULT_THREAD = {
+  title: "General",
+  body: "Project discussion room — agents and humans, threaded. Post here to reach the team; @-mention an agent or ticket to pull them in.",
+} as const;
+
 export function DiscussionRoomClient({ projectId }: { projectId: string }) {
   const client = useMemo(() => createDiscussionClient(), []);
   const agentsClient = useMemo(() => createAgentsClient(), []);
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let alive = true;
-    void client.listThreads(projectId).then((threads) => {
-      if (alive && threads.length > 0) setThreadId(threads[0].id);
-    });
+    void (async () => {
+      try {
+        const threads = await client.listThreads(projectId);
+        if (!alive) return;
+        if (threads.length > 0) {
+          setThreadId(threads[0].id);
+          setFailed(false);
+          return;
+        }
+        try {
+          const opened = await client.openThread(projectId, DEFAULT_THREAD);
+          if (alive) {
+            setThreadId(opened.id);
+            setFailed(false);
+          }
+        } catch {
+          // A racing first visitor may have opened the default thread just
+          // ahead of us — re-list and adopt it before giving up.
+          const retry = await client.listThreads(projectId);
+          if (!alive) return;
+          if (retry.length > 0) {
+            setThreadId(retry[0].id);
+            setFailed(false);
+          } else setFailed(true);
+        }
+      } catch {
+        if (alive) setFailed(true);
+      }
+    })();
     return () => {
       alive = false;
     };
-  }, [client, projectId]);
+  }, [client, projectId, attempt]);
 
   const subscribe = useMemo(() => {
     if (typeof EventSource === "undefined" || threadId == null) return undefined;
@@ -64,7 +101,19 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
     [client, projectId],
   );
 
-  if (threadId == null) return <div data-testid="room-resolving">Loading…</div>;
+  if (threadId == null) {
+    if (failed) {
+      return (
+        <div data-testid="room-resolve-error" className="muted">
+          <p>Could not open the discussion room.</p>
+          <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return <div data-testid="room-resolving">Loading…</div>;
+  }
 
   return (
     <DiscussionRoom
