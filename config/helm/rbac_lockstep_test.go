@@ -243,6 +243,124 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 	assertApiserverBinding(t, string(chartYAML))
 }
 
+// roleRulesByName slices the `rules:` block out of the namespaced Role document
+// whose metadata.name ends in the given suffix. Same discipline as
+// clusterRoleRulesByName but anchored to kind: Role (the model-endpoint Secret
+// write, ISI-5005, is a namespaced Role in the operator namespace, not a
+// ClusterRole). The rules block is plain YAML — templating only appears in
+// metadata (name/namespace) — so it unmarshals on its own.
+func roleRulesByName(t *testing.T, chart, suffix string) []rbacv1.PolicyRule {
+	t.Helper()
+	for _, d := range splitChartDocs(chart) {
+		if d.kind != "Role" || !strings.HasSuffix(d.metaName, "-"+suffix) {
+			continue
+		}
+		lines := strings.Split(d.body, "\n")
+		start := -1
+		for i, l := range lines {
+			if l == "rules:" {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			t.Fatalf("Role %q has no top-level `rules:` block", suffix)
+		}
+		var parsed ruleDoc
+		if err := yaml.Unmarshal([]byte(strings.Join(lines[start:], "\n")), &parsed); err != nil {
+			t.Fatalf("parse %q rules: %v", suffix, err)
+		}
+		return parsed.Rules
+	}
+	t.Fatalf("no Role with metadata.name ending %q found in rbac.yaml", "-"+suffix)
+	return nil
+}
+
+// roleName returns the (template-stripped) metadata.name of the Role document
+// whose name ends in the given suffix, so a RoleBinding assertion can require
+// roleRef to point at that EXACT object.
+func roleName(t *testing.T, chart, suffix string) string {
+	t.Helper()
+	for _, d := range splitChartDocs(chart) {
+		if d.kind == "Role" && strings.HasSuffix(d.metaName, "-"+suffix) {
+			return stripTemplates(d.metaName)
+		}
+	}
+	t.Fatalf("no Role with metadata.name ending %q found in rbac.yaml", "-"+suffix)
+	return ""
+}
+
+// TestApiserverModelEndpointRoleLeastPrivilege pins the ISI-5005 model-endpoint
+// Secret-write grant to exactly the verbs the code exercises. POST
+// /api/modelendpoints upserts a BYO endpoint Secret (get-then-create-or-update)
+// and GET /api/modelendpoints Lists them by label, both in the operator namespace
+// — so the least-privilege set is secrets get+list+create+update, scoped to a
+// NAMESPACED Role (the target namespace is fixed at install time, unlike the
+// dynamic-team managed-credential ClusterRole in deploy/helm). No watch (direct
+// client, no informers), no patch/delete. Update this expectation only when the
+// model-endpoint client's verb usage actually changes
+// (internal/apiserver/modelendpoints.go).
+func TestApiserverModelEndpointRoleLeastPrivilege(t *testing.T) {
+	chartYAML, err := os.ReadFile("templates/control-plane/rbac.yaml")
+	if err != nil {
+		t.Fatalf("read chart rbac.yaml: %v", err)
+	}
+	got := roleRulesByName(t, string(chartYAML), "apiserver-model-endpoint")
+
+	want := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get", "list", "create", "update"}},
+	}
+	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
+		t.Fatalf("apiserver model-endpoint Role drift: chart rbac.yaml grant is not the least-privilege set.\n"+
+			"If the model-endpoint client's verb usage changed, update both the chart and this test in lockstep.\n"+
+			"want:\n%+v\n\ngot:\n%+v", w, g)
+	}
+
+	// The grant is useless without the namespaced RoleBinding to the apiserver SA;
+	// an EXTRA subject would be an unintended recipient of this Secret-write grant.
+	assertNamespacedRoleBinding(t, string(chartYAML), "apiserver-model-endpoint", "ksquad-apiserver")
+}
+
+// assertNamespacedRoleBinding is the namespaced (kind: Role) analog of
+// assertComponentBinding: it finds the RoleBinding whose metadata.name ends in
+// "-"+suffix and requires roleRef to equal the Role of the same suffix (kind Role)
+// and subjects to be exactly one ServiceAccount subject named saName in the chart
+// namespace.
+func assertNamespacedRoleBinding(t *testing.T, chart, suffix, saName string) {
+	t.Helper()
+	wantRoleRef := rbacv1.RoleRef{
+		APIGroup: "rbac.authorization.k8s.io",
+		Kind:     "Role",
+		Name:     roleName(t, chart, suffix),
+	}
+	wantSubjects := []rbacv1.Subject{{
+		Kind:      "ServiceAccount",
+		Name:      saName,
+		Namespace: nsMarker, // the chart namespace {{ $ns }}
+	}}
+
+	for _, d := range splitChartDocs(chart) {
+		if d.kind != "RoleBinding" || !strings.HasSuffix(d.metaName, "-"+suffix) {
+			continue
+		}
+		var parsed struct {
+			RoleRef  rbacv1.RoleRef   `json:"roleRef"`
+			Subjects []rbacv1.Subject `json:"subjects"`
+		}
+		if err := yaml.Unmarshal([]byte(stripTemplates("roleRef:\n"+sectionAfter(d.body, "roleRef:")+"\nsubjects:\n"+sectionAfter(d.body, "subjects:"))), &parsed); err != nil {
+			t.Fatalf("parse %s binding: %v", suffix, err)
+		}
+		if !reflect.DeepEqual(parsed.RoleRef, wantRoleRef) {
+			t.Fatalf("%s RoleBinding roleRef mismatch.\nwant: %+v\ngot:  %+v", suffix, wantRoleRef, parsed.RoleRef)
+		}
+		if !reflect.DeepEqual(parsed.Subjects, wantSubjects) {
+			t.Fatalf("%s RoleBinding subjects mismatch (extra/altered subject = unintended grantee).\nwant: %+v\ngot:  %+v", suffix, wantSubjects, parsed.Subjects)
+		}
+		return
+	}
+	t.Fatalf("no RoleBinding with metadata.name ending -%s found in rbac.yaml", suffix)
+}
+
 // nsMarker is the token the chart-namespace action `{{ $ns }}` maps to. It is
 // DISTINCT from the generic action token so the binding guard can require the
 // subject namespace to come from `{{ $ns }}` specifically — a hardcoded or
