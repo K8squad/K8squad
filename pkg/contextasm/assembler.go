@@ -176,7 +176,10 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 	// NEVER element .Content: the bootstrap path is the highest-PII surface
 	// (§8), so telemetry here must not materialize work-item, comment or recall
 	// text.
-	ctx, span := telemetry.Tracer().Start(ctx, "contextasm.assemble")
+	ctx, span := telemetry.Tracer().Start(ctx, "contextasm.assemble", trace.WithAttributes(
+		attribute.String("code.namespace", "github.com/K8squad/K8squad/pkg/contextasm"),
+		attribute.String("code.function", "Assemble"),
+	))
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -357,6 +360,8 @@ func (a *Assembler) gatherArtifacts(ctx context.Context, runID string) ([]Artifa
 
 func startSourceSpan(ctx context.Context, source string, pinned bool) (context.Context, trace.Span) {
 	return telemetry.Tracer().Start(ctx, "contextasm.source."+source, trace.WithAttributes(
+		attribute.String("code.namespace", "github.com/K8squad/K8squad/pkg/contextasm"),
+		attribute.String("code.function", "startSourceSpan"),
 		attribute.String("ksquad.contextasm.source", source),
 		attribute.Bool("ksquad.contextasm.pinned", pinned),
 	))

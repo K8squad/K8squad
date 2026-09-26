@@ -213,6 +213,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	projectKey := project.Namespace + "/" + project.Name
 
 	ctx, span := telemetry.Tracer().Start(ctx, "scm.sync", trace.WithAttributes(
+		attribute.String("code.namespace", "github.com/K8squad/K8squad/pkg/controller/reposync"),
+		attribute.String("code.function", "Reconcile"),
 		attribute.String("ksquad.scm.provider", sync.Provider),
 		attribute.String("ksquad.scm.trigger", trigger),
 		attribute.String("ksquad.project.name", project.Name),

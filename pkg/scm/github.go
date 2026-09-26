@@ -315,7 +315,10 @@ func (p *GitHubProvider) Snapshot(ctx context.Context, repoURL string, options S
 // (GH-2). The span is a pure observability wrapper — it never alters the
 // fetch's result or error.
 func (p *GitHubProvider) traceFetch(ctx context.Context, kind string, fn func(context.Context) ([]NormalizedRecord, error)) ([]NormalizedRecord, error) {
-	ctx, span := telemetry.Tracer().Start(ctx, "scm.fetch."+kind)
+	ctx, span := telemetry.Tracer().Start(ctx, "scm.fetch."+kind, trace.WithAttributes(
+		attribute.String("code.namespace", "github.com/K8squad/K8squad/pkg/scm"),
+		attribute.String("code.function", "traceFetch"),
+	))
 	defer span.End()
 	recs, err := fn(ctx)
 	span.SetAttributes(attribute.Int("ksquad.scm.record_count", len(recs)))

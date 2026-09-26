@@ -94,6 +94,8 @@ func runSupervisor(args []string) error {
 	ctx := context.Background()
 	_, supSpan := telemetry.Tracer().Start(ctx, "supervisor.start",
 		trace.WithAttributes(
+			attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+			attribute.String("code.function", "runSupervisor"),
 			attribute.String("ksquad.supervisor.addr", addr),
 			attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
 		))
@@ -347,6 +349,8 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
 		trace.WithAttributes(
+			attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+			attribute.String("code.function", "handleTask"),
 			attribute.String("ksquad.task.id", r.URL.Query().Get("taskid")),
 			attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
 		),
@@ -408,6 +412,8 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 
 	_, streamSpan := telemetry.Tracer().Start(ctx, "supervisor.stream_events",
 		trace.WithAttributes(
+			attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+			attribute.String("code.function", "handleTask"),
 			attribute.String("ksquad.task.a2a_id", task.A2ATaskID),
 		))
 	defer streamSpan.End()
@@ -454,6 +460,8 @@ func (s *supervisor) runtime() (*shim.Engine, error) {
 
 		_, runtimeInitSpan := telemetry.Tracer().Start(ctx, "supervisor.runtime.init",
 			trace.WithAttributes(
+				attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
+				attribute.String("code.function", "runtime"),
 				attribute.String("ksquad.runtime.type", env("KSQUAD_RUNTIME_TYPE", os.Getenv("RUNTIME"))),
 				attribute.String("ksquad.pod.name", os.Getenv("HOSTNAME")),
 			))
