@@ -68,6 +68,7 @@ package toolusage
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -267,6 +268,14 @@ type Labels struct {
 	// model of a fallback is already carried by gen_ai.response.model +
 	// ksquad.llm.fallback on the llm.call span. Empty when unresolved.
 	ModelTier string
+	// Endpoint is the resolved model-provider route endpoint (ModelRoute.Endpoint,
+	// e.g. http://ollama:11434/v1) for BYO/Ollama-routed runs (ISI-4973). Like
+	// ModelTier it is deliberately OFF spanAttrs(): it is read ONLY by
+	// UsageEvent to stamp server.address / server.port / url.full on the
+	// llm.call span, so a routed run's network attribution is non-empty and the
+	// endpoint never leaks onto run/tool/skill spans. Empty on vendor-routed
+	// runs (no BYO endpoint).
+	Endpoint string
 }
 
 func (l Labels) spanAttrs() []attribute.KeyValue {
@@ -774,15 +783,18 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	// emitted before the next round-trip shares it.
 	stepIndex := m.advanceStep(taskID)
 	attrs := labels.spanAttrs()
+	if labels.Endpoint != "" {
+		attrs = append(attrs, networkAttrs(labels.Endpoint)...)
+	}
+	if stepIndex > 0 {
+		attrs = append(attrs, attrStepIndex.Int64(stepIndex))
+	}
 	attrs = append(attrs,
 		attrGenAIOperationName.String(operationChat),
 		attrGenAIRequestModel.String(p.Model),
 		attrGenAIInputTokens.Int(p.Input),
 		attrGenAIOutputTokens.Int(p.Output),
 	)
-	if stepIndex > 0 {
-		attrs = append(attrs, attrStepIndex.Int64(stepIndex))
-	}
 	if p.Provider != "" {
 		attrs = append(attrs, attrGenAISystem.String(p.Provider))
 	}
@@ -870,6 +882,27 @@ func recordContentEvents(span trace.Span, p a2a.UsagePayload) {
 		span.AddEvent("gen_ai.content.completion",
 			trace.WithAttributes(attribute.String("gen_ai.completion", p.Response)))
 	}
+}
+
+// networkAttrs derives the server network attribution (server.address,
+// server.port, url.full) from a BYO model-route endpoint (ISI-4973) so an
+// llm.call span for an Ollama/routed run is attributable to its endpoint
+// instead of carrying zero network fields (the backend could not otherwise
+// distinguish endpoint classes). A malformed endpoint degrades to url.full
+// carrying the raw value — attribution never drops the span.
+func networkAttrs(endpoint string) []attribute.KeyValue {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return []attribute.KeyValue{semconv.URLFull(endpoint)}
+	}
+	attrs := []attribute.KeyValue{semconv.URLFull(u.String())}
+	attrs = append(attrs, semconv.ServerAddress(u.Hostname()))
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			attrs = append(attrs, semconv.ServerPort(n))
+		}
+	}
+	return attrs
 }
 
 // FinishTask sweeps any still-open spans for taskID (a runtime that crashed

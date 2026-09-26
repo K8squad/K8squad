@@ -29,6 +29,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -167,6 +169,11 @@ func (e *Engine) labels(tk *task) toolusage.Labels {
 		if tk.project != "" {
 			l.Project = tk.project
 		}
+		// ISI-4973: the run's resolved BYO/Ollama route endpoint rides the
+		// llm.call span's network attribution (server.address / url.full). It
+		// is a per-task fact (ModelRoute.Endpoint on the submit payload), so it
+		// travels via Labels like the identity fields — never on the wire.
+		l.Endpoint = tk.endpoint
 	}
 	return l
 }
@@ -200,14 +207,17 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		return a2a.Status{}, fmt.Errorf("shim: build command for %s: %w", e.rt.Type(), err)
 	}
 	runCtx, cancel := context.WithCancel(context.Background())
+	resolvedModel := e.runModel(t)
 	tk := &task{
 		id:        t.A2ATaskID,
 		workItem:  t.WorkItemID,
 		agent:     t.Identity.Name,
 		team:      t.Identity.Squad,
 		project:   t.Identity.Project,
-		model:     e.runModel(t),
+		model:     resolvedModel,
 		modelTier: t.ModelTier,
+		endpoint:  t.ModelRoute.Endpoint,
+		provider:  providerForRoute(t.ModelRoute, resolvedModel),
 		state:     a2a.TaskSubmitted,
 		stream:    newTaskStream(),
 		cancel:    cancel,
@@ -302,6 +312,16 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Model == "" && tk.model != "" {
 			p.Usage.Model = tk.model
 		}
+		// GH #634: usage payloads without a provider (runtimes whose wire omits
+		// the serving provider — opencode v1.18.27's step-finish carries no
+		// providerID) are attributed to the run's RESOLVED gen_ai.system before
+		// the event leaves the process, so the llm.call span carries a non-empty
+		// gen_ai.system. Derived from the ModelRoute/launch model at submit
+		// (tk.provider); empty when neither yields a confident provider (the span
+		// then omits the attribute rather than fabricating one — GH #634 AC).
+		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Provider == "" && tk.provider != "" {
+			p.Usage.Provider = tk.provider
+		}
 		tk.emitProgress(p)
 		if e.telemetry != nil {
 			switch p.Kind {
@@ -368,6 +388,62 @@ func (e *Engine) runModel(t a2a.Task) string {
 		return t.ModelRoute.Model
 	}
 	return e.modelID()
+}
+
+// providerForRoute resolves gen_ai.system (the serving provider) for a run
+// whose usage wire omits it (GH #634), mirroring how Model is backfilled. It
+// is derived from the resolved ModelRoute + launch model:
+//
+//   - BYO/Ollama route (Endpoint != ""): "ollama" when the endpoint host
+//     suggests Ollama (host contains "ollama" or the local :11434
+//     OpenAI-compat port), else the fixed BYO provider id
+//     (capability.OpenCodeBYOProviderID, "ksquad-byo").
+//   - vendor run (Endpoint == ""): inferred from the resolved launch model
+//     (e.g. claude-sonnet-4 -> "anthropic"); "" when there is no confident
+//     inference — the span then omits the attribute rather than fabricating
+//     one (never fabricate, GH #634).
+func providerForRoute(route a2a.ModelRoute, model string) string {
+	if route.Endpoint != "" {
+		if ollamaEndpoint(route.Endpoint) {
+			return "ollama"
+		}
+		return capability.OpenCodeBYOProviderID
+	}
+	return providerFromModel(model)
+}
+
+// ollamaEndpoint reports whether a BYO endpoint host suggests an Ollama
+// server: the hostname contains "ollama", or it binds the conventional
+// local :11434 OpenAI-compat port (the zero-credential CI lane, spec §11/C9).
+func ollamaEndpoint(endpoint string) bool {
+	if u, err := url.Parse(endpoint); err == nil {
+		if strings.Contains(strings.ToLower(u.Hostname()), "ollama") {
+			return true
+		}
+		return u.Port() == "11434"
+	}
+	// Unparseable endpoint: fall back to raw substring checks so a BYO route
+	// never silently mislabels an Ollama host as a generic BYO provider.
+	lower := strings.ToLower(endpoint)
+	return strings.Contains(lower, "ollama") || strings.Contains(lower, ":11434")
+}
+
+// providerFromModel maps a resolved launch model id onto a vendor gen_ai.system
+// for a fixed-vendor run (GH #634). It is deliberately conservative: only the
+// confident, well-known model families map, and anything unrecognized yields
+// "" so the span omits the attribute instead of fabricating a provider.
+func providerFromModel(model string) string {
+	lower := strings.ToLower(model)
+	switch {
+	case strings.Contains(lower, "claude"):
+		return "anthropic"
+	case strings.Contains(lower, "gpt"), strings.Contains(lower, "openai"):
+		return "openai"
+	case strings.Contains(lower, "gemini"):
+		return "google"
+	default:
+		return ""
+	}
 }
 
 // hashToolArgs stamps the tool-call arguments hash at the shim's tool-call

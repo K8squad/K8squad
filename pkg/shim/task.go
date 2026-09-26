@@ -51,7 +51,20 @@ type task struct {
 	// run.start span so an operator sees WHY the run used its model. Empty on
 	// runtime-default runs and on pre-S5 dispatchers.
 	modelTier string
-	now       func() time.Time
+	// endpoint is the resolved model-provider route endpoint (ModelRoute.Endpoint,
+	// e.g. http://ollama:11434/v1) for BYO/Ollama-routed runs (ISI-4973). It is
+	// the run's network attribution source for the llm.call span (server.address
+	// / url.full). Empty on vendor-routed runs.
+	endpoint string
+	// provider is the resolved gen_ai.system (serving provider) for this run
+	// (GH #634), derived at submit from the resolved ModelRoute + launch model
+	// (see providerForRoute). It is the truthful backfill for usage events whose
+	// runtime wire omits the serving provider (opencode v1.18.27's step-finish
+	// carries no providerID), so llm.call spans carry a non-empty gen_ai.system.
+	// Empty when neither the route nor the launch model yields a confident
+	// provider — the span then omits the attribute rather than fabricating one.
+	provider string
+	now      func() time.Time
 
 	mu      sync.Mutex
 	state   a2a.TaskState

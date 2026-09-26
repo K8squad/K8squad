@@ -35,6 +35,7 @@ permissions:
   packages: write
   id-token: write        # cosign keyless (OIDC) + SLSA provenance attestation
   attestations: write
+  artifact-metadata: write  # Required for SLSA build provenance attestation
 
 env:
   REGISTRY: ghcr.io
@@ -52,23 +53,26 @@ jobs:
     steps:
       - name: Free up disk space
         run: |
-          set -euo pipefail
           echo "=== Disk space before cleanup ==="
           df -h
           
-          # Remove old Docker images and build cache
-          docker system prune -af --volumes
+          # Remove old Docker images and build cache (non-fatal)
+          echo "Cleaning up Docker resources..."
+          docker system prune -af --volumes || echo "Docker prune failed, continuing..."
           
-          # Remove build cache directories
-          sudo rm -rf /tmp/*
-          sudo rm -rf /var/tmp/*
+          # Remove build cache directories (non-fatal)
+          echo "Cleaning up temp directories..."
+          sudo rm -rf /tmp/* || echo "Temp cleanup failed, continuing..."
+          sudo rm -rf /var/tmp/* || echo "Var temp cleanup failed, continuing..."
           
-          # Clean up GitHub Actions cache directories
-          sudo rm -rf ~/.cache/gha/*
-          sudo rm -rf ~/.cache/docker/*
+          # Clean up GitHub Actions cache directories (non-fatal)
+          echo "Cleaning up cache directories..."
+          sudo rm -rf ~/.cache/gha/* || echo "GHA cache cleanup failed, continuing..."
+          sudo rm -rf ~/.cache/docker/* || echo "Docker cache cleanup failed, continuing..."
           
-          # Remove old log files
-          sudo find /home/ubuntu/actions-runner/_diag -name "*.log" -mtime +1 -delete
+          # Remove old log files (non-fatal)
+          echo "Cleaning up old log files..."
+          sudo find /home/ubuntu/actions-runner/_diag -name "*.log" -mtime +1 -delete || echo "Log cleanup failed, continuing..."
           
           echo "=== Disk space after cleanup ==="
           df -h
@@ -288,11 +292,12 @@ jobs:
       - name: Cleanup planning artifacts
         if: always()
         run: |
-          set -euo pipefail
-          # Clean up temporary files created during planning
-          rm -f /tmp/*.json /tmp/*.py
-          # Force garbage collection
-          docker system prune -f
+          # Clean up temporary files created during planning (non-fatal)
+          echo "Cleaning up planning artifacts..."
+          rm -f /tmp/*.json /tmp/*.py || echo "Temp file cleanup failed, continuing..."
+          # Force garbage collection (non-fatal)
+          docker system prune -f || echo "Docker prune failed, continuing..."
+          echo "Planning cleanup completed"
 
   build:
     name: image / ${{ matrix.component }}
@@ -449,12 +454,13 @@ jobs:
       - name: Cleanup build artifacts
         if: always()
         run: |
-          set -euo pipefail
-          # Clean up Docker build cache and temporary files
-          docker system prune -af --volumes
-          rm -rf /tmp/* /var/tmp/*
-          # Force garbage collection
-          echo 3 | sudo tee /proc/sys/vm/drop_caches
+          # Clean up Docker build cache and temporary files (non-fatal)
+          echo "Cleaning up build artifacts..."
+          docker system prune -af --volumes || echo "Docker prune failed, continuing..."
+          rm -rf /tmp/* /var/tmp/* || echo "Temp cleanup failed, continuing..."
+          # Force garbage collection (non-fatal)
+          echo 3 | sudo tee /proc/sys/vm/drop_caches || echo "Cache drop failed, continuing..."
+          echo "Cleanup completed"
 
   # ISI-3413 toolchain image lane. Builds and publishes every image the default Toolchain
   # catalog references (ghcr.io/k8squad/toolchains/<tool>:<catalog-version>). The matrix
@@ -580,12 +586,13 @@ jobs:
       - name: Cleanup build artifacts
         if: always()
         run: |
-          set -euo pipefail
-          # Clean up Docker build cache and temporary files
-          docker system prune -af --volumes
-          rm -rf /tmp/* /var/tmp/*
-          # Force garbage collection
-          echo 3 | sudo tee /proc/sys/vm/drop_caches
+          # Clean up Docker build cache and temporary files (non-fatal)
+          echo "Cleaning up build artifacts..."
+          docker system prune -af --volumes || echo "Docker prune failed, continuing..."
+          rm -rf /tmp/* /var/tmp/* || echo "Temp cleanup failed, continuing..."
+          # Force garbage collection (non-fatal)
+          echo 3 | sudo tee /proc/sys/vm/drop_caches || echo "Cache drop failed, continuing..."
+          echo "Cleanup completed"
 
   # ISI-3653 shim image lane. Builds and publishes the per-runtime A2A shim sidecars
   # (ghcr.io/k8squad/ksquad-shim-<runtime>) from the single Dockerfile.shim, selecting the
@@ -723,9 +730,10 @@ jobs:
       - name: Cleanup build artifacts
         if: always()
         run: |
-          set -euo pipefail
-          # Clean up Docker build cache and temporary files
-          docker system prune -af --volumes
-          rm -rf /tmp/* /var/tmp/*
-          # Force garbage collection
-          echo 3 | sudo tee /proc/sys/vm/drop_caches
+          # Clean up Docker build cache and temporary files (non-fatal)
+          echo "Cleaning up build artifacts..."
+          docker system prune -af --volumes || echo "Docker prune failed, continuing..."
+          rm -rf /tmp/* /var/tmp/* || echo "Temp cleanup failed, continuing..."
+          # Force garbage collection (non-fatal)
+          echo 3 | sudo tee /proc/sys/vm/drop_caches || echo "Cache drop failed, continuing..."
+          echo "Cleanup completed"
