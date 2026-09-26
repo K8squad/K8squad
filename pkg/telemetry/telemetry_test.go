@@ -142,6 +142,48 @@ func TestSetupRecordsMetric(t *testing.T) {
 	}
 }
 
+// TestSetupCarriesVCSRepositoryURLFull is the P3#8 / ISI-5016 proof: the
+// telemetry resource must carry vcs.repository.url.full so every span's service
+// maps to its repository deterministically (a backend must not guess the
+// service↔repo mapping by name resemblance). It also verifies an explicit
+// RepositoryURL override wins over the default.
+func TestSetupCarriesVCSRepositoryURLFull(t *testing.T) {
+	cases := []struct {
+		name          string
+		repositoryURL string
+		wantURL       string
+	}{
+		{"defaults to K8squad repo", "", "https://github.com/K8squad/K8squad"},
+		{"honors explicit override", "https://github.com/acme/widget", "https://github.com/acme/widget"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buf := &bytes.Buffer{}
+			_, shutdown, err := Setup(context.Background(), Options{
+				ServiceName:   "test-svc",
+				RepositoryURL: tc.repositoryURL,
+				Writer:        buf,
+			})
+			if err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+			_, span := Tracer().Start(context.Background(), "vcs.resource.span")
+			span.End()
+			if err := shutdown(context.Background()); err != nil {
+				t.Fatalf("shutdown: %v", err)
+			}
+
+			out := buf.String()
+			if !strings.Contains(out, "vcs.repository.url.full") {
+				t.Errorf("span export missing resource vcs.repository.url.full:\n%s", out)
+			}
+			if !strings.Contains(out, tc.wantURL) {
+				t.Errorf("span export missing vcs.repository.url.full value %q:\n%s", tc.wantURL, out)
+			}
+		})
+	}
+}
+
 // TestMeterSafeBeforeSetup proves the no-op-before-Setup contract the accessor
 // promises: recording through Meter() with no MeterProvider installed neither
 // panics nor errors, so bootstrap-path code can build instruments at init time.
