@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -443,6 +444,77 @@ func TestBuildTaskProjectsBYOModelEndpoint(t *testing.T) {
 	}
 	if task.ModelRoute.Token != "s3cr3t-bearer" {
 		t.Errorf("ModelRoute.Token = %q, want the resolved endpoint bearer (token-guarded BYO)", task.ModelRoute.Token)
+	}
+}
+
+// TestBuildTaskSerializesRunsPerBYOEndpoint is the ISI-5037 mitigation: two
+// Runs resolving the SAME BYO endpoint must not dispatch concurrently — the
+// first buildTask acquires the endpoint slot, the second fails with
+// errEndpointSlotBusy (which the driver turns into a quiet bounded requeue),
+// the holder's own rebuild is an idempotent grant, and releasing the holder
+// admits the waiter. With no gate configured the legacy behavior is
+// untouched (both build).
+func TestBuildTaskSerializesRunsPerBYOEndpoint(t *testing.T) {
+	const runUID1 = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	const runUID2 = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+	mkRun := func(uid, name string) *api.Run {
+		return &api.Run{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: types.UID(uid)},
+			Spec: api.RunSpec{
+				TeamRef:     api.ObjectRef{Name: "team-a"},
+				ProjectRef:  api.ObjectRef{Name: "proj-1"},
+				WorkItemRef: "99999999-8888-7777-6666-555555555555",
+				Agents:      []api.ObjectRef{{Name: "ollama-coder"}},
+			},
+		}
+	}
+	agent := &api.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: "ollama-coder", Namespace: "team-a"},
+		Spec: api.AgentSpec{
+			Model:            "qwen3.6:latest",
+			ModelEndpointRef: &api.SecretRef{Name: "ollama-endpoint"},
+		},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "ollama-endpoint", Namespace: "team-a"},
+		Data: map[string][]byte{
+			"endpointURL": []byte("http://10.0.0.185:11434/v1"),
+		},
+	}
+	gate := NewEndpointGate(1)
+	cl := fake.NewClientBuilder().WithScheme(dispatchScheme(t)).
+		WithObjects(mkRun(runUID1, "run-byo-1"), mkRun(runUID2, "run-byo-2"), agent, secret, dispatchTeamObj()).Build()
+	d := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl, EndpointGate: gate},
+		source: fakeDispatchSource{title: "wire ollama", body: "route this run", fence: "3"},
+	}
+
+	if _, err := d.buildTask(context.Background(), runUID1, runUID1); err != nil {
+		t.Fatalf("first run's buildTask must acquire the endpoint slot: %v", err)
+	}
+	if _, err := d.buildTask(context.Background(), runUID1, runUID1); err != nil {
+		t.Fatalf("the holder's own rebuild must be an idempotent grant (re-drive/reattach): %v", err)
+	}
+	_, err := d.buildTask(context.Background(), runUID2, runUID2)
+	if !errors.Is(err, errEndpointSlotBusy) {
+		t.Fatalf("second run over the busy endpoint: err = %v, want errEndpointSlotBusy", err)
+	}
+	gate.ReleaseByRun(runUID1)
+	if _, err := d.buildTask(context.Background(), runUID2, runUID2); err != nil {
+		t.Fatalf("the waiter must build once the holder releases: %v", err)
+	}
+
+	// Gate disabled (nil): both runs build concurrently, the pre-gate shape.
+	gate.ReleaseByRun(runUID2)
+	ungated := &operatorDispatch{
+		cfg:    OperatorDispatchConfig{Client: cl},
+		source: fakeDispatchSource{title: "wire ollama", body: "route this run", fence: "3"},
+	}
+	if _, err := ungated.buildTask(context.Background(), runUID1, runUID1); err != nil {
+		t.Fatalf("nil gate must not gate (run 1): %v", err)
+	}
+	if _, err := ungated.buildTask(context.Background(), runUID2, runUID2); err != nil {
+		t.Fatalf("nil gate must not gate (run 2): %v", err)
 	}
 }
 
