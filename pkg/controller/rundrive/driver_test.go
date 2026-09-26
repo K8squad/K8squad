@@ -20,9 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -949,5 +951,183 @@ func TestFollowFailedStillTakesDeathPath(t *testing.T) {
 	}
 	if len(claims.retryCalls) != 1 {
 		t.Fatalf("settled-failed run did not enter the retry lap: retry=%v", claims.retryCalls)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-5037: per-BYO-endpoint serialization gate
+// ---------------------------------------------------------------------------
+
+// TestEndpointSlotBusyWaitsWithoutDriving: a buildTask busy refusal (sticky
+// effects error wrapping errEndpointSlotBusy) converts to a quiet bounded
+// requeue at the endpoint-wait cadence — the durable step stays put, no error
+// surfaces, and the wait is stamped legibly on the Run CR.
+func TestEndpointSlotBusyWaitsWithoutDriving(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepDispatching, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepDispatching, fence: 1, advanceOK: true}
+	eff := &fakeMachineEffects{err: fmt.Errorf("coord.ProdEffects.Dispatch: submit: a2a: build task for run %s: "+
+		"rundrive: BYO model endpoint http://10.0.0.185:11434/v1 has no free slot (held by run other): %w", uid, errEndpointSlotBusy)}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+
+	rq, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"})
+	if err != nil {
+		t.Fatalf("busy endpoint must not surface an error: %v", err)
+	}
+	if rq != endpointSlotWaitDelay {
+		t.Fatalf("requeue = %v, want endpointSlotWaitDelay (%v)", rq, endpointSlotWaitDelay)
+	}
+	if store.advances != 0 {
+		t.Fatalf("the machine must not advance past a busy endpoint (%d advances)", store.advances)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	cond := meta.FindStatusCondition(got.Status.Conditions, ConditionEndpointSlotWait)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("WaitingForEndpointSlot condition not stamped: %+v", got.Status.Conditions)
+	}
+	if cond.Reason != "EndpointBusy" || !strings.Contains(cond.Message, "held by run other") {
+		t.Fatalf("condition must name the busy reason and holder: %+v", cond)
+	}
+}
+
+// TestEndpointSlotWaitConditionClearsAfterDrive: once a drive pass gets past
+// the dispatch step, a stale WaitingForEndpointSlot condition is removed so
+// the CR no longer reads as queued.
+func TestEndpointSlotWaitConditionClearsAfterDrive(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	run.Status.Conditions = []metav1.Condition{{
+		Type:               ConditionEndpointSlotWait,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "EndpointBusy",
+		Message:            "Waiting for a slot on the BYO model endpoint",
+		LastTransitionTime: metav1.Now(),
+	}}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).
+		WithStatusSubresource(&api.Run{}).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepDispatching, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1}
+	store := &fakeMachineStore{step: reconcile.StepDispatching, fence: 1, advanceOK: true}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: &fakeMachineEffects{}})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("clean drive: %v", err)
+	}
+	var got api.Run
+	if err := cl.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "run-1"}, &got); err != nil {
+		t.Fatalf("re-read run: %v", err)
+	}
+	if cond := meta.FindStatusCondition(got.Status.Conditions, ConditionEndpointSlotWait); cond != nil {
+		t.Fatalf("stale wait condition must clear after the slot frees: %+v", cond)
+	}
+}
+
+// TestEndpointGateReleasedOnFailEnter: a run that dies outside its retry
+// budget never reaches the dispatcher's OnDone, so the driver frees its
+// endpoint permit defensively at FailEnter — otherwise every later run on
+// that endpoint would queue forever.
+func TestEndpointGateReleasedOnFailEnter(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{
+		found: true,
+		state: ClaimState{Step: reconcile.StepRunning, Fence: 2, Holder: "a",
+			LeaseExpiresAt: leaseAgo(time.Minute)},
+		laps: 2, failOK: true, // MaxRetries nil ⇒ 0 budget, laps 2 ≥ 0
+	}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid); !ok {
+		t.Fatal("fixture: the dying run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("fail-enter drive: %v", err)
+	}
+	if !claims.failCall {
+		t.Fatal("budget exhausted death must FailEnter")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next"); !ok {
+		t.Fatal("FailEnter must release the dead run's endpoint slot")
+	}
+}
+
+// TestEndpointGateReleasedOnCancelFinish: a killed run's follow ends errored
+// (or never started) and an errored OnDone keeps the permit by design, so the
+// terminal kill frees the endpoint slot as the last certain release point.
+func TestEndpointGateReleasedOnCancelFinish(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{
+		found: true,
+		state: ClaimState{Step: reconcile.StepCancelling, Fence: 3, Holder: "a",
+			LeaseExpiresAt: leaseAgo(time.Minute)},
+		cancelFinishOK: true,
+	}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid); !ok {
+		t.Fatal("fixture: the killed run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("cancel-finish drive: %v", err)
+	}
+	if !claims.cancelFinishCall {
+		t.Fatal("cancelling step must complete via CancelFinish")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next"); !ok {
+		t.Fatal("CancelFinish must release the killed run's endpoint slot")
+	}
+}
+
+// TestEndpointGateKeptAcrossRetryLap: the retry path deliberately keeps the
+// permit — the same run re-acquires it as a no-op on the next lap, so no
+// other run can jump the lap's backoff queue.
+func TestEndpointGateKeptAcrossRetryLap(t *testing.T) {
+	uid := "11111111-1111-1111-1111-111111111111"
+	run := newTestRun(uid, "10000000-0000-0000-0000-000000000001")
+	max := int32(3)
+	run.Spec.RetryPolicy = &api.RetryPolicy{MaxRetries: &max}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{
+		found: true,
+		state: ClaimState{Step: reconcile.StepRunning, Fence: 7, Holder: "agent-1",
+			LeaseExpiresAt: leaseAgo(time.Minute)},
+		laps: 1, retryOK: true, retryNewFence: 8,
+	}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{})
+	d.Sandbox = &fakeReleaser{}
+	gate := NewEndpointGate(1)
+	d.EndpointGate = gate
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid); !ok {
+		t.Fatal("fixture: the retrying run must hold the endpoint slot")
+	}
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("retry drive: %v", err)
+	}
+	if len(claims.retryCalls) != 1 {
+		t.Fatal("in-budget death must enter the retry lap")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", "run-next"); ok {
+		t.Fatal("the retry lap must KEEP the endpoint slot (same run re-acquires next lap)")
+	}
+	if _, ok := gate.Acquire("http://10.0.0.185:11434/v1", uid); !ok {
+		t.Fatal("the retrying run's own re-acquire must stay an idempotent grant")
 	}
 }

@@ -118,6 +118,13 @@ type OperatorDispatchConfig struct {
 	// env injection entirely — the agent simply gets no token (fail-safe: an
 	// absent token makes the coord API refuse the call, never fail-open).
 	TaskIOMinter *taskio.Minter
+	// EndpointGate, when set, serializes Runs per resolved BYO endpoint
+	// (ISI-5037): buildTask acquires a slot for the run before the task ever
+	// reaches the endpoint, so a second Run over the same single-stream
+	// endpoint (Ollama) waits in the drive loop instead of dispatching into
+	// a stream the server will never start within the watchdog window. Nil
+	// disables gating (ledger-only lanes, tests that predate the gate).
+	EndpointGate *EndpointGate
 	// TaskIOCoordURL is the in-cluster coord/apiserver base URL injected as
 	// KSQUAD_COORD_URL (§AC7: an in-cluster Service, not a public surface).
 	// Empty disables task-io injection — both the minter and the URL are
@@ -322,6 +329,22 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		// is captured off the resolution rather than off modelRoute.
 		modelTier = string(tier)
 		if endpoint.BaseURL != "" {
+			// ISI-5037: serialize Runs per BYO endpoint. A single-stream
+			// endpoint (Ollama) accepts concurrent streams at TCP but queues
+			// them with an unbounded first-token wait, so a concurrent Run
+			// dies on the shim's first-output watchdog. Take the run's slot
+			// BEFORE the task is built: a busy endpoint aborts the dispatch
+			// with errEndpointSlotBusy, which the driver converts to a
+			// bounded quiet requeue (the run waits OUTSIDE the endpoint).
+			// Acquire is idempotent for this run (re-drive/lap/re-attach),
+			// and the permit releases on the follow's clean OnDone or the
+			// driver's terminal fail/cancel paths — never here.
+			if gate := d.cfg.EndpointGate; gate != nil {
+				if holder, ok := gate.Acquire(endpoint.BaseURL, runID); !ok {
+					return wire.Task{}, fmt.Errorf("rundrive: BYO model endpoint %s has no free slot (held by run %s); run %s waits: %w",
+						endpoint.BaseURL, holder, runID, errEndpointSlotBusy)
+				}
+			}
 			modelRoute = wire.ModelRoute{
 				Endpoint: endpoint.BaseURL,
 				Model:    endpoint.Model,

@@ -860,6 +860,26 @@ func main() {
 			}
 		}
 
+		// ISI-5037: the per-BYO-endpoint serialization gate. The shared LAN
+		// Ollama endpoint serves only one long stream at a time and queues
+		// concurrent ones with an unbounded first-token wait, so a second Run
+		// racing the endpoint died on the shim's first-output watchdog (~50%
+		// of sandbox runs, ISI-5036). The gate makes the second Run wait in
+		// the drive loop instead. Slot count is env-tunable for endpoints
+		// that CAN serve concurrent streams; default 1 (strict serialize).
+		endpointGateSlots := 1
+		if v := os.Getenv("KSQUAD_BYO_ENDPOINT_MAX_CONCURRENT"); v != "" {
+			switch n, nerr := strconv.Atoi(v); {
+			case nerr != nil:
+				ctrl.Log.Error(nerr, "invalid KSQUAD_BYO_ENDPOINT_MAX_CONCURRENT; using 1 (strict serialization)", "value", v)
+			case n < 1:
+				ctrl.Log.Info("KSQUAD_BYO_ENDPOINT_MAX_CONCURRENT below 1; using 1 (strict serialization)", "value", v)
+			default:
+				endpointGateSlots = n
+			}
+		}
+		endpointGate := rundrive.NewEndpointGate(endpointGateSlots)
+
 		var a2aErr error
 		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
 			DB:     db,
@@ -884,6 +904,7 @@ func main() {
 			ContextAssemblers: ctxDeps,
 			TaskIOMinter:      taskIOMinter,
 			TaskIOCoordURL:    taskIOCoordURL,
+			EndpointGate:      endpointGate,
 			// ISI-4238: project the run's LLM observability facts (usage
 			// events → llmInteractions/totalTokenUsage; status events →
 			// traceID) onto Run.Status as the innermost TelemetrySink leg,
@@ -961,8 +982,15 @@ func main() {
 				if followErr != nil {
 					ctrl.Log.Info("a2a follow ended with error; leaving run sandbox in place (error is not proof of completion)",
 						"run.id", runID, "followErr", followErr.Error())
+					// ISI-5037: the endpoint permit is kept on purpose — an
+					// errored follow may still have a live agent streaming
+					// from the BYO endpoint. The driver's terminal fail/cancel
+					// paths release it defensively when the run truly ends.
 					return
 				}
+				// ISI-5037 primary release: the agent's session is verifiably
+				// over, so its BYO endpoint slot frees for the next queued Run.
+				endpointGate.ReleaseByRun(runID)
 				if err := pool.Release(context.Background(), runID); err != nil {
 					ctrl.Log.Error(err, "sandbox release at agent completion failed (pool draining retries teardown)",
 						"run.id", runID)
@@ -1043,6 +1071,10 @@ func main() {
 			runner)
 		driver.Sandbox = pool  // dead-run sandbox teardown on the retry path (§9.3)
 		driver.Health = health // ISI-4384: per-controller reconcile latency/error metrics
+		// ISI-5037: the driver releases BYO endpoint permits defensively on the
+		// terminal fail/cancel paths (runs that never reach a clean OnDone) and
+		// surfaces the endpoint-slot wait on the Run CR while a run queues.
+		driver.EndpointGate = endpointGate
 		// ISI-4310 gone-sandbox recovery: when a bound sandbox pod is provably
 		// gone (deploy-restart AdoptOrReap, eviction, node loss), the driver
 		// clears the durable bind marker so the retry lap binds fresh warmth
