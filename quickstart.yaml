@@ -1,7 +1,7 @@
 # K8squad quickstart squad — apply after installing the operator chart.
 #   kubectl apply -f https://charts.k8squad.io/quickstart.yaml
 # Generated from hack/quickstart/squad.yaml — do not edit in place.
-# appVersion: 0.1.0
+# appVersion: 0.2.0
 # K8squad quickstart squad (ISI-2632).
 #
 # The self-contained "hello squad" the README's step 2 applies after the Helm
