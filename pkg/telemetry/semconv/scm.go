@@ -99,10 +99,18 @@ var SCMSpanConventions = []SpanConvention{
 	},
 	{
 		Name:  SpanSCMFetchPrefix + "<kind>",
-		Brief: "A child of scm.sync per entity kind (GH-2): scm.fetch.pull_requests, scm.fetch.issues, scm.fetch.check_runs, scm.fetch.artifacts, scm.fetch.releases, scm.fetch.branches. Isolates which provider fetch is slow or failing.",
+		Brief: "A child of scm.sync per entity kind (GH-2): scm.fetch.pull_requests, scm.fetch.issues, scm.fetch.check_runs, scm.fetch.artifacts, scm.fetch.releases, scm.fetch.branches. Isolates which provider fetch is slow or failing. Carries the outbound provider call's HTTP client semantics (method, path, server.address, response status) so RED analysis can group per route/status per SCM call (ISI-5013).",
 		Attributes: []Attribute{
 			{Key: "ksquad.scm.record_count", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-GH",
 				Brief: "Number of records the per-kind fetcher returned."},
+			{Key: "http.request.method", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-GH",
+				Brief: "The outbound provider API method (e.g. GET) stamped on the span by the provider HTTP transport."},
+			{Key: "url.path", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-GH",
+				Brief: "The outbound provider API path (e.g. /repos/{owner}/{repo}/issues), stamped from the request URL."},
+			{Key: "server.address", Type: TypeString, Requirement: Required, Stability: Stable, Workstream: "WS-GH",
+				Brief: "The provider API host (e.g. api.github.com) the outbound call targeted."},
+			{Key: "http.response.status_code", Type: TypeInt, Requirement: Required, Stability: Stable, Workstream: "WS-GH",
+				Brief: "The provider API response status code for the outbound call."},
 		},
 	},
 	{

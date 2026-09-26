@@ -203,8 +203,9 @@ func TestSCMConformance_SpansWellFormed(t *testing.T) {
 			t.Errorf("SCM span %q documents no attributes", sc.Name)
 		}
 		for _, a := range sc.Attributes {
-			if !strings.HasPrefix(a.Key, "scm.") && !strings.HasPrefix(a.Key, "ksquad.scm.") {
-				t.Errorf("SCM span %q attribute %q is not in the scm.*/ksquad.scm.* namespace", sc.Name, a.Key)
+			if !strings.HasPrefix(a.Key, "scm.") && !strings.HasPrefix(a.Key, "ksquad.scm.") &&
+				!isStandardOTelSemconvKey(a.Key) {
+				t.Errorf("SCM span %q attribute %q is not in the scm.*/ksquad.scm.* namespace (or a standard OTel semconv key)", sc.Name, a.Key)
 			}
 			if !validType[a.Type] {
 				t.Errorf("SCM span %q attribute %q has invalid type %q", sc.Name, a.Key, a.Type)
@@ -225,4 +226,18 @@ func keysSorted(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// isStandardOTelSemconvKey reports whether key is a standard OpenTelemetry
+// HTTP/network semantic-convention key (rather than a K8squad domain key). The
+// scm.fetch.<kind> span carries OTel HTTP client semantics (method/path/
+// server.address/status — ISI-5013) in addition to the ksquad.scm.* domain
+// attributes, so those standard namespaces are legitimate here.
+func isStandardOTelSemconvKey(key string) bool {
+	for _, ns := range []string{"http.", "url.", "server.", "client.", "network."} {
+		if strings.HasPrefix(key, ns) {
+			return true
+		}
+	}
+	return false
 }

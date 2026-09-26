@@ -30,6 +30,8 @@ import (
 	"github.com/google/go-github/v57/github"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 
 	"github.com/K8squad/K8squad/pkg/telemetry"
@@ -144,6 +146,34 @@ func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, er
 	return resp, err
 }
 
+// httpSpanTransport stamps HTTP client semantics (http.request.method,
+// url.path, server.address, http.response.status_code) onto the currently
+// recording span on the request context, so a scm.fetch.<kind> span carries the
+// outbound provider call's RED surface instead of zero http.* attributes
+// (ISI-5013): the backend can group method/route/status per outbound SCM call.
+// It is a pure observer — the request and response pass through untouched. When
+// the request carries no recording span (e.g. GetRepo/CreateComment/UpdateIssue
+// run without a scm.fetch span), it is a no-op. The response status code is
+// stamped only when a response was received (a transport error has none).
+type httpSpanTransport struct {
+	base http.RoundTripper
+}
+
+func (t *httpSpanTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if span := trace.SpanFromContext(req.Context()); span.IsRecording() {
+		span.SetAttributes(
+			semconv.HTTPRequestMethodKey.String(req.Method),
+			semconv.URLPath(req.URL.Path),
+			semconv.ServerAddress(req.URL.Hostname()),
+		)
+		if resp != nil {
+			span.SetAttributes(semconv.HTTPResponseStatusCode(resp.StatusCode))
+		}
+	}
+	return resp, err
+}
+
 // NewGitHubProvider creates a new GitHub provider instance. A malformed
 // baseURL is returned as an error — never silently swallowed (the old
 // `client.BaseURL, _ = url.Parse(baseURL)` dropped it and pointed every
@@ -163,6 +193,10 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 	// Wrap AFTER auth so the rate header (present on every GitHub response) is
 	// observed regardless of whether the call was authenticated (GH-3).
 	transport = &rateTrackingTransport{base: transport, remaining: &p.lastRate}
+	// Outermost observer: stamps HTTP client semantics onto the active
+	// scm.fetch.<kind> span (ISI-5013). It reads the same request/response the
+	// rate tracker sees, so it can sit above it without losing anything.
+	transport = &httpSpanTransport{base: transport}
 	httpClient := &http.Client{
 		Transport: transport,
 		Timeout:   githubHTTPTimeout,
