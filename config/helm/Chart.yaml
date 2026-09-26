@@ -8,15 +8,15 @@ description: |
   independently-versioned k8squad-crds chart (config/helm-crds), which must be
   installed/upgraded first (ADR-0002, Option B).
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.29.0-0"
 annotations:
   # Minimum k8squad-crds chart version this control plane requires (ADR-0002
   # §4). Bump when a control-plane change depends on a newly added CRD field.
   # The CRD chart must be at least this version (newer is always safe;
   # additive-only). Best-effort/non-fatal — surfaced in NOTES.txt.
-  k8squad.io/min-crds-version: "0.1.0"
+  k8squad.io/min-crds-version: "0.2.0"
 home: https://k8squad.io
 sources:
   - https://github.com/K8squad/K8squad
