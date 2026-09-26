@@ -336,6 +336,11 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("rundrive: read claim for %s: %w", req.NamespacedName, err)
 	}
+	// Capture the durable step so the span's outcome reflects a terminal
+	// StepFailed absorbed by the IsTerminal early-return below (no Go error is
+	// returned for it) — otherwise a failed Run leaves its span status unset
+	// (ISI-5011 P0#2).
+	finalStep = cs.Step
 	if !found {
 		// Not enrolled in coord (work item absent or ref dangling): nothing to
 		// drive. The projector reports Pending; re-creating coordination rows
