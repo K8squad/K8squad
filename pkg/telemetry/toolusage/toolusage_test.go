@@ -712,6 +712,48 @@ func TestUsageEventFallbackMarker(t *testing.T) {
 	}
 }
 
+// TestRunStartMarksRootSpan (ISI-5012 P1#3, root half): run.start is the
+// flow-first span of a run, so it carries request.is_root_span=true — a backend
+// anchors the run trace on it instead of inferring a root from a missing parent.
+func TestRunStartMarksRootSpan(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+
+	runCtx, _ := m.RunStart(context.Background(), Labels{RunID: "run-r", Agent: "dev"}, "run-r")
+	m.RunEnd(runCtx, "run-r", "completed", "")
+
+	s := findSpan(t, sr, SpanRunStart)
+	if got := attrMap(s.Attributes())["request.is_root_span"]; got != "true" {
+		t.Errorf("run.start request.is_root_span = %q, want true", got)
+	}
+}
+
+// TestLLMCallSpanStatusCodes (ISI-5012 P1#3, status half): every llm.call span
+// carries a non-empty span.status_code derived from the outcome — Ok for a
+// clean round-trip, Error for an "error"-class finish reason. Previously client
+// llm.call spans carried no status at all.
+func TestLLMCallSpanStatusCodes(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+
+	m.UsageEvent(ctx, Labels{RunID: "run-s", Agent: "dev"}, "run-s", a2a.UsagePayload{
+		Model: "anthropic/claude-sonnet-4", Input: 10, Output: 5, FinishReason: "stop",
+	})
+	m.UsageEvent(ctx, Labels{RunID: "run-s2", Agent: "dev"}, "run-s2", a2a.UsagePayload{
+		Model: "anthropic/claude-sonnet-4", Input: 10, Output: 0, FinishReason: "error",
+	})
+
+	spans := spansByName(sr, SpanLLMCall)
+	if len(spans) != 2 {
+		t.Fatalf("want 2 llm.call spans, got %d", len(spans))
+	}
+	if spans[0].Status().Code != codes.Ok {
+		t.Errorf("clean round-trip status = %v, want Ok", spans[0].Status().Code)
+	}
+	if spans[1].Status().Code != codes.Error {
+		t.Errorf("error finish-reason status = %v, want Error", spans[1].Status().Code)
+	}
+}
+
 // TestUsageEventContentGate (ISI-4383, ADR-0021 D3): prompt/response bodies
 // never ride the span by default (PII posture), and appear as gated span
 // EVENTS — never attributes — only when the content gate is explicitly on.

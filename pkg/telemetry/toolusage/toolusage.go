@@ -158,6 +158,12 @@ const (
 	// Reset per run (RunStart arms it, RunEnd/FinishTask clear it) to keep the
 	// value bounded within a run's lifetime.
 	attrStepIndex = attribute.Key("ksquad.step.index")
+	// attrIsRootSpan marks a span as the flow-first (root) span of a run
+	// (ISI-5012, P1#3): request.is_root_span=true tells a backend which span
+	// anchors the flow, so root-span analysis stops inferring it from a
+	// missing parent. Stamped on run.start (shim, via RunStart); the operator's
+	// run.reconcile root is marked by the rundrive driver (ISI-5010).
+	attrIsRootSpan = attribute.Key("request.is_root_span")
 	// GenAI semconv keys the v1.40 stable set does not export as typed
 	// constants yet (ISI-4238 / ISI-4383 llm.call spans). Kept as raw keys
 	// so the whole gen_ai.* surface reads in one place.
@@ -683,6 +689,10 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 	if labels.ModelTier != "" {
 		attrs = append(attrs, attrModelTier.String(labels.ModelTier))
 	}
+	// ISI-5012: run.start is the flow-first span of a run — mark it as the
+	// root so a backend anchors the run's trace on it instead of inferring a
+	// root from a missing parent (the "zero request.is_root_span" gap).
+	attrs = append(attrs, attrIsRootSpan.Bool(true))
 	runCtx, span := m.start(ctx, SpanRunStart, attrs)
 	m.mu.Lock()
 	m.runs[taskID] = span
@@ -860,22 +870,42 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	if contentTracing.Load() {
 		recordContentEvents(span, p)
 	}
-	// ISI-5015: a failed round-trip records its exception as a span event (with
-	// type + message) and an Error status, so a timeout/provider failure is
-	// diagnosable on the span instead of surfacing only as a bare status code.
+	// ISI-5012 (P1#3): every llm.call span carries a non-empty span.status_code
+	// derived from the call outcome, so a backend never sees the Unset default
+	// (previously 0% of client llm.call spans carried status). A usage event
+	// only fires for a completed round-trip, so the default is Ok; an error
+	// payload or an "error"-class finish reason marks the call failed.
+	status, description := llmCallStatus(p.FinishReason)
 	if p.Error != "" {
-		span.SetStatus(codes.Error, p.Error)
+		// ISI-5015: a failed round-trip records its exception as a span event
+		// (with type + message) and an Error status, so a timeout/provider
+		// failure is diagnosable on the span instead of surfacing only as a
+		// bare status code.
+		status, description = codes.Error, p.Error
 		span.AddEvent(semconv.ExceptionEventName,
 			trace.WithAttributes(
 				semconv.ExceptionType(llmErrorType(p.ErrorType)),
 				semconv.ExceptionMessage(p.Error),
 			))
 	}
+	span.SetStatus(status, description)
 	span.End()
 
 	m.ins.LLMCalls.WithLabelValues(p.Model, labels.Agent).Inc()
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "input").Add(float64(p.Input))
 	m.ins.LLMTokens.WithLabelValues(p.Model, labels.Agent, "output").Add(float64(p.Output + p.Reasoning))
+}
+
+// llmCallStatus derives the llm.call span status from the step's finish
+// reason (ISI-5012): an "error"-class finish reason marks the call failed;
+// anything else is Ok — a usage event only fires for a completed round-trip,
+// so "no finish reason" still means the step produced its token block. Every
+// llm.call span therefore carries a non-empty span.status_code.
+func llmCallStatus(finishReason string) (codes.Code, string) {
+	if strings.EqualFold(finishReason, "error") {
+		return codes.Error, ""
+	}
+	return codes.Ok, ""
 }
 
 // recordContentEvents adds the D3 opt-in prompt/response bodies as span
