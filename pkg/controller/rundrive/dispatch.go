@@ -182,17 +182,20 @@ type operatorDispatch struct {
 }
 
 // errSandboxPending marks the benign bind/readiness race: the sandbox pod is
-// bound but has not yet been scheduled+networked, so it has no PodIP. It is the
-// EXPECTED path on the first reconcile pass(es) after bind, cleared on requeue
-// once the CNI assigns an IP (ISI-4441). The driver requeues quietly on it
-// instead of recording a span exception — only a pod that stays IP-less past
-// podIPReadyDeadline (a genuine scheduling/CNI failure) escalates to a loud,
-// recorded error so it stands out from the normal race.
-var errSandboxPending = errors.New("rundrive: sandbox pod has no IP yet")
+// bound but has not yet been scheduled+networked+readied, so it has no PodIP or
+// has not passed its readiness probe yet. It is the EXPECTED path on the first
+// reconcile pass(es) after bind, cleared on requeue once the CNI assigns an IP
+// AND the supervisor's :8080 probe goes Ready (ISI-4441; not-Ready gate added
+// for ISI-5028). The driver requeues quietly on it instead of recording a span
+// exception — only a pod that stays unready past podIPReadyDeadline (a genuine
+// scheduling/CNI/supervisor failure) escalates to a loud, recorded error so it
+// stands out from the normal race.
+var errSandboxPending = errors.New("rundrive: sandbox pod not ready to dispatch yet")
 
-// podIPReadyDeadline bounds how long the pre-IP case stays benign. A bound pod
-// normally gets its IP within seconds; past this the IP-less state is no longer
-// a race but a scheduling/CNI fault worth surfacing on the reconcile span.
+// podIPReadyDeadline bounds how long the pre-IP / not-yet-Ready case stays
+// benign. A bound pod normally gets its IP and passes readiness within seconds;
+// past this the unready state is no longer a race but a scheduling/CNI fault or
+// a dead supervisor worth surfacing on the reconcile span.
 const podIPReadyDeadline = 2 * time.Minute
 
 // dispatchSource is the coord read-side the TaskBuilder needs, kept minimal
@@ -469,9 +472,10 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 // warm-pool Boot probes agree on). Returns "" when the Run has no sandboxRef
 // (pre-bind ordering or a sandbox-less lane); a bound sandbox whose pod is
 // missing is a loud error so the re-drive retries instead of silently degrading
-// to the stdio path (which cannot exec the runtime CLI). A bound pod that has
-// no IP yet returns errSandboxPending (a benign requeue signal) until it ages
-// past podIPReadyDeadline, after which it is a loud error (ISI-4441).
+// to the stdio path (which cannot exec the runtime CLI). A bound pod that is not
+// yet networked or not yet Ready returns errSandboxPending (a benign requeue
+// signal) until it ages past podIPReadyDeadline, after which it is a loud error
+// (ISI-4441; not-Ready gate added for ISI-5028).
 func (d *operatorDispatch) supervisorURL(ctx context.Context, a2aTaskID string) (string, error) {
 	run, err := d.runByUID(ctx, cleanRunID(a2aTaskID))
 	if err != nil {
@@ -489,16 +493,40 @@ func (d *operatorDispatch) supervisorURL(ctx context.Context, a2aTaskID string) 
 	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &pod); err != nil {
 		return "", fmt.Errorf("rundrive: resolve sandbox pod %s/%s: %w", ns, ref.Name, err)
 	}
-	if pod.Status.PodIP == "" {
+	// Dispatchable only once the pod is BOTH networked AND Ready. PodIP alone is
+	// not sufficient: the supervisor serves :8080 only after the container
+	// boots, so a fresh pod can carry an IP while :8080 still refuses
+	// connections. Posting to it races the supervisor's boot and fails the run
+	// fast with an opaque connection-refused ("readiness refused" / silent
+	// engine settle, ISI-5028) instead of requeuing until the probe passes.
+	// Treat the not-yet-Ready window exactly like the pre-IP window.
+	if pod.Status.PodIP == "" || !sandboxPodReady(&pod) {
 		if age := d.now().Sub(pod.CreationTimestamp.Time); age > podIPReadyDeadline {
 			// Past the readiness deadline: no longer a race but a stuck pod
-			// (scheduling/CNI fault). Loud, so it stands out on the span.
-			return "", fmt.Errorf("rundrive: sandbox pod %s/%s has no IP after %s", ns, ref.Name, age.Round(time.Second))
+			// (scheduling/CNI fault, or a supervisor that never came up). Loud,
+			// so it stands out on the span.
+			if pod.Status.PodIP == "" {
+				return "", fmt.Errorf("rundrive: sandbox pod %s/%s has no IP after %s", ns, ref.Name, age.Round(time.Second))
+			}
+			return "", fmt.Errorf("rundrive: sandbox pod %s/%s not Ready after %s (supervisor :8080 not serving)", ns, ref.Name, age.Round(time.Second))
 		}
 		// Benign bind/readiness race: requeue quietly, no span exception.
 		return "", fmt.Errorf("resolve sandbox %s/%s: %w", ns, ref.Name, errSandboxPending)
 	}
 	return "http://" + pod.Status.PodIP + ":8080/task", nil
+}
+
+// sandboxPodReady reports the pod's Ready condition. The warm-pool supervisor
+// serves its readiness probe on :8080 the moment it boots (cmd/shim
+// supervisorAddr), so Ready means the in-pod /task endpoint is accepting
+// connections — the precondition for dispatching a task to it.
+func sandboxPodReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (d *operatorDispatch) shimCommand(ctx context.Context, t wire.Task) (*exec.Cmd, error) {

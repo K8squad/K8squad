@@ -69,6 +69,7 @@ import (
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/internal/reviewdispatch"
+	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
@@ -933,9 +934,21 @@ func main() {
 				ctrl.Log.Error(serr, "a2a follow-settlement writer disabled: OnDone will not persist the durable settlement marker (S2 reaper will be blind to post-restart stragglers)")
 			}
 			a2aDispatcher.OnDone = func(a2aTaskID, runID string, res clienta2a.Result, followErr error) {
+				outcome := clienta2a.SettleOutcome(res, followErr)
+				// ISI-5028 observability gap: a cleanly terminal FAILURE carries the
+				// engine's status reason (the shim's run error), which used to be
+				// dropped here — leaving only the generic board "retry budget
+				// exhausted" line and no way to tell WHY a run died (the "silent
+				// engine settle" symptom). Surface it on the operator log so the
+				// failure is diagnosable even before it reaches the ticket.
+				if followErr == nil && res.Status.State == wire.TaskFailed {
+					ctrl.Log.Info("a2a follow reached a terminal failure",
+						"run.id", runID, "a2a.task.id", a2aTaskID,
+						"state", string(res.Status.State), "reason", res.Status.Reason)
+				}
 				// Durable marker FIRST — §2.2 ordering is a correctness invariant.
 				if settler != nil {
-					if err := settler.Settle(context.Background(), a2aTaskID, runID, clienta2a.SettleOutcome(res, followErr)); err != nil {
+					if err := settler.Settle(context.Background(), a2aTaskID, runID, outcome); err != nil {
 						ctrl.Log.Error(err, "durable a2a follow-settlement marker write failed",
 							"run.id", runID, "a2a.task.id", a2aTaskID)
 					}

@@ -763,14 +763,15 @@ func maxRetries(run *api.Run) int {
 	return int(*run.Spec.RetryPolicy.MaxRetries)
 }
 
-// requeueSandboxPending is the quiet requeue for the ISI-4441 bind/readiness
-// race: the sandbox is bound but its pod has no IP yet. It logs at debug (the
-// race is normal, not a warning) and requeues with the short continue delay,
-// returning a nil error to its caller so the reconcile span records NO
-// exception. A pod that never gets an IP ages past podIPReadyDeadline and stops
+// requeueSandboxPending is the quiet requeue for the ISI-4441/ISI-5028
+// bind/readiness race: the sandbox is bound but its pod is not yet networked or
+// not yet Ready (supervisor :8080 still refusing). It logs at debug (the race is
+// normal, not a warning) and requeues with the short continue delay, returning a
+// nil error to its caller so the reconcile span records NO exception. A pod that
+// never gets an IP or never becomes Ready ages past podIPReadyDeadline and stops
 // carrying errSandboxPending, so it surfaces as a loud, recorded error instead.
 func (r *Driver) requeueSandboxPending(ctx context.Context, runID string) ctrl.Result {
-	slog.DebugContext(ctx, "rundrive: sandbox pod has no IP yet; requeuing (bind/readiness race)",
+	slog.DebugContext(ctx, "rundrive: sandbox pod not ready to dispatch yet; requeuing (bind/readiness race)",
 		"run.id", runID)
 	return ctrl.Result{RequeueAfter: continueDelay}
 }

@@ -1,13 +1,16 @@
 # syntax=docker/dockerfile:1.9
 # ksquad-shim-<runtime> — A2A⇄native sidecar, one image per AgentRuntime.type.
 #
-# The image folds FOUR things onto $PATH:
+# The image folds FIVE things onto $PATH:
 #   1. /usr/local/bin/shim   — the generic A2A shim main (cmd/shim), runtime-agnostic.
 #   2. the runtime's native CLI — staged per-RUNTIME by the cli-<runtime> stages below.
 #   3. any runtime-specific entrypoint wrapper (e.g. ksquad-codex-exec for codex).
 #   4. a minimal shell userland under /bin (busybox applets + real bash, ISI-4314) —
 #      the runtime CLIs' bash tools exec /bin/sh by ABSOLUTE path, and the
 #      distroless/static base ships none.
+#   5. ripgrep (ISI-5028) — opencode's glob/grep prefer a PATH `rg` and otherwise
+#      download it from github.com at first use, a network stall inside the
+#      egress-restricted sandbox; baked so the tool is always local.
 #
 # RUNTIME selects which CLI layer is baked in (`FROM cli-${RUNTIME}`). It is NO LONGER
 # label-only (ISI-3653 fixes that pre-existing drift). Real CLI packaging today:
@@ -200,6 +203,32 @@ RUN set -eux; \
       | while read -r lib; do cp -aL "$lib" "/shell-lib/lib/$(basename "$lib")"; done; \
     test -f /shell-lib/lib/ld-musl-*.so.1
 
+# ---- ripgrep (ISI-5028) -------------------------------------------------------------------
+# opencode's glob/grep tools resolve ripgrep via `which("rg")` and, when it is
+# NOT on PATH, download it from github.com at first use
+# (packages/core/src/ripgrep/binary.ts in opencode 1.18.27). Inside the sandbox
+# that download races the EgressPolicy: it stalled 2m15s on the first glob and
+# could hard-fail the step. Bake the SAME pinned musl build opencode would fetch
+# onto $PATH so the tool never reaches the network. Version is asserted at build
+# time, mirroring the other CLI stages.
+FROM alpine:3.21 AS ripgrep
+ARG TARGETARCH
+ARG RIPGREP_VERSION=15.1.0
+RUN apk add --no-cache curl ca-certificates
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      amd64) rgarch=x86_64 ;; \
+      arm64) rgarch=aarch64 ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p /rg-out; \
+    curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl.tar.gz" \
+      -o /tmp/rg.tar.gz; \
+    tar -xzf /tmp/rg.tar.gz -C /tmp; \
+    install -m0755 "/tmp/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl/rg" /rg-out/rg; \
+    rm -rf /tmp/rg.tar.gz "/tmp/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl"; \
+    /rg-out/rg --version | grep -Fq "${RIPGREP_VERSION}"
+
 # ---- Final image -------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG RUNTIME=reference
@@ -211,6 +240,10 @@ WORKDIR /
 # shim first — this creates /usr/local/bin before the (possibly empty) CLI overlay.
 COPY --from=build /out/shim /usr/local/bin/shim
 COPY --from=cli /cli-out/ /usr/local/bin/
+# ripgrep (ISI-5028): opencode's glob/grep prefer a PATH `rg` and otherwise
+# download it from github.com at first use — a network stall/failure inside the
+# egress-restricted sandbox. Baked here so the tool is always local.
+COPY --from=ripgrep /rg-out/ /usr/local/bin/
 # Shell userland (ISI-4314): busybox applets + bash land on /bin (default PATH and
 # ToolPathValue both include it; /bin/sh + /bin/bash resolve for absolute-path execs).
 COPY --from=shell /shell-bin/ /bin/
