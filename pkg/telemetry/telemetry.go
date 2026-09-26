@@ -62,6 +62,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -73,6 +74,10 @@ const (
 	// defaultServiceName is the resource service.name when the caller leaves it
 	// blank; a Run trace is only useful if the operator that drove it is named.
 	defaultServiceName = "ksquad-operator"
+	// defaultRepositoryURL is the resource vcs.repository.url.full when the
+	// caller leaves it blank (P3#8 / ISI-5016): every span's service must map
+	// to its repository deterministically instead of by name resemblance.
+	defaultRepositoryURL = "https://github.com/K8squad/K8squad"
 )
 
 // propagator is the W3C trace-context + baggage propagator used by Extract and
@@ -114,6 +119,11 @@ type Options struct {
 	// ServiceName is the resource service.name attached to every span and log
 	// record. Empty defaults to "ksquad-operator".
 	ServiceName string
+	// RepositoryURL is the resource vcs.repository.url.full attached to every
+	// span and log record, mapping the emitting service to its source
+	// repository (P3#8 / ISI-5016). Empty defaults to
+	// "https://github.com/K8squad/K8squad".
+	RepositoryURL string
 	// Writer is where the stdout exporters emit. nil defaults to os.Stdout;
 	// tests pass a buffer.
 	Writer io.Writer
@@ -164,15 +174,24 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	if opts.ServiceName == "" {
 		opts.ServiceName = defaultServiceName
 	}
+	if opts.RepositoryURL == "" {
+		opts.RepositoryURL = defaultRepositoryURL
+	}
 	w := opts.Writer
 	if w == nil {
 		w = os.Stdout
 	}
 
 	// One resource describes the emitting service for both signals, so a span
-	// and its correlated log agree on service.name.
+	// and its correlated log agree on service.name. vcs.repository.url.full
+	// (P3#8 / ISI-5016) additionally pins every span's service to its source
+	// repository, so a backend maps service↔repo deterministically rather than
+	// guessing by name resemblance.
 	res, err := resource.Merge(resource.Default(),
-		resource.NewSchemaless(attribute.String("service.name", opts.ServiceName)))
+		resource.NewSchemaless(
+			attribute.String("service.name", opts.ServiceName),
+			semconv.VCSRepositoryURLFull(opts.RepositoryURL),
+		))
 	if err != nil {
 		return nil, nil, fmt.Errorf("telemetry: build resource: %w", err)
 	}
