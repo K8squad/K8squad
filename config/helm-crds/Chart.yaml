@@ -13,8 +13,8 @@ description: |
 type: application
 # Own version line — bump on ANY CRD schema change (ADR-0002 §1/§4). This is
 # the version operators pin and roll independently of the control plane.
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.29.0-0"
 home: https://k8squad.io
 sources:
