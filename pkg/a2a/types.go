@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/K8squad/K8squad/internal/protocol"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // SchemaVersion is the Agent Card schema tag (spec §6.1). It is versioned
@@ -142,6 +143,26 @@ type Task struct {
 	// walk. Empty when no agents resolve a tier (e.g. a runtime-default run).
 	// +optional
 	ModelTier string `json:"model_tier,omitempty"`
+	// MCPEndpoints is the Run's resolved MCP IR delivered on the submit
+	// payload (Epic C, ADR-044 step 6; ISI-5017). A warm-pool sandbox pod
+	// boots GENERIC and is immutable after Bind — its volumes/env cannot be
+	// extended per run — so the IR rides the task envelope exactly the way
+	// per-run Identity does, and the shim renders the runtime's native MCP
+	// config from it per task. It is the IR CONTENT (what K8SQUAD_MCP_CONFIG
+	// would name), never the ConfigMap name. Empty when the Run demanded no
+	// MCP servers (or on the operator-spawned stdio path, where the shim
+	// instead reads K8SQUAD_MCP_CONFIG from its env). +optional
+	MCPEndpoints []capability.Endpoint `json:"mcp_endpoints,omitempty"`
+	// MCPTokenEnv carries the resolved MCP credential VALUES keyed by the
+	// env var NAME the IR's endpoints reference (capability.CredentialEnvName
+	// — e.g. KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN). The runtime's rendered
+	// native config references the NAME (Bearer {env:NAME}); a warm-pool pod
+	// cannot gain the SecretKeyRef env at Bind time, so the operator resolves
+	// the per-run Secret at dispatch and ships the value here, and the shim
+	// layers it onto the runtime subprocess env. Values are scrubbed from
+	// logs/telemetry; this map is secret material and MUST NOT be logged.
+	// +optional
+	MCPTokenEnv map[string]string `json:"mcp_token_env,omitempty"`
 }
 
 // Status is the V3 GetStatus result (spec §3 V3): the current task state, an

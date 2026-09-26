@@ -77,6 +77,46 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills [
 	return m
 }
 
+// EndpointsFromManifest rebuilds the IR endpoints from a recorded
+// capability manifest (the immutable audit truth) for consumers that need
+// the IR without re-reading the projected ConfigMap — e.g. the run-drive
+// dispatch seam that ships the IR on the task envelope to a warm-pool pod
+// (ISI-5017). EnvNames are recomputed from each endpoint's credential ref
+// exactly as Run assembly records them. Returns nil for a nil/empty
+// manifest so the bare posture is preserved.
+func EndpointsFromManifest(m *api.CapabilityManifest) []Endpoint {
+	if m == nil || len(m.MCPEndpoints) == 0 {
+		return nil
+	}
+	out := make([]Endpoint, 0, len(m.MCPEndpoints))
+	for _, ep := range m.MCPEndpoints {
+		out = append(out, Endpoint{
+			Name:                ep.Name,
+			Transport:           string(ep.Transport),
+			URL:                 ep.URL,
+			Headers:             ep.Headers,
+			Command:             ep.Command,
+			Args:                ep.Args,
+			Image:               ep.Image,
+			EnvNames:            envNamesFor(ep),
+			AllowTools:          ep.AllowTools,
+			DenyTools:           ep.DenyTools,
+			CredentialSecretRef: ep.CredentialSecretRef,
+			EgressPolicyRef:     ep.EgressPolicyRef,
+		})
+	}
+	return out
+}
+
+// envNamesFor derives the credential env NAMES an endpoint's Secret ref maps
+// to — the single derivation both manifest→IR rebuild paths share.
+func envNamesFor(ep api.ResolvedMCPEndpoint) []string {
+	if ep.CredentialSecretRef == nil {
+		return nil
+	}
+	return []string{CredentialEnvName(ep.Name)}
+}
+
 // IsBareEnvelope reports whether m is the BARE capability posture: no
 // toolchains, no MCP endpoints and no skills — the envelope the assembler
 // stamps pre-dispatch even for a no-capability Run (BuildManifest(nil, nil,

@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -921,3 +922,115 @@ func TestDriveProviderBackfill(t *testing.T) {
 }
 
 func boolTrue() *bool { b := true; return &b }
+
+// captureRunner records the ExecSpec the engine built and settles immediately.
+// It is the seam that proves the per-task MCP envelope reached the runtime
+// launch (ISI-5017) without executing a real CLI.
+type captureRunner struct {
+	spec runtimes.ExecSpec
+	done chan struct{}
+}
+
+func (c *captureRunner) Run(_ context.Context, spec runtimes.ExecSpec, _ func(Progress)) (Outcome, error) {
+	c.spec = spec
+	close(c.done)
+	return Outcome{State: a2a.TaskCompleted}, nil
+}
+
+// TestSubmitTaskDeliversMCPEnvelope proves the warm-pool delivery seam
+// (ISI-5017): an MCP IR carried on the task envelope is rendered into the
+// runtime's native config AND its resolved credential VALUE is layered onto
+// the runtime subprocess env — with NO process-static K8SQUAD_MCP_CONFIG (the
+// exact warm-pool condition that made the dispatched agent launch without the
+// work_item_* tools).
+func TestSubmitTaskDeliversMCPEnvelope(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cr := &captureRunner{done: make(chan struct{})}
+	e := New(rt, cr, Config{Identity: Identity{Name: "john"}, ShimVersion: "test"})
+
+	_, err = e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID: "run-mcp",
+		MCPEndpoints: []capability.Endpoint{{
+			Name:       "ksquad-memory-authoring",
+			Transport:  "streamable-http",
+			URL:        "http://ksquad-memory.k8squad-system.svc.cluster.local:8080/mcp",
+			AllowTools: []string{"work_item_create", "work_item_update", "work_item_assign"},
+			EnvNames:   []string{"KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN"},
+			CredentialSecretRef: &apiv1alpha1.SecretRef{
+				Name: "run-mcp-authoring-token",
+			},
+		}},
+		MCPTokenEnv: map[string]string{"KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN": "sekret-token"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitTask: %v", err)
+	}
+	select {
+	case <-cr.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime never started")
+	}
+
+	// 1. The resolved credential VALUE reached the runtime subprocess env.
+	foundToken := false
+	for _, kv := range cr.spec.Env {
+		if kv == "KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN=sekret-token" {
+			foundToken = true
+		}
+	}
+	if !foundToken {
+		t.Fatalf("runtime env missing resolved MCP token; env=%v", cr.spec.Env)
+	}
+
+	// 2. The native opencode.json MCP section rendered from the envelope IR.
+	var cfgFile []byte
+	for _, f := range cr.spec.WorkDirFiles {
+		if f.Name == "opencode.json" {
+			cfgFile = f.Content
+		}
+	}
+	if cfgFile == nil {
+		t.Fatalf("opencode.json not rendered; files=%v", cr.spec.WorkDirFiles)
+	}
+	var doc struct {
+		MCP map[string]map[string]any `json:"mcp"`
+	}
+	if err := json.Unmarshal(cfgFile, &doc); err != nil {
+		t.Fatalf("decode opencode.json: %v", err)
+	}
+	srv, ok := doc.MCP["ksquad-memory-authoring"]
+	if !ok {
+		t.Fatalf("opencode.json missing authoring server: %s", cfgFile)
+	}
+	headers, _ := srv["headers"].(map[string]any)
+	if got := headers["Authorization"]; got != "Bearer {env:KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN}" {
+		t.Fatalf("Authorization header = %v, want env-name reference", got)
+	}
+}
+
+// TestSubmitTaskFailsClosedOnMissingMCPToken is the ADR-044 fail-closed guard
+// (ISI-5017): a task IR that references a credential env name with no resolved
+// value must abort, never launch the runtime with a half-wired capability
+// envelope.
+func TestSubmitTaskFailsClosedOnMissingMCPToken(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New(rt, &fakeRunner{outcome: Outcome{State: a2a.TaskCompleted}}, Config{ShimVersion: "test"})
+	_, err = e.SubmitTask(context.Background(), a2a.Task{
+		A2ATaskID: "run-missing-token",
+		MCPEndpoints: []capability.Endpoint{{
+			Name:      "ksquad-memory-authoring",
+			Transport: "streamable-http",
+			URL:       "http://svc/mcp",
+			EnvNames:  []string{"KSQUAD_MCP_KSQUAD_MEMORY_AUTHORING_TOKEN"},
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected fail-closed error when the MCP credential value is absent")
+	}
+}
