@@ -16,6 +16,11 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	fake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -206,5 +211,50 @@ func TestGithubSync_NilService501(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "github-sync trigger") {
 		t.Errorf("want not-implemented body, got %s", w.Body.String())
+	}
+}
+
+// TestGithubSyncSpanCarriesCodeAttrs pins ISI-5014 P1#5: the scm.sync.trigger
+// span is stamped with code.namespace + code.function so it maps to its source.
+func TestGithubSyncSpanCarriesCodeAttrs(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	c := buildSyncClient(t)
+	svc := NewGithubSyncService(c, c)
+	// A missing Project makes TriggerSync error after the span is opened; the
+	// span still carries the code.* attrs stamped at creation.
+	_ = svc.TriggerSync(context.Background(), discussion.AuthorContext{IsAdmin: true}, "missing")
+
+	var attrs []attribute.KeyValue
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "scm.sync.trigger" {
+			attrs = s.Attributes
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a scm.sync.trigger span, got %d spans", len(exp.GetSpans()))
+	}
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["code.namespace"] != "github.com/K8squad/K8squad/internal/apiserver" {
+		t.Errorf("code.namespace = %q, want internal/apiserver path", got["code.namespace"])
+	}
+	if got["code.function"] != "TriggerSync" {
+		t.Errorf("code.function = %q, want TriggerSync", got["code.function"])
 	}
 }

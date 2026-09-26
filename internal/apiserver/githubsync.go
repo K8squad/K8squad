@@ -66,6 +66,8 @@ func (s *GithubSyncService) TriggerSync(ctx context.Context, auth discussion.Aut
 	// indistinguishable downstream — this is what lets a dashboard PROVE a
 	// mirror refresh was (or was not) a human button press.
 	ctx, span := telemetry.Tracer().Start(ctx, "scm.sync.trigger", trace.WithAttributes(
+		attribute.String("code.namespace", "github.com/K8squad/K8squad/internal/apiserver"),
+		attribute.String("code.function", "TriggerSync"),
 		attribute.String("ksquad.scm.trigger", "manual"),
 	))
 	defer func() {

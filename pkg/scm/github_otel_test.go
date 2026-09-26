@@ -33,6 +33,35 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+// installScmTestTracer swaps the global TracerProvider for a synchronous
+// in-memory exporter so a span's attributes can be asserted without a collector.
+func installScmTestTracer(t *testing.T) *tracetest.InMemoryExporter {
+	t.Helper()
+	prevTP := otel.GetTracerProvider()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+	})
+	return exp
+}
+
+func assertCodeAttrs(t *testing.T, attrs []attribute.KeyValue, wantNS, wantFn string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["code.namespace"] != wantNS {
+		t.Errorf("code.namespace = %q, want %q", got["code.namespace"], wantNS)
+	}
+	if got["code.function"] != wantFn {
+		t.Errorf("code.function = %q, want %q", got["code.function"], wantFn)
+	}
+}
+
 // TestLastRateRemainingDefault: before any API response the reporter says
 // "unknown" (ok=false) so the reconciler never feeds a fabricated 0 into the
 // headroom gauge.
@@ -159,4 +188,34 @@ func TestFetchSpanCarriesHTTPSemantics(t *testing.T) {
 	if !statusOK || status.Value.AsInt64() != http.StatusOK {
 		t.Errorf("http.response.status_code = %d, want %d", status.Value.AsInt64(), http.StatusOK)
 	}
+}
+
+// TestTraceFetchSpanCarriesCodeAttrs pins ISI-5014 P1#5: the scm.fetch.<kind>
+// span is stamped with code.namespace + code.function so it maps to its source.
+func TestTraceFetchSpanCarriesCodeAttrs(t *testing.T) {
+	exp := installScmTestTracer(t)
+
+	p, err := NewGitHubProvider("", ProviderCredentials{})
+	if err != nil {
+		t.Fatalf("NewGitHubProvider: %v", err)
+	}
+
+	_, err = p.traceFetch(context.Background(), "pull_requests", func(ctx context.Context) ([]NormalizedRecord, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("traceFetch: %v", err)
+	}
+
+	var span *tracetest.SpanStub
+	for _, s := range exp.GetSpans() {
+		if s.Name == "scm.fetch.pull_requests" {
+			span = &s
+			break
+		}
+	}
+	if span == nil {
+		t.Fatalf("expected a scm.fetch.pull_requests span, got %d spans", len(exp.GetSpans()))
+	}
+	assertCodeAttrs(t, span.Attributes, "github.com/K8squad/K8squad/pkg/scm", "traceFetch")
 }
