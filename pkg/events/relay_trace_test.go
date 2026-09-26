@@ -10,6 +10,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // headerPub implements both events.Publisher and events.HeaderPublisher, so the
@@ -157,6 +159,73 @@ func TestRelay_NoTrace_RootsFreshTrace(t *testing.T) {
 	published, failed, err := r.Flush(context.Background())
 	if err != nil || published != 1 || failed != 0 {
 		t.Fatalf("Flush = (%d,%d,%v), want (1,0,nil)", published, failed, err)
+	}
+}
+
+// TestRelayHeaderExtractsToConsumerSpan proves the consumer half of the
+// ISI-5010 hop: the W3C headers the relay injects into the NATS message
+// extract — exactly as subscriber.go Consume does on delivery — into a context
+// whose consumer span NESTS under the relay's producer span: same trace_id,
+// parent span id = the publish span's. That is the parent/child join across
+// the NATS hop.
+func TestRelayHeaderExtractsToConsumerSpan(t *testing.T) {
+	sr := withRecordingTracer(t)
+
+	const runTraceID = "0af7651916cd43dd8448eb211c80319c"
+	store := &fakeStore{}
+	store.append(OutboxRow{
+		Entity: "run", ProjectID: "p1", EventType: "started", RunID: "run-1",
+		Payload: []byte("{}"),
+		TraceCarrier: map[string]string{
+			"traceparent": "00-" + runTraceID + "-b7ad6b7169203331-01",
+		},
+	})
+	pub := &headerPub{}
+
+	r, err := NewRelay(RelayConfig{Store: store, Publisher: pub})
+	if err != nil {
+		t.Fatalf("NewRelay: %v", err)
+	}
+	if _, _, err := r.Flush(context.Background()); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	spans := sr.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("want 1 producer span, got %d", len(spans))
+	}
+	prod := spans[0]
+
+	// The consumer side, as subscriber.go runs it: extract the delivered
+	// headers, start the receive span under the restored parent.
+	pub.mu.Lock()
+	hdrs := pub.headers[0]
+	pub.mu.Unlock()
+	if len(hdrs) == 0 {
+		t.Fatal("relay injected no headers on publish")
+	}
+	cctx := telemetry.Extract(context.Background(), hdrs)
+	if !trace.SpanContextFromContext(cctx).IsValid() {
+		t.Fatal("injected headers do not carry a valid traceparent")
+	}
+	_, cspan := telemetry.Tracer().Start(cctx, "nats receive ksquad.>",
+		trace.WithSpanKind(trace.SpanKindConsumer))
+	cspan.End()
+
+	spans = sr.Ended()
+	if len(spans) != 2 {
+		t.Fatalf("want producer+consumer spans, got %d", len(spans))
+	}
+	cons := spans[1]
+	if got := cons.SpanContext().TraceID().String(); got != runTraceID {
+		t.Errorf("consumer span trace_id = %s, want run trace %s", got, runTraceID)
+	}
+	if got, want := cons.Parent().SpanID(), prod.SpanContext().SpanID(); got != want {
+		t.Errorf("consumer span parent = %s, want the producer span %s (true child, not just same trace)",
+			got, want)
+	}
+	if cons.SpanKind() != trace.SpanKindConsumer {
+		t.Errorf("consumer span kind = %v, want Consumer", cons.SpanKind())
 	}
 }
 

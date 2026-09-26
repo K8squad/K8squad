@@ -71,6 +71,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/telemetry"
 )
 
 // IntakeInterval is the intake sweep's tick: the bounded-time half of the M1.3
@@ -304,6 +305,14 @@ func (i *Intake) sweep(ctx context.Context) {
 	if len(items) == 0 {
 		return
 	}
+
+	// ISI-5010: one span per minting pass is the trace parent the Runs minted
+	// below carry — buildRunForAgent stamps the W3C context into the Run's
+	// annotations, and the driver's run.reconcile span Extracts it back out —
+	// so the whole run lifecycle (mint → reconcile → downstream) lands on one
+	// trace instead of two disjoint ones keyed only by run id.
+	ctx, span := telemetry.Tracer().Start(ctx, "intake.sweep")
+	defer span.End()
 
 	// Resolve the Team index once per pass: uid → Team (the board's team_id
 	// is the Team CR's uid, the same linkage resolveTeamNamespace pins).
@@ -559,8 +568,22 @@ func (i *Intake) buildRunForAgent(ctx context.Context, item IntakeItem, team api
 		agentNameSegment = targetAgentRef.Name
 	}
 
+	// ISI-5010: stamp the sweep's W3C trace context onto the Run as raw
+	// annotation headers (traceparent/tracestate) — the exact carrier the
+	// driver feeds to telemetry.Extract before starting run.reconcile
+	// (driver.go) — so the reconcile span joins the trace that minted the Run
+	// instead of rooting a second, disjoint one. Raw headers, never a JSON
+	// blob: the annotations map IS the propagation carrier. A spanless ctx
+	// (no active span / SDK not installed) injects nothing and the Run roots
+	// its own trace, exactly as before.
+	meta := runObjectMeta(item.ID, ns, highestGen, agentNameSegment)
+	if meta.Annotations == nil {
+		meta.Annotations = make(map[string]string)
+	}
+	telemetry.Inject(ctx, meta.Annotations)
+
 	return &api.Run{
-		ObjectMeta: runObjectMeta(item.ID, ns, highestGen, agentNameSegment),
+		ObjectMeta: meta,
 		Spec: api.RunSpec{
 			// M1.2 (ISI-4128): like projectRef — a Team CR living outside the
 			// squad namespace must be referenced by namespace or later
