@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -64,6 +65,18 @@ func spanByName(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, boo
 		}
 	}
 	return tracetest.SpanStub{}, false
+}
+
+// assertCodeAttrs pins the code.namespace / code.function stamp (ISI-5014 P1#5)
+// that lets a span map back to its Go source location.
+func assertCodeAttrs(t *testing.T, attrs []attribute.KeyValue, wantNS, wantFn string) {
+	t.Helper()
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	assert.Equal(t, wantNS, got["code.namespace"], "code.namespace must be the full Go package path")
+	assert.Equal(t, wantFn, got["code.function"], "code.function must be the Go function name")
 }
 
 // AC7: a successful assembly emits exactly one `contextasm.assemble` span with
@@ -175,4 +188,31 @@ func TestAssembleTraceMarksFailClosed(t *testing.T) {
 		}
 	}
 	assert.True(t, failClosed, "ksquad.contextasm.fail_closed must be true on ErrMustIncludeExceedsWindow")
+}
+
+// ISI-5014 P1#5: every contextasm.* span carries code.namespace + code.function
+// so a span can be mapped back to its Go source location.
+func TestAssembleSpansCarryCodeAttrs(t *testing.T) {
+	exp := installTestTracer(t)
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+
+	_, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+
+	spans := exp.GetSpans()
+	root, ok := spanByName(spans, "contextasm.assemble")
+	require.True(t, ok, "expected a contextasm.assemble span")
+	assertCodeAttrs(t, root.Attributes, "github.com/K8squad/K8squad/pkg/contextasm", "Assemble")
+
+	for _, name := range []string{
+		"contextasm.source.work_item",
+		"contextasm.source.project_meta",
+		"contextasm.source.memory_recall",
+		"contextasm.source.artifacts",
+	} {
+		child, ok := spanByName(spans, name)
+		require.True(t, ok, "expected a %s span", name)
+		assertCodeAttrs(t, child.Attributes, "github.com/K8squad/K8squad/pkg/contextasm", "startSourceSpan")
+	}
 }

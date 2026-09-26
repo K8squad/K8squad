@@ -21,9 +21,13 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	ksquadapi "github.com/K8squad/K8squad/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -169,5 +173,50 @@ func TestReconcileNilMetricsSafe(t *testing.T) {
 	}
 	if len(store.Rows()) == 0 {
 		t.Errorf("expected mirror rows applied even with nil Metrics")
+	}
+}
+
+// TestReconcileSpanCarriesCodeAttrs pins ISI-5014 P1#5: the scm.sync span is
+// stamped with code.namespace + code.function so it maps to its source.
+func TestReconcileSpanCarriesCodeAttrs(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	provider := &fakeProvider{name: "github", snapshot: sampleRecords()}
+	r, _ := newHarness(t, syncProject(300), provider)
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var attrs []attribute.KeyValue
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "scm.sync" {
+			attrs = s.Attributes
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a scm.sync span, got %d spans", len(exp.GetSpans()))
+	}
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["code.namespace"] != "github.com/K8squad/K8squad/pkg/controller/reposync" {
+		t.Errorf("code.namespace = %q, want pkg/controller/reposync path", got["code.namespace"])
+	}
+	if got["code.function"] != "Reconcile" {
+		t.Errorf("code.function = %q, want Reconcile", got["code.function"])
 	}
 }

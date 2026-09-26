@@ -16,6 +16,7 @@ See the limitations under the License.
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // TestSupervisorMetricsEndpointServesRegistry covers ISI-4385 (WS-C): the
@@ -69,5 +75,50 @@ func TestSupervisorMetricsEndpointEmptyBeforeEngine(t *testing.T) {
 	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /metrics (pre-engine) status = %d, want 200", rec.Code)
+	}
+}
+
+// TestSupervisorHandleTaskSpanCarriesCodeAttrs pins ISI-5014 P1#5: the
+// supervisor.handle_task span is stamped with code.namespace + code.function so
+// it maps to its source. The busy short-circuit path still opens and closes the
+// span, so it needs no runtime wiring.
+func TestSupervisorHandleTaskSpanCarriesCodeAttrs(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	sup := &supervisor{busy: true}
+	rec := httptest.NewRecorder()
+	sup.handleTask(rec, httptest.NewRequest(http.MethodPost, "/task?taskid=t1", nil))
+
+	var attrs []attribute.KeyValue
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "supervisor.handle_task" {
+			attrs = s.Attributes
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a supervisor.handle_task span, got %d spans", len(exp.GetSpans()))
+	}
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["code.namespace"] != "github.com/K8squad/K8squad/cmd/shim" {
+		t.Errorf("code.namespace = %q, want cmd/shim path", got["code.namespace"])
+	}
+	if got["code.function"] != "handleTask" {
+		t.Errorf("code.function = %q, want handleTask", got["code.function"])
 	}
 }

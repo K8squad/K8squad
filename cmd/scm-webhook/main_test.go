@@ -24,6 +24,11 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -350,5 +355,51 @@ func TestUnknownProviderRefused(t *testing.T) {
 	h.handle(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unknown provider: got %d, want 401", rec.Code)
+	}
+}
+
+// TestWebhookSpanCarriesCodeAttrs pins ISI-5014 P1#5: the scm.webhook.receive
+// span is stamped with code.namespace + code.function so it maps to its source.
+func TestWebhookSpanCarriesCodeAttrs(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	c := newServer(t)
+	h := &webhookHandler{client: c, logger: zap.New().WithName("test")}
+	req := httptest.NewRequest(http.MethodPost,
+		"/scm/webhook?project="+projName+"&namespace="+ns, bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+	h.handle(rec, req)
+
+	var attrs []attribute.KeyValue
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "scm.webhook.receive" {
+			attrs = s.Attributes
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a scm.webhook.receive span, got %d spans", len(exp.GetSpans()))
+	}
+	got := map[string]string{}
+	for _, kv := range attrs {
+		got[string(kv.Key)] = kv.Value.AsString()
+	}
+	if got["code.namespace"] != "github.com/K8squad/K8squad/cmd/scm-webhook" {
+		t.Errorf("code.namespace = %q, want cmd/scm-webhook path", got["code.namespace"])
+	}
+	if got["code.function"] != "handle" {
+		t.Errorf("code.function = %q, want handle", got["code.function"])
 	}
 }

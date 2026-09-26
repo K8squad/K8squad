@@ -205,7 +205,11 @@ func (h *webhookHandler) unauthorized(w http.ResponseWriter, detail string, logK
 // itself lives in serve; this wrapper owns only the observability envelope so
 // every return path is counted exactly once with a bounded (event, outcome).
 func (h *webhookHandler) handle(w http.ResponseWriter, r *http.Request) {
-	ctx, span := telemetry.Tracer().Start(r.Context(), "scm.webhook.receive")
+	ctx, span := telemetry.Tracer().Start(r.Context(), "scm.webhook.receive",
+		trace.WithAttributes(
+			attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/scm-webhook"),
+			attribute.String("code.function", "handle"),
+		))
 	r = r.WithContext(ctx)
 
 	event, outcome := h.serve(w, r)
