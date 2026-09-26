@@ -208,26 +208,45 @@ RUN set -eux; \
 # NOT on PATH, download it from github.com at first use
 # (packages/core/src/ripgrep/binary.ts in opencode 1.18.27). Inside the sandbox
 # that download races the EgressPolicy: it stalled 2m15s on the first glob and
-# could hard-fail the step. Bake the SAME pinned musl build opencode would fetch
-# onto $PATH so the tool never reaches the network. Version is asserted at build
-# time, mirroring the other CLI stages.
+# could hard-fail the step. Bake a pinned rg onto $PATH so the tool never
+# reaches the network. Version is asserted at build time, mirroring the other
+# CLI stages.
+#
+# Per-arch source (review fix, ISI-5030): BurntSushi publishes NO
+# aarch64-unknown-linux-musl tarball (verified against the 15.1.0 release
+# assets — aarch64 is gnu-only), so the arm64 leg of the multi-arch build
+# 404'd. amd64 keeps the exact static musl prebuilt opencode would fetch;
+# arm64 uses alpine's own musl ripgrep (14.1.1 in 3.21), staging its ldd deps
+# under /rg-lib — the same cli-lib/shell-lib pattern bash and the dynamic CLIs
+# use (a rust binary NEEDEDs only libc.musl + the loader). Version drift on
+# arm64 is accepted: any PATH rg suppresses the runtime download, and
+# opencode's own arm64 fetch would 404 anyway.
 FROM alpine:3.21 AS ripgrep
 ARG TARGETARCH
 ARG RIPGREP_VERSION=15.1.0
 RUN apk add --no-cache curl ca-certificates
 RUN set -eux; \
+    mkdir -p /rg-out /rg-lib/lib; \
     case "$TARGETARCH" in \
-      amd64) rgarch=x86_64 ;; \
-      arm64) rgarch=aarch64 ;; \
+      amd64) \
+        curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+          -o /tmp/rg.tar.gz; \
+        tar -xzf /tmp/rg.tar.gz -C /tmp; \
+        install -m0755 "/tmp/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl/rg" /rg-out/rg; \
+        rm -rf /tmp/rg.tar.gz "/tmp/ripgrep-${RIPGREP_VERSION}-x86_64-unknown-linux-musl"; \
+        /rg-out/rg --version | grep -Fq "${RIPGREP_VERSION}" \
+        ;; \
+      arm64) \
+        apk add --no-cache ripgrep; \
+        cp -a /usr/bin/rg /rg-out/rg; \
+        ldd /usr/bin/rg | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' | sort -u \
+          | while read -r lib; do cp -aL "$lib" "/rg-lib/lib/$(basename "$lib")"; done; \
+        test -f /rg-lib/lib/ld-musl-*.so.1; \
+        /rg-out/rg --version | grep -Fq 'ripgrep 14.' \
+        ;; \
       *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
     esac; \
-    mkdir -p /rg-out; \
-    curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl.tar.gz" \
-      -o /tmp/rg.tar.gz; \
-    tar -xzf /tmp/rg.tar.gz -C /tmp; \
-    install -m0755 "/tmp/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl/rg" /rg-out/rg; \
-    rm -rf /tmp/rg.tar.gz "/tmp/ripgrep-${RIPGREP_VERSION}-${rgarch}-unknown-linux-musl"; \
-    /rg-out/rg --version | grep -Fq "${RIPGREP_VERSION}"
+    test -x /rg-out/rg
 
 # ---- Final image -------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -242,8 +261,10 @@ COPY --from=build /out/shim /usr/local/bin/shim
 COPY --from=cli /cli-out/ /usr/local/bin/
 # ripgrep (ISI-5028): opencode's glob/grep prefer a PATH `rg` and otherwise
 # download it from github.com at first use — a network stall/failure inside the
-# egress-restricted sandbox. Baked here so the tool is always local.
+# egress-restricted sandbox. Baked here so the tool is always local. /rg-lib
+# carries arm64's musl loader pair (empty on amd64, whose rg is static).
 COPY --from=ripgrep /rg-out/ /usr/local/bin/
+COPY --from=ripgrep /rg-lib/ /
 # Shell userland (ISI-4314): busybox applets + bash land on /bin (default PATH and
 # ToolPathValue both include it; /bin/sh + /bin/bash resolve for absolute-path execs).
 COPY --from=shell /shell-bin/ /bin/
