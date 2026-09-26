@@ -82,6 +82,12 @@ func NewRBACRenderer(c client.Client, platform toolchain.PlatformConfig) *RBACRe
 
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch;create;update;patch;delete
 
+// toolchains are read through the manager's cache-backed client below
+// (toolchain.Resolver over r.Client), which auto-starts a Toolchain informer —
+// so the operator ClusterRole needs list/watch/get or the reflector loops on a
+// forbidden error and toolchain resolution runs against a dead cache (ISI-4978).
+// +kubebuilder:rbac:groups=ksquad.io,resources=toolchains,verbs=get;list;watch
+
 // Ensure resolves the Run's toolchain demand and converges the rendered
 // RBAC objects to it:
 //
