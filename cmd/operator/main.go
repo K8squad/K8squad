@@ -947,12 +947,21 @@ func main() {
 						"state", string(res.Status.State), "reason", res.Status.Reason)
 				}
 				// Durable marker FIRST — §2.2 ordering is a correctness invariant.
-				if settler != nil {
-					if err := settler.Settle(context.Background(), a2aTaskID, runID, outcome); err != nil {
-						ctrl.Log.Error(err, "durable a2a follow-settlement marker write failed",
-							"run.id", runID, "a2a.task.id", a2aTaskID)
-					}
+			if settler != nil {
+				// ISI-5032 (ISI-5028 hypothesis 3): thread the follow's
+				// terminal failure reason into the durable settlement write so
+				// a failed Run's engine status.reason (or transport error)
+				// reaches the ticket thread instead of being dropped by this
+				// "silent engine settle". reason is engine text only.
+				reason := res.Status.Reason
+				if followErr != nil {
+					reason = followErr.Error()
 				}
+				if err := settler.Settle(context.Background(), a2aTaskID, runID, outcome, reason); err != nil {
+					ctrl.Log.Error(err, "durable a2a follow-settlement marker write failed",
+						"run.id", runID, "a2a.task.id", a2aTaskID)
+				}
+			}
 				// A follow ERROR is not proof the agent is done (a transient
 				// SSE/network blip on a live run must not tear down a healthy
 				// sandbox and force a re-dispatch). Leave the pod in place — the
