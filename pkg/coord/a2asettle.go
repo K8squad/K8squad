@@ -87,16 +87,27 @@ func NewProdSettleWriter(db *sql.DB, principal string) (*ProdSettler, error) {
 // row — both in ONE transaction so the audit lands exactly once iff the marker
 // was written.
 //
+// reason carries the follow's terminal failure text — the shim's
+// Result.Status.Reason, or the follow's transport error when followErr != nil —
+// threaded from OnDone (ISI-5032, ISI-5028 hypothesis 3). When the follow settled
+// FAILED with a non-empty reason, Settle posts one honest, agent-attributed
+// coord.comment (`Run failed: <reason>`) in the SAME transaction, so the ticket
+// thread answers "why did this die" without cluster access. The comment is gated
+// on the first-writer marker: it lands exactly once iff the marker did, and a
+// re-entry posts nothing. An empty reason posts nothing (nothing new to say over
+// the generic settle summary); succeeded / follow_error outcomes never post.
+//
 // At-most-once (ADR-0020 §2.2, F2): the conditional UPDATE ... WHERE
 // settled_at IS NULL is the single-statement guard — a re-entry (e.g. a
 // duplicated OnDone across a restart boundary, or a lap already settled by a
 // concurrent writer) matches nothing, writes no marker and no audit, and returns
 // nil. RETURNING work_item_id both proves exactly one row moved unsettled →
-// settled AND hands the audit the row's own item id with no second read.
+// settled AND hands the audit (and the failure comment) the row's own item id
+// with no second read.
 //
 // An unknown / never-dispatched a2aTaskID is likewise a silent no-op (no row to
 // settle) — Settle never fabricates a dispatch row.
-func (s *ProdSettler) Settle(ctx context.Context, a2aTaskID, runID, outcome string) error {
+func (s *ProdSettler) Settle(ctx context.Context, a2aTaskID, runID, outcome, reason string) error {
 	switch outcome {
 	case SettleOutcomeSucceeded, SettleOutcomeFailed, SettleOutcomeFollowError:
 	default:
@@ -139,10 +150,47 @@ func (s *ProdSettler) Settle(ctx context.Context, a2aTaskID, runID, outcome stri
 		return fmt.Errorf("coord.ProdSettler.Settle: audit: %w", err)
 	}
 
+	// ISI-5032 (ISI-5028 hypothesis 3): surface the engine's terminal failure
+	// reason on the ticket thread. Only a FAILED follow with a non-empty reason
+	// posts — succeeded/follow_error outcomes owe the thread no failure line, and
+	// an empty reason has nothing the generic settle summary doesn't already say.
+	// A coord.comment INSERT never touches coord.work_item, so it keeps the
+	// at-most-once marker contract intact, and it rides the SAME transaction so
+	// the comment lands exactly once iff the marker did.
+	if outcome == SettleOutcomeFailed && reason != "" {
+		// Agent attribution for the line: the checkout row's assignee_agent
+		// (stamped at acquire, retained through release — 0018). Nullable both
+		// for pre-0018 rows and for release shapes that clear it.
+		var agent sql.NullString
+		if err := tx.QueryRowContext(ctx,
+			`SELECT assignee_agent FROM coord.claim WHERE work_item_id = $1::uuid`,
+			workItemID).Scan(&agent); err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("coord.ProdSettler.Settle: read assignee: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO coord.comment (work_item_id, author_principal, body)
+			VALUES ($1::uuid, $2, $3)`,
+			workItemID, s.principal, settleFailureComment(reason, a2aTaskID, agent.String)); err != nil {
+			return fmt.Errorf("coord.ProdSettler.Settle: failure comment: %w", err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("coord.ProdSettler.Settle: commit: %w", err)
 	}
 	return nil
+}
+
+// settleFailureComment renders the one-line failure-reason comment the settle
+// posts for a failed follow (ISI-5032): the engine's terminal status.reason (the
+// shim's run error — engine text only, never secret material), the a2a task id
+// for correlation, and the agent attribution when known.
+func settleFailureComment(reason, a2aTaskID, agent string) string {
+	who := ""
+	if agent != "" {
+		who = " — agent " + agent
+	}
+	return fmt.Sprintf("Run failed: %s (a2a task %s)%s", reason, a2aTaskID, who)
 }
 
 // A2AFollowGateOpen reports whether the reconcile machine may commit the terminal
