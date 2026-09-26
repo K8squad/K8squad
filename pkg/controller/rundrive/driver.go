@@ -62,7 +62,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -317,12 +316,17 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	if len(run.Spec.Agents) > 0 {
 		spanAttrs = append(spanAttrs, attribute.String("ksquad.agent.name", run.Spec.Agents[0].Name))
 	}
+	// ISI-5010: run.reconcile is the flow-first span of the operator's
+	// reconcile cycle — mark it as the root so a backend can anchor the
+	// operator's flow explicitly instead of inferring it from a missing
+	// parent. It marks the OPERATOR flow anchor: the span still joins an
+	// inbound W3C parent extracted from the Run's annotations above when one
+	// was stamped at mint.
+	spanAttrs = append(spanAttrs, attribute.Bool("request.is_root_span", true))
 	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(spanAttrs...))
+	var finalStep reconcile.Step
 	defer func() {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
+		telemetry.SetSpanOutcome(span, reconcile.OutcomeFrom(finalStep, err), err)
 		span.End()
 	}()
 	slog.InfoContext(ctx, "rundrive: driving run",
@@ -478,6 +482,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 
 	switch after := store.Step(); {
 	case reconcile.IsTerminal(after):
+		finalStep = after
 		return ctrl.Result{}, nil // done: succeeded/failed/cancelled
 	default:
 		// Non-terminal after a bounded drive: spin guard hit or contention —
