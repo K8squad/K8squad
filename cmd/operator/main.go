@@ -619,6 +619,15 @@ func main() {
 				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: os.Getenv("OTEL_EXPORTER_OTLP_PROTOCOL")},
 			)
 		}
+		// ISI-5036: thread the shim's runtime startup no-output watchdog
+		// window into the sandbox so a stalled model-provider stream fails
+		// loudly and bounds the run instead of dying on an opaque external
+		// teardown. Unset keeps the shim default; "0" disables.
+		if v := os.Getenv("KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT"); v != "" {
+			kubeProvisioner = kubeProvisioner.WithPodEnv(
+				corev1.EnvVar{Name: "KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT", Value: v},
+			)
+		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		// M1.2: the pod watch that reports sandbox pod readiness into the pool
 		// (the Provisioner contract's NotifyReady caller — without it warm

@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -66,10 +67,36 @@ type osRunner struct {
 	// killGrace overrides the SIGTERM→SIGKILL grace in the force-settle
 	// path (tests); zero uses osSettleKillGraceDefault.
 	killGrace time.Duration
+	// firstOutput overrides the startup no-output watchdog (tests); zero uses
+	// osFirstOutputTimeoutDefault, negative disables.
+	firstOutput time.Duration
 }
 
-// NewOSRunner returns the production os/exec-backed Runner.
-func NewOSRunner() Runner { return osRunner{} }
+// NewOSRunner returns the production os/exec-backed Runner. The startup
+// watchdog window may be overridden with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT
+// (a Go duration such as "90s", or a bare second count such as "90").
+func NewOSRunner() Runner {
+	r := osRunner{}
+	if v := os.Getenv("KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT"); v != "" {
+		var d time.Duration
+		parsed := false
+		if dur, err := time.ParseDuration(v); err == nil {
+			d, parsed = dur, true
+		} else if secs, err := strconv.Atoi(v); err == nil {
+			d, parsed = time.Duration(secs)*time.Second, true
+		}
+		if parsed {
+			// 0 disables the watchdog (the operator's explicit opt-out); any
+			// positive value overrides the default window.
+			if d <= 0 {
+				r.firstOutput = -1
+			} else {
+				r.firstOutput = d
+			}
+		}
+	}
+	return r
+}
 
 const (
 	// osSettleQuietDefault is how long stdout must stay silent after a
@@ -86,6 +113,20 @@ const (
 	// force-settling: a moment for the runtime to flush buffers, then the
 	// hard cut — the work already completed, the process is only lingering.
 	osSettleKillGraceDefault = 10 * time.Second
+	// osFirstOutputTimeoutDefault bounds how long the runner waits for the
+	// runtime's FIRST stdout line before concluding the runtime never reached
+	// its model call (ISI-5036). A coding-agent CLI emits no stdout until the
+	// provider responds — verified live: opencode v1.18.27's first mirrored
+	// event arrives ~40s after launch on a healthy run (pod log line 1 at
+	// T+0, first `tool_use` at T+40). When the model endpoint accepts the
+	// connection but never streams (a saturated/over-subscribed provider —
+	// reproduced on the LAN ollama, which serves only one long stream at a
+	// time), stdout stays empty forever and the run used to die on an opaque
+	// external teardown. The watchdog converts that silent stall into a loud,
+	// bounded TaskFailed carrying the reason. 90s is >2x the healthy ~40s
+	// first-output latency, so a merely slow model is never misclassified;
+	// override with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT.
+	osFirstOutputTimeoutDefault = 90 * time.Second
 )
 
 func (r osRunner) quietWindow() time.Duration {
@@ -100,6 +141,20 @@ func (r osRunner) graceWindow() time.Duration {
 		return r.killGrace
 	}
 	return osSettleKillGraceDefault
+}
+
+// firstOutputWindow is the startup watchdog window: a negative value disables
+// it (also the operator's KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT=0 opt-out), a
+// positive value overrides the default, and the zero value (a directly-built
+// osRunner, e.g. in tests) uses the default.
+func (r osRunner) firstOutputWindow() time.Duration {
+	if r.firstOutput < 0 {
+		return 0
+	}
+	if r.firstOutput > 0 {
+		return r.firstOutput
+	}
+	return osFirstOutputTimeoutDefault
 }
 
 func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Progress)) (Outcome, error) {
@@ -161,13 +216,22 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// quiet window, so a multi-step session that keeps emitting never
 	// force-settles mid-flight.
 	scanned := make(chan struct{})
+	// firstOutput closes on the runtime's FIRST stdout line — the startup
+	// watchdog's stand-down signal (ISI-5036). It stays open for a runtime
+	// that accepts the task but never reaches its model call.
+	firstOutput := make(chan struct{})
 	activity := make(chan struct{}, 16)
 	go func() {
 		defer close(scanned)
 		terminalSeen := false
+		firstLine := true
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
+			if firstLine {
+				firstLine = false
+				close(firstOutput)
+			}
 			line := scanner.Text()
 			// ISI-4188 gap 7: a structured-stream adapter (opencode --format=json)
 			// decodes its own line shape into typed events; the default stays the
@@ -199,6 +263,21 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 		}
 	}()
 
+	// Startup watchdog (ISI-5036): if the runtime emits NO stdout within the
+	// window it never reached its model call — the provider accepted the
+	// connection but never streamed (a saturated/over-subscribed endpoint).
+	// Distinguish that from the settle path (which needs a terminal event and
+	// therefore stdout traffic) and from a clean exit: kill the group and fail
+	// LOUDLY with the reason, instead of leaving the run to die on an opaque
+	// external teardown ("engine settle").
+	var firstOutputTimer *time.Timer
+	var firstOutputCh <-chan time.Time
+	if w := r.firstOutputWindow(); w > 0 {
+		firstOutputTimer = time.NewTimer(w)
+		firstOutputCh = firstOutputTimer.C
+		defer firstOutputTimer.Stop()
+	}
+
 	var (
 		settleTimer *time.Timer
 		settleCh    <-chan time.Time
@@ -208,6 +287,9 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 		case <-scanned:
 			// Fast path (and the only path when SettleLine is nil):
 			// stdout EOF'd because the process exited.
+			if firstOutputTimer != nil {
+				firstOutputTimer.Stop()
+			}
 			waitErr := cmd.Wait()
 			if ctx.Err() != nil {
 				// Context cancellation drives the canceled path in the
@@ -219,6 +301,36 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 				return Outcome{State: a2a.TaskFailed, Reason: waitErr.Error()}, nil
 			}
 			return Outcome{State: a2a.TaskCompleted}, nil
+		case <-firstOutput:
+			// The runtime produced its first line: the startup watchdog has
+			// done its job and stands down for the rest of the run.
+			if firstOutputTimer != nil {
+				firstOutputTimer.Stop()
+			}
+			firstOutputCh = nil
+			// A closed channel is permanently select-ready; nil it too or the
+			// loop hot-spins for the rest of the run (ISI-5038 review).
+			firstOutput = nil
+		case <-firstOutputCh:
+			// Race guard: the first line may have landed in the same
+			// scheduling window as the timer. Re-check before condemning.
+			select {
+			case <-firstOutput:
+				firstOutputCh = nil
+				firstOutput = nil
+				continue
+			default:
+			}
+			if ctx.Err() != nil {
+				return Outcome{}, ctx.Err()
+			}
+			window := r.firstOutputWindow()
+			r.killProcessGroup(cmd, scanned)
+			return Outcome{
+				State: a2a.TaskFailed,
+				Reason: fmt.Sprintf("runtime produced no output within %s; model provider stream never started "+
+					"(endpoint unreachable, saturated, or not serving concurrent requests)", window),
+			}, nil
 		case <-activity:
 			quiet := r.quietWindow()
 			if settleTimer == nil {
@@ -245,6 +357,20 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 			}, nil
 		}
 	}
+}
+
+// killProcessGroup is the startup watchdog's termination path (ISI-5036): the
+// runtime produced no output at all, so there is nothing worth a SIGTERM
+// flush — SIGKILL the whole process group, wait (bounded) for the scanner to
+// observe EOF, then reap. Bounded so a pipe-holder that escaped the group
+// cannot wedge the runner: cmd.Wait's WaitDelay caps the remaining I/O.
+func (r osRunner) killProcessGroup(cmd *exec.Cmd, scanned <-chan struct{}) {
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	select {
+	case <-scanned:
+	case <-time.After(r.graceWindow()):
+	}
+	_ = cmd.Wait()
 }
 
 // forceSettle terminates a lingering runtime whose work already completed
