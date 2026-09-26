@@ -219,6 +219,14 @@ type Driver struct {
 	Runner    Runner
 	Sandbox   SandboxReleaser    // optional
 	BindClear SandboxBindClearer // optional (ISI-4310 gone-sandbox recovery)
+	// EndpointGate, when set, is the per-BYO-endpoint serialization gate
+	// (ISI-5037) the dispatcher acquires against at buildTask. The driver
+	// only RELEASES defensively on the terminal fail/cancel paths (a run
+	// that dies or is killed before a clean follow can never reach the
+	// dispatcher's OnDone release) — the primary release stays with OnDone.
+	// Optional — nil disables both the wait-condition surface and the
+	// defensive release (ledger-only lanes).
+	EndpointGate *EndpointGate
 	// Settle reads a run's a2a follow-settlement (ISI-4435). When the latest
 	// dispatch lap settled SUCCESSFULLY, the drive skips the death / gone-sandbox
 	// paths for this pass: the sandbox pod OnDone tears down at agent completion is
@@ -462,15 +470,25 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		if errors.Is(err, errSandboxPending) {
 			return r.requeueSandboxPending(ctx, runID), nil
 		}
+		if errors.Is(err, errEndpointSlotBusy) {
+			return r.waitEndpointSlot(ctx, &run, runID, err), nil
+		}
 		return ctrl.Result{}, fmt.Errorf("rundrive: drive %s: %w", req.NamespacedName, err)
 	}
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
 		if errors.Is(err, errSandboxPending) {
 			return r.requeueSandboxPending(ctx, runID), nil
 		}
+		if errors.Is(err, errEndpointSlotBusy) {
+			return r.waitEndpointSlot(ctx, &run, runID, err), nil
+		}
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
 	}
+	// The drive got past the dispatch step this pass, so no endpoint wait is
+	// in effect: clear a stale wait condition left by an earlier busy pass
+	// (transition-only — no patch when the condition was never stamped).
+	r.clearEndpointSlotWait(ctx, &run)
 
 	// A drive that advanced the durable step wakes the projector so the new
 	// phase is projected without waiting for its resync (ISI-4381 Option A). The
@@ -680,6 +698,15 @@ func (r *Driver) retryOrFail(ctx context.Context, run *api.Run, cs ClaimState) (
 	if _, err := r.Claims.FailEnter(ctx, run.Spec.WorkItemRef, runID, cs.Fence); err != nil {
 		return ctrl.Result{}, fmt.Errorf("rundrive: fail-enter %s: %w", run.Spec.WorkItemRef, err)
 	}
+	// ISI-5037 defensive release: a terminally failed run never reaches the
+	// dispatcher's OnDone, so its BYO endpoint permit would leak and queue
+	// every later run on that endpoint forever. Idempotent; nil-safe. (The
+	// retry path above deliberately KEEPS the permit: the same run
+	// re-acquires it as a no-op on the next lap, so no other run can jump a
+	// lap's backoff queue.)
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -702,6 +729,12 @@ func (r *Driver) cancelFinish(ctx context.Context, run *api.Run, cs ClaimState) 
 	if !ok {
 		// Fence moved under us (another kill/teardown raced): re-read next pass.
 		return ctrl.Result{RequeueAfter: continueDelay}, nil
+	}
+	// ISI-5037 defensive release: a killed run's follow ends errored (or
+	// never started), and an errored OnDone keeps the permit by design — so
+	// the terminal kill is the last certain chance to free the endpoint slot.
+	if r.EndpointGate != nil {
+		r.EndpointGate.ReleaseByRun(runID)
 	}
 	return ctrl.Result{}, nil
 }
@@ -779,6 +812,68 @@ func (r *Driver) requeueSandboxPending(ctx context.Context, runID string) ctrl.R
 	slog.DebugContext(ctx, "rundrive: sandbox pod not ready to dispatch yet; requeuing (bind/readiness race)",
 		"run.id", runID)
 	return ctrl.Result{RequeueAfter: continueDelay}
+}
+
+// ConditionEndpointSlotWait is the legible-wait marker the driver stamps on a
+// Run whose BYO model endpoint has no free slot (ISI-5037): True means the
+// Run is queued OUTSIDE the endpoint — dispatched nowhere, burning no retry
+// budget — until the holding run finishes. The projector's Ready condition is
+// unaffected (a different condition type survives its SetStatusCondition
+// merge), so both signals read side by side on the CR. The driver clears it
+// on the first pass that gets past the dispatch step.
+const ConditionEndpointSlotWait = "WaitingForEndpointSlot"
+
+// waitEndpointSlot is the quiet requeue for a run whose resolved BYO endpoint
+// is fully held by other run(s) (ISI-5037): the single-stream Ollama endpoint
+// queues concurrent streams with an unbounded first-token wait, so dispatching
+// now would kill the run on the shim's first-output watchdog. Instead the run
+// waits here — no lap consumed, no span exception — and retries on a slow
+// cadence. The wait is surfaced on the CR so a long hold reads as a queue,
+// not as the silent stall ISI-5036 chased. The wrapped error names the
+// endpoint and the holding run.
+func (r *Driver) waitEndpointSlot(ctx context.Context, run *api.Run, runID string, busyErr error) ctrl.Result {
+	slog.InfoContext(ctx, "rundrive: BYO endpoint has no free slot; run waits outside the endpoint",
+		"run.id", runID, "run.name", run.Name, "run.namespace", run.Namespace, "err", busyErr.Error())
+	patched := run.DeepCopy()
+	changed := meta.SetStatusCondition(&patched.Status.Conditions, metav1.Condition{
+		Type:               ConditionEndpointSlotWait,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: run.Generation,
+		Reason:             "EndpointBusy",
+		Message: fmt.Sprintf("Waiting for a slot on the BYO model endpoint: %s. "+
+			"The run is queued and dispatches when the holding run releases the endpoint.",
+			busyErr.Error()),
+		LastTransitionTime: metav1.Now(),
+	})
+	if changed {
+		// Best-effort: the wait itself is already correct without the surface
+		// (the requeue below is the mechanism); a status hiccup must not turn
+		// a benign queue into a reconcile error. NotFound means the Run left
+		// mid-flight — nothing to surface.
+		if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+			slog.WarnContext(ctx, "rundrive: could not surface endpoint-slot wait on the Run (wait continues regardless)",
+				"run.id", runID, "err", err.Error())
+		}
+	}
+	return ctrl.Result{RequeueAfter: endpointSlotWaitDelay}
+}
+
+// clearEndpointSlotWait removes a stale WaitingForEndpointSlot condition once
+// a drive pass makes it past the dispatch step (the slot was acquired, or the
+// run has no BYO endpoint). Transition-only: no patch when nothing is stamped.
+// Best-effort like the stamp — a failed clear replays on the next pass.
+func (r *Driver) clearEndpointSlotWait(ctx context.Context, run *api.Run) {
+	if meta.FindStatusCondition(run.Status.Conditions, ConditionEndpointSlotWait) == nil {
+		return
+	}
+	patched := run.DeepCopy()
+	if !meta.RemoveStatusCondition(&patched.Status.Conditions, ConditionEndpointSlotWait) {
+		return
+	}
+	if err := r.Status().Patch(ctx, patched, client.MergeFrom(run)); err != nil && !apierrors.IsNotFound(err) {
+		slog.WarnContext(ctx, "rundrive: could not clear endpoint-slot wait condition",
+			"run.id", string(run.UID), "err", err.Error())
+	}
 }
 
 // BackoffFor is the retry-lap delay (attempt is 1-based): equal jitter over
