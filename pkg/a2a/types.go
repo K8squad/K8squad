@@ -421,6 +421,16 @@ type UsagePayload struct {
 	Prompt string `json:"prompt,omitempty"`
 	// Response is the model's response body — see Prompt. +optional
 	Response string `json:"response,omitempty"`
+
+	// Error is the step's failure message when the model round-trip failed
+	// (timeout, provider error, …). Empty on success. When set, the llm.call
+	// span records an exception event and an Error status (ISI-5015). +optional
+	Error string `json:"error,omitempty"`
+	// ErrorType is the failure classifier the runtime reported (the provider
+	// error name — "APIError", "timeout", …), recorded as exception.type on
+	// the llm.call span alongside Error. Empty when the runtime reports none.
+	// +optional
+	ErrorType string `json:"errorType,omitempty"`
 }
 
 // AuthRequiredPayload is the payload of an EventAuthRequired event (spec §4/§7).
