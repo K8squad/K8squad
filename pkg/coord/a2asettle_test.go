@@ -56,7 +56,7 @@ func TestSettle_FirstWriterMarksAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeSucceeded); err != nil {
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeSucceeded, ""); err != nil {
 		t.Fatalf("first Settle: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -86,7 +86,7 @@ func TestSettle_SecondWriterIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFailed); err != nil {
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFailed, ""); err != nil {
 		t.Fatalf("re-entrant Settle should be a silent no-op, got: %v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -108,7 +108,7 @@ func TestSettle_InvalidOutcomeRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Settle(context.Background(), stTaskID, stRun, "bogus"); err == nil {
+	if err := s.Settle(context.Background(), stTaskID, stRun, "bogus", ""); err == nil {
 		t.Fatal("Settle must reject an out-of-family outcome")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -135,11 +135,94 @@ func TestSettle_MarkErrorSurfacesNoAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFollowError); err == nil {
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFollowError, ""); err == nil {
 		t.Fatal("a marker-write failure must surface as an error")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("no audit row may be attempted after a marker failure: %v", err)
+	}
+}
+
+// ISI-5032 (ISI-5028 hypothesis 3): a FAILED follow with a non-empty reason posts
+// one agent-attributed coord.comment (`Run failed: <reason>`) in the SAME
+// transaction as the marker + audit, so the ticket thread answers why the run
+// died. The agent attribution is read from the checkout row's assignee_agent.
+func TestSettle_FailedPostsFailureComment(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("UPDATE coord.a2a_dispatch").
+		WithArgs(stTaskID, coord.SettleOutcomeFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"work_item_id"}).AddRow(stItem))
+	mock.ExpectExec("INSERT INTO coord.audit_log").
+		WithArgs(stItem, stRun, stPrincip, coord.SettleOutcomeFailed).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("SELECT assignee_agent FROM coord.claim").
+		WithArgs(stItem).
+		WillReturnRows(sqlmock.NewRows([]string{"assignee_agent"}).AddRow("sam"))
+	mock.ExpectExec("INSERT INTO coord.comment").
+		WithArgs(stItem, stPrincip, "Run failed: sandbox readiness refused (a2a task "+stTaskID+") — agent sam").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	s, err := coord.NewProdSettleWriter(db, stPrincip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Settle(context.Background(), stTaskID, stRun, coord.SettleOutcomeFailed, "sandbox readiness refused"); err != nil {
+		t.Fatalf("failed Settle with reason: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("a failed settle with a reason must post one failure comment: %v", err)
+	}
+}
+
+// A FAILED follow with an EMPTY reason posts nothing (nothing new over the
+// generic settle summary), and a succeeded/follow_error outcome never posts a
+// failure comment even when a reason string is present.
+func TestSettle_NoFailureCommentWhenNoReasonOrNotFailed(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome string
+		reason  string
+	}{
+		{"failed-empty-reason", coord.SettleOutcomeFailed, ""},
+		{"succeeded-with-reason", coord.SettleOutcomeSucceeded, "boom"},
+		{"follow-error-with-reason", coord.SettleOutcomeFollowError, "stream reset"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+
+			mock.ExpectBegin()
+			mock.ExpectQuery("UPDATE coord.a2a_dispatch").
+				WithArgs(stTaskID, tc.outcome).
+				WillReturnRows(sqlmock.NewRows([]string{"work_item_id"}).AddRow(stItem))
+			mock.ExpectExec("INSERT INTO coord.audit_log").
+				WithArgs(stItem, stRun, stPrincip, tc.outcome).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+			// No assignee read, no comment INSERT — just commit.
+			mock.ExpectCommit()
+
+			s, err := coord.NewProdSettleWriter(db, stPrincip)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Settle(context.Background(), stTaskID, stRun, tc.outcome, tc.reason); err != nil {
+				t.Fatalf("Settle: %v", err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("no failure comment may be posted for %s: %v", tc.name, err)
+			}
+		})
 	}
 }
 
