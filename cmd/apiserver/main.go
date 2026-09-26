@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
+	dbmigrate "github.com/K8squad/K8squad/db"
 	"github.com/K8squad/K8squad/internal/apiserver"
 	"github.com/K8squad/K8squad/internal/artifactbrowser"
 	"github.com/K8squad/K8squad/internal/buildbrowser"
@@ -136,6 +137,18 @@ func main() {
 	}
 	cancel()
 	log.Printf("ksquad-apiserver: store ready")
+
+	// Fail closed at start: apply the shared forward-only migrations (auth/coord/scm/discussion)
+	// before serving, so a newly-landed db/migrations file can never silently drift on a live cluster
+	// (ISI-5051; the ISI-4919 discussion outage was an unapplied 0024/0025). Idempotent — a no-op once
+	// the schema is at HEAD — and forward-only. A failure here means a half-migrated store, so refuse
+	// to serve rather than run against drifted schema.
+	migCtx, migCancel := context.WithTimeout(ctx, 2*time.Minute)
+	if err := dbmigrate.Apply(migCtx, db); err != nil {
+		migCancel()
+		log.Fatalf("ksquad-apiserver: refusing to start, schema migration failed: %v", err)
+	}
+	migCancel()
 
 	// §13 identity resolver. Production resolves the forwarded ksquad_session cookie through the
 	// Postgres auth.session store (ISI-2758, db/migrations/0006_auth_schema.sql); a dev sessions file
