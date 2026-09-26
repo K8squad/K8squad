@@ -337,7 +337,7 @@ func validateEndpointURL(raw string) (string, error) {
 // a fabricated list. status is an HTTP status for the CALLER (502: the apiserver
 // could not get an honest answer from the upstream).
 func (s *ModelEndpointService) probe(ctx context.Context, spec providerSpec, base, apiKey string) (listModelsResult, int, string) {
-	probeURL := base
+	var probeURL string
 	switch spec.Wire {
 	case wireOllama:
 		probeURL = base + "/api/tags"
