@@ -22,7 +22,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -208,6 +210,100 @@ func TestOSRunnerMapsExitCodes(t *testing.T) {
 	outcome, err = osRunner{}.Run(context.Background(), runtimes.ExecSpec{Path: dirty}, func(Progress) {})
 	if err != nil || outcome.State != a2a.TaskFailed || outcome.Reason == "" {
 		t.Fatalf("dirty exit: outcome %+v err %v, want failed with reason", outcome, err)
+	}
+}
+
+// TestOSRunnerFirstOutputWatchdogFailsLoudly is the ISI-5036 regression: a
+// runtime that accepts the task but never reaches its model call (the
+// provider accepted the connection and never streamed) emits no stdout at
+// all. The runner must not wedge until an external teardown; it must fail
+// within the window with a reason naming the stall.
+func TestOSRunnerFirstOutputWatchdogFailsLoudly(t *testing.T) {
+	script := writeScript(t, "sleep 300\n")
+	runner := osRunner{firstOutput: 300 * time.Millisecond, killGrace: 2 * time.Second}
+	start := time.Now()
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{
+		Path:       script,
+		SettleLine: jsonSettleDetector("step_finish"),
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskFailed {
+		t.Fatalf("state = %s, want TaskFailed", outcome.State)
+	}
+	if !strings.Contains(outcome.Reason, "produced no output") {
+		t.Fatalf("reason = %q, want a no-output/stall reason", outcome.Reason)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("watchdog took %s; the stall was not bounded", elapsed)
+	}
+}
+
+// TestOSRunnerFirstOutputWatchdogStandsDownOnOutput guards the watchdog
+// against false positives: a runtime whose first line arrives inside the
+// window must ride the normal exit path, not be killed as a stall.
+func TestOSRunnerFirstOutputWatchdogStandsDownOnOutput(t *testing.T) {
+	script := writeScript(t, "sleep 0.4; echo done\n")
+	runner := osRunner{firstOutput: 5 * time.Second, killGrace: time.Second}
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{Path: script}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskCompleted || outcome.Reason != "" {
+		t.Fatalf("outcome = %+v, want completed with no reason", outcome)
+	}
+}
+
+// TestOSRunnerFirstOutputWatchdogDoesNotSpinAfterFirstLine is the ISI-5038
+// review regression: the stand-down branch must nil the closed firstOutput
+// channel, because a closed channel is permanently select-ready. Left armed,
+// the Run select loop hot-spins from the first stdout line until exit. CPU
+// time (RUSAGE_SELF) is measured across a quiet window: a spin burns roughly
+// the whole window, the disarmed loop blocks in select.
+func TestOSRunnerFirstOutputWatchdogDoesNotSpinAfterFirstLine(t *testing.T) {
+	script := writeScript(t, "echo first\nsleep 1\n")
+	runner := osRunner{firstOutput: 5 * time.Second, killGrace: 5 * time.Second}
+
+	var before, after syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &before); err != nil {
+		t.Fatalf("getrusage before: %v", err)
+	}
+	outcome, err := runner.Run(context.Background(), runtimes.ExecSpec{Path: script}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskCompleted {
+		t.Fatalf("state = %s, want TaskCompleted", outcome.State)
+	}
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &after); err != nil {
+		t.Fatalf("getrusage after: %v", err)
+	}
+	spin := time.Duration(after.Utime.Nano()-before.Utime.Nano()) +
+		time.Duration(after.Stime.Nano()-before.Stime.Nano())
+	if spin > 500*time.Millisecond {
+		t.Fatalf("Run consumed %s CPU across a ~1s quiet window; the firstOutput stand-down is busy-spinning", spin)
+	}
+}
+
+// TestNewOSRunnerFirstOutputTimeoutEnv pins the operator-facing override:
+// duration and bare-second forms set the window, 0 is the explicit opt-out.
+func TestNewOSRunnerFirstOutputTimeoutEnv(t *testing.T) {
+	cases := []struct {
+		val  string
+		want time.Duration
+	}{
+		{"", osFirstOutputTimeoutDefault},
+		{"45s", 45 * time.Second},
+		{"30", 30 * time.Second},
+		{"0", 0}, // explicit opt-out: window disabled
+	}
+	for _, tc := range cases {
+		t.Setenv("KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT", tc.val)
+		got := NewOSRunner().(osRunner).firstOutputWindow()
+		if got != tc.want {
+			t.Fatalf("val %q: window = %s, want %s", tc.val, got, tc.want)
+		}
 	}
 }
 
