@@ -97,3 +97,38 @@ func TestClearOldTraces(t *testing.T) {
 	report = analyzer.GenerateReport(ctx)
 	assert.NotContains(t, report, "Trace ID:")
 }
+
+// TestTraceValidatorRootSpanMarking covers ISI-5012 P1#3 (root half): the
+// validator tracks exactly-one-root-per-flow so a test can assert each flow
+// anchors on a single request.is_root_span=true span.
+func TestTraceValidatorRootSpanMarking(t *testing.T) {
+	v := NewTraceValidator()
+
+	assert.False(t, v.HasSingleRoot(), "zero root spans must not satisfy single-root")
+	v.RecordRootSpan()
+	assert.True(t, v.HasSingleRoot())
+	assert.Equal(t, 1, v.RootSpanCount())
+
+	// A second root is a violation — each flow must mark exactly one.
+	v.RecordRootSpan()
+	assert.Equal(t, 2, v.RootSpanCount())
+	assert.False(t, v.HasSingleRoot())
+}
+
+// TestTraceValidatorLLMCallStatus covers ISI-5012 P1#3 (status half): the
+// validator tracks llm.call spans that were recorded without a status so a
+// test can assert every llm.call carries a non-empty span.status_code.
+func TestTraceValidatorLLMCallStatus(t *testing.T) {
+	v := NewTraceValidator()
+
+	// No llm.call observed yet: not "all have status" (nothing to prove).
+	assert.False(t, v.AllLLMCallsHaveStatus())
+
+	v.RecordLLMCall(true)
+	assert.True(t, v.AllLLMCallsHaveStatus())
+	assert.Equal(t, 0, v.LLMCallsWithoutStatus())
+
+	v.RecordLLMCall(false)
+	assert.Equal(t, 1, v.LLMCallsWithoutStatus())
+	assert.False(t, v.AllLLMCallsHaveStatus())
+}
