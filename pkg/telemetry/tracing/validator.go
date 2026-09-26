@@ -30,8 +30,16 @@ import (
 type TraceValidator struct {
 	expectedSpans map[string]bool
 	actualSpans   map[string]bool
-	createdAt     time.Time
-	mu            sync.RWMutex
+	// ISI-5012 (P1#3): flow-level completeness — exactly one root span per
+	// trace (request.is_root_span=true) and a non-empty status on every
+	// llm.call span. These are recorded by the caller (the OTel Span API
+	// does not expose attributes/status, so the observer supplies them, same
+	// as the span name).
+	rootSpans        int
+	llmCalls         int
+	llmCallsNoStatus int
+	createdAt        time.Time
+	mu               sync.RWMutex
 }
 
 // NewTraceValidator creates a new trace validator
@@ -55,6 +63,55 @@ func (tv *TraceValidator) ActualSpan(spanType string) {
 	tv.mu.Lock()
 	defer tv.mu.Unlock()
 	tv.actualSpans[spanType] = true
+}
+
+// RecordRootSpan registers that a span was observed carrying
+// request.is_root_span=true (ISI-5012). Each flow must mark exactly one.
+func (tv *TraceValidator) RecordRootSpan() {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.rootSpans++
+}
+
+// RecordLLMCall registers an observed llm.call span and whether it carried a
+// non-empty span.status_code (ISI-5012); statusSet=false records a gap.
+func (tv *TraceValidator) RecordLLMCall(statusSet bool) {
+	tv.mu.Lock()
+	defer tv.mu.Unlock()
+	tv.llmCalls++
+	if !statusSet {
+		tv.llmCallsNoStatus++
+	}
+}
+
+// RootSpanCount returns how many spans were recorded as the flow root.
+func (tv *TraceValidator) RootSpanCount() int {
+	tv.mu.RLock()
+	defer tv.mu.RUnlock()
+	return tv.rootSpans
+}
+
+// LLMCallCount returns how many llm.call spans were observed.
+func (tv *TraceValidator) LLMCallCount() int {
+	tv.mu.RLock()
+	defer tv.mu.RUnlock()
+	return tv.llmCalls
+}
+
+// LLMCallsWithoutStatus returns how many llm.call spans lacked a status code.
+func (tv *TraceValidator) LLMCallsWithoutStatus() int {
+	tv.mu.RLock()
+	defer tv.mu.RUnlock()
+	return tv.llmCallsNoStatus
+}
+
+// HasSingleRoot reports whether exactly one root span was observed.
+func (tv *TraceValidator) HasSingleRoot() bool { return tv.RootSpanCount() == 1 }
+
+// AllLLMCallsHaveStatus reports whether at least one llm.call span was observed
+// and every one carried a non-empty status.
+func (tv *TraceValidator) AllLLMCallsHaveStatus() bool {
+	return tv.LLMCallCount() > 0 && tv.LLMCallsWithoutStatus() == 0
 }
 
 // GetMissingSpans returns the set of expected spans that were not observed
