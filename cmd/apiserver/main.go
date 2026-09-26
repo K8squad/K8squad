@@ -520,6 +520,21 @@ func main() {
 		log.Printf("ksquad-apiserver: managed-credential write ready (E3-S1, label-scoped Secret create)")
 	}
 
+	// ISI-5005 model-endpoint surface (child of ISI-4989, the deferred ISI-4890
+	// AC6 fast-follow): list a provider's models and upsert a BYO endpoint Secret
+	// in the operator namespace (POD_NAMESPACE — the SAME namespace the ModelConfig
+	// "default" singleton and the resolver read, so a written endpoint is
+	// resolvable). Its own direct client (Get/Create/Update/List over Secrets in
+	// one fixed namespace). A cluster-less dev run leaves it nil → the routes keep
+	// the documented 501, exactly like the compose/credential surfaces.
+	var modelEndpoints *apiserver.ModelEndpointService
+	if mec, mecErr := apiserver.NewModelEndpointClient(); mecErr != nil {
+		log.Printf("ksquad-apiserver: model-endpoint surface disabled (/api/modelendpoints* → 501): %v", mecErr)
+	} else {
+		modelEndpoints = apiserver.NewModelEndpointService(mec, os.Getenv("POD_NAMESPACE"))
+		log.Printf("ksquad-apiserver: model-endpoint surface ready (ISI-5005, list-models + endpoint-Secret upsert)")
+	}
+
 	// E3-S2 test-connection (ISI-3680, AD-7): POST
 	// /api/credentials/{name}/test probes the STORED managed credential
 	// server-side and caches the last result as Team annotations. Own direct
@@ -625,6 +640,7 @@ func main() {
 		Onboarding:          onboarding,
 		OTelConfig:          otelConfig,
 		OTelConfigWriter:    otelConfigWriter,
+		ModelEndpoints:      modelEndpoints,
 		Builds:              builds,
 		Artifacts:           artifacts,
 		WorkspaceReader:     workspaceReader,
