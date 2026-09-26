@@ -245,11 +245,15 @@ One operator reposync Reconcile / mirror pass (GH-2). Joins the inbound webhook 
 
 #### `scm.fetch.<kind>`
 
-A child of scm.sync per entity kind (GH-2): scm.fetch.pull_requests, scm.fetch.issues, scm.fetch.check_runs, scm.fetch.artifacts, scm.fetch.releases, scm.fetch.branches. Isolates which provider fetch is slow or failing.
+A child of scm.sync per entity kind (GH-2): scm.fetch.pull_requests, scm.fetch.issues, scm.fetch.check_runs, scm.fetch.artifacts, scm.fetch.releases, scm.fetch.branches. Isolates which provider fetch is slow or failing. Carries the outbound provider call's HTTP client semantics (method, path, server.address, response status) so RED analysis can group per route/status per SCM call (ISI-5013).
 
 | Attribute | Type | Requirement | Stability | WS | Description |
 |---|---|---|---|---|---|
 | `ksquad.scm.record_count` | int | required | stable | WS-GH | Number of records the per-kind fetcher returned. |
+| `http.request.method` | string | required | stable | WS-GH | The outbound provider API method (e.g. GET) stamped on the span by the provider HTTP transport. |
+| `url.path` | string | required | stable | WS-GH | The outbound provider API path (e.g. /repos/{owner}/{repo}/issues), stamped from the request URL. |
+| `server.address` | string | required | stable | WS-GH | The provider API host (e.g. api.github.com) the outbound call targeted. |
+| `http.response.status_code` | int | required | stable | WS-GH | The provider API response status code for the outbound call. |
 
 #### `scm.sync.trigger`
 

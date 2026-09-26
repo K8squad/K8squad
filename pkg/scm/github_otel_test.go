@@ -17,11 +17,20 @@ limitations under the License.
 package scm
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // TestLastRateRemainingDefault: before any API response the reporter says
@@ -86,5 +95,68 @@ func TestRateTrackingTransportIgnoresMissingHeader(t *testing.T) {
 	resp.Body.Close()
 	if got := remaining.Load(); got != 1234 {
 		t.Errorf("remaining = %d after header-less response, want 1234 (untouched)", got)
+	}
+}
+
+// TestFetchSpanCarriesHTTPSemantics (ISI-5013): a scm.fetch.<kind> span for a
+// provider Snapshot carries the outbound provider call's HTTP client semantics
+// — http.request.method, url.path, server.address and http.response.status_code
+// — stamped by the provider HTTP transport. Previously the span carried zero
+// http.* attributes, so RED analysis could not see method/route/status per
+// outbound SCM call.
+func TestFetchSpanCarriesHTTPSemantics(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v3/repos/acme/app/issues", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	defer otel.SetTracerProvider(prev)
+
+	p, err := NewGitHubProvider(srv.URL, ProviderCredentials{})
+	if err != nil {
+		t.Fatalf("NewGitHubProvider: %v", err)
+	}
+	if _, err := p.Snapshot(context.Background(), "https://github.com/acme/app",
+		SnapshotOptions{Types: []RecordType{RecordTypeIssue}}); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+
+	var attrs map[string]attribute.KeyValue
+	for _, s := range sr.Ended() {
+		if s.Name() != "scm.fetch.issues" {
+			continue
+		}
+		attrs = map[string]attribute.KeyValue{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a
+		}
+	}
+	if attrs == nil {
+		t.Fatal("no scm.fetch.issues span recorded")
+	}
+
+	method, methodOK := attrs["http.request.method"]
+	if !methodOK || method.Value.AsString() != http.MethodGet {
+		t.Errorf("http.request.method = %q, want %q", method.Value.AsString(), http.MethodGet)
+	}
+	path, pathOK := attrs["url.path"]
+	if !pathOK || !strings.HasSuffix(path.Value.AsString(), "/repos/acme/app/issues") {
+		t.Errorf("url.path = %q, want suffix %q", path.Value.AsString(), "/repos/acme/app/issues")
+	}
+	u, _ := url.Parse(srv.URL)
+	host, hostOK := attrs["server.address"]
+	if !hostOK || host.Value.AsString() != u.Hostname() {
+		t.Errorf("server.address = %q, want %q", host.Value.AsString(), u.Hostname())
+	}
+	status, statusOK := attrs["http.response.status_code"]
+	if !statusOK || status.Value.AsInt64() != http.StatusOK {
+		t.Errorf("http.response.status_code = %d, want %d", status.Value.AsInt64(), http.StatusOK)
 	}
 }
