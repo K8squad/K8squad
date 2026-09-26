@@ -346,12 +346,30 @@ func (d *operatorDispatch) buildTask(ctx context.Context, a2aTaskID, runID strin
 		identity.Name = run.Spec.Agents[0].Name
 	}
 
+	// Epic C / ADR-044 step 6 (ISI-5017): deliver the resolved MCP IR + the
+	// per-run credential VALUES on the task envelope. A warm-pool sandbox pod
+	// boots GENERIC and is immutable after Bind — volumes/env cannot be added
+	// per run — so the pod-side supervisor (cmd/shim) can never receive the
+	// IR via the projected ConfigMap mount. Shipping it on the envelope is the
+	// same per-run-identity trick Task.Identity already uses. Fail-closed: a
+	// Run whose recorded manifest demands MCP servers must never dispatch a
+	// generic pod without its IR/credentials.
+	mcpEndpoints, mcpTokens, err := d.mcpEnvelope(ctx, run)
+	if err != nil {
+		return wire.Task{}, err
+	}
+
 	return wire.Task{
 		A2ATaskID:  a2aTaskID,
 		WorkItemID: run.Spec.WorkItemRef,
 		FenceToken: fence,
 		Envelope:   env,
 		Identity:   identity,
+		// MCPEndpoints/MCPTokenEnv deliver the capability envelope to the
+		// pod per run (ISI-5017). MCPTokenEnv is secret material — never
+		// logged.
+		MCPEndpoints: mcpEndpoints,
+		MCPTokenEnv:  mcpTokens,
 		// CredentialsMounted is the §7.3 contract: the reconciler env-injects
 		// the credential Secret into the runtime container. The v1
 		// operator-spawned topology mounts no per-user credential into the
@@ -845,6 +863,60 @@ func (d *operatorDispatch) materializeMCPConfig(ctx context.Context, run *api.Ru
 		return "", fmt.Errorf("rundrive: write MCP IR: %w", err)
 	}
 	return path, nil
+}
+
+// mcpEnvelope resolves the per-run MCP IR + credential VALUES to ship on the
+// task envelope (ISI-5017). The IR is rebuilt from the Run's IMMUTABLE
+// capability manifest — the same audit truth the projected ConfigMap follows
+// (capability.EndpointsFromManifest) — so the envelope can never drift from
+// what Run assembly recorded. For each endpoint carrying a CredentialSecretRef
+// the referenced per-run Secret is read and its value mapped under the env
+// NAME the IR references (capability.CredentialEnvName); that is the value the
+// shim layers onto the runtime subprocess env, because a warm-pool pod cannot
+// gain the SecretKeyRef projection after Bind.
+//
+// Fail-closed (ADR-044): a manifest that demands MCP servers but whose IR or
+// credential Secret cannot be resolved aborts the dispatch rather than
+// launching a generic pod with a silently missing capability. Returns nil,nil
+// for a bare manifest (no MCP demand).
+func (d *operatorDispatch) mcpEnvelope(ctx context.Context, run *api.Run) ([]capability.Endpoint, map[string]string, error) {
+	endpoints := capability.EndpointsFromManifest(run.Status.CapabilityManifest)
+	if len(endpoints) == 0 {
+		return nil, nil, nil
+	}
+	tokens := map[string]string{}
+	for _, ep := range endpoints {
+		ref := ep.CredentialSecretRef
+		if ref == nil || ref.Name == "" {
+			continue
+		}
+		var sec corev1.Secret
+		if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: ref.Name}, &sec); err != nil {
+			return nil, nil, fmt.Errorf("rundrive: read MCP credential secret %s/%s for server %s (fail-closed): %w", run.Namespace, ref.Name, ep.Name, err)
+		}
+		key := ref.Key
+		if key == "" {
+			// Mirrors pkg/capability's defaultCredentialKey (the catalog
+			// convention the pod-seam SecretKeyRef reads when the ref names no
+			// key). Kept as a literal to avoid exporting an internal const.
+			key = "token"
+		}
+		raw, ok := sec.Data[key]
+		if !ok || len(raw) == 0 {
+			return nil, nil, fmt.Errorf("rundrive: MCP credential secret %s/%s lacks key %q for server %s (fail-closed)", run.Namespace, ref.Name, key, ep.Name)
+		}
+		names := ep.EnvNames
+		if len(names) == 0 {
+			names = []string{capability.CredentialEnvName(ep.Name)}
+		}
+		for _, name := range names {
+			tokens[name] = string(raw)
+		}
+	}
+	if len(tokens) == 0 {
+		return endpoints, nil, nil
+	}
+	return endpoints, tokens, nil
 }
 
 // materializeSkills copies the Run's per-skill projection ConfigMaps into

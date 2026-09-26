@@ -220,36 +220,11 @@ func inlineSkillsFromManifest(m *api.CapabilityManifest) []capability.GrantedSki
 
 // endpointsFromManifest rebuilds the IR endpoints from a recorded
 // manifest for IR ConfigMap convergence (the manifest is the audit
-// truth; the ConfigMap follows it, never vice versa).
+// truth; the ConfigMap follows it, never vice versa). It delegates to
+// pkg/capability so the dispatch seam's manifest→IR rebuild (ISI-5017)
+// and this one can never drift.
 func endpointsFromManifest(m *api.CapabilityManifest) []capability.Endpoint {
-	if m == nil || len(m.MCPEndpoints) == 0 {
-		return nil
-	}
-	out := make([]capability.Endpoint, 0, len(m.MCPEndpoints))
-	for _, ep := range m.MCPEndpoints {
-		out = append(out, capability.Endpoint{
-			Name:                ep.Name,
-			Transport:           string(ep.Transport),
-			URL:                 ep.URL,
-			Headers:             ep.Headers,
-			Command:             ep.Command,
-			Args:                ep.Args,
-			Image:               ep.Image,
-			EnvNames:            envNamesFor(ep),
-			AllowTools:          ep.AllowTools,
-			DenyTools:           ep.DenyTools,
-			CredentialSecretRef: ep.CredentialSecretRef,
-			EgressPolicyRef:     ep.EgressPolicyRef,
-		})
-	}
-	return out
-}
-
-func envNamesFor(ep api.ResolvedMCPEndpoint) []string {
-	if ep.CredentialSecretRef == nil {
-		return nil
-	}
-	return []string{capability.CredentialEnvName(ep.Name)}
+	return capability.EndpointsFromManifest(m)
 }
 
 // authoringTokenSecretKey is the Secret data key the run capability token is

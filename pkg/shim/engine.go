@@ -30,6 +30,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -194,18 +195,38 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 		e.mu.Unlock()
 		return existing.status(), nil // reattach / terminal dedup (C1)
 	}
+	// Epic C / ADR-044 step 6 (ISI-5017): the per-task envelope's MCP IR wins
+	// over the process-static launch config. On the warm-pool sandbox path the
+	// pod boots GENERIC (K8SQUAD_MCP_CONFIG unset), so cfg.MCPEndpoints is
+	// empty and the IR arrives ONLY on the submit payload; the operator-spawned
+	// stdio path still carries it in the launch env and leaves the task field
+	// empty. Fail-closed: a task that demands MCP servers but whose credential
+	// VALUES are missing must never launch with a half-wired envelope.
+	endpoints := t.MCPEndpoints
+	if len(endpoints) == 0 {
+		endpoints = e.cfg.MCPEndpoints
+	}
+	if err := validateMCPEnvelope(t.MCPEndpoints, t.MCPTokenEnv); err != nil {
+		e.mu.Unlock()
+		return a2a.Status{}, err
+	}
 	spec, err := e.rt.Command(runtimes.LaunchContext{
 		Envelope:     t.Envelope,
 		ModelRoute:   t.ModelRoute,
 		Model:        e.cfg.Model,
 		Credential:   e.cfg.Credential,
 		WorkDir:      e.cfg.WorkDir,
-		MCPEndpoints: e.cfg.MCPEndpoints,
+		MCPEndpoints: endpoints,
 	})
 	if err != nil {
 		e.mu.Unlock()
 		return a2a.Status{}, fmt.Errorf("shim: build command for %s: %w", e.rt.Type(), err)
 	}
+	// Layer the resolved MCP credential VALUES onto the runtime subprocess env
+	// (ISI-5017): the rendered native config references the env NAME
+	// (Bearer {env:KSQUAD_MCP_*_TOKEN}), and the CLI resolves it from its own
+	// process env. These values are secret material and are never logged.
+	spec.Env = append(spec.Env, mcpCredentialEnv(t.MCPTokenEnv)...)
 	runCtx, cancel := context.WithCancel(context.Background())
 	resolvedModel := e.runModel(t)
 	tk := &task{
@@ -247,6 +268,47 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	go e.drive(runCtx, tk, spec)
 
 	return submitted, nil
+}
+
+// validateMCPEnvelope fails closed (ADR-044) when a task-supplied MCP IR
+// references a credential env NAME with no resolved value on the same
+// envelope (ISI-5017). Only task-supplied endpoints are validated: the
+// operator-spawned stdio path carries the IR in the launch env and no per-task
+// tokens, and must keep its prior behavior. An endpoint whose credential rides
+// a staged stdio sidecar (transport=stdio with an image) needs no agent-env
+// value by construction, so it is exempt — mirroring capability.AssemblePod.
+func validateMCPEnvelope(endpoints []capability.Endpoint, tokens map[string]string) error {
+	for _, ep := range endpoints {
+		if ep.Transport == "stdio" && ep.Image != "" {
+			continue
+		}
+		for _, name := range ep.EnvNames {
+			if _, ok := tokens[name]; !ok {
+				return fmt.Errorf("shim: MCP endpoint %q requires credential env %s but the task envelope carries no value (fail-closed, ADR-044)", ep.Name, name)
+			}
+		}
+	}
+	return nil
+}
+
+// mcpCredentialEnv renders the task envelope's resolved MCP credential env
+// pairs, name-sorted so the runtime launch env is deterministic across drives
+// (a re-drive reattaches byte-identically, C1). Values are secret material and
+// are never logged.
+func mcpCredentialEnv(tokens map[string]string) []string {
+	if len(tokens) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tokens))
+	for name := range tokens {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		out = append(out, name+"="+tokens[name])
+	}
+	return out
 }
 
 // drive runs the runtime to completion, funneling progress into the task's
