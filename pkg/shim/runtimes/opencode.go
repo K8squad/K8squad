@@ -348,17 +348,32 @@ func parseOpenCodeLine(line string) []Progress {
 		}
 		return nil
 	case "error":
-		msg := "opencode error"
-		if ev.Error != nil {
-			msg = ev.Error.Name
-			if ev.Error.Data.Message != "" {
-				msg = msg + ": " + ev.Error.Data.Message
-			}
+		name := "opencode error"
+		if ev.Error != nil && ev.Error.Name != "" {
+			name = ev.Error.Name
 		}
-		return []Progress{{
-			Kind:    a2a.EventMessage,
-			Message: &a2a.MessagePayload{Role: "agent", Text: msg, Trust: "untrusted"},
-		}}
+		detail := name
+		if ev.Error != nil && ev.Error.Data.Message != "" {
+			detail = ev.Error.Data.Message
+		}
+		text := name
+		if ev.Error != nil && ev.Error.Data.Message != "" {
+			text = name + ": " + ev.Error.Data.Message
+		}
+		// ISI-5015: a model-call failure (timeout/provider error) is ALSO an
+		// EventUsage carrying the error so the llm.call span records the
+		// exception (exception.type=name, exception.message=detail) — while the
+		// message event above preserves the user-facing error text in the stream.
+		return []Progress{
+			{
+				Kind:    a2a.EventMessage,
+				Message: &a2a.MessagePayload{Role: "agent", Text: text, Trust: "untrusted"},
+			},
+			{
+				Kind:  a2a.EventUsage,
+				Usage: &a2a.UsagePayload{ErrorType: name, Error: detail},
+			},
+		}
 	default: // step_start and future shapes: bookkeeping, not wire events
 		return nil
 	}

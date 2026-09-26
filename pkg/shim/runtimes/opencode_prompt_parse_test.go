@@ -155,10 +155,17 @@ func TestParseOpenCodeLineText(t *testing.T) {
 func TestParseOpenCodeLineError(t *testing.T) {
 	line := `{"type":"error","error":{"name":"UnknownError","data":{"message":"boom"}}}`
 	out := parseOpenCodeLine(line)
-	require.Len(t, out, 1)
+	require.Len(t, out, 2)
 	require.NotNil(t, out[0].Message)
 	assert.Contains(t, out[0].Message.Text, "UnknownError")
 	assert.Contains(t, out[0].Message.Text, "boom")
+	// ISI-5015: the failure is ALSO an EventUsage so the llm.call span records
+	// the exception (type + message) — the message preserves the user-facing
+	// text while the usage carries the exception detail onto the span.
+	require.Equal(t, a2a.EventUsage, out[1].Kind)
+	require.NotNil(t, out[1].Usage)
+	assert.Equal(t, "UnknownError", out[1].Usage.ErrorType)
+	assert.Equal(t, "boom", out[1].Usage.Error)
 }
 
 // TestParseOpenCodeLineDegrades: step bookkeeping is dropped, and a non-JSON

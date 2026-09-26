@@ -17,6 +17,7 @@ package toolusage
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -630,6 +631,49 @@ func TestUsageEventGenAISemconv(t *testing.T) {
 	}
 	if len(reasons) != 1 || reasons[0] != "stop" {
 		t.Errorf("gen_ai.response.finish_reasons = %v, want [stop]", reasons)
+	}
+}
+
+// TestUsageEventErrorException (ISI-5015): a failed llm.call (timeout/provider
+// error) records an exception span event carrying exception.type +
+// exception.message and sets the span status to Error, so the failure is
+// diagnosable on the span instead of surfacing only as a bare status code.
+func TestUsageEventErrorException(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+
+	m.UsageEvent(context.Background(), Labels{RunID: "run-e", Agent: "dev"}, "run-e", a2a.UsagePayload{
+		Model:     "anthropic/claude-sonnet-4",
+		ErrorType: "APIError",
+		Error:     "request timed out after 120s",
+	})
+
+	s := findSpan(t, sr, SpanLLMCall)
+	if got := s.Status().Code; got != codes.Error {
+		t.Errorf("status = %v, want Error", got)
+	}
+	if !strings.Contains(s.Status().Description, "request timed out") {
+		t.Errorf("status description = %q, want the error message", s.Status().Description)
+	}
+
+	var gotType, gotMsg string
+	for _, ev := range s.Events() {
+		if ev.Name != "exception" {
+			continue
+		}
+		for _, kv := range ev.Attributes {
+			switch string(kv.Key) {
+			case "exception.type":
+				gotType = kv.Value.AsString()
+			case "exception.message":
+				gotMsg = kv.Value.AsString()
+			}
+		}
+	}
+	if gotType != "APIError" {
+		t.Errorf("exception.type = %q, want APIError", gotType)
+	}
+	if gotMsg != "request timed out after 120s" {
+		t.Errorf("exception.message = %q, want the error message", gotMsg)
 	}
 }
 

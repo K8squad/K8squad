@@ -860,6 +860,17 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	if contentTracing.Load() {
 		recordContentEvents(span, p)
 	}
+	// ISI-5015: a failed round-trip records its exception as a span event (with
+	// type + message) and an Error status, so a timeout/provider failure is
+	// diagnosable on the span instead of surfacing only as a bare status code.
+	if p.Error != "" {
+		span.SetStatus(codes.Error, p.Error)
+		span.AddEvent(semconv.ExceptionEventName,
+			trace.WithAttributes(
+				semconv.ExceptionType(llmErrorType(p.ErrorType)),
+				semconv.ExceptionMessage(p.Error),
+			))
+	}
 	span.End()
 
 	m.ins.LLMCalls.WithLabelValues(p.Model, labels.Agent).Inc()
@@ -1028,3 +1039,14 @@ func mapOutcome(ok *bool) string {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+// llmErrorType resolves the exception.type for a failed llm.call: the
+// runtime-reported classifier when present, else a stable fallback so the
+// event always carries a non-empty type (never fabricate a provider-specific
+// name the runtime did not report).
+func llmErrorType(typ string) string {
+	if typ == "" {
+		return "llm.call.error"
+	}
+	return typ
+}
