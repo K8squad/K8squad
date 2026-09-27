@@ -31,6 +31,7 @@
 
 import { useEffect, useState } from "react";
 import { ModelSelector } from "@/components/compose/ModelSelector";
+import { ProviderModelPicker } from "@/components/compose/ProviderModelPicker";
 import { RuntimeAdapterStep } from "@/components/compose/RuntimeAdapterStep";
 import {
   emptyModelConfigForm,
@@ -40,6 +41,7 @@ import {
   validateModelConfig,
   type FieldErrors,
   type ModelConfigForm,
+  type ModelEndpointRow,
   type RuntimeAdapter,
 } from "@/lib/compose";
 
@@ -74,6 +76,27 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   // create form doesn't shout "is required" before the admin has touched anything.
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const [attempted, setAttempted] = useState(false);
+  // Saved endpoints for the opencode picker's advanced "existing endpoint" dropdown
+  // (GET /api/modelendpoints). Admin-only; a failure degrades to no escape hatch (the
+  // guided provider flow still works), so it never blocks the surface.
+  const [endpoints, setEndpoints] = useState<ModelEndpointRow[]>([]);
+  const [fallbackOpen, setFallbackOpen] = useState(false);
+
+  useEffect(() => {
+    if (!isAdmin) return; // non-admins never fetch (and would 403 anyway)
+    let alive = true;
+    fetch("/api/modelendpoints", { cache: "no-store" })
+      .then(async (r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!alive || !body) return;
+        const rows = (body as { endpoints?: ModelEndpointRow[] })?.endpoints;
+        if (Array.isArray(rows)) setEndpoints(rows);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) return; // non-admins never fetch (and would 403 anyway)
@@ -169,16 +192,79 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
 
       {isAdmin && load.kind === "ready" && (
         <div className="card settings-modelpriority__form" data-testid="modelpriority-form">
-          <RuntimeAdapterStep adapter={form.adapter} onAdapterChange={onAdapterChange}>
-            <ModelSelector
-              model={form.model}
-              modelEndpointRef={form.modelEndpointRef}
-              byoEnabled={form.byoEnabled}
-              fallbackModel={form.fallbackModel}
-              fallbackModelEndpointRef={form.fallbackModelEndpointRef}
-              errors={shownErrors}
-              patch={patch}
-            />
+          <RuntimeAdapterStep
+            adapter={form.adapter}
+            onAdapterChange={onAdapterChange}
+            opencodeSlot={
+              form.adapter === "opencode" ? (
+                <div className="settings-modelpriority__opencode" data-testid="modelpriority-opencode">
+                  <p className="muted">
+                    Pick a backend, list its live models, and Save — K8squad creates the endpoint Secret
+                    automatically. No pre-existing Secret required.
+                  </p>
+                  <ProviderModelPicker
+                    label="Model"
+                    idPrefix="primary"
+                    model={form.model}
+                    modelEndpointRef={form.modelEndpointRef}
+                    existingEndpoints={endpoints}
+                    errors={shownErrors}
+                    onChange={(next) =>
+                      patch({
+                        ...(next.model !== undefined ? { model: next.model } : {}),
+                        ...(next.modelEndpointRef !== undefined
+                          ? { modelEndpointRef: next.modelEndpointRef, byoEnabled: next.modelEndpointRef.trim() !== "" }
+                          : {}),
+                      })
+                    }
+                  />
+
+                  <div className="settings-modelpriority__fallback">
+                    {!fallbackOpen && form.fallbackModel.trim() === "" ? (
+                      <button
+                        type="button"
+                        className="btn btn--ghost"
+                        onClick={() => setFallbackOpen(true)}
+                        data-testid="modelpriority-add-fallback"
+                      >
+                        Add a fallback model
+                      </button>
+                    ) : (
+                      <ProviderModelPicker
+                        label="Fallback model"
+                        idPrefix="fallback"
+                        model={form.fallbackModel}
+                        modelEndpointRef={form.fallbackModelEndpointRef}
+                        existingEndpoints={endpoints}
+                        errors={shownErrors}
+                        onChange={(next) =>
+                          patch({
+                            ...(next.model !== undefined ? { fallbackModel: next.model } : {}),
+                            ...(next.modelEndpointRef !== undefined
+                              ? { fallbackModelEndpointRef: next.modelEndpointRef }
+                              : {}),
+                          })
+                        }
+                      />
+                    )}
+                  </div>
+                </div>
+              ) : undefined
+            }
+          >
+            {form.adapter === "opencode" ? (
+              <></>
+            ) : (
+              <ModelSelector
+                model={form.model}
+                modelEndpointRef={form.modelEndpointRef}
+                byoEnabled={form.byoEnabled}
+                fallbackModel={form.fallbackModel}
+                fallbackModelEndpointRef={form.fallbackModelEndpointRef}
+                errors={shownErrors}
+                patch={patch}
+              />
+            )}
           </RuntimeAdapterStep>
 
           <div className="settings-modelpriority__actions">

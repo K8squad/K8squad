@@ -723,6 +723,67 @@ export const RUNTIME_ADAPTER_LABELS: Record<RuntimeAdapter, string> = {
   opencode: "OpenCode",
 };
 
+// ── Backend-driven model picker (ISI-5006 S3, child of ISI-4989) ──────────────
+//
+// The opencode adapter no longer references a pre-existing Secret by hand: the
+// ProviderModelPicker (rendered into RuntimeAdapterStep's `opencodeSlot`, the
+// ISI-4890 AC6 seam) lets an admin pick a backend, type the URL/key, LIST the
+// live models from that backend, and Save — which auto-creates the endpoint
+// Secret via POST /api/modelendpoints. These ids MUST match the apiserver
+// provider registry (internal/apiserver/modelendpoints.go defaultProviders):
+// list-models and the Secret write both validate `provider` against it.
+
+/** How an endpoint is addressed: caller supplies the base URL, or only an API key. */
+export type LlmProviderMode = "url" | "apiKey";
+
+/** One selectable backend in the ProviderModelPicker (mirrors the apiserver registry). */
+export type LlmProviderOption = {
+  id: string;
+  label: string;
+  mode: LlmProviderMode;
+  /** url-mode provider that may ALSO carry an optional key (auth-proxied OpenAI-compatible). */
+  allowKey?: boolean;
+  /** Default base URL prefilled for a url-mode provider. */
+  defaultUrl?: string;
+};
+
+/**
+ * The backends the ProviderModelPicker offers. The claude/codex paths stay on
+ * the curated-list + token flow (ChatGPT/Anthropic-backed) and are NOT listed
+ * here — this picker is the opencode/BYO surface only. Provider ids are the exact
+ * strings the apiserver validates (kimi is `kimi-moonshot`).
+ */
+export const LLM_PROVIDER_OPTIONS: readonly LlmProviderOption[] = [
+  { id: "ollama", label: "Ollama (local)", mode: "url", defaultUrl: "http://localhost:11434" },
+  { id: "zai", label: "Z.ai", mode: "apiKey" },
+  { id: "deepseek", label: "DeepSeek", mode: "apiKey" },
+  { id: "kimi-moonshot", label: "Kimi (Moonshot)", mode: "apiKey" },
+  {
+    id: "openai-compatible",
+    label: "OpenAI-compatible (custom base URL)",
+    mode: "url",
+    allowKey: true,
+    defaultUrl: "",
+  },
+] as const;
+
+/** Look up a provider option by id (undefined for an unknown/curated id). */
+export function llmProviderById(id: string): LlmProviderOption | undefined {
+  return LLM_PROVIDER_OPTIONS.find((p) => p.id === id);
+}
+
+/** One model returned by POST /api/modelendpoints/list-models ({models:[{id,label?}]}). */
+export type ListedModel = { id: string; label?: string };
+
+/** One row of GET /api/modelendpoints (the advanced "existing endpoint" dropdown). */
+export type ModelEndpointRow = { name: string; provider: string; url: string; hasToken: boolean };
+
+/** The POST /api/modelendpoints/list-models request body. */
+export type ListModelsRequest = { provider: string; url?: string; apiKey?: string };
+
+/** The POST /api/modelendpoints (Secret upsert) request body. */
+export type CreateEndpointRequest = { name?: string; provider: string; url?: string; apiKey?: string };
+
 export type ModelConfigForm = {
   // adapter is UI-only (the credential path); it is NOT serialized — the org
   // default persists only the resolved model triple, provider-agnostic.
