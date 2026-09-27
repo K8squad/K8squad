@@ -47,6 +47,29 @@ console/
 - **Theme = token swap (8.9).** Light mode is the dark shell with token roles luminance-inverted;
   the accent and reserved status hues are theme-invariant.
 
+## LLM Settings — provider picker (ISI-4989 rework)
+
+A cluster admin wires a BYO model provider without hand-crafting a Secret:
+**pick a provider → list its live models → pick one → save**.
+
+- `components/compose/ProviderModelPicker.tsx` — the backend-driven picker
+  (provider registry → `list-models` → model dropdown). It is surfaced today in
+  the Model Priority section (`components/settings/ModelPrioritySection.tsx`,
+  rendered on Settings → Configuration) and in the compose runtime-adapter step
+  (`components/compose/RuntimeAdapterStep.tsx`, opencode branch).
+- BFF routes: `app/api/modelendpoints/providers`, `.../list-models`, `.../route.ts`
+  proxy the admin-tier Go apiserver surface. The API key is **never** rendered
+  back into the DOM or echoed by any route.
+- Saving upserts one labelled endpoint Secret (`endpointURL` required, `apiToken`
+  optional; labels `ksquad.io/model-endpoint[-provider]`). See
+  [`docs/llm-endpoints.md`](../docs/llm-endpoints.md) for the full contract,
+  provider registry, and round-trip.
+- Claude and Codex stay curated-only — this surface never dials or stores them.
+
+> A **dedicated `/settings/llm` nav entry + route (ISI-5004)** has not yet landed;
+> the LLM model section currently lives under Settings → Configuration. That gap
+> is tracked as a follow-up defect under the QA gate ISI-5007.
+
 ## Develop
 
 ```bash
