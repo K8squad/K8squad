@@ -37,8 +37,8 @@ type ToolHTTP struct {
 // enforcement (the fence) are preserved, not duplicated (§7.5 / ADR-0019 §13, ISI-4013). It is nil in
 // a read-only deployment, which leaves discussion_post unmounted (AC5).
 type DiscussionWriter interface {
-	OpenThread(ctx context.Context, projectID uuid.UUID, auth discussion.AuthorContext, title, body string) (*discussion.Thread, error)
-	PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*discussion.Message, error)
+	OpenThread(ctx context.Context, projectID string, auth discussion.AuthorContext, title, body string) (*discussion.Thread, error)
+	PostMessage(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*discussion.Message, error)
 }
 
 // NewToolHTTP wires the HTTP tool surface to a ReadService and (optionally) a WriteService plus a
@@ -316,9 +316,10 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	projectID, err := uuid.Parse(req.ProjectID)
-	if err != nil {
-		http.Error(w, "malformed project_id (want uuid)", http.StatusBadRequest)
+	// project_id is the platform Project id — a "namespace/name" slug (ISI-3982), not a uuid.
+	projectID := req.ProjectID
+	if projectID == "" {
+		http.Error(w, "missing project_id", http.StatusBadRequest)
 		return
 	}
 	// Provenance is stamped from `auth` alone — the header identity — mirroring handler AC3. IsAdmin

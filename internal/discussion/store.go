@@ -62,7 +62,7 @@ func (a AuthorContext) runID() sql.NullString {
 // Thread is a thread in a Project's discussion room (discussion.thread).
 type Thread struct {
 	ID        uuid.UUID `json:"id"`
-	ProjectID uuid.UUID `json:"projectId"`
+	ProjectID string    `json:"projectId"` // platform Project id — "namespace/name" slug (ISI-3982), not a uuid
 	TeamID    uuid.UUID `json:"teamId"`
 	Title     string    `json:"title"`
 	CreatedBy string    `json:"createdBy"`
@@ -142,7 +142,7 @@ const messageCols = `id, thread_id, parent_id, author_principal, author_agent_id
 // ListThreads returns the room's threads for (projectID, caller's teamID), most-recent first, paged.
 // Fully-retracted threads (every message soft-retracted) are excluded. Tenancy is enforced in the
 // WHERE clause — the room never crosses Team boundaries (AC5, FR-J4).
-func (s *Store) ListThreads(ctx context.Context, projectID, teamID uuid.UUID, limit, offset int) ([]Thread, error) {
+func (s *Store) ListThreads(ctx context.Context, projectID string, teamID uuid.UUID, limit, offset int) ([]Thread, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -175,7 +175,7 @@ func (s *Store) ListThreads(ctx context.Context, projectID, teamID uuid.UUID, li
 
 // OpenThread atomically creates a thread and its first message. created_by, team_id, and the message
 // provenance are ALL stamped from auth — nothing about the author comes from the caller's payload (AC3).
-func (s *Store) OpenThread(ctx context.Context, projectID uuid.UUID, auth AuthorContext, title, body string) (*Thread, error) {
+func (s *Store) OpenThread(ctx context.Context, projectID string, auth AuthorContext, title, body string) (*Thread, error) {
 	if title == "" {
 		return nil, ErrEmptyTitle
 	}
@@ -212,7 +212,7 @@ func (s *Store) OpenThread(ctx context.Context, projectID uuid.UUID, auth Author
 
 // GetThread returns a thread (scoped to the caller's Team) with its live messages, threaded via
 // parent_id. A thread outside the caller's tenancy is ErrThreadNotFound (404-not-403, AC5).
-func (s *Store) GetThread(ctx context.Context, projectID, teamID, threadID uuid.UUID) (*Thread, error) {
+func (s *Store) GetThread(ctx context.Context, projectID string, teamID, threadID uuid.UUID) (*Thread, error) {
 	var t Thread
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, project_id, team_id, title, created_by, created_at
@@ -253,7 +253,7 @@ func (s *Store) GetThread(ctx context.Context, projectID, teamID, threadID uuid.
 // invariant is enforced by the DB trigger and re-checked here for a clean error.
 // audience, kind, and payload are optional (nil) wire fields: audience defaults to 'party',
 // kind to 'text'; payload (structured message data) stays NULL unless supplied.
-func (s *Store) PostMessage(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*Message, error) {
+func (s *Store) PostMessage(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, parentID *uuid.UUID, audience *string, kind *string, payload *json.RawMessage) (*Message, error) {
 	if body == "" {
 		return nil, ErrEmptyBody
 	}
@@ -314,7 +314,7 @@ func normalizeKind(kind *string) (string, error) {
 
 // Retract soft-retracts a message (§7.4 — sets invalidated_at; no hard delete). Author-or-admin only.
 // Tenancy-scoped: a message outside the caller's Team is invisible (ErrMessageNotFound / 404).
-func (s *Store) Retract(ctx context.Context, projectID, teamID, threadID, messageID uuid.UUID, auth AuthorContext) error {
+func (s *Store) Retract(ctx context.Context, projectID string, teamID, threadID, messageID uuid.UUID, auth AuthorContext) error {
 	if err := s.assertThreadInScope(ctx, projectID, teamID, threadID); err != nil {
 		if errors.Is(err, ErrThreadNotFound) {
 			return ErrMessageNotFound
@@ -347,7 +347,7 @@ func (s *Store) Retract(ctx context.Context, projectID, teamID, threadID, messag
 
 // assertThreadInScope returns nil iff the thread exists within (projectID, teamID); else
 // ErrThreadNotFound. This is the single tenancy predicate every message path passes (AC5).
-func (s *Store) assertThreadInScope(ctx context.Context, projectID, teamID, threadID uuid.UUID) error {
+func (s *Store) assertThreadInScope(ctx context.Context, projectID string, teamID, threadID uuid.UUID) error {
 	var one int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT 1 FROM discussion.thread
@@ -370,7 +370,7 @@ func (s *Store) assertThreadInScope(ctx context.Context, projectID, teamID, thre
 type MemoryIndexable struct {
 	MessageID       uuid.UUID       `json:"messageId"`
 	ThreadID        uuid.UUID       `json:"threadId"`
-	ProjectID       uuid.UUID       `json:"projectId"`
+	ProjectID       string          `json:"projectId"` // "namespace/name" slug (ISI-3982), not a uuid
 	TeamID          uuid.UUID       `json:"teamId"`
 	AuthorPrincipal string          `json:"authorPrincipal"`
 	AuthorAgentID   *string         `json:"authorAgentId,omitempty"`
@@ -388,7 +388,7 @@ type MemoryIndexable struct {
 // 'direct:'-targeted at the caller — by principal OR, for an agent caller, by agent id (agentID nil ⇒
 // that arm is inert). The previous `m.audience LIKE 'direct:%'` arm matched every allowed audience
 // value and therefore filtered nothing.
-func (s *Store) ForMemoryIndex(ctx context.Context, projectID, teamID uuid.UUID, since time.Time, limit int, authorPrincipal string, agentID *string) ([]MemoryIndexable, error) {
+func (s *Store) ForMemoryIndex(ctx context.Context, projectID string, teamID uuid.UUID, since time.Time, limit int, authorPrincipal string, agentID *string) ([]MemoryIndexable, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}

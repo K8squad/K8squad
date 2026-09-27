@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,24 @@ func pathUUID(r *http.Request, key string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// pathProjectID extracts the {projectId} path variable as the platform Project id — a Kubernetes
+// "namespace/name" composite (ISI-3982), NOT a uuid. The root router runs with UseEncodedPath(), so
+// the captured value carries one layer of percent-encoding ("namespace%2Fname"); we unescape it once
+// to recover the canonical "namespace/name" the store keys rooms by — the same reversal the apiserver
+// applies uniformly via decodePathVar. An empty id is rejected (ok=false → 400) so a missing/blank
+// segment cannot silently scope to the whole squad.
+func pathProjectID(r *http.Request) (string, bool) {
+	raw := mux.Vars(r)["projectId"]
+	id, err := url.PathUnescape(raw)
+	if err != nil {
+		id = raw // a malformed escape degrades to the raw value rather than dropping the var
+	}
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
 func queryInt(r *http.Request, key string, def int) int {
 	if s := r.URL.Query().Get(key); s != "" {
 		if n, err := strconv.Atoi(s); err == nil {
@@ -200,7 +219,7 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 // ============================================================================
 
 func (h *Handler) listThreads(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -229,7 +248,7 @@ type openThreadReq struct {
 }
 
 func (h *Handler) openThread(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -255,7 +274,7 @@ func (h *Handler) openThread(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getThread(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -292,7 +311,7 @@ type postMessageReq struct {
 }
 
 func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -332,7 +351,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 
 // retractMessage soft-retracts a message (§7.4). Author-or-admin only; there is no hard-delete route.
 func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -373,7 +392,7 @@ type postProposalReq struct {
 // postProposal appends an inert kind='proposal' message (phase='proposed'). It writes no coord row
 // and moves no custody — the fan-out happens only in the human-gated confirm shell.
 func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -404,7 +423,7 @@ func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
 // its lifecycle phase (story 6 read side). Tenancy misses are indistinguishable from an empty
 // thread of another team — a foreign thread id yields 404 via the store's scope probe.
 func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -431,7 +450,7 @@ func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -487,7 +506,7 @@ const (
 // leads with people); work items follow, fenced by the ADR-039 in-query predicate and then
 // narrowed to the path's project.
 func (h *Handler) searchMentions(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := pathUUID(r, "projectId")
+	projectID, ok := pathProjectID(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
@@ -519,7 +538,7 @@ func (h *Handler) searchMentions(w http.ResponseWriter, r *http.Request) {
 	// handler narrows to the path's project. A searcher failure is the search plane failing —
 	// surface it (502) rather than silently answering with agents only.
 	if h.searcher != nil {
-		searchResults, err := h.searchWorkItems(r.Context(), text, projectID.String(), auth)
+		searchResults, err := h.searchWorkItems(r.Context(), text, projectID, auth)
 		switch {
 		case errors.Is(err, search.ErrEmptyQuery):
 			// A query of only stopwords/punctuation parses to an empty tsquery — same contract

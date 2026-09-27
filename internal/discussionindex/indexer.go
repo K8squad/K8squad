@@ -202,7 +202,7 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		m.MessageID.String(), m.ThreadID.String(), m.AuthorPrincipal,
 		m.AuthorAgentID, m.AuthorRunID, m.Audience, m.Kind, m.Payload, m.CreatedAt)
 
-	projectID := m.ProjectID.String()
+	projectID := m.ProjectID
 	// The record id is DERIVED deterministically from the message id (same UUIDv5 namespace as the
 	// substrate columns), so re-projecting a message on a crash-replay upserts the SAME row rather than
 	// duplicating it — the AC2 exactly-once-into-recall guarantee, paired with the store's ON CONFLICT.

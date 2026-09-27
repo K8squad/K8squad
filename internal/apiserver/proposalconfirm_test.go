@@ -31,20 +31,24 @@ type fakeProposalLifecycle struct {
 	get         *discussion.Proposal       // the proposal served by GetProposal (resume path)
 	getErr      error
 
-	confirmCalled  bool
-	confirmGot     [4]uuid.UUID
-	dismissCalled  bool
-	dismissGot     [4]uuid.UUID
-	completeCalled bool
-	completeGot    [4]uuid.UUID
-	completeResult json.RawMessage
-	completeBody   string
-	failCalled     bool
-	failGot        [3]uuid.UUID
-	getCalled      bool
+	confirmCalled   bool
+	confirmProject  string       // the platform Project id (namespace/name slug, ISI-3982)
+	confirmGot      [2]uuid.UUID // teamID, messageID
+	dismissCalled   bool
+	dismissProject  string
+	dismissGot      [2]uuid.UUID // teamID, messageID
+	completeCalled  bool
+	completeProject string
+	completeGot     [2]uuid.UUID // teamID, messageID
+	completeResult  json.RawMessage
+	completeBody    string
+	failCalled      bool
+	failProject     string
+	failGot         [2]uuid.UUID // teamID, messageID
+	getCalled       bool
 }
 
-func (f *fakeProposalLifecycle) GetProposal(_ context.Context, projectID, teamID, messageID uuid.UUID) (*discussion.Proposal, error) {
+func (f *fakeProposalLifecycle) GetProposal(_ context.Context, projectID string, teamID, messageID uuid.UUID) (*discussion.Proposal, error) {
 	f.getCalled = true
 	if f.getErr != nil {
 		return nil, f.getErr
@@ -59,9 +63,10 @@ func (f *fakeProposalLifecycle) GetProposal(_ context.Context, projectID, teamID
 	}, nil
 }
 
-func (f *fakeProposalLifecycle) ConfirmProposal(_ context.Context, projectID, teamID, messageID uuid.UUID, _ discussion.AuthorContext) (*discussion.Proposal, error) {
+func (f *fakeProposalLifecycle) ConfirmProposal(_ context.Context, projectID string, teamID, messageID uuid.UUID, _ discussion.AuthorContext) (*discussion.Proposal, error) {
 	f.confirmCalled = true
-	f.confirmGot = [4]uuid.UUID{projectID, teamID, messageID}
+	f.confirmProject = projectID
+	f.confirmGot = [2]uuid.UUID{teamID, messageID}
 	if f.confirmErr != nil {
 		return nil, f.confirmErr
 	}
@@ -73,15 +78,17 @@ func (f *fakeProposalLifecycle) ConfirmProposal(_ context.Context, projectID, te
 	}, nil
 }
 
-func (f *fakeProposalLifecycle) DismissProposal(_ context.Context, projectID, teamID, messageID uuid.UUID, _ discussion.AuthorContext) error {
+func (f *fakeProposalLifecycle) DismissProposal(_ context.Context, projectID string, teamID, messageID uuid.UUID, _ discussion.AuthorContext) error {
 	f.dismissCalled = true
-	f.dismissGot = [4]uuid.UUID{projectID, teamID, messageID}
+	f.dismissProject = projectID
+	f.dismissGot = [2]uuid.UUID{teamID, messageID}
 	return f.dismissErr
 }
 
-func (f *fakeProposalLifecycle) CompleteProposal(_ context.Context, projectID, teamID, messageID uuid.UUID, _ discussion.AuthorContext, result json.RawMessage, resultBody string) (*discussion.Message, error) {
+func (f *fakeProposalLifecycle) CompleteProposal(_ context.Context, projectID string, teamID, messageID uuid.UUID, _ discussion.AuthorContext, result json.RawMessage, resultBody string) (*discussion.Message, error) {
 	f.completeCalled = true
-	f.completeGot = [4]uuid.UUID{projectID, teamID, messageID}
+	f.completeProject = projectID
+	f.completeGot = [2]uuid.UUID{teamID, messageID}
 	f.completeResult = result
 	f.completeBody = resultBody
 	if f.completeErr != nil {
@@ -93,9 +100,10 @@ func (f *fakeProposalLifecycle) CompleteProposal(_ context.Context, projectID, t
 	return f.complete, nil
 }
 
-func (f *fakeProposalLifecycle) FailProposal(_ context.Context, projectID, teamID, messageID uuid.UUID) error {
+func (f *fakeProposalLifecycle) FailProposal(_ context.Context, projectID string, teamID, messageID uuid.UUID) error {
 	f.failCalled = true
-	f.failGot = [3]uuid.UUID{projectID, teamID, messageID}
+	f.failProject = projectID
+	f.failGot = [2]uuid.UUID{teamID, messageID}
 	return nil
 }
 
@@ -455,8 +463,8 @@ func TestProposalDismiss(t *testing.T) {
 	if !life.dismissCalled {
 		t.Fatal("dismiss must reach the lifecycle")
 	}
-	if life.dismissGot[2].String() != msgID || life.dismissGot[0].String() != projUUID {
-		t.Fatalf("dismiss args: %+v", life.dismissGot)
+	if life.dismissGot[1].String() != msgID || life.dismissProject != projUUID {
+		t.Fatalf("dismiss args: project=%q uuids=%+v", life.dismissProject, life.dismissGot)
 	}
 	if writer.createCalled || disp.called || life.completeCalled {
 		t.Fatal("dismiss must not execute anything")

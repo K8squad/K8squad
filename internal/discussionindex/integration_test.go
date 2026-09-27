@@ -72,7 +72,7 @@ func setup(t *testing.T) (*memory.PgVectorStore, *discussion.Store, *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS discussion CASCADE`); err != nil {
 		t.Fatalf("reset discussion schema: %v", err)
 	}
-	for _, mig := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql"} {
+	for _, mig := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql", "0026_discussion_project_id_text.sql"} {
 		sqlBytes, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", mig))
 		if err != nil {
 			t.Fatalf("read discussion migration %s: %v", mig, err)
@@ -93,11 +93,11 @@ func setup(t *testing.T) (*memory.PgVectorStore, *discussion.Store, *sql.DB) {
 // seedRooms builds the same corpus the bench models: Team-1/Project-A has a human message, a poisoned
 // agent message with Run linkage, and a soft-retracted message; Team-2/Project-B is the cross-tenant
 // bait. Returns the two teams and Project-A.
-func seedRooms(t *testing.T, ds *discussion.Store) (team1, team2, projA uuid.UUID) {
+func seedRooms(t *testing.T, ds *discussion.Store) (team1, team2 uuid.UUID, projA string) {
 	t.Helper()
 	ctx := context.Background()
 	team1, team2 = uuid.New(), uuid.New()
-	projA, projB := uuid.New(), uuid.New()
+	projA, projB := "ns-a/proj-a", "ns-b/proj-b"
 
 	alice := discussion.AuthorContext{Principal: "alice@corp", TeamID: team1}
 	th, err := ds.OpenThread(ctx, projA, alice, "release", "deploy target for the release is cluster-prod")
@@ -151,7 +151,7 @@ func TestDiscussionIndexAndSearch(t *testing.T) {
 	ctx := context.Background()
 
 	// ---- INV3: cross-tenant deny. Team-2 querying Team-1's Project-A room gets ZERO rows. ----
-	cross, err := read.DiscussionSearch(ctx, team2.String(), projA.String(),
+	cross, err := read.DiscussionSearch(ctx, team2.String(), projA,
 		memory.ReaderIdentity{Principal: "eve@corp"}, "deploy", 10)
 	if err != nil {
 		t.Fatalf("cross-tenant search: %v", err)
@@ -161,7 +161,7 @@ func TestDiscussionIndexAndSearch(t *testing.T) {
 	}
 
 	// ---- INV1 + INV4: team-1 reads its own room — untrusted envelopes, retracted excluded. ----
-	own, err := read.DiscussionSearch(ctx, team1.String(), projA.String(),
+	own, err := read.DiscussionSearch(ctx, team1.String(), projA,
 		memory.ReaderIdentity{Principal: "bob@corp"}, "deploy target release cluster-prod", 10)
 	if err != nil {
 		t.Fatalf("team-1 discussion search: %v", err)
@@ -205,7 +205,7 @@ func TestDiscussionIndexAndSearch(t *testing.T) {
 	}
 
 	// ---- INV2: the search ran on the pgvector ANN — a query equal to a body ranks that body first. ----
-	ranked, err := read.DiscussionSearch(ctx, team1.String(), projA.String(),
+	ranked, err := read.DiscussionSearch(ctx, team1.String(), projA,
 		memory.ReaderIdentity{Principal: "bob@corp"}, "deploy target for the release is cluster-prod", 10)
 	if err != nil {
 		t.Fatalf("ranked search: %v", err)
@@ -241,7 +241,7 @@ func TestRestartSurvival(t *testing.T) {
 	ctx := context.Background()
 	embed := memory.NewHashingEmbedder()
 
-	team, proj := uuid.New(), uuid.New()
+	team, proj := uuid.New(), "test-ns/restart-room"
 	alice := discussion.AuthorContext{Principal: "alice@corp", TeamID: team}
 	th, err := ds.OpenThread(ctx, proj, alice, "release", "message one — deploy plan alpha")
 	if err != nil {
@@ -308,7 +308,7 @@ func TestRestartSurvival(t *testing.T) {
 func TestProposalFindable_DirectScopedR2(t *testing.T) {
 	mem, ds, _ := setup(t)
 	ctx := context.Background()
-	team, proj := uuid.New(), uuid.New()
+	team, proj := uuid.New(), "test-ns/v2-room"
 
 	alice := discussion.AuthorContext{Principal: "alice@corp", TeamID: team}
 	th, err := ds.OpenThread(ctx, proj, alice, "v2 room", "party chatter about the rollout plan")
@@ -336,7 +336,7 @@ func TestProposalFindable_DirectScopedR2(t *testing.T) {
 
 	// ---- AC1: the proposal is findable by its PAYLOAD text, not just its body. ----
 	party := memory.ReaderIdentity{Principal: "bob@corp"} // a party reader with no agent linkage
-	hits, err := read.DiscussionSearch(ctx, team.String(), proj.String(), party,
+	hits, err := read.DiscussionSearch(ctx, team.String(), proj, party,
 		"Quarantine the flaky upgrade canal", 10)
 	if err != nil {
 		t.Fatalf("proposal search: %v", err)
@@ -351,7 +351,7 @@ func TestProposalFindable_DirectScopedR2(t *testing.T) {
 	}
 
 	// ---- AC2/R2: the direct message is invisible to a party reader (not the recipient/author). ----
-	partyHits, err := read.DiscussionSearch(ctx, team.String(), proj.String(), party, "rollout secret rotate-me", 10)
+	partyHits, err := read.DiscussionSearch(ctx, team.String(), proj, party, "rollout secret rotate-me", 10)
 	if err != nil {
 		t.Fatalf("party search: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestProposalFindable_DirectScopedR2(t *testing.T) {
 
 	// ---- R2 pass-arm: the RECIPIENT agent recalls the direct message. ----
 	recipient := memory.ReaderIdentity{AgentID: "agent:auditor", Principal: "agent:auditor"}
-	recpHits, err := read.DiscussionSearch(ctx, team.String(), proj.String(), recipient, "rollout secret rotate-me", 10)
+	recpHits, err := read.DiscussionSearch(ctx, team.String(), proj, recipient, "rollout secret rotate-me", 10)
 	if err != nil {
 		t.Fatalf("recipient search: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestProposalFindable_DirectScopedR2(t *testing.T) {
 
 	// ---- R2 pass-arm: the AUTHOR recalls their own direct message. ----
 	author := memory.ReaderIdentity{Principal: "alice@corp"}
-	authHits, err := read.DiscussionSearch(ctx, team.String(), proj.String(), author, "rollout secret rotate-me", 10)
+	authHits, err := read.DiscussionSearch(ctx, team.String(), proj, author, "rollout secret rotate-me", 10)
 	if err != nil {
 		t.Fatalf("author search: %v", err)
 	}

@@ -37,11 +37,11 @@ import (
 // ProposalLifecycle is the discussion-room decision seam these shells drive (implemented by
 // *discussion.Store; the interface keeps the room's persistence out of the unit-test lane).
 type ProposalLifecycle interface {
-	GetProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID) (*discussion.Proposal, error)
-	ConfirmProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext) (*discussion.Proposal, error)
-	DismissProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext) error
-	CompleteProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth discussion.AuthorContext, result json.RawMessage, resultBody string) (*discussion.Message, error)
-	FailProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID) error
+	GetProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID) (*discussion.Proposal, error)
+	ConfirmProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth discussion.AuthorContext) (*discussion.Proposal, error)
+	DismissProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth discussion.AuthorContext) error
+	CompleteProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth discussion.AuthorContext, result json.RawMessage, resultBody string) (*discussion.Message, error)
+	FailProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID) error
 }
 
 // proposalFanout carries the two existing authoring seams (the same interfaces the board's create
@@ -85,25 +85,21 @@ func requireHumanProposalDecider(w http.ResponseWriter, r *http.Request) (discus
 	return auth, true
 }
 
-// requireProposalPath resolves the shared path vars of both shells: a valid project UUID (the
-// room key, same form every discussion route uses) and the proposal message id.
-func requireProposalPath(w http.ResponseWriter, r *http.Request) (projectUUID, messageID uuid.UUID, ok bool) {
+// requireProposalPath resolves the shared path vars of both shells: the room key — the platform
+// Project id, a "namespace/name" slug (ISI-3982), same form every discussion route uses — and the
+// proposal message id (a uuid).
+func requireProposalPath(w http.ResponseWriter, r *http.Request) (projectID string, messageID uuid.UUID, ok bool) {
 	projectRef, has := pathVar(r, "projectId")
 	if !has || projectRef == "" {
 		writeJSONError(w, http.StatusBadRequest, "project id required")
-		return uuid.Nil, uuid.Nil, false
+		return "", uuid.Nil, false
 	}
-	projectUUID, err := uuid.Parse(projectRef)
-	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid projectId")
-		return uuid.Nil, uuid.Nil, false
-	}
-	messageID, err = uuid.Parse(pathVarOr(r, "messageId"))
+	messageID, err := uuid.Parse(pathVarOr(r, "messageId"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid messageId")
-		return uuid.Nil, uuid.Nil, false
+		return "", uuid.Nil, false
 	}
-	return projectUUID, messageID, true
+	return projectRef, messageID, true
 }
 
 // proposalConfirmHandler answers POST /api/projects/{projectId}/discussion/proposals/{messageId}/confirm.
@@ -113,7 +109,7 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		projectUUID, messageID, ok := requireProposalPath(w, r)
+		projectID, messageID, ok := requireProposalPath(w, r)
 		if !ok {
 			return
 		}
@@ -122,9 +118,9 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 		//    confirm gets 409 and nothing below runs twice. A card that already left `proposed`
 		//    is resumed rather than refused — see resumeProposal (ISI-4945: a wedged `confirmed`
 		//    card from a post-back failure must still be able to reach `executed`).
-		proposal, err := f.lifecycle.ConfirmProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth)
+		proposal, err := f.lifecycle.ConfirmProposal(r.Context(), projectID, auth.TeamID, messageID, auth)
 		if errors.Is(err, discussion.ErrProposalNotProposed) {
-			f.resumeProposal(w, r, auth, projectUUID, messageID)
+			f.resumeProposal(w, r, auth, projectID, messageID)
 			return
 		}
 		if mapProposalErr(w, err) {
@@ -134,7 +130,7 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 		// 2. Fan into the existing authoring seam for the proposal's action. The room's own team
 		//    (proposal.TeamID, from the thread) is the tenancy the mint lands in — the same team
 		//    the console create path resolves for this Project.
-		f.fanoutAndComplete(w, r, auth, projectUUID, messageID, proposal)
+		f.fanoutAndComplete(w, r, auth, projectID, messageID, proposal)
 	}
 }
 
@@ -150,8 +146,8 @@ func proposalConfirmHandler(f proposalFanout) http.HandlerFunc {
 //     silently losing the human's confirm intent; full dedup needs an idempotency key on the coord
 //     authoring seams, out of scope for this recovery.
 //   - `dismissed` → genuinely decided; 409.
-func (f proposalFanout) resumeProposal(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectUUID, messageID uuid.UUID) {
-	proposal, err := f.lifecycle.GetProposal(r.Context(), projectUUID, auth.TeamID, messageID)
+func (f proposalFanout) resumeProposal(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectID string, messageID uuid.UUID) {
+	proposal, err := f.lifecycle.GetProposal(r.Context(), projectID, auth.TeamID, messageID)
 	if mapProposalErr(w, err) {
 		return
 	}
@@ -163,7 +159,7 @@ func (f proposalFanout) resumeProposal(w http.ResponseWriter, r *http.Request, a
 			"alreadyExecuted": true,
 		})
 	case discussion.ProposalPhaseConfirmed:
-		f.fanoutAndComplete(w, r, auth, projectUUID, messageID, proposal)
+		f.fanoutAndComplete(w, r, auth, projectID, messageID, proposal)
 	default:
 		writeJSONError(w, http.StatusConflict, "proposal already decided")
 	}
@@ -172,10 +168,10 @@ func (f proposalFanout) resumeProposal(w http.ResponseWriter, r *http.Request, a
 // fanoutAndComplete runs the fan-out for the proposal's action and records the truth: executed +
 // post-back on success, roll back to proposed (retryable) on failure. Shared by the fresh-confirm
 // and the resume paths so the two stay identical.
-func (f proposalFanout) fanoutAndComplete(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectUUID, messageID uuid.UUID, proposal *discussion.Proposal) {
-	result, fanErr := f.execute(r.Context(), auth, projectUUID.String(), proposal)
+func (f proposalFanout) fanoutAndComplete(w http.ResponseWriter, r *http.Request, auth discussion.AuthorContext, projectID string, messageID uuid.UUID, proposal *discussion.Proposal) {
+	result, fanErr := f.execute(r.Context(), auth, projectID, proposal)
 	if fanErr != nil {
-		_ = f.lifecycle.FailProposal(r.Context(), projectUUID, auth.TeamID, messageID)
+		_ = f.lifecycle.FailProposal(r.Context(), projectID, auth.TeamID, messageID)
 		if mapWorkItemWriteError(w, fanErr) {
 			return
 		}
@@ -183,7 +179,7 @@ func (f proposalFanout) fanoutAndComplete(w http.ResponseWriter, r *http.Request
 		return
 	}
 	body := "Proposal confirmed: " + proposalResultLine(proposal.Payload.Action, result)
-	postBack, err := f.lifecycle.CompleteProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth, result, body)
+	postBack, err := f.lifecycle.CompleteProposal(r.Context(), projectID, auth.TeamID, messageID, auth, result, body)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "proposal executed but the result post-back failed: "+err.Error())
 		return
@@ -268,11 +264,11 @@ func proposalDismissHandler(f proposalFanout) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		projectUUID, messageID, ok := requireProposalPath(w, r)
+		projectID, messageID, ok := requireProposalPath(w, r)
 		if !ok {
 			return
 		}
-		if err := f.lifecycle.DismissProposal(r.Context(), projectUUID, auth.TeamID, messageID, auth); mapProposalErr(w, err) {
+		if err := f.lifecycle.DismissProposal(r.Context(), projectID, auth.TeamID, messageID, auth); mapProposalErr(w, err) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": discussion.ProposalPhaseDismissed})

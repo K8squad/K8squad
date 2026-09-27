@@ -589,7 +589,7 @@ func TestMCP_ToolsCall_DiscussionPostOpenThenReply(t *testing.T) {
 	if dw.openTitle != "Deploy plan" || dw.openBody != "first message" {
 		t.Fatalf("open title/body = %q/%q", dw.openTitle, dw.openBody)
 	}
-	if dw.openProject.String() != testProjectID {
+	if dw.openProject != testProjectID {
 		t.Fatalf("open projectID = %s, want %s", dw.openProject, testProjectID)
 	}
 	if dw.openAuth.TeamID.String() != testTeamID || dw.openAuth.Principal != "agent:amelia" {
@@ -702,7 +702,7 @@ func TestMCP_ToolsCall_DiscussionPostValidationAndAuth(t *testing.T) {
 	}{
 		{"missing principal", valid, map[string]string{"X-Team-Id": testTeamID}, nil},
 		{"malformed team header", valid, map[string]string{"X-Team-Id": "not-a-uuid", "X-Principal-Id": "p"}, nil},
-		{"malformed project_id", `{"project_id":"nope","title":"t","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
+		{"missing project_id", `{"project_id":"","title":"t","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
 		{"malformed thread_id", `{"project_id":"` + testProjectID + `","thread_id":"nope","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
 		{"malformed parent_message_id", `{"project_id":"` + testProjectID + `","thread_id":"` + testThreadID + `","body":"b","parent_message_id":"nope"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil},
 		{"empty title on open (store err)", `{"project_id":"` + testProjectID + `","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, func(f *fakeDiscussionWriter) { f.openErr = discussion.ErrEmptyTitle }},
