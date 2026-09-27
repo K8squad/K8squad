@@ -303,6 +303,47 @@ subjects:
   name: ksquad-apiserver
   namespace: {{ $ns }}
 ---
+# apiserver model-endpoint Secret write (ISI-5005, child of ISI-4989 — the
+# deferred ISI-4890 AC6 fast-follow). POST /api/modelendpoints upserts a BYO
+# model-endpoint Secret (endpointURL/apiToken keys, labelled
+# ksquad.io/model-endpoint) and GET /api/modelendpoints lists them — both in the
+# OPERATOR namespace, the SAME namespace the ModelConfig "default" singleton and
+# the resolver (pkg/modelendpoint) live in, so a written endpoint is resolvable.
+# Unlike the managed-credential write (deploy/helm — dynamic team namespaces,
+# hence a create-only ClusterRole), this target namespace is FIXED and known at
+# install time, so the least-privilege grant is a NAMESPACED Role in {{ $ns }}.
+# The DIRECT client does upsert = Get-then-Create-or-Update and the GET read
+# model Lists by label — so secrets get+list+create+update, scoped to this one
+# namespace. No watch (direct client, no informers), no patch/delete. Kept in
+# lockstep by TestApiserverModelEndpointRoleLeastPrivilege in rbac_lockstep_test.go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver-model-endpoint
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get, list, create, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "k8squad.fullname" . }}-apiserver-model-endpoint
+  namespace: {{ $ns }}
+  labels:
+    {{- include "k8squad.componentLabels" (dict "root" $ "component" "apiserver") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "k8squad.fullname" . }}-apiserver-model-endpoint
+subjects:
+- kind: ServiceAccount
+  name: ksquad-apiserver
+  namespace: {{ $ns }}
+---
 # memory Team-agent resolver (ISI-4743, ADR-0024 §8): the memory service's
 # work_item_assign verb (the PM→implementer handoff) must authorize the target
 # implementer against the item's Team composition (agent-∈-Team, §3 D4). That

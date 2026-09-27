@@ -129,6 +129,32 @@ func NewSecretWriter() (SecretWriteClient, error) {
 	return c, nil
 }
 
+// NewModelEndpointClient builds the DIRECT (uncached) client the ISI-5005
+// model-endpoint surface uses to upsert + list BYO endpoint Secrets in the
+// operator namespace. Wider than NewSecretWriter's grant (that path is
+// create-only, dynamic team namespaces): the upsert is Get-then-Create-or-Update
+// and the GET read model Lists by label, all in the fixed operator namespace, so
+// this client needs Get/Create/Update/List — a full controller-runtime client
+// over a corev1-carrying scheme. Like the other write paths it hits the API
+// server live (a just-written Secret must be durable and re-readable), so no
+// cache. The caller decides whether a build failure is fatal or a fall-back to
+// the documented 501.
+func NewModelEndpointClient() (ModelEndpointClient, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build model-endpoint client: %w", err)
+	}
+	return c, nil
+}
+
 // NewReaderPodClient builds the DIRECT (uncached) client the S4a reader-pod
 // launcher + reaper use (ISI-4079). The launcher creates/deletes reader pods and
 // their paired ClusterIP Services, and the reaper's orphan sweep lists pods — a

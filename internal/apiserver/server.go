@@ -249,6 +249,16 @@ type Options struct {
 	// Nil ⇒ the write route keeps the documented 501 (a cluster-less dev run without
 	// a writer client), exactly like the read half and the compose surface.
 	OTelConfigWriter *OTelConfigWriteService
+	// ModelEndpoints is the ISI-5005 model-endpoint surface (child of ISI-4989,
+	// the deferred ISI-4890 AC6 fast-follow): POST /api/modelendpoints/list-models
+	// (dial a provider for its model list), POST /api/modelendpoints (upsert an
+	// endpoint Secret in the operator namespace), GET /api/modelendpoints (list
+	// them without secret data), and GET /api/modelendpoints/providers (the
+	// data-only registry the console's ProviderModelPicker draws from). Admin-tier
+	// writes/list behind the SAME §13 choke point + same-origin guard + bounded
+	// body as the org-default ModelConfig. Nil ⇒ the routes keep the documented
+	// 501 (a cluster-less dev run without a Secret client), like the compose surface.
+	ModelEndpoints *ModelEndpointService
 	// TaskIO is the ISI-3601 S2 run-scoped agent task-io seam (get-task /
 	// post-comment / post-change (M1.5, ISI-4131) / update-status / checkout)
 	// mounted under /api/task-io/. It
@@ -622,6 +632,38 @@ func (s *Server) routes(opts Options) {
 		} else {
 			otelCfg.HandleFunc("", notImplemented("otel-config write surface", "ISI-3954: wire an OTelConfigWriteService (controller-runtime client) to enable")).
 				Methods(http.MethodPut, http.MethodPost)
+		}
+
+		// ISI-5005 model-endpoint surface (child of ISI-4989): the console's
+		// ProviderModelPicker + BYO endpoint write path. All behind the SAME §13
+		// choke point; the mutating routes add the same-origin guard + bounded body
+		// as the compose/otel writes. Admin-tier is enforced in the handlers
+		// (meRequireAdmin), like otelConfigWrite. A nil service keeps the documented
+		// 501 (cluster-less dev run without a Secret client).
+		//
+		// GET /api/modelendpoints/providers — data-only registry (session-gated).
+		meProviders := s.router.Path("/api/modelendpoints/providers").Subrouter()
+		meProviders.Use(authz)
+		// POST /api/modelendpoints/list-models — dial a provider for its model list.
+		meListModels := s.router.Path("/api/modelendpoints/list-models").Subrouter()
+		meListModels.Use(authz)
+		meListModels.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		meListModels.Use(maxBytesBody(modelEndpointMaxBodyBytes))
+		// GET (list) + POST (upsert) /api/modelendpoints.
+		meEndpoints := s.router.Path("/api/modelendpoints").Subrouter()
+		meEndpoints.Use(authz)
+		meEndpoints.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		meEndpoints.Use(maxBytesBody(modelEndpointMaxBodyBytes))
+		if opts.ModelEndpoints != nil {
+			meProviders.HandleFunc("", opts.ModelEndpoints.handleProviders).Methods(http.MethodGet)
+			meListModels.HandleFunc("", opts.ModelEndpoints.handleListModels).Methods(http.MethodPost)
+			meEndpoints.HandleFunc("", opts.ModelEndpoints.handleList).Methods(http.MethodGet)
+			meEndpoints.HandleFunc("", opts.ModelEndpoints.handleCreate).Methods(http.MethodPost)
+		} else {
+			const meTracking = "ISI-5005: wire a ModelEndpointService (controller-runtime Secret client) to enable"
+			meProviders.HandleFunc("", notImplemented("model-endpoint provider registry", meTracking)).Methods(http.MethodGet)
+			meListModels.HandleFunc("", notImplemented("model-endpoint list-models", meTracking)).Methods(http.MethodPost)
+			meEndpoints.HandleFunc("", notImplemented("model-endpoint read/write surface", meTracking)).Methods(http.MethodGet, http.MethodPost)
 		}
 
 		// Epic D tool-usage panel read model (ISI-3288, plan §2.4 story D3): the
