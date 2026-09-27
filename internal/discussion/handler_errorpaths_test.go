@@ -28,16 +28,16 @@ func TestHandlerBadPathVars(t *testing.T) {
 		vars    map[string]string
 		wantMsg string
 	}{
-		{"listThreads/badProject", h.listThreads, map[string]string{"projectId": bad}, "invalid projectId"},
-		{"openThread/badProject", h.openThread, map[string]string{"projectId": bad}, "invalid projectId"},
-		{"getThread/badProject", h.getThread, map[string]string{"projectId": bad}, "invalid projectId"},
+		{"listThreads/badProject", h.listThreads, map[string]string{"projectId": ""}, "invalid projectId"},
+		{"openThread/badProject", h.openThread, map[string]string{"projectId": ""}, "invalid projectId"},
+		{"getThread/badProject", h.getThread, map[string]string{"projectId": ""}, "invalid projectId"},
 		{"getThread/badThread", h.getThread, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
-		{"postMessage/badProject", h.postMessage, map[string]string{"projectId": bad}, "invalid projectId"},
+		{"postMessage/badProject", h.postMessage, map[string]string{"projectId": ""}, "invalid projectId"},
 		{"postMessage/badThread", h.postMessage, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
-		{"retractMessage/badProject", h.retractMessage, map[string]string{"projectId": bad}, "invalid projectId"},
+		{"retractMessage/badProject", h.retractMessage, map[string]string{"projectId": ""}, "invalid projectId"},
 		{"retractMessage/badThread", h.retractMessage, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
 		{"retractMessage/badMessage", h.retractMessage, map[string]string{"projectId": good, "threadId": good, "messageId": bad}, "invalid messageId"},
-		{"memoryIndex/badProject", h.memoryIndex, map[string]string{"projectId": bad}, "invalid projectId"},
+		{"memoryIndex/badProject", h.memoryIndex, map[string]string{"projectId": ""}, "invalid projectId"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -121,7 +121,7 @@ func TestDiscussionFenceWriteMovesNoCoordState(t *testing.T) {
 	// Full discussion write cycle through the production Store.
 	store := NewStore(db)
 	team := uuid.New()
-	project := uuid.New()
+	project := "test-ns/test-project"
 	auth := AuthorContext{Principal: "principal:writer", TeamID: team}
 
 	th, err := store.OpenThread(ctx, project, auth, "does a write move custody?", "opening message")

@@ -20,14 +20,14 @@ import (
 // return a specific store error to exercise the status mapping.
 type fakeDiscussionWriter struct {
 	// captured OpenThread args
-	openProject uuid.UUID
+	openProject string
 	openAuth    discussion.AuthorContext
 	openTitle   string
 	openBody    string
 	openCalled  bool
 
 	// captured PostMessage args
-	postProject  uuid.UUID
+	postProject  string
 	postTeam     uuid.UUID
 	postThread   uuid.UUID
 	postAuth     discussion.AuthorContext
@@ -39,7 +39,7 @@ type fakeDiscussionWriter struct {
 	postErr error
 }
 
-func (f *fakeDiscussionWriter) OpenThread(_ context.Context, projectID uuid.UUID, auth discussion.AuthorContext, title, body string) (*discussion.Thread, error) {
+func (f *fakeDiscussionWriter) OpenThread(_ context.Context, projectID string, auth discussion.AuthorContext, title, body string) (*discussion.Thread, error) {
 	f.openCalled = true
 	f.openProject, f.openAuth, f.openTitle, f.openBody = projectID, auth, title, body
 	if f.openErr != nil {
@@ -64,7 +64,7 @@ func (f *fakeDiscussionWriter) OpenThread(_ context.Context, projectID uuid.UUID
 	}, nil
 }
 
-func (f *fakeDiscussionWriter) PostMessage(_ context.Context, projectID, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, _ *string, _ *string, _ *json.RawMessage) (*discussion.Message, error) {
+func (f *fakeDiscussionWriter) PostMessage(_ context.Context, projectID string, teamID, threadID uuid.UUID, auth discussion.AuthorContext, body string, parentID *uuid.UUID, _ *string, _ *string, _ *json.RawMessage) (*discussion.Message, error) {
 	f.postCalled = true
 	f.postProject, f.postTeam, f.postThread, f.postAuth, f.postBody, f.postParentID = projectID, teamID, threadID, auth, body, parentID
 	if f.postErr != nil {
@@ -137,7 +137,7 @@ func TestDiscussionPostOpenThenReply(t *testing.T) {
 	if dw.openTitle != "Deploy plan" || dw.openBody != "first message" {
 		t.Fatalf("open title/body = %q/%q", dw.openTitle, dw.openBody)
 	}
-	if dw.openProject.String() != testProjectID {
+	if dw.openProject != testProjectID {
 		t.Fatalf("open projectID = %s, want %s", dw.openProject, testProjectID)
 	}
 	if dw.openAuth.TeamID.String() != testTeamID || dw.openAuth.Principal != "agent:amelia" {
@@ -253,7 +253,7 @@ func TestDiscussionPostAuthAndValidation(t *testing.T) {
 		{"missing team header ⇒ 401", valid, map[string]string{"X-Principal-Id": "p"}, nil, http.StatusUnauthorized},
 		{"missing principal header ⇒ 401", valid, map[string]string{"X-Team-Id": testTeamID}, nil, http.StatusUnauthorized},
 		{"malformed team header ⇒ 400", valid, map[string]string{"X-Team-Id": "not-a-uuid", "X-Principal-Id": "p"}, nil, http.StatusBadRequest},
-		{"malformed project_id ⇒ 400", `{"project_id":"nope","title":"t","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil, http.StatusBadRequest},
+		{"missing project_id ⇒ 400", `{"project_id":"","title":"t","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil, http.StatusBadRequest},
 		{"malformed thread_id ⇒ 400", `{"project_id":"` + testProjectID + `","thread_id":"nope","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil, http.StatusBadRequest},
 		{"malformed parent_message_id ⇒ 400", `{"project_id":"` + testProjectID + `","thread_id":"` + testThreadID + `","body":"b","parent_message_id":"nope"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, nil, http.StatusBadRequest},
 		{"empty title on open ⇒ 400", `{"project_id":"` + testProjectID + `","body":"b"}`, map[string]string{"X-Team-Id": testTeamID, "X-Principal-Id": "p"}, func(f *fakeDiscussionWriter) { f.openErr = discussion.ErrEmptyTitle }, http.StatusBadRequest},

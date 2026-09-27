@@ -108,7 +108,7 @@ var (
 
 // PostProposal appends an inert kind='proposal' message and its phase='proposed' lifecycle row in
 // one transaction. Agents and humans alike may propose — proposing is conversation, not execution.
-func (s *Store) PostProposal(ctx context.Context, projectID, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload ProposalPayload, parentID *uuid.UUID) (*Message, error) {
+func (s *Store) PostProposal(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload ProposalPayload, parentID *uuid.UUID) (*Message, error) {
 	if body == "" {
 		return nil, ErrEmptyBody
 	}
@@ -161,7 +161,7 @@ func (s *Store) PostProposal(ctx context.Context, projectID, teamID, threadID uu
 }
 
 // GetProposal returns the proposal message + lifecycle row, tenancy-scoped through thread.
-func (s *Store) GetProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID) (*Proposal, error) {
+func (s *Store) GetProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID) (*Proposal, error) {
 	var p Proposal
 	var payload []byte
 	var parentID uuid.NullUUID
@@ -217,7 +217,7 @@ func (s *Store) GetProposal(ctx context.Context, projectID, teamID, messageID uu
 // the thread message read stays custody-free and phase-less; the console joins this list onto the
 // messages by id to render durable card state (proposed/confirmed/dismissed/executed) after a
 // reload — dismissals and executions are otherwise un-derivable from the append-only transcript.
-func (s *Store) ListProposals(ctx context.Context, projectID, teamID, threadID uuid.UUID) ([]Proposal, error) {
+func (s *Store) ListProposals(ctx context.Context, projectID string, teamID, threadID uuid.UUID) ([]Proposal, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT m.id, m.thread_id, m.parent_id, m.author_principal, m.author_agent_id, m.author_run_id,
 		       m.body, m.audience, m.kind, m.payload, m.created_at, m.invalidated_at,
@@ -275,7 +275,7 @@ func (s *Store) ListProposals(ctx context.Context, projectID, teamID, threadID u
 // ConfirmProposal CAS-advances proposed→confirmed, stamping the deciding human. It is the
 // single-winner lock for the fan-out: the loser of a concurrent confirm gets ErrProposalNotProposed.
 // Returns the full proposal (payload included) so the shell can fan out without a re-read.
-func (s *Store) ConfirmProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth AuthorContext) (*Proposal, error) {
+func (s *Store) ConfirmProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth AuthorContext) (*Proposal, error) {
 	if err := s.transitionProposal(ctx, projectID, teamID, messageID, auth.Principal,
 		ProposalPhaseProposed, ProposalPhaseConfirmed); err != nil {
 		return nil, err
@@ -285,7 +285,7 @@ func (s *Store) ConfirmProposal(ctx context.Context, projectID, teamID, messageI
 
 // DismissProposal CAS-advances proposed→dismissed. No fan-out, no coord write — dismissing is a
 // decision recorded on the card, nothing more.
-func (s *Store) DismissProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth AuthorContext) error {
+func (s *Store) DismissProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth AuthorContext) error {
 	return s.transitionProposal(ctx, projectID, teamID, messageID, auth.Principal,
 		ProposalPhaseProposed, ProposalPhaseDismissed)
 }
@@ -298,7 +298,7 @@ func (s *Store) DismissProposal(ctx context.Context, projectID, teamID, messageI
 // result-but-no-post-back). The confirm shell's resume path (ISI-4945) then recovers it. The CAS is
 // still one-shot — a card already in `executed` is refused with ErrProposalNotProposed (the shell
 // treats that as an idempotent success before ever calling back in here).
-func (s *Store) CompleteProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, auth AuthorContext, result json.RawMessage, resultBody string) (*Message, error) {
+func (s *Store) CompleteProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, auth AuthorContext, result json.RawMessage, resultBody string) (*Message, error) {
 	if resultBody == "" {
 		resultBody = "Proposal executed."
 	}
@@ -338,7 +338,7 @@ func (s *Store) CompleteProposal(ctx context.Context, projectID, teamID, message
 
 // FailProposal rolls confirmed back to proposed after a failed fan-out so the human can retry or
 // dismiss. The lifecycle never lies about an execution that did not happen.
-func (s *Store) FailProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID) error {
+func (s *Store) FailProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.proposal p SET phase = 'proposed', decided_by = NULL, decided_at = NULL, updated_at = now()
 		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
@@ -349,7 +349,7 @@ func (s *Store) FailProposal(ctx context.Context, projectID, teamID, messageID u
 
 // transitionProposal is the tenancy-scoped CAS: phase must be exactly `from` or the transition is
 // refused, and a retracted card can never be decided.
-func (s *Store) transitionProposal(ctx context.Context, projectID, teamID, messageID uuid.UUID, principal, from, to string) error {
+func (s *Store) transitionProposal(ctx context.Context, projectID string, teamID, messageID uuid.UUID, principal, from, to string) error {
 	tag, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.proposal p
 		   SET phase = $6, decided_by = $5, decided_at = now(), updated_at = now()
@@ -378,7 +378,7 @@ type rowQuerier interface {
 
 // postResultMessage appends the confirm post-back: a kind='structured' reply pinned to the
 // proposal card whose payload carries the fan-out outcome (the run-chip data, plan §4.7).
-func (s *Store) postResultMessage(ctx context.Context, db rowQuerier, projectID, teamID, proposalID uuid.UUID, auth AuthorContext, result json.RawMessage, body string) (*Message, error) {
+func (s *Store) postResultMessage(ctx context.Context, db rowQuerier, projectID string, teamID, proposalID uuid.UUID, auth AuthorContext, result json.RawMessage, body string) (*Message, error) {
 	var threadID uuid.UUID
 	err := db.QueryRowContext(ctx, `
 		SELECT m.thread_id FROM discussion.message m

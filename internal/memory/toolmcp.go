@@ -641,9 +641,10 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 			return toolError("invalid arguments")
 		}
 	}
-	projectID, err := uuid.Parse(a.ProjectID)
-	if err != nil {
-		return toolError("malformed project_id (want uuid)")
+	// project_id is the platform Project id — a "namespace/name" slug (ISI-3982), not a uuid.
+	projectID := a.ProjectID
+	if projectID == "" {
+		return toolError("missing project_id")
 	}
 	// Provenance is stamped from `auth` alone — the header identity — mirroring handler AC3. IsAdmin
 	// stays false: posting needs no admin and retract is out of scope for the tool.

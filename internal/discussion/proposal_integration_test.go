@@ -53,13 +53,13 @@ func applyProposalMigrations(t *testing.T, db *sql.DB) {
 	}
 }
 
-func proposalFixtures(t *testing.T) (store *Store, projectID, teamID uuid.UUID, threadID uuid.UUID, agent, human AuthorContext) {
+func proposalFixtures(t *testing.T) (store *Store, projectID string, teamID uuid.UUID, threadID uuid.UUID, agent, human AuthorContext) {
 	t.Helper()
 	db := openTestDB(t)
 	applyProposalMigrations(t, db)
 	store = NewStore(db)
 
-	projectID, teamID = uuid.New(), uuid.New()
+	projectID, teamID = "test-ns/test-project", uuid.New()
 	agentID, runID := "agent:coordinator", "run:r1"
 	agent = AuthorContext{Principal: agentID, TeamID: teamID, AgentID: &agentID, RunID: &runID}
 	human = AuthorContext{Principal: "user:reviewer", TeamID: teamID} // ANY human in the room (OQ4)

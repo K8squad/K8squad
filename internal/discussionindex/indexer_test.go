@@ -54,7 +54,7 @@ func (f *fakeSink) Search(context.Context, memory.SearchQuery) ([]memory.SearchH
 func (f *fakeSink) Invalidate(context.Context, string) (bool, error) { return false, nil }
 func (f *fakeSink) Close()                                           {}
 
-func msg(id uuid.UUID, project, team uuid.UUID, principal string, agentID, runID *string, body string, at time.Time) discussion.MemoryIndexable {
+func msg(id uuid.UUID, project string, team uuid.UUID, principal string, agentID, runID *string, body string, at time.Time) discussion.MemoryIndexable {
 	return discussion.MemoryIndexable{
 		MessageID: id, ThreadID: uuid.New(), ProjectID: project, TeamID: team,
 		AuthorPrincipal: principal, AuthorAgentID: agentID, AuthorRunID: runID, Body: body, CreatedAt: at,
@@ -67,7 +67,7 @@ func str(s string) *string { return &s }
 // VERBATIM into the memory record (kind="discussion", scope preserved, author never invented). This is
 // the structural AC5 property the falsification bench pins: provenance in = provenance out.
 func TestIndex_ProvenanceInEqualsOut(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
 		msg(uuid.New(), project, team, "agent:planner", str("agent-planner"), str("run-77"),
@@ -90,7 +90,7 @@ func TestIndex_ProvenanceInEqualsOut(t *testing.T) {
 	if w.SquadID != team.String() {
 		t.Fatalf("squad_id = %q, want team %q (tenancy preserved)", w.SquadID, team)
 	}
-	if w.ProjectID == nil || *w.ProjectID != project.String() {
+	if w.ProjectID == nil || *w.ProjectID != project {
 		t.Fatalf("project_id = %v, want %q", w.ProjectID, project)
 	}
 	if len(w.Embedding) != memory.EmbeddingDim {
@@ -131,7 +131,7 @@ func TestIndex_ProvenanceInEqualsOut(t *testing.T) {
 // TestSweep_NoDoubleIndex asserts a second sweep re-reading the same watermark-boundary rows does not
 // re-index them (the seen-set dedup), so recall isn't polluted by duplicates.
 func TestSweep_NoDoubleIndex(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
 		msg(uuid.New(), project, team, "alice@corp", nil, nil, "one", at),
@@ -156,7 +156,7 @@ func TestSweep_NoDoubleIndex(t *testing.T) {
 // poison row is EARLIER than a later success, which locks the watermark-freeze: the later success must
 // not advance the watermark past the earlier failure, or the failure would be lost forever.
 func TestSweep_BestEffortSkip(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
 		msg(uuid.New(), project, team, "bob@corp", nil, nil, "poison", at),                  // earlier — fails
@@ -235,7 +235,7 @@ func (c *fakeCursor) SaveProjectionCursor(_ context.Context, _ string, at time.T
 
 // fourMessages is the corpus the restart-survival tests project: four messages at strictly increasing
 // timestamps, one team/project, so a watermark advances one message at a time.
-func fourMessages(team, project uuid.UUID) []discussion.MemoryIndexable {
+func fourMessages(team uuid.UUID, project string) []discussion.MemoryIndexable {
 	base := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	return []discussion.MemoryIndexable{
 		msg(uuid.New(), project, team, "alice@corp", nil, nil, "one", base),
@@ -250,7 +250,7 @@ func fourMessages(team, project uuid.UUID) []discussion.MemoryIndexable {
 // durable cursor + same sink) picks up EXACTLY where the first left off — every message ends up in
 // recall exactly once, with no full re-scan of the already-projected prefix.
 func TestCursor_ResumeAcrossRestart(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	src := &fakeSource{msgs: fourMessages(team, project)}
 	sink := newDedupeSink()
 	cur := &fakeCursor{}
@@ -295,7 +295,7 @@ func TestCursor_ResumeAcrossRestart(t *testing.T) {
 // cursor save fails (the crash window); the restart loads no watermark and re-scans from zero — and the
 // idempotent projection collapses every re-write to a no-op, so recall holds each message exactly once.
 func TestCrashBeforeCursorSave_ExactlyOnce(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	src := &fakeSource{msgs: fourMessages(team, project)}
 	sink := newDedupeSink()
 	cur := &fakeCursor{saveErr: errors.New("crash: db gone right after the batch commit")}
@@ -336,7 +336,7 @@ func TestCrashBeforeCursorSave_ExactlyOnce(t *testing.T) {
 // semantically findable, not just the prose body) and stamps kind/audience/payload verbatim into the
 // provenance jsonb (identifiable at read time; audience is the R2 predicate's key).
 func TestIndex_ProposalKindPayloadIndexed(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	payload := json.RawMessage(`{"action":"create_ticket","title":"Harden the R2 memory-index fence"}`)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
@@ -381,7 +381,7 @@ func TestIndex_ProposalKindPayloadIndexed(t *testing.T) {
 // no payload — the pre-v2 shape every existing row has) indexes its body ALONE; story 7 must not change
 // what legacy messages project.
 func TestIndex_PlainTextContentUnchanged(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
 		msg(uuid.New(), project, team, "alice@corp", nil, nil, "just a plain message", at),
@@ -401,7 +401,7 @@ func TestIndex_PlainTextContentUnchanged(t *testing.T) {
 // provenance jsonb — the store search predicate keys on exactly this field to keep the message out of
 // party-visible results for everyone else.
 func TestIndex_DirectAudienceStamped(t *testing.T) {
-	team, project := uuid.New(), uuid.New()
+	team, project := uuid.New(), "test-ns/test-project"
 	at := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
 	src := &fakeSource{msgs: []discussion.MemoryIndexable{
 		{
