@@ -35,10 +35,11 @@ describe("navTree() — Teams dynamic-children marker (ISI-4001, AC6)", () => {
         expect(n.dynamicChildren).toBeUndefined();
       }
     }
-    // Settings stays a section header with its four children intact.
+    // Settings stays a section header with its children intact (LLM Settings leads, ISI-5004).
     const settings = tree.find((n) => n.id === "settings") as NavNode;
     expect(settings.section).toBe(true);
     expect((settings.children ?? []).map((c) => c.id)).toEqual([
+      "llm",
       "otel",
       "credentials",
       "plugins",

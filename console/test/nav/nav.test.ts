@@ -49,14 +49,17 @@ describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725)", () =
     expect(settings?.href).toBe(""); // a header never navigates
   });
 
-  it("groups OTel · Credentials · Plugins · Users&Roles under SETTINGS", () => {
+  it("groups LLM Settings · OTel · Credentials · Plugins · Users&Roles under SETTINGS", () => {
     const settings = navTree().find((n) => n.id === "settings");
     expect(settings?.children?.map((c) => c.id)).toEqual([
+      "llm",
       "otel",
       "credentials",
       "plugins",
       "users",
     ]);
+    const llm = settings?.children?.find((c) => c.id === "llm");
+    expect(llm?.href).toBe("/settings/llm"); // dedicated LLM surface (ISI-5004)
     const otel = settings?.children?.find((c) => c.id === "otel");
     expect(otel?.href).toBe("/settings/configuration"); // OTLP surface (ISI-3717 Track 2 target)
   });
@@ -100,5 +103,19 @@ describe("breadcrumbFor — /users reads as a labelled trail", () => {
     expect(crumbs[0]).toEqual({ label: "Dashboard", href: "/" });
     const last = crumbs[crumbs.length - 1];
     expect(last).toEqual({ label: "Users & Roles", href: null });
+  });
+
+  it("labels the dedicated LLM settings route 'LLM Settings' (ISI-5004)", () => {
+    const crumbs = breadcrumbFor("/settings/llm");
+    expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Settings", "LLM Settings"]);
+    const last = crumbs[crumbs.length - 1];
+    expect(last).toEqual({ label: "LLM Settings", href: null });
+  });
+
+  it("keeps the OTLP surface labelled 'Configuration' under /settings/configuration", () => {
+    const crumbs = breadcrumbFor("/settings/configuration");
+    expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Settings", "Configuration"]);
+    const last = crumbs[crumbs.length - 1];
+    expect(last).toEqual({ label: "Configuration", href: null });
   });
 });

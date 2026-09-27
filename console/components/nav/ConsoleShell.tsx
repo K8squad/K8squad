@@ -57,10 +57,11 @@ function activeIds(pathname: string): Set<string> {
   if (pathname.startsWith("/credentials")) ids.add("credentials");
   if (pathname.startsWith("/plugins")) ids.add("plugins");
   if (pathname.startsWith("/users")) ids.add("users");
-  // "OTel" is the rail label for the OTLP config surface at /settings/configuration (ISI-3725):
-  // the whole /settings subtree lights the OTel item, keeping active-nav honest until Settings grows
-  // more than one surface.
-  if (pathname.startsWith("/settings")) ids.add("otel");
+  // Settings has two surfaces now (ISI-5004): "LLM Settings" at /settings/llm and "OTel" at
+  // /settings/configuration. Each lights only its own rail item; the bare /settings root is a
+  // redirect so it matches neither.
+  if (pathname.startsWith("/settings/llm")) ids.add("llm");
+  else if (pathname.startsWith("/settings")) ids.add("otel");
   // Project sub-nav tab active-state (ISI-3651 E5) still derives from the deep project route.
   const m = pathname.match(/^\/projects\/[^/]+\/(\w+)/);
   if (m) ids.add(m[1]);
