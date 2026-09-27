@@ -81,7 +81,7 @@ func applyMigration(t *testing.T, db *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS discussion CASCADE`); err != nil {
 		t.Fatalf("reset discussion schema: %v", err)
 	}
-	for _, name := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql"} {
+	for _, name := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql", "0026_discussion_project_id_text.sql"} {
 		candidates := []string{
 			filepath.Join("..", "..", "db", "migrations", name),
 			filepath.Join("db", "migrations", name),

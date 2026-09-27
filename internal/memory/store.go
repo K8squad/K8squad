@@ -178,7 +178,7 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 		       embedding <=> $2::vector AS distance
 		FROM memory.memory_records
 		WHERE squad_id = $1 AND invalidated_at IS NULL
-		  AND ($4::uuid IS NULL OR project_id = $4::uuid)
+		  AND ($4::text IS NULL OR project_id = $4::text)
 		  AND ($5::text IS NULL OR kind = $5::text)
 		  AND (
 		      kind IS DISTINCT FROM 'discussion'
@@ -236,7 +236,7 @@ func (s *PgVectorStore) SearchByIDs(ctx context.Context, q SearchQuery, ids []st
 		       created_at, invalidated_at, provenance
 		FROM memory.memory_records
 		WHERE squad_id = $1 AND invalidated_at IS NULL
-		  AND ($2::uuid IS NULL OR project_id = $2::uuid)
+		  AND ($2::text IS NULL OR project_id = $2::text)
 		  AND ($3::text IS NULL OR kind = $3::text)
 		  AND id = ANY($4::uuid[])
 		ORDER BY array_position($4::uuid[], id)`

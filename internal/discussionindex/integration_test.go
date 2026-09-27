@@ -72,7 +72,7 @@ func setup(t *testing.T) (*memory.PgVectorStore, *discussion.Store, *sql.DB) {
 	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS discussion CASCADE`); err != nil {
 		t.Fatalf("reset discussion schema: %v", err)
 	}
-	for _, mig := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql"} {
+	for _, mig := range []string{"0004_discussion_schema.sql", "0024_discussion_message_fields.sql", "0026_discussion_project_id_text.sql"} {
 		sqlBytes, err := os.ReadFile(filepath.Join("..", "..", "db", "migrations", mig))
 		if err != nil {
 			t.Fatalf("read discussion migration %s: %v", mig, err)
