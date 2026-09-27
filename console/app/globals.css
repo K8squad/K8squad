@@ -4858,6 +4858,38 @@ a:hover {
   margin: 0;
   font-size: 13px;
 }
+.settings-modelpriority__opencode,
+.settings-modelpriority__fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ProviderModelPicker (ISI-5006 S3) — the opencode backend-driven picker rendered into
+   RuntimeAdapterStep's opencodeSlot. Reuses .compose__field / .btn / .state / .muted; adds only
+   layout for the action rows and the advanced escape hatch. */
+.provider-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.provider-picker__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.provider-picker__bound {
+  margin: 0;
+  font-size: 13px;
+}
+.provider-picker__advanced summary {
+  cursor: pointer;
+  font-size: 13px;
+}
 
 /* RuntimeAdapterStep (Frame-4) — adapter selector + per-adapter credential branch fronting
    ModelSelector. --adapter-accent is set inline per adapter (claude=--accent, codex=--status-paused,
