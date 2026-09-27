@@ -19,6 +19,7 @@ export type NavIconId =
   | "settings"
   | "configuration"
   | "otel"
+  | "llm"
   | "credentials"
   | "plugins"
   | "users"
@@ -57,6 +58,9 @@ const P: Record<NavIconId, string> = {
   configuration:
     "M4 6h16M4 12h16M4 18h16m1-14a1 1 0 100 2 1 1 0 000-2zm0 6a1 1 0 100 2 1 1 0 000-2zm0 6a1 1 0 100 2 1 1 0 000-2z",
   otel: "M3 12h4l2.5 6 4-14L16 15l1.5-3H21",
+  // LLM Settings (ISI-5004): a four-point "AI sparkle", stroke style matching the set — the
+  // model/LLM affordance, distinct from the gear (settings) and waveform (otel) glyphs.
+  llm: "M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2L12 2z",
   credentials:
     "M12 2a5 5 0 015 5v3h1a2 2 0 012 2v8a2 2 0 01-2 2H6a2 2 0 01-2-2v-8a2 2 0 012-2h1V7a5 5 0 015-5zm0 2a3 3 0 00-3 3v3h6V7a3 3 0 00-3-3z",
   plugins: "M9 3v4M15 3v4M7 7h10v4a5 5 0 01-10 0V7zM12 16v5",

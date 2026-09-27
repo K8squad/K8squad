@@ -147,6 +147,7 @@ export function navTree(): NavNode[] {
       href: "",
       section: true,
       children: [
+        { id: "llm", label: "LLM Settings", href: "/settings/llm", scope: "global" },
         { id: "otel", label: "OTel", href: "/settings/configuration", scope: "global" },
         { id: "credentials", label: "Credentials", href: "/credentials", scope: "global" },
         { id: "plugins", label: "Plugins", href: "/plugins", scope: "global" },
@@ -279,6 +280,7 @@ const SECTION_LABEL: Record<string, string> = {
   runs: "Runs",
   plugins: "Plugins",
   settings: "Settings",
+  llm: "LLM Settings",
   configuration: "Configuration",
   build: "Build",
   tickets: "Tickets",
