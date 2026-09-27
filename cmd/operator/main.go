@@ -628,6 +628,15 @@ func main() {
 				corev1.EnvVar{Name: "KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT", Value: v},
 			)
 		}
+		// ISI-5085: thread the shim's pre-launch model-endpoint warm-up window
+		// into the sandbox so a cold/reloading BYO endpoint (the shared LAN
+		// Ollama) is loaded BEFORE the run's first-output watchdog is armed.
+		// Unset keeps the shim default; "0" disables the warm-up.
+		if v := os.Getenv("KSQUAD_RUNTIME_WARM_TIMEOUT"); v != "" {
+			kubeProvisioner = kubeProvisioner.WithPodEnv(
+				corev1.EnvVar{Name: "KSQUAD_RUNTIME_WARM_TIMEOUT", Value: v},
+			)
+		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		// M1.2: the pod watch that reports sandbox pod readiness into the pool
 		// (the Provisioner contract's NotifyReady caller — without it warm

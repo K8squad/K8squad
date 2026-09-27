@@ -229,6 +229,19 @@ func (e *Engine) SubmitTask(ctx context.Context, t a2a.Task) (a2a.Status, error)
 	spec.Env = append(spec.Env, mcpCredentialEnv(t.MCPTokenEnv)...)
 	runCtx, cancel := context.WithCancel(context.Background())
 	resolvedModel := e.runModel(t)
+	// ISI-5085: warm the model endpoint before the CLI launch. Scoped to
+	// Ollama-style endpoints — the shared LAN Ollama unloads an idle model
+	// after its keep-alive, so the next run pays model-load latency and can
+	// trip the runner's first-output watchdog on a healthy-but-cold endpoint.
+	// Other OpenAI-compatible providers keep a model resident and must not
+	// pay a per-run warm request, so they are left untouched.
+	if ep := t.ModelRoute.Endpoint; ep != "" && resolvedModel != "" && ollamaEndpoint(ep) {
+		spec.Warmup = &runtimes.Warmup{
+			Endpoint: ep,
+			Model:    resolvedModel,
+			Token:    t.ModelRoute.Token,
+		}
+	}
 	tk := &task{
 		id:        t.A2ATaskID,
 		workItem:  t.WorkItemID,

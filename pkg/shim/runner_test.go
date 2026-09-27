@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -357,5 +359,137 @@ sleep 300
 	}
 	if st.State != a2a.TaskCompleted {
 		t.Fatalf("terminal state = %s, want TaskCompleted (reason %q)", st.State, st.Reason)
+	}
+}
+
+// TestOSRunnerWarmsEndpointBeforeLaunch is the ISI-5085 core: when the spec
+// carries a Warmup, the runner issues one tiny OpenAI-compatible completion
+// against the endpoint+model BEFORE launching the CLI, so a cold/reloading
+// model is resident before the first-output watchdog is armed.
+func TestOSRunnerWarmsEndpointBeforeLaunch(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath, gotModel, gotAuth string
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		hits++
+		gotPath = r.URL.Path
+		var doc struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&doc)
+		gotModel = doc.Model
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""}}]}`))
+	}))
+	defer srv.Close()
+
+	script := writeScript(t, "echo done\n")
+	outcome, err := osRunner{}.Run(context.Background(), runtimes.ExecSpec{
+		Path:   script,
+		Warmup: &runtimes.Warmup{Endpoint: srv.URL + "/v1", Model: "qwen3.8:latest"},
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskCompleted {
+		t.Fatalf("outcome = %+v, want completed", outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 1 {
+		t.Fatalf("warm requests = %d, want exactly 1", hits)
+	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("warm path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotModel != "qwen3.8:latest" {
+		t.Errorf("warm model = %q, want qwen3.8:latest", gotModel)
+	}
+	if gotAuth != "Bearer ollama" {
+		t.Errorf("warm auth = %q, want the ollama placeholder", gotAuth)
+	}
+}
+
+// TestOSRunnerWarmDisabledSkips pins the KSQUAD_RUNTIME_WARM_TIMEOUT=0
+// opt-out: no warm request is issued and the CLI still runs.
+func TestOSRunnerWarmDisabledSkips(t *testing.T) {
+	var mu sync.Mutex
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	script := writeScript(t, "echo done\n")
+	outcome, err := osRunner{warm: -1}.Run(context.Background(), runtimes.ExecSpec{
+		Path:   script,
+		Warmup: &runtimes.Warmup{Endpoint: srv.URL + "/v1", Model: "qwen3.8:latest"},
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskCompleted {
+		t.Fatalf("outcome = %+v, want completed", outcome)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if hits != 0 {
+		t.Fatalf("warm requests = %d, want 0 when disabled", hits)
+	}
+}
+
+// TestOSRunnerWarmFailureFailsLoud guards the fail-closed contract: an
+// endpoint that cannot answer the warm request must fail the run with a warm
+// reason, and the CLI must never launch.
+func TestOSRunnerWarmFailureFailsLoud(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "cold", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	marker := filepath.Join(t.TempDir(), "launched")
+	script := writeScript(t, "touch "+marker+"\n")
+	outcome, err := osRunner{}.Run(context.Background(), runtimes.ExecSpec{
+		Path:   script,
+		Warmup: &runtimes.Warmup{Endpoint: srv.URL + "/v1", Model: "qwen3.8:latest"},
+	}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.State != a2a.TaskFailed {
+		t.Fatalf("outcome = %+v, want TaskFailed", outcome)
+	}
+	if !strings.Contains(outcome.Reason, "warm-up failed") {
+		t.Errorf("reason = %q, want a warm-up failure", outcome.Reason)
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("CLI launched (marker exists) despite warm failure; stat err = %v", statErr)
+	}
+}
+
+// TestNewOSRunnerWarmTimeoutEnv pins the operator-facing override forms:
+// duration and bare seconds set the window, 0 disables it.
+func TestNewOSRunnerWarmTimeoutEnv(t *testing.T) {
+	cases := []struct {
+		val  string
+		want time.Duration
+	}{
+		{"", osWarmTimeoutDefault},
+		{"120s", 120 * time.Second},
+		{"45", 45 * time.Second},
+		{"0", 0},
+	}
+	for _, tc := range cases {
+		t.Setenv("KSQUAD_RUNTIME_WARM_TIMEOUT", tc.val)
+		got := NewOSRunner().(osRunner).warmWindow()
+		if got != tc.want {
+			t.Fatalf("val %q: window = %s, want %s", tc.val, got, tc.want)
+		}
 	}
 }
