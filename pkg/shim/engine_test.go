@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1032,5 +1033,47 @@ func TestSubmitTaskFailsClosedOnMissingMCPToken(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected fail-closed error when the MCP credential value is absent")
+	}
+}
+
+// TestSubmitTaskWarmsOllamaRoute pins the ISI-5085 wiring: a run routed to an
+// Ollama-style BYO endpoint carries a Warmup on the launch spec (so the runner
+// pre-loads the model), while a non-Ollama OpenAI-compatible provider is left
+// untouched (its models stay resident; no per-run warm cost).
+func TestSubmitTaskWarmsOllamaRoute(t *testing.T) {
+	rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(t *testing.T, endpoint string) *runtimes.ExecSpec {
+		t.Helper()
+		cr := &captureRunner{done: make(chan struct{})}
+		e := New(rt, cr, Config{Identity: Identity{Name: "john"}, ShimVersion: "test"})
+		if _, err := e.SubmitTask(context.Background(), a2a.Task{
+			A2ATaskID:  "run-warm-" + strings.ReplaceAll(endpoint, "/", "_"),
+			ModelRoute: a2a.ModelRoute{Endpoint: endpoint, Model: "qwen3.8:latest"},
+		}); err != nil {
+			t.Fatalf("SubmitTask: %v", err)
+		}
+		select {
+		case <-cr.done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("runtime never started")
+		}
+		return &cr.spec
+	}
+
+	ollama := run(t, "http://10.0.0.185:11434/v1")
+	if ollama.Warmup == nil {
+		t.Fatalf("Ollama-route spec has no Warmup; spec=%+v", *ollama)
+	}
+	if ollama.Warmup.Endpoint != "http://10.0.0.185:11434/v1" || ollama.Warmup.Model != "qwen3.8:latest" {
+		t.Fatalf("Warmup = %+v, want the resolved endpoint+model", *ollama.Warmup)
+	}
+
+	vendor := run(t, "https://api.openai.com/v1")
+	if vendor.Warmup != nil {
+		t.Fatalf("non-Ollama endpoint got a Warmup (%+v); only Ollama-style routes should warm", *vendor.Warmup)
 	}
 }

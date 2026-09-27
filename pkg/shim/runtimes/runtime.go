@@ -86,12 +86,36 @@ type WorkDirFile struct {
 	Content []byte
 }
 
+// Warmup is a bounded pre-launch model-provider warm-up (ISI-5085). A
+// coding-agent CLI emits no stdout until the provider streams, so on a
+// cold/reloading BYO endpoint — the shared LAN Ollama unloads an idle model
+// after its keep-alive — the model-load latency can exceed the runner's
+// first-output watchdog window and the run dies loudly. The runner performs
+// this warm request BEFORE launching the CLI, while the watchdog is not yet
+// armed, so the model is resident when the run's own first request arrives.
+// Token is secret material and MUST NOT be logged.
+type Warmup struct {
+	// Endpoint is the OpenAI-compatible base URL the CLI targets
+	// (e.g. http://10.0.0.185:11434/v1).
+	Endpoint string
+	// Model is the resolved model id to load.
+	Model string
+	// Token is the bearer credential; empty uses the conventional "ollama"
+	// placeholder for an unauthenticated lane.
+	Token string
+}
+
 // ExecSpec is the native process a shim launches for one Run. Env carries the
 // mapped credential and model route; the engine passes it to os/exec verbatim.
 type ExecSpec struct {
 	Path string
 	Args []string
 	Env  []string
+	// Warmup, when non-nil, is a bounded model-provider warm-up the runner
+	// performs BEFORE launching the CLI, so a cold/reloading BYO endpoint does
+	// not spend the startup watchdog window on model-load latency (ISI-5085).
+	// nil = no warm-up.
+	Warmup *Warmup
 	// Stdin, when non-empty, is fed to the process's stdin and the stream is
 	// then closed (ISI-4188 gap 5): this is how the prompt reaches CLIs that
 	// read their message from stdin (opencode `run`), keeping it out of argv

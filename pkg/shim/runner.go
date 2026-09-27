@@ -18,8 +18,12 @@ package shim
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,22 +74,20 @@ type osRunner struct {
 	// firstOutput overrides the startup no-output watchdog (tests); zero uses
 	// osFirstOutputTimeoutDefault, negative disables.
 	firstOutput time.Duration
+	// warm overrides the pre-launch model-endpoint warm-up window (tests);
+	// zero uses osWarmTimeoutDefault, negative disables.
+	warm time.Duration
 }
 
 // NewOSRunner returns the production os/exec-backed Runner. The startup
 // watchdog window may be overridden with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT
-// (a Go duration such as "90s", or a bare second count such as "90").
+// (a Go duration such as "90s", or a bare second count such as "90"), and the
+// pre-launch model-endpoint warm-up window with KSQUAD_RUNTIME_WARM_TIMEOUT
+// (same forms; "0" disables the warm-up).
 func NewOSRunner() Runner {
 	r := osRunner{}
 	if v := os.Getenv("KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT"); v != "" {
-		var d time.Duration
-		parsed := false
-		if dur, err := time.ParseDuration(v); err == nil {
-			d, parsed = dur, true
-		} else if secs, err := strconv.Atoi(v); err == nil {
-			d, parsed = time.Duration(secs)*time.Second, true
-		}
-		if parsed {
+		if d, ok := parseDurationOrSeconds(v); ok {
 			// 0 disables the watchdog (the operator's explicit opt-out); any
 			// positive value overrides the default window.
 			if d <= 0 {
@@ -95,7 +97,29 @@ func NewOSRunner() Runner {
 			}
 		}
 	}
+	if v := os.Getenv("KSQUAD_RUNTIME_WARM_TIMEOUT"); v != "" {
+		if d, ok := parseDurationOrSeconds(v); ok {
+			// 0 disables the warm-up; any positive value overrides the default.
+			if d <= 0 {
+				r.warm = -1
+			} else {
+				r.warm = d
+			}
+		}
+	}
 	return r
+}
+
+// parseDurationOrSeconds accepts a Go duration ("90s") or a bare second count
+// ("90"), the two forms the runner env knobs honor.
+func parseDurationOrSeconds(v string) (time.Duration, bool) {
+	if d, err := time.ParseDuration(v); err == nil {
+		return d, true
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		return time.Duration(secs) * time.Second, true
+	}
+	return 0, false
 }
 
 const (
@@ -127,6 +151,19 @@ const (
 	// first-output latency, so a merely slow model is never misclassified;
 	// override with KSQUAD_RUNTIME_FIRST_OUTPUT_TIMEOUT.
 	osFirstOutputTimeoutDefault = 90 * time.Second
+	// osWarmTimeoutDefault bounds the pre-launch model-endpoint warm-up
+	// (ISI-5085). A cold/reloading BYO endpoint (the shared LAN Ollama
+	// unloads an idle model after its keep-alive) spends the model-load
+	// latency before it can stream the run's first token; when that load
+	// exceeds the first-output watchdog the run dies loudly even though the
+	// endpoint is healthy, just cold. The warm-up issues one tiny completion
+	// against the SAME endpoint+model the CLI will use, so the model is
+	// resident before the watchdog is armed. The window is deliberately wider
+	// than the 90s run watchdog (a cold 27B load under memory pressure can
+	// exceed it) and is bounded so an unreachable endpoint still fails with a
+	// legible reason instead of hanging. Override with
+	// KSQUAD_RUNTIME_WARM_TIMEOUT; 0 disables.
+	osWarmTimeoutDefault = 3 * time.Minute
 )
 
 func (r osRunner) quietWindow() time.Duration {
@@ -157,6 +194,20 @@ func (r osRunner) firstOutputWindow() time.Duration {
 	return osFirstOutputTimeoutDefault
 }
 
+// warmWindow is the pre-launch warm-up window: a negative value disables it
+// (also the operator's KSQUAD_RUNTIME_WARM_TIMEOUT=0 opt-out), a positive
+// value overrides the default, and the zero value (a directly-built osRunner,
+// e.g. in tests) uses the default.
+func (r osRunner) warmWindow() time.Duration {
+	if r.warm < 0 {
+		return 0
+	}
+	if r.warm > 0 {
+		return r.warm
+	}
+	return osWarmTimeoutDefault
+}
+
 func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Progress)) (Outcome, error) {
 	// Epic C: rendered native MCP configs materialize in the workdir
 	// BEFORE the CLI starts (ADR-044: race-free — the runtime reads its
@@ -165,6 +216,20 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// process env; nothing secret is written here.
 	if err := materializeWorkDirFiles(spec.WorkDir, spec.WorkDirFiles); err != nil {
 		return Outcome{}, err
+	}
+	// ISI-5085: warm the model endpoint BEFORE the CLI launch (and before the
+	// first-output watchdog is armed). A cold/reloading BYO endpoint would
+	// otherwise spend >the watchdog window loading the model and the run would
+	// fail loudly despite a healthy endpoint. Fail-closed: an endpoint that
+	// cannot answer the warm request within the window cannot serve the run,
+	// so report that legibly instead of launching into a guaranteed stall.
+	if spec.Warmup != nil && spec.Warmup.Endpoint != "" {
+		if w := r.warmWindow(); w > 0 {
+			if err := warmEndpoint(ctx, *spec.Warmup, w); err != nil {
+				return Outcome{State: a2a.TaskFailed, Reason: fmt.Sprintf(
+					"model endpoint warm-up failed within %s: %v", w, err)}, nil
+			}
+		}
 	}
 	// #nosec G204 -- spec.Path and spec.Args are constructed entirely by the
 	// registered runtime adapter from fixed binary names + constant flags
@@ -394,6 +459,50 @@ func (r osRunner) forceSettle(cmd *exec.Cmd, scanned <-chan struct{}) {
 	// Reap; the error is irrelevant by construction — WE ended the process,
 	// and the task outcome was already decided by the terminal event.
 	_ = cmd.Wait()
+}
+
+// warmEndpoint issues one minimal, non-streaming OpenAI-compatible chat
+// completion against the run's own endpoint+model to force a cold/reloading
+// model into memory before the CLI starts (ISI-5085). The response is
+// irrelevant; only reaching a 2xx proves the endpoint can load and serve the
+// model. max_tokens:1 bounds the generation, and the body is drained only up
+// to a small cap so a misbehaving server cannot stream unbounded data into the
+// shim. The bearer token is secret material and is never logged.
+func warmEndpoint(ctx context.Context, w runtimes.Warmup, window time.Duration) error {
+	base := strings.TrimRight(w.Endpoint, "/")
+	token := w.Token
+	if token == "" {
+		// An unauthenticated BYO lane (the Ollama lane) still needs a bearer
+		// value for the OpenAI client libraries to authenticate; "ollama" is
+		// the same conventional placeholder the runtime adapters use.
+		token = "ollama"
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":      w.Model,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+		"stream":     false,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := &http.Client{Timeout: window}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("endpoint returned HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // materializeWorkDirFiles writes the adapter-rendered config files into the
