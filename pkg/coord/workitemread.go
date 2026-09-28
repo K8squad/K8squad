@@ -128,6 +128,9 @@ func (s *WorkItemReadStore) ListWorkItems(ctx context.Context, teamID, projectID
 		 WHERE wi.project_id = $1::uuid
 		   AND ($2::uuid IS NULL OR wi.team_id = $2::uuid)
 		   AND ($3::uuid IS NULL OR wi.parent_id = $3::uuid)
+		   -- ADR-0024b §4.2 board-hide: dispatch-on-mention thread-runs (source='discussion') never
+		   -- surface on the human board. Allowlist semantics so new sources stay hidden by default.
+		   AND wi.source = 'board'
 		 ORDER BY wi.updated_at DESC, wi.id
 		 LIMIT 500`, projectID, nullUUID(teamID), nullUUID(parentID))
 	if err != nil {
