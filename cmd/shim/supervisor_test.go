@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.opentelemetry.io/otel"
@@ -164,5 +165,71 @@ func TestSupervisorTelemetryOptionsUnsetEndpoint(t *testing.T) {
 	}
 	if opts.ServiceName != "ksquad-supervisor" || !opts.CaptureUnsampledRemoteParent {
 		t.Errorf("service resource/sampler config lost when endpoint unset: %+v", opts)
+	}
+}
+
+// TestSupervisorSpansShareRunTraceID pins ISI-5144 (ISI-4540 W2): once the
+// handshake landed the run traceparent, handle_task, runtime.init and run.start
+// must all continue that ONE run trace instead of each rooting a fresh trace off
+// the process-start span. Bluebox verified a run fragmenting across ≥3 trace IDs
+// because runtime.init/run.start started from context.Background(); this locks in
+// the fix (thread the live/extracted context through the supervisor call chain).
+func TestSupervisorSpansShareRunTraceID(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	// The operator-injected run traceparent, as awaitCredential extracts it from
+	// the credential carrier (ISI-4238). This is the trace every supervisor span
+	// must join.
+	const runTraceID = "0af7651916cd43dd8448eb211c80319c"
+	runCtx := propagation.TraceContext{}.Extract(context.Background(),
+		propagation.MapCarrier{"traceparent": "00-" + runTraceID + "-b7ad6b7169203331-01"})
+
+	// The process-start span roots its OWN trace (created at boot, before any
+	// credential) — the wrong parent the pre-fix code grafted everywhere.
+	_, startSpan := tp.Tracer("test").Start(context.Background(), "supervisor.start")
+	defer startSpan.End()
+	if startSpan.SpanContext().TraceID().String() == runTraceID {
+		t.Fatal("test setup: process-start span must root a different trace than the run")
+	}
+
+	sup := &supervisor{
+		metricsReg:     prometheus.NewRegistry(),
+		supervisorSpan: startSpan,
+		traceCtx:       runCtx,
+	}
+
+	// Replay the supervisor call chain the way handleTask threads it: graft the
+	// run trace, open handle_task, hand that live ctx to runtime (runtime.init),
+	// and open run.start on the detached handshake ctx (as SubmitTask's submitCtx
+	// does).
+	ctx := sup.runTraceContext(context.Background())
+	ctx, handle := telemetry.Tracer().Start(ctx, "supervisor.handle_task")
+	_, _ = sup.runtime(ctx) // KSQUAD_RUNTIME_TYPE unset: still opens+ends runtime.init
+	handle.End()
+	_, runStart := telemetry.Tracer().Start(sup.traceCtx, "run.start")
+	runStart.End()
+
+	traceIDs := map[string]string{}
+	for _, s := range exp.GetSpans() {
+		traceIDs[s.Name] = s.SpanContext.TraceID().String()
+	}
+	for _, name := range []string{"supervisor.handle_task", "supervisor.runtime.init", "run.start"} {
+		got, ok := traceIDs[name]
+		if !ok {
+			t.Fatalf("expected a %s span, got spans %v", name, traceIDs)
+		}
+		if got != runTraceID {
+			t.Errorf("%s traceID = %q, want run traceID %q (span fragmented onto a different trace)", name, got, runTraceID)
+		}
 	}
 }
