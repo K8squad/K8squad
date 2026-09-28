@@ -212,8 +212,12 @@ func Setup(ctx context.Context, opts Options) (*slog.Logger, ShutdownFunc, error
 	if err != nil {
 		return nil, nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 	}
+	// WithBatcher(traceExp) is sugar for WithSpanProcessor(NewBatchSpanProcessor);
+	// we insert the same batcher behind dropNoopReconcile so the drive loop's
+	// changeless poll-tick run.reconcile spans (AttrReconcileNoop) never reach the
+	// exporter (ISI-5145), while every other span exports exactly as before.
 	traceProviderOpts := []sdktrace.TracerProviderOption{
-		sdktrace.WithBatcher(traceExp),
+		sdktrace.WithSpanProcessor(dropNoopReconcile{next: sdktrace.NewBatchSpanProcessor(traceExp)}),
 		sdktrace.WithResource(res),
 	}
 	// Head sampler selection:
