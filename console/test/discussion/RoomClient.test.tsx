@@ -7,20 +7,17 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 import type { Thread } from "@/lib/discussion/types";
 
-const { client, agentsClient } = vi.hoisted(() => ({
+const { client } = vi.hoisted(() => ({
   client: {
     listThreads: vi.fn(),
     openThread: vi.fn(),
     searchMentions: vi.fn(),
+    getRoster: vi.fn(),
   },
-  agentsClient: { getTeamOrg: vi.fn() },
 }));
 
 vi.mock("@/lib/discussion/api", () => ({
   createDiscussionClient: () => client,
-}));
-vi.mock("@/lib/agents/api", () => ({
-  createAgentsClient: () => agentsClient,
 }));
 vi.mock("@/components/discussion/DiscussionRoom", () => ({
   DiscussionRoom: ({ threadId }: { threadId: string }) => (

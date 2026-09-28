@@ -90,6 +90,20 @@ export interface MentionSearchResponse {
   results: MentionSuggestion[];
 }
 
+/**
+ * One row of the project roster read
+ * (`GET /api/projects/{projectId}/discussion/roster`, ISI-5107): the agents
+ * dispatchable into THIS project, scoped server-side (admin ⇒ the project's
+ * namespace; everyone else ⇒ their own team). Field names match the Go JSON
+ * tags on `internal/discussion/handler.go#RosterAgent`. `id` mirrors `name`
+ * (the @-mention token) — a roster is namespace-scoped, so names are unique.
+ */
+export interface RosterAgentDTO {
+  id: string;
+  name: string;
+  status?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Proposals (ISI-4928 / ISI-4930, plan §4.4/§4.7). Field names match the Go
 // JSON tags on `internal/discussion/proposal.go`. A proposal is an inert
