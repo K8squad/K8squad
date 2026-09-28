@@ -1,0 +1,288 @@
+package discussion
+
+// Dispatch-on-mention coverage (ISI-5108, plan ISI-4919). The decision core (resolveMentionTargets)
+// and the post-commit hook (dispatchMentions) are exercised WITHOUT a database — the store is never
+// touched, so these ride the default unit lane exactly like the sibling mention-search tests. The
+// three plan-mandated integration scenarios are all here: (a) an @-mention dispatches exactly one run
+// for the named agent, (b) an agent→agent chain is bounded, (c) direct vs party audience routing. The
+// four guardrails (loop / de-dupe / rate-cost / opt-out) each have a dedicated case.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	"github.com/google/uuid"
+)
+
+// fakeDispatcher records every MentionDispatch the hook emits and can be forced to error to prove the
+// hook is best-effort (a dispatch failure never propagates to the HTTP write).
+type fakeDispatcher struct {
+	calls []MentionDispatch
+	err   error
+}
+
+func (f *fakeDispatcher) DispatchMention(_ context.Context, d MentionDispatch) error {
+	f.calls = append(f.calls, d)
+	return f.err
+}
+
+func agentMsg(body, audience, agentID string, payload *json.RawMessage) *Message {
+	m := &Message{ID: uuid.New(), ThreadID: uuid.New(), Body: body, Audience: audience, Payload: payload}
+	if agentID != "" {
+		id := agentID
+		m.AuthorAgentID = &id
+	}
+	return m
+}
+
+func names(ts []MentionDispatch) []string {
+	out := make([]string, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, t.AgentName)
+	}
+	return out
+}
+
+// --- parseMentions -----------------------------------------------------------
+
+func TestParseMentions(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"plain", "hey @john can you look?", []string{"john"}},
+		{"hyphenated agent name", "@Robo-Coder please review", []string{"Robo-Coder"}},
+		{"trailing period stripped", "ping @john.", []string{"john"}},
+		{"de-dupe case-insensitive", "@John and @john again", []string{"John"}},
+		{"multiple distinct, order preserved", "@a then @b then @c", []string{"a", "b", "c"}},
+		{"no mentions", "just a plain message", nil},
+		{"email is not a mention", "mail me at bob@example.com", nil},
+		{"mid-word @ is not a mention", "path/to@thing or a@b", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseMentions(tc.body)
+			if len(got) != len(tc.want) {
+				t.Fatalf("parseMentions(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("parseMentions(%q) = %v, want %v", tc.body, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// --- hop counter round-trip --------------------------------------------------
+
+func TestDispatchHopRoundTrip(t *testing.T) {
+	if got := DispatchHopOf(nil); got != 0 {
+		t.Fatalf("nil payload hop = %d, want 0", got)
+	}
+	stamped := StampDispatchHop(nil, 2)
+	if got := DispatchHopOf(&stamped); got != 2 {
+		t.Fatalf("round-trip hop = %d, want 2", got)
+	}
+	// Stamping preserves an existing payload object rather than clobbering it.
+	base := json.RawMessage(`{"foo":"bar"}`)
+	merged := StampDispatchHop(&base, 1)
+	var got struct {
+		Foo      string `json:"foo"`
+		Dispatch struct {
+			HopDepth int `json:"hopDepth"`
+		} `json:"_dispatch"`
+	}
+	if err := json.Unmarshal(merged, &got); err != nil {
+		t.Fatalf("merged payload not valid JSON: %v", err)
+	}
+	if got.Foo != "bar" || got.Dispatch.HopDepth != 1 {
+		t.Fatalf("merged = %s, want foo preserved + hop 1", merged)
+	}
+}
+
+// --- (a) an @-mention dispatches exactly one run for the named agent ---------
+
+func TestResolveDispatchesExactlyOne(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "idle"}}
+	msg := agentMsg("hey @john please look", "party", "", nil) // human-authored (no agentID)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if dropped != 0 || len(targets) != 1 {
+		t.Fatalf("targets = %v (dropped %d), want exactly [john]", names(targets), dropped)
+	}
+	if targets[0].AgentName != "john" {
+		t.Fatalf("dispatched %q, want john", targets[0].AgentName)
+	}
+	if targets[0].HopDepth != 1 {
+		t.Fatalf("human turn dispatches at hop %d, want 1", targets[0].HopDepth)
+	}
+}
+
+// --- (c) direct vs party audience routing -----------------------------------
+
+func TestResolveAudienceRouting(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "working"}}
+
+	// direct:<agent> dispatches ONLY that agent, ignoring body @-tokens.
+	direct := agentMsg("@jane too", "direct:john", "", nil)
+	if got := names(mustResolve(t, direct, roster)); len(got) != 1 || got[0] != "john" {
+		t.Fatalf("direct routing = %v, want [john] only", got)
+	}
+
+	// party + @agent dispatches each mentioned agent.
+	party := agentMsg("@john and @jane", "party", "", nil)
+	if got := names(mustResolve(t, party, roster)); len(got) != 2 {
+		t.Fatalf("party routing = %v, want [john jane]", got)
+	}
+
+	// A bare party post with no @-mention dispatches nobody (no waking the whole squad).
+	bare := agentMsg("just thinking out loud", "party", "", nil)
+	if got := mustResolve(t, bare, roster); len(got) != 0 {
+		t.Fatalf("bare party = %v, want nobody", names(got))
+	}
+}
+
+func mustResolve(t *testing.T, msg *Message, roster []TeamAgent) []MentionDispatch {
+	t.Helper()
+	targets, _ := resolveMentionTargets(msg, roster)
+	return targets
+}
+
+// --- (b) agent→agent loop is bounded (loop guard) ---------------------------
+
+func TestResolveLoopGuardBoundsAgentChain(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "working"}}
+
+	// A human turn (no agentID, no hop payload) → dispatches at hop 1.
+	human := agentMsg("@john go", "party", "", nil)
+	h1 := mustResolve(t, human, roster)
+	if len(h1) != 1 || h1[0].HopDepth != 1 {
+		t.Fatalf("human turn = %v, want one dispatch at hop 1", h1)
+	}
+
+	// john (agent) replies at hop 1 and @-mentions jane → dispatches jane at hop 2 (still within cap).
+	hop1Payload := StampDispatchHop(nil, 1)
+	agentHop1 := agentMsg("@jane your turn", "party", "john", &hop1Payload)
+	h2 := mustResolve(t, agentHop1, roster)
+	if len(h2) != 1 || h2[0].AgentName != "jane" || h2[0].HopDepth != 2 {
+		t.Fatalf("hop-1 agent = %v, want jane at hop 2", h2)
+	}
+
+	// jane (agent) replies at hop 2 and @-mentions john → hop 3 would exceed the cap → nobody.
+	hop2Payload := StampDispatchHop(nil, 2)
+	agentHop2 := agentMsg("@john back to you", "party", "jane", &hop2Payload)
+	if got := mustResolve(t, agentHop2, roster); len(got) != 0 {
+		t.Fatalf("hop-2 agent = %v, want nobody (loop guard tripped)", names(got))
+	}
+}
+
+// --- de-dupe: one dispatch per (agent) within a post ------------------------
+
+func TestResolveDeDupesRepeatedMention(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}}
+	msg := agentMsg("@john @john @John", "party", "", nil)
+	if got := mustResolve(t, msg, roster); len(got) != 1 {
+		t.Fatalf("de-dupe = %v, want a single dispatch for john", names(got))
+	}
+}
+
+// --- opt-out: paused/blocked agents are not auto-dispatched ------------------
+
+func TestResolveOptOutPausedAgent(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "paused"}, {Name: "jane", Status: "blocked"}, {Name: "amy", Status: "working"}}
+	msg := agentMsg("@john @jane @amy", "party", "", nil)
+	got := names(mustResolve(t, msg, roster))
+	if len(got) != 1 || got[0] != "amy" {
+		t.Fatalf("opt-out = %v, want only the working agent amy", got)
+	}
+}
+
+// --- self-mention: an agent never auto-dispatches itself --------------------
+
+func TestResolveSkipsSelfMention(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "working"}}
+	// john (agent) @-mentions itself and jane; only jane is dispatched.
+	msg := agentMsg("@john note to self, @jane please help", "party", "john", nil)
+	got := names(mustResolve(t, msg, roster))
+	if len(got) != 1 || got[0] != "jane" {
+		t.Fatalf("self-mention = %v, want only jane", got)
+	}
+}
+
+// --- rate/cost cap ----------------------------------------------------------
+
+func TestResolveRateCap(t *testing.T) {
+	roster := []TeamAgent{}
+	body := ""
+	for i := 0; i < maxMentionDispatchPerMessage+3; i++ {
+		name := string(rune('a' + i))
+		roster = append(roster, TeamAgent{Name: name, Status: "working"})
+		body += "@" + name + " "
+	}
+	msg := agentMsg(body, "party", "", nil)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if len(targets) != maxMentionDispatchPerMessage {
+		t.Fatalf("dispatched %d, want cap of %d", len(targets), maxMentionDispatchPerMessage)
+	}
+	if dropped != 3 {
+		t.Fatalf("dropped = %d, want 3 (non-silent truncation)", dropped)
+	}
+}
+
+// --- dispatchMentions hook: wiring, provenance stamping, best-effort ---------
+
+func TestDispatchMentionsHookStampsContextAndProvenance(t *testing.T) {
+	roster := &fakeRoster{agents: []TeamAgent{{Name: "john", Status: "working"}}}
+	disp := &fakeDispatcher{}
+	h := NewHandlerWithDeps(nil, nil, roster)
+	h.SetMentionDispatcher(disp)
+
+	team := uuid.New()
+	agentID := "pm-1"
+	auth := AuthorContext{Principal: "agent:pm", TeamID: team, AgentID: &agentID}
+	msg := agentMsg("@john please implement", "party", "pm-1", nil)
+
+	h.dispatchMentions(context.Background(), "squad-a/proj", auth, msg)
+
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher called %d times, want 1", len(disp.calls))
+	}
+	c := disp.calls[0]
+	if c.AgentName != "john" || c.ProjectID != "squad-a/proj" || c.ThreadID != msg.ThreadID ||
+		c.MessageID != msg.ID || c.TeamID != team {
+		t.Fatalf("dispatch context = %+v, want thread/message/project/team stamped", c)
+	}
+	if c.TriggeredByPrincipal != "agent:pm" || c.TriggeredByAgentID == nil || *c.TriggeredByAgentID != "pm-1" {
+		t.Fatalf("trigger provenance = %+v, want server-stamped agent identity", c)
+	}
+	if c.HopDepth != 1 {
+		t.Fatalf("hop = %d, want 1 (fresh agent post carries no hop payload)", c.HopDepth)
+	}
+}
+
+func TestDispatchMentionsHookBestEffort(t *testing.T) {
+	roster := &fakeRoster{agents: []TeamAgent{{Name: "john", Status: "working"}}}
+	disp := &fakeDispatcher{err: errors.New("run mint failed")}
+	h := NewHandlerWithDeps(nil, nil, roster)
+	h.SetMentionDispatcher(disp)
+
+	// A dispatcher error must not panic or propagate — the message is already committed.
+	h.dispatchMentions(context.Background(), "squad-a/proj",
+		AuthorContext{Principal: "user:alice", TeamID: uuid.New()},
+		agentMsg("@john hi", "party", "", nil))
+	if len(disp.calls) != 1 {
+		t.Fatalf("dispatcher called %d times, want 1 (error swallowed)", len(disp.calls))
+	}
+}
+
+func TestDispatchMentionsHookNoDispatcherNoop(t *testing.T) {
+	roster := &fakeRoster{agents: []TeamAgent{{Name: "john", Status: "working"}}}
+	h := NewHandlerWithDeps(nil, nil, roster) // no dispatcher wired
+	// Must not panic and must dispatch nobody (room stays coordination-free).
+	h.dispatchMentions(context.Background(), "squad-a/proj",
+		AuthorContext{Principal: "user:alice", TeamID: uuid.New()},
+		agentMsg("@john hi", "party", "", nil))
+}

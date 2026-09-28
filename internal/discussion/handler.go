@@ -70,9 +70,10 @@ func BFFAuthz(auth Authenticator) mux.MiddlewareFunc {
 // which supplies the AuthorContext (principal + Team scope) — this handler never trusts the body for
 // identity or tenancy.
 type Handler struct {
-	store    *Store
-	searcher search.Searcher
-	org      OrgReader
+	store      *Store
+	searcher   search.Searcher
+	org        OrgReader
+	dispatcher MentionDispatcher // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -358,6 +359,10 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		writeStoreErr(w, err)
 		return
 	}
+	// ISI-5108: after the row is committed, parse @-mentions and auto-dispatch the matched agents so
+	// they read the thread and reply. Best-effort — the message is already durable, so this never
+	// fails the write (see dispatchMentions); a nil dispatcher leaves the room coordination-free.
+	h.dispatchMentions(r.Context(), projectID, auth, msg)
 	writeJSON(w, http.StatusCreated, msg)
 }
 
