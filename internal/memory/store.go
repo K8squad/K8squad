@@ -48,8 +48,41 @@ func Open(ctx context.Context, cfg Config) (*PgVectorStore, error) {
 	return s, nil
 }
 
-// Ready fails closed if pgvector is absent or the base migration is not applied — the AC1 readiness
-// gate. A missing extension is a hard error, not a silent fallback to a bespoke store.
+// expectedColumnTypes pins the information_schema data_type this binary's SQL casts assume for the
+// shared memory.memory_records scope columns. Ready asserts the live column types still match. When a
+// migration retypes one of these columns, update its cast sites in this file AND this map in the same
+// change — the map is the single source of truth for what schema this binary's code was written against.
+// project_id is text (0004_project_id_text.sql, ISI-4919); the id scopes stay uuid; kind is text.
+var expectedColumnTypes = map[string]string{
+	"squad_id":   "uuid",
+	"project_id": "text",
+	"run_id":     "uuid",
+	"agent_id":   "uuid",
+	"kind":       "text",
+}
+
+// assertColumnTypes fails closed if any pinned shared column's live type diverges from what this
+// binary's SQL casts assume (Guard #2, ISI-5112). This is the check that catches ISI-5109: an older
+// reader whose code still casts ::uuid against a project_id column that a newer release already retyped
+// to text — the ledger is AHEAD (so the HEAD floor passes) yet every query would raise SQLSTATE 42883
+// per reconcile forever. A loud boot failure beats that silent per-reconcile storm. Pure over the
+// column→type map so it is unit-testable without a live Postgres.
+func assertColumnTypes(live map[string]string) error {
+	for col, want := range expectedColumnTypes {
+		got, ok := live[col]
+		if !ok {
+			return fmt.Errorf("memory.memory_records.%s missing — schema incompatible with this binary, refusing to start (ISI-5112)", col)
+		}
+		if got != want {
+			return fmt.Errorf("memory.memory_records.%s is %q but this binary's SQL casts assume %q — shared-DB deploy skew, refusing to start (roll all memory co-consumers in lockstep; ISI-5109/ISI-5112)", col, got, want)
+		}
+	}
+	return nil
+}
+
+// Ready is the AC1 readiness gate: it fails closed unless pgvector is present, the schema this binary
+// embeds has landed, and the shared columns still have the types this binary's code expects. A schema
+// skew is a hard boot error, never a silent fallback or a per-reconcile error storm (ISI-5112).
 func (s *PgVectorStore) Ready(ctx context.Context) error {
 	var hasVector bool
 	if err := s.pool.QueryRow(ctx,
@@ -59,15 +92,44 @@ func (s *PgVectorStore) Ready(ctx context.Context) error {
 	if !hasVector {
 		return fmt.Errorf("pgvector extension absent — refusing to start (integrate pgvector, do not invent a vector engine; OQ10/ADR-004)")
 	}
-	var hasBase bool
+
+	// (a) HEAD floor — the newest migration this binary embeds must be present in the shared ledger, so
+	// a binary that embeds 0004 against a ledger still at 0003 fails closed instead of running blind.
+	head, err := embeddedMigrationHead()
+	if err != nil {
+		return err
+	}
+	var hasHead bool
 	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM memory.schema_migrations WHERE version = 'migrations/0001_memory.sql')`).Scan(&hasBase); err != nil {
+		`SELECT EXISTS(SELECT 1 FROM memory.schema_migrations WHERE version = $1)`, head).Scan(&hasHead); err != nil {
 		return fmt.Errorf("probe schema version: %w", err)
 	}
-	if !hasBase {
-		return fmt.Errorf("memory schema not at expected version (0001 not applied) — refusing to start")
+	if !hasHead {
+		return fmt.Errorf("memory schema behind this binary: embedded migration %s not applied to the shared ledger — refusing to start (roll the migrating service first; ISI-5112)", head)
 	}
-	return nil
+
+	// (b) Type assertion — the live types of the shared scope columns must match this binary's casts.
+	// Catches the ISI-5109 skew where the ledger is AHEAD of this reader (so (a) passes) but this
+	// binary still casts the pre-migration type.
+	rows, err := s.pool.Query(ctx,
+		`SELECT column_name, data_type FROM information_schema.columns
+		 WHERE table_schema = 'memory' AND table_name = 'memory_records'`)
+	if err != nil {
+		return fmt.Errorf("probe column types: %w", err)
+	}
+	defer rows.Close()
+	live := make(map[string]string)
+	for rows.Next() {
+		var col, typ string
+		if err := rows.Scan(&col, &typ); err != nil {
+			return fmt.Errorf("scan column type: %w", err)
+		}
+		live[col] = typ
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("probe column types: %w", err)
+	}
+	return assertColumnTypes(live)
 }
 
 // Write server-stamps id + created_at (DB defaults) and durably commits the record. The embedding
@@ -86,6 +148,10 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 	if len(req.Embedding) != s.dim {
 		return Record{}, fmt.Errorf("embedding dimension %d != configured embedder dimension %d", len(req.Embedding), s.dim)
 	}
+	// Keep prov typed as json.RawMessage (never []byte) all the way to the insert: pgx maps
+	// json.RawMessage to the json OID, but a bare []byte to bytea. Under the simple query protocol
+	// (the transaction-pooling mode ISI-5114 pins) a []byte would interpolate as a bytea hex literal
+	// the jsonb column rejects with SQLSTATE 22P02 (invalid input syntax for type json).
 	prov := req.Provenance
 	if len(prov) == 0 {
 		prov = json.RawMessage(`{}`)
@@ -115,7 +181,7 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 			RETURNING id, created_at`
 		err := s.pool.QueryRow(ctx, qi,
 			*req.DedupeID, req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
-			req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),
+			req.Kind, req.Content, encodeVector(req.Embedding), prov,
 		).Scan(&rec.ID, &rec.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if err := s.pool.QueryRow(ctx,
@@ -138,7 +204,7 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 		RETURNING id, created_at`
 	if err := s.pool.QueryRow(ctx, q,
 		req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
-		req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),
+		req.Kind, req.Content, encodeVector(req.Embedding), prov,
 	).Scan(&rec.ID, &rec.CreatedAt); err != nil {
 		return Record{}, fmt.Errorf("insert memory_record: %w", err)
 	}

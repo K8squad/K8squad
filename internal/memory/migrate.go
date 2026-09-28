@@ -9,6 +9,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// embeddedMigrationHead returns the lexically-last embedded migration version — the newest schema this
+// binary was compiled against. applyMigrations records every embedded version in the ledger, so Ready
+// (Guard #2, ISI-5112) can assert this HEAD actually landed on the shared DB before serving.
+func embeddedMigrationHead() (string, error) {
+	entries, err := fs.Glob(migrationsFS, "migrations/*.sql")
+	if err != nil {
+		return "", fmt.Errorf("enumerate migrations: %w", err)
+	}
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no embedded migrations found")
+	}
+	sort.Strings(entries)
+	return entries[len(entries)-1], nil
+}
+
 // applyMigrations applies every embedded forward-only migration exactly once, in lexical order,
 // tracking applied versions in memory.schema_migrations. Each migration runs in its own transaction,
 // so a crash mid-apply commits or rolls back a whole file, never a partial schema (§7.4). It is
