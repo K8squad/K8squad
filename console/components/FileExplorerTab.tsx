@@ -56,7 +56,7 @@ hljs.registerLanguage("yaml", hlYaml);
 
 /** Per-directory lazy-load state, keyed by the directory's workspace-relative
  * path ("" = root). A directory is fetched the first time it is expanded. */
-type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean }>;
+type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean; reason?: string }>;
 
 // ISI-4705: the largest byte window the rich renderers (highlight.js code view,
 // ReactMarkdown) will process on the main thread. A capped read is up to 1 MiB
@@ -235,7 +235,10 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
       if (state.kind !== "ready") return state;
       return {
         kind: "ready",
-        data: { entries: state.data.entries ?? [], degraded: state.data.degraded },
+        // ISI-5140: preserve `reason` — the render logic (busyDegraded / noTarget)
+        // keys the workspace-busy banner on reason==="workspace_busy"; dropping it
+        // here left busyDegraded permanently false, so the banner never rendered.
+        data: { entries: state.data.entries ?? [], degraded: state.data.degraded, reason: state.data.reason },
       };
     },
     [projectId],
@@ -331,8 +334,8 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   // ISI-5140: the busy banner is shown ONLY when snapshot bytes are actually being
   // served (degraded + reason="workspace_busy"). The no-completed-run empty state
   // (reason="no_browse_target", degraded=false) is honest, not a degradation.
-  const busyDegraded = degraded && (root.data as { reason?: string }).reason === "workspace_busy";
-  const noTarget = !degraded && (root.data as { reason?: string }).reason === "no_browse_target";
+  const busyDegraded = degraded && root.data.reason === "workspace_busy";
+  const noTarget = !degraded && root.data.reason === "no_browse_target";
 
   return (
     <section data-testid="file-explorer">

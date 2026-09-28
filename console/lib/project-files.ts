@@ -32,6 +32,10 @@ export type FileListing = {
   path: string;
   entries: FileEntry[] | null;
   degraded?: boolean;
+  // Labels the degraded shape (ISI-5140): "workspace_busy" when snapshot bytes
+  // are actually being served (busy banner), "no_browse_target" for the honest
+  // empty state. Must survive to the component — it drives which banner renders.
+  reason?: string;
   truncated?: boolean;
 };
 
