@@ -30,6 +30,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 // TestSupervisorMetricsEndpointServesRegistry covers ISI-4385 (WS-C): the
@@ -231,5 +232,69 @@ func TestSupervisorSpansShareRunTraceID(t *testing.T) {
 		if got != runTraceID {
 			t.Errorf("%s traceID = %q, want run traceID %q (span fragmented onto a different trace)", name, got, runTraceID)
 		}
+	}
+}
+
+// TestSupervisorHandleTaskContinuesRunTrace pins ISI-5143 (ISI-4540 W1) at the
+// HTTP-handler boundary: driving the real handleTask endpoint (not a replayed
+// call chain) must produce a supervisor.handle_task span that CONTINUES the
+// operator run trace landed in s.traceCtx — not a fresh trace rooted on the
+// boot-time supervisor.start span (the "handle_task is a fresh trace ROOT (no
+// parent)" orphan Bluebox flagged). Complements TestSupervisorSpansShareRunTraceID
+// (ISI-5144), which replays the chain directly; here the busy short-circuit still
+// opens/closes the span, so no runtime wiring is needed.
+func TestSupervisorHandleTaskContinuesRunTrace(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+
+	// Simulate awaitCredential: the operator injected the run's traceparent into
+	// the task-io credential and the handshake Extracted it into s.traceCtx.
+	runTraceID, _ := oteltrace.TraceIDFromHex("00000000000000000000000000004540")
+	parentSpanID, _ := oteltrace.SpanIDFromHex("0000000000005143")
+	runSC := oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+		TraceID:    runTraceID,
+		SpanID:     parentSpanID,
+		TraceFlags: oteltrace.FlagsSampled,
+		Remote:     true,
+	})
+	traceCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(), runSC)
+
+	// supervisorSpan is a run-DISJOINT boot root: if the fix regressed, handle_task
+	// would inherit ITS traceID instead of the run's — this makes the assertion
+	// discriminating.
+	_, bootSpan := tp.Tracer("test").Start(context.Background(), "supervisor.start")
+	defer bootSpan.End()
+
+	sup := &supervisor{busy: true, traceCtx: traceCtx, supervisorSpan: bootSpan}
+	rec := httptest.NewRecorder()
+	sup.handleTask(rec, httptest.NewRequest(http.MethodPost, "/task?taskid=t1", nil))
+
+	var got oteltrace.TraceID
+	found := false
+	for _, s := range exp.GetSpans() {
+		if s.Name == "supervisor.handle_task" {
+			got = s.SpanContext.TraceID()
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected a supervisor.handle_task span, got %d spans", len(exp.GetSpans()))
+	}
+	if got != runTraceID {
+		t.Errorf("supervisor.handle_task traceID = %s, want %s (must continue the operator run trace, not root a fresh one)",
+			got, runTraceID)
+	}
+	if got == bootSpan.SpanContext().TraceID() {
+		t.Errorf("supervisor.handle_task inherited the supervisor.start boot trace %s — the ISI-5143 orphan", got)
 	}
 }

@@ -331,7 +331,10 @@ describe("FileExplorerTab", () => {
 
   it("shows the workspace-busy degraded banner over the last-committed snapshot (AC4)", async () => {
     routeFetch({
-      listings: { "": { path: "", degraded: true, entries: [{ name: "app.go", path: "app.go", type: "file", size: 8 }] } },
+      // Mirror the server contract (files.go): a workspace-busy snapshot answers
+      // degraded=true WITH reason="workspace_busy" — the banner keys on the reason,
+      // not degraded alone (ISI-5140).
+      listings: { "": { path: "", degraded: true, reason: "workspace_busy", entries: [{ name: "app.go", path: "app.go", type: "file", size: 8 }] } },
     });
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-busy-banner")).toBeTruthy());

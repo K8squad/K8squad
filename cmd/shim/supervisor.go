@@ -399,6 +399,16 @@ func (s *supervisor) handleHandshake(w http.ResponseWriter, _ *http.Request) {
 // the a2a wire contract verbatim. 409 while another task is in flight (one
 // pod = one Run), 500 when no runtime flavor was baked into the image.
 func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
+	// ISI-5143 (ISI-4540 W1): continue the operator RUN trace. The operator
+	// injects the run's W3C trace carrier into the task-io credential; the Bind→pod
+	// handshake Extracts it into s.traceCtx (awaitCredential). Parent
+	// supervisor.handle_task on THAT context so the span shares the run's traceID —
+	// instead of the boot-time supervisor.start root (a run-disjoint trace: the
+	// exact "supervisor.handle_task is a fresh trace ROOT (no parent)" orphan
+	// Bluebox flagged, where supervisor/agent spans landed disconnected). Before
+	// the handshake lands (an unbound warm pod, or a pre-credential test POST) fall
+	// back to the process root span, then the bare request context.
+	//
 	// ISI-4540: SpanKindServer — this is the inbound HTTP edge of the sandbox
 	// (operator → pod), so backends can model the supervisor as a service.
 	// ISI-5144: parent the supervisor span chain on the Run's distributed trace
@@ -407,6 +417,7 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// and run.start each root a fresh trace, fragmenting one run across ≥3 trace
 	// IDs. runTraceContext keeps r.Context()'s cancellation while grafting on the
 	// run trace, and falls back to supervisor.start before the handshake lands.
+	// This same graft satisfies ISI-5143 (W1): handle_task continues the run trace.
 	ctx := s.runTraceContext(r.Context())
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
@@ -458,7 +469,10 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 
 	// ISI-4238: submit on the handshake's trace context when it landed so
 	// the run's spans join the Run's distributed trace; the request ctx
-	// (streaming lifetime) stays with the stream below.
+	// (streaming lifetime) stays with the stream below. NB: this is
+	// intentionally NOT the handle_task span ctx — that carries r.Context()'s
+	// cancellation (ISI-5144 runTraceContext), which would tie the run's
+	// lifetime to HTTP stream teardown. traceCtx is background-rooted.
 	submitCtx := r.Context()
 	s.mu.RLock()
 	if s.traceCtx != nil {
