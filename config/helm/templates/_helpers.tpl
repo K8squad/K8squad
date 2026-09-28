@@ -66,14 +66,25 @@ ksquad.io/component: {{ .component }}
 
 {{/*
 Container image ref for a component. `ctx` is a dict {root, component}.
-Registry+repo default to ghcr.io/k8squad/ksquad-<component>; tag falls back to
-the chart appVersion so a bare `controlPlane.enabled=true` pins a real image.
+Registry+repo default to ghcr.io/k8squad/ksquad-<component>; tag resolution is
+per-component-override → shared tag → chart appVersion, so a bare
+`controlPlane.enabled=true` pins a real image while a reconcile `helm upgrade`
+can pin each out-of-band-rolled component to its running sha independently
+(ISI-5155). The shared `controlPlane.image.tag` cannot express a mixed-sha live
+state (six components, distinct hotfix shas); `controlPlane.image.tagOverrides`
+is a component→tag map that wins per component, e.g.
+  --set controlPlane.image.tagOverrides.apiserver=sha-7ae378b
+  --set controlPlane.image.tagOverrides.operator=sha-de70f78
+Component keys are the deployment component names (apiserver, console, operator,
+memory, event-relay, scm-webhook). Empty/absent overrides fall through cleanly.
 */}}
 {{- define "k8squad.image" -}}
 {{- $img := .root.Values.controlPlane.image -}}
 {{- $registry := $img.registry | default "ghcr.io/k8squad" -}}
-{{- $tag := $img.tag | default .root.Chart.AppVersion -}}
-{{- printf "%s/ksquad-%s:%s" $registry .component $tag -}}
+{{- $override := "" -}}
+{{- with $img.tagOverrides -}}{{- $override = (index . $.component) | default "" -}}{{- end -}}
+{{- $tag := $override | default $img.tag | default $.root.Chart.AppVersion -}}
+{{- printf "%s/ksquad-%s:%s" $registry $.component $tag -}}
 {{- end -}}
 
 {{/*
