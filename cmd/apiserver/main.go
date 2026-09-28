@@ -635,9 +635,24 @@ func main() {
 	// only into those, and stay documented-501 otherwise (server.go enforces the pair).
 	discussionStore := discussion.NewStore(db)
 
+	// ISI-5108/ISI-5116 dispatch-on-mention: the decision half (@-mention parse + guardrails) lives on
+	// the handler; here we wire the run-minting half (MentionDispatcher) and the reply-path loop-guard
+	// hop stamp (ReplyHopResolver). The dispatcher reuses the SAME board authoring seams the proposal
+	// confirm fan-out rides (workItemWrites + workItemDispatch), so it needs the informer-backed dispatch
+	// store (the agent-∈-Team authority, ADR-0024b). A cluster-less dev run (nil workItemDispatch) leaves
+	// the room coordination-free exactly as before — postMessage still commits, it just dispatches nobody.
+	discussionHandler := discussion.NewHandlerWithDeps(discussionStore, searcher, rosterForMentions(org))
+	if workItemDispatch != nil {
+		discussionHandler.SetMentionDispatcher(apiserver.NewMentionDispatcher(workItemWrites, workItemDispatch, projectRefs, db))
+		discussionHandler.SetReplyHopResolver(apiserver.NewReplyHopResolver(db))
+		log.Printf("ksquad-apiserver: dispatch-on-mention ready (room @-mention → board-hidden thread-run → agent Run; ISI-5108/ISI-5116)")
+	} else {
+		log.Printf("ksquad-apiserver: dispatch-on-mention inert (no informer-backed dispatch store; room stays coordination-free)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
-		Discussion:          discussion.NewHandlerWithDeps(discussionStore, searcher, rosterForMentions(org)),
+		Discussion:          discussionHandler,
 		DiscussionProposals: discussionStore,
 		Ready:               dbReady{db},
 		Overview:            overview,

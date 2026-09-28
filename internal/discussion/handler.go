@@ -70,9 +70,11 @@ func BFFAuthz(auth Authenticator) mux.MiddlewareFunc {
 // which supplies the AuthorContext (principal + Team scope) — this handler never trusts the body for
 // identity or tenancy.
 type Handler struct {
-	store    *Store
-	searcher search.Searcher
-	org      OrgReader
+	store       *Store
+	searcher    search.Searcher
+	org         OrgReader
+	dispatcher  MentionDispatcher // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
+	hopResolver ReplyHopResolver  // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -353,11 +355,19 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		parentID = &pid
 	}
+	// ISI-5116 (loop guard): an agent-authored reply from within a dispatched thread-run must carry the
+	// hop it runs at, so a further @-mention in it stays bounded (hop 2 dispatches, hop 3 is refused).
+	req.Payload = h.stampReplyHop(r.Context(), auth, req.Payload)
 	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
 	}
+	// ISI-5108: after the row is committed, parse @-mentions and auto-dispatch the matched agents so
+	// they read the thread and reply. Best-effort — the message is already durable, so this never
+	// fails the write (see dispatchMentions); a nil dispatcher leaves the room coordination-free. The
+	// hop stamped above rides msg.Payload, so resolveMentionTargets reads the accumulated depth here.
+	h.dispatchMentions(r.Context(), projectID, auth, msg)
 	writeJSON(w, http.StatusCreated, msg)
 }
 
