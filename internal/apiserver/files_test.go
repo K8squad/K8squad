@@ -78,13 +78,47 @@ func filesAuthn(principal string, isAdmin bool) *stubAuthenticator {
 
 // buildFilesServer constructs a minimal Server with the files routes wired.
 func buildFilesServer(reader WorkspaceReader, resolver ProjectRoleResolver, authn discussion.Authenticator) *Server {
+	return buildFilesServerBusy(reader, nil, resolver, authn)
+}
+
+func buildFilesServerBusy(reader WorkspaceReader, busy BusySnapshotReader, resolver ProjectRoleResolver, authn discussion.Authenticator) *Server {
 	opts := Options{
-		Authenticator:   authn,
-		Discussion:      nil,
-		WorkspaceReader: reader,
-		ProjectRoles:    resolver,
+		Authenticator:       authn,
+		Discussion:          nil,
+		WorkspaceReader:     reader,
+		WorkspaceBusyReader: busy,
+		ProjectRoles:        resolver,
 	}
 	return NewServer(opts)
+}
+
+// fakeBusySnapshotReader serves (or refuses) the last-committed snapshot for a busy workspace.
+type fakeBusySnapshotReader struct {
+	listing *DirListing
+	content *FileContent
+	stat    *FileStat
+	err     error // ErrNoWorkspaceSnapshot to refuse
+}
+
+func (f *fakeBusySnapshotReader) ListSnapshotDir(_ context.Context, _, _ string, _ int) (*DirListing, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.listing, nil
+}
+
+func (f *fakeBusySnapshotReader) ReadSnapshotFile(_ context.Context, _, _ string, _, _ int64) (*FileContent, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.content, nil
+}
+
+func (f *fakeBusySnapshotReader) StatSnapshotFile(_ context.Context, _, _ string) (*FileStat, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.stat, nil
 }
 
 // ---- workspaceJailPath ---------------------------------------------------
@@ -207,8 +241,9 @@ func TestProjectFiles_BusyDegraded_Returns200WithFlag(t *testing.T) {
 	}
 }
 
-func TestProjectFiles_NoBrowseTarget_Returns200DegradedEmpty(t *testing.T) {
-	// Project exists but has no completed Run yet → degraded empty listing, not 5xx.
+func TestProjectFiles_NoBrowseTarget_Returns200HonestEmpty(t *testing.T) {
+	// ISI-5140: no completed Run yet is an honest empty state, NOT a snapshot:
+	// degraded=false + reason=no_browse_target so the UI skips the busy banner.
 	reader := &fakeWorkspaceReader{err: ErrNoBrowseTarget}
 	authn := filesAuthn("alice", true)
 	srv := buildFilesServer(reader, nil, authn)
@@ -223,8 +258,59 @@ func TestProjectFiles_NoBrowseTarget_Returns200DegradedEmpty(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !body.Degraded || len(body.Entries) != 0 {
-		t.Errorf("want degraded empty listing, got %+v", body)
+	if body.Degraded || body.Reason != "no_browse_target" || len(body.Entries) != 0 {
+		t.Errorf("want honest empty listing reason=no_browse_target, got %+v", body)
+	}
+}
+
+func TestProjectFiles_BusyServesSnapshotListing(t *testing.T) {
+	// ISI-5140: a busy workspace must serve the last-committed snapshot, never a
+	// fabricated empty listing.
+	reader := &fakeWorkspaceReader{err: ErrWorkspaceBusy}
+	busy := &fakeBusySnapshotReader{listing: &DirListing{Entries: []DirEntry{
+		{Name: "README.md", Type: "file", Size: 42},
+	}}}
+	authn := filesAuthn("alice", true)
+	srv := buildFilesServerBusy(reader, busy, nil, authn)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj-1/files", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("busy+snapshot: got %d, want 200", w.Code)
+	}
+	var body DirListing
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Degraded || body.Reason != "workspace_busy" {
+		t.Errorf("want degraded reason=workspace_busy, got %+v", body)
+	}
+	if len(body.Entries) != 1 || body.Entries[0].Name != "README.md" {
+		t.Errorf("want snapshot entries served, got %+v", body.Entries)
+	}
+}
+
+func TestProjectFiles_BusyNoSnapshot_LabelsEmptyHonestly(t *testing.T) {
+	// Busy + no servable snapshot (nil reader / ErrNoWorkspaceSnapshot): the empty
+	// form is still labelled reason=workspace_busy so the UI can say so.
+	reader := &fakeWorkspaceReader{err: ErrWorkspaceBusy}
+	busy := &fakeBusySnapshotReader{err: ErrNoWorkspaceSnapshot}
+	authn := filesAuthn("alice", true)
+	srv := buildFilesServerBusy(reader, busy, nil, authn)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj-1/files", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("busy+no-snapshot: got %d, want 200", w.Code)
+	}
+	var body DirListing
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.Degraded || body.Reason != "workspace_busy" || len(body.Entries) != 0 {
+		t.Errorf("want labelled empty degraded listing, got %+v", body)
 	}
 }
 
@@ -339,8 +425,9 @@ func TestProjectFilesContent_NoBrowseTarget_Returns200Degraded(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("content no browse target: got %d, want 200", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"degraded":true`) {
-		t.Errorf("content no browse target: degraded flag missing in body: %s", w.Body.String())
+	// ISI-5140: honest empty state, NOT a snapshot — reason only, no degraded flag.
+	if !strings.Contains(w.Body.String(), `"reason":"no_browse_target"`) || strings.Contains(w.Body.String(), `"degraded":true`) {
+		t.Errorf("content no browse target: want reason=no_browse_target without degraded, body: %s", w.Body.String())
 	}
 }
 
@@ -480,8 +567,9 @@ func TestProjectFilesStat_NoBrowseTarget_Returns200Degraded(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("stat no browse target: got %d, want 200", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), `"degraded":true`) {
-		t.Errorf("stat no browse target: degraded flag missing in body: %s", w.Body.String())
+	// ISI-5140: honest empty state, NOT a snapshot — reason only, no degraded flag.
+	if !strings.Contains(w.Body.String(), `"reason":"no_browse_target"`) || strings.Contains(w.Body.String(), `"degraded":true`) {
+		t.Errorf("stat no browse target: want reason=no_browse_target without degraded, body: %s", w.Body.String())
 	}
 }
 
