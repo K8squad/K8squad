@@ -122,3 +122,47 @@ func TestSupervisorHandleTaskSpanCarriesCodeAttrs(t *testing.T) {
 		t.Errorf("code.function = %q, want handleTask", got["code.function"])
 	}
 }
+
+// TestSupervisorTelemetryOptionsRoutesOTLP covers ISI-5142 (ISI-4540 W3): the
+// supervisor's telemetry spine is configured at process START from the
+// operator-stamped OTEL_EXPORTER_OTLP_* env, so the OTLP trace exporter (and the
+// ksquad-supervisor service entity) exist before the credential handshake — not
+// deferred until a Run binds, which dropped every pre-credential span.
+func TestSupervisorTelemetryOptionsRoutesOTLP(t *testing.T) {
+	env := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-gateway.observability:4317",
+	}
+	opts, filled := supervisorTelemetryOptions(func(k string) string { return env[k] })
+
+	if opts.ServiceName != "ksquad-supervisor" {
+		t.Errorf("ServiceName = %q, want ksquad-supervisor", opts.ServiceName)
+	}
+	if !opts.CaptureUnsampledRemoteParent {
+		t.Error("CaptureUnsampledRemoteParent = false, want true (sandbox one-Run capture, ISI-4413)")
+	}
+	// The env endpoint must route every signal still on the stdout default so
+	// supervisor/runtime spans reach the gateway instead of dying on stderr.
+	if len(filled) != 3 {
+		t.Errorf("filled = %v, want traces+metrics+logs routed to OTLP", filled)
+	}
+	if opts.Traces == nil || opts.Traces.Endpoint != env["OTEL_EXPORTER_OTLP_ENDPOINT"] {
+		t.Errorf("traces exporter not pointed at the operator gateway endpoint: %+v", opts.Traces)
+	}
+}
+
+// TestSupervisorTelemetryOptionsUnsetEndpoint asserts that with no OTLP endpoint
+// the signals stay on the stderr default (filled empty, Traces nil) — the
+// caller logs this loudly so "zero shim spans" reads as a config gap, not a
+// silent void.
+func TestSupervisorTelemetryOptionsUnsetEndpoint(t *testing.T) {
+	opts, filled := supervisorTelemetryOptions(func(string) string { return "" })
+	if len(filled) != 0 {
+		t.Errorf("filled = %v, want none (no endpoint configured)", filled)
+	}
+	if opts.Traces != nil {
+		t.Errorf("Traces = %+v, want nil (stderr default)", opts.Traces)
+	}
+	if opts.ServiceName != "ksquad-supervisor" || !opts.CaptureUnsampledRemoteParent {
+		t.Errorf("service resource/sampler config lost when endpoint unset: %+v", opts)
+	}
+}
