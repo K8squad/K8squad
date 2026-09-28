@@ -333,7 +333,19 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	spanAttrs = append(spanAttrs, attribute.Bool("request.is_root_span", true))
 	ctx, span := telemetry.Tracer().Start(ctx, "run.reconcile", trace.WithAttributes(spanAttrs...))
 	var finalStep reconcile.Step
+	// ISI-5145 poll-loop noise: a Run in flight is re-driven every ~2s requeue,
+	// and every pass that advances NO durable step is pure poll noise. Such a
+	// pass sets noopTick, and the deferred hook stamps AttrReconcileNoop so the
+	// export pipeline (telemetry.dropNoopReconcile) drops the span — no-op passes
+	// open no child spans, so nothing is orphaned. An errored pass is always
+	// kept (worth a span, and the noop stamp is suppressed below), and the poll
+	// CADENCE stays visible as the ksquad.controller.reconcile.duration count
+	// that cphealth records every pass.
+	var noopTick bool
 	defer func() {
+		if noopTick && err == nil {
+			span.SetAttributes(attribute.Bool(telemetry.AttrReconcileNoop, true))
+		}
 		telemetry.SetSpanOutcome(span, reconcile.OutcomeFrom(finalStep, err), err)
 		span.End()
 	}()
@@ -353,9 +365,11 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		// Not enrolled in coord (work item absent or ref dangling): nothing to
 		// drive. The projector reports Pending; re-creating coordination rows
 		// here would invent a work item that does not exist (ADR-001).
+		noopTick = true
 		return ctrl.Result{}, nil
 	}
 	if reconcile.IsTerminal(cs.Step) {
+		noopTick = true
 		return ctrl.Result{}, nil // absorbing (AC5): the projector has it
 	}
 
@@ -427,6 +441,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			return ctrl.Result{}, fmt.Errorf("rundrive: renew claim for %s: %w", req.NamespacedName, err)
 		}
 		if !ok {
+			noopTick = true
 			return ctrl.Result{RequeueAfter: continueDelay}, nil
 		}
 	} else if cs.ItemState == coord.DefaultProdConfig().ClaimableState || cs.ItemState == coord.DefaultProdConfig().ClaimedState {
@@ -441,6 +456,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			// Live foreign lease (contended) or a lane change raced us —
 			// nothing changed; re-read on the next pass. A short step, not a
 			// poll: contention is transient by the §6.2 guard design.
+			noopTick = true
 			return ctrl.Result{RequeueAfter: continueDelay}, nil
 		}
 	} else {
@@ -450,6 +466,7 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		slog.InfoContext(ctx, "rundrive: work item not claimable; absorbing",
 			"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
 			"work_item.state", cs.ItemState)
+		noopTick = true
 		return ctrl.Result{}, nil
 	}
 
@@ -473,18 +490,30 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 	}
 	if err := reconcile.Reconcile(effects, store, opts); err != nil {
 		if errors.Is(err, errSandboxPending) {
+			// Waiting on the sandbox pod to come up — the dominant poll loop
+			// (ISI-5145). No step advanced this pass; drop the span.
+			noopTick = true
 			return r.requeueSandboxPending(ctx, runID), nil
 		}
 		if errors.Is(err, errEndpointSlotBusy) {
+			// Parked behind a busy model-endpoint slot: the wait condition is
+			// stamped idempotently, no durable step moves — a poll tick.
+			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
 		}
 		return ctrl.Result{}, fmt.Errorf("rundrive: drive %s: %w", req.NamespacedName, err)
 	}
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
 		if errors.Is(err, errSandboxPending) {
+			// Waiting on the sandbox pod to come up — the dominant poll loop
+			// (ISI-5145). No step advanced this pass; drop the span.
+			noopTick = true
 			return r.requeueSandboxPending(ctx, runID), nil
 		}
 		if errors.Is(err, errEndpointSlotBusy) {
+			// Parked behind a busy model-endpoint slot: the wait condition is
+			// stamped idempotently, no durable step moves — a poll tick.
+			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
 		}
 		// An infrastructure error mid-effect must not read as "applied": requeue.
@@ -508,8 +537,15 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 		finalStep = after
 		return ctrl.Result{}, nil // done: succeeded/failed/cancelled
 	default:
-		// Non-terminal after a bounded drive: spin guard hit or contention —
-		// re-read the world on the next pass.
+		// Non-terminal after a bounded drive. Reflect the resolved step on the
+		// span's outcome, and if it is the SAME step we entered on (spin guard
+		// hit or contention — the level-triggered running-wait poll), this pass
+		// advanced nothing: it is a changeless poll tick (ISI-5145). A pass that
+		// DID move the step (e.g. claiming → dispatching) keeps its span.
+		finalStep = after
+		if after == cs.Step {
+			noopTick = true
+		}
 		return ctrl.Result{RequeueAfter: continueDelay}, nil
 	}
 }
