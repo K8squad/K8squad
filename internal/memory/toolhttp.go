@@ -29,6 +29,10 @@ type ToolHTTP struct {
 	read    *ReadService
 	write   *WriteService
 	discuss DiscussionWriter
+	// mentions is the optional dispatch-on-mention wiring (ISI-5125): when set, a reply posted through
+	// discussion_post fires the @-mention trigger and carries the loop-guard hop, symmetric with the REST
+	// handler. Nil ⇒ the tool posts exactly as before (no dispatch, no stamp). See WithDiscussionDispatch.
+	mentions *DiscussionDispatch
 }
 
 // DiscussionWriter is the minimal seam the discussion_post tool depends on: the two authored-write
@@ -47,6 +51,15 @@ type DiscussionWriter interface {
 // before Stories 6.3 / 6.4.
 func NewToolHTTP(read *ReadService, write *WriteService, discuss DiscussionWriter) *ToolHTTP {
 	return &ToolHTTP{read: read, write: write, discuss: discuss}
+}
+
+// WithDiscussionDispatch wires dispatch-on-mention parity onto the discussion_post tool (ISI-5125): a
+// reply posted via the tool then fires the @-mention trigger and auto-stamps the loop-guard hop, exactly
+// like the REST endpoint. A nil dispatch (the default, or a DB-less/cluster-less deployment) leaves the
+// tool coordination-free. Returns the receiver for chaining at construction.
+func (h *ToolHTTP) WithDiscussionDispatch(dispatch *DiscussionDispatch) *ToolHTTP {
+	h.mentions = dispatch
+	return h
 }
 
 // Mount registers the tool endpoints on the given mux.
@@ -354,11 +367,18 @@ func (h *ToolHTTP) discussionPost(w http.ResponseWriter, r *http.Request) {
 		}
 		parentID = &pid
 	}
-	msg, err := h.discuss.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID, nil, nil, nil)
+	// ISI-5125 (loop guard): auto-stamp the loop-guard hop for an agent reply from within a dispatched
+	// thread-run BEFORE the write, from the Run's server-stamped identity — symmetric with the REST
+	// handler's stampReplyHop. Nil dispatch / non-run post ⇒ nil payload, exactly as before.
+	payload := h.mentions.stampReplyHop(r.Context(), auth)
+	msg, err := h.discuss.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID, nil, nil, payload)
 	if err != nil {
 		writeDiscussionErr(w, err)
 		return
 	}
+	// ISI-5125: after the row commits, fire dispatch-on-mention so a @-mention in a tool-posted reply
+	// dispatches the named agent — parity with the REST postMessage path. Best-effort (the row is durable).
+	h.mentions.dispatchMentions(r.Context(), projectID, auth, msg)
 	writeJSON(w, msg)
 }
 

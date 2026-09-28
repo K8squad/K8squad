@@ -48,6 +48,11 @@ type ToolMCP struct {
 	// call). See agentauthor.go (TokenCapabilityResolver) and pkg/mcpauthtoken.
 	tokenAuth AuthoringTokenVerifier
 	tokenCaps CapabilityResolver
+	// dispatch is the optional dispatch-on-mention wiring (ISI-5125): when set, a reply posted through the
+	// discussion_post MCP tool fires the @-mention trigger and carries the loop-guard hop, symmetric with
+	// the REST handler. Nil ⇒ the tool posts exactly as before. See WithDiscussionDispatch. Named `mentions`
+	// (not `dispatch`) to avoid colliding with the JSON-RPC dispatch method below.
+	mentions *DiscussionDispatch
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -71,6 +76,15 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 	m.author = author
 	m.dispatcher = dispatcher
 	m.caps = caps
+	return m
+}
+
+// WithDiscussionDispatch wires dispatch-on-mention parity onto the discussion_post MCP tool (ISI-5125): a
+// reply posted via the tool then fires the @-mention trigger and auto-stamps the loop-guard hop, exactly
+// like the REST endpoint. A nil dispatch (the default, or a DB-less/cluster-less deployment) leaves the
+// tool coordination-free. Returns the receiver for chaining at construction.
+func (m *ToolMCP) WithDiscussionDispatch(dispatch *DiscussionDispatch) *ToolMCP {
+	m.mentions = dispatch
 	return m
 }
 
@@ -677,10 +691,17 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 		}
 		parentID = &pid
 	}
-	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID, nil, nil, nil)
+	// ISI-5125 (loop guard): auto-stamp the loop-guard hop for an agent reply from within a dispatched
+	// thread-run BEFORE the write, from the Run's server-stamped identity — symmetric with the REST
+	// handler's stampReplyHop. Nil dispatch / non-run post ⇒ nil payload, exactly as before.
+	payload := m.mentions.stampReplyHop(ctx, auth)
+	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID, nil, nil, payload)
 	if err != nil {
 		return toolError(err.Error())
 	}
+	// ISI-5125: after the row commits, fire dispatch-on-mention so a @-mention in a tool-posted reply
+	// dispatches the named agent — parity with the REST postMessage path. Best-effort (the row is durable).
+	m.mentions.dispatchMentions(ctx, projectID, auth, msg)
 	return toolResult(msg)
 }
 

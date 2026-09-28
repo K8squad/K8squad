@@ -1,8 +1,9 @@
-package apiserver
+package mentiondispatch
 
-// Run-minting coverage for dispatch-on-mention (ISI-5116). The dispatcher is exercised against fakes —
-// no Postgres — so these ride the default unit lane. The DB-backed guarantees (board-hide filter,
-// (message,agent) idempotency at the SQL layer) are covered by the chaos-tagged contract tests.
+// Run-minting coverage for dispatch-on-mention (ISI-5116; relocated from internal/apiserver in ISI-5125).
+// The dispatcher is exercised against fakes — no Postgres — so these ride the default unit lane. The
+// DB-backed guarantees (board-hide filter, (message,agent) idempotency at the SQL layer) are covered by
+// the chaos-tagged contract tests.
 
 import (
 	"context"
@@ -31,10 +32,6 @@ func (f *fakeCreate) CreateWorkItem(_ context.Context, in coord.CreateWorkItemIn
 	return f.rec, nil
 }
 
-func (f *fakeCreate) UpdateWorkItem(_ context.Context, _ string, _ coord.UpdateWorkItemInput) (coord.WorkItemRecord, error) {
-	return coord.WorkItemRecord{}, nil
-}
-
 type fakeDispatch struct {
 	calls []coord.RequestDispatchInput
 	err   error
@@ -50,8 +47,8 @@ func (f *fakeDispatch) RequestDispatch(_ context.Context, in coord.RequestDispat
 
 type fakeRefs struct{ uid, team string }
 
-func (f fakeRefs) ResolveProjectRef(_ context.Context, _ string) (ProjectRefResolution, error) {
-	return ProjectRefResolution{UID: f.uid, TeamUID: f.team}, nil
+func (f fakeRefs) ResolveProject(_ context.Context, _ string) (ResolvedProject, error) {
+	return ResolvedProject{UID: f.uid, TeamUID: f.team}, nil
 }
 
 type fakeLedger struct {
@@ -95,8 +92,8 @@ func (l *fakeLedger) HopForDispatchedRun(_ context.Context, _ string) (int, bool
 	return 0, false, nil
 }
 
-func newTestDispatcher(fc *fakeCreate, fd *fakeDispatch, fl *fakeLedger, marks *[]string) *mentionDispatcher {
-	return &mentionDispatcher{
+func newTestDispatcher(fc *fakeCreate, fd *fakeDispatch, fl *fakeLedger, marks *[]string) *dispatcher {
+	return &dispatcher{
 		create:   fc,
 		dispatch: fd,
 		refs:     fakeRefs{uid: "proj-uid", team: "team-uid"},

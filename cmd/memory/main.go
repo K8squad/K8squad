@@ -30,6 +30,7 @@ import (
 	"github.com/K8squad/K8squad/internal/discussionindex"
 	"github.com/K8squad/K8squad/internal/handoffmirror"
 	"github.com/K8squad/K8squad/internal/memory"
+	"github.com/K8squad/K8squad/internal/mentiondispatch"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 )
@@ -143,6 +144,22 @@ func main() {
 		defer stopCache()
 		teamResolver = memory.NewClientTeamAgentResolver(reader)
 		log.Printf("ksquad-memory: Team-agent resolver ready (informer cache synced) — work_item_assign enabled")
+
+		// ISI-5125: dispatch-on-mention parity for the discussion_post tool. The tool runs in THIS process
+		// and posts via discussion.Store directly, so — without this — a @-mention in a tool-posted reply
+		// fired neither the run-minting trigger nor the loop-guard hop stamp the REST endpoint fires
+		// (ISI-5108/5116). We reuse the SAME run-minting implementation (internal/mentiondispatch) the
+		// apiserver wires, over the coord board seams + this cache's project resolver, so the two edges
+		// cannot drift. Fail-open, matching the rest of cmd/memory: any setup problem leaves dispatch off
+		// and the tool posts exactly as before.
+		refs := mentiondispatch.NewClientProjectResolver(reader)
+		if dd := openDiscussionDispatch(cfg.DatabaseURL, teamResolver, refs); dd != nil {
+			tools.WithDiscussionDispatch(dd)
+			mcpTools.WithDiscussionDispatch(dd)
+			log.Printf("ksquad-memory: discussion_post dispatch-on-mention parity wired (@-mention → thread-run + loop-guard hop stamp; opt-out degrades — no presence on the tool path; ISI-5125)")
+		} else {
+			log.Printf("ksquad-memory: discussion_post dispatch-on-mention off (coord seams unavailable) — tool posts stay coordination-free")
+		}
 	}
 	if author, dispatcher := openAgentAuthor(cfg.DatabaseURL, teamResolver); author != nil {
 		mcpTools.WithWorkItemAuthor(author, dispatcher, memory.NewHeaderCapabilityResolver())
@@ -265,6 +282,37 @@ func openAgentAuthor(dsn string, resolver coord.TeamAgentResolver) (memory.WorkI
 		return writes, nil
 	}
 	return writes, dispatch
+}
+
+// openDiscussionDispatch builds the dispatch-on-mention wiring for the discussion_post tool (ISI-5125)
+// over the shared Postgres + the Team-CR informer cache, fail-open exactly like openAgentAuthor: any setup
+// problem returns nil so the caller leaves the tool coordination-free rather than taking down the memory
+// service. It reuses the SAME run-minting implementation (internal/mentiondispatch) the apiserver wires —
+// coord.CreateWorkItem + coord.RequestDispatch over the trusted "discussion-dispatch" principal, the source
+// board-hide, and the discussion.mention_dispatch ledger — so the REST and MCP-tool edges cannot drift. The
+// TeamAgentResolver backs both the dispatch store (agent-∈-Team authority) and the @-mention roster; the
+// project resolver (informer cache) maps the room slug to the coord Project/Team UIDs. The db handle lives
+// for the process lifetime (it backs the tool surface), so it is intentionally not closed here.
+func openDiscussionDispatch(dsn string, resolver coord.TeamAgentResolver, refs mentiondispatch.ProjectResolver) *memory.DiscussionDispatch {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: discussion_post dispatch disabled (open db: %v)", err)
+		return nil
+	}
+	writes, err := coord.NewWorkItemWriteStore(db)
+	if err != nil {
+		log.Printf("ksquad-memory: discussion_post dispatch disabled (write store: %v)", err)
+		return nil
+	}
+	dispatch, err := coord.NewWorkItemDispatchStore(db, resolver)
+	if err != nil {
+		log.Printf("ksquad-memory: discussion_post dispatch disabled (dispatch store: %v)", err)
+		return nil
+	}
+	dispatcher := mentiondispatch.New(writes, dispatch, refs, db)
+	hop := mentiondispatch.NewReplyHopResolver(db)
+	roster := memory.NewCoordRosterResolver(resolver)
+	return memory.NewDiscussionDispatch(dispatcher, hop, roster)
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is
