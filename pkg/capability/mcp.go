@@ -125,6 +125,14 @@ const defaultCredentialKey = "token"
 // here to avoid a lib→controller import.
 const authoringMCPServerName = "ksquad-memory-authoring"
 
+// discussionMCPServerName mirrors pkg/controller/team.DiscussionMCPServerName.
+// A guard test (discussion_name_guard_test.go) pins the two together.
+const discussionMCPServerName = "ksquad-memory-discussion"
+
+// discussionAllowedTools is the two-verb surface the built-in discussion server
+// exposes. Referenced by the guard test to detect drift from memory constants.
+var discussionAllowedTools = []string{"discussion_search", "discussion_post"}
+
 // ResolveMCP resolves a Run's MCP demand fail-closed (ADR-044 step 4):
 //
 //   - every referenced MCPServer must exist (admission cache may be stale);
@@ -182,6 +190,17 @@ func ResolveMCP(ctx context.Context, reader client.Reader, run *api.Run, reqs *R
 		}
 	}
 
+	// ADR-0024c D3 (ISI-5138): discussion-reply auto-injection. A Run minted
+	// for a source=discussion work item (label ksquad.io/work-item-source=discussion,
+	// stamped by intake D2) gets discussion_search + discussion_post injected from
+	// the built-in ksquad-memory-discussion MCPServer (D1). Fail-closed: a missing
+	// D1 server or empty observedTools rejects assembly loudly.
+	if isDiscussionRun(run) {
+		if err := injectDiscussionEndpoint(ctx, reader, run, reqs, &endpoints, &servers); err != nil {
+			return nil, nil, err
+		}
+	}
+
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].Name < endpoints[j].Name })
 	sort.Slice(servers, func(i, j int) bool { return servers[i].Name < servers[j].Name })
 	return endpoints, servers, nil
@@ -210,6 +229,44 @@ func injectAuthoringEndpoint(ctx context.Context, reader client.Reader, run *api
 				Details: toolchain.DetailsFor(run)}
 		}
 		return fmt.Errorf("read built-in authoring mcpserver %s (fail-closed): %w", key, err)
+	}
+
+	ep, err := endpointFor(run, reqs, key, &server)
+	if err != nil {
+		return err
+	}
+	*endpoints = append(*endpoints, *ep)
+	*servers = append(*servers, server.DeepCopy())
+	return nil
+}
+
+// isDiscussionRun returns true when the Run was minted for a
+// source='discussion' work item (D2 stamps ksquad.io/work-item-source=discussion
+// on the Run). The label check keeps pkg/capability free of coord DB reads.
+func isDiscussionRun(run *api.Run) bool {
+	return run.Labels[api.LabelWorkItemSource] == "discussion"
+}
+
+// injectDiscussionEndpoint appends the built-in memory-discussion endpoint to a
+// source=discussion thread-run's resolved set (ADR-0024c D3, ISI-5138). Mirrors
+// injectAuthoringEndpoint: fail-closed on missing CR or empty observedTools,
+// no-op if the built-in is already in MCPRefs (reserved name, never wired twice).
+func injectDiscussionEndpoint(ctx context.Context, reader client.Reader, run *api.Run, reqs *Requirements, endpoints *[]Endpoint, servers *[]*api.MCPServer) error {
+	for i := range *endpoints {
+		if (*endpoints)[i].Name == discussionMCPServerName {
+			return nil // already resolved via MCPRefs — do not double-inject
+		}
+	}
+
+	key := run.Namespace + "/" + discussionMCPServerName
+	var server api.MCPServer
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: discussionMCPServerName}, &server); err != nil {
+		if isNotFound(err) {
+			return &MCPError{Server: key,
+				Reason:  "built-in memory-discussion MCPServer not found; the Team controller provisions it per squad namespace (ADR-0024c D1) — wait for reconciliation or check the Team",
+				Details: toolchain.DetailsFor(run)}
+		}
+		return fmt.Errorf("read built-in discussion mcpserver %s (fail-closed): %w", key, err)
 	}
 
 	ep, err := endpointFor(run, reqs, key, &server)

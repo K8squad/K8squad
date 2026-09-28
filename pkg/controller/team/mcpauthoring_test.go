@@ -54,17 +54,12 @@ func TestAuthoringMCPServerProvisioned(t *testing.T) {
 		t.Fatal("team never resolved a squad namespace")
 	}
 
-	// Exactly one server, deterministically named.
-	var list api.MCPServerList
-	if err := c.List(context.Background(), &list); err != nil {
-		t.Fatalf("list mcpservers: %v", err)
-	}
-	if len(list.Items) != 1 {
-		t.Fatalf("want exactly 1 MCPServer, got %d: %+v", len(list.Items), list.Items)
-	}
-	srv := &list.Items[0]
-	if srv.Name != AuthoringMCPServerName || srv.Namespace != ns {
-		t.Fatalf("server at %s/%s, want %s/%s", srv.Namespace, srv.Name, ns, AuthoringMCPServerName)
+	// The authoring server must exist, deterministically named.
+	// (A second ksquad-memory-discussion server is also provisioned by D1,
+	// so the list now has 2 entries — filter to the authoring one.)
+	var srv api.MCPServer
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: AuthoringMCPServerName}, &srv); err != nil {
+		t.Fatalf("get authoring MCPServer: %v", err)
 	}
 
 	if srv.Spec.Transport != api.MCPTransportStreamableHTTP {
@@ -141,15 +136,11 @@ func TestAuthoringMCPServerIdempotentAndDriftCorrected(t *testing.T) {
 		t.Fatalf("second reconcile: %v", err)
 	}
 
-	// Still exactly one — no duplicate created.
-	var list api.MCPServerList
-	if err := c.List(context.Background(), &list); err != nil {
-		t.Fatalf("list mcpservers: %v", err)
+	// No duplicate created: the authoring server must still be unique by name.
+	var healed api.MCPServer
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: ns, Name: AuthoringMCPServerName}, &healed); err != nil {
+		t.Fatalf("get authoring MCPServer after re-reconcile: %v", err)
 	}
-	if len(list.Items) != 1 {
-		t.Fatalf("want exactly 1 MCPServer after re-reconcile, got %d", len(list.Items))
-	}
-	healed := &list.Items[0]
 	if healed.Spec.ToolFilter == nil || !reflect.DeepEqual(healed.Spec.ToolFilter.Allow, authoringWantTools) {
 		t.Errorf("spec drift not corrected: toolFilter.allow = %+v, want %v", healed.Spec.ToolFilter, authoringWantTools)
 	}

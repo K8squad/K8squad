@@ -51,6 +51,11 @@ const (
 	// story 15.5 (Run identity propagation); the constant lands here so the
 	// annotation vocabulary is defined once.
 	InitiatedByAnnotation = "ksquad.io/initiated-by"
+
+	// LabelWorkItemSource is the Run label carrying coord.work_item.source so
+	// k8s-only packages can key on it without reading the coord DB
+	// (ADR-0024c D2, ISI-5138). Value examples: "board", "discussion".
+	LabelWorkItemSource = "ksquad.io/work-item-source"
 )
 
 // Cache field-index keys for RBAC scope queries (Epic 15.3). These are the

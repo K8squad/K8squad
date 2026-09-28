@@ -90,6 +90,7 @@ const DefaultIntakeMaxPerPass = 32
 // the operator's intake decision rather than defaulting it away.
 const IntakePrincipal = "ksquad-intake"
 
+
 // IntakeItem is one due board ticket: identifiers only (the FR-B3 rule above).
 type IntakeItem struct {
 	ID        string // coord.work_item.id (uuid)
@@ -100,6 +101,11 @@ type IntakeItem struct {
 	// membership defensively — a stale choice (composition changed since dispatch)
 	// falls back rather than dispatching to an agent no longer on the team.
 	RequestedAgent string
+	// Source is the coord.work_item.source value ("board", "discussion", …).
+	// Carried to buildRunForAgent to stamp api.LabelWorkItemSource on the minted
+	// Run (ADR-0024c D2, ISI-5138) — the capability gate (pkg/capability) uses
+	// the label rather than querying coord so it never imports the coord DB.
+	Source string
 }
 
 // IntakeSource is the board read-side seam, minimal so tests bind a fake (the
@@ -148,7 +154,7 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	// Run-mint path) is still selected for its first dispatch. A source='board'
 	// item is untouched: the NOT-clause is false, so ISI-4556 re-arm stands.
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent
+		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND NOT (wi.source = 'discussion'
@@ -165,10 +171,12 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	for rows.Next() {
 		var it IntakeItem
 		var requestedAgent sql.NullString
-		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent); err != nil {
+		var source sql.NullString
+		if err := rows.Scan(&it.ID, &it.TeamID, &it.ProjectID, &requestedAgent, &source); err != nil {
 			return nil, fmt.Errorf("rundrive.intake: scan due work item: %w", err)
 		}
 		it.RequestedAgent = requestedAgent.String // "" when NULL
+		it.Source = source.String                 // "" when NULL (treated as "board")
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -599,6 +607,14 @@ func (i *Intake) buildRunForAgent(ctx context.Context, item IntakeItem, team api
 		meta.Annotations = make(map[string]string)
 	}
 	telemetry.Inject(ctx, meta.Annotations)
+	// ADR-0024c D2 (ISI-5138): stamp source onto the Run label so the
+	// capability gate (pkg/capability) can key on it without reading coord.
+	if item.Source != "" {
+		if meta.Labels == nil {
+			meta.Labels = make(map[string]string)
+		}
+		meta.Labels[api.LabelWorkItemSource] = item.Source
+	}
 
 	return &api.Run{
 		ObjectMeta: meta,
