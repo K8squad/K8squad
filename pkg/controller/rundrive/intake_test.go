@@ -138,10 +138,14 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent"}).
 		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder").
 		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT id::text, team_id::text, project_id::text, requested_agent
-		  FROM coord.work_item
-		 WHERE state = 'todo' AND team_id IS NOT NULL
-		 ORDER BY created_at, id
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent
+		  FROM coord.work_item wi
+		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
+		   AND NOT (wi.source = 'discussion'
+		            AND EXISTS (SELECT 1 FROM coord.claim c
+		                         WHERE c.work_item_id = wi.id
+		                           AND c.reconcile_step IN ('succeeded','failed','cancelled')))
+		 ORDER BY wi.created_at, wi.id
 		 LIMIT $1`)).
 		WithArgs(7).
 		WillReturnRows(rows)
@@ -1059,7 +1063,8 @@ func TestSQLIntakeSourceRearmSettled(t *testing.T) {
 		   AND EXISTS (
 		         SELECT 1 FROM coord.work_item wi
 		          WHERE wi.id = coord.claim.work_item_id
-		            AND wi.state = 'todo')
+		            AND wi.state = 'todo'
+		            AND wi.source IS DISTINCT FROM 'discussion')
 		 RETURNING fence_token`)
 	auditQ := regexp.QuoteMeta(`INSERT INTO coord.audit_log
 		       (work_item_id, run_id, event_type, principal, fence_token, to_state)

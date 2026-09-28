@@ -27,7 +27,10 @@
 //   - failed    → todo (back to the dispatchable lane: honest "not being
 //     worked, needs attention". NOTE: intake currently suppresses items whose
 //     workItemRef still owns a Run CR, so this is a board state, not an auto
-//     re-queue — the re-dispatch gap is tracked separately.)
+//     re-queue — the re-dispatch gap is tracked separately.) EXCEPTION
+//     (ISI-5137/ADR-0024c §4): a source='discussion' thread-run is single-shot,
+//     so its failed run maps to `cancelled` (terminal), not `todo` — a failed
+//     reply attempt must be a dead end, never an unbounded PAID re-dispatch.
 //   - cancelled → cancelled (TERMINAL, ISI-4489/Q3): a kill is human-initiated
 //     and the ticket is done for good — it lands on the Cancelled terminal lane,
 //     no longer bouncing back to todo. `done↔cancelled` remains the one forbidden
@@ -141,6 +144,32 @@ func SettleTerminalLane(ctx context.Context, tx *sql.Tx, workItemID, runID, prin
 	// by the run_terminal audit and the summary below; the move to done is the
 	// human's.
 	lane = SettleLaneOf(terminalStep)
+
+	// ISI-5137 / ADR-0024c §4 — a source='discussion' thread-run is single-shot.
+	// SettleLaneOf maps a failed run back to 'todo' (the ISI-4556 re-dispatchable
+	// lane); for a board-hidden discussion item that lane re-arms an unbounded
+	// PAID re-dispatch loop for a reply attempt that already failed. On the FIRST
+	// terminal run of a discussion item the item goes to the 'cancelled' terminal
+	// lane instead — a failed reply is a dead end, not a paid loop. Only the
+	// failed→'todo' mapping needs the override: 'cancelled' is already terminal
+	// and succeeded owns no engine lane (it stays in_progress, ISI-4298 pin —
+	// and carries a terminal claim, so intake's single-shot scan never re-selects
+	// it either). Gated on the coord.work_item.source column (migration 0027).
+	if lane == "todo" {
+		var src sql.NullString
+		switch err := tx.QueryRowContext(ctx,
+			`SELECT source FROM coord.work_item WHERE id = $1::uuid`, workItemID).Scan(&src); err {
+		case nil, sql.ErrNoRows:
+			// proceed; a missing row leaves the lane and the WHERE-guarded UPDATE
+			// below no-ops it anyway.
+		default:
+			return "", false, fmt.Errorf("coord.SettleTerminalLane: read source: %w", err)
+		}
+		if src.String == "discussion" {
+			lane = "cancelled"
+		}
+	}
+
 	if lane != "" {
 		res, err := tx.ExecContext(ctx, `
 			UPDATE coord.work_item
