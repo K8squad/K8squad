@@ -62,6 +62,19 @@ var modelWindows = []struct {
 	{"o1", 200000},
 	{"gemini-1.5", 1000000},
 	{"gemini", 1000000},
+	// qwen3 backs the entire local bmad-squad/sympozium-squad fleet
+	// (agent CR spec.model = "qwen3.8:latest", "qwen3.6:latest", …).
+	// Before this entry every qwen agent fell to DefaultContextWindow (8192),
+	// so the must-include tier (~8.3K tokens) overflowed an 8170-usable window
+	// and EVERY run failed closed at context assembly (ISI-5113). 32768 is
+	// qwen3's documented native window — a conservative, portable floor: the
+	// live Ollama host (10.0.0.185) actually serves the full 262144, so this
+	// under-budgets by design (§8.5: under-budget is safe, over-budget silently
+	// breaks the runtime) while giving must-include 4× headroom. A precise
+	// per-endpoint window belongs in the Agent Card / ModelEndpoint resolution
+	// flagged above, not in this family-keyed catalog.
+	{"qwen3", 32768},
+	{"qwen", 32768},
 }
 
 // WindowForModel resolves a model id to its context window in tokens. An empty
