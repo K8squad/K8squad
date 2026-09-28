@@ -263,21 +263,17 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 	return targets, dropped
 }
 
-// dispatchMentions is the post-commit hook postMessage calls: it resolves the auto-dispatch targets
-// for a just-committed message and emits each through the dispatcher seam. It is best-effort by
-// construction — the message is already durable, so a dispatch failure never fails the HTTP write (the
-// human's post must not be lost because a paid run could not be minted). No-ops when the feature is
-// unwired (nil dispatcher/roster), keeping DB-less runs coordination-free exactly as before.
-func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth AuthorContext, msg *Message) {
-	if h.dispatcher == nil || h.org == nil || msg == nil {
+// DispatchMentionsFrom is the shared post-commit trigger BOTH room write edges call (ISI-5125): the
+// apiserver REST Handler.postMessage and the cmd/memory discussion_post MCP tool (which runs in a separate
+// process and posts via discussion.Store directly). It resolves the auto-dispatch targets for a
+// just-committed message against the supplied roster and emits each through the dispatcher seam. Hoisting
+// it here — with the seams and the already-resolved roster passed in — is what keeps the two edges from
+// drifting: neither re-implements the guardrail application or the MentionDispatch field wiring. It is
+// best-effort by construction (the message is already durable, so a dispatch failure never fails the
+// write) and no-ops when the dispatcher is nil (an unwired room stays coordination-free).
+func DispatchMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, roster []TeamAgent, projectID string, auth AuthorContext, msg *Message) {
+	if dispatcher == nil || msg == nil {
 		return
-	}
-	// The dispatch scope mirrors the roster right-rail (ISI-5107): admin ⇒ the project namespace's
-	// agents, everyone else ⇒ their own Team. An agent-authored trigger is never admin, so it resolves
-	// its own squad — the same tenancy the room lives in.
-	roster, err := h.projectRoster(ctx, projectID, auth)
-	if err != nil {
-		return // the roster is a projection, not a fence — a read failure degrades to no dispatch
 	}
 	targets, _ := resolveMentionTargets(msg, roster)
 	for _, t := range targets {
@@ -287,25 +283,48 @@ func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth A
 		t.TeamID = auth.TeamID
 		t.TriggeredByPrincipal = auth.Principal
 		t.TriggeredByAgentID = auth.AgentID
-		_ = h.dispatcher.DispatchMention(ctx, t) // best-effort: the row is already committed
+		_ = dispatcher.DispatchMention(ctx, t) // best-effort: the row is already committed
 	}
 }
 
-// stampReplyHop (ISI-5116) returns the payload a message should be stored with, auto-stamping the
-// loop-guard hop for an agent-authored reply posted from within a dispatched thread-run. The hop is
-// derived from the Run's server-stamped identity (auth.RunID) via the dispatch ledger — NOT from an
-// agent-supplied number — so a misbehaving run cannot reset its own hop to escape the loop guard. A
-// non-agent post, a post outside a Run, an unwired resolver, or a Run that is not a thread-run all pass
-// the payload through unchanged (a normal post stays hop 0). Best-effort: a resolver error also passes
-// through — the reply is already valid, and the other three guardrails still bound the blast radius.
-func (h *Handler) stampReplyHop(ctx context.Context, auth AuthorContext, payload *json.RawMessage) *json.RawMessage {
-	if auth.AgentID == nil || auth.RunID == nil || h.hopResolver == nil {
+// StampReplyHopFrom is the shared pre-write reply-hop stamp BOTH room write edges call (ISI-5125). It
+// returns the payload a message should be stored with, auto-stamping the loop-guard hop for an
+// agent-authored reply posted from within a dispatched thread-run. The hop is derived from the Run's
+// server-stamped identity (auth.RunID) via the dispatch ledger — NOT from an agent-supplied number — so a
+// misbehaving run cannot reset its own hop to escape the loop guard. A non-agent post, a post outside a
+// Run, an unwired resolver, or a Run that is not a thread-run all pass the payload through unchanged (a
+// normal post stays hop 0). Best-effort: a resolver error also passes through — the reply is already valid,
+// and the other three guardrails still bound the blast radius.
+func StampReplyHopFrom(ctx context.Context, resolver ReplyHopResolver, auth AuthorContext, payload *json.RawMessage) *json.RawMessage {
+	if auth.AgentID == nil || auth.RunID == nil || resolver == nil {
 		return payload
 	}
-	hop, ok, err := h.hopResolver.HopForDispatchedRun(ctx, *auth.RunID)
+	hop, ok, err := resolver.HopForDispatchedRun(ctx, *auth.RunID)
 	if err != nil || !ok {
 		return payload
 	}
 	stamped := StampDispatchHop(payload, hop)
 	return &stamped
+}
+
+// dispatchMentions is the REST handler's post-commit hook: it resolves the room roster (admin ⇒ the
+// project namespace's agents, everyone else ⇒ their own Team — an agent-authored trigger is never admin,
+// so it resolves its own squad, the tenancy the room lives in) and delegates to the shared
+// DispatchMentionsFrom so the REST and MCP-tool edges cannot drift. No-ops when unwired (nil
+// dispatcher/roster source).
+func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth AuthorContext, msg *Message) {
+	if h.dispatcher == nil || h.org == nil || msg == nil {
+		return
+	}
+	roster, err := h.projectRoster(ctx, projectID, auth)
+	if err != nil {
+		return // the roster is a projection, not a fence — a read failure degrades to no dispatch
+	}
+	DispatchMentionsFrom(ctx, h.dispatcher, roster, projectID, auth, msg)
+}
+
+// stampReplyHop (ISI-5116) is the REST handler's pre-write hook; it delegates to the shared
+// StampReplyHopFrom (ISI-5125) so the REST and MCP-tool edges stamp the loop-guard hop identically.
+func (h *Handler) stampReplyHop(ctx context.Context, auth AuthorContext, payload *json.RawMessage) *json.RawMessage {
+	return StampReplyHopFrom(ctx, h.hopResolver, auth, payload)
 }
