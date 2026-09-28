@@ -142,29 +142,38 @@ function classified(over: Partial<ClassifiedEntry>): ClassifiedEntry {
 }
 
 describe("This-run / All scope filter", () => {
-  const runId = "intake-ef5b2075-r15";
+  const runId = "intake-ef5b2075-r83";
+  // The operator stamps `[run <first-8-of-UID>]`; identity is by UID, NOT the
+  // run name/label (which embed the work-item ref). This run's UID → token 51c621b4.
+  const runUid = "51c621b4-aaaa-bbbb-cccc-dddddddddddd";
 
   it("keeps unlabelled entries as this run's own", () => {
-    expect(belongsToRun(classified({ runScope: null }), runId)).toBe(true);
+    expect(belongsToRun(classified({ runScope: null }), runId, runUid)).toBe(true);
   });
 
-  it("keeps entries whose token matches the run label", () => {
-    expect(belongsToRun(classified({ runScope: "r15" }), runId)).toBe(true);
+  it("keeps entries whose token matches THIS run's UID prefix (ISI-5130)", () => {
+    expect(belongsToRun(classified({ runScope: "51c621b4" }), runId, runUid)).toBe(true);
   });
 
-  it("drops entries tagged with a different run", () => {
-    expect(belongsToRun(classified({ runScope: "51c621b4" }), runId)).toBe(false);
+  it("drops sibling-run entries even though the run label is r83", () => {
+    expect(belongsToRun(classified({ runScope: "af093ad5" }), runId, runUid)).toBe(false);
+    // The `rNN` label is NOT the run identity — a marker never carries it.
+    expect(belongsToRun(classified({ runScope: "r83" }), runId, runUid)).toBe(false);
+  });
+
+  it("falls back to the name/label heuristic when no uid is on the wire", () => {
+    expect(belongsToRun(classified({ runScope: "r83" }), runId)).toBe(true);
     expect(belongsToRun(classified({ runScope: "af093ad5" }), runId)).toBe(false);
   });
 
   it("filterByScope=this hides other runs but All keeps everything", () => {
     const entries = [
       classified({ id: "a", runScope: null }),
-      classified({ id: "b", runScope: "r15" }),
-      classified({ id: "c", runScope: "51c621b4" }),
+      classified({ id: "b", runScope: "51c621b4" }),
+      classified({ id: "c", runScope: "af093ad5" }),
     ];
-    expect(filterByScope(entries, "this", runId).map((e) => e.id)).toEqual(["a", "b"]);
-    expect(filterByScope(entries, "all", runId).map((e) => e.id)).toEqual(["a", "b", "c"]);
+    expect(filterByScope(entries, "this", runId, runUid).map((e) => e.id)).toEqual(["a", "b"]);
+    expect(filterByScope(entries, "all", runId, runUid).map((e) => e.id)).toEqual(["a", "b", "c"]);
   });
 });
 

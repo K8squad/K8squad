@@ -641,6 +641,17 @@ func (s *RunsService) populateSteps(ctx context.Context, response *RunDetailResp
 }
 
 // populateThinking reads the Run's thinking/comments from progressmirror comments and LLM interactions.
+//
+// ISI-5130: coord.comment is keyed by work_item_id (the ticket), so a naive read
+// returns EVERY run's progressmirror rows on the work item — sibling runs' tool
+// results and agent narration leak into THIS run's Execution view and get
+// misattributed to it. rundrive.ProgressMirror stamps each row it writes with a
+// `[run <shortRunID>]` prefix, where shortRunID is the first 8 chars of the
+// Run.UID (progressmirror.mirrorBody / shortRunID; the a2a task id cleans back to
+// the Run UID). So we scope the read to rows that either carry no run prefix
+// (ticket/admin conversation, which classifies as CONVERSATION on the FE) or
+// carry THIS run's prefix, and drop rows tagged for other runs. The filter runs
+// in SQL so the LIMIT applies to relevant rows, not to sibling-run noise.
 func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailResponse) error {
 	db, ok := s.db.(*sql.DB)
 	if !ok || db == nil || response.Run.Spec.WorkItemRef == "" {
@@ -650,13 +661,25 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 		return nil
 	}
 
-	// Query coord.comment for progressmirror comments
+	// Query coord.comment for progressmirror comments, run-scoped (ISI-5130).
+	// $2 is this run's prefix as a LIKE pattern ("[run <token>]%"); `[` is not a
+	// LIKE metacharacter so the literal bracket matches. Keep a row when it has no
+	// `[run ` prefix at all (ticket-level conversation) or its prefix is ours.
+	token := shortRunToken(string(response.Run.GetUID()))
+	// When we cannot identify the run (no UID — demo/test paths), fall back to a
+	// pattern that matches every `[run …]` row so scoping is a no-op rather than
+	// silently hiding this run's own narration.
+	mine := "[run %"
+	if token != "" {
+		mine = "[run " + token + "]%"
+	}
 	rows, err := db.QueryContext(ctx, `
 		SELECT author_principal, body, created_at
-		FROM coord.comment 
-		WHERE work_item_id = $1::uuid 
+		FROM coord.comment
+		WHERE work_item_id = $1::uuid
+		  AND (body NOT LIKE '[run %' OR body LIKE $2)
 		ORDER BY created_at ASC
-		LIMIT 20`, response.Run.Spec.WorkItemRef)
+		LIMIT 20`, response.Run.Spec.WorkItemRef, mine)
 	if err != nil {
 		return fmt.Errorf("read comments: %w", err)
 	}
@@ -675,6 +698,18 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 	// getRunDetailInNamespace (activityFromInteraction) so it is not double-listed
 	// here — this function now owns only progressmirror comments (ISI-4811).
 	return nil
+}
+
+// shortRunToken renders the run-scope token that rundrive.ProgressMirror writes
+// into the `[run <id>]` comment prefix (progressmirror.shortRunID): the first 8
+// chars of the Run.UID. Kept as a local mirror of that unexported helper so the
+// apiserver read model can scope coord.comment rows to a run (ISI-5130) without
+// importing the operator's rundrive package.
+func shortRunToken(uid string) string {
+	if len(uid) <= 8 {
+		return uid
+	}
+	return uid[:8]
 }
 
 // runListItem projects a Run into a listing item (reuses org.go pattern)

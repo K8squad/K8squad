@@ -200,16 +200,39 @@ export function runScopeLabel(runId: string): string {
 }
 
 /**
- * Whether an entry belongs to the run currently being viewed. Unlabelled entries
- * (no `[run …]` prefix) are treated as this run's own; a labelled entry belongs
- * only when its token matches the run id or its short label — so r15's stream
- * stops interleaving with 51c621b4 / af093ad5.
+ * The run-scope token the operator stamps into a `[run <id>]` comment prefix:
+ * the first 8 chars of the Run.UID (rundrive.ProgressMirror.shortRunID). This is
+ * the ONLY authoritative key for "does this entry belong to this run" — the run
+ * *name* and its `rNN` label embed the work-item ref, not the UID, so matching a
+ * marker against them can never work (ISI-5130).
  */
-export function belongsToRun(entry: ClassifiedEntry, runId: string): boolean {
+export function runUidToken(uid: string | null | undefined): string {
+  const u = (uid ?? "").trim();
+  return u.length > 8 ? u.slice(0, 8) : u;
+}
+
+/**
+ * Whether an entry belongs to the run currently being viewed. Unlabelled entries
+ * (no `[run …]` prefix) are treated as this run's own. A labelled entry belongs
+ * only when its `[run <token>]` matches THIS run's UID token (`runUid`) — so
+ * r83's stream stops interleaving with sibling runs 51c621b4 / af093ad5.
+ *
+ * `runUid` is the Run.UID from the detail read model. When it is absent (older
+ * payloads that don't carry the uid), we fall back to the legacy name/label
+ * heuristic rather than hiding every labelled entry.
+ */
+export function belongsToRun(
+  entry: ClassifiedEntry,
+  runId: string,
+  runUid?: string | null,
+): boolean {
   const tok = entry.runScope;
   if (!tok) return true;
-  const r = (runId ?? "").toLowerCase();
   const t = tok.toLowerCase();
+  const uidTok = runUidToken(runUid).toLowerCase();
+  if (uidTok) return t === uidTok || uidTok.startsWith(t) || t.startsWith(uidTok);
+  // Legacy fallback (no uid on the wire): match against name / short label.
+  const r = (runId ?? "").toLowerCase();
   const label = runScopeLabel(runId).toLowerCase();
   return r.includes(t) || t === label || t.includes(label) || label.includes(t);
 }
@@ -220,9 +243,10 @@ export function filterByScope(
   entries: ClassifiedEntry[],
   scope: RunScope,
   runId: string,
+  runUid?: string | null,
 ): ClassifiedEntry[] {
   if (scope === "all") return entries;
-  return entries.filter((e) => belongsToRun(e, runId));
+  return entries.filter((e) => belongsToRun(e, runId, runUid));
 }
 
 // ---- execution vs conversation (ISI-4813 P2-C) -----------------------------
