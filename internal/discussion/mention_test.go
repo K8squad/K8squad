@@ -40,13 +40,31 @@ func (f *fakeSearcher) Search(_ context.Context, q search.Query) ([]search.Resul
 	return f.results, f.err
 }
 
-// fakeRoster is the OrgReader seam with canned agents.
+// fakeRoster is the OrgReader seam with canned agents. `agents` backs TeamAgents (the caller's own
+// team); `projectAgents`/`allAgents` back the ISI-5107 admin scopes when set (they fall back to
+// `agents` when nil so pre-5107 tests keep their single-source behaviour).
 type fakeRoster struct {
-	agents []TeamAgent
-	err    error
+	agents        []TeamAgent
+	projectAgents []TeamAgent
+	allAgents     []TeamAgent
+	err           error
 }
 
 func (f *fakeRoster) TeamAgents(_ context.Context, _ uuid.UUID) ([]TeamAgent, error) {
+	return f.agents, f.err
+}
+
+func (f *fakeRoster) ProjectAgents(_ context.Context, _ string) ([]TeamAgent, error) {
+	if f.projectAgents != nil {
+		return f.projectAgents, f.err
+	}
+	return f.agents, f.err
+}
+
+func (f *fakeRoster) AllAgents(_ context.Context) ([]TeamAgent, error) {
+	if f.allAgents != nil {
+		return f.allAgents, f.err
+	}
 	return f.agents, f.err
 }
 

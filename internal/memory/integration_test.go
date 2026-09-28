@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func testStore(t *testing.T) *PgVectorStore {
@@ -341,3 +343,73 @@ func deriveUUIDForTest(prefix, text string) string {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPgVector_SquadIDScopeUnderSimpleProtocol is the ISI-5114 regression (Defect A of ISI-4540). It
+// STRUCTURALLY executes every squad_id-scoped read arm against real pgvector under the SIMPLE query
+// protocol — the exec mode the production pool resolves to behind a transaction-pooling proxy, where
+// pgx interpolates a Go string argument as a `$n::text` literal instead of leaning on the server-side
+// parameter-type inference the default cache_statement mode enjoys. Under that protocol an uncast
+// `WHERE squad_id = $1` predicate resolves to `text = uuid` and dies with SQLSTATE 42883 ("operator
+// does not exist: text = uuid") on 100% of runs, before a single row is scanned — exactly the failure
+// that zeroed out the dispatch pipeline. squad_id / principal_id / run_id / agent_id are uuid columns
+// (migration 0004 kept them uuid; only project_id became text), so the fix is a `::uuid` cast on every
+// squad_id predicate, matching the diary arm.
+//
+// This is deliberately NOT a sqlmock regex assertion: a regex matcher passes a uuid/text mismatch
+// silently (the 42883 / 42P18 lesson). Only a real engine in the reproducing protocol catches a
+// regressed cast — so if any squad_id predicate loses its `::uuid`, this test fails the build.
+func TestPgVector_SquadIDScopeUnderSimpleProtocol(t *testing.T) {
+	dsn := os.Getenv("MEMORY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set MEMORY_TEST_DATABASE_URL to run the pgvector integration test")
+	}
+	ctx := context.Background()
+
+	// Apply migrations / assert readiness once via the normal store (default exec mode).
+	_ = testStore(t)
+
+	// A second pool pinned to the simple protocol — this is the mode that reproduces the 42883 that the
+	// default extended-protocol pool masks via server-side parameter type inference.
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", err)
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("pool (simple protocol): %v", err)
+	}
+	t.Cleanup(pool.Close)
+	store := &PgVectorStore{pool: pool, dim: EmbeddingDim}
+
+	squad, principal := uuid.NewString(), uuid.NewString()
+	agent := uuid.NewString()
+
+	// Write itself uses squad_id in INSERT assignment context (text→uuid assignment cast is legal), so it
+	// is not the defect — but we need a row to read back, and this proves the write path too.
+	rec, err := store.Write(ctx, WriteRequest{
+		SquadID: squad, PrincipalID: principal, AgentID: &agent,
+		Kind: KindDiary, Content: "simple-protocol scope row", Embedding: oneHot(41),
+	})
+	if err != nil {
+		t.Fatalf("write under simple protocol: %v", err)
+	}
+
+	// Search (store.go L180) — the proven ISI-4540 blocker. Uncast squad_id ⇒ 42883 here.
+	if _, err := store.Search(ctx, SearchQuery{SquadID: squad, Embedding: oneHot(41), Limit: 5}); err != nil {
+		t.Fatalf("Search under simple protocol (squad_id ::uuid cast regressed?): %v", err)
+	}
+	// SearchByIDs (store.go L238) — the sibling pinned-read arm.
+	if _, err := store.SearchByIDs(ctx, SearchQuery{SquadID: squad}, []string{rec.ID}); err != nil {
+		t.Fatalf("SearchByIDs under simple protocol (squad_id ::uuid cast regressed?): %v", err)
+	}
+	// ReadChronological (store.go L297) — the diary arm ISI-5110/5109 already cast; guarded here so it
+	// can never regress silently.
+	if _, err := store.ReadChronological(ctx, squad, agent, KindDiary, 10); err != nil {
+		t.Fatalf("ReadChronological under simple protocol (squad_id ::uuid cast regressed?): %v", err)
+	}
+	// SupersedeHandoffMirrors (store.go L352) — the sibling writer-side arm (UPDATE ... WHERE squad_id).
+	if _, err := store.SupersedeHandoffMirrors(ctx, squad, uuid.NewString(), uuid.NewString(), uuid.NewString()); err != nil {
+		t.Fatalf("SupersedeHandoffMirrors under simple protocol (squad_id ::uuid cast regressed?): %v", err)
+	}
+}

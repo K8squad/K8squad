@@ -733,11 +733,54 @@ func (m mentionRoster) TeamAgents(ctx context.Context, teamID uuid.UUID) ([]disc
 	if err != nil {
 		return nil, err
 	}
-	out := make([]discussion.TeamAgent, 0, len(o.Agents))
-	for _, a := range o.Agents {
+	return toTeamAgents(o.Agents), nil
+}
+
+// ProjectAgents resolves the agents of the project's OWN team (ISI-5107): the project id is a
+// "namespace/name" slug whose namespace IS the team home namespace, so the roster reads that
+// namespace directly — no Team-UID round trip. A slug with no namespace segment yields an empty
+// roster rather than a fleet-wide read.
+func (m mentionRoster) ProjectAgents(ctx context.Context, projectID string) ([]discussion.TeamAgent, error) {
+	ns := projectNamespace(projectID)
+	if ns == "" {
+		return nil, nil
+	}
+	agents, err := m.org.NamespaceAgents(ctx, ns)
+	if err != nil {
+		return nil, err
+	}
+	return toTeamAgents(agents), nil
+}
+
+// AllAgents resolves the fleet-wide agent set (ADR-039): the admin @-mention composer can pull an
+// agent from any squad into the room.
+func (m mentionRoster) AllAgents(ctx context.Context) ([]discussion.TeamAgent, error) {
+	agents, err := m.org.AllAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return toTeamAgents(agents), nil
+}
+
+// projectNamespace extracts the namespace segment of a "namespace/name" project slug (ISI-3982). The
+// namespace IS the team home namespace, so it names the squad whose agents are dispatchable into the
+// project. A slug without a "/" (or an empty namespace) yields "" — the caller treats that as no
+// project team.
+func projectNamespace(projectID string) string {
+	i := strings.IndexByte(projectID, '/')
+	if i <= 0 {
+		return ""
+	}
+	return projectID[:i]
+}
+
+// toTeamAgents maps the apiserver org projection onto the discussion mention/roster seam shape.
+func toTeamAgents(agents []apiserver.OrgAgent) []discussion.TeamAgent {
+	out := make([]discussion.TeamAgent, 0, len(agents))
+	for _, a := range agents {
 		out = append(out, discussion.TeamAgent{Name: a.Name, Status: a.Status})
 	}
-	return out, nil
+	return out
 }
 
 // rosterForMentions returns the mention roster seam, or nil when the org projection is unavailable
