@@ -202,6 +202,10 @@ type Options struct {
 	// dev run or pre-S4a host without the reader-pod client wired), so S4c can render
 	// "File Explorer not available yet" honestly.
 	WorkspaceReader WorkspaceReader
+	// WorkspaceBusyReader is the ISI-5140 last-committed-snapshot seam consulted by the
+	// files routes when the live workspace is busy (ErrWorkspaceBusy). Nil means the busy
+	// branch degrades to the honestly-labelled empty form instead of serving a snapshot.
+	WorkspaceBusyReader BusySnapshotReader
 	// ComposeCRD is the 8.5 CRD-apply write surface (ISI-3198): create/edit endpoints
 	// for Team/Project/Agent/Role/Skill behind the membership write-tier gate. Nil ⇒
 	// the routes answer the documented 501 (a cluster-less dev run without a writer
@@ -869,14 +873,14 @@ func (s *Server) routes(opts Options) {
 		if opts.ProjectRoles != nil {
 			filesDir.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
 		}
-		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader)).Methods(http.MethodGet)
+		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
 		filesContent := s.router.Path("/api/projects/{projectId:.+}/files/content").Subrouter()
 		filesContent.Use(authz)
 		if opts.ProjectRoles != nil {
 			filesContent.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
 		}
-		filesContent.HandleFunc("", s.projectFilesContent(opts.WorkspaceReader)).Methods(http.MethodGet)
+		filesContent.HandleFunc("", s.projectFilesContent(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
 		// S4b — download (ISI-4650): file → attachment stream; directory → server-built
 		// tar.gz archive. Same choke point + requireProjectRole(Viewer), same jail, same
@@ -895,7 +899,7 @@ func (s *Server) routes(opts Options) {
 		if opts.ProjectRoles != nil {
 			filesStat.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
 		}
-		filesStat.HandleFunc("", s.projectFilesStat(opts.WorkspaceReader)).Methods(http.MethodGet)
+		filesStat.HandleFunc("", s.projectFilesStat(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less

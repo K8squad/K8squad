@@ -328,6 +328,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
 
   const rootEntries = root.data.entries;
   const degraded = root.data.degraded === true;
+  // ISI-5140: the busy banner is shown ONLY when snapshot bytes are actually being
+  // served (degraded + reason="workspace_busy"). The no-completed-run empty state
+  // (reason="no_browse_target", degraded=false) is honest, not a degradation.
+  const busyDegraded = degraded && (root.data as { reason?: string }).reason === "workspace_busy";
+  const noTarget = !degraded && (root.data as { reason?: string }).reason === "no_browse_target";
 
   return (
     <section data-testid="file-explorer">
@@ -336,18 +341,26 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
         <p className="muted">Read-only view of this project&apos;s workspace files.</p>
       </header>
 
-      {degraded && (
+      {busyDegraded && rootEntries.length > 0 && (
         <div className="banner banner--info" role="status" data-testid="files-busy-banner">
           Workspace busy — showing last-committed state. Files reflect the last commit, not
           live edits, while an agent holds the workspace.
+        </div>
+      )}
+      {busyDegraded && rootEntries.length === 0 && (
+        <div className="banner banner--info" role="status" data-testid="files-busy-banner">
+          Workspace busy — no last-committed snapshot is available yet. Files will
+          reappear when the agent releases the workspace.
         </div>
       )}
 
       {rootEntries.length === 0 ? (
         <EmptyState
           testId="files-empty"
-          title="No files yet"
-          why="This project's workspace has no files yet."
+          title={noTarget ? "No completed run yet" : "No files yet"}
+          why={noTarget
+            ? "This project has no completed run yet, so there is no workspace to browse. Files appear after the first run finishes."
+            : "This project's workspace has no files yet."}
         />
       ) : (
         <div className="file-explorer">
