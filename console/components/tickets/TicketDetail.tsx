@@ -1184,6 +1184,61 @@ function TicketBody({
     ]),
   );
 
+  // ISI-5157 — scroll ergonomics for a tall ticket. The page (document) is the
+  // scroll owner on this route, so the docked composer and the jump-to-bottom
+  // FAB are pinned relative to the viewport (tickets.css). Two small effects:
+  //   (1) keep the dock's live height in a CSS var so the FAB rides just above it
+  //       (the composer grows on error / when the @-mention popover opens), and
+  //   (2) drive the FAB's visibility from how much content is still below the fold.
+  const dockRef = useRef<HTMLElement | null>(null);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const apply = () =>
+      document.documentElement.style.setProperty(
+        "--ksq-dock-h",
+        `${el.offsetHeight}px`,
+      );
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--ksq-dock-h");
+    };
+  }, []);
+
+  // Show the FAB only while there is meaningful content below the fold; it fades
+  // out within ~48px of the end, so it is never a dead control at the bottom.
+  useEffect(() => {
+    const THRESHOLD = 48;
+    const update = () => {
+      const doc = document.documentElement;
+      const distance = doc.scrollHeight - window.scrollY - window.innerHeight;
+      setShowJump(distance > THRESHOLD);
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [activity.length]);
+
+  // Smooth-scroll the page to the newest activity (instant under reduced-motion).
+  function jumpToBottom() {
+    const reduce =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: reduce ? "auto" : "smooth",
+    });
+  }
+
   // This very ticket, synthesized from the thread we already loaded, handed to the
   // "Add sub-ticket" sheet as its LOCKED parent (fixedParent, ISI-4504) so the
   // create always files a child of the ticket in view.
@@ -1198,7 +1253,8 @@ function TicketBody({
   };
 
   return (
-    <div className="ksq-ticket-detail__grid">
+    <>
+      <div className="ksq-ticket-detail__grid">
       {/* ---- Main column: header+description, then S2/S3/S4 mount regions ---- */}
       <div className="ksq-ticket-detail__main">
         <section
@@ -1295,23 +1351,10 @@ function TicketBody({
               → Working…) the explicit-assign path uses, so there is ONE coherent run
               signal, never a static line competing with the live card. */}
 
-          {/* S4 mount region — the human comment composer (ISI-4454). Posts to
-              POST /api/work-items/{id}/comments (ISI-4406); contributor+ only, a
-              viewer stays read-only. If the endpoint is absent on this deployment
-              (404/501) it falls back to the honest "not wired here" gap (FR-I3),
-              never a broken control. ISI-4495: on a parked (unheld, non-backlog)
-              ticket the comment ALSO re-dispatches the lane to todo — the
-              "comment to an agent triggers work" half the board asked for. */}
-          <Composer
-            workItemId={thread.workItemId}
-            canComment={canComment(role)}
-            onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
-            onPosted={onCommentPosted}
-            onDispatched={(agent) => setDispatch({ agent, at: Date.now() })}
-            dispatchWatch={dispatchWatch}
-            dispatchAgent={dispatch?.agent ?? ""}
-            reTriggerAgent={thread.requestedAgent ?? thread.assignee ?? ""}
-          />
+          {/* S4 — the human comment composer (ISI-4454) no longer lives at the
+              tail of this scrolling Activity card: ISI-5157 lifts it into a bar
+              docked to the bottom of the view (below), so it is always reachable
+              on a long ticket. Same <Composer>, only its position changed. */}
         </section>
       </div>
 
@@ -1431,6 +1474,67 @@ function TicketBody({
           )}
         </section>
       </aside>
+      </div>
+
+      {/* ISI-5157 (board ask #3) — the comment + assign composer docked to the
+          bottom of the ticket-detail view, always visible on a long ticket.
+          `position: sticky; bottom: 0` (tickets.css) keeps it pinned to the
+          viewport bottom while the activity scrolls beneath, and it settles below
+          the newest activity at the end. This is the SAME <Composer> that used to
+          sit at the Activity tail — the ISI-4567 comment+assign contract, the
+          ISI-4853 dispatch ladder and the ISI-5159 @-mention → assign all move
+          with it untouched; only its position changed. */}
+      <footer
+        ref={dockRef}
+        className="ksq-ticket-detail__dock"
+        data-testid="detail-composer-dock"
+      >
+        <div className="ksq-ticket-detail__dock-inner">
+          <Composer
+            workItemId={thread.workItemId}
+            canComment={canComment(role)}
+            onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}
+            onPosted={onCommentPosted}
+            onDispatched={(agent) => setDispatch({ agent, at: Date.now() })}
+            dispatchWatch={dispatchWatch}
+            dispatchAgent={dispatch?.agent ?? ""}
+            reTriggerAgent={thread.requestedAgent ?? thread.assignee ?? ""}
+          />
+        </div>
+      </footer>
+
+      {/* ISI-5157 (board ask #1) — jump-to-bottom FAB, fixed bottom-right, riding
+          just above the docked composer. Shown only while content sits below the
+          fold; smooth-scrolls the page to the newest activity (instant under
+          prefers-reduced-motion). A real focusable button, pulled from the tab
+          order and hidden from AT while off-screen. */}
+      <button
+        type="button"
+        className="ksq-jump-fab"
+        data-testid="detail-jump-bottom"
+        data-visible={showJump}
+        aria-label="Scroll to latest"
+        aria-hidden={!showJump}
+        tabIndex={showJump ? 0 : -1}
+        onClick={jumpToBottom}
+      >
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M10 3.5v11m0 0l4.5-4.5M10 14.5L5.5 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
 
       {addingSub && (
         <CreateTicketSheet
@@ -1445,7 +1549,7 @@ function TicketBody({
           onClose={() => setAddingSub(false)}
         />
       )}
-    </div>
+    </>
   );
 }
 

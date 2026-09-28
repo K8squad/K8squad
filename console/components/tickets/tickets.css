@@ -1144,6 +1144,11 @@
   position: sticky;
   top: 16px;
   align-self: start;
+  /* ISI-5157: cap the pinned rail to the viewport and let it scroll internally,
+     so a tall rail (Properties + Sub-tickets + Run/trace) can't run off-screen —
+     every field stays reachable while it stays pinned. */
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
 }
 
 @media (max-width: 900px) {
@@ -1616,6 +1621,104 @@
 .ksq-composer__actions {
   display: flex;
   justify-content: flex-end;
+}
+
+/* ---- ISI-5157: docked comment + assign bar (board ask #3) ----
+   The composer no longer sits at the tail of the scrolling Activity card; it is
+   docked to the bottom of the ticket-detail view. `position: sticky; bottom: 0`
+   keeps it pinned to the viewport bottom while a tall ticket scrolls beneath it,
+   and it settles below the newest activity at the very end (sticky keeps its box
+   in flow, so it never overlaps the last activity once you reach the bottom).
+   Full content-column width; the rail keeps its own column. Zero new tokens. */
+.ksq-ticket-detail__dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 15;
+  margin-top: 16px;
+  padding-top: 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 16px rgb(0 0 0 / 18%);
+}
+
+.ksq-ticket-detail__dock-inner {
+  padding-bottom: 12px;
+}
+
+/* The docked composer drops its own top border/margin — the dock supplies both. */
+.ksq-ticket-detail__dock .ksq-composer,
+.ksq-ticket-detail__dock .ksq-composer-note {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* Rest compactly at the bottom; the textarea still grows (resize: vertical) and
+   the @-mention popover / errors expand the bar upward as needed. */
+.ksq-ticket-detail__dock .ksq-composer textarea,
+.ksq-ticket-detail__dock .ksq-composer-note textarea {
+  min-height: 44px;
+}
+
+/* On mobile the shell shows a fixed ~68px bottom nav (globals.css) — lift the
+   dock above it so the composer is never hidden behind the nav bar. */
+@media (max-width: 767px) {
+  .ksq-ticket-detail__dock {
+    bottom: 68px;
+  }
+}
+
+/* ---- ISI-5157: jump-to-bottom FAB (board ask #1) ----
+   Fixed bottom-right, riding just above the docked composer (its live height is
+   published as --ksq-dock-h). Hidden — non-interactive and click-through — until
+   there is content below the fold; the component also drops it from the tab order
+   and hides it from AT while off-screen. Accent puck, reused token, no new hue. */
+.ksq-jump-fab {
+  position: fixed;
+  right: 24px;
+  bottom: calc(var(--ksq-dock-h, 96px) + 20px);
+  z-index: 16;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--accent, #4f8cff);
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 28%);
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
+  transition:
+    opacity 0.16s ease,
+    transform 0.16s ease;
+}
+
+.ksq-jump-fab[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.ksq-jump-fab:focus-visible {
+  outline: 2px solid var(--accent, #4f8cff);
+  outline-offset: 2px;
+}
+
+@media (max-width: 767px) {
+  .ksq-jump-fab {
+    bottom: calc(68px + var(--ksq-dock-h, 96px) + 20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ksq-jump-fab {
+    transition: none;
+  }
 }
 
 /* ---- Properties list ---- */
