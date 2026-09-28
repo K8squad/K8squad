@@ -149,6 +149,15 @@ type OrgReader interface {
 	// AgentStatuses is the light per-agent status projection the SSE stream polls: it lists only
 	// Agents + Runs (no Role/Runtime resolution), so a repeated poll stays cheap.
 	AgentStatuses(ctx context.Context, teamUID string) ([]AgentStatusDelta, error)
+	// NamespaceAgents lists the agents living in a single team home namespace — the value a project
+	// slug's "namespace/name" carries (ISI-5107 / ISI-3982). It resolves "the agents dispatchable
+	// into THIS project" directly by namespace, without a Team-UID round trip, for the project-scoped
+	// discussion roster (which keys the room by project, not by the caller's team).
+	NamespaceAgents(ctx context.Context, namespace string) ([]OrgAgent, error)
+	// AllAgents lists every agent fleet-wide, across all team namespaces (ADR-039 / ISI-3932). The
+	// global admin carries no home team to fence to, so the @-mention composer resolves against the
+	// whole fleet; a non-admin never reaches this path. Enrichment is best-effort (see the impl).
+	AllAgents(ctx context.Context) ([]OrgAgent, error)
 }
 
 // ClientOrgReader is the production OrgReader over any client.Reader (the informer cache in the
@@ -235,12 +244,89 @@ func (r *ClientOrgReader) Org(ctx context.Context, teamUID string) (TeamOrg, err
 		return TeamOrg{}, err
 	}
 
-	out := TeamOrg{TeamID: teamUID, TeamName: team.name, Agents: []OrgAgent{}}
-	for i := range agents.Items {
-		out.Agents = append(out.Agents, projectAgent(&agents.Items[i], runtimeType, roleByName, runsByAgent))
-	}
-	sort.Slice(out.Agents, func(a, b int) bool { return out.Agents[a].Name < out.Agents[b].Name })
+	out := TeamOrg{TeamID: teamUID, TeamName: team.name, Agents: projectAgents(agents, runtimeType, roleByName, runsByAgent)}
 	return out, nil
+}
+
+// projectAgents projects a loaded Agent set into sorted org nodes — the shared tail of Org,
+// NamespaceAgents, and AllAgents. Deterministic: agents sort by name.
+func projectAgents(agents ksquadv1.AgentList, runtimeType map[string]string, roleByName map[string]*ksquadv1.Role, runsByAgent map[string][]*ksquadv1.Run) []OrgAgent {
+	out := make([]OrgAgent, 0, len(agents.Items))
+	for i := range agents.Items {
+		out = append(out, projectAgent(&agents.Items[i], runtimeType, roleByName, runsByAgent))
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
+// NamespaceAgents lists the agents in a single team home namespace — the project slug's namespace
+// (ISI-5107). It serves the project-scoped discussion roster without a Team-UID round trip: the room
+// is keyed by project, and the slug's namespace IS the team home namespace. Presence is derived from
+// Runs in the same namespace (co-tenant layout) or folds to idle under the split-namespace layout —
+// best-effort for a roster whose job is dispatch targeting, not a live run view.
+func (r *ClientOrgReader) NamespaceAgents(ctx context.Context, namespace string) ([]OrgAgent, error) {
+	if namespace == "" {
+		return nil, ErrTeamNotFound
+	}
+	agents, runtimeType, roleByName, runsByAgent, err := r.load(ctx, namespace, namespace)
+	if err != nil {
+		return nil, err
+	}
+	return projectAgents(agents, runtimeType, roleByName, runsByAgent), nil
+}
+
+// AllAgents lists every agent fleet-wide, across all team namespaces (ADR-039 / ISI-3932). The global
+// admin carries no home team to fence to, so the @-mention composer resolves against the whole fleet;
+// a non-admin never reaches this path (the handler branches on IsAdmin). Enrichment (runtime flavour,
+// role badge, presence) is built cluster-wide and is best-effort — the mention token is the agent
+// name, so at most a cross-namespace name collision mislabels a presence dot.
+func (r *ClientOrgReader) AllAgents(ctx context.Context) ([]OrgAgent, error) {
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents); err != nil { // no InNamespace ⇒ every namespace
+		return nil, err
+	}
+	var runtimes ksquadv1.AgentRuntimeList
+	if err := r.reader.List(ctx, &runtimes); err != nil {
+		return nil, err
+	}
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles); err != nil {
+		return nil, err
+	}
+	var runs ksquadv1.RunList
+	if err := r.reader.List(ctx, &runs); err != nil {
+		return nil, err
+	}
+	runtimeType := make(map[string]string, len(runtimes.Items))
+	for i := range runtimes.Items {
+		runtimeType[runtimes.Items[i].Name] = runtimes.Items[i].Spec.Type
+	}
+	roleByName := make(map[string]*ksquadv1.Role, len(roles.Items))
+	for i := range roles.Items {
+		roleByName[roles.Items[i].Name] = &roles.Items[i]
+	}
+	runsByAgent := indexRunsByAgentFleet(runs.Items, agentNames(agents.Items))
+	return projectAgents(agents, runtimeType, roleByName, runsByAgent), nil
+}
+
+// indexRunsByAgentFleet indexes Runs to Agents by NAME only, ignoring namespace — the fleet-wide
+// counterpart to indexRunsByAgent for AllAgents (ADR-039). Presence is best-effort here, so a
+// same-named agent in two squads may share a run's presence dot; the roster/mention token is the name.
+func indexRunsByAgentFleet(items []ksquadv1.Run, names []string) map[string][]*ksquadv1.Run {
+	byAgent := map[string][]*ksquadv1.Run{}
+	for i := range items {
+		run := &items[i]
+		if len(run.Spec.Agents) == 0 {
+			for _, name := range names {
+				byAgent[name] = append(byAgent[name], run)
+			}
+			continue
+		}
+		for _, ref := range run.Spec.Agents {
+			byAgent[ref.Name] = append(byAgent[ref.Name], run)
+		}
+	}
+	return byAgent
 }
 
 // resolveAgentScope locates the Agent identified by agentUID, returning its HOME namespace (where

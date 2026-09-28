@@ -17,6 +17,7 @@ import type {
   ProposalConfirmResponse,
   ProposalDismissResponse,
   ProposalPayload,
+  RosterAgentDTO,
   Thread,
 } from "./types";
 import {
@@ -100,6 +101,14 @@ export interface DiscussionClient {
     projectId: string,
     q: string,
   ): Promise<MentionSuggestion[]>;
+  /**
+   * Project roster (ISI-5107): the agents dispatchable into THIS project for
+   * the right rail + composer direct-target selector. Scoped server-side from
+   * the path's project (admin ⇒ the project namespace; everyone else ⇒ their
+   * own team) — no caller-team `thread.teamId` input, which was the empty-roster
+   * bug. Always resolves an array (a read failure degrades to []).
+   */
+  getRoster(projectId: string): Promise<RosterAgentDTO[]>;
   /** Soft-retract a message (AC4). Author-or-admin only; no hard-delete exists. */
   retractMessage(
     projectId: string,
@@ -237,6 +246,13 @@ export function createDiscussionClient(
       const res = await fetchImpl(url, { method: "GET" });
       const out = await readJson<{ results?: MentionSuggestion[] }>(res);
       return out.results ?? [];
+    },
+
+    async getRoster(projectId) {
+      const url = `${discussionBase(projectId)}/roster`;
+      const res = await fetchImpl(url, { method: "GET" });
+      const out = await readJson<RosterAgentDTO[] | null>(res);
+      return out ?? [];
     },
 
     async retractMessage(projectId, threadId, messageId) {

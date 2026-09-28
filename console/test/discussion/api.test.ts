@@ -228,4 +228,24 @@ describe("createDiscussionClient — v2 wire (ISI-4929 / ISI-4926)", () => {
     const results = await client.searchMentions("p", "x");
     expect(results).toEqual([]);
   });
+
+  it("getRoster GETs the project-scoped roster endpoint (ISI-5107)", async () => {
+    const { fetchImpl, urls } = recorder(200, [
+      { id: "john", name: "john", status: "working" },
+    ]);
+    const client = createDiscussionClient(fetchImpl);
+    const agents = await client.getRoster("squad-b/todo-demo");
+    // The slug is percent-encoded so "namespace/name" is one path segment.
+    expect(urls[0]).toBe(
+      "/api/projects/squad-b%2Ftodo-demo/discussion/roster",
+    );
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ id: "john", name: "john" });
+  });
+
+  it("getRoster coerces a null body to an empty array", async () => {
+    const client = createDiscussionClient(stub(200, null));
+    const agents = await client.getRoster("p");
+    expect(agents).toEqual([]);
+  });
 });

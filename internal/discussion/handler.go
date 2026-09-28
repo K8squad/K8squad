@@ -94,13 +94,22 @@ type TeamAgent struct {
 	Status string
 }
 
-// OrgReader is the roster seam the §13 BFF supplies for mention resolution (ISI-4926): it lists
-// the agents of ONE Team (the caller's authorized scope) and nothing else. Production adapts the
-// apiserver org projection (cmd/apiserver); tests wire a fake. It is deliberately blind to work
-// items — those come from the search.Searcher seam — so each source keeps its own fence: the
-// roster is Team-scoped by construction, the FTS query carries the ADR-039 tenancy predicate.
+// OrgReader is the roster seam the §13 BFF supplies for mention + roster resolution (ISI-4926,
+// ISI-5107): it lists agents, scoped one of three ways so the caller can be shown "the agents
+// dispatchable into THIS project" rather than the agents of the caller's own Team. Production adapts
+// the apiserver org projection (cmd/apiserver); tests wire a fake. It is deliberately blind to work
+// items — those come from the search.Searcher seam — so each source keeps its own fence.
 type OrgReader interface {
+	// TeamAgents lists the agents of ONE Team (the caller's own authorized scope) — the non-admin
+	// fence: existence-hiding is preserved because a non-admin never resolves any other Team.
 	TeamAgents(ctx context.Context, teamID uuid.UUID) ([]TeamAgent, error)
+	// ProjectAgents lists the agents of the project's OWN team, derived from the project id's
+	// "namespace/name" slug (the namespace IS the team home namespace, ISI-5107). Used for admins,
+	// who carry no home team to fence to — the project namespace IS the dispatch scope.
+	ProjectAgents(ctx context.Context, projectID string) ([]TeamAgent, error)
+	// AllAgents lists agents fleet-wide, across all teams (ADR-039). Used for the admin @-mention
+	// composer so a global admin can pull an agent from ANY squad into the room.
+	AllAgents(ctx context.Context) ([]TeamAgent, error)
 }
 
 // Mount wires the discussion surface onto a parent router at the canonical §7.5 prefix
@@ -132,6 +141,9 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
 	r.HandleFunc("/mentions", h.searchMentions).Methods(http.MethodGet)
+	// Project roster endpoint (ISI-5107): the right-rail agent list, scoped to the agents
+	// dispatchable into THIS project (not the caller's team). Resolved at read time from the path.
+	r.HandleFunc("/roster", h.roster).Methods(http.MethodGet)
 }
 
 // ============================================================================
@@ -590,11 +602,21 @@ func (h *Handler) searchWorkItems(ctx context.Context, text, projectID string, a
 	return suggestions, nil
 }
 
-// searchAgents resolves @agent suggestions from the Team roster: a case-insensitive substring
-// match on the agent name — mention typing is fragment matching, not FTS. The roster itself is
-// already Team-scoped (the seam takes the caller's TeamID), so no cross-team name can appear.
+// searchAgents resolves @agent suggestions: a case-insensitive substring match on the agent name —
+// mention typing is fragment matching, not FTS. The scope mirrors the ADR-039 branch searchWorkItems
+// already uses: an admin (who carries no home team to fence to) resolves fleet-wide so they can pull
+// an agent from ANY squad into the room; everyone else is fenced to their own Team, so no cross-team
+// name can appear (existence-hiding preserved, ISI-5107 RBAC note).
 func (h *Handler) searchAgents(ctx context.Context, text string, auth AuthorContext) ([]MentionSuggestion, error) {
-	agents, err := h.org.TeamAgents(ctx, auth.TeamID)
+	var (
+		agents []TeamAgent
+		err    error
+	)
+	if auth.IsAdmin {
+		agents, err = h.org.AllAgents(ctx)
+	} else {
+		agents, err = h.org.TeamAgents(ctx, auth.TeamID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -615,4 +637,59 @@ func (h *Handler) searchAgents(ctx context.Context, text string, auth AuthorCont
 		}
 	}
 	return out, nil
+}
+
+// ============================================================================
+// Roster endpoint (ISI-5107)
+// ============================================================================
+
+// RosterAgent is one row of the project roster read: the agent's mention token (@Name) and derived
+// presence bucket. The `id` mirrors the name so the console can key rows and direct-target the agent
+// with the same token the composer inserts — a roster is namespace-scoped, so names are unique.
+type RosterAgent struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// roster answers GET /api/projects/{projectId}/discussion/roster with the agents dispatchable into
+// THIS project (ISI-5107) — the fix for the empty right rail. Scope mirrors the ADR-039 branch: an
+// admin resolves the roster from the PROJECT's namespace (the slug's namespace IS the team home
+// namespace), since the bootstrap admin carries no home team to fence to; everyone else is fenced to
+// their own Team (existence-hiding — a non-admin never sees another squad's agents). Resolved at read
+// time from the path's project, so no thread.team_id backfill is required. The roster is a projection,
+// not a fence, so any read failure degrades to an empty rail (200) rather than blanking the room.
+func (h *Handler) roster(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	auth, ok := requireAuth(w, r)
+	if !ok {
+		return
+	}
+	out := make([]RosterAgent, 0)
+	if h.org != nil {
+		agents, err := h.projectRoster(r.Context(), projectID, auth)
+		if err == nil {
+			for _, a := range agents {
+				if a.Name == "" {
+					continue
+				}
+				out = append(out, RosterAgent{ID: a.Name, Name: a.Name, Status: a.Status})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// projectRoster resolves the right-rail roster for a project: admin ⇒ the project namespace's agents
+// (ADR-039 fleet break-out, narrowed to the squad the room belongs to); non-admin ⇒ the caller's own
+// Team (existence-hiding preserved — a non-admin cannot name another squad's namespace to read it).
+func (h *Handler) projectRoster(ctx context.Context, projectID string, auth AuthorContext) ([]TeamAgent, error) {
+	if auth.IsAdmin {
+		return h.org.ProjectAgents(ctx, projectID)
+	}
+	return h.org.TeamAgents(ctx, auth.TeamID)
 }

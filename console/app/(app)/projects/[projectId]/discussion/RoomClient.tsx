@@ -17,7 +17,6 @@ import { createDiscussionClient } from "@/lib/discussion/api";
 import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
 import type { RoomEvent } from "@/lib/discussion/liveFeed";
 import type { RosterAgent } from "@/components/discussion/Roster";
-import { createAgentsClient } from "@/lib/agents/api";
 import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
 
 // R1 empty-room bootstrap: a fresh Project has no threads, and nothing else in
@@ -31,7 +30,6 @@ const DEFAULT_THREAD = {
 
 export function DiscussionRoomClient({ projectId }: { projectId: string }) {
   const client = useMemo(() => createDiscussionClient(), []);
-  const agentsClient = useMemo(() => createAgentsClient(), []);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -80,20 +78,21 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
       subscribeRoom(projectId, threadId, onEvent, factory);
   }, [projectId, threadId]);
 
-  // Roster: the Team org read model (8.10) projected onto the room's roster
-  // rows. A Team read failure rejects and the room degrades to roster-less.
+  // Roster: the project-scoped roster read (ISI-5107) — the agents dispatchable
+  // into THIS project, resolved server-side from the path (admin ⇒ the project
+  // namespace, everyone else ⇒ their own team) rather than from the caller's team
+  // via thread.teamId, which rendered an empty rail for admins on another squad's
+  // project. A read failure degrades the room to roster-less.
   const loadRoster = useCallback(
-    (teamId: string): Promise<RosterAgent[]> =>
-      agentsClient
-        .getTeamOrg(teamId)
-        .then((org) =>
-          org.agents.map((a) => ({
-            id: a.id,
-            name: a.name,
-            status: a.status,
-          })),
-        ),
-    [agentsClient],
+    (): Promise<RosterAgent[]> =>
+      client.getRoster(projectId).then((agents) =>
+        agents.map((a) => ({
+          id: a.id,
+          name: a.name,
+          status: a.status,
+        })),
+      ),
+    [client, projectId],
   );
 
   const searchMentions = useCallback(

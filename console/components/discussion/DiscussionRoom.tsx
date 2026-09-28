@@ -33,11 +33,14 @@ export interface DiscussionRoomProps {
    */
   subscribe?: (onEvent: (evt: RoomEvent) => void) => () => void;
   /**
-   * Roster loader (ISI-4929, plan §4.5): given the thread's Team id, resolves
-   * the agent roster the sidebar + composer direct-target selector render.
-   * Optional — absent degrades to a roster-less room (party-only composer).
+   * Roster loader (ISI-4929, plan §4.5; project-scoped in ISI-5107): resolves
+   * the agents dispatchable into THIS project for the sidebar + composer
+   * direct-target selector. No longer takes the thread's Team id — the roster is
+   * scoped server-side from the project, so an admin viewing another squad's
+   * project sees that squad's agents instead of an empty rail. Optional — absent
+   * degrades to a roster-less room (party-only composer).
    */
-  loadRoster?: (teamId: string) => Promise<RosterAgent[]>;
+  loadRoster?: () => Promise<RosterAgent[]>;
   /** Mention search backing the composer's `@` popover (ISI-4926 endpoint). */
   searchMentions?: (q: string) => Promise<MentionSuggestion[]>;
 }
@@ -77,12 +80,13 @@ export function DiscussionRoom({
       } catch {
         setProposals({});
       }
-      // The thread's Team scopes the roster (§4.5). A roster failure degrades
-      // silently to a roster-less room — the thread itself already rendered.
+      // The project scopes the roster (§4.5; ISI-5107 — no longer the caller's
+      // team via thread.teamId, which rendered an empty rail for admins viewing
+      // another squad's project). A roster failure degrades silently to a
+      // roster-less room — the thread itself already rendered.
       try {
-        const thread = await client.getThreadInfo(projectId, threadId);
-        if (loadRoster && thread.teamId) {
-          const agents = await loadRoster(thread.teamId);
+        if (loadRoster) {
+          const agents = await loadRoster();
           setRosterAgents(agents);
         }
       } catch {
