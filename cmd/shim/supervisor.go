@@ -315,6 +315,28 @@ func (s *supervisor) credential() (taskio.RunCredential, time.Time, bool) {
 	return *s.cred, s.credAt, true
 }
 
+// runTraceContext grafts the Run's distributed trace onto base so a supervisor
+// span joins it instead of rooting a fresh trace (ISI-5144). It carries only
+// the handshake-extracted run traceparent's span context onto base —
+// preserving base's deadline/cancellation — so handle_task, runtime.init and
+// run.start share ONE run traceID. Before the handshake lands (an unbound warm
+// pod that has no run to join yet) it falls back to the process-start span,
+// then leaves base untouched.
+func (s *supervisor) runTraceContext(base context.Context) context.Context {
+	s.mu.RLock()
+	tctx := s.traceCtx
+	s.mu.RUnlock()
+	if tctx != nil {
+		if sc := trace.SpanContextFromContext(tctx); sc.IsValid() {
+			return trace.ContextWithSpanContext(base, sc)
+		}
+	}
+	if s.supervisorSpan != nil {
+		return trace.ContextWithSpan(base, s.supervisorSpan)
+	}
+	return base
+}
+
 // teardownTelemetry snapshots the OTel shutdown for runSupervisor's exit
 // path (nil before the handshake initialized the spine).
 func (s *supervisor) teardownTelemetry() telemetry.ShutdownFunc {
@@ -379,10 +401,13 @@ func (s *supervisor) handleHandshake(w http.ResponseWriter, _ *http.Request) {
 func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// ISI-4540: SpanKindServer — this is the inbound HTTP edge of the sandbox
 	// (operator → pod), so backends can model the supervisor as a service.
-	ctx := r.Context()
-	if s.supervisorSpan != nil {
-		ctx = trace.ContextWithSpan(ctx, s.supervisorSpan)
-	}
+	// ISI-5144: parent the supervisor span chain on the Run's distributed trace
+	// (the operator-injected credential traceparent, extracted at handshake)
+	// rather than the process-start span — otherwise handle_task, runtime.init
+	// and run.start each root a fresh trace, fragmenting one run across ≥3 trace
+	// IDs. runTraceContext keeps r.Context()'s cancellation while grafting on the
+	// run trace, and falls back to supervisor.start before the handshake lands.
+	ctx := s.runTraceContext(r.Context())
 
 	ctx, taskHandleSpan := telemetry.Tracer().Start(ctx, "supervisor.handle_task",
 		trace.WithAttributes(
@@ -409,7 +434,7 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	engine, err := s.runtime()
+	engine, err := s.runtime(ctx)
 	if err != nil {
 		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("runtime initialization failed: %v", err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -488,13 +513,12 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 
 // runtime lazily constructs the engine from the image's baked-in flavor
 // (Dockerfile.shim ENV KSQUAD_RUNTIME_TYPE) plus the pod env Boot stamped.
-func (s *supervisor) runtime() (*shim.Engine, error) {
+// ISI-5144: it takes the caller's live context (handle_task, already grafted
+// onto the Run's distributed trace) instead of starting from
+// context.Background(), so runtime.init continues the run trace and shares its
+// traceID with run.start rather than rooting a disconnected trace.
+func (s *supervisor) runtime(ctx context.Context) (*shim.Engine, error) {
 	s.engineOnce.Do(func() {
-		ctx := context.Background()
-		if s.supervisorSpan != nil {
-			ctx = trace.ContextWithSpan(context.Background(), s.supervisorSpan)
-		}
-
 		_, runtimeInitSpan := telemetry.Tracer().Start(ctx, "supervisor.runtime.init",
 			trace.WithAttributes(
 				attribute.String("code.namespace", "github.com/K8squad/K8squad/cmd/shim"),
