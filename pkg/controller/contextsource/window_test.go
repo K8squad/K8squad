@@ -29,6 +29,9 @@ func TestWindowForModel(t *testing.T) {
 		{"gpt-4o", 128000},
 		{"gpt-4.1", 1000000},
 		{"gemini-1.5-pro", 1000000},
+		{"qwen3.8:latest", 32768},                    // ISI-5113: local fleet model, was falling to 8192 default
+		{"qwen3.6:latest", 32768},                    // longest-prefix "qwen3" wins
+		{"qwen2.5-coder", 32768},                     // bare "qwen" prefix catches older families
 		{"", DefaultContextWindow},                   // no model → default
 		{"some-unknown-model", DefaultContextWindow}, // unknown → default, never 0
 	}
