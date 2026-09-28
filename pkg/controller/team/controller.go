@@ -378,6 +378,11 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 	if err := r.ensureAuthoringMCPServer(ctx, teamObj, nsName, ns.UID); err != nil {
 		return fmt.Errorf("ensure authoring MCPServer: %w", err)
 	}
+	// ADR-0024c D1 (ISI-5138): built-in memory-discussion MCPServer for
+	// source=discussion thread-runs (discussion_search + discussion_post).
+	if err := r.ensureDiscussionMCPServer(ctx, teamObj, nsName, ns.UID); err != nil {
+		return fmt.Errorf("ensure discussion MCPServer: %w", err)
+	}
 	return nil
 }
 

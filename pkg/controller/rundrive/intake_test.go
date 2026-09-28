@@ -135,10 +135,10 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 		t.Fatalf("NewSQLIntakeSource: %v", err)
 	}
 
-	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder").
-		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil)
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent
+	rows := sqlmock.NewRows([]string{"id", "team_id", "project_id", "requested_agent", "source"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", "proj-a", "coder", "board").
+		AddRow("33333333-3333-3333-3333-333333333333", "22222222-2222-2222-2222-222222222222", "proj-a", nil, "discussion")
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
 		   AND NOT (wi.source = 'discussion'
@@ -164,6 +164,13 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	}
 	if items[1].RequestedAgent != "" {
 		t.Fatalf("row 1 requested_agent (NULL): got %q want empty", items[1].RequestedAgent)
+	}
+	// source is now selected; ADR-0024c D2.
+	if items[0].Source != "board" {
+		t.Fatalf("row 0 source: got %q want board", items[0].Source)
+	}
+	if items[1].Source != "discussion" {
+		t.Fatalf("row 1 source: got %q want discussion", items[1].Source)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)

@@ -180,6 +180,21 @@ const (
 // (pkg/controller/mcpserver/probe.go) stays for BYO servers only.
 var AuthoringToolNames = []string{WorkItemCreateToolName, WorkItemUpdateToolName, WorkItemAssignToolName}
 
+// DiscussionSearchToolName / DiscussionPostToolName are the two discussion-reply
+// verbs the built-in ksquad-memory-discussion MCPServer exposes for source=discussion
+// thread-runs (ADR-0024c D1, ISI-5138). Exported here so the operator provisioner
+// (pkg/controller/team) and the capability gate (pkg/capability) share one source of
+// truth, matching the AuthoringToolNames pattern.
+const (
+	DiscussionSearchToolName = "discussion_search"
+	DiscussionPostToolName   = "discussion_post"
+)
+
+// DiscussionToolNames is the compiled-in tool surface the built-in
+// ksquad-memory-discussion MCPServer exposes — the seed the operator writes to
+// status.observedTools (ADR-0024c D1, ISI-5138).
+var DiscussionToolNames = []string{DiscussionSearchToolName, DiscussionPostToolName}
+
 var (
 	workItemCreateTool = mcpTool{
 		Name:        WorkItemCreateToolName,

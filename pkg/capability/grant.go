@@ -33,6 +33,12 @@ import (
 // widening never requires a rebuild (ADR-0024 §3).
 const CapabilityWorkItemAuthor = "work_item.author"
 
+// CapabilityDiscussion is the capability slug baked into the per-run HS256
+// token for source=discussion thread-runs. It authorizes the run's token to
+// call discussion_search + discussion_post through the built-in
+// ksquad-memory-discussion MCPServer (ADR-0024c D4, ISI-5138).
+const CapabilityDiscussion = "discussion"
+
 // GrantSet is the resolved capability set for a Run's decomposing agent(s),
 // read from the owning Team's grant store (ADR-0024a S4). The zero value is
 // the empty set — deny-by-default: an unresolved or grant-absent Run yields
