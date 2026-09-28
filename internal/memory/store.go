@@ -177,7 +177,7 @@ func (s *PgVectorStore) Search(ctx context.Context, query SearchQuery) ([]Search
 		       created_at, invalidated_at, provenance,
 		       embedding <=> $2::vector AS distance
 		FROM memory.memory_records
-		WHERE squad_id = $1 AND invalidated_at IS NULL
+		WHERE squad_id = $1::uuid AND invalidated_at IS NULL
 		  AND ($4::text IS NULL OR project_id = $4::text)
 		  AND ($5::text IS NULL OR kind = $5::text)
 		  AND (
@@ -235,7 +235,7 @@ func (s *PgVectorStore) SearchByIDs(ctx context.Context, q SearchQuery, ids []st
 		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
 		       created_at, invalidated_at, provenance
 		FROM memory.memory_records
-		WHERE squad_id = $1 AND invalidated_at IS NULL
+		WHERE squad_id = $1::uuid AND invalidated_at IS NULL
 		  AND ($2::text IS NULL OR project_id = $2::text)
 		  AND ($3::text IS NULL OR kind = $3::text)
 		  AND id = ANY($4::uuid[])
@@ -349,7 +349,7 @@ func (s *PgVectorStore) SupersedeHandoffMirrors(ctx context.Context, squadID, wo
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE memory.memory_records SET invalidated_at = now()
-		 WHERE squad_id = $1
+		 WHERE squad_id = $1::uuid
 		   AND kind = $2
 		   AND invalidated_at IS NULL
 		   AND id <> $3
