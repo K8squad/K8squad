@@ -25,7 +25,13 @@ import {
 } from "@/lib/discussion/compose";
 import type { Audience } from "@/lib/discussion/audience";
 import type { MentionSuggestion } from "@/lib/discussion/types";
+import { mentionFragmentBefore } from "@/lib/mentions";
 import { MentionPopover } from "./MentionPopover";
+
+// The `@`-fragment matcher moved to the shared `lib/mentions` primitive (ISI-5159)
+// so the ticket composer reuses the exact same trigger semantics; re-exported here
+// for callers that still import it from this module.
+export { mentionFragmentBefore };
 
 /** A direct-target option for the audience selector (one roster agent). */
 export interface DirectTarget {
@@ -46,16 +52,6 @@ export interface ComposerProps {
   directTargets?: readonly DirectTarget[];
   /** Mention search backing the `@` popover (ISI-4926 endpoint). */
   searchMentions?: (q: string) => Promise<MentionSuggestion[]>;
-}
-
-/** The @-fragment ending at `caret`, or null when the caret is not in one. */
-export function mentionFragmentBefore(
-  text: string,
-  caret: number,
-): string | null {
-  const before = text.slice(0, caret);
-  const m = /(^|[^A-Za-z0-9_-])@([A-Za-z0-9_-]*)$/.exec(before);
-  return m ? m[2] : null;
 }
 
 const MENTION_DEBOUNCE_MS = 200;

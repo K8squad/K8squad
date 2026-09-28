@@ -28,7 +28,7 @@
 // LIVE — it posts to POST /api/work-items/{id}/comments (ISI-4406) for contributor+
 // callers and keeps the honest "not wired here" gap when that endpoint is absent.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 // The detail route (`/projects/[id]/issues/[workItemId]`) mounts this component
 // directly — TicketsScreen (the list/kanban) is NOT in its module graph, so its
 // `import "./tickets.css"` never reaches this route. Without this import the
@@ -67,6 +67,13 @@ import {
   type RunComment,
 } from "@/lib/tickets/runComments";
 import { runHref } from "@/lib/discussion/provenance";
+import { MentionPopover } from "@/components/discussion/MentionPopover";
+import {
+  agentMentionSuggestions,
+  mentionFragmentBefore,
+  replaceMentionFragment,
+} from "@/lib/mentions";
+import type { MentionSuggestion } from "@/lib/discussion/types";
 import type { CSSProperties } from "react";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
 import { STATUS_META } from "@/lib/tickets/statusColor";
@@ -707,6 +714,21 @@ function Composer({
   const [assignErr, setAssignErr] = useState<string | null>(null);
   const [assignUnavailable, setAssignUnavailable] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  // ISI-5159: `@`-mention autocomplete over the SAME squad roster the assign
+  // select loads. Typing `@frag` opens the picker (filtered CLIENT-SIDE — no new
+  // backend); selecting an agent inserts the `@Name ` token AND arms `assignee`,
+  // so the existing Comment-&-assign verb dispatches the mentioned agent onto the
+  // ticket. This mirrors the discussion-room mention→dispatch experience the board
+  // asked for ("same experience we have in Paperclip"), reusing every bit of the
+  // dispatch machinery below plus the shared MentionPopover / mention primitives.
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [fragment, setFragment] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const caretRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const suggestions = mentionOpen
+    ? agentMentionSuggestions(agents, fragment)
+    : [];
 
   // Same best-effort roster the rail AssigneeControl loads; an empty list just
   // leaves the placeholder ("Loading squad…") — the plain Comment path is unaffected.
@@ -851,6 +873,74 @@ function Composer({
     }
   }
 
+  /** Recompute the live `@fragment` at the caret and open/close the popover. */
+  function syncMention(value: string, caret: number) {
+    caretRef.current = caret;
+    const frag = mentionFragmentBefore(value, caret);
+    if (frag === null) {
+      setMentionOpen(false);
+      setFragment("");
+      return;
+    }
+    setFragment(frag);
+    setActiveIndex(0);
+    setMentionOpen(true);
+  }
+
+  /**
+   * Replace the trailing `@fragment` with the canonical `@Name ` token AND arm the
+   * existing dispatch path: an @-mentioned agent becomes the pending `assignee`, so
+   * "Comment & assign" dispatches to it (ISI-5159). The assign select is controlled
+   * by `assignee`, so it visibly reflects the armed pick.
+   */
+  function insertMention(s: MentionSuggestion) {
+    const el = textareaRef.current;
+    const caret = caretRef.current;
+    const before = text.slice(0, caret);
+    const after = text.slice(caret);
+    const newBefore = replaceMentionFragment(before, s.displayName);
+    setText(newBefore + after);
+    setMentionOpen(false);
+    setFragment("");
+    if (s.type === "agent") setAssignee(s.id);
+    if (el) {
+      el.focus();
+      requestAnimationFrame(() =>
+        el.setSelectionRange(newBefore.length, newBefore.length),
+      );
+    }
+  }
+
+  /** Keyboard nav while the popover is open; returns true when it handled the key. */
+  function onMentionKeyDown(
+    e: React.KeyboardEvent<HTMLTextAreaElement>,
+  ): boolean {
+    if (!mentionOpen) return false;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setMentionOpen(false);
+      setFragment("");
+      return true;
+    }
+    if (suggestions.length === 0) return false;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((i) => (i + 1) % suggestions.length);
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((i) => (i - 1 + suggestions.length) % suggestions.length);
+      return true;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      insertMention(suggestions[activeIndex]);
+      return true;
+    }
+    return false;
+  }
+
   return (
     <form
       className="ksq-composer"
@@ -861,13 +951,19 @@ function Composer({
       }}
     >
       <textarea
+        ref={textareaRef}
         aria-label="Write a message to the agents"
-        placeholder="Write a message to the agents…"
+        placeholder="Write a message to the agents… (type @ to mention an agent)"
         value={text}
         disabled={posting}
         data-testid="detail-composer-input"
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          syncMention(e.target.value, e.target.selectionStart ?? 0);
+        }}
         onKeyDown={(e) => {
+          // The mention popover claims arrow/enter/tab/escape while open.
+          if (onMentionKeyDown(e)) return;
           // ⌘/Ctrl+Enter posts, matching the board's other composers.
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();
@@ -875,6 +971,17 @@ function Composer({
           }
         }}
       />
+      {mentionOpen ? (
+        <MentionPopover
+          suggestions={suggestions}
+          activeIndex={activeIndex}
+          onSelect={insertMention}
+          onDismiss={() => {
+            setMentionOpen(false);
+            setFragment("");
+          }}
+        />
+      ) : null}
       {status.kind === "error" && (
         <p
           className="ksq-composer__error"
