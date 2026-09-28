@@ -74,6 +74,7 @@ vi.mock("@/lib/bff", () => ({
 import { GET as workItemsGET, POST as workItemsPOST } from "@/app/api/projects/[projectId]/work-items/route";
 import { GET as workItemThreadGET } from "@/app/api/work-items/[workItemId]/route";
 import { GET as threadsGET } from "@/app/api/projects/[projectId]/discussion/threads/route";
+import { GET as rosterGET } from "@/app/api/projects/[projectId]/discussion/roster/route";
 import { GET as streamGET } from "@/app/api/projects/[projectId]/stream/route";
 import { GET as threadGET } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/route";
 import { POST as threadMessagesPOST } from "@/app/api/projects/[projectId]/discussion/threads/[threadId]/messages/route";
@@ -187,6 +188,23 @@ describe("Project BFF routes forward a single-encoded id (ISI-3982)", () => {
     expect(p).toBe(`/api/projects/${ENCODED}/discussion/threads`);
     expect(p).not.toContain("%252F");
   });
+
+  // ISI-5164 — the room roster BFF proxy route was MISSING: the apiserver endpoint
+  // and the client `getRoster` shipped with ISI-5107 but this hop did not, so the
+  // browser fetch fell through to Next's 404 and the client degraded EVERY room to
+  // "No agents on this team yet". This test would have failed at import time (the
+  // route module did not exist). Both router-shapes must forward one encoding layer.
+  for (const [shape, param] of [
+    ["router-encoded", ENCODED],
+    ["decoded", NS_NAME],
+  ] as const) {
+    it(`discussion roster GET forwards ns%2Fname once (${shape})`, async () => {
+      await rosterGET(fakeReq(), { params: Promise.resolve({ projectId: param }) });
+      const p = pathOf(proxyJson);
+      expect(p).toBe(`/api/projects/${ENCODED}/discussion/roster`);
+      expect(p).not.toContain("%252F");
+    });
+  }
 
   it("stream GET forwards ns%2Fname once", async () => {
     await streamGET(fakeReq(), { params: Promise.resolve({ projectId: ENCODED }) });
