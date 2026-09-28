@@ -148,6 +148,10 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 	if len(req.Embedding) != s.dim {
 		return Record{}, fmt.Errorf("embedding dimension %d != configured embedder dimension %d", len(req.Embedding), s.dim)
 	}
+	// Keep prov typed as json.RawMessage (never []byte) all the way to the insert: pgx maps
+	// json.RawMessage to the json OID, but a bare []byte to bytea. Under the simple query protocol
+	// (the transaction-pooling mode ISI-5114 pins) a []byte would interpolate as a bytea hex literal
+	// the jsonb column rejects with SQLSTATE 22P02 (invalid input syntax for type json).
 	prov := req.Provenance
 	if len(prov) == 0 {
 		prov = json.RawMessage(`{}`)
@@ -177,7 +181,7 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 			RETURNING id, created_at`
 		err := s.pool.QueryRow(ctx, qi,
 			*req.DedupeID, req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
-			req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),
+			req.Kind, req.Content, encodeVector(req.Embedding), prov,
 		).Scan(&rec.ID, &rec.CreatedAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if err := s.pool.QueryRow(ctx,
@@ -200,7 +204,7 @@ func (s *PgVectorStore) Write(ctx context.Context, req WriteRequest) (Record, er
 		RETURNING id, created_at`
 	if err := s.pool.QueryRow(ctx, q,
 		req.SquadID, req.ProjectID, req.PrincipalID, req.RunID, req.AgentID,
-		req.Kind, req.Content, encodeVector(req.Embedding), []byte(prov),
+		req.Kind, req.Content, encodeVector(req.Embedding), prov,
 	).Scan(&rec.ID, &rec.CreatedAt); err != nil {
 		return Record{}, fmt.Errorf("insert memory_record: %w", err)
 	}
