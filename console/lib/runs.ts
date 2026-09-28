@@ -34,7 +34,7 @@ export interface LLMInteractionWire {
 
 /** The subset of the Run CRD the detail screen reads (api/v1alpha1/run_types.go). */
 export interface RunWire {
-  metadata?: { name?: string; namespace?: string; creationTimestamp?: string };
+  metadata?: { name?: string; namespace?: string; uid?: string; creationTimestamp?: string };
   spec: {
     projectRef?: { name?: string };
     workItemRef?: string;

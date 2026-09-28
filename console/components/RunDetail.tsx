@@ -472,9 +472,10 @@ export function RunDetail({ runId }: { runId: string }) {
     return enrichLlm(entries, detail.llmInteractions);
   }, [detail]);
 
+  const runUid = detail?.run?.metadata?.uid ?? null;
   const scoped = useMemo(
-    () => filterByScope(classified, scope, runId),
-    [classified, scope, runId],
+    () => filterByScope(classified, scope, runId, runUid),
+    [classified, scope, runId, runUid],
   );
   const { execution, conversation } = useMemo(() => partitionByView(scoped), [scoped]);
   const executionItems = useMemo(() => buildExecutionItems(execution), [execution]);
