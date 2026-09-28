@@ -109,6 +109,11 @@ const (
 	// (plan: "a per-thread hop counter in payload"). Human posts omit it (hop 0); a dispatched run
 	// stamps it on its reply so the NEXT mention parse sees the accumulated depth.
 	dispatchPayloadKey = "_dispatch"
+
+	// referencesPayloadKey is the message-payload field carrying the resolved ticket references
+	// (ISI-5165) — the LINK-not-dispatch metadata. It shares the payload object with dispatchPayloadKey
+	// via the same JSON-merge pattern, so a message can carry both a loop-guard hop and ticket links.
+	referencesPayloadKey = "references"
 )
 
 // mentionTokenRe matches an @-mention token in a message body: '@' then a name that starts with an
@@ -175,6 +180,124 @@ func DispatchHopOf(payload *json.RawMessage) int {
 		return 0
 	}
 	return wrapper.Dispatch.HopDepth
+}
+
+// ============================================================================
+// Ticket references (ISI-5165, plan ISI-5134 S1) — a LINK, NOT a dispatch
+// ============================================================================
+//
+// A discussion message may carry structured references to work items (tickets). A reference is a LINK:
+// it is persisted as durable metadata in the message payload and rendered as a chip, but it MUST NOT
+// dispatch anything and pulls NO context into any agent run (Q2 default = NO, confirmed by the plan).
+// It therefore bypasses resolveMentionTargets / DispatchMentionsFrom entirely — ISI-5108 dispatch stays
+// agent-only, driven solely by @-mention tokens in the body.
+//
+// k8squad work items are UUID-keyed (no human ISI-#### column), so the MVP is picker-by-title carrying
+// the work-item UUID plus its display title (Q1 Option A). Typed "#ISI-1234" literal refs are OUT OF
+// SCOPE (they would need a ref-column migration). Each candidate UUID is validated against the message's
+// project via the TicketRefResolver seam; unknown or out-of-project refs are dropped, never persisted.
+
+// TicketRef is one ticket reference — a link from a message to a work item. WorkItemID is the coord
+// work-item UUID (the picker's carried key); Title is its display title for chip rendering. Persisted
+// into Message.Payload under referencesPayloadKey; it is never a dispatch target.
+type TicketRef struct {
+	WorkItemID string `json:"workItemId"`
+	Title      string `json:"title,omitempty"`
+}
+
+// StampReferences merges validated ticket references into a message payload under the `references`
+// key, using the same JSON-merge pattern as StampDispatchHop so a payload can carry both a loop-guard
+// hop (_dispatch) and ticket links (references) without either clobbering the other. An empty ref set
+// returns the payload unchanged (no `references` key is added), so a plain message stays link-free.
+func StampReferences(existing *json.RawMessage, refs []TicketRef) *json.RawMessage {
+	if len(refs) == 0 {
+		return existing
+	}
+	obj := map[string]json.RawMessage{}
+	if existing != nil && len(*existing) > 0 {
+		_ = json.Unmarshal(*existing, &obj) // a non-object payload is replaced rather than corrupted
+	}
+	encoded, _ := json.Marshal(refs)
+	obj[referencesPayloadKey] = encoded
+	out, _ := json.Marshal(obj)
+	raw := json.RawMessage(out)
+	return &raw
+}
+
+// ReferencesOf reads the ticket references from a message payload. Absent/malformed ⇒ nil, so a plain
+// message (no `references` field) carries no links.
+func ReferencesOf(payload *json.RawMessage) []TicketRef {
+	if payload == nil || len(*payload) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		References []TicketRef `json:"references"`
+	}
+	if err := json.Unmarshal(*payload, &wrapper); err != nil {
+		return nil
+	}
+	return wrapper.References
+}
+
+// normalizeTicketRefs is the pure pre-resolution pass (no I/O): it de-duplicates candidate references
+// by work-item id (first-seen wins, order preserved) and drops any with a blank or non-UUID id BEFORE
+// the resolver's project-membership check — so a malformed or empty token never reaches coord and the
+// UUID-keyed MVP contract is enforced client-independently. The surviving title is carried through
+// verbatim; the resolver is free to canonicalize it against the authoritative source.
+func normalizeTicketRefs(refs []TicketRef) []TicketRef {
+	seen := make(map[string]bool, len(refs))
+	out := make([]TicketRef, 0, len(refs))
+	for _, r := range refs {
+		id := strings.TrimSpace(r.WorkItemID)
+		if id == "" {
+			continue
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			continue // work items are UUID-keyed (Q1 Option A); a non-UUID token is not a valid ref
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, TicketRef{WorkItemID: id, Title: r.Title})
+	}
+	return out
+}
+
+// TicketRefResolver is the ISI-5165 resolution seam: given the room's projectID, the caller's Team
+// scope, and candidate references, it returns the subset that EXIST and belong to that project —
+// the LINK-not-dispatch guardrail's resolution half. It reuses the coord project-narrowing ride
+// (searchWorkItems / ReadWorkItemThread) and may canonicalize each returned Title from the
+// authoritative source; unknown or out-of-project refs are dropped (never persisted). apiserver
+// supplies the implementation. A nil resolver (DB-less dev runs, or before the wiring lands) resolves
+// nothing, so no references are persisted and a post stays link-free exactly as before.
+type TicketRefResolver interface {
+	ResolveTicketRefs(ctx context.Context, projectID string, teamID uuid.UUID, refs []TicketRef) ([]TicketRef, error)
+}
+
+// SetTicketRefResolver wires the reference-resolution seam onto the handler (post-construction, same
+// rationale as SetMentionDispatcher / SetReplyHopResolver). Without it, ticket references are dropped.
+func (h *Handler) SetTicketRefResolver(r TicketRefResolver) { h.refResolver = r }
+
+// stampTicketRefs (ISI-5165) is the REST handler's pre-write hook: it normalizes the request's
+// candidate references, resolves them against the message's project (dropping unknown/out-of-project
+// refs), and merges only the surviving links into the payload under `references`. It is best-effort by
+// construction — a nil resolver, no candidates, a resolver error, or an empty result all pass the
+// payload through unchanged. A reference is durable link metadata, NEVER a write fence (the message is
+// the durable artifact) and NEVER a dispatch (this hook emits no MentionDispatch).
+func (h *Handler) stampTicketRefs(ctx context.Context, projectID string, auth AuthorContext, refs []TicketRef, payload *json.RawMessage) *json.RawMessage {
+	if h.refResolver == nil {
+		return payload
+	}
+	candidates := normalizeTicketRefs(refs)
+	if len(candidates) == 0 {
+		return payload
+	}
+	resolved, err := h.refResolver.ResolveTicketRefs(ctx, projectID, auth.TeamID, candidates)
+	if err != nil || len(resolved) == 0 {
+		return payload // best-effort: an unresolvable set degrades to a link-free (but durable) message
+	}
+	return StampReferences(payload, resolved)
 }
 
 // dispatchableStatus reports whether an agent in the given presence bucket may be auto-dispatched: the

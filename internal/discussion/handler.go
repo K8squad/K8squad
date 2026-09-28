@@ -75,6 +75,7 @@ type Handler struct {
 	org         OrgReader
 	dispatcher  MentionDispatcher // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
 	hopResolver ReplyHopResolver  // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
+	refResolver TicketRefResolver // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -322,6 +323,11 @@ type postMessageReq struct {
 	Audience *string          `json:"audience,omitempty"`
 	Kind     *string          `json:"kind,omitempty"`
 	Payload  *json.RawMessage `json:"payload,omitempty"`
+	// References are structured ticket LINKS (ISI-5165): work-item UUIDs (with a display title) the
+	// composer's picker carried. They are validated against the message's project and merged into the
+	// stored payload under `references` — they are NOT dispatches (no @-mention, no run) and pull no
+	// context into any agent run. Unknown/out-of-project refs are dropped, never persisted.
+	References []TicketRef `json:"references,omitempty"`
 }
 
 func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
@@ -358,6 +364,10 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	// ISI-5116 (loop guard): an agent-authored reply from within a dispatched thread-run must carry the
 	// hop it runs at, so a further @-mention in it stays bounded (hop 2 dispatches, hop 3 is refused).
 	req.Payload = h.stampReplyHop(r.Context(), auth, req.Payload)
+	// ISI-5165: validate any structured ticket references against THIS project and merge the surviving
+	// links into the payload. This is a LINK, not a dispatch — it merges alongside the hop above and
+	// never emits a MentionDispatch (see stampTicketRefs). Unknown/out-of-project refs are dropped.
+	req.Payload = h.stampTicketRefs(r.Context(), projectID, auth, req.References, req.Payload)
 	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
 	if err != nil {
 		writeStoreErr(w, err)
