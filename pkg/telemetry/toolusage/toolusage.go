@@ -557,6 +557,21 @@ func categorizeTool(name, server string) string {
 	return "system"
 }
 
+// isNamedToolFamily reports whether a categorized tool type is a specific,
+// bounded-cardinality executable family (git, docker, kubectl, …) that should
+// surface as its own gen_ai.tool.name (ISI-5146, ISI-4540 W5). The generic
+// shell bucket ("bash") and the catch-alls ("system"/"mcp") stay under the
+// runtime-exposed tool name so an arbitrary `ls`/`cat` shell call does not
+// explode span or metric cardinality.
+func isNamedToolFamily(toolType string) bool {
+	switch toolType {
+	case "git", "docker", "kubectl", "helm", "node", "python":
+		return true
+	default:
+		return false
+	}
+}
+
 // ToolEvent maps one EventTool payload for taskID under the given labels.
 // Phase "start" opens the span; phase "result" settles it. Any other phase
 // is mapped safely as a standalone unknown-outcome span (D1 AC: unknown
@@ -580,17 +595,27 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 	if idx := m.stepIndex(taskID); idx > 0 {
 		attrs = append(attrs, attrStepIndex.Int64(idx))
 	}
-	// ISI-4720: a shell-family call (bash) whose real executable the shim
-	// resolved (p.Command: git|kubectl|npm|…) is categorized by what it RAN,
-	// and the executable rides ksquad.tool.command, so a bash-wrapped git call
-	// is no longer an opaque "bash" span. gen_ai.tool.name stays the tool the
-	// runtime exposed. The command is only trusted for local (non-MCP) calls.
+	// ISI-4720 + ISI-5146 (ISI-4540 W5): a shell-family call (bash) whose real
+	// executable the shim resolved (p.Command: git|kubectl|npm|…) is categorized
+	// by what it RAN (ksquad.tool.type) with the executable on ksquad.tool.command.
+	// Parent ISI-4540 §3 ("the tools are attached to bash, i was expecting git,
+	// mcp, …"): a recognized executable is ALSO surfaced as the gen_ai.tool.name
+	// so a git call appears as its own gen_ai.tool.call instead of collapsing
+	// under an opaque "bash" span. The effective name is derived identically on
+	// start and result (opencode sets p.Command on both phases) so the pending
+	// span keys agree, and it is the metric label. Unrecognized shell commands
+	// (ls, cat, …) keep gen_ai.tool.name="bash" to bound span/metric cardinality.
+	// The command is only trusted for local (non-MCP) calls.
+	toolName := p.Name
 	toolType := categorizeTool(p.Name, p.Server)
-	attrs = append(attrs, semconv.GenAIToolName(p.Name))
 	if !isMCP && p.Command != "" {
 		toolType = categorizeTool(p.Command, "")
+		if isNamedToolFamily(toolType) {
+			toolName = p.Command
+		}
 		attrs = append(attrs, attrToolCommand.String(p.Command))
 	}
+	attrs = append(attrs, semconv.GenAIToolName(toolName))
 	attrs = append(attrs, attrToolType.String(toolType))
 	if p.ArgsSHA256 != "" {
 		// The hash IS the argument surface — raw args never reach this
@@ -616,18 +641,18 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 		_, span := m.startWithOptions(ctx, name, opts)
 		elapsed := m.now()
 		m.mu.Lock()
-		m.pending[spanKey(taskID, p.Name)] = pendingSpan{span: span, start: elapsed}
+		m.pending[spanKey(taskID, toolName)] = pendingSpan{span: span, start: elapsed}
 		m.mu.Unlock()
 	case "result":
 		outcome := mapOutcome(p.OK)
 		attrs = append(attrs, attrOutcome.String(outcome))
-		m.settle(ctx, taskID, p.Name, name, attrs, outcome, func(d float64) {
+		m.settle(ctx, taskID, toolName, name, attrs, outcome, func(d float64) {
 			if isMCP {
 				m.ins.MCPDur.WithLabelValues(p.Server, p.Name).Observe(d)
 			}
 		})
 		if !isMCP {
-			m.ins.ToolCalls.WithLabelValues(p.Name, labels.Agent, p.Skill).Inc()
+			m.ins.ToolCalls.WithLabelValues(toolName, labels.Agent, p.Skill).Inc()
 		}
 	default:
 		// Unknown phase: emit a complete standalone span so the activity is

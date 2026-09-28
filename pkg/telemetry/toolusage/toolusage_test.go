@@ -916,11 +916,13 @@ func TestToolEventCarriesToolType(t *testing.T) {
 	}
 }
 
-// TestToolEventShellCommandEnrichment (ISI-4720): a bash-family tool call the
-// shim resolved to a real executable (Command="git") is categorized by what it
-// RAN — ksquad.tool.type=git and ksquad.tool.command=git — while
-// gen_ai.tool.name stays the tool the runtime exposed ("bash"). Without this a
-// git/kubectl/npm call is an invisible, uncategorized "bash" span.
+// TestToolEventShellCommandEnrichment (ISI-4720 + ISI-5146/ISI-4540 W5): a
+// bash-family tool call the shim resolved to a real executable (Command="git")
+// is categorized by what it RAN — ksquad.tool.type=git and
+// ksquad.tool.command=git — AND surfaces under gen_ai.tool.name="git" so the
+// call appears as its own gen_ai.tool.call instead of collapsing under an
+// opaque "bash" span (parent ISI-4540 §3). This supersedes the earlier
+// ISI-4720 behavior where gen_ai.tool.name stayed "bash".
 func TestToolEventShellCommandEnrichment(t *testing.T) {
 	m, sr, _ := newTestMapper(t)
 	ctx := context.Background()
@@ -933,14 +935,101 @@ func TestToolEventShellCommandEnrichment(t *testing.T) {
 
 	span := findSpan(t, sr, SpanToolCall)
 	attrs := attrMap(span.Attributes())
-	if got := attrs["gen_ai.tool.name"]; got != "bash" {
-		t.Errorf("gen_ai.tool.name = %v, want bash (the exposed tool)", got)
+	if got := attrs["gen_ai.tool.name"]; got != "git" {
+		t.Errorf("gen_ai.tool.name = %v, want git (the resolved executable, ISI-5146)", got)
 	}
 	if got := attrs["ksquad.tool.type"]; got != "git" {
 		t.Errorf("ksquad.tool.type = %v, want git (categorized by what it ran)", got)
 	}
 	if got := attrs["ksquad.tool.command"]; got != "git" {
 		t.Errorf("ksquad.tool.command = %v, want git", got)
+	}
+}
+
+// TestToolEventGitSurfacesAsNamedTool (ISI-5146, ISI-4540 W5 AC): a run
+// performing git shows a git gen_ai.tool.call span — one paired start→result
+// span named "git" with a truthful start→result duration, and the
+// ksquad_tool_calls_total metric labeled tool="git" (not "bash"), so a git
+// call is findable by name exactly like read/bash/MCP.
+func TestToolEventGitSurfacesAsNamedTool(t *testing.T) {
+	m, sr, reg := newTestMapper(t)
+	ctx := context.Background()
+	p := a2a.ToolPayload{Name: "bash", Command: "git"}
+	p.Phase = "start"
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+	p.Phase = "result"
+	p.OK = boolPtr(true)
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+
+	// Exactly one tool.call span, paired (has a duration), named git.
+	spans := sr.Ended()
+	var toolSpans int
+	for _, s := range spans {
+		if s.Name() == SpanToolCall {
+			toolSpans++
+		}
+	}
+	if toolSpans != 1 {
+		t.Fatalf("gen_ai.tool.call span count = %d, want 1 (start+result paired into one span)", toolSpans)
+	}
+	span := findSpan(t, sr, SpanToolCall)
+	attrs := attrMap(span.Attributes())
+	if got := attrs["gen_ai.tool.name"]; got != "git" {
+		t.Errorf("gen_ai.tool.name = %v, want git", got)
+	}
+	if _, ok := attrs["ksquad.duration.ms"]; !ok {
+		t.Errorf("paired git call must carry ksquad.duration.ms (start→result); attrs=%v", attrs)
+	}
+	if got := toolCallsForLabel(t, reg, "git"); got != 1 {
+		t.Errorf("ksquad_tool_calls_total{tool=git} = %v, want 1", got)
+	}
+	if got := toolCallsForLabel(t, reg, "bash"); got != 0 {
+		t.Errorf("ksquad_tool_calls_total{tool=bash} = %v, want 0 (git no longer collapses under bash)", got)
+	}
+}
+
+// toolCallsForLabel returns the ksquad_tool_calls_total counter value for the
+// given tool label (0 if absent), so a test can assert git surfaces under its
+// own metric label rather than "bash".
+func toolCallsForLabel(t *testing.T, reg *prometheus.Registry, tool string) float64 {
+	t.Helper()
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range mf {
+		if f.GetName() != "ksquad_tool_calls_total" {
+			continue
+		}
+		for _, mm := range f.GetMetric() {
+			for _, lp := range mm.GetLabel() {
+				if lp.GetName() == "tool" && lp.GetValue() == tool {
+					return mm.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// TestToolEventUnrecognizedShellStaysBash (ISI-5146): an unrecognized shell
+// command (ls) is NOT promoted to its own gen_ai.tool.name — it keeps the
+// runtime-exposed "bash" name so arbitrary shell calls don't explode span or
+// metric cardinality. Only bounded executable families (git, kubectl, …) are
+// surfaced by name.
+func TestToolEventUnrecognizedShellStaysBash(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+	p := a2a.ToolPayload{Name: "bash", Command: "ls", Phase: "result", OK: boolPtr(true)}
+	m.ToolEvent(ctx, Labels{Agent: "a"}, "task-1", p)
+
+	span := findSpan(t, sr, SpanToolCall)
+	attrs := attrMap(span.Attributes())
+	if got := attrs["gen_ai.tool.name"]; got != "bash" {
+		t.Errorf("gen_ai.tool.name = %v, want bash (unrecognized command stays under bash)", got)
+	}
+	if got := attrs["ksquad.tool.type"]; got != "system" {
+		t.Errorf("ksquad.tool.type = %v, want system", got)
 	}
 }
 
