@@ -142,6 +142,9 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 		  FROM coord.work_item
 		 WHERE project_id = $1::uuid
 		   AND ($2::uuid IS NULL OR team_id = $2::uuid)
+		   -- ADR-0024b §4.2 board-hide: discussion thread-runs are not board items, so they must not
+		   -- inflate the board's status chart. Allowlist filter (source='board').
+		   AND source = 'board'
 		   AND created_at <= $3`, projectID, nullUUID(teamID), to)
 	if err != nil {
 		return nil, fmt.Errorf("coord.ProjectStatusSnapshots: items %s: %w", projectID, err)
@@ -175,6 +178,8 @@ func (s *WorkItemReadStore) ProjectStatusSnapshots(ctx context.Context, teamID, 
 		  JOIN coord.work_item w ON w.id = a.work_item_id
 		 WHERE w.project_id = $1::uuid
 		   AND ($2::uuid IS NULL OR w.team_id = $2::uuid)
+		   -- ADR-0024b §4.2 board-hide: exclude discussion thread-run transitions from board metrics.
+		   AND w.source = 'board'
 		   AND a.event_type = 'state_transition'
 		   AND a.created_at <= $3
 		 ORDER BY a.work_item_id, a.id`, projectID, nullUUID(teamID), to)

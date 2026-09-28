@@ -174,6 +174,9 @@ func (s *PostgresSearcher) Search(ctx context.Context, q Query) ([]Result, error
 		       w.updated_at
 		  FROM coord.work_item w, q
 		 WHERE w.search_tsv @@ q.tsq
+		   -- ADR-0024b §4.2 board-hide: a discussion-sourced thread-run must not surface to a human
+		   -- searcher any more than it appears on the board. Allowlist filter (source='board').
+		   AND w.source = 'board'
 		   %s
 		 ORDER BY ts_rank_cd(w.search_tsv, q.tsq) DESC, w.updated_at DESC
 		 LIMIT $%d`, scope, limitArg)

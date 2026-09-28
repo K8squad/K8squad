@@ -77,6 +77,23 @@ type MentionDispatcher interface {
 // mentions and dispatches nobody.
 func (h *Handler) SetMentionDispatcher(d MentionDispatcher) { h.dispatcher = d }
 
+// ReplyHopResolver is the ISI-5116 reply-plumbing seam: given the (server-stamped) id of the Run a
+// message was posted from, it returns the loop-guard hop the Run was dispatched to reply at, if that
+// Run is a dispatch-on-mention thread-run. This is what lets an agent→agent reply carry an HONEST hop
+// without trusting the agent to echo the number: postMessage stamps it from the Run's identity alone,
+// via the dispatch ledger (apiserver supplies the implementation). `ok=false` for any Run that is not a
+// thread-run (a normal post stays hop 0). An error degrades to no stamp — best-effort, the reply is
+// already durable and valid; the other three guardrails (de-dupe, rate cap, opt-out) still bound the
+// blast radius. A nil resolver (DB-less dev runs, or before this wiring lands) leaves replies unstamped
+// exactly as before, so a plain post remains hop 0.
+type ReplyHopResolver interface {
+	HopForDispatchedRun(ctx context.Context, runID string) (hop int, ok bool, err error)
+}
+
+// SetReplyHopResolver wires the reply-hop seam onto the handler (post-construction, same rationale as
+// SetMentionDispatcher). Without it, agent replies are not auto-stamped.
+func (h *Handler) SetReplyHopResolver(r ReplyHopResolver) { h.hopResolver = r }
+
 const (
 	// maxMentionHopDepth bounds agent→agent chaining: a human post is hop 0, so the run it dispatches
 	// is hop 1; that run's @-mention dispatches hop 2; a hop-2 run's @-mention would be hop 3 and is
@@ -272,4 +289,23 @@ func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth A
 		t.TriggeredByAgentID = auth.AgentID
 		_ = h.dispatcher.DispatchMention(ctx, t) // best-effort: the row is already committed
 	}
+}
+
+// stampReplyHop (ISI-5116) returns the payload a message should be stored with, auto-stamping the
+// loop-guard hop for an agent-authored reply posted from within a dispatched thread-run. The hop is
+// derived from the Run's server-stamped identity (auth.RunID) via the dispatch ledger — NOT from an
+// agent-supplied number — so a misbehaving run cannot reset its own hop to escape the loop guard. A
+// non-agent post, a post outside a Run, an unwired resolver, or a Run that is not a thread-run all pass
+// the payload through unchanged (a normal post stays hop 0). Best-effort: a resolver error also passes
+// through — the reply is already valid, and the other three guardrails still bound the blast radius.
+func (h *Handler) stampReplyHop(ctx context.Context, auth AuthorContext, payload *json.RawMessage) *json.RawMessage {
+	if auth.AgentID == nil || auth.RunID == nil || h.hopResolver == nil {
+		return payload
+	}
+	hop, ok, err := h.hopResolver.HopForDispatchedRun(ctx, *auth.RunID)
+	if err != nil || !ok {
+		return payload
+	}
+	stamped := StampDispatchHop(payload, hop)
+	return &stamped
 }
