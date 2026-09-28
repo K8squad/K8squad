@@ -36,10 +36,12 @@ limitations under the License.
 // The credential wait is a poll loop (1s tick), not a fsnotify: the projected
 // Secret volume materializes on the kubelet's sync cadence, and ADR-0007
 // explicitly accepts that latency ("the supervisor waits on the file rather
-// than racing it"). Once the files land, the supervisor Extracts the W3C
-// carrier they carry and initializes the telemetry spine with it, so every
-// span the supervisor/runtime emits joins the Run's distributed trace — the
-// M1.2 telemetry leg.
+// than racing it"). The telemetry spine (OTLP exporter + providers) comes up at
+// process start (ISI-5142), so the ksquad-supervisor service entity and early
+// spans export before any Run binds; once the credential files land, the
+// supervisor Extracts the W3C carrier they carry and runs the task on it, so
+// every span the supervisor/runtime emits joins the Run's distributed trace —
+// the M1.2 telemetry leg.
 package main
 
 import (
@@ -91,6 +93,40 @@ func runSupervisor(args []string) error {
 		addr = args[0]
 	}
 
+	// ISI-5142 (ISI-4540 W3): bring the OTLP trace exporter up at process start —
+	// BEFORE the first span and BEFORE the credential handshake. The old design
+	// deferred telemetry.Setup until awaitCredential completed the Bind→pod
+	// handshake, so supervisor.start and every pre-credential span was recorded
+	// by the no-op global tracer and dropped, and an unbound warm pod never
+	// registered a service entity at all — exactly Bluebox's "ZERO ksquad-shim
+	// spans / no shim service entity over 24h". The exporter does not need the
+	// run's trace context to exist: the run's spans still parent onto the Run's
+	// distributed trace by SubmitTask running on the carrier-extracted context
+	// (s.traceCtx set at handshake), and the CaptureUnsampledRemoteParent sampler
+	// makes that decision per span, not at Setup time.
+	supTelemetryOpts, filled := supervisorTelemetryOptions(os.Getenv)
+	if len(filled) > 0 {
+		fmt.Fprintf(os.Stderr, "shim supervisor: OTLP export via OTEL_EXPORTER_OTLP_* env for %v (endpoint=%s)\n",
+			filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	} else {
+		// No endpoint configured → every signal stays on the stderr default and
+		// the shim's spans never reach the gateway/Dynatrace. Surface it loudly
+		// so "zero shim spans" reads as a config gap, not a silent void.
+		fmt.Fprintln(os.Stderr, "shim supervisor: OTEL_EXPORTER_OTLP_ENDPOINT unset — "+
+			"spans stay on stderr and will NOT reach the observability gateway (no ksquad-supervisor service entity)")
+	}
+	var telemetryShutdown telemetry.ShutdownFunc
+	if _, shutdown, terr := telemetry.Setup(context.Background(), supTelemetryOpts); terr == nil {
+		telemetryShutdown = shutdown
+	} else {
+		// A dead spine means the run's spans silently vanish (ISI-4413). Surface
+		// it on stderr (stdout is reserved for the /task event wire) instead of
+		// masquerading as "OTLP export engaged".
+		fmt.Fprintf(os.Stderr, "shim supervisor: telemetry.Setup failed, run spans will not export: %v\n", terr)
+	}
+
+	// The exporter is live now, so this root span actually exports and the
+	// ksquad-supervisor service entity registers even before a Run binds.
 	ctx := context.Background()
 	_, supSpan := telemetry.Tracer().Start(ctx, "supervisor.start",
 		trace.WithAttributes(
@@ -114,6 +150,10 @@ func runSupervisor(args []string) error {
 		// supervisor is long-lived and exposes the exposition on GET /metrics.
 		metricsReg:     prometheus.NewRegistry(),
 		supervisorSpan: supSpan,
+		// Owned here so runSupervisor's exit-path defer flushes the pipelines at
+		// process teardown (ISI-4161); populated at start now (ISI-5142), not by
+		// the handshake.
+		telemetryShutdown: telemetryShutdown,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", sup.handleHealth)
@@ -166,6 +206,24 @@ func runSupervisor(args []string) error {
 	}
 }
 
+// supervisorTelemetryOptions builds the telemetry spine options for the in-pod
+// supervisor (ISI-5142): the ksquad-supervisor service resource, stderr as the
+// stdout-default sink (never stdout — /task's body IS the run-event wire), and
+// the sandbox's one-Run unsampled-parent capture (ISI-4413). It then layers the
+// operator-stamped OTEL_EXPORTER_OTLP_* env (warmpool WithPodEnv, M1.2) over
+// every signal still on the stdout default, so supervisor/runtime spans reach
+// the observability gateway instead of dying on stderr. The returned slice names
+// the signals routed to OTLP (empty when no endpoint is configured), for logging.
+func supervisorTelemetryOptions(getenv func(string) string) (telemetry.Options, []string) {
+	opts := telemetry.Options{
+		ServiceName:                  "ksquad-supervisor",
+		Writer:                       os.Stderr,
+		CaptureUnsampledRemoteParent: true,
+	}
+	filled := telemetry.ApplyEnvOTLPFallback(&opts, telemetry.EnvSignalExport(getenv))
+	return opts, filled
+}
+
 // supervisor is the shared state of the in-pod control surface.
 type supervisor struct {
 	toolUsage bool
@@ -179,9 +237,10 @@ type supervisor struct {
 
 	mu   sync.RWMutex
 	cred *taskio.RunCredential
-	// telemetryShutdown is the OTel provider shutdown the handshake's
-	// telemetry.Setup returned (nil until then); owned by runSupervisor's
-	// exit path, stored here because Setup runs inside awaitCredential.
+	// telemetryShutdown is the OTel provider shutdown telemetry.Setup returned.
+	// Set once at supervisor start (ISI-5142) — the exporter comes up before the
+	// credential handshake now — and owned by runSupervisor's exit path so the
+	// pipelines flush at process teardown.
 	telemetryShutdown telemetry.ShutdownFunc
 	// credAt is when the handshake completed (observability).
 	credAt time.Time
@@ -225,36 +284,14 @@ func (s *supervisor) awaitCredential(ctx context.Context) {
 		if cred.TraceState != "" {
 			carrier["tracestate"] = cred.TraceState
 		}
+		// ISI-5142: the telemetry spine (OTLP exporter, providers, sampler) is
+		// already up — runSupervisor initialized it at process start. The
+		// handshake only supplies the run's trace context: Extract the injected
+		// W3C carrier so SubmitTask, running on this tctx, parents the run's spans
+		// onto the Run's distributed trace. The CaptureUnsampledRemoteParent
+		// sampler (set at Setup) captures that subtree even when the injected
+		// parent carries sampled=0 (ISI-4413), so no second Setup is needed.
 		tctx := telemetry.Extract(ctx, carrier)
-		supTelemetryOpts := telemetry.Options{
-			ServiceName: "ksquad-supervisor",
-			Writer:      os.Stderr, // never stdout: /task's body IS the event wire
-			// ISI-4413: the run's spans continue the operator-injected credential
-			// traceparent; a sandbox hosts exactly one Run, so its run trace must
-			// be captured even when that injected parent carries sampled=0 (which
-			// would otherwise head-drop run.start/llm.call/run.end in the sandbox).
-			CaptureUnsampledRemoteParent: true,
-		} // M1.2 telemetry leg: the operator stamps OTEL_EXPORTER_OTLP_* (the
-		// observability gateway) onto the sandbox pod env (warmpool
-		// WithPodEnv); honor it for every signal still on the stdout default
-		// so supervisor/runtime spans reach the gateway instead of dying on
-		// stderr.
-		if filled := telemetry.ApplyEnvOTLPFallback(&supTelemetryOpts, telemetry.EnvSignalExport(os.Getenv)); len(filled) > 0 {
-			fmt.Fprintf(os.Stderr, "shim supervisor: OTLP export via OTEL_EXPORTER_OTLP_* env for %v (endpoint=%s)\n",
-				filled, os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
-		}
-		if _, shutdown, terr := telemetry.Setup(tctx, supTelemetryOpts); terr == nil {
-			s.mu.Lock()
-			s.telemetryShutdown = shutdown
-			s.mu.Unlock()
-		} else {
-			// A failed Setup leaves the global providers non-exporting (a partial
-			// install may even shut the trace provider down), so the supervisor's
-			// run spans would silently vanish — the exact ISI-4413 symptom. Never
-			// swallow it: surface it on stderr so a dead spine is diagnosable
-			// instead of masquerading as "OTLP export engaged".
-			fmt.Fprintf(os.Stderr, "shim supervisor: telemetry.Setup failed, run spans will not export: %v\n", terr)
-		}
 		toolusage.SetEnabled(s.toolUsage)
 
 		s.mu.Lock()
