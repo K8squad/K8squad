@@ -139,12 +139,24 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	if limit <= 0 {
 		limit = DefaultIntakeMaxPerPass
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id::text, team_id::text, project_id::text, requested_agent
-		  FROM coord.work_item
-		 WHERE state = 'todo' AND team_id IS NOT NULL
-		 ORDER BY created_at, id
-		 LIMIT $1`, limit)
+	// ISI-5137 / ADR-0024c §4 — thread-runs are single-shot. A board-hidden
+	// source='discussion' item is dispatched at most once: once its run has
+	// reached a terminal reconcile_step (succeeded/failed/cancelled) the item is
+	// NEVER re-selected, so a failed reply attempt is a dead end, not the
+	// unbounded PAID re-dispatch the ISI-4556 re-arm produces for board items. A
+	// FRESH discussion item (no terminal claim yet — DueWorkItems is the sole
+	// Run-mint path) is still selected for its first dispatch. A source='board'
+	// item is untouched: the NOT-clause is false, so ISI-4556 re-arm stands.
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
+		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent
+		  FROM coord.work_item wi
+		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
+		   AND NOT (wi.source = 'discussion'
+		            AND EXISTS (SELECT 1 FROM coord.claim c
+		                         WHERE c.work_item_id = wi.id
+		                           AND c.reconcile_step IN %s))
+		 ORDER BY wi.created_at, wi.id
+		 LIMIT $1`, terminalSet), limit)
 	if err != nil {
 		return nil, fmt.Errorf("rundrive.intake: list due work items: %w", err)
 	}
@@ -194,6 +206,11 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 // move can never resurrect a claim a live Run holds, and a second call after
 // a committed re-arm matches nothing. The fence bump keeps any same-fence
 // zombie of the settled generation fenced out of the re-armed epoch.
+//
+// ISI-5137 / ADR-0024c §4: the guard ALSO excludes source='discussion' items —
+// a board-hidden thread-run is single-shot, so a settled discussion item is
+// never re-armed even if it re-enters 'todo'. This mirrors the DueWorkItems
+// exclusion (defense in depth at both intake seams); board items are untouched.
 func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -213,7 +230,8 @@ func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) er
 		   AND EXISTS (
 		         SELECT 1 FROM coord.work_item wi
 		          WHERE wi.id = coord.claim.work_item_id
-		            AND wi.state = 'todo')
+		            AND wi.state = 'todo'
+		            AND wi.source IS DISTINCT FROM 'discussion')
 		 RETURNING fence_token`, terminalSet)
 	switch err := tx.QueryRowContext(ctx, q, workItemID).Scan(&fenceAfter); {
 	case errors.Is(err, sql.ErrNoRows):
