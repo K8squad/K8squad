@@ -77,6 +77,7 @@ type Handler struct {
 	hopResolver  ReplyHopResolver    // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
 	refResolver  TicketRefResolver   // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
 	teamResolver ProjectTeamResolver // ISI-5198: room tenancy = project's OWNING team; nil ⇒ caller-team scope
+	projResolver ProjectUIDResolver  // ISI-5213: {projectId} slug → Project CR UID for the ticket-picker narrow; nil ⇒ raw-path compare
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -593,12 +594,33 @@ func (h *Handler) searchMentions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, MentionSearchResponse{Query: text, Results: results})
 }
 
+// ProjectUIDResolver maps a discussion room's {projectId} path variable — the console's canonical
+// "namespace/name" slug (ISI-3982) — to the owning Project CR UID that coord.work_item.project_id
+// keys on. The ticket-picker narrow (searchWorkItems) must compare like-for-like: the search read
+// model returns each hit's ProjectID as the Project UID (w.project_id::text), but the route carries
+// the slug, so a raw slug-vs-UID compare dropped EVERY row regardless of query (ISI-5213, the same
+// slug↔UID mismatch class ISI-5170 solved for the ref-resolver). ok=false (never fabricated) when the
+// project cannot be resolved — a DB-less dev host or an uncomposed squad — and the handler then falls
+// back to comparing against the raw path value, preserving the pre-resolver behaviour. The apiserver
+// supplies the implementation over the SAME shared ProjectRefResolver the dispatch / ticket-reference /
+// room-tenancy seams ride, so the picker resolves a Project identically to its sibling surfaces (no
+// second slug→UID mapping is introduced).
+type ProjectUIDResolver interface {
+	ResolveProjectUID(ctx context.Context, projectID string) (uid string, ok bool, err error)
+}
+
+// SetProjectUIDResolver wires the slug→Project-UID seam onto a handler built via NewHandler/
+// NewHandlerWithDeps (post-construction, same rationale as SetProjectTeamResolver / SetTicketRefResolver).
+// Without it, the ticket picker narrows against the raw {projectId} path value exactly as before.
+func (h *Handler) SetProjectUIDResolver(r ProjectUIDResolver) { h.projResolver = r }
+
 // searchWorkItems searches the work-item corpus via the global search service, scoped to the
 // caller's Team (or fleet-wide for admins — ADR-039) and then narrowed to the path's project.
 func (h *Handler) searchWorkItems(ctx context.Context, text, projectID string, auth AuthorContext) ([]MentionSuggestion, error) {
 	q := search.Query{
 		Text:     text,
 		Limit:    mentionWorkItemLimit,
+		Prefix:   true,                 // ISI-5213: while-typing prefix + stopword tolerance so a partial title matches
 		AllTeams: auth.IsAdmin,         // admin: fleet-wide (ADR-039)…
 		TeamID:   auth.TeamID.String(), // …everyone else: fenced to their Team (§12.1)
 	}
@@ -608,11 +630,22 @@ func (h *Handler) searchWorkItems(ctx context.Context, text, projectID string, a
 		return nil, err
 	}
 
+	// The search read model keys ProjectID on the Project CR UID (w.project_id::text), but the route
+	// carries the console "namespace/name" slug (ISI-3982). Resolve the slug → UID so the per-project
+	// narrow compares like-for-like; without a resolver (dev host) or when the project cannot be
+	// resolved, fall back to the raw path value — the unchanged pre-ISI-5213 comparison.
+	narrowID := projectID
+	if h.projResolver != nil {
+		if uid, ok, rerr := h.projResolver.ResolveProjectUID(ctx, projectID); rerr == nil && ok && uid != "" {
+			narrowID = uid
+		}
+	}
+
 	suggestions := make([]MentionSuggestion, 0, len(searchResults))
 	for _, result := range searchResults {
 		// The mention composer suggests tickets of THIS project; rows that predate project
 		// scoping (ProjectID "") are dropped rather than guessed at.
-		if projectID != "" && result.ProjectID != projectID {
+		if narrowID != "" && result.ProjectID != narrowID {
 			continue
 		}
 		suggestions = append(suggestions, MentionSuggestion{

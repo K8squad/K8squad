@@ -231,6 +231,93 @@ func TestSearchMentionsDegradedPaths(t *testing.T) {
 	})
 }
 
+// fakeProjectUIDResolver maps a room's {projectId} slug to a Project CR UID, mirroring the apiserver
+// adapter over the shared project-ref resolver. ok=false when the slug is not in uids (unknown /
+// uncomposed) so the handler falls back to the raw-path narrow.
+type fakeProjectUIDResolver struct {
+	uids map[string]string // slug → Project UID
+	err  error
+}
+
+func (f *fakeProjectUIDResolver) ResolveProjectUID(_ context.Context, projectID string) (string, bool, error) {
+	if f.err != nil {
+		return "", false, f.err
+	}
+	uid, ok := f.uids[projectID]
+	return uid, ok, nil
+}
+
+// TestSearchMentionsSlugKeyedProjectNarrow is the ISI-5213 regression: in production the {projectId}
+// route carries a "namespace/name" slug, but the search read model returns each hit keyed by the
+// Project CR UID (w.project_id::text). Before the fix the handler compared slug != UID and dropped
+// EVERY row — the picker returned nothing for any query. With the slug→UID resolver wired, the
+// in-project hit survives and a foreign-project hit is still dropped. It also pins that the picker
+// derives a prefix (while-typing) search query.
+func TestSearchMentionsSlugKeyedProjectNarrow(t *testing.T) {
+	const slug = "bmad-squad/intake"
+	projectUID := uuid.New().String()
+	otherUID := uuid.New().String()
+	auth := AuthorContext{Principal: "user:alice", TeamID: uuid.New()}
+
+	fs := &fakeSearcher{results: []search.Result{
+		{Type: "work_item", ID: "11111111-1111-1111-1111-111111111111", ProjectID: projectUID, Title: "Fix the intake sweep", State: "todo", Rank: 0.9},
+		{Type: "work_item", ID: "22222222-2222-2222-2222-222222222222", ProjectID: otherUID, Title: "Other project ticket", State: "todo", Rank: 0.8}, // foreign project — dropped
+	}}
+	h, _ := mentionServer(t, fs, &fakeRoster{})
+	h.SetProjectUIDResolver(&fakeProjectUIDResolver{uids: map[string]string{slug: projectUID}})
+
+	rec := httptest.NewRecorder()
+	// Set the {projectId} var directly (like TestPathUUID) to a "namespace/name" slug — the value the
+	// production router recovers after UseEncodedPath()+unescape — without the unit router collapsing
+	// the embedded '/' into two path segments.
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/x/discussion/mentions?q=intake", nil)
+	req = mux.SetURLVars(req, map[string]string{"projectId": slug})
+	req = req.WithContext(WithAuth(req.Context(), auth))
+	h.searchMentions(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	var got MentionSearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("results = %+v, want exactly the in-project ticket (foreign UID dropped)", got.Results)
+	}
+	if got.Results[0].ID != "11111111-1111-1111-1111-111111111111" || got.Results[0].ProjectID != projectUID {
+		t.Fatalf("results[0] = %+v, want the slug-keyed project's ticket", got.Results[0])
+	}
+	if len(fs.captured) != 1 || !fs.captured[0].Prefix {
+		t.Fatalf("derived query = %+v, want a single prefix (while-typing) search", fs.captured)
+	}
+}
+
+// TestSearchMentionsNarrowFallsBackWithoutResolver pins the degrade contract: with no slug→UID
+// resolver wired (a DB-less dev host), the picker narrows against the raw {projectId} path value
+// exactly as before — a UID-keyed dev project still matches when addressed by its UID.
+func TestSearchMentionsNarrowFallsBackWithoutResolver(t *testing.T) {
+	projectUID := uuid.New().String()
+	auth := AuthorContext{Principal: "user:alice", TeamID: uuid.New()}
+	fs := &fakeSearcher{results: []search.Result{
+		{Type: "work_item", ID: "11111111-1111-1111-1111-111111111111", ProjectID: projectUID, Title: "Ticket", State: "todo"},
+	}}
+	_, router := mentionServer(t, fs, &fakeRoster{}) // no SetProjectUIDResolver
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectUID+"/discussion/mentions?q=ticket", nil)
+	req = req.WithContext(WithAuth(req.Context(), auth))
+	router.ServeHTTP(rec, req)
+
+	var got MentionSearchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Results) != 1 {
+		t.Fatalf("results = %+v, want the raw-path narrow to still match a UID-addressed project", got.Results)
+	}
+}
+
 func TestSearchMentionsAgentCap(t *testing.T) {
 	project := uuid.New()
 	auth := AuthorContext{Principal: "user:alice", TeamID: uuid.New()}
