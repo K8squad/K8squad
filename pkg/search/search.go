@@ -66,6 +66,15 @@ type Query struct {
 	AllTeams bool
 	// Limit bounds the page (the handler clamps 1..maxLimit, default defaultLimit).
 	Limit int
+	// Prefix selects while-typing matching (ISI-5213): instead of websearch_to_tsquery (whole-word,
+	// stopword-only ⇒ empty), the text is lexized by to_tsvector (which strips stopwords) and each
+	// remaining lexeme is ANDed as a PREFIX term (lexeme:*). A partial word typed character-by-
+	// character then matches, and a stopword no longer zeroes the query. Set by the discussion
+	// ticket-picker so it feels like the substring-matched agent picker; the global /api/search read
+	// model leaves it false and keeps the exact websearch grammar. In Prefix mode a query that lexizes
+	// to nothing (all stopwords/punctuation) is NOT an error — it simply matches no rows (empty
+	// popover), never ErrEmptyQuery; only a blank/whitespace query is still ErrEmptyQuery.
+	Prefix bool
 }
 
 // ErrEmptyQuery marks a blank/whitespace-only query. The handler rejects this BEFORE calling the
@@ -161,10 +170,21 @@ func (s *PostgresSearcher) Search(ctx context.Context, q Query) ([]Result, error
 	args = append(args, limit)
 	limitArg := len(args)
 
-	// websearch_to_tsquery is computed ONCE in a CTE so the @@ match, the rank, and the headline all
-	// reference the same parsed query (and Postgres does not re-parse it three times).
+	// The query text is parsed ONCE in a CTE so the @@ match, the rank, and the headline all reference
+	// the same tsquery (and Postgres does not re-parse it three times). Two grammars, both built solely
+	// from the bound $1 (no request text is interpolated):
+	//   - default (global /api/search): websearch_to_tsquery — quoted phrases, OR, leading-minus
+	//     negation, whole-word matching; a stopword-only query parses to an empty tsquery.
+	//   - Prefix (the ticket-picker, ISI-5213): lexize with to_tsvector (stopwords dropped) and AND the
+	//     lexemes as PREFIX terms. Each lexeme is quote_literal-wrapped before ':*' so a lexeme can
+	//     never inject to_tsquery syntax. Over zero surviving lexemes string_agg yields NULL ⇒
+	//     to_tsquery(NULL) ⇒ NULL tsquery ⇒ @@ matches nothing (empty popover, not an error).
+	tsqExpr := `websearch_to_tsquery('english', $1)`
+	if q.Prefix {
+		tsqExpr = `to_tsquery('english', (SELECT string_agg(quote_literal(lexeme) || ':*', ' & ') FROM unnest(to_tsvector('english', $1))))`
+	}
 	query := fmt.Sprintf(`
-		WITH q AS (SELECT websearch_to_tsquery('english', $1) AS tsq)
+		WITH q AS (SELECT %s AS tsq)
 		SELECT w.id::text,
 		       COALESCE(w.project_id::text, ''),
 		       w.title,
@@ -179,7 +199,7 @@ func (s *PostgresSearcher) Search(ctx context.Context, q Query) ([]Result, error
 		   AND w.source = 'board'
 		   %s
 		 ORDER BY ts_rank_cd(w.search_tsv, q.tsq) DESC, w.updated_at DESC
-		 LIMIT $%d`, scope, limitArg)
+		 LIMIT $%d`, tsqExpr, scope, limitArg)
 
 	r, err := s.q.QueryContext(ctx, query, args...)
 	if err != nil {

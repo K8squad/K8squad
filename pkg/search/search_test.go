@@ -113,6 +113,43 @@ func TestSearch_AdminDropsTenancyPredicate(t *testing.T) {
 	}
 }
 
+func TestSearch_DefaultGrammarIsWebsearch(t *testing.T) {
+	fq := &fakeQueryer{rows: &fakeRows{}}
+	if _, err := newSearcher(fq).Search(context.Background(), Query{Text: "checkout", AllTeams: true}); err != nil {
+		t.Fatal(err)
+	}
+	// The global /api/search read model keeps the exact websearch grammar (Prefix defaults false).
+	if !strings.Contains(fq.gotQuery, "websearch_to_tsquery('english', $1)") {
+		t.Fatalf("default query must use websearch_to_tsquery; got:\n%s", fq.gotQuery)
+	}
+	if strings.Contains(fq.gotQuery, ":*") {
+		t.Fatalf("default query must NOT add prefix matching; got:\n%s", fq.gotQuery)
+	}
+}
+
+func TestSearch_PrefixGrammarLexizesAndPrefixMatches(t *testing.T) {
+	fq := &fakeQueryer{rows: &fakeRows{}}
+	if _, err := newSearcher(fq).Search(context.Background(), Query{Text: "inta", AllTeams: true, Prefix: true}); err != nil {
+		t.Fatal(err)
+	}
+	// ISI-5213: the ticket-picker path lexizes the text (stopword-tolerant) and prefix-matches each
+	// lexeme, so a partial word typed char-by-char still matches. It must NOT use the whole-word
+	// websearch grammar, and each lexeme is quote_literal-wrapped before ':*' so no lexeme can inject
+	// to_tsquery syntax.
+	if strings.Contains(fq.gotQuery, "websearch_to_tsquery") {
+		t.Fatalf("prefix query must not use websearch_to_tsquery; got:\n%s", fq.gotQuery)
+	}
+	for _, frag := range []string{"to_tsquery('english'", "unnest(to_tsvector('english', $1))", "quote_literal(lexeme) || ':*'"} {
+		if !strings.Contains(fq.gotQuery, frag) {
+			t.Fatalf("prefix query missing %q; got:\n%s", frag, fq.gotQuery)
+		}
+	}
+	// The text is still the single bound $1 — never interpolated into the SQL.
+	if len(fq.gotArgs) == 0 || fq.gotArgs[0] != "inta" {
+		t.Fatalf("prefix query must bind the text as $1; args=%v", fq.gotArgs)
+	}
+}
+
 func TestSearch_LimitClamped(t *testing.T) {
 	cases := []struct{ in, want int }{
 		{in: 0, want: defaultLimit},

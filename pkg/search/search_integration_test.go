@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -54,25 +55,42 @@ func applySearchMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS coord CASCADE`); err != nil {
-		t.Fatalf("reset coord schema: %v", err)
-	}
-	for _, name := range []string{"0001_coord_schema.sql", "0012_work_item_search.sql"} {
-		var mig []byte
-		var err error
-		for _, c := range []string{
-			filepath.Join("..", "..", "db", "migrations", name),
-			filepath.Join("db", "migrations", name),
-		} {
-			if mig, err = os.ReadFile(c); err == nil {
-				break
-			}
+	// Reset every schema the shipped migrations own so a re-run starts clean.
+	for _, sch := range []string{"coord", "discussion", "auth"} {
+		if _, err := db.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+sch+` CASCADE`); err != nil {
+			t.Fatalf("reset %s schema: %v", sch, err)
 		}
-		if mig == nil {
-			t.Fatalf("could not read shipped migration %s", name)
+	}
+	// Apply the FULL shipped migration chain in order — not a hand-picked subset — so the searcher runs
+	// against the real work_item shape (search_tsv + the ADR-0024b source='board' board-hide column that
+	// migration 0027 adds). Hand-picking 0001+0012 drifted RED once source was filtered in the SQL; the
+	// whole chain keeps the lane honest as new columns land. Test-seed files (*_test.sql) are excluded.
+	migDir := filepath.Join("..", "..", "db", "migrations")
+	if _, err := os.Stat(migDir); err != nil {
+		migDir = filepath.Join("db", "migrations")
+	}
+	files, err := filepath.Glob(filepath.Join(migDir, "0*.sql"))
+	if err != nil {
+		t.Fatalf("glob migrations: %v", err)
+	}
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.sql") {
+			continue // seed fixtures, not schema
+		}
+		names = append(names, f)
+	}
+	sort.Strings(names) // numeric filename prefix ⇒ lexical sort is apply order
+	if len(names) == 0 {
+		t.Fatalf("no shipped migrations found under %s", migDir)
+	}
+	for _, path := range names {
+		mig, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", path, err)
 		}
 		if _, err := db.ExecContext(ctx, string(mig)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
+			t.Fatalf("apply %s: %v", filepath.Base(path), err)
 		}
 	}
 }
@@ -174,5 +192,54 @@ func TestSearchIntegration(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Fatalf("empty-team (non-admin) query must return no rows, got %d", len(none))
+	}
+}
+
+// TestSearchIntegration_PrefixGrammar proves the ISI-5213 ticket-picker grammar against real Postgres:
+// a partial word typed while composing prefix-matches (a full-word websearch query would miss it), a
+// stopword in the query no longer zeroes it, and a stopword-only query returns no rows WITHOUT erroring
+// (so the picker shows an empty popover, never a 400). The default (websearch) grammar is proven above.
+func TestSearchIntegration_PrefixGrammar(t *testing.T) {
+	db := openSearchTestDB(t)
+	applySearchMigrations(t, db)
+	s, err := NewPostgresSearcher(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	const teamA = "aaaaaaaa-0000-0000-0000-000000000001"
+	const projA = "aaaaaaaa-1111-0000-0000-000000000001"
+	hit := seedItem(t, db, projA, teamA, "Fix the intake sweep", "unrelated body", "in_progress")
+
+	// A partial word ("inta") is what a user has typed mid-word. websearch matches whole words only, so
+	// the default grammar misses it; the prefix grammar matches "intake".
+	if got, err := s.Search(ctx, Query{Text: "inta", TeamID: teamA, Limit: 10}); err != nil {
+		t.Fatalf("default partial query errored: %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("default (websearch) grammar should NOT prefix-match a partial word, got %d", len(got))
+	}
+	got, err := s.Search(ctx, Query{Text: "inta", TeamID: teamA, Limit: 10, Prefix: true})
+	if err != nil {
+		t.Fatalf("prefix partial query errored: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != hit {
+		t.Fatalf("prefix grammar must match the partial word to the intake ticket, got %+v", got)
+	}
+
+	// A stopword in the query ("the intake") no longer zeroes it — to_tsvector drops the stopword and the
+	// remaining lexeme prefix-matches.
+	if got, err := s.Search(ctx, Query{Text: "the intake", TeamID: teamA, Limit: 10, Prefix: true}); err != nil {
+		t.Fatalf("prefix stopword query errored: %v", err)
+	} else if len(got) != 1 || got[0].ID != hit {
+		t.Fatalf("prefix grammar must tolerate a stopword and still match, got %+v", got)
+	}
+
+	// A stopword-only query lexizes to nothing: no rows, and crucially NOT ErrEmptyQuery (the picker
+	// shows an empty popover instead of a 400 while the user is mid-stopword).
+	if got, err := s.Search(ctx, Query{Text: "the", TeamID: teamA, Limit: 10, Prefix: true}); err != nil {
+		t.Fatalf("prefix stopword-only query must not error, got %v", err)
+	} else if len(got) != 0 {
+		t.Fatalf("prefix stopword-only query must return no rows, got %d", len(got))
 	}
 }

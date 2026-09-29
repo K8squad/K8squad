@@ -650,6 +650,15 @@ func main() {
 		discussionHandler.SetProjectTeamResolver(teamResolver)
 		log.Printf("ksquad-apiserver: discussion room tenancy scoped to the Project's owning Team (ISI-5198)")
 	}
+	// ISI-5213: the @-mention ticket picker narrows work-item hits to THIS room's project, but search
+	// returns rows keyed by the Project CR UID while the {projectId} route carries the console
+	// "namespace/name" slug — comparing the two directly dropped every row (picker returned nothing).
+	// Resolve slug → UID over the SAME shared project-ref resolver so the narrow compares like-for-like;
+	// a nil resolver (cache-less dev host) leaves the picker on the legacy raw-path compare.
+	if uidResolver := apiserver.NewProjectUIDResolver(projectRefs); uidResolver != nil {
+		discussionHandler.SetProjectUIDResolver(uidResolver)
+		log.Printf("ksquad-apiserver: discussion ticket-picker project narrow resolves slug → Project UID (ISI-5213)")
+	}
 	if workItemDispatch != nil {
 		discussionHandler.SetMentionDispatcher(apiserver.NewMentionDispatcher(workItemWrites, workItemDispatch, projectRefs, db))
 		discussionHandler.SetReplyHopResolver(apiserver.NewReplyHopResolver(db))
