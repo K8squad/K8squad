@@ -52,12 +52,13 @@ func Open(ctx context.Context, cfg Config) (*PgVectorStore, error) {
 // shared memory.memory_records scope columns. Ready asserts the live column types still match. When a
 // migration retypes one of these columns, update its cast sites in this file AND this map in the same
 // change — the map is the single source of truth for what schema this binary's code was written against.
-// project_id is text (0004_project_id_text.sql, ISI-4919); the id scopes stay uuid; kind is text.
+// project_id is text (0004_project_id_text.sql, ISI-4919) and agent_id is text (0005_agent_id_text.sql,
+// ISI-5210 — the agent identity is a NAME, not a uuid); squad_id/run_id stay uuid; kind is text.
 var expectedColumnTypes = map[string]string{
 	"squad_id":   "uuid",
 	"project_id": "text",
 	"run_id":     "uuid",
-	"agent_id":   "uuid",
+	"agent_id":   "text",
 	"kind":       "text",
 }
 
@@ -354,13 +355,14 @@ func (s *PgVectorStore) ReadChronological(ctx context.Context, squadID, agentID,
 	}
 	// No distance column — this is a time-ordered read, not a ranked one. Scope + retraction discipline
 	// is identical to Search/SearchByIDs: squad_id is the tenancy root, invalidated_at IS NULL excludes
-	// soft-retracted rows. agent_id/kind are cast so a text arg binds cleanly against the uuid/text
-	// columns (an ill-formed agent id surfaces as a legible query error, never a silent empty read).
+	// soft-retracted rows. agent_id is text (0005, ISI-5210: the agent identity is a NAME) so the diary
+	// owner arg — the name the model passes, matching what diary_append stamped — binds cleanly; kind is
+	// text. squad_id stays a ::uuid cast (tenancy root is a real uuid).
 	const q = `
 		SELECT id, squad_id, project_id, principal_id, run_id, agent_id, kind, content,
 		       created_at, invalidated_at, provenance
 		FROM memory.memory_records
-		WHERE squad_id = $1::uuid AND agent_id = $2::uuid AND kind = $3::text
+		WHERE squad_id = $1::uuid AND agent_id = $2::text AND kind = $3::text
 		  AND invalidated_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT $4`
