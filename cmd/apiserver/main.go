@@ -650,6 +650,18 @@ func main() {
 		log.Printf("ksquad-apiserver: dispatch-on-mention inert (no informer-backed dispatch store; room stays coordination-free)")
 	}
 
+	// ISI-5165/ISI-5170 ticket references: resolve the room's #-picker links against coord and persist
+	// only the in-project, in-Team survivors into Message.Payload.references. Independent of dispatch-on-
+	// mention (a reference is a LINK, never a dispatch), so it wires whenever the coord read model + project
+	// resolver are up; NewTicketRefResolver returns nil (references stay dropped, posts link-free) if either
+	// is absent, so a DB-less dev run behaves exactly as before.
+	if refResolver := apiserver.NewTicketRefResolver(workItemReads, projectRefs); refResolver != nil {
+		discussionHandler.SetTicketRefResolver(refResolver)
+		log.Printf("ksquad-apiserver: discussion ticket-references ready (room #-picker link → coord-validated Message.Payload.references; ISI-5170)")
+	} else {
+		log.Printf("ksquad-apiserver: discussion ticket-references inert (no coord read store or project resolver; posts stay link-free)")
+	}
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
 		Discussion:          discussionHandler,

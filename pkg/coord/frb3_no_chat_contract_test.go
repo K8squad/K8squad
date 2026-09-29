@@ -442,6 +442,8 @@ var allowedSurface = map[string]string{
 	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
 	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
 	"WorkItemReadStore.FindWorkItemByLabel":    "§13 label-keyed existence read for create-if-absent idempotency (ISI-4757/ISI-4766), Team-scoped (404 existence-hiding), read-only",
+	"WorkItemReadStore.WorkItemProject":        "§12.1 one work item's owning-project UID + title, Team-scoped (404 existence-hiding), read-only — DB-backed half of the discussion ticket-reference resolver (ISI-5165 seam / ISI-5170)",
+	"WorkItemProjectRef":                       "§12.1 owning-project UID + authoritative title returned by WorkItemProject; lets the discussion ticket-ref resolver drop out-of-project links and canonicalize chip labels (ISI-5170)",
 	"StatusSnapshot":                           "§6.5 one day's point-in-time per-status count for the overview stacked-area chart (read-only, ISI-4509)",
 
 	// §10 pause/resume + §11 per-user credentials + §7.2 credentialLifecycle
