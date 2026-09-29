@@ -170,3 +170,89 @@ describe("<Composer> — @-mention popover (ISI-4929, plan §4.3)", () => {
     });
   });
 });
+
+describe("<Composer> — `#` ticket picker (ISI-5167 / ISI-5134 S3)", () => {
+  it("typing #fragment opens a picker scoped to work_item suggestions", async () => {
+    const searchMentions = vi.fn().mockResolvedValue(MENTIONS);
+    render(<Composer onPost={vi.fn()} searchMentions={searchMentions} />);
+    fireEvent.change(screen.getByTestId("composer-body"), {
+      target: { value: "see #fl" },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("mention-popover")).toBeTruthy();
+    });
+    // The `#` trigger filters out the agent row — only the ticket remains.
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mention-option")).toHaveLength(1);
+    });
+    expect(searchMentions).toHaveBeenCalledWith("fl");
+    expect(screen.getAllByTestId("mention-option")[0]).toHaveAttribute(
+      "data-mention-type",
+      "work_item",
+    );
+  });
+
+  it("selecting a ticket inserts a #Title token and adds a structured ref to the payload", async () => {
+    const onPost = vi.fn();
+    const searchMentions = vi.fn().mockResolvedValue(MENTIONS);
+    render(<Composer onPost={onPost} searchMentions={searchMentions} />);
+    const body = screen.getByTestId("composer-body") as HTMLTextAreaElement;
+    fireEvent.change(body, { target: { value: "see #fl" } });
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mention-option").length).toBe(1);
+    });
+    fireEvent.click(screen.getAllByTestId("mention-option")[0]);
+    expect(body.value).toBe("see #Fix the flaky test ");
+    // Type the rest of the message and post.
+    fireEvent.change(body, {
+      target: { value: "see #Fix the flaky test please" },
+    });
+    fireEvent.click(screen.getByTestId("composer-submit"));
+    expect(onPost).toHaveBeenCalledTimes(1);
+    expect(onPost.mock.calls[0][0]).toEqual({
+      body: "see #Fix the flaky test please",
+      references: [{ workItemId: "wi-1", title: "Fix the flaky test" }],
+    });
+  });
+
+  it("agent `@` mention still works alongside `#` ticket refs in one post", async () => {
+    const onPost = vi.fn();
+    const searchMentions = vi.fn().mockResolvedValue(MENTIONS);
+    render(<Composer onPost={onPost} searchMentions={searchMentions} />);
+    const body = screen.getByTestId("composer-body") as HTMLTextAreaElement;
+    // Pick a ticket via `#`.
+    fireEvent.change(body, { target: { value: "#fl" } });
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mention-option").length).toBe(1);
+    });
+    fireEvent.click(screen.getAllByTestId("mention-option")[0]);
+    expect(body.value).toBe("#Fix the flaky test ");
+    // Then `@`-mention an agent (agents lead the unfiltered `@` list).
+    fireEvent.change(body, {
+      target: { value: "#Fix the flaky test @am" },
+    });
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mention-option").length).toBe(2);
+    });
+    fireEvent.click(screen.getAllByTestId("mention-option")[0]);
+    expect(body.value).toBe("#Fix the flaky test @Amelia ");
+    fireEvent.click(screen.getByTestId("composer-submit"));
+    expect(onPost.mock.calls[0][0]).toEqual({
+      body: "#Fix the flaky test @Amelia",
+      references: [{ workItemId: "wi-1", title: "Fix the flaky test" }],
+    });
+  });
+
+  it("a work_item picked from the `@` list inserts a #Title token (bug fix)", async () => {
+    const searchMentions = vi.fn().mockResolvedValue(MENTIONS);
+    render(<Composer onPost={vi.fn()} searchMentions={searchMentions} />);
+    const body = screen.getByTestId("composer-body") as HTMLTextAreaElement;
+    fireEvent.change(body, { target: { value: "ping @fl" } });
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mention-option").length).toBe(2);
+    });
+    // option[1] is the work_item under the unfiltered `@` list.
+    fireEvent.click(screen.getAllByTestId("mention-option")[1]);
+    expect(body.value).toBe("ping #Fix the flaky test ");
+  });
+});

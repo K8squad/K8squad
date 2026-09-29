@@ -8,11 +8,17 @@
 // point guaranteeing the wire body is `{ body, parentId?, audience? }` and
 // NOTHING else — provenance is server-stamped.
 //
-// @-mentions (plan §4.3): typing `@` + a fragment pops the MentionPopover,
-// backed by the injected `searchMentions` (the ISI-4926 endpoint). Picking a
-// suggestion replaces the fragment with the `@Name` token at the caret. When
-// no `searchMentions` prop is wired the composer simply never pops — the
-// affordance degrades silently.
+// @-mentions and #-tickets (plan §4.3, ISI-5167): typing `@` or `#` + a
+// fragment pops the MentionPopover, backed by the injected `searchMentions`
+// (the ISI-4926 endpoint, which returns both agent AND project-scoped
+// work_item suggestions). The trigger scopes the picker: `#` shows only
+// work_item (ticket) suggestions; `@` shows the full set (agents lead). Picking
+// an AGENT replaces the fragment with the `@Name` mention token; picking a
+// WORK_ITEM replaces it with the `#Title` ticket token AND collects a
+// structured link ({ workItemId, title }) into the outgoing payload — a LINK,
+// never a dispatch (ISI-5165 resolves/drops it server-side). This also fixes
+// the prior bug where a work_item picked from the `@` list inserted an `@`
+// prefix. When no `searchMentions` prop is wired the composer never pops.
 //
 // Still a COLLABORATION surface only: no custody verb rides this form.
 
@@ -22,10 +28,16 @@ import {
   canSubmit,
   type ComposerInput,
   type PostMessageBody,
+  type TicketReference,
 } from "@/lib/discussion/compose";
 import type { Audience } from "@/lib/discussion/audience";
 import type { MentionSuggestion } from "@/lib/discussion/types";
-import { mentionFragmentBefore } from "@/lib/mentions";
+import {
+  mentionFragmentBefore,
+  triggerFragmentBefore,
+  replaceTriggerFragment,
+  type MentionTrigger,
+} from "@/lib/mentions";
 import { MentionPopover } from "./MentionPopover";
 
 // The `@`-fragment matcher moved to the shared `lib/mentions` primitive (ISI-5159)
@@ -70,13 +82,25 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [fragment, setFragment] = useState("");
+  // Which trigger opened the popover: `@` shows the full result set (agents
+  // lead), `#` scopes it to work_item (ticket) suggestions (ISI-5167).
+  const [trigger, setTrigger] = useState<MentionTrigger>("@");
+  // Ticket links the `#` picker collected — carried into the outgoing payload
+  // (a LINK, not a dispatch; ISI-5165 resolves/drops them server-side).
+  const [refs, setRefs] = useState<TicketReference[]>([]);
   const caretRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const input: ComposerInput = { body, parentId: parentId ?? null, audience };
+  const input: ComposerInput = {
+    body,
+    parentId: parentId ?? null,
+    audience,
+    references: refs,
+  };
   const disabled = !canSubmit(input);
 
-  // Debounced mention query: fires only while a live `@fragment` is open.
+  // Debounced mention query: fires only while a live trigger fragment is open.
+  // A `#` trigger scopes the shown suggestions to work_item (ticket) rows.
   useEffect(() => {
     if (!mentionOpen || !searchMentions || fragment.length < 1) return;
     let alive = true;
@@ -85,7 +109,11 @@ export function Composer({
       searchMentions(fragment)
         .then((results) => {
           if (!alive) return;
-          setSuggestions(results);
+          const shown =
+            trigger === "#"
+              ? results.filter((r) => r.type === "work_item")
+              : results;
+          setSuggestions(shown);
           setActiveIndex(0);
           setMentionLoading(false);
         })
@@ -100,17 +128,18 @@ export function Composer({
       clearTimeout(t);
       setMentionLoading(false);
     };
-  }, [fragment, mentionOpen, searchMentions]);
+  }, [fragment, mentionOpen, searchMentions, trigger]);
 
   const syncMention = (text: string, caret: number) => {
     caretRef.current = caret;
-    const frag = mentionFragmentBefore(text, caret);
+    const frag = triggerFragmentBefore(text, caret);
     if (frag === null || !searchMentions) {
       setMentionOpen(false);
       setFragment("");
       return;
     }
-    setFragment(frag);
+    setTrigger(frag.trigger);
+    setFragment(frag.fragment);
     setMentionOpen(true);
   };
 
@@ -119,14 +148,22 @@ export function Composer({
     const caret = caretRef.current;
     const before = body.slice(0, caret);
     const after = body.slice(caret);
-    // Replace the trailing `@fragment` with the canonical token.
-    const replaced =
-      before.replace(/@([A-Za-z0-9_-]*)$/, `@${s.displayName} `) + after;
-    setBody(replaced);
+    // Agent → `@Name` mention; work_item → `#Title` ticket token (regardless of
+    // which trigger the human typed — this also fixes the prior `@Title` bug).
+    const newBefore = replaceTriggerFragment(before, s.displayName, s.type);
+    setBody(newBefore + after);
+    // A picked ticket carries its structured link (UUID + title) into the
+    // payload; dedupe by work-item id so re-picking is a no-op.
+    if (s.type === "work_item") {
+      setRefs((prev) =>
+        prev.some((r) => r.workItemId === s.id)
+          ? prev
+          : [...prev, { workItemId: s.id, title: s.displayName }],
+      );
+    }
     setMentionOpen(false);
     setFragment("");
-    const nextCaret = before.replace(/@([A-Za-z0-9_-]*)$/, `@${s.displayName} `)
-      .length;
+    const nextCaret = newBefore.length;
     if (el) {
       el.focus();
       requestAnimationFrame(() => el.setSelectionRange(nextCaret, nextCaret));
@@ -161,6 +198,7 @@ export function Composer({
     if (!canSubmit(input)) return;
     await onPost(buildPostBody(input));
     setBody("");
+    setRefs([]);
     setMentionOpen(false);
   };
 

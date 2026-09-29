@@ -8,6 +8,20 @@
 
 import { audienceWire, type AudienceLike } from "./audience";
 
+/**
+ * One structured ticket reference the composer's `#` picker collected
+ * (ISI-5167 / ISI-5134 S3). It is a LINK, not a dispatch: `workItemId` is the
+ * coord work-item UUID the picker carried (its stable key), and `title` is the
+ * display title for chip rendering. Field names match the Go JSON tags on
+ * `internal/discussion/dispatch.go#TicketRef` so the wire shape lines up with
+ * the S1 (ISI-5165) resolver, which validates each ref against the message's
+ * project and drops unknown/out-of-project ids server-side.
+ */
+export interface TicketReference {
+  workItemId: string;
+  title?: string;
+}
+
 /** Everything the composer is allowed to collect from the human. */
 export interface ComposerInput {
   body: string;
@@ -20,6 +34,13 @@ export interface ComposerInput {
    * audience only scopes delivery.
    */
   audience?: AudienceLike;
+  /**
+   * Ticket LINKS the `#` picker collected (ISI-5167). Absent/empty ⇒ no
+   * `references` key on the wire, so a plain message stays link-free. These are
+   * links, never dispatch targets: the server resolves them and drops any that
+   * do not belong to the room's project (ISI-5165).
+   */
+  references?: readonly TicketReference[];
 }
 
 /** The exact, minimal wire shape POSTed to the 10.1 message endpoint. */
@@ -28,13 +49,38 @@ export interface PostMessageBody {
   parentId?: string;
   /** Present only for a direct post — the server defaults omitted to `party`. */
   audience?: string;
+  /** Present only when the `#` picker collected at least one ticket link (ISI-5167). */
+  references?: TicketReference[];
+}
+
+/**
+ * De-duplicate and trim ticket references: drop blank ids, collapse duplicate
+ * work-item ids (first-seen wins, order preserved), and trim titles. The
+ * backend re-validates and re-dedupes, so this only keeps the wire tidy — it is
+ * NOT the authority on which links survive.
+ */
+function normalizeReferences(
+  refs?: readonly TicketReference[],
+): TicketReference[] {
+  if (!refs || refs.length === 0) return [];
+  const seen = new Set<string>();
+  const out: TicketReference[] = [];
+  for (const r of refs) {
+    const id = r.workItemId?.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const title = r.title?.trim();
+    out.push(title ? { workItemId: id, title } : { workItemId: id });
+  }
+  return out;
 }
 
 /**
  * Build the outbound POST body. The result contains `body` and — only for a
- * reply — `parentId`, and — only for a direct audience — `audience`. It NEVER
- * contains `author`, `authorId`, `authorType`, `authorName`, `author_agent_id`,
- * or `author_run_id`: provenance is server-stamped, not client-supplied.
+ * reply — `parentId`, only for a direct audience — `audience`, and only when
+ * the `#` picker collected links — `references` (ISI-5167). It NEVER contains
+ * `author`, `authorId`, `authorType`, `authorName`, `author_agent_id`, or
+ * `author_run_id`: provenance is server-stamped, not client-supplied.
  */
 export function buildPostBody(input: ComposerInput): PostMessageBody {
   const body = input.body.trim();
@@ -43,6 +89,8 @@ export function buildPostBody(input: ComposerInput): PostMessageBody {
   if (parentId) out.parentId = parentId;
   const audience = audienceWire(input.audience);
   if (audience) out.audience = audience;
+  const references = normalizeReferences(input.references);
+  if (references.length > 0) out.references = references;
   return out;
 }
 
