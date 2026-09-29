@@ -5,6 +5,8 @@ import {
   mentionFragmentBefore,
   replaceMentionFragment,
   agentMentionSuggestions,
+  triggerFragmentBefore,
+  replaceTriggerFragment,
 } from "@/lib/mentions";
 import type { AgentOption } from "@/lib/tickets/api";
 
@@ -35,6 +37,51 @@ describe("replaceMentionFragment", () => {
   });
   it("swaps a bare `@`", () => {
     expect(replaceMentionFragment("hi @", "planner")).toBe("hi @planner ");
+  });
+});
+
+describe("triggerFragmentBefore (ISI-5167 — dual `@`/`#` trigger)", () => {
+  it("detects the `@` trigger and its fragment", () => {
+    expect(triggerFragmentBefore("hi @rev", 7)).toEqual({
+      trigger: "@",
+      fragment: "rev",
+    });
+  });
+  it("detects the `#` trigger and its fragment", () => {
+    expect(triggerFragmentBefore("see #fix", 8)).toEqual({
+      trigger: "#",
+      fragment: "fix",
+    });
+  });
+  it("opens on a bare `#`", () => {
+    expect(triggerFragmentBefore("re: #", 5)).toEqual({
+      trigger: "#",
+      fragment: "",
+    });
+  });
+  it("does not trigger inside a mid-token `#` (e.g. `c#3`)", () => {
+    expect(triggerFragmentBefore("issue c#3", 9)).toBeNull();
+  });
+  it("returns null when the caret is not in a fragment", () => {
+    expect(triggerFragmentBefore("just words", 10)).toBeNull();
+  });
+});
+
+describe("replaceTriggerFragment (ISI-5167)", () => {
+  it("agent → `@displayName ` token", () => {
+    expect(replaceTriggerFragment("hi @rev", "reviewer", "agent")).toBe(
+      "hi @reviewer ",
+    );
+  });
+  it("work_item → `#Title ` token", () => {
+    expect(replaceTriggerFragment("see #fl", "Fix flaky test", "work_item")).toBe(
+      "see #Fix flaky test ",
+    );
+  });
+  it("normalizes a work_item picked from the `@` list to a `#` prefix (bug fix)", () => {
+    expect(replaceTriggerFragment("see @fl", "Fix flaky test", "work_item")).toBe(
+      "see #Fix flaky test ",
+    );
   });
 });
 

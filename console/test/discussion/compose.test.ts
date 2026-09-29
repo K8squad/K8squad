@@ -81,6 +81,71 @@ describe("buildPostBody — audience (ISI-4929, plan §4.1/§4.2)", () => {
   });
 });
 
+describe("buildPostBody — ticket references (ISI-5167 / ISI-5134 S3)", () => {
+  it("no references ⇒ no `references` key (a plain post stays link-free)", () => {
+    expect(buildPostBody({ body: "hi" })).not.toHaveProperty("references");
+    expect(buildPostBody({ body: "hi", references: [] })).not.toHaveProperty(
+      "references",
+    );
+  });
+
+  it("collects picked refs into the wire body as { workItemId, title }", () => {
+    const out = buildPostBody({
+      body: "see #Fix flaky test",
+      references: [{ workItemId: "wi-1", title: "Fix flaky test" }],
+    });
+    expect(out).toEqual({
+      body: "see #Fix flaky test",
+      references: [{ workItemId: "wi-1", title: "Fix flaky test" }],
+    });
+  });
+
+  it("de-dupes by work-item id and drops blank ids", () => {
+    const out = buildPostBody({
+      body: "x",
+      references: [
+        { workItemId: "wi-1", title: "One" },
+        { workItemId: "wi-1", title: "One again" },
+        { workItemId: "  ", title: "blank" },
+        { workItemId: "wi-2" },
+      ],
+    });
+    expect(out.references).toEqual([
+      { workItemId: "wi-1", title: "One" },
+      { workItemId: "wi-2" },
+    ]);
+  });
+
+  it("references ride ALONGSIDE audience without dropping either", () => {
+    const out = buildPostBody({
+      body: "psst",
+      audience: { kind: "direct", agentId: "agent-7" },
+      references: [{ workItemId: "wi-9", title: "Ship it" }],
+    });
+    expect(out).toEqual({
+      body: "psst",
+      audience: "direct:agent-7",
+      references: [{ workItemId: "wi-9", title: "Ship it" }],
+    });
+  });
+
+  it("is idempotent over an already-built body carrying references", () => {
+    const once = buildPostBody({
+      body: "b",
+      references: [{ workItemId: "wi-1", title: "One" }],
+    });
+    expect(buildPostBody(once)).toEqual(once);
+  });
+
+  it("references never widen the wire with author fields", () => {
+    const out = buildPostBody({
+      body: "x",
+      references: [{ workItemId: "wi-1" }],
+    }) as unknown as Record<string, unknown>;
+    for (const k of FORBIDDEN) expect(out).not.toHaveProperty(k);
+  });
+});
+
 describe("canSubmit", () => {
   it("rejects empty/whitespace bodies", () => {
     expect(canSubmit({ body: "" })).toBe(false);
