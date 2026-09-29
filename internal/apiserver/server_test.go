@@ -65,6 +65,7 @@ func TestGatedRoutesRejectUnauthenticated(t *testing.T) {
 	run := uuid.NewString()
 	for _, path := range []string{
 		"/api/projects/" + proj + "/discussion/threads",
+		"/api/projects/" + proj + "/stream",
 		"/api/runs/" + run + "/stream",
 		"/api/runs/" + run + "/build/tree",
 		"/api/squad/overview",
@@ -183,6 +184,79 @@ func TestSSEStreamDeliversPublishedEvent(t *testing.T) {
 		t.Errorf("stream missing subscribed preamble; got:\n%s", got)
 	}
 	if !strings.Contains(got, "event: progress") || !strings.Contains(got, "data: step-1") {
+		t.Errorf("stream missing published event; got:\n%s", got)
+	}
+}
+
+// TestProjectStreamDeliversPublishedEvent — the ISI-5194 per-project bus: an authenticated
+// EventSource on /api/projects/{id}/stream registers on Server.ProjectHub() and receives an event
+// published for that project in SSE wire format. Proves the route is mounted behind authz and the
+// accessor exposes the same Hub the handler serves (no ProjectRoles resolver ⇒ team-scope authz only).
+func TestProjectStreamDeliversPublishedEvent(t *testing.T) {
+	projectID := uuid.NewString()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: uuid.New()},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/api/projects/"+projectID+"/stream", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: devToken})
+	resp, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed via the defer below; bodyclose can't track it through the goroutine read.
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream status: got %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("content-type: got %q, want text/event-stream", ct)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.ProjectHub().subscriberCount(projectID) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.ProjectHub().subscriberCount(projectID) != 1 {
+		t.Fatalf("subscriber not registered on ProjectHub")
+	}
+	srv.ProjectHub().Publish(projectID, Event{ID: "1", Type: "discussion.message", Data: "hi"})
+
+	buf := make([]byte, 4096)
+	got := ""
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			n, rerr := resp.Body.Read(buf)
+			if n > 0 {
+				got += string(buf[:n])
+				if strings.Contains(got, "event: discussion.message") && strings.Contains(got, "data: hi") {
+					return
+				}
+			}
+			if rerr != nil {
+				return
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-readCtx.Done():
+	}
+	if !strings.Contains(got, ": subscribed project=") {
+		t.Errorf("stream missing subscribed preamble; got:\n%s", got)
+	}
+	if !strings.Contains(got, "event: discussion.message") || !strings.Contains(got, "data: hi") {
 		t.Errorf("stream missing published event; got:\n%s", got)
 	}
 }
