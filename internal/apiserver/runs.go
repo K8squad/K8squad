@@ -673,11 +673,20 @@ func (s *RunsService) populateThinking(ctx context.Context, response *RunDetailR
 	if token != "" {
 		mine = "[run " + token + "]%"
 	}
+	// Drop `[run <id>][llm:response] …` digest rows (ISI-5192): the mirror writes
+	// those into coord.comment so the ticket feed — which reads ONLY coord.comment
+	// — can show model round-trips it otherwise never saw. Run-detail already gets
+	// the same digest from Run.Status.LLMInteractions (activityFromInteraction, the
+	// central mapping in getRunDetailInNamespace), so reading the mirrored row here
+	// too would double-list it as conversation noise. The envelope always sits
+	// right after the `[run <token>]` prefix, so this matches only the mirror's own
+	// digest rows, never untrusted narration that merely mentions "[llm:".
 	rows, err := db.QueryContext(ctx, `
 		SELECT author_principal, body, created_at
 		FROM coord.comment
 		WHERE work_item_id = $1::uuid
 		  AND (body NOT LIKE '[run %' OR body LIKE $2)
+		  AND body NOT LIKE '[run %][llm:%'
 		ORDER BY created_at ASC
 		LIMIT 20`, response.Run.Spec.WorkItemRef, mine)
 	if err != nil {

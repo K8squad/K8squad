@@ -261,15 +261,17 @@ func TestProgressMirrorSwallowsOwnFailures(t *testing.T) {
 	}
 }
 
-// TestProgressMirrorSkipsNoiseAndTruncates: usage/skill-load/non-terminal
-// status events are not thread-worthy; oversized text is truncated.
+// TestProgressMirrorSkipsNoiseAndTruncates: signal-less usage/skill-load/
+// non-terminal status events are not thread-worthy; oversized text is truncated.
 func TestProgressMirrorSkipsNoiseAndTruncates(t *testing.T) {
 	f := newMirrorFixture(t)
 	ctx := context.Background()
 	task := "r6"
 
+	// A usage event with neither a model nor any tokens carries no digest
+	// (ISI-5192): honest empty, mirrored as nothing.
 	_ = f.m.Event(ctx, wire.Event{Seq: 1, A2ATaskID: task, Type: wire.EventUsage,
-		Payload: wire.UsagePayload{Model: "m", Input: 1, Output: 2}})
+		Payload: wire.UsagePayload{}})
 	_ = f.m.Event(ctx, statusEv(2, task, wire.TaskWorking))
 	_ = f.m.Event(ctx, msgEv(3, task, ""))
 	if got := f.comments(); len(got) != 0 {
@@ -285,6 +287,40 @@ func TestProgressMirrorSkipsNoiseAndTruncates(t *testing.T) {
 	body := strings.SplitN(got[0], "|", 3)[2]
 	if want := progressMirrorMaxBody + len("[run r6][untrusted] ") + len("…"); len(body) != want {
 		t.Fatalf("truncated body len = %d, want %d", len(body), want)
+	}
+}
+
+// TestProgressMirrorMirrorsResponseDigest is the ISI-5192 AC: an EventUsage —
+// the same signal that projects the CR LLMInteraction "response" onto
+// Run.Status — mirrors a parseable `[llm:response]` digest (model + bounded
+// token counts) into the ticket feed, so the ticket agent-turn card can show a
+// model round-trip completed. Never the response TEXT (that is ISI-4812).
+func TestProgressMirrorMirrorsResponseDigest(t *testing.T) {
+	f := newMirrorFixture(t)
+	ctx := context.Background()
+	task := "r9"
+
+	_ = f.m.Event(ctx, wire.Event{Seq: 1, A2ATaskID: task, Type: wire.EventUsage,
+		Payload: wire.UsagePayload{Model: "qwen", Input: 100, Output: 23}})
+	got := f.comments()
+	if len(got) != 1 {
+		t.Fatalf("usage digest: %d comments, want 1: %v", len(got), got)
+	}
+	body := strings.SplitN(got[0], "|", 3)[2]
+	if body != "[run r9][llm:response] qwen · 123 tok (100 in / 23 out)" {
+		t.Fatalf("digest body = %q", body)
+	}
+
+	// An empty-model runtime (ISI-4412) still reports token-bearing usage: the
+	// digest falls back to a generic model label rather than dropping the signal.
+	_ = f.m.Event(ctx, wire.Event{Seq: 2, A2ATaskID: task, Type: wire.EventUsage,
+		Payload: wire.UsagePayload{Input: 5, Output: 0}})
+	got = f.comments()
+	if len(got) != 2 {
+		t.Fatalf("empty-model digest: %d comments, want 2: %v", len(got), got)
+	}
+	if body := strings.SplitN(got[1], "|", 3)[2]; body != "[run r9][llm:response] model · 5 tok (5 in / 0 out)" {
+		t.Fatalf("empty-model digest body = %q", body)
 	}
 }
 
