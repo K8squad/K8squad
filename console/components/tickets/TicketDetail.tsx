@@ -621,10 +621,17 @@ function RunCommentCard({
     hue !== undefined
       ? ({ "--ksq-author-hue": String(hue) } as CSSProperties)
       : undefined;
-  // Older agent runs collapse to a one-liner; the newest agent run and every
-  // human reply start open (design "newest last; older runs collapse").
+  // ISI-5205 (S2 of ISI-5202): every agent run activity row renders EXPANDED BY
+  // DEFAULT. The board reported "user has to click to see the agent's message" —
+  // the old default hid older agent runs behind a click-to-expand button that
+  // showed only an envelopeSnippet, so the clean narration + tool chips
+  // (ProgressBody) were one click away. Now the newest run, older runs, AND human
+  // replies all start open; the raw `[run…]/[tool:…]/[untrusted]` wire literals are
+  // never surfaced (ProgressBody parses them). Older agent runs keep a *collapse*
+  // affordance (the "−" toggle) so a long thread can still be tamed by hand — the
+  // gate is gone, the option is not.
   const collapsible = item.authorKind === "agent" && !(meta?.isLatestAgent ?? false);
-  const [open, setOpen] = useState(!collapsible);
+  const [open, setOpen] = useState(true);
 
   if (collapsible && !open) {
     return (
