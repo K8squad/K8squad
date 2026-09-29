@@ -87,6 +87,8 @@ import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 import { AssigneeChipView } from "./RailAssigneeChip";
 import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
+import { useTicketRunStream } from "@/lib/tickets/useTicketRunStream";
+import type { LiveThinkingRow } from "@/lib/tickets/thread";
 import { DispatchPendingCard } from "./DispatchPendingCard";
 import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
 import { ticketWorkingView } from "@/lib/tickets/working";
@@ -1269,6 +1271,22 @@ function TicketBody({
     dispatch?.agent ?? "",
     dispatch?.at ?? 0,
   );
+  // ISI-5206 (S3 of ISI-5202): live-tail ANY active run on the ticket, not only a
+  // self-dispatch. useDispatchWatch arms the per-run SSE only for a run this page
+  // dispatched this session; a run started server-side (kanban automation, another
+  // admin/session, a discussion @-mention, or a run already in flight when the page
+  // opens) had no live stream and spun until a manual refresh (ISI-5202 Problem 2).
+  // This opens the SAME shared per-run SSE bus (useRunStream) for the ticket's
+  // holding run whenever it is live — skipping the run the self-dispatch ladder
+  // already streams, so there is never a second EventSource on one run (AC4) — and
+  // re-fetches the thread on the run's terminal `ended` milestone so the surface
+  // resolves (durable tail materialized + running state cleared) without a refresh.
+  const ambientThinking = useTicketRunStream(
+    thread.runId,
+    thread.state,
+    dispatchWatch?.runId,
+    onCommentPosted,
+  );
   // Single pending-inclusive projection drives both the chronological Activity
   // timeline and the S3 run-meta map, so an optimistically-posted comment and its
   // run bubble stay consistent (buildRunComments still owns the attribution rules).
@@ -1276,18 +1294,24 @@ function TicketBody({
     ...thread,
     comments: [...thread.comments, ...pending],
   };
-  // Live thinking (ISI-5193): while a dispatch is in flight, the per-run SSE
-  // `thinking` rows (surfaced through the SAME EventSource useDispatchWatch opens
-  // — no second stream, ISI-5174 AC4) live-append to the timeline. mergeLiveThinking
-  // de-dupes each against the durable coord.comment once the reconciling re-fetch
-  // materializes it, so a row never renders twice across the live→durable handoff.
-  const activity = mergeLiveThinking(
-    buildActivity(threadWithPending),
-    (dispatchWatch?.thinking ?? []).map((ev) => ({
+  // Live thinking (ISI-5193): the per-run SSE `thinking` rows live-append to the
+  // timeline — from the self-dispatch ladder's stream (dispatchWatch.thinking, the
+  // SAME EventSource, no second stream — ISI-5174 AC4) AND from the ambient
+  // active-run stream (ISI-5206). mergeLiveThinking de-dupes every row against the
+  // durable coord.comment once the reconciling re-fetch materializes it, and
+  // against each other, so a row never renders twice across the live→durable
+  // handoff or when both feeds observe the same run.
+  const liveThinking: LiveThinkingRow[] = [
+    ...(dispatchWatch?.thinking ?? []).map((ev) => ({
       author: ev.actor,
       body: ev.summary ?? "",
       at: ev.ts,
     })),
+    ...ambientThinking,
+  ];
+  const activity = mergeLiveThinking(
+    buildActivity(threadWithPending),
+    liveThinking,
   );
   // Run meta (run-id / live dot / trace ribbon) keyed by comment identity so the
   // Activity timeline can render each comment as its S3 run bubble without
