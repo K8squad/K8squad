@@ -364,6 +364,31 @@ func discussionTokenSecretName(run *api.Run) string {
 	return run.Name + "-discussion-token"
 }
 
+// teamTenancyUID resolves the Run's owning Team CR and returns its object UID —
+// the tenancy-root identifier the memory service scopes every read/write to
+// (squad_id is a uuid column; the discussion apiserver's AuthorContext.TeamID is
+// a uuid.UUID). The Run's TeamRef carries only the Team NAME (api.ObjectRef has
+// no UID field), and the memory edge derives the caller tenant SOLELY from the
+// verified token claims on the sandbox path — so the token MUST claim the UID,
+// never the name, or the ::uuid cast rejects every tool call (ISI-5189). The
+// namespace falls back to the Run's own namespace, mirroring the TeamRef
+// cross-namespace convention rundrive intake stamps (a namespace is set only
+// when the Team lives outside the run namespace).
+func (a *Assembler) teamTenancyUID(ctx context.Context, run *api.Run) (string, error) {
+	ns := run.Spec.TeamRef.Namespace
+	if ns == "" {
+		ns = run.Namespace
+	}
+	var teamObj api.Team
+	if err := a.Get(ctx, client.ObjectKey{Namespace: ns, Name: run.Spec.TeamRef.Name}, &teamObj); err != nil {
+		return "", fmt.Errorf("resolve team %s/%s for discussion-token tenancy uid: %w", ns, run.Spec.TeamRef.Name, err)
+	}
+	if teamObj.UID == "" {
+		return "", fmt.Errorf("team %s/%s has no uid; cannot scope discussion token to the tenancy root", ns, run.Spec.TeamRef.Name)
+	}
+	return string(teamObj.UID), nil
+}
+
 // discussionEndpoint returns the injected built-in memory-discussion endpoint
 // in eps, or nil when the Run is not a discussion run (D3 injects it ONLY for
 // source=discussion Runs, so its presence is the signal).
@@ -413,8 +438,19 @@ func (a *Assembler) ensureDiscussionToken(ctx context.Context, run *api.Run, eps
 		return fmt.Errorf("get discussion-token secret %s/%s: %w", run.Namespace, name, err)
 	}
 
+	// The team scope must be the Team's tenancy-root UID, NOT its CR name: the
+	// memory edge casts the token's team claim to ::uuid (squad_id, and the
+	// discussion apiserver's AuthorContext.TeamID). run.Spec.TeamRef carries only
+	// the Team NAME (api.ObjectRef has no UID field), so claiming TeamRef.Name
+	// makes every discussion tool call fail its ::uuid cast — the ISI-5189 defect
+	// where discussion_search/memory_search/diary_read all error at the store.
+	teamUID, err := a.teamTenancyUID(ctx, run)
+	if err != nil {
+		return err
+	}
+
 	token, err := a.Minter.Mint(mcpauthtoken.Claims{
-		TeamID:       run.Spec.TeamRef.Name,
+		TeamID:       teamUID,
 		Principal:    string(run.GetOwnedBy()),
 		AgentID:      run.Spec.Agents[0].Name,
 		RunID:        string(run.UID),
