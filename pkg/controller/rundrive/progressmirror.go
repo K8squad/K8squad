@@ -64,9 +64,16 @@ const (
 	// window lands, so the thread still advances). Terminal status events
 	// bypass the guard.
 	progressMirrorMinInterval = time.Second
-	// progressMirrorMaxBody caps one mirrored comment's body so a runaway
-	// runtime message cannot balloon the append-only channel row.
-	progressMirrorMaxBody = 480
+	// progressMirrorMaxBody caps one mirrored comment's variable-length field
+	// (narration text, tool summary, status reason) so a runaway runtime
+	// message cannot balloon the append-only channel row. Raised from the
+	// original 480 (ISI-5191): 480 clipped real narration and tool output to
+	// uselessly-terse stubs, so the console's expandable rows (ISI-5190) had
+	// nothing to expand. 8 KiB carries genuine detail while still bounding the
+	// worst case — the full reasoning/prompt/response TEXT is a separate
+	// producer surface gated on the observability spine (ISI-4812), not this
+	// best-effort mirror.
+	progressMirrorMaxBody = 8192
 	// progressMirrorMaxTracked caps the dedup/rate maps: past it they reset
 	// (worst case one duplicate comment on a live replay — acceptable, and
 	// far better than unbounded growth over the operator's lifetime).
@@ -276,6 +283,24 @@ func mirrorBody(runID string, ev wire.Event) string {
 			}
 		}
 		body := tag + "[tool:" + p.Name + "/" + phase + "]"
+		// Enrichment segments (ISI-5191): each is an optional bracketed
+		// key:value the console parses into an expandable tool row (ISI-5190).
+		// Order is stable (command → skill → server) so the parser splits
+		// deterministically, and every value is already a low-cardinality,
+		// PII-safe token the shim extracted in-process (ISI-4720): Command is
+		// a recognized shell head (git/kubectl/…), Skill/Server are curated
+		// identifiers. Raw call arguments are NEVER put on this wire — the
+		// emitter hashes them to ToolPayload.ArgsSHA256 before the event
+		// leaves the process (Epic D, plan §2.4).
+		if p.Command != "" {
+			body += "[cmd:" + p.Command + "]"
+		}
+		if p.Skill != "" {
+			body += "[skill:" + p.Skill + "]"
+		}
+		if p.Server != "" {
+			body += "[server:" + p.Server + "]"
+		}
 		if p.Summary != "" {
 			body += " " + truncateRun(p.Summary)
 		}

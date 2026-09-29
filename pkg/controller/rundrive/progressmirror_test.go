@@ -195,6 +195,93 @@ func TestProgressMirrorCachesAssignee(t *testing.T) {
 	}
 }
 
+// TestProgressMirrorEnrichesToolEnvelope is the ISI-5191 AC: the tool row
+// carries Command/Skill/Server as stable bracketed segments (feeding the
+// console's expandable rows, ISI-5190) in addition to the Summary — and the
+// raw call arguments are NEVER emitted, only ever available as the emitter's
+// pre-hashed ArgsSHA256 digest.
+func TestProgressMirrorEnrichesToolEnvelope(t *testing.T) {
+	f := newMirrorFixture(t)
+	ctx := context.Background()
+	task := "aa11bb22-0000-0000-0000-000000000000"
+
+	// A bash-wrapped git call served locally: Command enriches the opaque
+	// "shell" name; no MCP server. The raw args ("commit -m secret…") are
+	// hashed by the emitter — only the digest rides ArgsSHA256, never the body.
+	f.m.minInterval = 0
+	ev1 := wire.Event{Seq: 1, A2ATaskID: task, Type: wire.EventTool,
+		Payload: wire.ToolPayload{Name: "shell", Phase: "start", Command: "git",
+			Skill: "commit-flow", Summary: "staging changes",
+			ArgsSHA256: "deadbeefcafef00d"}}
+	// An MCP-served tool call: Server present, no Command.
+	ok := true
+	ev2 := wire.Event{Seq: 2, A2ATaskID: task, Type: wire.EventTool,
+		Payload: wire.ToolPayload{Name: "search", Phase: "result", OK: &ok,
+			Server: "context7", Summary: "3 hits"}}
+	for _, ev := range []wire.Event{ev1, ev2} {
+		if err := f.m.Event(ctx, ev); err != nil {
+			t.Fatalf("Event(seq %d) errored: %v", ev.Seq, err)
+		}
+	}
+	got := f.comments()
+	if len(got) != 2 {
+		t.Fatalf("appended %d comments, want 2: %v", len(got), got)
+	}
+	body1 := strings.SplitN(got[0], "|", 3)[2]
+	if !strings.Contains(body1, "[tool:shell/start]") ||
+		!strings.Contains(body1, "[cmd:git]") ||
+		!strings.Contains(body1, "[skill:commit-flow]") ||
+		!strings.Contains(body1, "staging changes") {
+		t.Fatalf("tool row not enriched with command/skill/summary: %q", body1)
+	}
+	if strings.Contains(body1, "[server:") {
+		t.Fatalf("local tool row must carry no server segment: %q", body1)
+	}
+	// The pre-hashed args digest is emitter-only telemetry — it must never leak
+	// onto the mirrored comment body (raw args, hashed or not, are not thread
+	// content).
+	if strings.Contains(body1, "deadbeefcafef00d") || strings.Contains(body1, "secret") {
+		t.Fatalf("args digest / raw args leaked onto the wire body: %q", body1)
+	}
+	// Stable segment order: command before skill before server.
+	body2 := strings.SplitN(got[1], "|", 3)[2]
+	if !strings.Contains(body2, "[tool:search/result(ok)]") ||
+		!strings.Contains(body2, "[server:context7]") ||
+		!strings.Contains(body2, "3 hits") {
+		t.Fatalf("MCP tool row not enriched with server/summary: %q", body2)
+	}
+	if strings.Contains(body2, "[cmd:") || strings.Contains(body2, "[skill:") {
+		t.Fatalf("MCP tool row must carry no command/skill segment: %q", body2)
+	}
+}
+
+// TestProgressMirrorRaisedBodyCap is the ISI-5191 AC: the narration/summary cap
+// was lifted well past the original 480 runes so real detail survives (the
+// console's expandable rows need content to show). The cap still bounds a
+// runaway runtime message.
+func TestProgressMirrorRaisedBodyCap(t *testing.T) {
+	if progressMirrorMaxBody <= 480 {
+		t.Fatalf("body cap not raised past the original 480: got %d", progressMirrorMaxBody)
+	}
+	f := newMirrorFixture(t)
+	f.m.minInterval = 0
+	ctx := context.Background()
+	task := "bb22cc33-0000-0000-0000-000000000000"
+
+	// A 2 KiB narration (well past the old 480 clip) must survive intact.
+	detail := strings.Repeat("y", 2000)
+	if err := f.m.Event(ctx, msgEv(1, task, detail)); err != nil {
+		t.Fatalf("Event errored: %v", err)
+	}
+	body := strings.SplitN(f.comments()[0], "|", 3)[2]
+	if !strings.Contains(body, detail) {
+		t.Fatalf("2 KiB narration was clipped under the raised cap: len(body)=%d", len(body))
+	}
+	if strings.Contains(body, "…") {
+		t.Fatalf("narration within the raised cap must not be truncated: %q", body[:64])
+	}
+}
+
 // TestProgressMirrorDedupsReplayedSeqs: the EventSink contract is
 // at-least-once — a replayed/duplicate seq must not double-append.
 func TestProgressMirrorDedupsReplayedSeqs(t *testing.T) {
