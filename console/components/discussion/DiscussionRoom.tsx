@@ -15,7 +15,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MentionSuggestion, Message, Proposal } from "@/lib/discussion/types";
 import { nestMessages } from "@/lib/discussion/thread";
-import { applyRoomEvent, type RoomEvent } from "@/lib/discussion/liveFeed";
+import {
+  applyRoomEvent,
+  type RoomStreamEvent,
+  type ThinkingRow,
+} from "@/lib/discussion/liveFeed";
+import { appendThinking } from "@/lib/discussion/liveThinking";
 import { audienceWire } from "@/lib/discussion/audience";
 import {
   applyReply,
@@ -48,9 +53,11 @@ export interface DiscussionRoomProps {
   client: DiscussionClient;
   /**
    * Subscribe to the thread's live event stream (the 8.2 EventSource/BFF proxy).
-   * Returns an unsubscribe fn. Optional — absent means poll-on-focus degrade.
+   * Delivers the multiplexed union — room message changes AND live run `thinking`
+   * envelopes (ISI-5208) — off the ONE project channel. Returns an unsubscribe fn.
+   * Optional — absent means poll-on-focus degrade.
    */
-  subscribe?: (onEvent: (evt: RoomEvent) => void) => () => void;
+  subscribe?: (onEvent: (evt: RoomStreamEvent) => void) => () => void;
   /**
    * Roster loader (ISI-4929, plan §4.5; project-scoped in ISI-5107): resolves
    * the agents dispatchable into THIS project for the sidebar + composer
@@ -86,11 +93,23 @@ export function DiscussionRoom({
   // seeded when the human posts an @-mention and resolved by the agent's reply
   // landing over the SAME SSE channel (no parallel status stream, AC4).
   const [working, setWorking] = useState<DispatchWatch[]>([]);
+  // Live run thinking (ISI-5208): messageId → the streamed thinking envelopes for
+  // the run(s) that message dispatched, rendered inline beneath it while the run is
+  // active. Seeded from the `thinking` events arriving over the SAME project channel
+  // and correlated to a working watch by author (lib/discussion/liveThinking.ts).
+  const [liveThinking, setLiveThinking] = useState<
+    Record<string, ThinkingRow[]>
+  >({});
   // The roster the post callback reads to resolve dispatch targets, held in a
   // ref so `post` is not re-created on every roster refresh (and never dispatches
   // against a stale closure).
   const rosterRef = useRef<RosterAgent[]>([]);
   rosterRef.current = rosterAgents;
+  // Current working watches, held in a ref so the stable subscribe closure
+  // correlates an incoming thinking envelope against the LIVE watch set (not the
+  // set captured when the subscription was opened).
+  const workingRef = useRef<DispatchWatch[]>([]);
+  workingRef.current = working;
 
   const load = useCallback(async () => {
     try {
@@ -139,9 +158,20 @@ export function DiscussionRoom({
   // the affordance rides the same bus, not a parallel status stream (AC4).
   useEffect(() => {
     if (!subscribe) return;
-    const unsub = subscribe((evt) => {
+    const unsub = subscribe((se) => {
+      if (se.kind === "thinking") {
+        // Live run thinking: correlate to the working watch it belongs under and
+        // append it inline (dropped if it matches no active dispatch in this thread).
+        setLiveThinking((cur) =>
+          appendThinking(cur, se.row, workingRef.current),
+        );
+        return;
+      }
+      const evt = se.event;
       setMessages((cur) => applyRoomEvent(cur, evt));
       if (evt.type === "message.created" || evt.type === "message.updated") {
+        // An agent reply landing over the SAME bus resolves its working watch to
+        // "replied" (ISI-5174) — no parallel status stream (AC4).
         setWorking((cur) => applyReply(cur, evt.message));
       }
     });
@@ -268,6 +298,7 @@ export function DiscussionRoom({
               onDismissProposal={dismissProposal}
               busyMessageId={busyMessageId}
               workingByMessageId={workingByMessageId}
+              thinkingByMessageId={liveThinking}
             />
           ))}
         </ul>

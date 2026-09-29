@@ -509,3 +509,35 @@ a.ksq-ticket-chip:hover {
     opacity: 0.7;
   }
 }
+
+/* Live run thinking (ISI-5208): the streamed agent-progress rows rendered inline
+ * beneath a message while its dispatched run is active — a muted, mono transcript
+ * so it reads as machine progress, distinct from the human/agent message bodies. */
+.ksq-thinking-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 6px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px dashed var(--border-1);
+}
+.ksq-thinking {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+.ksq-thinking__author {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--status-running);
+}
+.ksq-thinking__body {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

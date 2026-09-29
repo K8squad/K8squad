@@ -19,12 +19,14 @@ import type {
   TicketReference,
 } from "@/lib/discussion/types";
 import type { DispatchWatch } from "@/lib/discussion/working";
+import type { ThinkingRow } from "@/lib/discussion/liveFeed";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
 import { parseAudience } from "@/lib/discussion/audience";
 import { reviewWorkItemHref } from "@/lib/github-links";
 import { AuthorBadge } from "./AuthorBadge";
 import { ProposalCard } from "./ProposalCard";
 import { WorkingIndicators } from "./WorkingIndicator";
+import { ThinkingStream } from "./ThinkingStream";
 
 export function isRetracted(m: Message): boolean {
   return typeof m.invalidatedAt === "string" && m.invalidatedAt !== "";
@@ -84,6 +86,12 @@ export interface MessageItemProps {
    * no indicator (a plain message, or a room that isn't tracking dispatch).
    */
   workingByMessageId?: Readonly<Record<string, DispatchWatch[]>>;
+  /**
+   * messageId → live run `thinking` envelopes (ISI-5208): the streamed agent
+   * progress rendered inline beneath a message while its dispatched run is active.
+   * Absent ⇒ nothing streaming (a plain message, or before any thinking arrives).
+   */
+  thinkingByMessageId?: Readonly<Record<string, ThinkingRow[]>>;
 }
 
 export function MessageItem({
@@ -94,6 +102,7 @@ export function MessageItem({
   onDismissProposal,
   busyMessageId,
   workingByMessageId,
+  thinkingByMessageId,
 }: MessageItemProps) {
   const retracted = isRetracted(message);
   const badge = deriveAuthorBadge(message);
@@ -209,6 +218,7 @@ export function MessageItem({
       )}
 
       <WorkingIndicators watches={workingByMessageId?.[message.id]} />
+      <ThinkingStream rows={thinkingByMessageId?.[message.id]} />
 
       {message.replies && message.replies.length > 0 ? (
         <ul className="ksq-thread" data-testid="replies">
@@ -222,6 +232,7 @@ export function MessageItem({
               onDismissProposal={onDismissProposal}
               busyMessageId={busyMessageId}
               workingByMessageId={workingByMessageId}
+              thinkingByMessageId={thinkingByMessageId}
             />
           ))}
         </ul>

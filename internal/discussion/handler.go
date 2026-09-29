@@ -78,6 +78,7 @@ type Handler struct {
 	refResolver  TicketRefResolver   // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
 	teamResolver ProjectTeamResolver // ISI-5198: room tenancy = project's OWNING team; nil ⇒ caller-team scope
 	projResolver ProjectUIDResolver  // ISI-5213: {projectId} slug → Project CR UID for the ticket-picker narrow; nil ⇒ raw-path compare
+	roomStream   RoomStreamPublisher // ISI-5208: live-echo committed messages onto the project SSE bus; nil ⇒ reload-only
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -384,6 +385,13 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	// fails the write (see dispatchMentions); a nil dispatcher leaves the room coordination-free. The
 	// hop stamped above rides msg.Payload, so resolveMentionTargets reads the accumulated depth here.
 	h.dispatchMentions(r.Context(), projectID, auth, msg)
+	// ISI-5208: echo the committed message onto the project's live SSE bus so every
+	// open Room live-appends it — a co-viewer sees the human's post, and an agent
+	// reply both appends AND resolves the poster's "{agent} is working…" watch to
+	// "replied" — without a reload. Best-effort (the row is already durable).
+	if h.roomStream != nil {
+		h.roomStream.PublishMessageCreated(projectID, msg)
+	}
 	writeJSON(w, http.StatusCreated, msg)
 }
 
@@ -411,6 +419,10 @@ func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Retract(r.Context(), projectID, teamID, threadID, messageID, auth); err != nil {
 		writeStoreErr(w, err)
 		return
+	}
+	// ISI-5208: propagate the tombstone live so open Rooms drop the row without a reload.
+	if h.roomStream != nil {
+		h.roomStream.PublishMessageDeleted(projectID, messageID.String())
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "retracted"})
 }

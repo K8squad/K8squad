@@ -140,9 +140,18 @@ const defaultRunEventLimit = 1000
 // RunEvent is one run-entity outbox row projected to the SSE hub. ID (the
 // bigserial row id) is the SSE event id / Last-Event-ID resume key; RunID keys
 // the hub fan-out; EventType is the SSE event name; Payload is the jsonb body.
+//
+// ProjectID is the run's owning Project CR UID (coord.work_item.project_id — a
+// uuid, NOT the console's namespace/name slug). It lets the projector ALSO fan a
+// run event onto the per-PROJECT SSE bus (ISI-5194) so project-scoped surfaces —
+// the discussion Room (ISI-5208) — receive an active run's `thinking` deltas
+// without knowing the run id. Empty when the outbox row has a NULL project_id
+// (older rows, or a run with no work item); such a row is fanned to the per-run
+// hub only, never bridged to a project. See apiserver's run-event projector.
 type RunEvent struct {
 	ID        int64
 	RunID     string
+	ProjectID string
 	EventType string
 	Payload   []byte
 }
@@ -184,7 +193,7 @@ func (s *SQLStore) RunEventsAfter(ctx context.Context, afterID int64, limit int)
 		limit = defaultRunEventLimit
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id::text, event_type, payload
+		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload
 		  FROM coord.outbox
 		 WHERE entity = 'run' AND run_id IS NOT NULL AND id > $1
 		 ORDER BY id
@@ -203,7 +212,7 @@ func (s *SQLStore) RunEventsForRun(ctx context.Context, runID string, afterID in
 		limit = defaultRunEventLimit
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, run_id::text, event_type, payload
+		SELECT id, run_id::text, COALESCE(project_id::text, ''), event_type, payload
 		  FROM coord.outbox
 		 WHERE entity = 'run' AND run_id = $1::uuid AND id > $2
 		 ORDER BY id
@@ -222,7 +231,7 @@ func scanRunEvents(rows *sql.Rows, where string) ([]RunEvent, error) {
 	for rows.Next() {
 		var r RunEvent
 		var payload []byte
-		if err := rows.Scan(&r.ID, &r.RunID, &r.EventType, &payload); err != nil {
+		if err := rows.Scan(&r.ID, &r.RunID, &r.ProjectID, &r.EventType, &payload); err != nil {
 			return nil, fmt.Errorf("events.SQLStore.%s: scan: %w", where, err)
 		}
 		r.Payload = append([]byte(nil), payload...)
