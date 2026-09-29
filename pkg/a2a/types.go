@@ -340,6 +340,48 @@ func isIdentChar(r rune) bool {
 	return r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
+// ToolErrorSummaryMax bounds the rune length of a tool-error summary that a
+// runtime parser lifts onto ToolPayload.Summary (ISI-5211). Tool error text is
+// low-cardinality diagnostic prose (e.g. the memory MCP service's `invalid
+// input syntax for type uuid`) but is model/tool-authored, so it is bounded and
+// scrubbed on the way onto the wire (NFR-2) exactly as the shell-head
+// enrichment is: enough to name the failure, never a place to smuggle a payload.
+const ToolErrorSummaryMax = 512
+
+// ToolErrorSummary normalizes a tool call's error text into a bounded, PII-safe
+// one-line summary for ToolPayload.Summary (ISI-5211). It collapses runs of
+// whitespace (newlines included) to single spaces, drops other control
+// characters, trims, and caps the result at ToolErrorSummaryMax runes with an
+// explicit ellipsis. It returns "" for empty/whitespace-only input so an
+// output-less error stays honestly empty rather than emitting a blank summary.
+// This is the source-side bound; downstream mirrors (progressMirrorMaxBody) may
+// bound further, never wider.
+func ToolErrorSummary(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	prevSpace := false
+	for _, r := range s {
+		switch {
+		case r == '\t' || r == '\n' || r == '\r' || r == ' ':
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+		case r < 0x20 || r == 0x7f:
+			// Drop other control characters entirely (never widen the surface).
+		default:
+			b.WriteRune(r)
+			prevSpace = false
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	r := []rune(out)
+	if len(r) > ToolErrorSummaryMax {
+		return string(r[:ToolErrorSummaryMax]) + "…"
+	}
+	return out
+}
+
 // SkillLoadPayload is the payload of an EventSkillLoad event (Epic D, plan
 // §2.4). It reports one skill entering the runtime session: which skill, the
 // immutable source it came from (git commit SHA when git-sourced; empty for

@@ -134,6 +134,40 @@ func TestParseOpenCodeLineToolError(t *testing.T) {
 	assert.False(t, *out[0].Tool.OK)
 }
 
+// ISI-5211: an errored tool call carries its failure reason (opencode records
+// an MCP tool's isError content text in state.output) onto ToolPayload.Summary
+// so the run-feed chip renders it instead of "No tool output recorded".
+func TestParseOpenCodeLineToolErrorReasonFromOutput(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"mempalace_search","state":{"status":"error","input":{"query":"x"},"output":"semantic search: invalid input syntax for type uuid"}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.False(t, *out[0].Tool.OK)
+	assert.Equal(t, "semantic search: invalid input syntax for type uuid", out[0].Tool.Summary)
+}
+
+// The state.error field is the fallback drop point when a build reports the
+// reason out of the output channel (ISI-5211).
+func TestParseOpenCodeLineToolErrorReasonFromError(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"error","input":{},"error":"ENOENT: no such file"}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Equal(t, "ENOENT: no such file", out[0].Tool.Summary)
+}
+
+// A completed call never lifts its output onto Summary: NFR-2 keeps the
+// success-path tool output (which may carry file contents/secrets) off the
+// wire; only the bounded error reason travels (ISI-5211).
+func TestParseOpenCodeLineToolCompletedNoSummary(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/etc/passwd"},"output":"root:x:0:0:..."}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.True(t, *out[0].Tool.OK)
+	assert.Empty(t, out[0].Tool.Summary)
+}
+
 func TestParseOpenCodeLineToolInFlight(t *testing.T) {
 	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"running","input":{}}}}`
 	out := parseOpenCodeLine(line)

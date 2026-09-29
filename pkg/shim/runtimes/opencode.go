@@ -185,9 +185,18 @@ type openCodePart struct {
 	// onto gen_ai.response.finish_reasons (GH #635). Empty on parts that do
 	// not carry it.
 	Reason string `json:"reason"`
-	State      *struct {
+	State  *struct {
 		Status string          `json:"status"`
 		Input  json.RawMessage `json:"input"`
+		// Output is the tool result text opencode records for a settled call.
+		// On status:"error" it carries the failure reason (e.g. an MCP tool's
+		// isError content text, internal/memory/toolmcp.go toolError) — the
+		// signal ISI-5211 surfaces into the run-feed chip. Empty on in-flight
+		// states and on errors the runtime reports out-of-band.
+		Output string `json:"output"`
+		// Error is the alternate field older/other opencode builds stash the
+		// failure reason in; read as a fallback when Output is empty on error.
+		Error string `json:"error"`
 	} `json:"state"`
 	// Tokens is the step-finish usage block; nil on shapes that do not
 	// carry it (then step_finish stays bookkeeping, ISI-4238).
@@ -330,6 +339,16 @@ func parseOpenCodeLine(line string) []Progress {
 			ok := false
 			tool.Phase = "result"
 			tool.OK = &ok
+			// ISI-5211: capture the failure reason so the run-feed chip renders
+			// it instead of the bare "No tool output recorded" fallback. opencode
+			// records an MCP tool's isError content text in state.output; some
+			// builds use state.error — prefer output, fall back to error. Bounded
+			// and scrubbed onto the wire (NFR-2) like the shell-head enrichment.
+			if reason := ev.Part.State.Output; reason != "" {
+				tool.Summary = a2a.ToolErrorSummary(reason)
+			} else if reason := ev.Part.State.Error; reason != "" {
+				tool.Summary = a2a.ToolErrorSummary(reason)
+			}
 		default: // pending/running — the call is in flight
 			tool.Phase = "start"
 		}
