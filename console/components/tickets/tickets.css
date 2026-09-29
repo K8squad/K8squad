@@ -1566,6 +1566,79 @@
   white-space: nowrap;
 }
 
+/* ---- ISI-5190 (S1): structured ProgressMirror rows — tool chip + status ---- */
+/* Parsed from the flat `[tool:read/result(ok)]` envelope: a friendly verb, an
+   ok/err status chip, and an expandable summary row (S2 fills the detail). The
+   bare `[tool:read/result(ok)]` rows Henrik reported now render as one quiet chip
+   instead of a leaked wire literal. */
+.ksq-toolchip {
+  margin: 6px 0 0;
+}
+.ksq-toolchip__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ksq-toolchip__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-1);
+  font: inherit;
+}
+.ksq-toolchip__caret {
+  color: var(--text-2);
+  font-size: 0.75em;
+  width: 1em;
+  display: inline-block;
+}
+.ksq-toolchip__verb {
+  font-weight: 600;
+}
+.ksq-toolchip__verb--static {
+  /* a chip with no detail sits a caret-width in so it aligns with expandable
+     rows above/below it. */
+  padding-left: calc(1em + 6px);
+}
+.ksq-toolchip__status {
+  text-transform: uppercase;
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+}
+.ksq-toolchip__status[data-status="ok"] {
+  border-color: var(--ok, #2ea043);
+  color: var(--ok, #2ea043);
+}
+.ksq-toolchip__status[data-status="err"] {
+  border-color: var(--danger, #f85149);
+  color: var(--danger, #f85149);
+}
+.ksq-toolchip__running {
+  font-size: 0.9em;
+}
+.ksq-toolchip__detail {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--inset, var(--canvas));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.ksq-progress__status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
 /* ---- Composer: read-only fallback (viewer / write path not wired) ---- */
 .ksq-composer-note {
   margin-top: 16px;
