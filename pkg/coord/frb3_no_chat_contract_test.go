@@ -419,6 +419,7 @@ var allowedSurface = map[string]string{
 	"AppendComment":  "§6.1 append a provenanced coord.comment (sanctioned handoff half, server-authored author)",
 	"TaskDetail":     "§6.1 the richer work-item read projection (title/body/state/comments/fence, read-only)",
 	"TaskComment":    "§6.1 one append-only provenanced note on a work item (read projection)",
+	"CommentRef":     "§6.1 a structured ticket LINK carried on a comment (ISI-5214) — the `#`-picker's work-item reference (UUID + title), read projection / durable link metadata, never a dispatch or agent-to-agent channel",
 
 	// M1.5 agent change reporting + board read models (ISI-4131, epic ISI-4126):
 	// the run's change SUMMARY — commit SHAs / PR links — appended to its OWN card

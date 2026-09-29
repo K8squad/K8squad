@@ -13,12 +13,22 @@
 
 import { ApiError } from "./api";
 import type { WorkItemState } from "./types";
+import type { TicketReference } from "@/lib/discussion/types";
 
-/** One append-only comment (coord.comment) — author principal + body + time. */
+export type { TicketReference };
+
+/**
+ * One append-only comment (coord.comment) — author principal + body + time, plus
+ * (ISI-5214) any structured ticket LINKS the `#`-picker collected. `references`
+ * are read straight off the wire (coord.TaskComment.references) — the SAME shape
+ * the discussion room carries on a message payload — and render as chips beneath
+ * the comment. Absent/empty for a plain comment.
+ */
 export interface ThreadComment {
   author: string;
   body: string;
   createdAt: string;
+  references?: TicketReference[];
 }
 
 /** One agent-reported change ref (coord.change_ref) — commit SHA or PR URL. */
@@ -82,15 +92,46 @@ function arr(raw: Record<string, unknown>, ...keys: string[]): unknown[] {
   return [];
 }
 
+/**
+ * Read the structured ticket links off a comment (ISI-5214) — the coord TaskComment
+ * `references` array (lowercase wire tag; PascalCase tolerated for symmetry with the
+ * rest of this boundary). Blank ids and non-objects are dropped, so a plain comment
+ * (no `references`) yields an empty list and renders link-free.
+ */
+export function commentReferences(o: Record<string, unknown>): TicketReference[] {
+  const raw = Array.isArray(o.references)
+    ? o.references
+    : Array.isArray(o.References)
+      ? o.References
+      : [];
+  const out: TicketReference[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const workItemId = str(e, "workItemId", "WorkItemID");
+    if (workItemId === "") continue;
+    const title = str(e, "title", "Title");
+    const state = str(e, "state", "State");
+    out.push({
+      workItemId,
+      ...(title ? { title } : {}),
+      ...(state ? { state } : {}),
+    });
+  }
+  return out;
+}
+
 /** Map the raw wire object (either casing) into the clean shape. */
 export function normalizeThread(raw: unknown): NormalizedThread {
   const r = (raw ?? {}) as Record<string, unknown>;
   const comments = arr(r, "Comments", "comments").map((c) => {
     const o = c as Record<string, unknown>;
+    const references = commentReferences(o);
     return {
       author: str(o, "author", "Author"),
       body: str(o, "body", "Body"),
       createdAt: str(o, "createdAt", "CreatedAt"),
+      ...(references.length > 0 ? { references } : {}),
     };
   });
   const changeRefs = arr(r, "ChangeRefs", "changeRefs").map((c) => {
@@ -175,13 +216,24 @@ export interface PostedComment extends ThreadComment {
 export async function postWorkItemComment(
   workItemId: string,
   body: string,
+  references?: readonly TicketReference[],
 ): Promise<PostedComment> {
+  // Only send `references` when the `#`-picker collected at least one link, so a
+  // plain comment posts the exact { body } shape it always did (ISI-5214). The
+  // server re-resolves + re-dedupes against the ticket's project, so this wire is
+  // a best-effort hint, never the authority on which links survive.
+  const payload: { body: string; references?: TicketReference[] } = { body };
+  if (references && references.length > 0) {
+    payload.references = references.map((r) =>
+      r.title ? { workItemId: r.workItemId, title: r.title } : { workItemId: r.workItemId },
+    );
+  }
   const res = await fetch(
     `/api/work-items/${encodeURIComponent(workItemId)}/comments`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ body }),
+      body: JSON.stringify(payload),
       cache: "no-store",
     },
   );
@@ -194,10 +246,12 @@ export async function postWorkItemComment(
     throw new ApiError(res.status, text);
   }
   const o = (raw ?? {}) as Record<string, unknown>;
+  const refs = commentReferences(o);
   return {
     author: str(o, "author", "Author"),
     body: str(o, "body", "Body"),
     createdAt: str(o, "createdAt", "CreatedAt"),
+    ...(refs.length > 0 ? { references: refs } : {}),
     reTriggered: o.reTriggered === true || o.ReTriggered === true || undefined,
     fromState: str(o, "fromState", "FromState") || undefined,
     toState: str(o, "toState", "ToState") || undefined,

@@ -37,13 +37,21 @@ import (
 // independently, and tests inject a fake without touching the create/edit fakes. The
 // concrete *coord.WorkItemWriteStore satisfies both.
 type WorkItemCommenter interface {
-	AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string) (coord.HumanCommentOutcome, error)
+	AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string, refs []coord.CommentRef) (coord.HumanCommentOutcome, error)
 }
 
-// postCommentRequest is the POST body. body is the only field; author is NEVER taken
-// from the body — it is server-stamped from the session principal.
+// postCommentRequest is the POST body. body is the only required field; author is
+// NEVER taken from the body — it is server-stamped from the session principal.
+//
+// references (ISI-5214, parent ISI-5212 S2) are the structured ticket LINKS the
+// ticket-detail `#`-picker collected: work-item UUID + display title, the exact wire
+// shape the discussion room's postMessageReq.References carries. They are LINKS, never
+// dispatch: coord.AppendHumanComment resolves them against the commented ticket's own
+// project and drops any that don't belong (canonicalizing each title from the source),
+// so a spoofed label or an out-of-project id never persists. Absent ⇒ a plain comment.
 type postCommentRequest struct {
-	Body string `json:"body"`
+	Body       string             `json:"body"`
+	References []coord.CommentRef `json:"references,omitempty"`
 }
 
 // workItemCommentHandler answers POST /api/work-items/{id}/comments.
@@ -83,7 +91,7 @@ func workItemCommentHandler(store WorkItemCommenter) http.HandlerFunc {
 		// Team, ISI-3921/ISI-4132).
 		teamID := authTeamScope(r)
 
-		comment, err := store.AppendHumanComment(r.Context(), id, teamID, auth.Principal, req.Body)
+		comment, err := store.AppendHumanComment(r.Context(), id, teamID, auth.Principal, req.Body, req.References)
 		if mapWorkItemWriteError(w, err) {
 			return
 		}
