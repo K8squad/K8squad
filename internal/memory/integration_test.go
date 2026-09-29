@@ -244,8 +244,11 @@ func TestPgVector_ReadChronological(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	squad, principal := uuid.NewString(), uuid.NewString()
-	agent := uuid.NewString()
-	otherAgent := uuid.NewString()
+	// ISI-5210: agent_id is a text NAME, not a uuid (0005). Use real agent names — the value the token
+	// carries (run.Spec.Agents[0].Name) and the model passes to diary_read — so this arm proves a
+	// name-based diary round-trips (the old uuid column/cast raised 22P02 on exactly these).
+	agent := "john"
+	otherAgent := "mary"
 
 	// Write three diary rows for `agent` with strictly increasing created_at (explicit sleeps so the
 	// server-stamped now() ordering is unambiguous), plus decoys the read must exclude.
@@ -351,9 +354,10 @@ func strPtr(s string) *string { return &s }
 // parameter-type inference the default cache_statement mode enjoys. Under that protocol an uncast
 // `WHERE squad_id = $1` predicate resolves to `text = uuid` and dies with SQLSTATE 42883 ("operator
 // does not exist: text = uuid") on 100% of runs, before a single row is scanned — exactly the failure
-// that zeroed out the dispatch pipeline. squad_id / principal_id / run_id / agent_id are uuid columns
-// (migration 0004 kept them uuid; only project_id became text), so the fix is a `::uuid` cast on every
-// squad_id predicate, matching the diary arm.
+// that zeroed out the dispatch pipeline. squad_id / principal_id / run_id are uuid columns; project_id
+// (0004) and agent_id (0005, ISI-5210) are text, so the fix is a `::uuid` cast on every squad_id predicate
+// and a `::text` cast on the diary agent_id predicate — this arm reads with a NAME-based agent so a
+// regression back to `agent_id = $2::uuid` raises 22P02 under the simple protocol and fails the build.
 //
 // This is deliberately NOT a sqlmock regex assertion: a regex matcher passes a uuid/text mismatch
 // silently (the 42883 / 42P18 lesson). Only a real engine in the reproducing protocol catches a
@@ -383,7 +387,7 @@ func TestPgVector_SquadIDScopeUnderSimpleProtocol(t *testing.T) {
 	store := &PgVectorStore{pool: pool, dim: EmbeddingDim}
 
 	squad, principal := uuid.NewString(), uuid.NewString()
-	agent := uuid.NewString()
+	agent := "john" // ISI-5210: a name-based agent — the value the token carries; agent_id is text (0005)
 
 	// Write itself uses squad_id in INSERT assignment context (text→uuid assignment cast is legal), so it
 	// is not the defect — but we need a row to read back, and this proves the write path too.

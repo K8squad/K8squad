@@ -40,11 +40,12 @@ type CursorStore interface {
 // cursorName is the projection_cursor key for the discussion→memory indexer.
 const cursorName = "discussion"
 
-// principalNamespace is a fixed UUIDv5 namespace: the memory substrate columns (principal_id/agent_id/
-// run_id) are uuid NOT NULL, but the discussion provenance is TEXT ("alice@corp", "agent:coordinator").
-// We derive a STABLE uuid from each text identity for the substrate columns; the honest text triple is
-// carried verbatim in `provenance` and is what the read envelope surfaces (§7.3.2). Same text ⇒ same
-// uuid, so re-projecting a message is idempotent in the substrate columns too.
+// principalNamespace is a fixed UUIDv5 namespace: the uuid substrate columns (principal_id/run_id) are
+// uuid, but the discussion provenance is TEXT ("alice@corp"). We derive a STABLE uuid from each text
+// identity for those uuid columns; the honest text triple is carried verbatim in `provenance` and is what
+// the read envelope surfaces (§7.3.2). Same text ⇒ same uuid, so re-projecting a message is idempotent in
+// the substrate columns too. agent_id is NOT derived — it is a text column (0005, ISI-5210) storing the
+// agent NAME verbatim, since the whole identity model keys an agent by name, not uuid.
 var principalNamespace = uuid.MustParse("6b1e5b1e-2c9a-5e7d-9f3a-10b2c3d4e5f6")
 
 // deriveUUID maps a discussion text identity to a deterministic uuid for a memory substrate column.
@@ -218,7 +219,10 @@ func (ix *Indexer) index(ctx context.Context, m discussion.MemoryIndexable) erro
 		DedupeID:    &recordID,
 	}
 	if m.AuthorAgentID != nil {
-		a := deriveUUID("agent", *m.AuthorAgentID)
+		// agent_id is text (0005, ISI-5210): the agent identity is a NAME, not a uuid. Store the honest
+		// author name verbatim — the same value diary_append stamps and diary_read matches — rather than a
+		// deriveUUID synthetic. principal_id/run_id stay uuid columns, so those keep the UUIDv5 derivation.
+		a := *m.AuthorAgentID
 		req.AgentID = &a
 	}
 	if m.AuthorRunID != nil {
