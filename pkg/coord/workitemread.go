@@ -285,6 +285,44 @@ func (s *WorkItemReadStore) FindWorkItemByLabel(ctx context.Context, teamID, pro
 	return rec, nil
 }
 
+// WorkItemProjectRef is the minimal identity the discussion ticket-reference
+// resolver (ISI-5170) needs to validate a candidate link: the work item's
+// owning project (coord.work_item.project_id — the Project CR UID, NOT the
+// console's namespace/name slug) and its authoritative title, so the resolver
+// can canonicalize the client-supplied chip label rather than trust it.
+type WorkItemProjectRef struct {
+	ProjectID string
+	Title     string
+}
+
+// WorkItemProject returns the owning project + title for one work item, scoped
+// to teamID exactly like ReadWorkItemThread: an item outside the caller's Team
+// reads as ErrWorkItemNotFound (404, existence-hiding, §12.1), never a
+// cross-tenant leak; an empty teamID is the trusted fleet-admin path (ISI-3937).
+// It is the DB-backed half of the discussion ticket-reference resolver (the
+// ISI-5165 seam, wired in ISI-5170): the resolver drops any candidate whose
+// project does not match the room's, so an out-of-project or foreign-team UUID
+// never persists into Message.Payload.references.
+func (s *WorkItemReadStore) WorkItemProject(ctx context.Context, workItemID, teamID string) (WorkItemProjectRef, error) {
+	if workItemID == "" {
+		return WorkItemProjectRef{}, fmt.Errorf("coord.WorkItemProject: workItemID required")
+	}
+	var ref WorkItemProjectRef
+	err := s.db.QueryRowContext(ctx, `
+		SELECT project_id::text, title
+		  FROM coord.work_item
+		 WHERE id = $1::uuid
+		   AND ($2::uuid IS NULL OR team_id = $2::uuid)`, workItemID, nullUUID(teamID)).
+		Scan(&ref.ProjectID, &ref.Title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkItemProjectRef{}, ErrWorkItemNotFound
+	}
+	if err != nil {
+		return WorkItemProjectRef{}, fmt.Errorf("coord.WorkItemProject: lookup %s: %w", workItemID, err)
+	}
+	return ref, nil
+}
+
 // nullUUID turns an empty teamID into a NULL bind parameter (the trusted
 // fleet-admin path); a non-empty one is cast to uuid at the server.
 func nullUUID(id string) any {
