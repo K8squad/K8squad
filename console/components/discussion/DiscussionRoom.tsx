@@ -12,16 +12,35 @@
 // composer's audience selector + `@`-mention popover. Audience scoping stays a
 // SERVER decision (Store reads); the room only renders what it is given.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MentionSuggestion, Message, Proposal } from "@/lib/discussion/types";
 import { nestMessages } from "@/lib/discussion/thread";
 import { applyRoomEvent, type RoomEvent } from "@/lib/discussion/liveFeed";
+import { audienceWire } from "@/lib/discussion/audience";
+import {
+  applyReply,
+  dispatchTargets,
+  expireStale,
+  groupByMessage,
+  hasActiveWork,
+  seedWatches,
+  type DispatchWatch,
+} from "@/lib/discussion/working";
 import type { DiscussionClient } from "@/lib/discussion/api";
 import { DiscussionApiError } from "@/lib/discussion/api";
 import { MessageItem } from "./MessageItem";
 import { Composer } from "./Composer";
 import { Roster, type RosterAgent } from "./Roster";
 import "./discussion.css";
+
+// How long a dispatched agent may stay silent before the room shows "could not
+// respond" (ISI-5174 AC3). A discussion thread-run reads the thread, runs a
+// model turn, and posts back — minutes, not seconds — so this is generous enough
+// not to false-fail a live run yet short enough that a dead run stops spinning.
+const WORKING_TIMEOUT_MS = 5 * 60_000;
+// Cadence at which the room re-checks working watches against the clock. The
+// reducer (expireStale) is pure in `now`; this timer just supplies the tick.
+const WORKING_SWEEP_MS = 15_000;
 
 export interface DiscussionRoomProps {
   projectId: string;
@@ -63,6 +82,15 @@ export function DiscussionRoom({
   const [proposals, setProposals] = useState<Record<string, Proposal>>({});
   // Message id whose confirm/dismiss round-trip is in flight.
   const [busyMessageId, setBusyMessageId] = useState<string>();
+  // Dispatch working-state (ISI-5174): the live "an agent is working…" entries,
+  // seeded when the human posts an @-mention and resolved by the agent's reply
+  // landing over the SAME SSE channel (no parallel status stream, AC4).
+  const [working, setWorking] = useState<DispatchWatch[]>([]);
+  // The roster the post callback reads to resolve dispatch targets, held in a
+  // ref so `post` is not re-created on every roster refresh (and never dispatches
+  // against a stale closure).
+  const rosterRef = useRef<RosterAgent[]>([]);
+  rosterRef.current = rosterAgents;
 
   const load = useCallback(async () => {
     try {
@@ -106,16 +134,33 @@ export function DiscussionRoom({
     void load();
   }, [load]);
 
-  // Live append over the single 8.2 SSE channel (idempotent by id).
+  // Live append over the single 8.2 SSE channel (idempotent by id). An agent's
+  // reply arriving here also resolves any working watch it answers (ISI-5174):
+  // the affordance rides the same bus, not a parallel status stream (AC4).
   useEffect(() => {
     if (!subscribe) return;
     const unsub = subscribe((evt) => {
       setMessages((cur) => applyRoomEvent(cur, evt));
+      if (evt.type === "message.created" || evt.type === "message.updated") {
+        setWorking((cur) => applyReply(cur, evt.message));
+      }
     });
     return unsub;
   }, [subscribe]);
 
+  // Failure sweep (ISI-5174 AC3): expire a still-working watch to "could not
+  // respond" once its run has been silent past the timeout, so an indicator
+  // never spins forever. The reducer is pure in `now`; this timer is the clock.
+  useEffect(() => {
+    if (!hasActiveWork(working)) return;
+    const t = setInterval(() => {
+      setWorking((cur) => expireStale(cur, Date.now(), WORKING_TIMEOUT_MS));
+    }, WORKING_SWEEP_MS);
+    return () => clearInterval(t);
+  }, [working]);
+
   const threads = useMemo(() => nestMessages(messages), [messages]);
+  const workingByMessageId = useMemo(() => groupByMessage(working), [working]);
 
   const post = useCallback(
     async (body: { body: string; parentId?: string; audience?: string }) => {
@@ -124,6 +169,24 @@ export function DiscussionRoom({
       setMessages((cur) =>
         applyRoomEvent(cur, { type: "message.created", message: created }),
       );
+      // ISI-5174: seed the "an agent is working…" affordance for each agent this
+      // post @-mentions — resolved server-side the same way (dispatch.go). The
+      // wire audience token (party vs direct:{id}) decides the fan-out, matching
+      // the backend; a post that dispatches nobody seeds nothing.
+      const agentNames = dispatchTargets(
+        body.body,
+        audienceWire(body.audience),
+        rosterRef.current,
+      );
+      if (agentNames.length > 0) {
+        setWorking((cur) =>
+          seedWatches(cur, {
+            messageId: created.id,
+            agentNames,
+            now: Date.now(),
+          }),
+        );
+      }
     },
     [client, projectId, threadId],
   );
@@ -204,6 +267,7 @@ export function DiscussionRoom({
               onConfirmProposal={confirmProposal}
               onDismissProposal={dismissProposal}
               busyMessageId={busyMessageId}
+              workingByMessageId={workingByMessageId}
             />
           ))}
         </ul>

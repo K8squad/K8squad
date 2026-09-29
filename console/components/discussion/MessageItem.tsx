@@ -18,11 +18,13 @@ import type {
   ProposalResult,
   TicketReference,
 } from "@/lib/discussion/types";
+import type { DispatchWatch } from "@/lib/discussion/working";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
 import { parseAudience } from "@/lib/discussion/audience";
 import { reviewWorkItemHref } from "@/lib/github-links";
 import { AuthorBadge } from "./AuthorBadge";
 import { ProposalCard } from "./ProposalCard";
+import { WorkingIndicators } from "./WorkingIndicator";
 
 export function isRetracted(m: Message): boolean {
   return typeof m.invalidatedAt === "string" && m.invalidatedAt !== "";
@@ -76,6 +78,12 @@ export interface MessageItemProps {
   onDismissProposal?: (messageId: string) => void;
   /** Message id whose confirm/dismiss round-trip is in flight. */
   busyMessageId?: string;
+  /**
+   * messageId → dispatch working-state entries (ISI-5174): the live "an agent is
+   * working…" rows shown beneath a message that @-mentioned an agent. Absent ⇒
+   * no indicator (a plain message, or a room that isn't tracking dispatch).
+   */
+  workingByMessageId?: Readonly<Record<string, DispatchWatch[]>>;
 }
 
 export function MessageItem({
@@ -85,6 +93,7 @@ export function MessageItem({
   onConfirmProposal,
   onDismissProposal,
   busyMessageId,
+  workingByMessageId,
 }: MessageItemProps) {
   const retracted = isRetracted(message);
   const badge = deriveAuthorBadge(message);
@@ -199,6 +208,8 @@ export function MessageItem({
         </>
       )}
 
+      <WorkingIndicators watches={workingByMessageId?.[message.id]} />
+
       {message.replies && message.replies.length > 0 ? (
         <ul className="ksq-thread" data-testid="replies">
           {message.replies.map((r) => (
@@ -210,6 +221,7 @@ export function MessageItem({
               onConfirmProposal={onConfirmProposal}
               onDismissProposal={onDismissProposal}
               busyMessageId={busyMessageId}
+              workingByMessageId={workingByMessageId}
             />
           ))}
         </ul>
