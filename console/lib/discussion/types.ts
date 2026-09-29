@@ -143,6 +143,19 @@ export interface Proposal {
   decidedAt?: string;
 }
 
+/**
+ * One ticket reference carried on a message payload under `references`
+ * (ISI-5165 / plan ISI-5134 S1). A reference is a LINK, never a dispatch: the
+ * message renderer deep-links it to the in-console work item. Field names match
+ * the Go JSON tags on `internal/discussion/dispatch.go#TicketRef`; `state` is an
+ * optional lane label the chip may surface (absent on the S1 wire).
+ */
+export interface TicketReference {
+  workItemId: string;
+  title?: string;
+  state?: string;
+}
+
 /** The fan-out outcome posted back under an executed card (plan §4.7). */
 export interface ProposalResult {
   action: ProposalAction;

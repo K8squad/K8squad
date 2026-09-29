@@ -12,7 +12,12 @@
 // (kind='structured') renders a run chip that links the fan-out outcome back to
 // its work item.
 
-import type { Message, Proposal, ProposalResult } from "@/lib/discussion/types";
+import type {
+  Message,
+  Proposal,
+  ProposalResult,
+  TicketReference,
+} from "@/lib/discussion/types";
 import { deriveAuthorBadge } from "@/lib/discussion/provenance";
 import { parseAudience } from "@/lib/discussion/audience";
 import { reviewWorkItemHref } from "@/lib/github-links";
@@ -33,6 +38,30 @@ export function parseProposalResult(payload: unknown): ProposalResult | null {
 
 function shortId(id: string): string {
   return id.length > 8 ? id.slice(0, 8) : id;
+}
+
+/**
+ * Read the ticket references stamped onto a message payload under `references`
+ * (ISI-5165 / plan ISI-5134 S1). A reference is a stored LINK (UUID + title)
+ * read straight off the payload — no render-time refetch. Absent or malformed
+ * payloads yield an empty list, so a plain message renders link-free.
+ */
+export function parseReferences(payload: unknown): TicketReference[] {
+  if (!payload || typeof payload !== "object") return [];
+  const raw = (payload as Record<string, unknown>).references;
+  if (!Array.isArray(raw)) return [];
+  const out: TicketReference[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue;
+    const r = entry as Record<string, unknown>;
+    if (typeof r.workItemId !== "string" || r.workItemId === "") continue;
+    out.push({
+      workItemId: r.workItemId,
+      title: typeof r.title === "string" ? r.title : undefined,
+      state: typeof r.state === "string" ? r.state : undefined,
+    });
+  }
+  return out;
 }
 
 export interface MessageItemProps {
@@ -71,6 +100,10 @@ export function MessageItem({
   // links back to (plan §4.7).
   const isPostBack = message.kind === "structured";
   const result = isPostBack ? parseProposalResult(message.payload) : null;
+
+  // Ticket references (ISI-5165 / plan ISI-5134 S4) linkify as chips beneath the
+  // body. They are read straight off the stored payload — no render-time refetch.
+  const references = isProposal ? [] : parseReferences(message.payload);
 
   return (
     <li
@@ -119,6 +152,49 @@ export function MessageItem({
             >
               ticket {shortId(result.workItemId)}
             </a>
+          ) : null}
+          {references.length > 0 ? (
+            <ul className="ksq-message__refs" data-testid="ticket-refs">
+              {references.map((ref) => {
+                const href = reviewWorkItemHref(
+                  projectId ?? "",
+                  ref.workItemId,
+                );
+                const label = ref.title || `ticket ${shortId(ref.workItemId)}`;
+                const chip = (
+                  <>
+                    {label}
+                    {ref.state ? (
+                      <span className="ksq-ticket-chip__state">
+                        {ref.state}
+                      </span>
+                    ) : null}
+                  </>
+                );
+                return (
+                  <li key={ref.workItemId}>
+                    {href ? (
+                      <a
+                        className="ksq-chip ksq-ticket-chip"
+                        data-testid="ticket-ref"
+                        href={href}
+                        title={`Work item ${ref.workItemId}`}
+                      >
+                        {chip}
+                      </a>
+                    ) : (
+                      <span
+                        className="ksq-chip ksq-ticket-chip"
+                        data-testid="ticket-ref"
+                        title={`Work item ${ref.workItemId}`}
+                      >
+                        {chip}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           ) : null}
         </>
       )}

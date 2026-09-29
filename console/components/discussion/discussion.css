@@ -418,3 +418,28 @@
   border-color: var(--chip-base);
   text-decoration: none;
 }
+
+/* Ticket-reference chips (ISI-5165 / plan ISI-5134 S4): a message's stored
+ * work-item links, deep-linking to the in-console ticket. Shares the result
+ * chip's hue and shape so links read as one family. */
+.ksq-message__refs {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ksq-ticket-chip {
+  --chip-base: var(--ksq-badge-run);
+  text-decoration: none;
+  gap: 6px;
+}
+a.ksq-ticket-chip:hover {
+  border-color: var(--chip-base);
+  text-decoration: none;
+}
+.ksq-ticket-chip__state {
+  opacity: 0.75;
+  font-variant: small-caps;
+}
