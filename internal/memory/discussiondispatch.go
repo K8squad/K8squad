@@ -83,17 +83,19 @@ type DiscussionDispatch struct {
 	dispatcher  discussion.MentionDispatcher
 	hopResolver discussion.ReplyHopResolver
 	roster      RosterResolver
+	refResolver discussion.TicketRefResolver // ISI-5166: ticket-reference resolution seam; nil ⇒ references dropped
 }
 
-// NewDiscussionDispatch bundles the run-minting dispatcher, the reply-hop resolver, and the roster source.
-// Any component may be nil and degrades gracefully: a nil dispatcher/roster disables the trigger, a nil
-// hopResolver disables the auto-stamp — the post still commits. Returns nil when there is nothing to wire
-// (no dispatcher AND no hopResolver), so the tool surface treats it as "dispatch off".
-func NewDiscussionDispatch(dispatcher discussion.MentionDispatcher, hopResolver discussion.ReplyHopResolver, roster RosterResolver) *DiscussionDispatch {
-	if dispatcher == nil && hopResolver == nil {
+// NewDiscussionDispatch bundles the run-minting dispatcher, the reply-hop resolver, the roster source, and
+// the ticket-reference resolver. Any component may be nil and degrades gracefully: a nil dispatcher/roster
+// disables the trigger, a nil hopResolver disables the auto-stamp, a nil refResolver drops ticket references
+// — the post still commits. Returns nil when there is nothing to wire (no dispatcher AND no hopResolver AND
+// no refResolver), so the tool surface treats it as "dispatch off".
+func NewDiscussionDispatch(dispatcher discussion.MentionDispatcher, hopResolver discussion.ReplyHopResolver, roster RosterResolver, refResolver discussion.TicketRefResolver) *DiscussionDispatch {
+	if dispatcher == nil && hopResolver == nil && refResolver == nil {
 		return nil
 	}
-	return &DiscussionDispatch{dispatcher: dispatcher, hopResolver: hopResolver, roster: roster}
+	return &DiscussionDispatch{dispatcher: dispatcher, hopResolver: hopResolver, roster: roster, refResolver: refResolver}
 }
 
 // stampReplyHop returns the payload a tool-posted reply should be stored with, auto-stamping the loop-guard
@@ -105,6 +107,20 @@ func (d *DiscussionDispatch) stampReplyHop(ctx context.Context, auth discussion.
 		return nil
 	}
 	return discussion.StampReplyHopFrom(ctx, d.hopResolver, auth, nil)
+}
+
+// stampTicketRefs (ISI-5166) is the tool's pre-write ticket-reference hook: it resolves the request's
+// candidate references against the message's project and merges the surviving links into the payload under
+// `references`, driving the SAME shared discussion.StampTicketRefsFrom the REST handler delegates to — so a
+// ticket referenced through the MCP tool persists into Message.Payload identically to the REST path, and an
+// unknown/out-of-project ref is dropped identically. Best-effort and nil-safe: a nil bundle, a nil
+// refResolver, no candidates, a resolver error, or an all-out-of-project set all pass the payload through
+// unchanged. A reference is a LINK, never a dispatch — this hook emits no MentionDispatch.
+func (d *DiscussionDispatch) stampTicketRefs(ctx context.Context, projectID string, auth discussion.AuthorContext, refs []discussion.TicketRef, payload *json.RawMessage) *json.RawMessage {
+	if d == nil {
+		return payload
+	}
+	return discussion.StampTicketRefsFrom(ctx, d.refResolver, projectID, auth, refs, payload)
 }
 
 // dispatchMentions is the tool's post-commit trigger: it resolves the caller Team's roster and delegates to

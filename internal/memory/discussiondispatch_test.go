@@ -93,7 +93,7 @@ func mentionToolServer(t *testing.T, dw DiscussionWriter, dd *DiscussionDispatch
 func TestToolMentionDispatchHumanReply(t *testing.T) {
 	dw := &mentionCaptureWriter{}
 	disp := &captureDispatcher{}
-	dd := NewDiscussionDispatch(disp, fixedHopResolver{}, staticRoster{names: []string{"Robo-Coder", "Reviewer"}})
+	dd := NewDiscussionDispatch(disp, fixedHopResolver{}, staticRoster{names: []string{"Robo-Coder", "Reviewer"}}, nil)
 	srv := mentionToolServer(t, dw, dd)
 
 	res := discussionPostReq(t, srv.URL+"/mcp/tools/discussion_post",
@@ -133,7 +133,7 @@ func TestToolMentionDispatchHumanReply(t *testing.T) {
 func TestToolMentionAgentReplyIncrementsHop(t *testing.T) {
 	dw := &mentionCaptureWriter{}
 	disp := &captureDispatcher{}
-	dd := NewDiscussionDispatch(disp, fixedHopResolver{runID: "run-hop1", hop: 1}, staticRoster{names: []string{"Reviewer"}})
+	dd := NewDiscussionDispatch(disp, fixedHopResolver{runID: "run-hop1", hop: 1}, staticRoster{names: []string{"Reviewer"}}, nil)
 	srv := mentionToolServer(t, dw, dd)
 
 	res := discussionPostReq(t, srv.URL+"/mcp/tools/discussion_post",
@@ -173,7 +173,7 @@ func TestToolMentionAgentReplyIncrementsHop(t *testing.T) {
 func TestToolMentionHopThreeRefused(t *testing.T) {
 	dw := &mentionCaptureWriter{}
 	disp := &captureDispatcher{}
-	dd := NewDiscussionDispatch(disp, fixedHopResolver{runID: "run-hop2", hop: 2}, staticRoster{names: []string{"Reviewer"}})
+	dd := NewDiscussionDispatch(disp, fixedHopResolver{runID: "run-hop2", hop: 2}, staticRoster{names: []string{"Reviewer"}}, nil)
 	srv := mentionToolServer(t, dw, dd)
 
 	res := discussionPostReq(t, srv.URL+"/mcp/tools/discussion_post",

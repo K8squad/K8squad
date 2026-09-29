@@ -631,6 +631,11 @@ type discussionPostArgs struct {
 	Title           string `json:"title,omitempty"`             // required iff thread_id omitted
 	Body            string `json:"body"`                        // thread first-message body, or the reply body
 	ParentMessageID string `json:"parent_message_id,omitempty"` // reply target within the thread (ignored when opening)
+	// References are structured ticket LINKS (ISI-5166, parity with the REST postMessageReq): work-item
+	// UUIDs (with a display title) the message links to. Validated against THIS project and persisted under
+	// Payload.references; a reference NEVER dispatches (a link, not an @-mention). Honored only on the reply
+	// path (thread_id present), mirroring the REST handler which stamps refs on postMessage.
+	References []discussion.TicketRef `json:"references,omitempty"`
 }
 
 // callDiscussionPost is the MCP edge of the discussion_post tool: the authored write peer of
@@ -695,6 +700,10 @@ func (m *ToolMCP) callDiscussionPost(ctx context.Context, sess mcpSession, raw j
 	// thread-run BEFORE the write, from the Run's server-stamped identity — symmetric with the REST
 	// handler's stampReplyHop. Nil dispatch / non-run post ⇒ nil payload, exactly as before.
 	payload := m.mentions.stampReplyHop(ctx, auth)
+	// ISI-5166 (ticket references): resolve any structured refs against THIS project and merge the
+	// survivors into the same payload under `references` — parity with the REST handler's stampTicketRefs.
+	// A reference is a LINK, never a dispatch; a nil dispatch / nil resolver leaves the payload unchanged.
+	payload = m.mentions.stampTicketRefs(ctx, projectID, auth, a.References, payload)
 	msg, err := m.discuss.PostMessage(ctx, projectID, teamID, threadID, auth, a.Body, parentID, nil, nil, payload)
 	if err != nil {
 		return toolError(err.Error())

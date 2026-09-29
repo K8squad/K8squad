@@ -279,25 +279,37 @@ type TicketRefResolver interface {
 // rationale as SetMentionDispatcher / SetReplyHopResolver). Without it, ticket references are dropped.
 func (h *Handler) SetTicketRefResolver(r TicketRefResolver) { h.refResolver = r }
 
-// stampTicketRefs (ISI-5165) is the REST handler's pre-write hook: it normalizes the request's
-// candidate references, resolves them against the message's project (dropping unknown/out-of-project
-// refs), and merges only the surviving links into the payload under `references`. It is best-effort by
-// construction — a nil resolver, no candidates, a resolver error, or an empty result all pass the
-// payload through unchanged. A reference is durable link metadata, NEVER a write fence (the message is
-// the durable artifact) and NEVER a dispatch (this hook emits no MentionDispatch).
-func (h *Handler) stampTicketRefs(ctx context.Context, projectID string, auth AuthorContext, refs []TicketRef, payload *json.RawMessage) *json.RawMessage {
-	if h.refResolver == nil {
+// StampTicketRefsFrom is the shared pre-write ticket-reference hook BOTH room write edges call: the
+// apiserver REST Handler.postMessage (ISI-5165) and the cmd/memory discussion_post MCP tool (ISI-5166),
+// which runs in a separate process and posts via discussion.Store directly. It normalizes the request's
+// candidate references, resolves them against the message's project through the resolver seam (dropping
+// unknown/out-of-project refs), and merges only the surviving links into the payload under `references`.
+// Hoisting it here — with the resolver seam passed in — is what keeps the two edges from drifting on how
+// a reference is normalized, resolved, and persisted (the same rationale as StampReplyHopFrom /
+// DispatchMentionsFrom, ISI-5125). It is best-effort by construction — a nil resolver, no candidates, a
+// resolver error, or an empty result all pass the payload through unchanged. A reference is durable link
+// metadata, NEVER a write fence (the message is the durable artifact) and NEVER a dispatch (this hook
+// emits no MentionDispatch).
+func StampTicketRefsFrom(ctx context.Context, resolver TicketRefResolver, projectID string, auth AuthorContext, refs []TicketRef, payload *json.RawMessage) *json.RawMessage {
+	if resolver == nil {
 		return payload
 	}
 	candidates := normalizeTicketRefs(refs)
 	if len(candidates) == 0 {
 		return payload
 	}
-	resolved, err := h.refResolver.ResolveTicketRefs(ctx, projectID, auth.TeamID, candidates)
+	resolved, err := resolver.ResolveTicketRefs(ctx, projectID, auth.TeamID, candidates)
 	if err != nil || len(resolved) == 0 {
 		return payload // best-effort: an unresolvable set degrades to a link-free (but durable) message
 	}
 	return StampReferences(payload, resolved)
+}
+
+// stampTicketRefs (ISI-5165) is the REST handler's pre-write hook; it delegates to the shared
+// StampTicketRefsFrom (ISI-5166) so the REST and MCP-tool edges resolve and persist references
+// identically.
+func (h *Handler) stampTicketRefs(ctx context.Context, projectID string, auth AuthorContext, refs []TicketRef, payload *json.RawMessage) *json.RawMessage {
+	return StampTicketRefsFrom(ctx, h.refResolver, projectID, auth, refs, payload)
 }
 
 // dispatchableStatus reports whether an agent in the given presence bucket may be auto-dispatched: the
