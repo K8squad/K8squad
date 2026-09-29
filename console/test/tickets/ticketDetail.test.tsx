@@ -261,6 +261,57 @@ describe("TicketDetail", () => {
     expect(screen.getAllByTestId("runcomment-meta")).toHaveLength(1);
   });
 
+  it("renders older agent runs EXPANDED by default — no click-to-expand gate (ISI-5205)", async () => {
+    // Two agent runs (builder older, reviewer newest) + a human reply. The board
+    // reported "user has to click to see the agent's message": the OLD default hid
+    // older agent runs behind a runcomment-collapsed button showing only a snippet.
+    routeFetch({
+      thread: {
+        ...THREAD,
+        Comments: [
+          { author: "agent:builder", body: "wired the seam", createdAt: "2026-09-14T10:00:00Z" },
+          { author: "agent:reviewer", body: "reviewed it", createdAt: "2026-09-14T10:03:00Z" },
+          { author: "user:alice", body: "looks good", createdAt: "2026-09-14T10:05:00Z" },
+        ],
+      },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    // No agent run is behind a click-to-expand button — the gate is gone.
+    expect(screen.queryByTestId("runcomment-collapsed")).toBeNull();
+
+    // The OLDER agent's narration is on screen immediately (ProgressBody), not
+    // hidden behind a snippet button — this is the whole point of S2.
+    expect(screen.getByText("wired the seam")).toBeTruthy();
+    expect(screen.getByText("reviewed it")).toBeTruthy();
+
+    // The collapse affordance is still offered on the older agent run so a long
+    // thread can be tamed by hand — the option remains, only the default flipped.
+    expect(
+      screen.getAllByRole("button", { name: "Collapse run" }).length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("keeps the collapse affordance working — clicking − re-collapses an older run (ISI-5205)", async () => {
+    routeFetch({
+      thread: {
+        ...THREAD,
+        Comments: [
+          { author: "agent:builder", body: "wired the seam", createdAt: "2026-09-14T10:00:00Z" },
+          { author: "agent:reviewer", body: "reviewed it", createdAt: "2026-09-14T10:03:00Z" },
+        ],
+      },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await waitFor(() => expect(screen.getByTestId("detail-description")).toBeTruthy());
+
+    // Older run opens expanded; collapsing it re-shows the one-line summary button.
+    expect(screen.queryByTestId("runcomment-collapsed")).toBeNull();
+    fireEvent.click(screen.getAllByRole("button", { name: "Collapse run" })[0]);
+    expect(screen.getByTestId("runcomment-collapsed")).toBeTruthy();
+  });
+
   it("shows the poster's name with the agent:/user: prefix stripped (ISI-4567)", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
