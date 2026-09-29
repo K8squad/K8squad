@@ -443,3 +443,69 @@ a.ksq-ticket-chip:hover {
   opacity: 0.75;
   font-variant: small-caps;
 }
+
+/* Dispatch working-state affordance (ISI-5174): the "an agent is working…" rows
+ * shown beneath a message that @-mentioned an agent. */
+.ksq-working-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ksq-working {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ksq-working--replied {
+  color: var(--status-succeeded);
+}
+.ksq-working--failed {
+  color: var(--status-blocked);
+}
+.ksq-working__check,
+.ksq-working__warn {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+/* Animated typing indicator — three dots pulsing in sequence, so the room
+ * visibly does something while the background run is live (AC2). */
+.ksq-working__dots {
+  display: inline-flex;
+  gap: 3px;
+  align-items: center;
+}
+.ksq-working__dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--status-running);
+  animation: ksq-working-pulse 1.2s ease-in-out infinite;
+}
+.ksq-working__dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.ksq-working__dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes ksq-working-pulse {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+/* Respect reduced-motion: hold the dots steady rather than pulsing. */
+@media (prefers-reduced-motion: reduce) {
+  .ksq-working__dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
