@@ -22,6 +22,20 @@ import { TicketDetail } from "@/components/tickets/TicketDetail";
 const fetchMock = vi.fn();
 vi.stubGlobal("fetch", fetchMock);
 
+// jsdom has no EventSource; the ticket now opens the shared per-run SSE for ANY
+// active holding run (ISI-5206 useTicketRunStream) — this THREAD is `in_review`
+// with a RunID, so the ambient stream arms on mount. A no-op stub keeps the
+// transport inert (these tests assert the rendered thread, not the live feed).
+class NoopEventSource {
+  onopen: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onmessage: (() => void) | null = null;
+  addEventListener() {}
+  removeEventListener() {}
+  close() {}
+}
+vi.stubGlobal("EventSource", NoopEventSource as unknown as typeof EventSource);
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
