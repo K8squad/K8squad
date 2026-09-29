@@ -70,12 +70,13 @@ func BFFAuthz(auth Authenticator) mux.MiddlewareFunc {
 // which supplies the AuthorContext (principal + Team scope) — this handler never trusts the body for
 // identity or tenancy.
 type Handler struct {
-	store       *Store
-	searcher    search.Searcher
-	org         OrgReader
-	dispatcher  MentionDispatcher // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
-	hopResolver ReplyHopResolver  // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
-	refResolver TicketRefResolver // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
+	store        *Store
+	searcher     search.Searcher
+	org          OrgReader
+	dispatcher   MentionDispatcher   // ISI-5108: dispatch-on-mention seam; nil ⇒ room stays coordination-free
+	hopResolver  ReplyHopResolver    // ISI-5116: reply-path loop-guard hop stamp; nil ⇒ replies unstamped
+	refResolver  TicketRefResolver   // ISI-5165: ticket-reference resolution seam; nil ⇒ references dropped
+	teamResolver ProjectTeamResolver // ISI-5198: room tenancy = project's OWNING team; nil ⇒ caller-team scope
 }
 
 // NewHandler creates the discussion HTTP handler group.
@@ -239,11 +240,11 @@ func (h *Handler) listThreads(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
-	threads, err := h.store.ListThreads(r.Context(), projectID, auth.TeamID,
+	threads, err := h.store.ListThreads(r.Context(), projectID, teamID,
 		queryInt(r, "limit", 50), queryInt(r, "offset", 0))
 	if err != nil {
 		writeStoreErr(w, err)
@@ -268,7 +269,7 @@ func (h *Handler) openThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
@@ -280,6 +281,10 @@ func (h *Handler) openThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	// The thread's tenancy is the room's OWNING Team (ISI-5198), not the creating session's Team — so a
+	// Run scoped to the project's Team can post into a thread a fleet-admin opened. created_by stays the
+	// authenticated principal; only the Team scope is overridden onto this local auth copy.
+	auth.TeamID = teamID
 	thread, err := h.store.OpenThread(r.Context(), projectID, auth, req.Title, req.Body)
 	if err != nil {
 		writeStoreErr(w, err)
@@ -299,11 +304,11 @@ func (h *Handler) getThread(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
-	thread, err := h.store.GetThread(r.Context(), projectID, auth.TeamID, threadID)
+	thread, err := h.store.GetThread(r.Context(), projectID, teamID, threadID)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -341,7 +346,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
@@ -368,7 +373,7 @@ func (h *Handler) postMessage(w http.ResponseWriter, r *http.Request) {
 	// links into the payload. This is a LINK, not a dispatch — it merges alongside the hop above and
 	// never emits a MentionDispatch (see stampTicketRefs). Unknown/out-of-project refs are dropped.
 	req.Payload = h.stampTicketRefs(r.Context(), projectID, auth, req.References, req.Payload)
-	msg, err := h.store.PostMessage(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
+	msg, err := h.store.PostMessage(r.Context(), projectID, teamID, threadID, auth, req.Body, parentID, req.Audience, req.Kind, req.Payload)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -398,11 +403,11 @@ func (h *Handler) retractMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid messageId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
-	if err := h.store.Retract(r.Context(), projectID, auth.TeamID, threadID, messageID, auth); err != nil {
+	if err := h.store.Retract(r.Context(), projectID, teamID, threadID, messageID, auth); err != nil {
 		writeStoreErr(w, err)
 		return
 	}
@@ -434,7 +439,7 @@ func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
@@ -443,7 +448,7 @@ func (h *Handler) postProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	msg, err := h.store.PostProposal(r.Context(), projectID, auth.TeamID, threadID, auth, req.Body, req.Payload, nil)
+	msg, err := h.store.PostProposal(r.Context(), projectID, teamID, threadID, auth, req.Body, req.Payload, nil)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -465,11 +470,11 @@ func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid threadId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
-	proposals, err := h.store.ListProposals(r.Context(), projectID, auth.TeamID, threadID)
+	proposals, err := h.store.ListProposals(r.Context(), projectID, teamID, threadID)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
@@ -487,7 +492,7 @@ func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid projectId")
 		return
 	}
-	auth, ok := requireAuth(w, r)
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
 	if !ok {
 		return
 	}
@@ -497,7 +502,7 @@ func (h *Handler) memoryIndex(w http.ResponseWriter, r *http.Request) {
 			since = t
 		}
 	}
-	records, err := h.store.ForMemoryIndex(r.Context(), projectID, auth.TeamID, since, queryInt(r, "limit", 200), auth.Principal, auth.AgentID)
+	records, err := h.store.ForMemoryIndex(r.Context(), projectID, teamID, since, queryInt(r, "limit", 200), auth.Principal, auth.AgentID)
 	if err != nil {
 		writeStoreErr(w, err)
 		return
