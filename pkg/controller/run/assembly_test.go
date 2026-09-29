@@ -435,3 +435,96 @@ func TestEnsureAuthoringToken(t *testing.T) {
 		assert.True(t, apierrors.IsNotFound(err))
 	})
 }
+
+// --- ADR-0024c D4 (ISI-5138): discussion-run token mint at assembly ---
+
+// discussionRun is a source=discussion thread-run (D2 stamps the source label).
+func discussionRun() *api.Run {
+	return &api.Run{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "asm1",
+			Namespace: asmRunNS,
+			UID:       "uid-asm1",
+			Labels:    map[string]string{api.LabelWorkItemSource: "discussion"},
+		},
+		Spec: api.RunSpec{
+			TeamRef:     api.ObjectRef{Name: "squad-a"},
+			WorkItemRef: "wi-1",
+			OwnedBy:     "henrik",
+			Agents:      []api.ObjectRef{{Name: "john"}},
+		},
+	}
+}
+
+// discussionEps returns a resolved set carrying the injected built-in
+// memory-discussion endpoint (as D3 injects it: no credential ref — D4 wires it).
+func discussionEps() []capability.Endpoint {
+	return []capability.Endpoint{
+		{Name: "github-mcp", Transport: "streamable-http", URL: "https://gh"},
+		{Name: team.DiscussionMCPServerName, Transport: "streamable-http", URL: "http://memory/mcp"},
+	}
+}
+
+// teamCR builds a Team CR the tenancy-uid resolver reads to scope the token.
+func teamCR(name, uid string) *api.Team {
+	return &api.Team{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: asmRunNS, UID: types.UID(uid)}}
+}
+
+func TestEnsureDiscussionToken(t *testing.T) {
+	minter := testMinter(t)
+
+	// ISI-5189 regression: the team claim MUST be the Team's tenancy-root UID,
+	// never its CR name. The memory edge casts the claim to ::uuid (squad_id),
+	// so a name claim erupts as an error on EVERY discussion tool call.
+	t.Run("team claim is the Team UID, not the CR name (ISI-5189)", func(t *testing.T) {
+		run := discussionRun()
+		c := newAuthoringClient(t, run, teamCR("squad-a", "team-uid-squad-a"))
+		asm := &Assembler{Client: c, Minter: minter}
+
+		eps := discussionEps()
+		asm.bindDiscussionCredential(run, eps)
+		require.NoError(t, asm.ensureDiscussionToken(context.Background(), run, eps))
+
+		var sec corev1.Secret
+		require.NoError(t, c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-discussion-token"}, &sec))
+		tokBytes, ok := sec.Data[authoringTokenSecretKey]
+		require.True(t, ok)
+
+		claims, err := minter.Verify(string(tokBytes))
+		require.NoError(t, err)
+		assert.Equal(t, "team-uid-squad-a", claims.TeamID, "team scope must be the tenancy-root UID (squad_id::uuid), not the CR name")
+		assert.NotEqual(t, "squad-a", claims.TeamID, "claiming the CR name is the ISI-5189 defect")
+		assert.Equal(t, "henrik", claims.Principal)
+		assert.Equal(t, "john", claims.AgentID)
+		assert.Equal(t, "uid-asm1", claims.RunID)
+		assert.Equal(t, []string{capability.CapabilityDiscussion}, claims.Capabilities)
+	})
+
+	// Fail-closed: a missing Team CR (no tenancy root to scope to) must reject
+	// assembly rather than mint a token that cannot authenticate.
+	t.Run("missing Team CR fails closed (no token minted)", func(t *testing.T) {
+		run := discussionRun()
+		c := newAuthoringClient(t, run) // Team CR absent
+		asm := &Assembler{Client: c, Minter: minter}
+
+		eps := discussionEps()
+		asm.bindDiscussionCredential(run, eps)
+		err := asm.ensureDiscussionToken(context.Background(), run, eps)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolve team")
+
+		gotErr := c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-discussion-token"}, &corev1.Secret{})
+		assert.True(t, apierrors.IsNotFound(gotErr), "no Secret written on fail-closed")
+	})
+
+	t.Run("non-discussion run (no endpoint) is a no-op", func(t *testing.T) {
+		run := discussionRun()
+		c := newAuthoringClient(t, run, teamCR("squad-a", "team-uid-squad-a"))
+		asm := &Assembler{Client: c, Minter: minter}
+		eps := []capability.Endpoint{{Name: "github-mcp"}} // no discussion endpoint injected
+		asm.bindDiscussionCredential(run, eps)
+		require.NoError(t, asm.ensureDiscussionToken(context.Background(), run, eps))
+		err := c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-discussion-token"}, &corev1.Secret{})
+		assert.True(t, apierrors.IsNotFound(err))
+	})
+}
