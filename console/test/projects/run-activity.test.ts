@@ -267,6 +267,29 @@ describe("buildExecutionItems — pairs prompt/response and call/output (ISI-481
     const items = buildExecutionItems([classified({ id: "th", kind: "thinking", text: "hmm" })]);
     expect(items[0]).toMatchObject({ type: "thinking" });
   });
+
+  // ISI-5211: a standalone `[tool:…/result(err)]` marker (the progressmirror
+  // envelope for a settled tool call) classifies as a `result` phase, so its
+  // text — the error reason mirrored off ToolPayload.Summary — lands in the
+  // card's `output`, not `args`. RunDetail then renders the reason instead of
+  // "No tool output recorded for this call."
+  it("routes an errored tool marker's reason into output, not args", () => {
+    const e = classifyEntry(
+      entry({
+        agent: "claude",
+        content: "[tool:mempalace_search/result(err)] semantic search: invalid input syntax for type uuid",
+      }),
+    );
+    const items = buildExecutionItems([e]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      type: "tool",
+      name: "mempalace_search",
+      ok: false,
+      output: "semantic search: invalid input syntax for type uuid",
+    });
+    if (items[0].type === "tool") expect(items[0].args).toBeUndefined();
+  });
 });
 
 describe("buildLifecycle — the rail replaces state-transition rows", () => {

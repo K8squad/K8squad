@@ -116,14 +116,19 @@ export function classifyEntry(entry: ThinkingEntryWire): ClassifiedEntry {
   const ts = parseTs(entry.timestamp);
   const base = { id: entry.id, runScope, ts };
 
-  // 1. A legacy `[tool:name/result(..)]` marker wins over everything — it can ride
-  //    any agent (a pasted result), matching the pre-P2-C behaviour.
+  // 1. A `[tool:name/result(..)]` marker wins over everything — it can ride
+  //    any agent (a pasted result), matching the pre-P2-C behaviour. The marker
+  //    is by construction a tool RESULT (parseToolCall only matches `/result(..)`),
+  //    so it is a `result` phase: buildExecutionItems then routes its text — the
+  //    tool's output/error reason mirrored off ToolPayload.Summary (ISI-5211) —
+  //    into the card's Output section instead of Args, so an errored call shows
+  //    its reason rather than "No tool output recorded".
   const marker = parseToolCall(rest);
   if (marker) {
     return {
       ...base,
       kind: "tool",
-      toolPhase: "call",
+      toolPhase: "result",
       tool: marker.tool,
       text: marker.rest,
       author: agent || undefined,
