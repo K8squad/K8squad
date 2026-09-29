@@ -57,7 +57,7 @@ function makeClient(overrides: Partial<DiscussionClient> = {}): DiscussionClient
     getRoster: vi.fn(),
     retractMessage: vi.fn(),
     listProposals: vi.fn().mockResolvedValue([]),
-    ...(overrides as DiscussionClient),
+    ...overrides,
   } as DiscussionClient;
 }
 
