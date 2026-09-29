@@ -101,6 +101,62 @@ func CaptureForWorkItem(ctx context.Context, tx QueryExecer, workItemID, runID, 
 	return nil
 }
 
+// captureRunForWorkItemInsert mirrors captureForWorkItemInsert — deriving
+// project_id/squad from the work_item row so the caller need not thread tenancy
+// fields — but stamps a RUN-entity event with run_id set. That distinction is
+// load-bearing: the apiserver SSE projector fans only rows matching
+// `entity='run' AND run_id IS NOT NULL` to the per-run hub (see
+// events.SQLStore.RunEventsAfter), so a work_item-entity row would never reach
+// the live run stream. Used by the operator's ProgressMirror to make the ticket
+// Activity feed live on the EXISTING per-run EventSource (ISI-5193, plan
+// ISI-5185/WS-A): the durable coord.comment row stays the source of truth, while
+// this run event is the transient liveness signal AND the Last-Event-ID replay
+// tail for a mid-run reconnect.
+const captureRunForWorkItemInsert = `
+	INSERT INTO coord.outbox
+	       (entity, project_id, squad, event_type, work_item_id, run_id, payload, trace_carrier)
+	SELECT 'run', w.project_id, w.team_id, $2, w.id, $3::uuid, $4::jsonb, $5::jsonb
+	  FROM coord.work_item w
+	 WHERE w.id = $1::uuid
+	RETURNING 1`
+
+// CaptureRunForWorkItem appends a run-entity outbox event correlated to
+// workItemID, deriving project_id/squad from the work_item row (like
+// CaptureForWorkItem) so a producer that already holds a work_item id — the
+// operator's progress mirror — captures a run event without a separate tenancy
+// lookup. runID is REQUIRED: a run event with a NULL run_id keys no SSE fan-out
+// and the projector skips it, so an empty runID is a caller bug, not a NULL row.
+// Returns an error if workItemID names no row (which would otherwise silently
+// drop the event). Same transaction discipline as Capture: pass an in-flight
+// *sql.Tx to commit atomically with the state change; a *sql.DB emits the event
+// in its own transaction (acceptable only for a best-effort projection whose
+// durable record is written separately, e.g. the progress mirror).
+func CaptureRunForWorkItem(ctx context.Context, tx QueryExecer, workItemID, runID, eventType string, payload []byte) error {
+	if workItemID == "" {
+		return fmt.Errorf("events.CaptureRunForWorkItem: workItemID is required")
+	}
+	if runID == "" {
+		return fmt.Errorf("events.CaptureRunForWorkItem: runID is required")
+	}
+	if eventType == "" {
+		return fmt.Errorf("events.CaptureRunForWorkItem: eventType is required")
+	}
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	var one int
+	err := tx.QueryRowContext(ctx, captureRunForWorkItemInsert,
+		workItemID, eventType, runID, string(payload),
+		traceCarrierJSON(ctx)).Scan(&one)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("events.CaptureRunForWorkItem: work_item %s not found (no event captured)", workItemID)
+	}
+	if err != nil {
+		return fmt.Errorf("events.CaptureRunForWorkItem(%s/%s): %w", workItemID, eventType, err)
+	}
+	return nil
+}
+
 // nullable maps "" to a SQL NULL so optional uuid/text columns store NULL rather
 // than an empty string (which would fail a uuid cast and mis-token the subject).
 func nullable(s string) any {

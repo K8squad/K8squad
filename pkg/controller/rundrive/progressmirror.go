@@ -51,6 +51,7 @@ import (
 	a2a "github.com/K8squad/K8squad/internal/a2a"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/coord"
+	"github.com/K8squad/K8squad/pkg/events"
 )
 
 // ProgressMirror satisfies the dispatcher's EventSink seam (RunEvents) — the
@@ -97,6 +98,14 @@ type ProgressMirror struct {
 	// append appends one comment (default: coord.AppendComment over db).
 	// Test seam.
 	append func(ctx context.Context, workItemID, author, body string) error
+	// publish emits the liveness projection of a mirrored comment as a
+	// run-entity outbox event (default: events.CaptureRunForWorkItem over db),
+	// which the apiserver's run-event projector fans onto the EXISTING per-run
+	// SSE hub so the ticket Activity feed goes live without a second EventSource
+	// (ISI-5193, plan ISI-5185/WS-A). Best-effort and strictly secondary to the
+	// durable coord.comment write — a publish failure loses only the live
+	// signal; the reload thread still carries the row. Test seam.
+	publish func(ctx context.Context, workItemID, runID, eventType string, payload []byte) error
 
 	// minInterval bounds the per-run comment rate: events arriving faster
 	// are DROPPED (not queued — the next event after the window lands, so
@@ -125,6 +134,9 @@ func NewProgressMirror(db *sql.DB) *ProgressMirror {
 	m.append = func(ctx context.Context, workItemID, author, body string) error {
 		_, err := coord.AppendComment(ctx, m.db, workItemID, author, body)
 		return err
+	}
+	m.publish = func(ctx context.Context, workItemID, runID, eventType string, payload []byte) error {
+		return events.CaptureRunForWorkItem(ctx, m.db, workItemID, runID, eventType, payload)
 	}
 	return m
 }
@@ -175,8 +187,53 @@ func (m *ProgressMirror) Event(ctx context.Context, ev wire.Event) error {
 	if name := m.agentName(ctx, wi); name != "" {
 		author = "agent:" + name
 	}
-	_ = m.append(ctx, wi, author, body)
+	if err := m.append(ctx, wi, author, body); err != nil {
+		return nil // the durable comment is the source of truth — no comment, no liveness echo
+	}
+	// Liveness echo (ISI-5193): now that the comment is durable, project it as a
+	// run-entity outbox event so the per-run SSE hub live-appends the same row to
+	// the ticket without a second EventSource. Purely best-effort — a publish miss
+	// only delays the row to the next thread reload, never the run.
+	m.publishThinking(ctx, wi, runID, author, body, ev.Seq)
 	return nil
+}
+
+// thinkingEventType is the SSE event name (outbox event_type) the ticket's
+// useRunStream subscribes to for a live mirrored row. Bare word, no CR/LF, so it
+// is a valid `event:` line and a valid NATS subject token.
+const thinkingEventType = "thinking"
+
+// thinkingPayload is the run-event body carried on the per-run SSE stream. It is
+// the SAME triple the durable coord.comment row holds (author_principal, body,
+// created_at) plus the run id and wire seq, so the console renders a live row
+// identical to the one a subsequent thread reload materializes — the client
+// dedups the two by (author, body) when the durable row lands.
+type thinkingPayload struct {
+	RunID  string `json:"runId"`
+	Author string `json:"author"`
+	Body   string `json:"body"`
+	Seq    uint64 `json:"seq"`
+	At     string `json:"at"` // RFC3339Nano, UTC — client-render timestamp until reload
+}
+
+// publishThinking emits one mirrored comment as a run-entity outbox event. All
+// failures (nil seam, marshal error, DB hiccup, non-uuid run id) are swallowed:
+// the liveness echo must never perturb a run whose durable record already landed.
+func (m *ProgressMirror) publishThinking(ctx context.Context, workItemID, runID, author, body string, seq uint64) {
+	if m.publish == nil {
+		return
+	}
+	payload, err := json.Marshal(thinkingPayload{
+		RunID:  runID,
+		Author: author,
+		Body:   body,
+		Seq:    seq,
+		At:     time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return
+	}
+	_ = m.publish(ctx, workItemID, runID, thinkingEventType, payload)
 }
 
 // workItem resolves the a2a_task_id through the durable dispatch marker,

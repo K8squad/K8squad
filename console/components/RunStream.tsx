@@ -17,6 +17,7 @@ const KIND_LABEL: Record<RunEventKind, string> = {
   ARTIFACT: "artifact",
   STEP: "step",
   LIFECYCLE: "lifecycle",
+  THINKING: "thinking",
 };
 
 export function RunStream({ runId }: { runId: string }) {

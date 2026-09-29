@@ -26,7 +26,7 @@ import { useEffect, useRef, useState } from "react";
 /** Server-stamped coordination-event kinds (AC7), plus the reconcile/lifecycle vocabulary. */
 export type RunEventKind =
   | "CHECKOUT" | "COMMENT" | "HANDOFF" | "MEMORY" | "ARTIFACT"
-  | "STEP" | "LIFECYCLE";
+  | "STEP" | "LIFECYCLE" | "THINKING";
 
 export type RunEvent = {
   id: string;
@@ -49,6 +49,14 @@ const KINDS: ReadonlySet<string> = new Set([
 /** Named SSE event types emitted by the outbox projector (event: line = outbox event_type). */
 const RECONCILE_EVENT = "reconcile_advanced";
 const LIFECYCLE_EVENTS = ["assigned", "scheduled", "sandbox_bound", "started", "ended"] as const;
+/**
+ * `event: thinking` — the operator's progress mirror echoed as a run event
+ * (ISI-5193, plan ISI-5185/WS-A). Payload is the SAME triple the durable
+ * coord.comment row holds so the ticket can live-append a row identical to the
+ * one a later thread reload materializes: {runId, author, body, seq, at}. Carried
+ * on THIS per-run stream — no second EventSource (ISI-5174 AC4).
+ */
+const THINKING_EVENT = "thinking";
 
 function coerceEvent(id: string, raw: unknown): RunEvent | null {
   if (typeof raw !== "object" || raw === null) return null;
@@ -77,6 +85,24 @@ function lifecycleActor(raw: unknown): string {
   if (typeof raw !== "object" || raw === null) return "reconciler";
   const r = raw as Record<string, unknown>;
   return typeof r.agent === "string" && r.agent ? r.agent : "reconciler";
+}
+
+/** Shape a `thinking` payload into a RunEvent, or null when it carries no body
+ * (author or body missing ⇒ nothing to render). `at` is the mirror's UTC stamp;
+ * fall back to now so the row still sorts sensibly if an older backend omits it. */
+function thinkingEvent(id: string, raw: unknown): RunEvent | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const author = typeof r.author === "string" ? r.author : "";
+  const body = typeof r.body === "string" ? r.body : "";
+  if (!body) return null;
+  return {
+    id,
+    kind: "THINKING",
+    actor: author || "unknown",
+    ts: typeof r.at === "string" && r.at ? r.at : new Date().toISOString(),
+    summary: body,
+  };
 }
 
 export function useRunStream(runId: string) {
@@ -124,6 +150,14 @@ export function useRunStream(runId: string) {
     };
     es.addEventListener(RECONCILE_EVENT, onAdvanced);
 
+    // Live mirrored comment: `event: thinking` (ISI-5193). Same triple as the durable
+    // coord.comment row so the ticket live-appends a row it can dedup on reload.
+    const onThinking = (msg: MessageEvent) => {
+      const parsed = parse(msg);
+      if (parsed !== null) push(thinkingEvent(msg.lastEventId || "", parsed));
+    };
+    es.addEventListener(THINKING_EVENT, onThinking);
+
     // Discrete lifecycle milestones (ADR-0021 D4): assigned/scheduled/sandbox_bound/started/ended.
     const lifecycleListeners = LIFECYCLE_EVENTS.map((name) => {
       const listener = (msg: MessageEvent) => {
@@ -144,6 +178,7 @@ export function useRunStream(runId: string) {
 
     return () => {
       es.removeEventListener(RECONCILE_EVENT, onAdvanced);
+      es.removeEventListener(THINKING_EVENT, onThinking);
       for (const [name, listener] of lifecycleListeners) {
         es.removeEventListener(name, listener);
       }

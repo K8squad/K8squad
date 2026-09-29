@@ -19,6 +19,7 @@ package rundrive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -31,11 +32,20 @@ import (
 // mirrorFixture is a ProgressMirror with the SQL seams stubbed: lookup returns
 // a fixed work item, append records (and can fail on demand).
 type mirrorFixture struct {
-	m      *ProgressMirror
-	mu     sync.Mutex
-	got    []string // "author|body" per appended comment
-	failOn int      // append calls >= failOn fail (0 = never)
-	calls  int
+	m         *ProgressMirror
+	mu        sync.Mutex
+	got       []string            // "workItem|author|body" per appended comment
+	published []publishedThinking // liveness echoes (ISI-5193), in order
+	failOn    int                 // append calls >= failOn fail (0 = never)
+	calls     int
+}
+
+// publishedThinking records one liveness-echo publish for assertions.
+type publishedThinking struct {
+	workItemID string
+	runID      string
+	eventType  string
+	payload    []byte
 }
 
 func newMirrorFixture(t *testing.T) *mirrorFixture {
@@ -65,8 +75,20 @@ func newMirrorFixture(t *testing.T) *mirrorFixture {
 		f.got = append(f.got, workItemID+"|"+author+"|"+body)
 		return nil
 	}
+	m.publish = func(_ context.Context, workItemID, runID, eventType string, payload []byte) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.published = append(f.published, publishedThinking{workItemID, runID, eventType, append([]byte(nil), payload...)})
+		return nil
+	}
 	f.m = m
 	return f
+}
+
+func (f *mirrorFixture) echoes() []publishedThinking {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]publishedThinking(nil), f.published...)
 }
 
 func (f *mirrorFixture) comments() []string {
@@ -345,6 +367,74 @@ func TestProgressMirrorSwallowsOwnFailures(t *testing.T) {
 	f.m.lookup = func(context.Context, string) (string, error) { return "", nil }
 	if err := f.m.Event(ctx, msgEv(1, "r5", "text")); err != nil {
 		t.Fatalf("missing-marker failure surfaced: %v", err)
+	}
+}
+
+// TestProgressMirrorPublishesLivenessEcho is the ISI-5193 AC: every durable
+// comment is ALSO echoed as a run-entity liveness event carrying the same
+// (author, body) triple and the run id, so the per-run SSE hub can live-append
+// the ticket row. The echo fires once per landed comment, in order, tagged
+// thinking, with the FULL (unshortened) run id so the projector can key its
+// fan-out and the client can dedup against the reloaded thread.
+func TestProgressMirrorPublishesLivenessEcho(t *testing.T) {
+	f := newMirrorFixture(t)
+	f.m.assignee = func(context.Context, string) string { return "sam" }
+	ctx := context.Background()
+	task := "9952db54-1111-2222-3333-444455556666"
+
+	for _, ev := range []wire.Event{
+		msgEv(1, task, "Reading the repo layout…"),
+		toolEv(2, task, "shell", "start", "ls -la"),
+	} {
+		if err := f.m.Event(ctx, ev); err != nil {
+			t.Fatalf("Event(seq %d) errored: %v", ev.Seq, err)
+		}
+	}
+
+	echoes := f.echoes()
+	comments := f.comments()
+	if len(echoes) != len(comments) || len(echoes) != 2 {
+		t.Fatalf("published %d echoes for %d comments, want 2 each", len(echoes), len(comments))
+	}
+	for i, e := range echoes {
+		if e.eventType != thinkingEventType {
+			t.Fatalf("echo %d event type = %q, want %q", i, e.eventType, thinkingEventType)
+		}
+		if e.runID != task {
+			t.Fatalf("echo %d run id = %q, want full run id %q (short id keys no fan-out)", i, e.runID, task)
+		}
+		if e.workItemID != "11111111-1111-1111-1111-111111111111" {
+			t.Fatalf("echo %d work item = %q, want the dispatch-marker item", i, e.workItemID)
+		}
+		var p thinkingPayload
+		if err := json.Unmarshal(e.payload, &p); err != nil {
+			t.Fatalf("echo %d payload not valid JSON: %v", i, err)
+		}
+		// The echo must carry the SAME author+body the durable comment did, so a
+		// reload dedups the live row exactly (comments[i] == "wi|author|body").
+		parts := strings.SplitN(comments[i], "|", 3)
+		if p.Author != parts[1] || p.Body != parts[2] {
+			t.Fatalf("echo %d payload (%q,%q) != comment (%q,%q)", i, p.Author, p.Body, parts[1], parts[2])
+		}
+		if p.RunID != task || p.At == "" {
+			t.Fatalf("echo %d payload missing runId/at: %+v", i, p)
+		}
+	}
+}
+
+// TestProgressMirrorNoEchoWhenCommentFails: the liveness echo is strictly
+// secondary — if the durable comment write fails there is no row to be live
+// about, so no run event is published (the reload thread is the source of truth).
+func TestProgressMirrorNoEchoWhenCommentFails(t *testing.T) {
+	f := newMirrorFixture(t)
+	f.failOn = 1 // every append fails
+	ctx := context.Background()
+
+	if err := f.m.Event(ctx, msgEv(1, "9952db54-0000-0000-0000-000000000000", "text")); err != nil {
+		t.Fatalf("append failure surfaced: %v", err)
+	}
+	if echoes := f.echoes(); len(echoes) != 0 {
+		t.Fatalf("published %d echoes despite a failed comment write, want 0", len(echoes))
 	}
 }
 

@@ -24,8 +24,8 @@
 // drive as the "mock signal source", and a thin hook (`useDispatchWatch`) that wires the real signal
 // sources (poll → runId, SSE → lifecycle, wall-clock → degrade) onto that reducer.
 
-import { useEffect, useReducer, useRef } from "react";
-import { useRunStream } from "@/lib/useRunStream";
+import { useEffect, useMemo, useReducer, useRef } from "react";
+import { useRunStream, type RunEvent } from "@/lib/useRunStream";
 import type { RunPhase } from "@/lib/agents/types";
 
 // ── Public contract (stable regardless of which signal path wins) ──────────────────────────────
@@ -48,6 +48,16 @@ export interface DispatchWatch {
   tone: DispatchTone;
   degrade: DispatchDegrade;
   runId?: string;
+  /**
+   * Live `thinking` rows from the discovered run's SSE stream (ISI-5193), in
+   * arrival order. Surfaced HERE — off the ONE EventSource this hook already
+   * opens — so the ticket live-tails the mirrored comment feed without a second
+   * EventSource (ISI-5174 AC4). Empty until a runId is discovered; the caller
+   * merges these into the Activity feed and de-dupes them against the durable
+   * thread reload (thread.mergeLiveThinking). Optional so a hand-built DispatchWatch
+   * (card fixtures, older callers) needs no live feed; the hook always sets it.
+   */
+  thinking?: RunEvent[];
 }
 
 // ── Board-locked / tuning constants (interaction f3d5c62e) ─────────────────────────────────────
@@ -220,6 +230,7 @@ export function toDispatchWatch(m: DispatchMachine): DispatchWatch {
     tone: dispatchTone(m.state),
     degrade: m.degrade,
     runId: m.runId,
+    thinking: [], // live rows are grafted on by the hook (they need the SSE feed)
   };
 }
 
@@ -419,6 +430,13 @@ export function useDispatchWatch(
     }
   }, [events, haveRun]);
 
+  // Live thinking feed: the `thinking` rows off the SAME stream (ISI-5193). The
+  // caller merges these into the Activity feed; empty until a runId is discovered.
+  const thinking = useMemo(
+    () => (haveRun ? events.filter((e) => e.kind === "THINKING") : []),
+    [events, haveRun],
+  );
+
   if (!active) return null;
-  return toDispatchWatch(machine);
+  return { ...toDispatchWatch(machine), thinking };
 }

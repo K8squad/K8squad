@@ -248,6 +248,56 @@ func TestOutbox_RunEventReadSide(t *testing.T) {
 	}
 }
 
+// ISI-5193: CaptureRunForWorkItem writes a RUN-entity row with run_id set —
+// the distinction that makes the operator's progress mirror surface on the
+// per-run SSE projector, unlike CaptureForWorkItem (entity='work_item', which
+// the run-event tail excludes). Proves entity/run_id/tenancy derivation and that
+// exactly the run row appears in RunEventsAfter (the live-tail feed the hub fans).
+func TestOutbox_CaptureRunForWorkItemSurfacesToRunProjector(t *testing.T) {
+	db := integrationDB(t)
+	ctx := context.Background()
+	store := NewSQLStore(db)
+	const runID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	id, err := insertWorkItem(ctx, tx)
+	if err != nil {
+		t.Fatalf("insert work_item: %v", err)
+	}
+	if err := CaptureRunForWorkItem(ctx, tx, id, runID, "thinking", []byte(`{"body":"hi"}`)); err != nil {
+		t.Fatalf("CaptureRunForWorkItem: %v", err)
+	}
+	// A work_item sibling on the SAME run must NOT surface on the run projector,
+	// proving the entity discriminator (not merely run_id presence) is what counts.
+	if err := CaptureForWorkItem(ctx, tx, id, runID, "commented", nil); err != nil {
+		t.Fatalf("CaptureForWorkItem: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	var entity, project, rid string
+	if err := db.QueryRow(
+		`SELECT entity, project_id::text, run_id::text FROM coord.outbox WHERE event_type = 'thinking'`).
+		Scan(&entity, &project, &rid); err != nil {
+		t.Fatalf("read thinking row: %v", err)
+	}
+	if entity != "run" || project != testProject || rid != runID {
+		t.Fatalf("thinking row = %s/%s/%s, want run/%s/%s", entity, project, rid, testProject, runID)
+	}
+
+	tail, err := store.RunEventsAfter(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("RunEventsAfter: %v", err)
+	}
+	if len(tail) != 1 || tail[0].RunID != runID || tail[0].EventType != "thinking" || !jsonEqual(tail[0].Payload, `{"body":"hi"}`) {
+		t.Fatalf("run projector tail = %+v, want exactly the thinking row for %s", tail, runID)
+	}
+}
+
 // jsonEqual compares two JSON documents semantically. coord.outbox.payload is
 // jsonb, so Postgres rewrites the stored text to its canonical form (e.g.
 // `{"to_step": "x"}` — a space after each colon) on the way back out; raw-byte
