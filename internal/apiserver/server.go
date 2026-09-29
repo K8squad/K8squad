@@ -44,8 +44,9 @@ type ReadinessChecker interface {
 // Server bundles the root router and its dependencies. Build it with NewServer and serve
 // Server.Handler() from an http.Server.
 type Server struct {
-	router *mux.Router
-	hub    *Hub
+	router     *mux.Router
+	hub        *Hub
+	projectHub *ProjectHub
 }
 
 // Options wires the host's collaborators. Authenticator and Discussion are required for the
@@ -85,6 +86,11 @@ type Options struct {
 	// documented 501 (cluster-less dev run), exactly like SecretWriter.
 	RepoAuthTest *RepoAuthTestService
 	Hub          *Hub // optional; NewServer allocates one when nil
+	// ProjectHub is the ISI-5194 per-project SSE fan-out bus behind GET
+	// /api/projects/{projectId}/stream (the transport the ticket Activity view and the
+	// discussion Room ride, unblocking ISI-5174 live-append). Optional; NewServer allocates
+	// one when nil. Publishers reach it via Server.ProjectHub().
+	ProjectHub *ProjectHub
 	// Builds is the 8.7a build-browser read-model (behind the 8.7d gate, ISI-2759). When nil the
 	// build routes keep answering the documented 501 (dev run without a Run source wired).
 	Builds *buildbrowser.Service
@@ -289,6 +295,10 @@ func NewServer(opts Options) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
+	projectHub := opts.ProjectHub
+	if projectHub == nil {
+		projectHub = NewProjectHub()
+	}
 	router := mux.NewRouter()
 	// ISI-4795: the console addresses a Project by its canonical "namespace/name"
 	// composite id (ISI-3982), percent-encoded to a single path segment
@@ -304,7 +314,7 @@ func NewServer(opts Options) *Server {
 	// overview, dashboard, files, settings, github, issue-links).
 	router.UseEncodedPath()
 	router.SkipClean(true)
-	s := &Server{router: router, hub: hub}
+	s := &Server{router: router, hub: hub, projectHub: projectHub}
 	s.routes(opts)
 	return s
 }
@@ -359,6 +369,11 @@ func routeTagMiddleware(next http.Handler) http.Handler {
 
 // Hub returns the SSE hub so a publisher (run reconciler / outbox relay) can fan events out.
 func (s *Server) Hub() *Hub { return s.hub }
+
+// ProjectHub returns the per-project SSE fan-out bus (ISI-5194) so a publisher — a discussion
+// message append, an agent working/thinking mirror, a run status change — can fan events out to
+// every EventSource open on GET /api/projects/{projectId}/stream.
+func (s *Server) ProjectHub() *ProjectHub { return s.projectHub }
 
 func (s *Server) routes(opts Options) {
 	// otelhttp span enrichment (ISI-3668): a root middleware so it runs after mux matches a route
@@ -422,6 +437,19 @@ func (s *Server) routes(opts Options) {
 		stream := s.router.Path("/api/runs/{runId}/stream").Subrouter()
 		stream.Use(authz)
 		stream.HandleFunc("", s.hub.streamRun).Methods(http.MethodGet)
+
+		// ISI-5194 (S6, plan ISI-5185) — the per-project SSE fan-out bus. One EventSource per
+		// project carries every producer's events (discussion append, agent working/thinking,
+		// run status) so the ticket Activity view and discussion Room live-tail instead of poll
+		// (also unblocks ISI-5174 live-append). Behind the SAME §13 choke point and, when a
+		// membership resolver is wired, the SAME viewer-or-admin RBAC the dashboard uses — a
+		// non-member gets 404 (existence-hiding); admin bypasses.
+		projectStream := s.router.Path("/api/projects/{projectId}/stream").Subrouter()
+		projectStream.Use(authz)
+		if opts.ProjectRoles != nil {
+			projectStream.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		projectStream.HandleFunc("", s.projectHub.streamProject).Methods(http.MethodGet)
 
 		// 8.7a/8.7d build-browser (ISI-2759): the git read-model behind the per-principal +
 		// Team-scope gate. When a Run source is wired (opts.Builds != nil) the routes serve real
