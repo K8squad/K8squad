@@ -290,8 +290,43 @@ func mirrorBody(runID string, ev wire.Event) string {
 			body += ": " + truncateRun(p.Reason)
 		}
 		return body
+	case wire.EventUsage:
+		p, ok := mirrorUsagePayload(ev.Payload)
+		if !ok {
+			return ""
+		}
+		return mirrorUsageBody(tag, p)
 	}
 	return ""
+}
+
+// mirrorUsageBody renders the CR LLMInteraction "response" digest into the
+// ticket feed (ISI-5192): the same model + token summary run-detail already
+// surfaces from Run.Status.LLMInteractions (activityFromInteraction → the
+// "response" case), carried here as a parseable `[llm:response]` envelope so
+// the ticket agent-turn card can show that a model round-trip completed — a
+// signal the ticket thread otherwise never saw (only run-detail did, off the
+// CR). It is deliberately a DIGEST — model + bounded token counts, matching
+// what the CR LLMInteraction stores — NEVER the response TEXT (opt-in content
+// capture is hard-gated on ISI-4812). "" when the usage event carries no
+// signal worth a row (no model and no tokens), so empty churn stays silent.
+func mirrorUsageBody(tag string, p wire.UsagePayload) string {
+	model := p.Model
+	if model == "" {
+		model = p.ResponseModel
+	}
+	total := p.Input + p.Output
+	if model == "" && total == 0 {
+		return "" // no signal — matches the run-detail "honest empty" posture
+	}
+	if model == "" {
+		model = "model" // token-bearing usage from an empty-model runtime (ISI-4412)
+	}
+	body := tag + "[llm:response] " + model
+	if total > 0 {
+		body += fmt.Sprintf(" · %d tok (%d in / %d out)", total, p.Input, p.Output)
+	}
+	return body
 }
 
 // truncateRun caps s at progressMirrorMaxBody runes with an explicit ellipsis.
@@ -353,6 +388,19 @@ func mirrorStatusPayload(payload any) (wire.StatusPayload, bool) {
 		return *v, true
 	}
 	return decodePayload[wire.StatusPayload](payload)
+}
+
+func mirrorUsagePayload(payload any) (wire.UsagePayload, bool) {
+	switch v := payload.(type) {
+	case wire.UsagePayload:
+		return v, true
+	case *wire.UsagePayload:
+		if v == nil {
+			return wire.UsagePayload{}, false
+		}
+		return *v, true
+	}
+	return decodePayload[wire.UsagePayload](payload)
 }
 
 func decodePayload[T any](payload any) (T, bool) {
