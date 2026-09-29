@@ -88,6 +88,8 @@ import { CreateTicketSheet } from "./CreateTicketSheet";
 import { AssigneeChipView } from "./RailAssigneeChip";
 import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
 import { DispatchPendingCard } from "./DispatchPendingCard";
+import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
+import { ticketWorkingView } from "@/lib/tickets/working";
 
 type ThreadState =
   | { kind: "loading" }
@@ -1447,6 +1449,23 @@ function TicketBody({
                   watch={dispatchWatch}
                   agentName={dispatch.agent}
                 />
+              )}
+              {/* ISI-5196 (S5): the ISI-5174 "an agent is working…" pill, ported to
+                  the ticket view. Rides the SAME dispatchWatch SSE bus (no second
+                  stream / no polling, AC4); its working label carries the current
+                  step verb the live `thinking` rows report ("… is editing X…"),
+                  and it resolves to "replied" / "could not respond" on the honest
+                  ladder's terminal state. */}
+              {dispatchWatch && dispatch && (
+                <li className="ksq-activity ksq-activity--working">
+                  <TicketWorkingIndicator
+                    view={ticketWorkingView(
+                      dispatch.agent,
+                      dispatchWatch.state,
+                      dispatchWatch.thinking,
+                    )}
+                  />
+                </li>
               )}
             </ul>
           )}
