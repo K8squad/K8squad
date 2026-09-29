@@ -1,0 +1,39 @@
+{{- /* ISI-5176: durable apiserver JWT signing key.
+
+     Without a persisted key the apiserver auto-generates an HS256 key at boot,
+     so every restart/rollout invalidates all sessions and forces every user to
+     re-login. This template provisions a chart-managed Secret holding a stable
+     >=32-byte key:
+
+       - first install: a fresh random key is generated;
+       - upgrades: `lookup` re-uses the key already in the cluster, so the value
+         survives chart upgrades and deploys.
+
+     Explicit user-supplied config always wins: apiserver.auth.jwtSigningKey
+     (plain value) and apiserver.auth.existingJwtKeySecret (external Secret)
+     both disable this managed Secret. */ -}}
+{{- if and .Values.apiserver.enabled (not .Values.apiserver.auth.jwtSigningKey) (not .Values.apiserver.auth.existingJwtKeySecret) -}}
+{{- $secretName := printf "%s-jwt-signing-key" (include "ksquad.fullname" .) -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName -}}
+{{- $key := "" -}}
+{{- if $existing -}}
+  {{- $key = index $existing.data "signing-key" | default "" -}}
+{{- end -}}
+{{- if not $key -}}
+  {{- $key = randAlphaNum 48 | b64enc -}}
+{{- else -}}
+  {{- /* lookup returns base64-encoded data; keep as-is for `data`. */ -}}
+{{- end -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  labels:
+    {{- include "ksquad.labels" . | nindent 4 }}
+    app.kubernetes.io/component: apiserver
+  annotations:
+    ksquad.io/purpose: jwt-signing-key
+type: Opaque
+data:
+  signing-key: {{ $key | quote }}
+{{- end }}

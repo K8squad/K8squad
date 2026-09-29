@@ -78,6 +78,17 @@ spec:
                   key: {{ .key }}
             {{- end }}
             {{- $auth := .Values.apiserver.auth }}
+            {{- /* ISI-5176: default durable signing key. When neither a plain
+                   value nor an external Secret is configured, wire the
+                   chart-managed Secret (apiserver-signing-key.yaml) so sessions
+                   survive restarts and rollouts. */ -}}
+            {{- if and (not $auth.jwtSigningKey) (not $auth.existingJwtKeySecret) }}
+            - name: KSQUAD_JWT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ksquad.fullname" . }}-jwt-signing-key
+                  key: signing-key
+            {{- end }}
             {{- if $auth.jwtSigningKey }}
             - name: KSQUAD_JWT_SIGNING_KEY
               value: {{ $auth.jwtSigningKey | quote }}

@@ -190,6 +190,10 @@ apiserver:
     # multi-replica or restart-surviving install (auto-generated per-pod
     # otherwise — sessions die on every restart and replicas disagree).
     # Value is raw or base64 bytes; >= 32 bytes required.
+    # Empty by default (ISI-5176): the chart then provisions a durable,
+    # upgrade-stable signing-key Secret (<fullname>-jwt-signing-key) and wires
+    # it automatically, so restarts/rollouts no longer log every user out.
+    # Set a plain value or existingJwtKeySecret to manage the key yourself.
     jwtSigningKey: "" # e.g. from `openssl rand -base64 32`
     jwtTtlSeconds: 3600 # internal JWT lifetime (spec 15.1: 1h)
     sessionTtlSeconds: 86400 # edge session lifetime (24h)
