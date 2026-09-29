@@ -48,6 +48,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // HumanCommentOutcome is the result of one human comment: the persisted comment
@@ -93,7 +95,17 @@ var commentReTriggerLanes = map[string]bool{
 //     hiding (404). Pass teamID == "" only for a trusted, already-tenancy-checked
 //     caller (fleet-admin, ISI-3937), exactly like UpdateWorkItem.
 //   - (zero, err): infrastructure failure; nothing was written.
-func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string) (HumanCommentOutcome, error) {
+//
+// ISI-5214 (parent ISI-5212 S2): a comment may carry structured ticket LINKS the
+// ticket-detail `#`-picker collected (refs). This mirrors the discussion room's
+// postMessageReq.References + StampTicketRefsFrom seam (internal/discussion), done
+// coord-natively: each candidate is deduped + UUID-validated, then resolved against
+// THIS ticket's own project inside the same transaction (an unknown, out-of-project,
+// or cross-Team ref is dropped, never persisted), its Title canonicalized from
+// coord.work_item, and the survivors merged into coord.comment.payload under the
+// `references` key. A link is never a dispatch and never a write fence — an empty or
+// unresolvable ref set degrades to a plain, link-free (but durable) comment.
+func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID, teamID, principal, body string, refs []CommentRef) (HumanCommentOutcome, error) {
 	if workItemID == "" || principal == "" {
 		return HumanCommentOutcome{}, fmt.Errorf("%w: workItemID and principal are required", ErrInvalidWorkItem)
 	}
@@ -116,13 +128,14 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 	var currentState string
 	var teamOut sql.NullString
 	var liveHolder sql.NullString
+	var projectID string
 	err = tx.QueryRowContext(ctx, `
-		SELECT wi.state, wi.team_id::text, c.holder_principal
+		SELECT wi.state, wi.team_id::text, wi.project_id::text, c.holder_principal
 		  FROM coord.work_item wi
 		  LEFT JOIN coord.claim c ON c.work_item_id = wi.id
 		 WHERE wi.id = $1::uuid
 		   FOR UPDATE OF wi`,
-		workItemID).Scan(&currentState, &teamOut, &liveHolder)
+		workItemID).Scan(&currentState, &teamOut, &projectID, &liveHolder)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return HumanCommentOutcome{}, ErrWorkItemNotFound
@@ -133,11 +146,32 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 		return HumanCommentOutcome{}, ErrWorkItemNotFound
 	}
 
+	// Resolve the `#`-picker ticket links against THIS ticket's project (ISI-5214),
+	// dropping any that don't exist / belong to another project or Team, and
+	// canonicalize each surviving title. An empty result leaves payload NULL, so a
+	// plain comment stays link-free (mirror of discussion.StampTicketRefsFrom's
+	// best-effort, degrade-to-link-free contract).
+	resolvedRefs, err := resolveCommentRefs(ctx, tx, projectID, teamID, refs)
+	if err != nil {
+		return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: resolve refs: %w", err)
+	}
+	// payloadArg stays nil (→ NULL) for a link-free comment; otherwise the JSON is
+	// passed as a string with a $N::jsonb cast — the SAME lib/pq discipline the
+	// re-dispatch audit INSERT below uses, avoiding the []byte→bytea ambiguity.
+	var payloadArg any
+	if len(resolvedRefs) > 0 {
+		encoded, err := json.Marshal(map[string]any{"references": resolvedRefs})
+		if err != nil {
+			return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: marshal refs: %w", err)
+		}
+		payloadArg = string(encoded)
+	}
+
 	var created time.Time
 	if err := tx.QueryRowContext(ctx, `
-		INSERT INTO coord.comment (work_item_id, author_principal, body)
-		VALUES ($1::uuid, $2, $3)
-		RETURNING created_at`, workItemID, principal, body).Scan(&created); err != nil {
+		INSERT INTO coord.comment (work_item_id, author_principal, body, payload)
+		VALUES ($1::uuid, $2, $3, $4::jsonb)
+		RETURNING created_at`, workItemID, principal, body, payloadArg).Scan(&created); err != nil {
 		return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: insert: %w", err)
 	}
 
@@ -148,7 +182,7 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 		return HumanCommentOutcome{}, err
 	}
 
-	outcome := HumanCommentOutcome{TaskComment: TaskComment{Author: principal, Body: body, CreatedAt: created}}
+	outcome := HumanCommentOutcome{TaskComment: TaskComment{Author: principal, Body: body, CreatedAt: created, References: resolvedRefs}}
 
 	// ISI-4495 comment-triggered re-dispatch: parked lane + no live checkout
 	// holder → advance to the dispatch lane so Intake mints the next Run. The
@@ -205,4 +239,58 @@ func (s *WorkItemWriteStore) AppendHumanComment(ctx context.Context, workItemID,
 		return HumanCommentOutcome{}, fmt.Errorf("coord.AppendHumanComment: commit: %w", err)
 	}
 	return outcome, nil
+}
+
+// resolveCommentRefs is the coord-native mirror of the discussion normalize →
+// resolve → survive pipeline (discussion.normalizeTicketRefs + the apiserver
+// ticketRefResolver, ISI-5165). It runs inside the comment transaction: it dedups
+// candidates by work-item id (first-seen wins, order preserved), drops any with a
+// blank or non-UUID id, then keeps only those that EXIST in the commented ticket's
+// OWN project within the caller's Team scope — an unknown, out-of-project, or
+// cross-Team id is dropped (existence-hiding), never persisted. The surviving title
+// is canonicalized from coord.work_item so a client-supplied chip label cannot spoof
+// it. teamID == "" is the trusted fleet-admin path (mirrors AppendHumanComment's own
+// team-fence convention). An empty input or an all-dropped set returns nil, so the
+// comment persists link-free.
+func resolveCommentRefs(ctx context.Context, tx *sql.Tx, projectID, teamID string, refs []CommentRef) ([]CommentRef, error) {
+	if len(refs) == 0 || projectID == "" {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(refs))
+	out := make([]CommentRef, 0, len(refs))
+	for _, r := range refs {
+		id := r.WorkItemID
+		if id == "" {
+			continue
+		}
+		if _, err := uuid.Parse(id); err != nil {
+			continue // work items are UUID-keyed (ISI-5134); a non-UUID token is not a valid ref
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+
+		// The candidate must live in the SAME project as the commented ticket and be
+		// visible to the caller's Team; an empty teamID is the trusted fleet-admin path.
+		var title string
+		err := tx.QueryRowContext(ctx, `
+			SELECT title
+			  FROM coord.work_item
+			 WHERE id = $1::uuid
+			   AND project_id = $2::uuid
+			   AND ($3 = '' OR team_id::text = $3)`,
+			id, projectID, teamID).Scan(&title)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue // unknown / out-of-project / cross-Team — drop (existence-hiding)
+		case err != nil:
+			return nil, err
+		}
+		out = append(out, CommentRef{WorkItemID: id, Title: title})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }

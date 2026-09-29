@@ -91,20 +91,25 @@ func TestApplyFreshThenIdempotent(t *testing.T) {
 	}
 
 	// 3. Drift shape: delete HEAD from the ledger AND drop its object, then Apply catches it back up.
-	head := path.Base(names[len(names)-1]) // 0025_discussion_proposal.sql
+	// HEAD is 0028_comment_payload.sql — its object is coord.comment.payload (ISI-5214). The dropped
+	// object MUST be the one the HEAD migration creates, so re-running HEAD alone heals the drift
+	// (this section was stale at 0025's discussion.proposal and broke every time HEAD advanced).
+	head := path.Base(names[len(names)-1]) // 0028_comment_payload.sql
 	if _, err := db.Exec(`DELETE FROM public.schema_migrations WHERE version=$1`, head); err != nil {
 		t.Fatalf("simulate drift (delete ledger row): %v", err)
 	}
-	if _, err := db.Exec(`DROP TABLE IF EXISTS discussion.proposal`); err != nil {
+	if _, err := db.Exec(`ALTER TABLE coord.comment DROP COLUMN IF EXISTS payload`); err != nil {
 		t.Fatalf("simulate drift (drop object): %v", err)
 	}
 	if err := Apply(ctx, db); err != nil {
 		t.Fatalf("Apply after drift: %v", err)
 	}
-	if err := db.QueryRow(`SELECT to_regclass('discussion.proposal') IS NOT NULL`).Scan(&proposal); err != nil {
-		t.Fatalf("re-probe proposal: %v", err)
+	var payloadCol bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM information_schema.columns
+		WHERE table_schema='coord' AND table_name='comment' AND column_name='payload')`).Scan(&payloadCol); err != nil {
+		t.Fatalf("re-probe payload column: %v", err)
 	}
-	if !proposal {
+	if !payloadCol {
 		t.Fatal("Apply did not re-create the dropped HEAD object — drift not healed")
 	}
 	if got := ledgerCount(t, db); got != len(names) {

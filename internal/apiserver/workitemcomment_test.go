@@ -23,13 +23,15 @@ type fakeWorkItemCommenter struct {
 	gotTeam   string
 	gotAuthor string
 	gotBody   string
+	gotRefs   []coord.CommentRef
 	result    coord.HumanCommentOutcome
 	err       error
 }
 
-func (f *fakeWorkItemCommenter) AppendHumanComment(_ context.Context, id, teamID, principal, body string) (coord.HumanCommentOutcome, error) {
+func (f *fakeWorkItemCommenter) AppendHumanComment(_ context.Context, id, teamID, principal, body string, refs []coord.CommentRef) (coord.HumanCommentOutcome, error) {
 	f.called = true
 	f.gotID, f.gotTeam, f.gotAuthor, f.gotBody = id, teamID, principal, body
+	f.gotRefs = refs
 	return f.result, f.err
 }
 

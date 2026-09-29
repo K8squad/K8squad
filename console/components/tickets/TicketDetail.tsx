@@ -60,6 +60,7 @@ import {
   type NormalizedThread,
   type PostedComment,
   type ThreadComment,
+  type TicketReference,
 } from "@/lib/tickets/thread";
 import {
   buildRunComments,
@@ -76,9 +77,11 @@ import {
 import { MentionPopover } from "@/components/discussion/MentionPopover";
 import {
   agentMentionSuggestions,
-  mentionFragmentBefore,
-  replaceMentionFragment,
+  triggerFragmentBefore,
+  replaceTriggerFragment,
+  type MentionTrigger,
 } from "@/lib/mentions";
+import { createDiscussionClient } from "@/lib/discussion/api";
 import type { MentionSuggestion } from "@/lib/discussion/types";
 import type { CSSProperties } from "react";
 import { STATE_LABELS, type WorkItem, type WorkItemState } from "@/lib/tickets/types";
@@ -460,9 +463,12 @@ function AssigneeControl({
 function ActivityRow({
   item,
   runMeta,
+  projectId,
 }: {
   item: ActivityItem;
   runMeta: Map<string, RunComment>;
+  // The ticket's project slug — deep-links a comment's `#` ticket refs (ISI-5214).
+  projectId: string;
 }) {
   if (item.kind === "event" && item.event) {
     const e = item.event;
@@ -502,9 +508,51 @@ function ActivityRow({
     const meta = runMeta.get(
       runCommentKey(item.comment.author, item.at, item.comment.body),
     );
-    return <RunCommentCard item={item} meta={meta} />;
+    return <RunCommentCard item={item} meta={meta} projectId={projectId} />;
   }
   return null;
+}
+
+/**
+ * ISI-5214 — render the structured ticket LINKS a comment carried (its `#`-picker
+ * references) as chips beneath the body, deep-linked to the in-console ticket. This
+ * is the ticket-page mirror of the discussion MessageItem reference chips (ISI-5168):
+ * links are read straight off the wire (no render-time refetch); an absent/empty list
+ * renders nothing, so a plain comment stays link-free.
+ */
+function TicketRefChips({
+  references,
+  projectId,
+}: {
+  references?: TicketReference[];
+  projectId: string;
+}) {
+  if (!references || references.length === 0) return null;
+  return (
+    <ul className="ksq-message__refs" data-testid="comment-ticket-refs">
+      {references.map((ref) => {
+        const label = ref.title || `ticket ${shortId(ref.workItemId)}`;
+        const href = `/projects/${encodeURIComponent(
+          projectId,
+        )}/issues/${encodeURIComponent(ref.workItemId)}`;
+        return (
+          <li key={ref.workItemId}>
+            <a
+              className="ksq-chip ksq-ticket-chip"
+              data-testid="comment-ticket-ref"
+              href={href}
+              title={`Work item ${ref.workItemId}`}
+            >
+              {label}
+              {ref.state ? (
+                <span className="ksq-ticket-chip__state">{ref.state}</span>
+              ) : null}
+            </a>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 /**
@@ -605,9 +653,12 @@ function ToolChip({ seg }: { seg: Extract<ProgressSegment, { kind: "tool" }> }) 
 function RunCommentCard({
   item,
   meta,
+  projectId,
 }: {
   item: ActivityItem;
   meta?: RunComment;
+  // Deep-links this comment's `#` ticket references to the in-console ticket (ISI-5214).
+  projectId: string;
 }) {
   const comment = item.comment!;
   const author = displayName(comment.author);
@@ -719,6 +770,11 @@ function RunCommentCard({
 
         <ProgressBody body={comment.body ?? ""} />
 
+        {/* ISI-5214: the `#`-picker ticket LINKS this comment carried, read straight
+            off the wire (no render-time refetch) and deep-linked to the in-console
+            ticket — the ticket-page analogue of the discussion MessageItem chips. */}
+        <TicketRefChips references={comment.references} projectId={projectId} />
+
         {/* Trace ribbon footer — the honest "View trace →" surface available
             today is the internal Run-detail deep-link (Story 8.11). The external
             Dynatrace link (ISI-4231 §4) stays deferred with the rail. */}
@@ -781,6 +837,7 @@ type ComposerStatus =
  * just the assign button with honest copy. ⌘/Ctrl+Enter stays a plain Comment.
  */
 function Composer({
+  projectId,
   workItemId,
   canComment,
   onOptimisticAppend,
@@ -790,6 +847,9 @@ function Composer({
   dispatchAgent,
   reTriggerAgent,
 }: {
+  // The ticket's project (namespace/name slug) — scopes the `#`-picker's work-item
+  // search to this project (ISI-5214), reusing the discussion mentions endpoint.
+  projectId: string;
   workItemId: string;
   canComment: boolean;
   onOptimisticAppend: (c: ThreadComment) => void;
@@ -826,14 +886,61 @@ function Composer({
   // ticket. This mirrors the discussion-room mention→dispatch experience the board
   // asked for ("same experience we have in Paperclip"), reusing every bit of the
   // dispatch machinery below plus the shared MentionPopover / mention primitives.
+  //
+  // ISI-5214 (parent ISI-5212 S2): the composer now also pops on `#` to link a
+  // TICKET — the dual `triggerFragmentBefore`/`replaceTriggerFragment` primitive
+  // the discussion Composer uses (ISI-5167). `@` stays the client-side agent roster
+  // (→ arms dispatch, unchanged); `#` searches THIS project's work items via the
+  // reused discussion mentions endpoint and, on pick, inserts a `#Title` token AND
+  // collects a structured { workItemId, title } link into `refs` — a LINK, never a
+  // dispatch (the server re-resolves + drops out-of-project ids, ISI-5165 parity).
   const [mentionOpen, setMentionOpen] = useState(false);
   const [fragment, setFragment] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  // Which trigger opened the popover: `@` (agent) vs `#` (ticket picker).
+  const [trigger, setTrigger] = useState<MentionTrigger>("@");
+  // Work-item suggestions fetched for a live `#` fragment (debounced below).
+  const [ticketSuggestions, setTicketSuggestions] = useState<MentionSuggestion[]>(
+    [],
+  );
+  // The ticket LINKS the `#` picker collected, carried into the comment POST.
+  const [refs, setRefs] = useState<TicketReference[]>([]);
   const caretRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const suggestions = mentionOpen
-    ? agentMentionSuggestions(agents, fragment)
-    : [];
+  const mentions = useRef(createDiscussionClient()).current;
+  // `@` → the client-side agent roster; `#` → the fetched work-item rows.
+  const suggestions = !mentionOpen
+    ? []
+    : trigger === "#"
+      ? ticketSuggestions
+      : agentMentionSuggestions(agents, fragment);
+
+  // Debounced `#` work-item search (ISI-5214): fires only while a `#` fragment is
+  // open, scoped to this ticket's project. A failed/empty search leaves the list
+  // empty — the popover shows its empty state, the plain comment path is unaffected.
+  useEffect(() => {
+    if (!mentionOpen || trigger !== "#" || fragment.length < 1) {
+      setTicketSuggestions([]);
+      return;
+    }
+    let alive = true;
+    const t = setTimeout(() => {
+      mentions
+        .searchMentions(projectId, fragment)
+        .then((results) => {
+          if (!alive) return;
+          setTicketSuggestions(results.filter((r) => r.type === "work_item"));
+          setActiveIndex(0);
+        })
+        .catch(() => {
+          if (alive) setTicketSuggestions([]);
+        });
+    }, 200);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [mentionOpen, trigger, fragment, projectId, mentions]);
 
   // Same best-effort roster the rail AssigneeControl loads; an empty list just
   // leaves the placeholder ("Loading squad…") — the plain Comment path is unaffected.
@@ -895,7 +1002,9 @@ function Composer({
   async function postComment(value: string): Promise<PostedComment | null> {
     setStatus({ kind: "posting" });
     try {
-      return await postWorkItemComment(workItemId, value);
+      // Carry the `#`-picker ticket links (ISI-5214); the server re-resolves and
+      // drops any that don't belong to this ticket's project.
+      return await postWorkItemComment(workItemId, value, refs);
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
       if (code === 404 || code === 501) {
@@ -924,6 +1033,7 @@ function Composer({
     if (!comment) return;
     onOptimisticAppend(comment);
     setText("");
+    setRefs([]);
     setStatus({ kind: "idle" });
     // ISI-4918 (S7 of ISI-4853): a PLAIN comment that re-dispatched a parked ticket
     // (reTriggered=true — pkg/coord AppendHumanComment moved it → todo) mints a Run
@@ -959,6 +1069,7 @@ function Composer({
     // Comment landed — keep it before the assign half even fires.
     onOptimisticAppend(comment);
     setText("");
+    setRefs([]);
     setStatus({ kind: "idle" });
     try {
       await dispatchWorkItem(workItemId, assignee);
@@ -978,36 +1089,53 @@ function Composer({
     }
   }
 
-  /** Recompute the live `@fragment` at the caret and open/close the popover. */
+  /**
+   * Recompute the live trigger fragment at the caret and open/close the popover
+   * (ISI-5214). `triggerFragmentBefore` detects EITHER `@` (agent) or `#` (ticket)
+   * and reports which — the popover contents then branch on `trigger`.
+   */
   function syncMention(value: string, caret: number) {
     caretRef.current = caret;
-    const frag = mentionFragmentBefore(value, caret);
+    const frag = triggerFragmentBefore(value, caret);
     if (frag === null) {
       setMentionOpen(false);
       setFragment("");
       return;
     }
-    setFragment(frag);
+    setTrigger(frag.trigger);
+    setFragment(frag.fragment);
     setActiveIndex(0);
     setMentionOpen(true);
   }
 
   /**
-   * Replace the trailing `@fragment` with the canonical `@Name ` token AND arm the
-   * existing dispatch path: an @-mentioned agent becomes the pending `assignee`, so
-   * "Comment & assign" dispatches to it (ISI-5159). The assign select is controlled
-   * by `assignee`, so it visibly reflects the armed pick.
+   * Insert a picked suggestion, branching on its type (ISI-5214):
+   *   - agent → `@Name ` token AND arm the existing dispatch path (`assignee`), so
+   *     "Comment & assign" dispatches to it (ISI-5159, unchanged). The assign select
+   *     is controlled by `assignee`, so it visibly reflects the armed pick.
+   *   - work_item → `#Title ` token AND collect a structured { workItemId, title }
+   *     link into `refs` (deduped by id) — a LINK carried on the comment, never a
+   *     dispatch. `replaceTriggerFragment` always writes the `#` prefix for a
+   *     work_item regardless of which trigger the human typed.
    */
   function insertMention(s: MentionSuggestion) {
     const el = textareaRef.current;
     const caret = caretRef.current;
     const before = text.slice(0, caret);
     const after = text.slice(caret);
-    const newBefore = replaceMentionFragment(before, s.displayName);
+    const newBefore = replaceTriggerFragment(before, s.displayName, s.type);
     setText(newBefore + after);
     setMentionOpen(false);
     setFragment("");
-    if (s.type === "agent") setAssignee(s.id);
+    if (s.type === "agent") {
+      setAssignee(s.id);
+    } else if (s.type === "work_item") {
+      setRefs((prev) =>
+        prev.some((r) => r.workItemId === s.id)
+          ? prev
+          : [...prev, { workItemId: s.id, title: s.displayName }],
+      );
+    }
     if (el) {
       el.focus();
       requestAnimationFrame(() =>
@@ -1058,7 +1186,7 @@ function Composer({
       <textarea
         ref={textareaRef}
         aria-label="Write a message to the agents"
-        placeholder="Write a message to the agents… (type @ to mention an agent)"
+        placeholder="Write a message to the agents… (type @ to mention an agent, # to link a ticket)"
         value={text}
         disabled={posting}
         data-testid="detail-composer-input"
@@ -1469,7 +1597,7 @@ function TicketBody({
           ) : (
             <ul className="ksq-activity-list">
               {activity.map((item, i) => (
-                <ActivityRow key={`${item.kind}-${i}`} item={item} runMeta={runMeta} />
+                <ActivityRow key={`${item.kind}-${i}`} item={item} runMeta={runMeta} projectId={projectId} />
               ))}
               {/* ISI-4881 (S3): the placeholder run bubble lands at the tail — where
                   the real RunCommentCard eventually renders (activity is newest-last),
@@ -1647,6 +1775,7 @@ function TicketBody({
       >
         <div className="ksq-ticket-detail__dock-inner">
           <Composer
+            projectId={projectId}
             workItemId={thread.workItemId}
             canComment={canComment(role)}
             onOptimisticAppend={(c) => setPending((prev) => [...prev, c])}

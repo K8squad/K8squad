@@ -21,6 +21,7 @@ package coord
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -28,12 +29,30 @@ import (
 	"github.com/lib/pq"
 )
 
+// CommentRef is one structured ticket LINK a human comment carried from the
+// ticket-detail `#`-picker (ISI-5214, parent ISI-5212 S2). It is the coord-native
+// mirror of discussion.TicketRef (internal/discussion/dispatch.go): WorkItemID is
+// the linked coord work-item UUID and Title its display title for chip rendering.
+// The JSON tags match the discussion wire shape so the console renders a ticket
+// comment's links with the SAME parseReferences path it uses for room messages.
+// A ref is a LINK, never a dispatch and never a write fence — it is durable
+// metadata persisted on coord.comment.payload under the `references` key.
+type CommentRef struct {
+	WorkItemID string `json:"workItemId"`
+	Title      string `json:"title,omitempty"`
+}
+
 // TaskComment is one append-only note on a work item (coord.comment), in
 // chronological order.
 type TaskComment struct {
 	Author    string    `json:"author"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
+	// References are the structured ticket links the comment carried (ISI-5214);
+	// read straight off coord.comment.payload, never a render-time refetch. nil /
+	// omitted for a plain comment, so an older reader and a link-free comment are
+	// indistinguishable on the wire.
+	References []CommentRef `json:"references,omitempty"`
 }
 
 // TaskDetail is the canonical richer read of one work item and its coordination
@@ -155,7 +174,7 @@ func ReadTaskDetail(ctx context.Context, db *sql.DB, workItemID string) (TaskDet
 
 func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskComment, error) {
 	rows, err := db.QueryContext(ctx, `
-		SELECT author_principal, body, created_at
+		SELECT author_principal, body, created_at, payload
 		  FROM coord.comment
 		 WHERE work_item_id = $1::uuid
 		 ORDER BY created_at ASC, id ASC`, workItemID)
@@ -167,15 +186,34 @@ func readComments(ctx context.Context, db *sql.DB, workItemID string) ([]TaskCom
 	var out []TaskComment
 	for rows.Next() {
 		var c TaskComment
-		if err := rows.Scan(&c.Author, &c.Body, &c.CreatedAt); err != nil {
+		var payload []byte
+		if err := rows.Scan(&c.Author, &c.Body, &c.CreatedAt, &payload); err != nil {
 			return nil, fmt.Errorf("coord.ReadTaskDetail: scan comment: %w", err)
 		}
+		c.References = referencesFromPayload(payload)
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("coord.ReadTaskDetail: iterate comments: %w", err)
 	}
 	return out, nil
+}
+
+// referencesFromPayload reads the structured ticket links off a comment's jsonb
+// payload under the `references` key (ISI-5214), the coord-native mirror of
+// discussion.ReferencesOf. A NULL/empty/malformed payload — every pre-0028 row and
+// every plain comment — yields nil, so a link-free comment stays link-free.
+func referencesFromPayload(payload []byte) []CommentRef {
+	if len(payload) == 0 {
+		return nil
+	}
+	var wrapper struct {
+		References []CommentRef `json:"references"`
+	}
+	if err := json.Unmarshal(payload, &wrapper); err != nil {
+		return nil
+	}
+	return wrapper.References
 }
 
 // AppendComment appends one provenanced comment to a work item and returns it.
