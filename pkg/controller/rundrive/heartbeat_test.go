@@ -251,3 +251,132 @@ func containsSub(s, sub string) bool {
 	}
 	return false
 }
+
+// ---- ISI-5184: orphan-claim verification (Run CR gone → release, not renew) ----
+
+// fakeRuns fakes the runExistenceChecker seam.
+type fakeRuns struct {
+	live map[string]bool
+	err  error
+}
+
+func (f *fakeRuns) RunExists(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.live[runID], nil
+}
+
+// A held claim whose backing Run CR still exists is renewed as before.
+func TestHeartbeatSweepVerifiesThenRenewsLiveRun(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := &HeartbeatSweeper{DB: db, Claimer: rn, Runs: &fakeRuns{live: map[string]bool{"22222222-2222-2222-2222-222222222222": true}}}
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("live run must be renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A held claim whose backing Run CR no longer exists is NOT renewed: the
+// orphan-release transaction clears custody, audits claim_released with the
+// orphan verdict, emits the outbox event, and returns the lane to todo.
+func TestHeartbeatSweepReleasesOrphanClaim(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(9), "dispatching")
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WithArgs("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WithArgs("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
+			OperatorPrincipal, int64(9), "orphan_run_deleted").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs("11111111-1111-1111-1111-111111111111", "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rn := &fakeRenewer{ret: true}
+	s := &HeartbeatSweeper{DB: db, Claimer: rn, Runs: &fakeRuns{live: map[string]bool{}}}
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 0 {
+		t.Fatalf("an orphan claim must never be renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// Verification errors fail safe: no renewal, no release — the next tick retries.
+func TestHeartbeatSweepVerificationErrorSkipsRenewal(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := &HeartbeatSweeper{DB: db, Claimer: rn,
+		Runs: &fakeRuns{err: fmt.Errorf("apiserver unavailable")}}
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 0 {
+		t.Fatalf("verification failure must skip renewal; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// Nil verifier keeps the pre-ISI-5184 blind-renew behavior (legacy wiring).
+func TestHeartbeatSweepNilRunsBlindRenews(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := &HeartbeatSweeper{DB: db, Claimer: rn}
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("nil verifier must blind-renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}

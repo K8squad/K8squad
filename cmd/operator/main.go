@@ -1144,9 +1144,14 @@ func main() {
 		// the custody of terminal held rows (claim_released; lane returns to
 		// todo on failure/cancel, stays in_progress on success for M1.5's
 		// reporting to move).
+		// ISI-5184: the sweep refuses to renew custody whose backing Run CR
+		// is gone (UID-exact via the uncached API reader) and releases it as
+		// an orphan instead — a deleted Run can no longer blind-renew a
+		// zombie claim that keeps the workspace permanently busy.
 		if err := mgr.Add(&rundrive.HeartbeatSweeper{
 			DB:      db,
 			Claimer: claimer,
+			Runs:    &rundrive.LiveRuns{Reader: mgr.GetAPIReader()},
 			Log:     func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")

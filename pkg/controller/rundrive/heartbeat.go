@@ -39,9 +39,47 @@ import (
 	"fmt"
 	"time"
 
+	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// runExistenceChecker answers "does the backing Run CR still exist?" (ISI-5184).
+// Blind renewal kept zombie claims alive for Run CRs deleted out from under the
+// sweep — the verifier refuses to renew custody whose provenance is gone and
+// hands the row to the orphan-release path instead.
+type runExistenceChecker interface {
+	RunExists(ctx context.Context, runID string) (bool, error)
+}
+
+// LiveRuns is the production runExistenceChecker: an uncached API-reader Get
+// keyed on the Run's UID. Delete-then-recreate is indistinguishable from
+// existence by name, so the check is UID-exact — a recreated Run with the same
+// name is a DIFFERENT run and must not legitimize the old claim.
+type LiveRuns struct {
+	Reader client.Reader
+}
+
+// RunExists reports whether a Run CR with the given UID exists in any watched
+// namespace. A malformed runID is treated as non-existent (a claim with broken
+// provenance is an orphan by definition).
+func (l *LiveRuns) RunExists(ctx context.Context, runID string) (bool, error) {
+	if l == nil || l.Reader == nil || runID == "" {
+		return false, nil
+	}
+	runs := &ksquadv1alpha1.RunList{}
+	if err := l.Reader.List(ctx, runs); err != nil {
+		return false, fmt.Errorf("rundrive.heartbeat: list runs: %w", err)
+	}
+	for i := range runs.Items {
+		if string(runs.Items[i].UID) == runID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 
 // HeartbeatInterval is the keepalive tick. It is comfortably inside the 30s
 // claim lease (a single missed tick must not lapse a healthy run's lease),
@@ -62,6 +100,9 @@ type HeartbeatSweeper struct {
 	DB *sql.DB
 	// Claimer executes the §6.2 renew (required).
 	Claimer renewer
+	// Runs verifies the backing Run CR still exists before renewal (ISI-5184).
+	// Nil keeps the pre-ISI-5184 blind-renew behavior (tests, legacy wiring).
+	Runs runExistenceChecker
 	// Tick overrides HeartbeatInterval when > 0 (tests shrink it).
 	Tick time.Duration
 	// Log receives diagnostics (nil discards).
@@ -116,10 +157,36 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 				s.logf("rundrive.heartbeat: release %s: %v", hc.workItemID, err)
 			}
 		default:
-			// In flight: renew the lease. Renew's own SQL guard
-			// (lease_expires_at > clock_timestamp()) refuses an already-lapsed
-			// lease — the authoritative liveness check — and a lapsed one is
-			// the 3.2 death detector's business on the Run's next pass.
+			// In flight: renew the lease — but only if the backing Run CR
+			// still exists (ISI-5184). Blind renewal wedged workspaces behind
+			// zombie claims whose Run had been deleted with no terminal step
+			// ever committed: the sweep renewed forever, the lane stayed
+			// in_progress, and the busy fallback served an empty listing.
+			if s.Runs != nil && hc.holderRun != "" {
+				live, err := s.Runs.RunExists(ctx, hc.holderRun)
+				if err != nil {
+					// Verification unavailable: fail safe by NOT renewing —
+					// a skipped tick costs delay (the 3.2 death detector can
+					// still reclaim a lapsed lease), renewing a zombie does
+					// not. Retry is the next level-triggered tick.
+					s.logf("rundrive.heartbeat: verify %s run %s: %v — renewal skipped this tick",
+						hc.workItemID, hc.holderRun, err)
+					continue
+				}
+				if !live {
+					if err := s.releaseOrphan(ctx, hc); err != nil {
+						s.logf("rundrive.heartbeat: orphan-release %s: %v", hc.workItemID, err)
+					} else {
+						s.logf("rundrive.heartbeat: released orphan claim %s (run %s no longer exists, step %s)",
+							hc.workItemID, hc.holderRun, hc.step)
+					}
+					continue
+				}
+			}
+			// Renew's own SQL guard (lease_expires_at > clock_timestamp())
+			// refuses an already-lapsed lease — the authoritative liveness
+			// check — and a lapsed one is the 3.2 death detector's business
+			// on the Run's next pass.
 			s.renew(ctx, hc)
 		}
 	}
@@ -237,6 +304,75 @@ func (s *HeartbeatSweeper) releaseTerminal(ctx context.Context, hc heldClaim) er
 	}
 	s.logf("rundrive.heartbeat: released terminal claim %s (run %s, step %s)",
 		hc.workItemID, hc.holderRun, hc.step)
+	return nil
+}
+
+// releaseOrphan clears a held claim whose backing Run CR no longer exists
+// (ISI-5184): custody (holder/lease/run_id) released in one transaction with a
+// claim_released audit row whose to_state records the orphan verdict. The
+// reconcile_step of a dead run is untrustworthy provenance, so the LANE is
+// deliberately NOT settled here — items whose machine state cannot be
+// re-derived fall back to in_progress=false only via the guard below: the lane
+// returns to todo (reclaimable) exactly as the terminal-failed path does,
+// because a Run that vanished without a terminal commit is, from the machine's
+// point of view, a failed holder. Human-moved lanes are never disturbed.
+func (s *HeartbeatSweeper) releaseOrphan(ctx context.Context, hc heldClaim) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.claim
+		   SET holder_principal = NULL,
+		       run_id           = NULL,
+		       lease_expires_at = NULL,
+		       reconcile_step   = 'failed'
+		 WHERE work_item_id = $1::uuid
+		   AND run_id        = $2::uuid
+		   AND holder_principal IS NOT NULL`,
+		hc.workItemID, hc.holderRun)
+	if err != nil {
+		return fmt.Errorf("release: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Already cleared by a concurrent sweep / release — nothing to audit.
+		return tx.Commit()
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, fence_token, to_state)
+		VALUES ($1::uuid, $2::uuid, 'claim_released', $3, $4, $5)`,
+		hc.workItemID, hc.holderRun, hc.principal, hc.fence, "orphan_run_deleted"); err != nil {
+		return fmt.Errorf("audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'claim_released',
+		       wi.id, $2::uuid,
+		       jsonb_build_object('fence_token', $3::bigint, 'reason', 'orphan_run_deleted')
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		hc.workItemID, hc.holderRun, hc.fence); err != nil {
+		return fmt.Errorf("outbox: %w", err)
+	}
+
+	// The vanished holder never committed a terminal step, so from the
+	// machine's perspective it failed: the lane returns to todo (reclaimable),
+	// guarded on in_progress so a human-moved lane is never touched.
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE coord.work_item
+		   SET state = $2, updated_at = now()
+		 WHERE id = $1::uuid AND state = 'in_progress'`,
+		hc.workItemID, "todo"); err != nil {
+		return fmt.Errorf("lane return: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
 	return nil
 }
 
