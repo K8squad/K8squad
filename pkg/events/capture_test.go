@@ -86,3 +86,20 @@ func TestCapture_RequiresProjectAndEventType(t *testing.T) {
 		t.Fatal("expected error for missing event_type")
 	}
 }
+
+// TestCaptureRunForWorkItem_RequiresFields: the guards fire BEFORE any DB round
+// trip, so a nil tx is never dereferenced. runID is mandatory here (unlike the
+// work_item sibling): a run event with a NULL run_id keys no SSE fan-out and the
+// projector silently drops it, so an empty runID is a caller bug, not a NULL row.
+func TestCaptureRunForWorkItem_RequiresFields(t *testing.T) {
+	ctx := context.Background()
+	if err := CaptureRunForWorkItem(ctx, nil, "", "r1", "thinking", nil); err == nil {
+		t.Fatal("expected error for missing workItemID")
+	}
+	if err := CaptureRunForWorkItem(ctx, nil, "w1", "", "thinking", nil); err == nil {
+		t.Fatal("expected error for missing runID (a NULL run_id keys no fan-out)")
+	}
+	if err := CaptureRunForWorkItem(ctx, nil, "w1", "r1", "", nil); err == nil {
+		t.Fatal("expected error for missing eventType")
+	}
+}

@@ -284,6 +284,58 @@ export function buildActivity(thread: NormalizedThread): ActivityItem[] {
   return items.sort((a, b) => at(a.at) - at(b.at));
 }
 
+/** One live mirrored row from the per-run SSE `thinking` stream (ISI-5193),
+ * already reduced to the comment triple the Activity feed renders. */
+export interface LiveThinkingRow {
+  author: string;
+  body: string;
+  at: string;
+}
+
+/**
+ * Merge live `thinking` rows into an already-built Activity list, NEWEST LAST,
+ * without double-rendering a row the durable thread reload has since materialized
+ * (ISI-5193). The operator's progress mirror publishes the live SSE echo AND the
+ * coord.comment with an IDENTICAL (author, body); so a live row is dropped when a
+ * comment with that same (author, body) already exists in `activity` — the
+ * durable row wins once the reload lands, the transient one de-dupes out. Live
+ * rows are also de-duped against each other so an SSE reconnect replay cannot
+ * stack duplicates. Pure + DOM-free so the dedup rule is unit-tested without a
+ * stream or the DOM.
+ */
+export function mergeLiveThinking(
+  activity: ActivityItem[],
+  live: LiveThinkingRow[],
+): ActivityItem[] {
+  if (live.length === 0) return activity;
+  const key = (author: string, body: string) => `${author} ${body}`;
+  const seen = new Set<string>();
+  for (const it of activity) {
+    if (it.kind === "comment" && it.comment) {
+      seen.add(key(it.comment.author, it.comment.body));
+    }
+  }
+  const merged = [...activity];
+  for (const row of live) {
+    if (!row.body) continue;
+    const k = key(row.author, row.body);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    merged.push({
+      kind: "comment",
+      at: row.at,
+      who: row.author,
+      authorKind: authorKind(row.author),
+      comment: { author: row.author, body: row.body, createdAt: row.at },
+    });
+  }
+  const at = (s: string) => {
+    const t = Date.parse(s);
+    return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+  };
+  return merged.sort((a, b) => at(a.at) - at(b.at));
+}
+
 /** Sub-ticket rollup for the "N of M done" progress line (design §3). */
 export function subTicketProgress(children: { state: string }[]): {
   done: number;

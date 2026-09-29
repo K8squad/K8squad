@@ -52,6 +52,7 @@ import {
 import {
   buildActivity,
   fetchWorkItemThread,
+  mergeLiveThinking,
   postWorkItemComment,
   subTicketProgress,
   subTicketStatus,
@@ -1266,7 +1267,19 @@ function TicketBody({
     ...thread,
     comments: [...thread.comments, ...pending],
   };
-  const activity = buildActivity(threadWithPending);
+  // Live thinking (ISI-5193): while a dispatch is in flight, the per-run SSE
+  // `thinking` rows (surfaced through the SAME EventSource useDispatchWatch opens
+  // — no second stream, ISI-5174 AC4) live-append to the timeline. mergeLiveThinking
+  // de-dupes each against the durable coord.comment once the reconciling re-fetch
+  // materializes it, so a row never renders twice across the live→durable handoff.
+  const activity = mergeLiveThinking(
+    buildActivity(threadWithPending),
+    (dispatchWatch?.thinking ?? []).map((ev) => ({
+      author: ev.actor,
+      body: ev.summary ?? "",
+      at: ev.ts,
+    })),
+  );
   // Run meta (run-id / live dot / trace ribbon) keyed by comment identity so the
   // Activity timeline can render each comment as its S3 run bubble without
   // re-deriving the attribution rules.

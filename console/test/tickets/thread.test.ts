@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   authorKind,
   buildActivity,
+  mergeLiveThinking,
   normalizeThread,
   subTicketProgress,
   subTicketStatus,
@@ -140,6 +141,63 @@ describe("buildActivity", () => {
       }),
     );
     expect(items[items.length - 1].comment?.body).toBe("undated");
+  });
+});
+
+describe("mergeLiveThinking (ISI-5193)", () => {
+  it("returns the activity unchanged when there are no live rows", () => {
+    const base = buildActivity(
+      thread({ comments: [{ author: "u", body: "b", createdAt: "2026-09-14T10:00:00Z" }] }),
+    );
+    expect(mergeLiveThinking(base, [])).toBe(base);
+  });
+
+  it("appends a live thinking row as an agent comment, chronologically", () => {
+    const base = buildActivity(
+      thread({ comments: [{ author: "u", body: "hi", createdAt: "2026-09-14T10:00:00Z" }] }),
+    );
+    const merged = mergeLiveThinking(base, [
+      { author: "agent:sam", body: "[run abc] working…", at: "2026-09-14T10:05:00Z" },
+    ]);
+    expect(merged).toHaveLength(2);
+    const last = merged[merged.length - 1];
+    expect(last.kind).toBe("comment");
+    expect(last.authorKind).toBe("agent");
+    expect(last.comment).toEqual({
+      author: "agent:sam",
+      body: "[run abc] working…",
+      createdAt: "2026-09-14T10:05:00Z",
+    });
+  });
+
+  it("drops a live row once the durable comment with the same (author, body) has landed", () => {
+    // The reloaded thread already carries the persisted mirror comment; the live
+    // echo for that exact (author, body) must NOT render a second time.
+    const base = buildActivity(
+      thread({
+        comments: [
+          { author: "agent:sam", body: "[run abc] step one", createdAt: "2026-09-14T10:00:00Z" },
+        ],
+      }),
+    );
+    const merged = mergeLiveThinking(base, [
+      { author: "agent:sam", body: "[run abc] step one", at: "2026-09-14T10:00:01Z" },
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].comment?.createdAt).toBe("2026-09-14T10:00:00Z"); // durable wins
+  });
+
+  it("de-dupes duplicate live rows (SSE reconnect replay) against each other", () => {
+    const merged = mergeLiveThinking([], [
+      { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
+      { author: "agent:sam", body: "same", at: "2026-09-14T10:00:00Z" },
+      { author: "agent:sam", body: "different", at: "2026-09-14T10:00:02Z" },
+    ]);
+    expect(merged.map((i) => i.comment?.body)).toEqual(["same", "different"]);
+  });
+
+  it("skips a live row with an empty body", () => {
+    expect(mergeLiveThinking([], [{ author: "agent:sam", body: "", at: "x" }])).toHaveLength(0);
   });
 });
 
