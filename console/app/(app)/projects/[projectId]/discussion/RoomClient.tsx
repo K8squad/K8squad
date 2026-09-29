@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createDiscussionClient } from "@/lib/discussion/api";
 import { subscribeRoom, type EventSourceFactory } from "@/lib/discussion/sse";
-import type { RoomEvent } from "@/lib/discussion/liveFeed";
+import type { RoomStreamEvent } from "@/lib/discussion/liveFeed";
 import type { RosterAgent } from "@/components/discussion/Roster";
 import { DiscussionRoom } from "@/components/discussion/DiscussionRoom";
 
@@ -74,7 +74,7 @@ export function DiscussionRoomClient({ projectId }: { projectId: string }) {
     if (typeof EventSource === "undefined" || threadId == null) return undefined;
     const factory: EventSourceFactory = (url) =>
       new EventSource(url) as unknown as ReturnType<EventSourceFactory>;
-    return (onEvent: (evt: RoomEvent) => void) =>
+    return (onEvent: (evt: RoomStreamEvent) => void) =>
       subscribeRoom(projectId, threadId, onEvent, factory);
   }, [projectId, threadId]);
 

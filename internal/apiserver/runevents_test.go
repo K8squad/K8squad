@@ -181,6 +181,102 @@ func TestRunEventSource_TailErrorRetriesWithoutSkipping(t *testing.T) {
 	}
 }
 
+// nrecvWithin returns whether an Event arrives on a subscriber channel within d.
+func nrecvWithin(sub *subscriber, d time.Duration) (Event, bool) {
+	select {
+	case ev, ok := <-sub.ch:
+		return ev, ok
+	case <-time.After(d):
+		return Event{}, false
+	}
+}
+
+// ISI-5208: a `thinking` run event is fanned to BOTH the per-run hub AND the
+// per-project bus (keyed by the run's Project slug, resolved from its project_id
+// UID); a non-bridged type stays on the per-run hub only.
+func TestRunEventSource_BridgesThinkingToProject(t *testing.T) {
+	reader := &fakeRunReader{errLatest: errors.New("seed-at-0")}
+	hub := NewHub()
+	projectHub := NewProjectHub()
+	runSub := hub.Subscribe("run-a")
+	projSub := projectHub.Subscribe("ns/proj")
+
+	// Resolver maps the outbox project UID → the console slug the project bus keys on.
+	resolve := func(_ context.Context, uid string) (string, bool) {
+		if uid == "uid-1" {
+			return "ns/proj", true
+		}
+		return "", false
+	}
+	src := NewRunEventSource(reader, hub, WithProjectorPoll(5*time.Millisecond),
+		WithProjectBridge(projectHub, resolve))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = src.Run(ctx) }()
+
+	reader.add(
+		events.RunEvent{ID: 1, RunID: "run-a", ProjectID: "uid-1", EventType: "reconcile_advanced", Payload: []byte(`{"to_step":"x"}`)},
+		events.RunEvent{ID: 2, RunID: "run-a", ProjectID: "uid-1", EventType: "thinking", Payload: []byte(`{"body":"reading"}`)},
+	)
+
+	// The per-run hub sees both events (id 1 then id 2).
+	if ev := recvWithin(t, runSub, time.Second); ev.ID != "1" {
+		t.Fatalf("run hub: want id 1 first, got %q", ev.ID)
+	}
+	if ev := recvWithin(t, runSub, time.Second); ev.ID != "2" || ev.Type != "thinking" {
+		t.Fatalf("run hub: want id 2 thinking, got id %q type %q", ev.ID, ev.Type)
+	}
+
+	// The project bus sees ONLY the bridged `thinking` event (id 2) — never the
+	// per-run reconcile_advanced (id 1).
+	ev, ok := nrecvWithin(projSub, time.Second)
+	if !ok {
+		t.Fatal("project bus: expected the bridged thinking event, got none")
+	}
+	if ev.ID != "2" || ev.Type != "thinking" {
+		t.Fatalf("project bus: want id 2 thinking (not the non-bridged reconcile), got id %q type %q", ev.ID, ev.Type)
+	}
+	if _, extra := nrecvWithin(projSub, 50*time.Millisecond); extra {
+		t.Fatal("project bus: received an extra event (a non-bridged type leaked)")
+	}
+}
+
+// A thinking row with no project_id, or whose UID resolves to no live Project, is
+// fanned to the per-run hub only — never bridged (best-effort, no crash).
+func TestRunEventSource_BridgeSkipsUnresolvableOrProjectless(t *testing.T) {
+	reader := &fakeRunReader{errLatest: errors.New("seed-at-0")}
+	hub := NewHub()
+	projectHub := NewProjectHub()
+	runSub := hub.Subscribe("run-a")
+	projSub := projectHub.Subscribe("ns/proj")
+
+	resolve := func(_ context.Context, uid string) (string, bool) {
+		return "", false // nothing resolves
+	}
+	src := NewRunEventSource(reader, hub, WithProjectorPoll(5*time.Millisecond),
+		WithProjectBridge(projectHub, resolve))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = src.Run(ctx) }()
+
+	reader.add(
+		events.RunEvent{ID: 1, RunID: "run-a", ProjectID: "", EventType: "thinking", Payload: []byte(`{"body":"a"}`)},
+		events.RunEvent{ID: 2, RunID: "run-a", ProjectID: "uid-x", EventType: "thinking", Payload: []byte(`{"body":"b"}`)},
+	)
+
+	// Both reach the per-run hub.
+	if ev := recvWithin(t, runSub, time.Second); ev.ID != "1" {
+		t.Fatalf("run hub: want id 1, got %q", ev.ID)
+	}
+	if ev := recvWithin(t, runSub, time.Second); ev.ID != "2" {
+		t.Fatalf("run hub: want id 2, got %q", ev.ID)
+	}
+	// Neither is bridged (empty project id / unresolvable UID).
+	if ev, extra := nrecvWithin(projSub, 100*time.Millisecond); extra {
+		t.Fatalf("project bus: expected no bridged event, got id %q", ev.ID)
+	}
+}
+
 // The replay adapter converts per-run rows to SSE Events and forwards afterID/error.
 func TestRunReplayAdapter_ConvertsAndForwards(t *testing.T) {
 	reader := &fakeRunReader{}

@@ -3,6 +3,7 @@ import {
   applyRoomEvent,
   upsertMessage,
   parseRoomEvent,
+  parseThinkingRow,
 } from "@/lib/discussion/liveFeed";
 import type { Message } from "@/lib/discussion/types";
 
@@ -81,5 +82,37 @@ describe("parseRoomEvent", () => {
     expect(
       parseRoomEvent(JSON.stringify({ type: "message.created" })),
     ).toBeNull();
+  });
+});
+
+describe("parseThinkingRow (ISI-5208)", () => {
+  it("parses a full thinking envelope", () => {
+    const row = parseThinkingRow(
+      JSON.stringify({
+        runId: "r1",
+        author: "agent:john",
+        body: "[run r1] reading thread",
+        seq: 3,
+        at: "2026-09-29T10:00:00Z",
+      }),
+    );
+    expect(row).toEqual({
+      runId: "r1",
+      author: "agent:john",
+      body: "[run r1] reading thread",
+      seq: 3,
+      at: "2026-09-29T10:00:00Z",
+    });
+  });
+
+  it("defaults missing scalar fields but requires a body", () => {
+    const row = parseThinkingRow(JSON.stringify({ body: "x" }));
+    expect(row).toEqual({ runId: "", author: "", body: "x", seq: 0, at: "" });
+  });
+
+  it("returns null on an empty body or garbage", () => {
+    expect(parseThinkingRow(JSON.stringify({ author: "agent:john", body: "" }))).toBeNull();
+    expect(parseThinkingRow("not json")).toBeNull();
+    expect(parseThinkingRow(JSON.stringify(42))).toBeNull();
   });
 });

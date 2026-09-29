@@ -350,7 +350,15 @@ func main() {
 	runEvents := events.NewSQLStore(db)
 	hub := apiserver.NewHub()
 	hub.SetReplayer(apiserver.NewRunReplayer(runEvents))
-	projector := apiserver.NewRunEventSource(runEvents, hub)
+	// ISI-5194 per-project SSE bus + ISI-5208 producers: the run-event projector ALSO
+	// bridges an active run's `thinking` deltas onto this bus (keyed by the run's
+	// Project slug, resolved UID→slug through the SAME informer cache the dashboard
+	// uses), and the discussion handler echoes committed messages onto it — so the
+	// discussion Room live-tails instead of polling. A nil informer cache leaves the
+	// bridge disarmed (per-run hub only).
+	projectHub := apiserver.NewProjectHub()
+	projector := apiserver.NewRunEventSource(runEvents, hub,
+		apiserver.WithProjectBridge(projectHub, apiserver.NewProjectSlugResolver(dashboardReader)))
 	go func() {
 		if err := projector.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("ksquad-apiserver: run-event projector stopped: %v", err)
@@ -679,6 +687,12 @@ func main() {
 		log.Printf("ksquad-apiserver: discussion ticket-references inert (no coord read store or project resolver; posts stay link-free)")
 	}
 
+	// ISI-5208: echo committed room messages onto the per-project SSE bus so an open Room
+	// live-appends a reply and resolves the poster's "{agent} is working…" watch to
+	// "replied" without a reload (pairs with the projector's live `thinking` bridge above).
+	discussionHandler.SetRoomStreamPublisher(apiserver.NewRoomStreamPublisher(projectHub))
+	log.Printf("ksquad-apiserver: discussion room live-echo ready (committed message → per-project SSE bus; ISI-5208)")
+
 	srv := apiserver.NewServer(apiserver.Options{
 		Authenticator:       authn,
 		Discussion:          discussionHandler,
@@ -725,10 +739,11 @@ func main() {
 		// operator's ksquad_* tool metrics. Unset takes the in-cluster
 		// operator metrics default; a scrape that cannot reach it answers
 		// 503 with the reason (the panel renders a degraded state).
-		ToolUsage: apiserver.NewOperatorMetricsToolUsage(os.Getenv("KSQUAD_OPERATOR_METRICS_URL")),
-		Hub:       hub,
-		TaskIO:    taskIOHandler,
-		OrgOps:    orgOpsHandler,
+		ToolUsage:  apiserver.NewOperatorMetricsToolUsage(os.Getenv("KSQUAD_OPERATOR_METRICS_URL")),
+		Hub:        hub,
+		ProjectHub: projectHub, // ISI-5194 bus shared with the projector + discussion live-echo (ISI-5208)
+		TaskIO:     taskIOHandler,
+		OrgOps:     orgOpsHandler,
 		Auth: apiserver.AuthRoutesOptions{
 			Service:        authSvc,
 			Authenticator:  authn,

@@ -5,7 +5,11 @@
 // poll-on-focus (live is the target, not a hard gate).
 
 import { encodeProjectId } from "@/lib/projectId";
-import { parseRoomEvent, type RoomEvent } from "./liveFeed";
+import {
+  parseRoomEvent,
+  parseThinkingRow,
+  type RoomStreamEvent,
+} from "./liveFeed";
 
 /** Minimal EventSource surface (so this is testable without a real browser). */
 export interface EventSourceLike {
@@ -21,17 +25,24 @@ export function streamUrl(projectId: string): string {
 }
 
 /**
- * Subscribe to a thread's live message events over the shared 8.2 channel.
- * Returns an unsubscribe function. Events for other threads are ignored.
+ * Subscribe to a thread's live events over the shared 8.2 project channel. The ONE
+ * EventSource multiplexes two named events (§13 "one bus, no polling"):
+ *   - `discussion` → a RoomEvent (message created/updated/deleted), filtered to
+ *     this thread and delivered as `{kind:"room"}`;
+ *   - `thinking`   → a live run thinking envelope (ISI-5208), delivered as
+ *     `{kind:"thinking"}`. A thinking envelope carries no thread id, so it is NOT
+ *     filtered here — the Room correlates it to a working watch by author (which is
+ *     itself thread-scoped), dropping any that belong to no active dispatch.
+ * Returns an unsubscribe function.
  */
 export function subscribeRoom(
   projectId: string,
   threadId: string,
-  onEvent: (evt: RoomEvent) => void,
+  onEvent: (evt: RoomStreamEvent) => void,
   makeSource: EventSourceFactory,
 ): () => void {
   const src = makeSource(streamUrl(projectId));
-  const handler = (e: { data: string }) => {
+  const roomHandler = (e: { data: string }) => {
     const evt = parseRoomEvent(e.data);
     if (!evt) return;
     const tid =
@@ -40,8 +51,13 @@ export function subscribeRoom(
     // carry threadId and are filtered to this thread. (A richer envelope can
     // carry threadId on delete too; then filter it the same way.)
     if (tid !== undefined && tid !== threadId) return;
-    onEvent(evt);
+    onEvent({ kind: "room", event: evt });
   };
-  src.addEventListener("discussion", handler);
+  const thinkingHandler = (e: { data: string }) => {
+    const row = parseThinkingRow(e.data);
+    if (row) onEvent({ kind: "thinking", row });
+  };
+  src.addEventListener("discussion", roomHandler);
+  src.addEventListener("thinking", thinkingHandler);
   return () => src.close();
 }
