@@ -67,6 +67,11 @@ import {
   type RunComment,
 } from "@/lib/tickets/runComments";
 import { runHref } from "@/lib/discussion/provenance";
+import {
+  parseProgressEnvelope,
+  envelopeSnippet,
+  type ProgressSegment,
+} from "@/lib/tickets/progressEnvelope";
 import { MentionPopover } from "@/components/discussion/MentionPopover";
 import {
   agentMentionSuggestions,
@@ -498,6 +503,92 @@ function ActivityRow({
 }
 
 /**
+ * ISI-5190 (S1) — structured render of one ProgressMirror comment body. The
+ * operator writes a flat tagged string (`[run …][untrusted] …`,
+ * `[run …][tool:read/result(ok)]`, `[run …][status] …`); we parse it and render
+ * a clean narration bubble or a tool chip instead of leaking the wire literals.
+ * A body we can't parse falls back to verbatim text (backward-compatible), so
+ * human comments and any older/other producer are unaffected.
+ */
+function ProgressBody({ body }: { body: string }) {
+  const seg = parseProgressEnvelope(body);
+  return <ProgressSegmentView seg={seg} />;
+}
+
+function ProgressSegmentView({ seg }: { seg: ProgressSegment }) {
+  if (seg.kind === "tool") {
+    return <ToolChip seg={seg} />;
+  }
+  if (seg.kind === "status") {
+    return (
+      <p className="ksq-activity__body ksq-progress__status" data-testid="progress-status">
+        <span className="ksq-chip ksq-chip--state">{seg.state}</span>
+        {seg.reason && <span className="muted">{seg.reason}</span>}
+      </p>
+    );
+  }
+  // narration + raw both render as a clean text bubble (no wire prefixes).
+  return (
+    <p className="ksq-activity__body" data-testid="progress-narration">
+      {seg.text}
+    </p>
+  );
+}
+
+/** One tool step as a chip: friendly verb + ok/err status, with an expandable
+ *  row for the summary the producer attached (S2 populates this further with the
+ *  command/skill/server head). Bare `[tool:read/result(ok)]` rows (no summary)
+ *  render as a single quiet chip — no expander, no noise. */
+function ToolChip({ seg }: { seg: Extract<ProgressSegment, { kind: "tool" }> }) {
+  const [open, setOpen] = useState(false);
+  const hasDetail = Boolean(seg.summary);
+  return (
+    <div className="ksq-toolchip" data-testid="progress-tool" data-phase={seg.phase}>
+      <div className="ksq-toolchip__head">
+        {hasDetail ? (
+          <button
+            type="button"
+            className="ksq-toolchip__toggle"
+            aria-expanded={open}
+            data-testid="progress-tool-toggle"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <span className="ksq-toolchip__caret" aria-hidden="true">
+              {open ? "▾" : "▸"}
+            </span>
+            <span className="ksq-toolchip__verb">{seg.verb}</span>
+          </button>
+        ) : (
+          <span className="ksq-toolchip__verb ksq-toolchip__verb--static">
+            {seg.verb}
+          </span>
+        )}
+        {seg.done && seg.status ? (
+          <span
+            className="ksq-chip ksq-toolchip__status"
+            data-status={seg.status}
+            data-testid="progress-tool-status"
+          >
+            {seg.status}
+          </span>
+        ) : (
+          !seg.done && (
+            <span className="muted ksq-toolchip__running" data-testid="progress-tool-running">
+              …
+            </span>
+          )
+        )}
+      </div>
+      {hasDetail && open && (
+        <pre className="ksq-toolchip__detail" data-testid="progress-tool-detail">
+          {seg.summary}
+        </pre>
+      )}
+    </div>
+  );
+}
+
+/**
  * The S3 anatomy (ISI-4449 · ISI-4433 Frame 02-B): one agent run rendered as a
  * GitHub-style comment. Avatar on the spine, a header (name + agent/human pill +
  * mono timestamp), the run meta strip (run-id + a live status dot that pulses
@@ -554,7 +645,9 @@ function RunCommentCard({
           <span className="ksq-chip" data-role={item.authorKind} data-testid="activity-role">
             {item.authorKind}
           </span>
-          <span className="muted ksq-runcomment__snippet">{comment.body}</span>
+          <span className="muted ksq-runcomment__snippet">
+            {envelopeSnippet(parseProgressEnvelope(comment.body ?? ""))}
+          </span>
           <time className="ksq-ticket-id ksq-runcomment__time">{fmt(item.at)}</time>
         </button>
       </li>
@@ -612,7 +705,7 @@ function RunCommentCard({
           </div>
         )}
 
-        <p className="ksq-activity__body">{comment.body}</p>
+        <ProgressBody body={comment.body ?? ""} />
 
         {/* Trace ribbon footer — the honest "View trace →" surface available
             today is the internal Run-detail deep-link (Story 8.11). The external
