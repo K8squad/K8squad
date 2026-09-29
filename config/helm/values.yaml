@@ -60,8 +60,19 @@ controlPlane:
   image:
     # registry+org; component images resolve to <registry>/ksquad-<component>.
     registry: ghcr.io/k8squad
-    # Image tag; empty falls back to the chart appVersion.
+    # Image tag; empty falls back to the chart appVersion. Applies to every
+    # control-plane component unless overridden per-component below.
     tag: ""
+    # Per-component tag overrides (ISI-5155). A component→tag map that wins over
+    # `tag` for that one component; empty/absent keys fall through to `tag`. Use
+    # this to reconcile a mixed-sha live cluster (each component on a distinct
+    # out-of-band hotfix sha) without clobbering running images back to a single
+    # shared tag on `helm upgrade`. Keys are component names: apiserver, console,
+    # operator, memory, event-relay, scm-webhook. Example:
+    #   tagOverrides:
+    #     apiserver: sha-7ae378b
+    #     operator: sha-de70f78
+    tagOverrides: {}
     pullPolicy: IfNotPresent
   # Pull secrets for private ghcr access, attached to each ServiceAccount.
   imagePullSecrets: []
