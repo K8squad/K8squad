@@ -315,8 +315,20 @@ func (a *Assembler) ensureAuthoringToken(ctx context.Context, run *api.Run, eps 
 		return fmt.Errorf("get authoring-token secret %s/%s: %w", run.Namespace, name, err)
 	}
 
+	// The team scope MUST be the Team's tenancy-root UID, NOT its CR name: the
+	// memory edge casts the token's team claim to ::uuid (squad_id), so a CR-name
+	// claim makes EVERY authoring-mount memory tool (memory_search, diary_read, …)
+	// fail its ::uuid cast with SQLSTATE 22P02 — the ISI-5189 defect, which was
+	// fixed for the discussion token (ensureDiscussionToken) but left unfixed here
+	// on the authoring token (ISI-5209). run.Spec.TeamRef carries only the Team
+	// NAME (api.ObjectRef has no UID field), so resolve the Team CR for its UID.
+	teamUID, err := a.teamTenancyUID(ctx, run)
+	if err != nil {
+		return err
+	}
+
 	token, err := a.Minter.Mint(mcpauthtoken.Claims{
-		TeamID:    run.Spec.TeamRef.Name,
+		TeamID:    teamUID,
 		Principal: string(run.GetOwnedBy()),
 		// The dispatched (decomposing) agent, matched against the work item's
 		// dispatch claim by S5 custody-match. Mirrors the task-io writer's

@@ -369,7 +369,7 @@ func TestEnsureAuthoringToken(t *testing.T) {
 
 	t.Run("mints a per-run Secret whose token verifies to the grant-bound claims", func(t *testing.T) {
 		run := authoringRun()
-		c := newAuthoringClient(t, run)
+		c := newAuthoringClient(t, run, teamCR("squad-a", "team-uid-squad-a"))
 		asm := &Assembler{Client: c, Minter: minter}
 
 		eps := authoringEps()
@@ -388,16 +388,38 @@ func TestEnsureAuthoringToken(t *testing.T) {
 
 		claims, err := minter.Verify(string(tokBytes))
 		require.NoError(t, err)
-		assert.Equal(t, "squad-a", claims.TeamID)
+		// ISI-5209 regression: the team claim MUST be the Team's tenancy-root UID,
+		// never its CR name — the memory edge casts the claim to ::uuid (squad_id),
+		// so a name claim errors EVERY authoring-mount memory tool (memory_search,
+		// diary_read). Same defect ISI-5189 fixed for the discussion token.
+		assert.Equal(t, "team-uid-squad-a", claims.TeamID, "team scope must be the tenancy-root UID (squad_id::uuid), not the CR name")
+		assert.NotEqual(t, "squad-a", claims.TeamID, "claiming the CR name is the ISI-5209 defect")
 		assert.Equal(t, "henrik", claims.Principal)
 		assert.Equal(t, "decomposer", claims.AgentID)
 		assert.Equal(t, "uid-asm1", claims.RunID)
 		assert.Equal(t, []string{capability.CapabilityWorkItemAuthor}, claims.Capabilities)
 	})
 
+	// Fail-closed: a missing Team CR (no tenancy root to scope to) must reject
+	// assembly rather than mint a token that cannot authenticate (mirrors discussion).
+	t.Run("missing Team CR fails closed (no token minted)", func(t *testing.T) {
+		run := authoringRun()
+		c := newAuthoringClient(t, run) // Team CR absent
+		asm := &Assembler{Client: c, Minter: minter}
+
+		eps := authoringEps()
+		asm.bindAuthoringCredential(run, eps)
+		err := asm.ensureAuthoringToken(context.Background(), run, eps)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolve team")
+
+		gotErr := c.Get(context.Background(), types.NamespacedName{Namespace: asmRunNS, Name: "asm1-authoring-token"}, &corev1.Secret{})
+		assert.True(t, apierrors.IsNotFound(gotErr), "no Secret written on fail-closed")
+	})
+
 	t.Run("idempotent: create-if-absent leaves an existing token be", func(t *testing.T) {
 		run := authoringRun()
-		c := newAuthoringClient(t, run)
+		c := newAuthoringClient(t, run, teamCR("squad-a", "team-uid-squad-a"))
 		asm := &Assembler{Client: c, Minter: minter}
 		eps := authoringEps()
 		asm.bindAuthoringCredential(run, eps)
