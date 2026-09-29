@@ -312,7 +312,13 @@ func openDiscussionDispatch(dsn string, resolver coord.TeamAgentResolver, refs m
 	dispatcher := mentiondispatch.New(writes, dispatch, refs, db)
 	hop := mentiondispatch.NewReplyHopResolver(db)
 	roster := memory.NewCoordRosterResolver(resolver)
-	return memory.NewDiscussionDispatch(dispatcher, hop, roster)
+	// ISI-5166 (ticket references): the tool path now carries the reference-stamping seam symmetric with the
+	// REST handler. The concrete coord-backed TicketRefResolver + its wiring is ISI-5134 S1b (ISI-5170) —
+	// the SAME follow-up that wires it on the REST edge (apiserver SetTicketRefResolver). Until it lands, both
+	// edges resolve nothing and a referenced ticket degrades to a link-free (but durable) message — true
+	// parity, no regression. When S1b builds it, hand the same resolver in here and to the REST handler.
+	var refResolver discussion.TicketRefResolver // nil until ISI-5170
+	return memory.NewDiscussionDispatch(dispatcher, hop, roster, refResolver)
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is
