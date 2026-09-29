@@ -642,6 +642,14 @@ func main() {
 	// store (the agent-∈-Team authority, ADR-0024b). A cluster-less dev run (nil workItemDispatch) leaves
 	// the room coordination-free exactly as before — postMessage still commits, it just dispatches nobody.
 	discussionHandler := discussion.NewHandlerWithDeps(discussionStore, searcher, rosterForMentions(org))
+	// ISI-5198: fence every room operation on the Project's OWNING Team (resolved from the {projectId}
+	// path via the shared project-ref resolver), not the caller's session Team — so a fleet-admin can
+	// open a thread that a Run scoped to the project's Team can then reply into (the ISI-5152 loop). A
+	// nil resolver (cache-less dev host) leaves the room on the legacy caller-Team scope.
+	if teamResolver := apiserver.NewProjectTeamResolver(projectRefs); teamResolver != nil {
+		discussionHandler.SetProjectTeamResolver(teamResolver)
+		log.Printf("ksquad-apiserver: discussion room tenancy scoped to the Project's owning Team (ISI-5198)")
+	}
 	if workItemDispatch != nil {
 		discussionHandler.SetMentionDispatcher(apiserver.NewMentionDispatcher(workItemWrites, workItemDispatch, projectRefs, db))
 		discussionHandler.SetReplyHopResolver(apiserver.NewReplyHopResolver(db))
