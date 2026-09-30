@@ -1,0 +1,55 @@
+# All-tools sandbox canary Skill (ISI-5222, parent ISI-5219).
+#
+# This Skill exists for ONE purpose: declare EVERY registered toolchain ref in
+# spec.requires.toolchains so a Run granted this skill forces the operator to
+# stage all 14 init packs onto /tools/bin (PATH) — the exact path ISI-5221
+# (main@80af771b) fixed on the live warm-pool sandbox. The canary body
+# (hack/toolchain-canary.sh) then version-probes each tool and fails the Run if
+# any is missing.
+#
+# The name@version refs below are the catalog tags from
+# images/toolchains/matrix.json / config/helm/values.yaml
+# (tools.defaultCatalog.entries). Resolution is fail-closed: an unknown
+# name/version rejects the Run at admission with an actionable message. The
+# cluster Toolchain catalog must be enabled (tools.defaultCatalog.enabled=true)
+# — verified live on k8squad-test: 14 catalog CRs present in ksquad-system.
+#
+# docker-cli is the CLI only; the daemon is the capability-gated `dockerd`
+# sidecar, declared under requires.sidecars.
+#
+# Re-run procedure + deploy precondition: docs/runbooks/toolchain-canary.md.
+apiVersion: ksquad.io/v1alpha1
+kind: Skill
+metadata:
+  name: toolchain-canary
+  namespace: bmad-squad
+  labels:
+    ksquad.io/canary: toolchain
+spec:
+  source:
+    type: inline
+    inline: |
+      # Toolchain canary
+
+      A no-op capability envelope whose only job is to pull in every toolchain
+      init pack. The agent runs `hack/toolchain-canary.sh` (staged into the
+      Run) and reports PASS/FAIL. Do not add behaviour here — this skill is a
+      fleet toolchain regression guard, not a working skill.
+  requires:
+    toolchains:
+      - git@2.45
+      - curl@8
+      - gh@2.98
+      - dtctl@1.0
+      - kubectl@1.36
+      - helm@3.21
+      - jq@1.7
+      - yq@4
+      - python@3.12
+      - node@22
+      - go@1.26
+      - uv@0.5
+      - make@4
+      - docker-cli@29
+    sidecars:
+      - dockerd
