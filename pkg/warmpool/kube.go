@@ -37,9 +37,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
+	"github.com/K8squad/K8squad/pkg/toolchain"
 )
 
 // sandboxNamespace is the namespace sandbox pods are created in. It is a
@@ -92,6 +95,15 @@ type KubeProvisioner struct {
 	// priority (ISI-4315 — WithPriorities). Empty = no stamping.
 	warmPriorityClass string
 	runPriorityClass  string
+	// toolchainsForRun resolves a Run's recorded toolchain envelope from its
+	// id (Run CRD uid) so BootRun can attach the per-Run init packs the
+	// PoolKey's capability HASH cannot carry (ISI-5221). Nil = inert: no
+	// staging is attached and the sandbox boots bare — the pre-ISI-5221
+	// behavior, and the correct posture for a bare Run (empty toolchains) or
+	// a warm boot (no Run). Wired by cmd/operator to read Run.status.
+	// capabilityManifest via ManifestForRun below; unset in tests that only
+	// exercise the bare pod shape.
+	toolchainsForRun func(ctx context.Context, runID string) ([]toolchain.Resolved, error)
 }
 
 // NewKubeProvisioner creates a new kube Provisioner with the given
@@ -148,6 +160,52 @@ func (k *KubeProvisioner) WithPriorities(warmPriorityClassName, runPriorityClass
 	return k
 }
 
+// WithToolchainResolver wires the per-Run toolchain envelope lookup the
+// BootRun path stages init packs from (ISI-5221). The base sandbox image ships
+// no git/curl by design; skill toolchains attach per-Run via init packs
+// (pool.go). Those packs were resolved (pkg/toolchain) and recorded on the Run's
+// capability manifest (pkg/capability.BuildManifest) but NEVER attached on the
+// live warm-pool Boot path — Boot built a bare pod, so git/dtctl skills were
+// unusable in the sandbox. This wires the missing edge: given the claiming
+// Run's id, resolve its recorded toolchains so Boot renders the staging init
+// containers. Empty resolver leaves Boot bare (no-op), preserving every
+// existing bare-pod test. ManifestForRun is the ready-made adapter the operator
+// passes here.
+func (k *KubeProvisioner) WithToolchainResolver(fn func(ctx context.Context, runID string) ([]toolchain.Resolved, error)) *KubeProvisioner {
+	k.toolchainsForRun = fn
+	return k
+}
+
+// ManifestForRun adapts a controller-runtime reader into the toolchain resolver
+// WithToolchainResolver wants: it finds the Run whose uid == runID and rebuilds
+// its recorded toolchain envelope from status.capabilityManifest (the immutable
+// audit truth stamped at assembly). The manifest already pinned name→image, so
+// the boot stages exactly what admission recorded — no catalog re-resolution,
+// no drift. A Run that cannot be found, or that carries no manifest yet, fails
+// CLOSED (an error): a capability Run must not boot a sandbox missing the very
+// tools its skills require — the ISI-5221 symptom was precisely a silent
+// tools-absent boot. The bind's coord marker is not yet written when Boot runs,
+// so a failed boot re-drives cleanly.
+func ManifestForRun(reader client.Reader) func(ctx context.Context, runID string) ([]toolchain.Resolved, error) {
+	return func(ctx context.Context, runID string) ([]toolchain.Resolved, error) {
+		var runs api.RunList
+		if err := reader.List(ctx, &runs); err != nil {
+			return nil, fmt.Errorf("warmpool.ManifestForRun: list runs: %w", err)
+		}
+		for i := range runs.Items {
+			if string(runs.Items[i].UID) != runID {
+				continue
+			}
+			m := runs.Items[i].Status.CapabilityManifest
+			if m == nil {
+				return nil, fmt.Errorf("warmpool.ManifestForRun: run %s has no capability manifest yet; refusing to boot its sandbox without the resolved toolchains", runID)
+			}
+			return capability.ToolchainsFromManifest(m), nil
+		}
+		return nil, fmt.Errorf("warmpool.ManifestForRun: run %s not found (deleted mid-bind?)", runID)
+	}
+}
+
 // Boot creates a fresh sandbox pod for key under the pool-assigned sandboxID.
 //
 //+kubebuilder:rbac:groups="",resources=pods,verbs=create;delete
@@ -160,7 +218,7 @@ func (k *KubeProvisioner) WithPriorities(warmPriorityClassName, runPriorityClass
 // tenancy — per-Run RBAC, NetworkPolicy and quota are namespace-scoped,
 // §12.1); the sandboxNamespace default remains only for callers that have
 // not migrated to classified keys.
-func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID string, purpose BootPurpose) error {
+func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runID string, purpose BootPurpose) error {
 	if key.Image == "" {
 		// Fail loudly over the API server's opaque "spec.containers[0].image:
 		// Required value" — an empty image means the AgentRuntime→image
@@ -394,10 +452,53 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID strin
 		})
 	}
 
+	// ISI-5221: attach the Run's resolved toolchain init packs on the cold
+	// boot. The base image ships no git/curl — skill toolchains stage per-Run
+	// via init containers that cp their binaries onto a shared /tools volume
+	// the agent container mounts read-only with /tools/bin on PATH. This is
+	// the edge the capability seam (pkg/capability.AssemblePod) rendered but
+	// nothing ever wired into the live warm-pool boot. Only BootRun stages —
+	// warm boots have no Run, and the operator pre-warms only the bare key, so
+	// a capability Run always cold-boots here. A resolver error fails the boot
+	// closed (see ManifestForRun): a git skill must never land in a git-less
+	// sandbox.
+	if purpose == BootRun && runID != "" && k.toolchainsForRun != nil {
+		if err := k.attachToolchainInitPacks(ctx, pod, runID); err != nil {
+			return fmt.Errorf("kubeProvisioner.Boot: stage toolchains for sandbox %s (run %s): %w", sandboxID, runID, err)
+		}
+	}
+
 	if err := k.client.Create(ctx, pod); err != nil {
 		return fmt.Errorf("kubeProvisioner.Boot: failed to create sandbox pod %s: %w", sandboxID, err)
 	}
 
+	return nil
+}
+
+// attachToolchainInitPacks resolves the Run's recorded toolchains and merges the
+// staging contract (pkg/capability.staging) into the sandbox pod: one hardened
+// `stage-<name>` init container per toolchain copies its binaries onto a shared
+// emptyDir, the agent container mounts that volume read-only, and PATH is
+// prepended with /tools/bin so kubectl/git/dtctl resolve before the runtime
+// starts (ISI-5221). A bare envelope (no toolchains) is a no-op — the sandbox
+// stays bare, correctly. Idempotent-safe on the object it builds: Boot always
+// constructs a fresh pod, so there is nothing to dedupe.
+func (k *KubeProvisioner) attachToolchainInitPacks(ctx context.Context, pod *corev1.Pod, runID string) error {
+	resolved, err := k.toolchainsForRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	if len(resolved) == 0 {
+		return nil // bare envelope: nothing to stage
+	}
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, capability.RenderInitContainers(resolved)...)
+	pod.Spec.Volumes = append(pod.Spec.Volumes, capability.ToolVolume())
+	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, capability.ToolVolumeMounts()...)
+	// PATH is a single static value (the pod spec cannot express $PATH
+	// expansion); capability.ToolPathValue already carries the standard
+	// locations after /tools/bin, so this override loses nothing the base
+	// image relied on. The base env sets no PATH, so there is no duplicate.
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, capability.ToolPathEnv())
 	return nil
 }
 
