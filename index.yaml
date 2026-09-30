@@ -5,14 +5,14 @@ entries:
       k8squad.io/min-crds-version: 0.2.0
     apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-09-29T07:50:23.713806852Z"
+    created: "2026-09-30T09:26:41.257181481Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
       NO CRDs: the ksquad.io CRDs are owned by the standalone, independently-versioned
       k8squad-crds chart (config/helm-crds), which must be installed/upgraded first
       (ADR-0002, Option B). '
-    digest: 977a73cd3e8f56e7be47e9e5f05ceb7d69c9bcd70e0a657fabb992a8271eb247
+    digest: 61eb6de3372c31f2ef5142bd7bbaacb26f795432333fb3b14dbb64535a10fe83
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -35,7 +35,7 @@ entries:
       k8squad.io/min-crds-version: 0.1.0
     apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-29T07:50:23.71091098Z"
+    created: "2026-09-30T09:26:41.255389135Z"
     description: 'K8squad control plane — Kubernetes-native AI agent squad orchestration.
       Installs the control-plane namespace and (when enabled) the control-plane services
       (apiserver, operator, console, memory, scm-webhook, event bus). This chart ships
@@ -64,7 +64,7 @@ entries:
   k8squad-crds:
   - apiVersion: v2
     appVersion: 0.2.0
-    created: "2026-09-29T07:50:23.71666345Z"
+    created: "2026-09-30T09:26:41.259933624Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -72,7 +72,7 @@ entries:
       chart, and upgrade it independently to roll CRD schema changes forward on their
       own cadence. CRDs carry helm.sh/resource-policy: keep, so uninstalling never
       deletes the CRDs or the user''s custom resources. '
-    digest: 7d4ed7f0e72f279ec1120c4365d4a16797e077f2bded3260123939da7041b9b5
+    digest: c420a7ca0e92b0cfb864da7f83829187ebd887c192b5d648d16839f0b08636f6
     home: https://k8squad.io
     icon: https://k8squad.io/img/banner-on-dark.png
     keywords:
@@ -93,7 +93,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: 0.1.0
-    created: "2026-09-29T07:50:23.714923374Z"
+    created: "2026-09-30T09:26:41.258278104Z"
     description: 'K8squad CRD chart — the eleven ksquad.io CustomResourceDefinitions
       (Team, Agent, AgentRuntime, Role, Skill, Project, Run, EgressPolicy, OtelConfig,
       MCPServer, Toolchain), delivered as an independently versioned, upgrade-safe
@@ -120,4 +120,4 @@ entries:
     urls:
     - https://charts.k8squad.io/k8squad-crds-0.1.0.tgz
     version: 0.1.0
-generated: "2026-09-29T07:50:23.708819824Z"
+generated: "2026-09-30T09:26:41.252380473Z"
