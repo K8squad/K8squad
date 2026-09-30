@@ -3,6 +3,7 @@ package discussion
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -35,9 +36,12 @@ import (
 //     mentions are dropped (surfaced via the returned count so the caller can log the cap).
 //   - Opt-out      — a paused/blocked agent is never auto-dispatched.
 //
-// Audience semantics (plan): `direct:<agent>` dispatches ONLY that agent; a `party` post dispatches
-// each @-mentioned agent; a bare `party` post with no @-mention dispatches nobody (so a plain message
-// never wakes the whole squad).
+// Audience semantics: `direct:<agent>` dispatches ONLY that agent; a `party` post with @-mentions
+// dispatches each @-mentioned agent. A bare `party` post with no @-mention BROADCASTS to the whole
+// room roster when it is a HUMAN turn (ISI-5265 — "party" means "talk to the whole room", and a human
+// at hop 0 is the one turn allowed to wake the squad); an AGENT-authored bare party post still
+// dispatches nobody (loop-safety: broadcast is a hop-0 human privilege, never an agent's, or two
+// agents party-posting would N²-loop the squad).
 
 // MentionDispatch is one resolved auto-dispatch intent: a specific agent to run with a discussion
 // thread as context, carrying the loop-guard hop depth and the provenance of the message that
@@ -104,6 +108,14 @@ const (
 	// maxMentionDispatchPerMessage caps the fan-out of a single post (rate/cost guardrail): a message
 	// that @-mentions the whole squad dispatches at most this many agents. Excess mentions are dropped.
 	maxMentionDispatchPerMessage = 5
+
+	// maxBroadcastDispatchPerMessage caps a whole-room broadcast (ISI-5265): a HUMAN party post with no
+	// @-mention wakes every eligible roster agent, and the 5-mention cap is too small for a full squad.
+	// This is sized for a realistic squad room and stays bounded — a broadcast that would exceed it
+	// dispatches the first this-many and counts the rest via `dropped` (a non-silent truncation the
+	// caller logs), never fanning out unbounded. Only the human hop-0 broadcast path uses this cap;
+	// an explicit @-mention party post still rides the smaller maxMentionDispatchPerMessage.
+	maxBroadcastDispatchPerMessage = 25
 
 	// dispatchPayloadKey is the message-payload field carrying the in-band loop-guard hop counter
 	// (plan: "a per-thread hop counter in payload"). Human posts omit it (hop 0); a dispatched run
@@ -344,12 +356,34 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 	}
 
 	// (2) Audience routing: direct:<agent> targets exactly that agent (ignoring body @-tokens); a
-	// party post targets its @-mentions; a bare party post targets nobody.
+	// party post with @-mentions targets each mentioned agent. A party post with NO @-mention
+	// BROADCASTS to the whole room roster (ISI-5265) — but ONLY when the trigger is a HUMAN turn
+	// (msg.AuthorAgentID == nil). "party" means "talk to the whole room", and a human at hop 0 is the
+	// one turn allowed to wake the squad. This intentionally reverses the ISI-5108 guardrail, but only
+	// for human-authored posts: an AGENT-authored party post with no @-mention still dispatches nobody
+	// (loop-safety — broadcast is a hop-0 human privilege, never an agent's; otherwise two agents
+	// party-posting would N²-loop the whole squad. Agent posts continue to dispatch ONLY via explicit
+	// @-mention, bounded by the hop guard above).
 	var candidates []string
+	broadcast := false
 	if target, ok := strings.CutPrefix(msg.Audience, "direct:"); ok && target != "" {
 		candidates = []string{target}
 	} else {
 		candidates = parseMentions(msg.Body)
+		if len(candidates) == 0 {
+			if msg.AuthorAgentID != nil {
+				return nil, 0 // agent party + no @-mention: dispatch nobody (loop-safety)
+			}
+			// human party + no @-mention: broadcast to every roster agent (guardrails below still
+			// apply — opt-out, self-exclusion, de-dupe, and the broadcast fan-out cap).
+			broadcast = true
+			candidates = make([]string, 0, len(roster))
+			for _, a := range roster {
+				if a.Name != "" {
+					candidates = append(candidates, a.Name)
+				}
+			}
+		}
 	}
 	if len(candidates) == 0 {
 		return nil, 0
@@ -369,6 +403,14 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 		selfAgent = strings.ToLower(*msg.AuthorAgentID)
 	}
 
+	// A whole-room broadcast rides the larger squad-sized cap; an explicit @-mention party post (or a
+	// direct: post) stays on the smaller per-message cap. Either way the fan-out is bounded and excess
+	// is surfaced via `dropped`, never dispatched silently (ISI-5265 req 4).
+	dispatchCap := maxMentionDispatchPerMessage
+	if broadcast {
+		dispatchCap = maxBroadcastDispatchPerMessage
+	}
+
 	seen := make(map[string]bool, len(candidates))
 	for _, name := range candidates {
 		key := strings.ToLower(name)
@@ -386,7 +428,7 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 			continue // an agent never auto-dispatches itself
 		}
 		seen[key] = true
-		if len(targets) >= maxMentionDispatchPerMessage {
+		if len(targets) >= dispatchCap {
 			dropped++ // rate cap: count the drop so the caller can log a non-silent truncation
 			continue
 		}
@@ -410,7 +452,15 @@ func DispatchMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, ros
 	if dispatcher == nil || msg == nil {
 		return
 	}
-	targets, _ := resolveMentionTargets(msg, roster)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if dropped > 0 {
+		// Non-silent truncation (the fan-out/broadcast cap guardrail): the message @-mentioned — or, for
+		// a human party post, the room held — more dispatchable agents than the cap allows, so the tail
+		// was not dispatched. Surface it here (the sole caller) so an over-cap broadcast is visible in the
+		// logs rather than silently clipped.
+		slog.WarnContext(ctx, "discussion: mention dispatch fan-out capped",
+			"projectID", projectID, "messageID", msg.ID, "dispatched", len(targets), "dropped", dropped)
+	}
 	for _, t := range targets {
 		t.ProjectID = projectID
 		t.ThreadID = msg.ThreadID
