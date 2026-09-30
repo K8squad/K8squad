@@ -39,6 +39,7 @@ type fakeProvisioner struct {
 	boots        map[string]warmpool.PoolKey
 	bootOrder    []string                        // boot call order (maps iterate randomly — FIFO tests need this)
 	bootPurposes map[string]warmpool.BootPurpose // ISI-4315: purpose per boot id
+	bootRunIDs   map[string]string               // ISI-5221: runID passed per boot id ("" for warm)
 	teardowns    map[string]int
 	bootErr      error
 	tearDownErr  error
@@ -64,6 +65,7 @@ func newFakeProvisioner() *fakeProvisioner {
 	return &fakeProvisioner{
 		boots:            map[string]warmpool.PoolKey{},
 		bootPurposes:     map[string]warmpool.BootPurpose{},
+		bootRunIDs:       map[string]string{},
 		teardowns:        map[string]int{},
 		tearDownErrFor:   map[string]error{},
 		tearDownFailNth:  map[string]int{},
@@ -73,7 +75,7 @@ func newFakeProvisioner() *fakeProvisioner {
 	}
 }
 
-func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id string, purpose warmpool.BootPurpose) error {
+func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id, runID string, purpose warmpool.BootPurpose) error {
 	f.mu.Lock()
 	if f.bootErr != nil {
 		err := f.bootErr
@@ -82,6 +84,7 @@ func (f *fakeProvisioner) Boot(_ context.Context, key warmpool.PoolKey, id strin
 	}
 	f.boots[id] = key
 	f.bootPurposes[id] = purpose
+	f.bootRunIDs[id] = runID
 	f.bootOrder = append(f.bootOrder, id) // insertion order — map iteration is randomized
 	block := f.blockOnBoot
 	f.mu.Unlock()

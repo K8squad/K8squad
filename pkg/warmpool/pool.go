@@ -156,7 +156,17 @@ type Provisioner interface {
 	// boot — the Run is waiting for THIS pod right now and it must
 	// out-rank idle warmth in the scheduler queue. Adapters that cannot
 	// express priority may ignore the flag, but must not fail on it.
-	Boot(ctx context.Context, key PoolKey, sandboxID string, purpose BootPurpose) error
+	//
+	// runID is the claiming Run's id (Run CRD uid) on the BootRun cold path
+	// and empty on BootWarm — a speculative warm pod exists before any Run.
+	// It lets the adapter attach per-Run truth the PoolKey cannot carry: the
+	// resolved toolchain init packs (ISI-5221). The PoolKey holds only the
+	// capability HASH (it must stay a comparable map key); the runID lets the
+	// adapter read the Run's recorded manifest and stage git/curl/dtctl into
+	// the sandbox. Warm boots (runID "") stage nothing — the operator only
+	// pre-warms the BARE key, so a capability Run never warm-hits and always
+	// takes this BootRun path.
+	Boot(ctx context.Context, key PoolKey, sandboxID, runID string, purpose BootPurpose) error
 
 	// TearDown destroys the sandbox pod (§9.3 teardown-and-replace: the
 	// pod is the disposable unit; a sandbox is NEVER reused across Runs).
@@ -325,7 +335,7 @@ func (p *Pool) Bind(ctx context.Context, runID string, key PoolKey, class RunCla
 	// Run itself — it must out-rank idle warmth in the scheduler queue.
 	bootErr := error(nil)
 	if p.provisioner != nil {
-		bootErr = p.provisioner.Boot(ctx, key, id, BootRun)
+		bootErr = p.provisioner.Boot(ctx, key, id, runID, BootRun)
 	}
 	fireMiss := func() {
 		if miss != nil {
@@ -672,7 +682,7 @@ func (p *Pool) Boot(ctx context.Context, key PoolKey) (string, error) {
 	p.mu.Unlock()
 
 	if p.provisioner != nil {
-		if err := p.provisioner.Boot(ctx, key, id, BootWarm); err != nil {
+		if err := p.provisioner.Boot(ctx, key, id, "", BootWarm); err != nil {
 			p.mu.Lock()
 			delete(p.entries, id)
 			p.mu.Unlock()

@@ -598,7 +598,14 @@ func main() {
 			sandboxMemoryRequest = "512Mi"
 		}
 		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi").
-			WithRequests(sandboxCPURequest, sandboxMemoryRequest)
+			WithRequests(sandboxCPURequest, sandboxMemoryRequest).
+			// ISI-5221: attach the Run's resolved toolchain init packs on the
+			// cold boot. Without this the sandbox booted bare — no git/curl,
+			// git/dtctl skills unusable — because the capability seam that
+			// renders the staging init containers was never wired into Boot.
+			// ManifestForRun reads the Run's recorded capability manifest so
+			// the boot stages exactly what admission resolved.
+			WithToolchainResolver(kubepool.ManifestForRun(mgr.GetClient()))
 		// ISI-4315: purpose-keyed scheduling priority. Idle warm boots sit
 		// BELOW Run cold boots in the scheduler queue (warm pods carry
 		// preemptionPolicy: Never, so a claimed warm pod is never evicted

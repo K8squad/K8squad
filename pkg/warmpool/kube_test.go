@@ -32,7 +32,9 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/taskio"
+	"github.com/K8squad/K8squad/pkg/toolchain"
 )
 
 func clientObjectKey(t *testing.T, ns, name string) types.NamespacedName {
@@ -58,7 +60,7 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "abc", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-1", BootWarm); err != nil {
+	if err := p.Boot(ctx, key, "sbx-1", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -71,7 +73,7 @@ func TestKubeProvisionerBootsInTeamNamespace(t *testing.T) {
 
 	// Legacy key without a namespace: the provisioner default remains.
 	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, legacy, "sbx-2", BootWarm); err != nil {
+	if err := p.Boot(ctx, legacy, "sbx-2", "", BootWarm); err != nil {
 		t.Fatalf("boot legacy: %v", err)
 	}
 	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-2"), &corev1.Pod{}); err != nil {
@@ -103,7 +105,7 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	defer span.End()
 
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-traced", BootWarm); err != nil {
+	if err := p.Boot(ctx, key, "sbx-traced", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -127,7 +129,7 @@ func TestKubeProvisionerBootStampsTraceContext(t *testing.T) {
 	}
 
 	// Bare context: no span → no carrier, honestly.
-	if err := p.Boot(context.Background(), key, "sbx-bare", BootWarm); err != nil {
+	if err := p.Boot(context.Background(), key, "sbx-bare", "", BootWarm); err != nil {
 		t.Fatalf("boot bare: %v", err)
 	}
 	bare := &corev1.Pod{}
@@ -157,7 +159,7 @@ func TestKubeProvisionerTearDownUsesKeyNamespace(t *testing.T) {
 
 	ctx := context.Background()
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, key, "sbx-kill", BootWarm); err != nil {
+	if err := p.Boot(ctx, key, "sbx-kill", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	if err := p.TearDown(ctx, key, "sbx-kill"); err != nil {
@@ -169,7 +171,7 @@ func TestKubeProvisionerTearDownUsesKeyNamespace(t *testing.T) {
 
 	// Legacy key (no namespace): teardown keeps the provisioner default.
 	legacy := PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}
-	if err := p.Boot(ctx, legacy, "sbx-legacy", BootWarm); err != nil {
+	if err := p.Boot(ctx, legacy, "sbx-legacy", "", BootWarm); err != nil {
 		t.Fatalf("boot legacy: %v", err)
 	}
 	if err := p.TearDown(ctx, legacy, "sbx-legacy"); err != nil {
@@ -194,7 +196,7 @@ func TestKubeProvisionerBootMountsCoordSecretVolume(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}, "sbx-coord", BootWarm); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Image: "reg.example/ksquad-shim-codex:m1"}, "sbx-coord", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -254,7 +256,7 @@ func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
 	// M1.2 merged onto main: Boot refuses a key without an image, so both
 	// keys carry one (the classifier guarantees it in production).
 	key := PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test", ProjectPVC: "workspace-project-widget"}
-	if err := p.Boot(ctx, key, "sbx-ws", BootWarm); err != nil {
+	if err := p.Boot(ctx, key, "sbx-ws", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -295,7 +297,7 @@ func TestKubeProvisionerMountsProjectWorkspace(t *testing.T) {
 	}
 
 	// No PVC in the key: no workspace volume, no workspace mount.
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test"}, "sbx-plain", BootWarm); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "gvisor", Namespace: "squad-a", Image: "reg/shim:test"}, "sbx-plain", "", BootWarm); err != nil {
 		t.Fatalf("boot plain: %v", err)
 	}
 	plain := &corev1.Pod{}
@@ -329,7 +331,7 @@ func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
 	p := NewKubeProvisioner(c, "", "")
 
 	ctx := context.Background()
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}, "sbx-workdir", BootWarm); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}, "sbx-workdir", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -353,7 +355,7 @@ func TestKubeProvisionerBootStampsWritableWorkDir(t *testing.T) {
 	}
 
 	// With a per-Project workspace the shared mount is the workdir.
-	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1", ProjectPVC: "workspace-project-x"}, "sbx-ws", BootWarm); err != nil {
+	if err := p.Boot(ctx, PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1", ProjectPVC: "workspace-project-x"}, "sbx-ws", "", BootWarm); err != nil {
 		t.Fatalf("boot ws: %v", err)
 	}
 	ws := &corev1.Pod{}
@@ -386,7 +388,7 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 	img := PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}
 
 	p := NewKubeProvisioner(c, "1", "512Mi").WithRequests("500m", "512Mi")
-	if err := p.Boot(ctx, img, "sbx-rightsized", BootWarm); err != nil {
+	if err := p.Boot(ctx, img, "sbx-rightsized", "", BootWarm); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 	sized := &corev1.Pod{}
@@ -409,7 +411,7 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 
 	// Default (no WithRequests): requests==limits, Guaranteed QoS preserved.
 	dflt := NewKubeProvisioner(c, "1", "512Mi")
-	if err := dflt.Boot(ctx, img, "sbx-guaranteed", BootWarm); err != nil {
+	if err := dflt.Boot(ctx, img, "sbx-guaranteed", "", BootWarm); err != nil {
 		t.Fatalf("boot default: %v", err)
 	}
 	pod := &corev1.Pod{}
@@ -439,10 +441,10 @@ func TestKubeProvisionerStampsPurposePriority(t *testing.T) {
 
 	stamping := NewKubeProvisioner(fake.NewClientBuilder().WithScheme(s).Build(), "", "").
 		WithPriorities("ksquad-sandbox-warm", "ksquad-sandbox-run")
-	if err := stamping.Boot(context.Background(), key, "sbx-warm-prio", BootWarm); err != nil {
+	if err := stamping.Boot(context.Background(), key, "sbx-warm-prio", "", BootWarm); err != nil {
 		t.Fatalf("warm boot: %v", err)
 	}
-	if err := stamping.Boot(context.Background(), key, "sbx-run-prio", BootRun); err != nil {
+	if err := stamping.Boot(context.Background(), key, "sbx-run-prio", "", BootRun); err != nil {
 		t.Fatalf("run boot: %v", err)
 	}
 
@@ -463,7 +465,7 @@ func TestKubeProvisionerStampsPurposePriority(t *testing.T) {
 
 	// Unset priorities: no stamping — the cluster default stands.
 	plain := NewKubeProvisioner(fake.NewClientBuilder().WithScheme(s).Build(), "", "")
-	if err := plain.Boot(context.Background(), key, "sbx-plain-prio", BootWarm); err != nil {
+	if err := plain.Boot(context.Background(), key, "sbx-plain-prio", "", BootWarm); err != nil {
 		t.Fatalf("plain warm boot: %v", err)
 	}
 	var plainPod corev1.Pod
@@ -472,5 +474,183 @@ func TestKubeProvisionerStampsPurposePriority(t *testing.T) {
 	}
 	if got := plainPod.Spec.PriorityClassName; got != "" {
 		t.Errorf("unstamped boot PriorityClassName = %q, want empty (cluster default)", got)
+	}
+}
+
+// TestKubeProvisionerStagesToolchainInitPacks (ISI-5221): the BootRun cold path
+// attaches the Run's resolved toolchain init packs — the edge that was missing,
+// so live sandboxes booted with no git/curl and git/dtctl skills were unusable.
+// A resolver returning git+curl must yield one `stage-<name>` init container per
+// toolchain, the shared /tools emptyDir, the agent container's read-only mount,
+// and /tools/bin on PATH.
+func TestKubeProvisionerStagesToolchainInitPacks(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "").WithToolchainResolver(
+		func(_ context.Context, runID string) ([]toolchain.Resolved, error) {
+			if runID != "run-uid-1" {
+				t.Errorf("resolver got runID %q, want run-uid-1", runID)
+			}
+			return []toolchain.Resolved{
+				{Name: "git", Version: "2.45", Image: "reg.example/toolchain-git:2.45"},
+				{Name: "curl", Version: "8.7", Image: "reg.example/toolchain-curl:8.7"},
+			}, nil
+		})
+
+	ctx := context.Background()
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "cap-hash", Image: "reg.example/ksquad-shim-opencode:m1"}
+	if err := p.Boot(ctx, key, "sbx-cap", "run-uid-1", BootRun); err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-cap"), pod); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+
+	// One stage-<name> init container per toolchain, resolver order re-sorted
+	// by name (curl before git).
+	if got := len(pod.Spec.InitContainers); got != 2 {
+		t.Fatalf("init containers = %d, want 2 (%+v)", got, pod.Spec.InitContainers)
+	}
+	wantInit := map[string]string{
+		"stage-git":  "reg.example/toolchain-git:2.45",
+		"stage-curl": "reg.example/toolchain-curl:8.7",
+	}
+	for _, ic := range pod.Spec.InitContainers {
+		img, ok := wantInit[ic.Name]
+		if !ok {
+			t.Errorf("unexpected init container %q", ic.Name)
+			continue
+		}
+		if ic.Image != img {
+			t.Errorf("init %q image = %q, want %q", ic.Name, ic.Image, img)
+		}
+	}
+
+	// The shared tool volume is present.
+	foundVol := false
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == capability.ToolVolumeName {
+			foundVol = true
+			if v.EmptyDir == nil {
+				t.Errorf("tool volume %q is not an emptyDir", v.Name)
+			}
+		}
+	}
+	if !foundVol {
+		t.Errorf("tool volume %q missing from pod (%+v)", capability.ToolVolumeName, pod.Spec.Volumes)
+	}
+
+	// The agent container mounts /tools read-only and carries /tools/bin on PATH.
+	agent := pod.Spec.Containers[0]
+	foundMount := false
+	for _, m := range agent.VolumeMounts {
+		if m.Name == capability.ToolVolumeName {
+			foundMount = true
+			if m.MountPath != capability.ToolMountPath || !m.ReadOnly {
+				t.Errorf("tool mount = %+v, want %s read-only", m, capability.ToolMountPath)
+			}
+		}
+	}
+	if !foundMount {
+		t.Errorf("agent container missing tool mount (%+v)", agent.VolumeMounts)
+	}
+	foundPath := false
+	for _, e := range agent.Env {
+		if e.Name == "PATH" {
+			foundPath = true
+			if e.Value != capability.ToolPathValue {
+				t.Errorf("PATH = %q, want %q", e.Value, capability.ToolPathValue)
+			}
+		}
+	}
+	if !foundPath {
+		t.Errorf("agent container missing PATH env (%+v)", agent.Env)
+	}
+}
+
+// TestKubeProvisionerBareWhenNoToolchains (ISI-5221): a warm boot (no Run) and a
+// resolver that returns no toolchains both leave the sandbox bare — no init
+// containers, no tool volume — so bare Runs keep sharing bare warm stock.
+func TestKubeProvisionerBareWhenNoToolchains(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	resolverCalls := 0
+	p := NewKubeProvisioner(c, "", "").WithToolchainResolver(
+		func(_ context.Context, _ string) ([]toolchain.Resolved, error) {
+			resolverCalls++
+			return nil, nil // bare envelope
+		})
+	ctx := context.Background()
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", Image: "reg.example/ksquad-shim-opencode:m1"}
+
+	// Warm boot: the resolver must NOT even be consulted (no Run).
+	if err := p.Boot(ctx, key, "sbx-warm", "", BootWarm); err != nil {
+		t.Fatalf("warm boot: %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Errorf("warm boot consulted the toolchain resolver %d times, want 0", resolverCalls)
+	}
+	warm := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-warm"), warm); err != nil {
+		t.Fatalf("get warm pod: %v", err)
+	}
+	if len(warm.Spec.InitContainers) != 0 {
+		t.Errorf("warm boot has %d init containers, want 0 (bare)", len(warm.Spec.InitContainers))
+	}
+
+	// BootRun with a bare-envelope resolver: consulted, but nothing staged.
+	if err := p.Boot(ctx, key, "sbx-bare-run", "run-uid-bare", BootRun); err != nil {
+		t.Fatalf("bare run boot: %v", err)
+	}
+	if resolverCalls != 1 {
+		t.Errorf("BootRun resolver calls = %d, want 1", resolverCalls)
+	}
+	bare := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-bare-run"), bare); err != nil {
+		t.Fatalf("get bare-run pod: %v", err)
+	}
+	if len(bare.Spec.InitContainers) != 0 {
+		t.Errorf("bare-envelope run has %d init containers, want 0", len(bare.Spec.InitContainers))
+	}
+}
+
+// TestKubeProvisionerFailsClosedOnResolverError (ISI-5221): a capability Run
+// whose toolchains cannot be resolved must NOT boot a bare (tool-less) sandbox —
+// the boot fails so the bind re-drives instead of silently degrading.
+func TestKubeProvisionerFailsClosedOnResolverError(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("corev1 scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	p := NewKubeProvisioner(c, "", "").WithToolchainResolver(
+		func(_ context.Context, _ string) ([]toolchain.Resolved, error) {
+			return nil, fmt.Errorf("manifest not stamped yet")
+		})
+	ctx := context.Background()
+	key := PoolKey{RuntimeClass: "gvisor", Namespace: "bmad-squad", CapabilityHash: "cap", Image: "reg.example/ksquad-shim-opencode:m1"}
+	err := p.Boot(ctx, key, "sbx-fail", "run-uid-x", BootRun)
+	if err == nil {
+		t.Fatalf("boot succeeded, want fail-closed on resolver error")
+	}
+	// The pod must not have been created.
+	if getErr := c.Get(ctx, clientObjectKey(t, "bmad-squad", "sbx-fail"), &corev1.Pod{}); !apierrors.IsNotFound(getErr) {
+		t.Errorf("pod was created despite resolver error (get err = %v)", getErr)
 	}
 }

@@ -108,6 +108,33 @@ func EndpointsFromManifest(m *api.CapabilityManifest) []Endpoint {
 	return out
 }
 
+// ToolchainsFromManifest rebuilds the resolved toolchain set from a recorded
+// capability manifest (the immutable audit truth), the tool-staging analogue of
+// EndpointsFromManifest. The warm-pool cold-boot seam (pkg/warmpool) needs the
+// resolved images to render the staging init containers WITHOUT re-resolving the
+// catalog — the manifest already pinned name→image at assembly time, so the
+// boot stages exactly what admission recorded (ISI-5221: the init packs were
+// resolved and recorded but never attached on the live sandbox path). Returns
+// nil for a nil/empty manifest so the bare posture stages nothing. RBAC/Provides
+// are intentionally not reconstructed — the boot path needs only Name (init
+// container name) and Image (the staged layer); the effective RBAC envelope is
+// the RBAC renderer's concern, sourced from the same manifest elsewhere.
+func ToolchainsFromManifest(m *api.CapabilityManifest) []toolchain.Resolved {
+	if m == nil || len(m.Toolchains) == 0 {
+		return nil
+	}
+	out := make([]toolchain.Resolved, 0, len(m.Toolchains))
+	for _, tc := range m.Toolchains {
+		out = append(out, toolchain.Resolved{
+			Name:            tc.Name,
+			Version:         tc.Version,
+			Image:           tc.Image,
+			SourceNamespace: tc.SourceNamespace,
+		})
+	}
+	return out
+}
+
 // envNamesFor derives the credential env NAMES an endpoint's Secret ref maps
 // to — the single derivation both manifest→IR rebuild paths share.
 func envNamesFor(ep api.ResolvedMCPEndpoint) []string {
