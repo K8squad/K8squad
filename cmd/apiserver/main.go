@@ -358,7 +358,12 @@ func main() {
 	// bridge disarmed (per-run hub only).
 	projectHub := apiserver.NewProjectHub()
 	projector := apiserver.NewRunEventSource(runEvents, hub,
-		apiserver.WithProjectBridge(projectHub, apiserver.NewProjectSlugResolver(dashboardReader)))
+		apiserver.WithProjectBridge(projectHub, apiserver.NewProjectSlugResolver(dashboardReader)),
+		// ISI-5272: on a discussion-dispatched run's no-reply terminal (failed/cancelled),
+		// echo a `dispatch.failed` room event so the room's working watch clears immediately
+		// instead of spinning until the client timeout. Ledger-backed (mention_dispatch);
+		// a nil db leaves it disarmed.
+		apiserver.WithDiscussionTerminalBridge(apiserver.NewDiscussionRunResolver(db)))
 	go func() {
 		if err := projector.Run(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("ksquad-apiserver: run-event projector stopped: %v", err)

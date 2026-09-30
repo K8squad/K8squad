@@ -23,6 +23,7 @@ import {
 import { appendThinking } from "@/lib/discussion/liveThinking";
 import { audienceWire } from "@/lib/discussion/audience";
 import {
+  applyDispatchFailed,
   applyReply,
   dispatchTargets,
   expireStale,
@@ -173,6 +174,16 @@ export function DiscussionRoom({
         // An agent reply landing over the SAME bus resolves its working watch to
         // "replied" (ISI-5174) — no parallel status stream (AC4).
         setWorking((cur) => applyReply(cur, evt.message));
+      } else if (evt.type === "dispatch.failed") {
+        // A discussion run ended without a reply (failed/cancelled): flip its
+        // working watch → "failed" now instead of waiting for the client timeout
+        // (ISI-5272). Correlated by agent name (+ messageId when present).
+        setWorking((cur) =>
+          applyDispatchFailed(cur, {
+            agentName: evt.agentName,
+            messageId: evt.messageId,
+          }),
+        );
       }
     });
     return unsub;

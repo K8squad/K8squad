@@ -124,6 +124,43 @@ func NewReplyHopResolver(db *sql.DB) discussion.ReplyHopResolver {
 	return pgLedger{db: db}
 }
 
+// RunDispatchCorrelation is the (triggering message, dispatched agent) a discussion @-mention run
+// replies for — the pair that keys the room's optimistic "working" watch (ISI-5174,
+// console/lib/discussion/working.ts: watchKey = `${messageId}:${agentName}`). It is recovered from the
+// dispatch ledger by run id so a run-terminal producer can clear the watch (ISI-5272) without the
+// console ever learning the minted run id.
+type RunDispatchCorrelation struct {
+	MessageID string
+	AgentName string
+}
+
+// NewRunCorrelationResolver resolves a run id to its discussion-dispatch correlation via the
+// discussion.mention_dispatch ledger joined to the run through coord.claim — the SAME join
+// HopForDispatchedRun uses. (ok=false, nil err) ⇒ the run is NOT a discussion dispatch (a normal board
+// run, no ledger row): the caller then clears no room watch. A non-nil error is a transient DB failure
+// for the caller to log — it never implies "not a discussion run". An empty run id resolves to
+// (false, nil). Wire the result onto the apiserver run-event projector's DiscussionRunResolver seam.
+func NewRunCorrelationResolver(db *sql.DB) func(ctx context.Context, runID string) (RunDispatchCorrelation, bool, error) {
+	return func(ctx context.Context, runID string) (RunDispatchCorrelation, bool, error) {
+		if strings.TrimSpace(runID) == "" {
+			return RunDispatchCorrelation{}, false, nil
+		}
+		var msgID, agent string
+		err := db.QueryRowContext(ctx, `
+			SELECT md.message_id::text, md.agent_name
+			  FROM discussion.mention_dispatch md
+			  JOIN coord.claim c ON c.work_item_id = md.work_item_id
+			 WHERE c.run_id = $1::uuid`, runID).Scan(&msgID, &agent)
+		if errors.Is(err, sql.ErrNoRows) {
+			return RunDispatchCorrelation{}, false, nil
+		}
+		if err != nil {
+			return RunDispatchCorrelation{}, false, err
+		}
+		return RunDispatchCorrelation{MessageID: msgID, AgentName: agent}, true, nil
+	}
+}
+
 // DispatchMention turns one resolved @-mention into a real agent Run. It is idempotent on
 // (MessageID, AgentName): a duplicate at-least-once delivery is a no-op.
 func (m *dispatcher) DispatchMention(ctx context.Context, d discussion.MentionDispatch) error {

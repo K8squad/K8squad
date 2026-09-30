@@ -52,6 +52,34 @@ var projectBridgeEventTypes = map[string]struct{}{
 	"thinking": {},
 }
 
+// projectTerminalFailureEventTypes is the set of terminal run-lifecycle outbox
+// event types that mean a run ENDED WITHOUT COMMITTING A REPLY (failed/cancelled).
+// For a discussion-dispatched (@-mention) run these clear the room's optimistic
+// "{agent} is working…" watch (ISI-5174): a failed/cancelled run commits no reply
+// message, so the `message.created` echo that normally resolves the watch
+// (roomstream.go) never arrives and the indicator would otherwise spin until the
+// client-side timeout (ISI-5272). The projector turns each into a `dispatch.failed`
+// room event on the per-project bus so the watch flips to "failed" immediately.
+//
+// Success (`ended`) is deliberately absent: a succeeded run commits its reply,
+// which resolves the watch the normal way. A non-terminal retry re-entry
+// (`retry_lap_entered`) is also absent — the agent may still reply on the retry lap,
+// so the watch must NOT be cleared mid-retry.
+var projectTerminalFailureEventTypes = map[string]struct{}{
+	"run_failed_entered":    {}, // FailEnter: retry budget exhausted → failed (rundrive/store.go)
+	"run_cancelled_entered": {}, // CancelEnter: kill → cancelled (rundrive/store.go)
+	"run_cancelled":         {}, // Cancel/CancelFinish → cancelled (coord/cancelprod.go)
+}
+
+// DiscussionRunResolver reports whether a run is a discussion-dispatched (@-mention)
+// run and, if so, the (messageId, agentName) that keys its room working watch
+// (the discussion.mention_dispatch ledger, joined to the run via coord.claim —
+// the SAME join the reply-hop resolver uses). ok=false with a nil error ⇒ the run
+// is a normal board run with no room watch to clear, and the projector emits no
+// terminal room event. Best-effort by construction: an error is logged and treated
+// as "skip", never fatal — the client-side timeout still eventually clears the watch.
+type DiscussionRunResolver func(ctx context.Context, runID string) (messageID, agentName string, ok bool, err error)
+
 // RunEventSource tails coord.outbox for run-entity events and fans each to the
 // SSE Hub keyed by run_id — the publish half of §4.4. It is best-effort and
 // decoupled: a read error is logged and retried on the next tick, never fatal.
@@ -64,13 +92,14 @@ var projectBridgeEventTypes = map[string]struct{}{
 // is effectively immutable (a rename mints a new object), so a stale entry can
 // only ever mis-route a since-renamed project's echo, which is harmless.
 type RunEventSource struct {
-	reader     events.RunEventReader
-	hub        *Hub
-	projectHub *ProjectHub
-	resolve    ProjectSlugResolver
-	poll       time.Duration
-	batch      int
-	log        *slog.Logger
+	reader            events.RunEventReader
+	hub               *Hub
+	projectHub        *ProjectHub
+	resolve           ProjectSlugResolver
+	resolveDiscussion DiscussionRunResolver
+	poll              time.Duration
+	batch             int
+	log               *slog.Logger
 
 	lastID int64 // high-water mark: the last outbox id fanned to the hub
 
@@ -110,6 +139,22 @@ func WithProjectBridge(hub *ProjectHub, resolve ProjectSlugResolver) RunEventSou
 		if hub != nil && resolve != nil {
 			s.projectHub = hub
 			s.resolve = resolve
+		}
+	}
+}
+
+// WithDiscussionTerminalBridge arms the discussion run-terminal echo (ISI-5272):
+// when a discussion-dispatched run reaches a no-reply terminal state
+// (projectTerminalFailureEventTypes), the projector ALSO publishes a
+// `dispatch.failed` room event onto the per-project bus so the room's working
+// watch flips to "failed" without waiting for the client timeout. Requires the
+// project bridge (WithProjectBridge) to be armed too — a terminal event is keyed
+// by the SAME resolved Project slug. A nil resolver leaves the terminal echo
+// disarmed (the room clears the watch only on the client-side timeout, as before).
+func WithDiscussionTerminalBridge(resolve DiscussionRunResolver) RunEventSourceOption {
+	return func(s *RunEventSource) {
+		if resolve != nil {
+			s.resolveDiscussion = resolve
 		}
 	}
 }
@@ -176,6 +221,7 @@ func (s *RunEventSource) drain(ctx context.Context) {
 			sse := runEventToSSE(row)
 			s.hub.Publish(row.RunID, sse)
 			s.bridgeToProject(ctx, row, sse)
+			s.bridgeTerminalFailure(ctx, row)
 			if row.ID > s.lastID {
 				s.lastID = row.ID
 			}
@@ -220,6 +266,45 @@ func (s *RunEventSource) bridgeToProject(ctx context.Context, row events.RunEven
 		return
 	}
 	s.projectHub.Publish(slug, sse)
+}
+
+// bridgeTerminalFailure publishes a `dispatch.failed` room event onto the
+// per-project bus when a DISCUSSION-dispatched run reaches a no-reply terminal
+// state (failed/cancelled), so the room's optimistic working watch flips to
+// "failed" immediately instead of spinning until the client timeout (ISI-5272).
+// A no-op unless the project bridge is armed (WithProjectBridge), a discussion
+// resolver is wired (WithDiscussionTerminalBridge), the event is a terminal-failure
+// type, and the run resolves to a discussion dispatch whose Project resolves to a
+// live slug. Best-effort throughout — a miss loses only the live echo, never the
+// run, and the client timeout still clears the watch.
+func (s *RunEventSource) bridgeTerminalFailure(ctx context.Context, row events.RunEvent) {
+	if s.projectHub == nil || s.resolve == nil || s.resolveDiscussion == nil {
+		return
+	}
+	if _, ok := projectTerminalFailureEventTypes[row.EventType]; !ok {
+		return
+	}
+	if row.RunID == "" || row.ProjectID == "" {
+		return
+	}
+	messageID, agentName, ok, err := s.resolveDiscussion(ctx, row.RunID)
+	if err != nil {
+		s.log.Warn("run-event projector: discussion terminal resolve failed (skip)",
+			"runID", row.RunID, "eventType", row.EventType, "err", err)
+		return
+	}
+	if !ok {
+		return // a normal board run — no room working watch to clear
+	}
+	slug, ok := s.projectSlug(ctx, row.ProjectID)
+	if !ok {
+		return
+	}
+	evt, ok := newDispatchFailedEvent(messageID, agentName)
+	if !ok {
+		return
+	}
+	s.projectHub.Publish(slug, evt)
 }
 
 // projectSlug resolves a Project CR UID to its "namespace/name" slug, memoizing

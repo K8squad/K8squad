@@ -45,11 +45,16 @@ export function subscribeRoom(
   const roomHandler = (e: { data: string }) => {
     const evt = parseRoomEvent(e.data);
     if (!evt) return;
+    // message.created/updated carry a threadId and are filtered to this thread.
+    // message.deleted and dispatch.failed (ISI-5272) carry no thread id in this
+    // minimal envelope, so they are delivered unfiltered — a dispatch.failed is
+    // correlated to a working watch by agent name (itself thread-scoped) in the
+    // room component, and a deleted tombstone is id-scoped. (A richer envelope
+    // could carry threadId on both; then filter them the same way.)
     const tid =
-      evt.type === "message.deleted" ? undefined : evt.message.threadId;
-    // Deleted events lack a thread id in this minimal envelope; created/updated
-    // carry threadId and are filtered to this thread. (A richer envelope can
-    // carry threadId on delete too; then filter it the same way.)
+      evt.type === "message.created" || evt.type === "message.updated"
+        ? evt.message.threadId
+        : undefined;
     if (tid !== undefined && tid !== threadId) return;
     onEvent({ kind: "room", event: evt });
   };
