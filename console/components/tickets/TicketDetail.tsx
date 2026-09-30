@@ -1348,6 +1348,7 @@ export function TicketDetail({
           role={role}
           onChildCreated={() => setChildReload((k) => k + 1)}
           onCommentPosted={() => setThreadReload((k) => k + 1)}
+          onRunSettled={() => setThreadReload((k) => k + 1)}
         />
       )}
     </div>
@@ -1361,6 +1362,7 @@ function TicketBody({
   role,
   onChildCreated,
   onCommentPosted,
+  onRunSettled,
 }: {
   projectId: string;
   thread: NormalizedThread;
@@ -1368,6 +1370,13 @@ function TicketBody({
   role: string;
   onChildCreated: () => void;
   onCommentPosted: () => void;
+  // ISI-5248: fired once when the in-flight dispatch reaches a terminal state, so the
+  // ORIGINAL tab reloads the durable thread and renders the agent's reply comment
+  // WITHOUT a manual reload. The live per-run SSE resolves the ladder to
+  // Finished/Failed, but the reply itself is a durable coord.comment that only
+  // materializes on a fetchWorkItemThread — which otherwise fires only on a human
+  // comment post or navigation.
+  onRunSettled: () => void;
 }) {
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
   const [addingSub, setAddingSub] = useState(false);
@@ -1415,6 +1424,24 @@ function TicketBody({
     dispatchWatch?.runId,
     onCommentPosted,
   );
+  // ISI-5248 defense-in-depth: the SELF-DISPATCH run (dispatchWatch.runId) is the one
+  // useTicketRunStream deliberately skips above, so nothing else reloads the thread when
+  // THIS page's own dispatch settles. When that ladder reaches terminal (succeeded/
+  // failed), reload the durable thread ONCE so the agent's reply comment renders in the
+  // ORIGINAL tab — the reported symptom was the pill reaching "Finished" (or stuck on
+  // "working" pre-backend-fix) while the reply stayed invisible until a manual reload or
+  // a new tab. Keyed on the dispatch nonce so a second nudge on the same ticket re-arms
+  // it; the ref guard makes it fire exactly once per dispatch across terminal re-renders.
+  const settledFor = useRef<number | null>(null);
+  useEffect(() => {
+    const at = dispatch?.at ?? null;
+    if (at === null) return;
+    const state = dispatchWatch?.state;
+    if (state !== "succeeded" && state !== "failed") return;
+    if (settledFor.current === at) return; // already reloaded for this dispatch
+    settledFor.current = at;
+    onRunSettled();
+  }, [dispatchWatch?.state, dispatch?.at, onRunSettled]);
   // Single pending-inclusive projection drives both the chronological Activity
   // timeline and the S3 run-meta map, so an optimistically-posted comment and its
   // run bubble stay consistent (buildRunComments still owns the attribution rules).

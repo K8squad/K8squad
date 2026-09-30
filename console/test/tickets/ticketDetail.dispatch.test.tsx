@@ -207,6 +207,83 @@ describe("TicketDetail — dispatch signal wiring (ISI-4881 / S3)", () => {
     expect(dispatchCall?.[1]?.body).toBe(JSON.stringify({ agentId: "agent:reviewer" }));
   });
 
+  it("ISI-5248: when the run settles, the ORIGINAL tab reloads the thread and renders the agent reply", async () => {
+    // The reported symptom: the SAME tab shows "working" forever and only a NEW tab
+    // shows the reply. The backend fix (name→UID subscribe + fresh-connect replay)
+    // makes the ladder settle; this asserts the FE defense-in-depth — a terminal
+    // ladder reloads the durable thread so the agent's reply comment renders in-place.
+    const AGENT_REPLY = {
+      author: "agent:reviewer",
+      body: "done — shipped it",
+      createdAt: "2026-09-24T10:05:00Z",
+    };
+    let threadFetches = 0;
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (u.includes("/api/session")) {
+        return Promise.resolve(jsonResponse({ globalRole: "contributor" }));
+      }
+      if (u.includes("/api/squad/agents")) {
+        return Promise.resolve(jsonResponse({ agents: SQUAD }));
+      }
+      if (u.includes("/api/runs")) {
+        // A FAST run: the discovery poll finds it already Succeeded (its terminal
+        // event was published before the tab could observe the working phase).
+        return Promise.resolve(
+          jsonResponse([
+            {
+              id: "run-x",
+              phase: "Succeeded",
+              workItemRef: "wi-1",
+              agents: ["agent:reviewer"],
+              startedAt: new Date().toISOString(),
+            },
+          ]),
+        );
+      }
+      if (u.includes("/dispatch") && method === "POST") {
+        return Promise.resolve(
+          jsonResponse({
+            workItemId: "wi-1",
+            fromState: "backlog",
+            toState: "todo",
+            requestedAgent: "agent:reviewer",
+          }),
+        );
+      }
+      if (u.includes("/api/work-items/")) {
+        threadFetches += 1;
+        // The agent's durable reply only lands once the settle-triggered reload
+        // re-fetches the thread (the 2nd+ read), proving onRunSettled fired.
+        const body =
+          threadFetches >= 2
+            ? { ...THREAD, Comments: [AGENT_REPLY] }
+            : THREAD;
+        return Promise.resolve(jsonResponse(body));
+      }
+      if (u.includes("/work-items")) return Promise.resolve(jsonResponse([]));
+      return Promise.resolve(jsonResponse([]));
+    });
+
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await commentAndAssign();
+
+    // The ladder reaches terminal ("Finished")…
+    await waitFor(() =>
+      expect(screen.getByTestId("dispatch-pending-card")).toHaveAttribute(
+        "data-state",
+        "succeeded",
+      ),
+    );
+    // …and the durable agent reply renders WITHOUT a manual reload or a new tab
+    // (onRunSettled bumped threadReload, re-fetching the thread).
+    await waitFor(() =>
+      expect(screen.getByText("done — shipped it")).toBeInTheDocument(),
+    );
+    expect(threadFetches).toBeGreaterThanOrEqual(2);
+  });
+
   it("regression: a plain Comment (no assign) never seeds a dispatch card", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

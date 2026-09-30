@@ -789,6 +789,64 @@ func runInTimeWindow(run *ksquadv1.Run, window string) bool {
 	}
 }
 
+// ResolveRunUID maps a run CR NAME — the id the console threads on the wire (GET
+// /api/runs returns run.Name; useDispatchWatch/useRunStream forward it verbatim)
+// — to the run UID the SSE Hub publishes under. The projector fans run events
+// keyed by coord.outbox run_id, which is the mint's RunID claim = run.UID
+// (getRunDetailInNamespace's sibling read at line ~527, progressmirror,
+// prodreconcile), NOT the name. So the per-run stream route resolves name→UID via
+// this before Subscribe/replay or it subscribes on a key nothing publishes to and
+// the client sees only keepalives (ISI-5248, same name/UID class as ISI-5209).
+//
+// Namespace scope mirrors getRunDetail: an admin is fleet-wide (list-and-match on
+// name, since a namespaced Get with an empty namespace does not search all
+// namespaces); a tenant is pinned to their Team's execution namespace. Auth is
+// read from ctx — the stream route rides the same §13 choke point that seeds it.
+// Errors are the caller's to treat as best-effort (the stream falls back to the
+// raw name rather than failing).
+func (s *RunsService) ResolveRunUID(ctx context.Context, name string) (string, error) {
+	auth, ok := discussion.AuthFromContext(ctx)
+	if !ok || auth.Principal == "" {
+		return "", fmt.Errorf("resolve run uid: unauthenticated")
+	}
+
+	var namespace string
+	if !auth.IsAdmin {
+		ns, err := s.runNamespaceForTeam(ctx, auth.TeamID.String())
+		if err != nil {
+			return "", err
+		}
+		if ns == "" {
+			return "", fmt.Errorf("resolve run uid: no team scope for %q", name)
+		}
+		namespace = ns
+	}
+
+	var run ksquadv1.Run
+	if namespace != "" {
+		if err := s.reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &run); err != nil {
+			return "", err
+		}
+	} else {
+		var runs ksquadv1.RunList
+		if err := s.reader.List(ctx, &runs); err != nil {
+			return "", err
+		}
+		found := false
+		for i := range runs.Items {
+			if runs.Items[i].Name == name {
+				run = runs.Items[i]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", apierrors.NewNotFound(ksquadv1.GroupVersion.WithResource("runs").GroupResource(), name)
+		}
+	}
+	return string(run.UID), nil
+}
+
 // runNamespaceForTeam resolves the EXECUTION namespace where a non-admin caller's
 // Run CRs live, given the caller's Team UID. It resolves the Team CR by UID (a
 // rename can never widen scope, §12.1) to its home namespace, then bridges to the

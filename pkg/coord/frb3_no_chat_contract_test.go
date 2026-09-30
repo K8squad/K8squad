@@ -374,6 +374,7 @@ var allowedSurface = map[string]string{
 	"AgentUpdateWorkItemInput":               "ADR-0024 §5 agent field-edit input (title/body/parent pointers + optimistic guard + agent identity)",
 	"WorkItemWriteStore.AgentCreateWorkItem": "ADR-0024 §4/§5 custody-scoped agent sub-ticket create + honest agent audit, depth/run-budget bounded",
 	"WorkItemWriteStore.AgentUpdateWorkItem": "ADR-0024 §4/§5 custody-scoped (item+descendants) agent field CAS + honest agent audit",
+	"WorkItemWriteStore.RunHeldWorkItem":     "ADR-0024 §4/ISI-5244 read-only custody lookup — returns the work item a Run holds in live custody (holder set + lease live); server-side source of the coordinator's own in-custody UUID used to DEFAULT work_item_create parent_id when a decomposing agent omits it. Read-only, no-fence, not an agent-to-agent channel; ('' ,nil) keeps root-human-only when the run holds nothing",
 
 	// ISI-4750 E4 (ISI-4776): the SYSTEM-authored, dedup-idempotent PR-review
 	// create used by the review-automation dispatch adapter. A THIRD writer,
@@ -382,8 +383,8 @@ var allowedSurface = map[string]string{
 	// identity, per D1 / ISI-4711), reusing the same §6.1/§6.5 insert+audit shape
 	// as CreateWorkItem. NOT an agent-to-agent channel — a system-executed standing
 	// policy materialising one review work item; the dedup label is the only mark.
-	"EnsureReviewWorkItemInput":              "ISI-4750 E4 idempotent review-item create input (project/team/title/body + required SYSTEM principal + dedup label)",
-	"EnsureReviewWorkItemResult":             "ISI-4750 E4 create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
+	"EnsureReviewWorkItemInput":               "ISI-4750 E4 idempotent review-item create input (project/team/title/body + required SYSTEM principal + dedup label)",
+	"EnsureReviewWorkItemResult":              "ISI-4750 E4 create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
 	"WorkItemWriteStore.EnsureReviewWorkItem": "ISI-4750 E4/§6.1/§6.5 create-if-absent PR-review item under SYSTEM principal, atomic on (project,dedupLabel) via pg_advisory_xact_lock — closes the level-triggered reconcile double-create race; no-fence, Team-scoped",
 
 	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
