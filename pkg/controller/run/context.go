@@ -28,6 +28,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/roleprompt"
+	"github.com/K8squad/K8squad/pkg/teamroster"
 )
 
 // ContextAssemblers builds a per-namespace §8.5 context assembler over the
@@ -114,6 +115,17 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 		return fmt.Errorf("resolve role prompt for run %s/%s context assembly: %w", run.Namespace, run.Name, err)
 	}
 
+	// ISI-5245: resolve the team roster (assignable agent NAME ↔ role) so a
+	// coordinator can name a valid assignee for work_item_assign. Fails closed on
+	// a transient read exactly like the agent/project/team reads above; an empty
+	// team yields "" (unchanged). Same wiring as the role prompt above, and the
+	// dispatcher injects the identical fact so the snapshot and dispatch renders
+	// agree.
+	teamRoster, err := teamroster.Resolve(ctx, r.Client, &team, teamNS)
+	if err != nil {
+		return fmt.Errorf("resolve team roster for run %s/%s context assembly: %w", run.Namespace, run.Name, err)
+	}
+
 	// Resolve the Project CRD in the projectRef's namespace (honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := r.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
@@ -123,6 +135,7 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 		TeamID:        string(team.UID),
 		ContextWindow: window,
 		RolePrompt:    rolePrompt,
+		TeamRoster:    teamRoster,
 	})
 	if err != nil {
 		return fmt.Errorf("assemble context for run %s/%s: %w", run.Namespace, run.Name, err)

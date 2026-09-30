@@ -516,6 +516,51 @@ func TestRolePromptInjectedFirstAuthoritative(t *testing.T) {
 	assert.Less(t, strings.Index(prompt, "Decompose and delegate"), strings.Index(prompt, "UNTRUSTED RECALL"))
 }
 
+// ISI-5245: a resolved team roster (AssembleRequest.TeamRoster) is injected as
+// an authoritative, must-include element right after the role directive, so a
+// coordinator learns the assignable agent NAMES it must pass to work_item_assign.
+func TestTeamRosterInjectedAfterRoleDirective(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.RolePrompt = "You are the coordinator. Decompose and delegate."
+	req.TeamRoster = "## Your team (assignable agents)\n\n- winston — role: architect\n- ada — role: coder"
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	// Ordered: roleDirective first, teamRoster immediately after, both authoritative.
+	require.GreaterOrEqual(t, len(res.Envelope.Elements), 2)
+	assert.Equal(t, "roleDirective", res.Envelope.Elements[0].Kind)
+	second := res.Envelope.Elements[1]
+	assert.Equal(t, TierAuthoritative, second.Tier)
+	assert.Equal(t, "teamRoster", second.Kind)
+	assert.Equal(t, "team", second.Provenance.Source)
+	assert.Contains(t, second.Content, "winston")
+	assert.Contains(t, second.Content, "architect")
+
+	// The roster renders in the authoritative block, before any untrusted block.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "winston"), strings.Index(prompt, "UNTRUSTED RECALL"))
+}
+
+// ISI-5245: no TeamRoster ⇒ no teamRoster element — unchanged behavior for a run
+// whose team names no agents.
+func TestNoTeamRosterNoElement(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+	for _, el := range res.Envelope.Elements {
+		assert.NotEqual(t, "teamRoster", el.Kind, "no roster without a TeamRoster")
+	}
+}
+
+// ISI-5245: the team roster is must-include — never truncated by the budget.
+func TestTeamRosterIsMustInclude(t *testing.T) {
+	assert.True(t, isMustInclude(Element{Tier: TierAuthoritative, Kind: "teamRoster"}))
+	assert.False(t, isMustInclude(Element{Tier: TierUntrustedRecall, Kind: "teamRoster"}))
+}
+
 // ISI-5223: no RolePrompt ⇒ no roleDirective element — unchanged IC behavior.
 func TestNoRolePromptNoDirective(t *testing.T) {
 	src := fixtureSources()
