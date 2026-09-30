@@ -483,6 +483,71 @@ func TestInjectionPreservesTiers(t *testing.T) {
 	assert.Less(t, strings.Index(prompt, "AUTHORITATIVE CONTEXT"), strings.Index(prompt, "UNTRUSTED RECALL"))
 }
 
+// ISI-5223: a resolved Role behavior prompt (AssembleRequest.RolePrompt) is
+// injected as the FIRST authoritative, must-include element so a coordinator's
+// orchestration instructions frame the run. It never overwrites the task.
+func TestRolePromptInjectedFirstAuthoritative(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.RolePrompt = "You are the coordinator. Decompose and delegate via work_item_create."
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	// First element is the role directive, authoritative-tier.
+	first := res.Envelope.Elements[0]
+	assert.Equal(t, TierAuthoritative, first.Tier)
+	assert.Equal(t, "roleDirective", first.Kind)
+	assert.Equal(t, "role", first.Provenance.Source)
+	assert.Contains(t, first.Content, "Decompose and delegate")
+
+	// The task itself still rides the envelope alongside the role prompt.
+	kinds := map[string]bool{}
+	for _, el := range res.Envelope.Elements {
+		kinds[el.Kind] = true
+	}
+	assert.True(t, kinds["description"], "work-item description still present")
+	assert.True(t, kinds["roleDirective"], "role directive present")
+
+	// It renders inside the authoritative block of the system prompt, before
+	// any untrusted block.
+	prompt := res.Injection.SystemPrompt()
+	assert.Contains(t, prompt, "Decompose and delegate")
+	assert.Less(t, strings.Index(prompt, "Decompose and delegate"), strings.Index(prompt, "UNTRUSTED RECALL"))
+}
+
+// ISI-5223: no RolePrompt ⇒ no roleDirective element — unchanged IC behavior.
+func TestNoRolePromptNoDirective(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+	for _, el := range res.Envelope.Elements {
+		assert.NotEqual(t, "roleDirective", el.Kind, "no role directive without a RolePrompt")
+	}
+}
+
+// ISI-5223: the role directive is must-include — never truncated by the budget.
+// A tiny window that still admits the role prompt keeps it verbatim while
+// best-effort tiers drop.
+func TestRolePromptIsMustInclude(t *testing.T) {
+	assert.True(t, isMustInclude(Element{Tier: TierAuthoritative, Kind: "roleDirective"}))
+	assert.False(t, isMustInclude(Element{Tier: TierUntrustedRecall, Kind: "roleDirective"}))
+}
+
+// ISI-5223: an over-large role prompt participates in the fail-closed
+// must-include guard — a role prompt that alone blows the window fails the Run
+// rather than silently dropping the persona.
+func TestRolePromptCountsTowardMustIncludeFailClosed(t *testing.T) {
+	src := fixtureSources()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 40) // tiny window
+	req.RolePrompt = strings.Repeat("orchestrate decompose delegate ", 200)
+	_, err := a.Assemble(context.Background(), req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrMustIncludeExceedsWindow)
+}
+
 // The framing overhead is counted, deterministic, and non-zero.
 func TestInjectionOverheadCounted(t *testing.T) {
 	p := NewInjection(mustEnv())

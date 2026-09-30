@@ -145,6 +145,15 @@ type AssembleRequest struct {
 	TeamID        string
 	ContextWindow int64
 	Existing      *ksquadv1alpha1.ContextSnapshot
+	// RolePrompt is the dispatched agent's resolved Role behavior prompt
+	// (Role.Spec.PromptRef, resolved control-plane-side by pkg/roleprompt —
+	// ISI-5223). Empty for a role with no prompt. When set it is injected as the
+	// FIRST authoritative, must-include element ("roleDirective"): a coordinator
+	// role's orchestration instructions (decompose → work_item_create → assign)
+	// reach the agent so it delegates rather than working the item as an IC. It
+	// is control-plane-authored (never sourced from the sandbox), so it rides the
+	// authoritative tier alongside the task directives.
+	RolePrompt string
 }
 
 // AssembleResult is the assembled envelope, the budget actually applied, the
@@ -240,7 +249,7 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 		return nil, fmt.Errorf("contextasm: artifacts: %w", err)
 	}
 
-	env := a.buildEnvelope(wi, meta, recall, arts, req.Run.Spec.Inputs)
+	env := a.buildEnvelope(req.RolePrompt, wi, meta, recall, arts, req.Run.Spec.Inputs)
 
 	// Deterministic resume (AC3): when resuming, reuse the budget the snapshot
 	// pinned rather than re-resolving from the live Project/Agent. Combined
@@ -413,8 +422,17 @@ func envelopeTelemetryStats(env *Envelope) assembleStats {
 
 // buildEnvelope tier-stamps the gathered facts (the ONLY envelope
 // construction path — server-side constants by source, F16).
-func (a *Assembler) buildEnvelope(wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, inputs map[string]string) *Envelope {
+func (a *Assembler) buildEnvelope(rolePrompt string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, inputs map[string]string) *Envelope {
 	b := newEnvelopeBuilder()
+
+	// — Role behavior prompt (ISI-5223): the dispatched agent's resolved Role
+	// instructions, control-plane-authored, placed FIRST so it frames how the
+	// agent works the task (a coordinator role decomposes + delegates rather
+	// than acting as an IC). Must-include, never truncated (budget.go) —
+	// dropping the persona would silently regress orchestration to IC behavior.
+	if rolePrompt != "" {
+		b.addAuthoritative("roleDirective", rolePrompt, Provenance{Source: "role"})
+	}
 
 	// — Authoritative: the task itself (must-include, 5.9) —
 	b.addAuthoritative("description", joinTitleBody(wi.Title, wi.Description), Provenance{Source: "workItem"})

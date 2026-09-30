@@ -43,6 +43,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/orgops"
+	"github.com/K8squad/K8squad/pkg/roleprompt"
 	"github.com/K8squad/K8squad/pkg/taskio"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
@@ -701,6 +702,23 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 	if err := d.cfg.Client.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
 		return "", fmt.Errorf("rundrive: read Team %s/%s for run %s/%s: %w", teamNS, run.Spec.TeamRef.Name, run.Namespace, run.Name, err)
 	}
+	// ISI-5223: resolve the dispatched agent's Role behavior prompt
+	// (Role.Spec.PromptRef) control-plane-side so a coordinator role's
+	// orchestration instructions reach the run. A nil role / no prompt yields ""
+	// (unchanged IC behavior); only a transient read error fails closed.
+	role, err := d.roleFor(ctx, &agent)
+	if err != nil {
+		return "", err
+	}
+	rolePromptNS := agent.Namespace
+	if role != nil {
+		rolePromptNS = role.Namespace
+	}
+	rolePrompt, err := roleprompt.Resolve(ctx, d.cfg.Client, role, rolePromptNS)
+	if err != nil {
+		return "", err
+	}
+
 	// The Source resolves the Project CRD in projNS (which honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
@@ -710,6 +728,7 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		TeamID:        string(team.UID),
 		ContextWindow: window,
 		Existing:      run.Status.ContextSnapshot,
+		RolePrompt:    rolePrompt,
 	})
 	if err != nil {
 		return "", err

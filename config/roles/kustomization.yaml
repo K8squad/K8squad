@@ -9,3 +9,6 @@ resources:
   - role-boss.yaml
   - role-implementer.yaml
   - role-manager.yaml
+  # role-manager-prompt: the ConfigMap role-manager.yaml's promptRef points at
+  # (ISI-5223) — the manager's orchestration behavior prompt, injected in-run.
+  - role-manager-prompt.yaml

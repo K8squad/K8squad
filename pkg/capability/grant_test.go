@@ -153,6 +153,70 @@ func TestResolveGrantUnionAcrossAgents(t *testing.T) {
 	assert.Equal(t, []string{"extra.cap", CapabilityWorkItemAuthor}, got.List())
 }
 
+// roleCR builds a Role CR in runNS, optionally a coordinator.
+func roleCR(name string, coordinator bool) *api.Role {
+	return &api.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: runNS},
+		Spec:       api.RoleSpec{Coordinator: coordinator},
+	}
+}
+
+// TestResolveGrantCoordinatorDefault (ISI-5223): a dispatched agent whose Role
+// is a coordinator is granted work_item.author by DEFAULT — even with no Team
+// grant store — so a PM/coordinator can orchestrate out of the box.
+func TestResolveGrantCoordinatorDefault(t *testing.T) {
+	team := teamWithGrants("squad") // no explicit grants
+	role := roleCR("role-manager", true)
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor), "coordinator is author-capable by default")
+}
+
+// TestResolveGrantCoordinatorDefaultNoTeam (ISI-5223): the coordinator default
+// derives from the Role CR, so it applies even when the Team CR is absent.
+func TestResolveGrantCoordinatorDefaultNoTeam(t *testing.T) {
+	role := roleCR("role-manager", true)
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("ghost-team", "john")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor))
+}
+
+// TestResolveGrantNonCoordinatorNoDefault (ISI-5223): a non-coordinator Role
+// gets NO default grant — deny-by-default preserved for ICs.
+func TestResolveGrantNonCoordinatorNoDefault(t *testing.T) {
+	team := teamWithGrants("squad")
+	role := roleCR("role-implementer", false)
+	agent := agentWithRole("ada", "role-implementer")
+	run := grantRun("squad", "ada")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Empty(), "non-coordinator role is deny-by-default")
+}
+
+// TestResolveGrantCoordinatorDefaultUnionsWithTeamGrants (ISI-5223): the
+// coordinator default unions with explicit Team.Spec.Grants for other roles.
+func TestResolveGrantCoordinatorDefaultUnionsWithTeamGrants(t *testing.T) {
+	team := teamWithGrants("squad",
+		api.CapabilityGrant{Role: "role-implementer", Capabilities: []string{"extra.cap"}})
+	mgrRole := roleCR("role-manager", true)
+	devRole := roleCR("role-implementer", false)
+	mgr := agentWithRole("john", "role-manager")
+	dev := agentWithRole("ada", "role-implementer")
+	run := grantRun("squad", "john", "ada")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, mgrRole, devRole, mgr, dev), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor), "coordinator default")
+	assert.True(t, got.Has("extra.cap"), "explicit team grant for the IC role")
+}
+
 // TestGrantSetZeroValueDenies: the zero-value GrantSet is deny-by-default.
 func TestGrantSetZeroValueDenies(t *testing.T) {
 	var g GrantSet

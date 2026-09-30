@@ -83,39 +83,49 @@ func (g GrantSet) List() []string {
 // Resolution walks agent → role → team grant:
 //  1. read the owning Team (run.spec.teamRef);
 //  2. for each dispatched agent (run.spec.agents) resolve its role
-//     (agent.spec.roleRef.name);
+//     (agent.spec.roleRef.name) and read that Role CR;
 //  3. UNION the Team's grants keyed by any role a dispatched agent holds
-//     (precedence across multiple roles/agents is a union).
+//     (precedence across multiple roles/agents is a union);
+//  4. ADD work_item.author by DEFAULT for any dispatched agent whose Role is a
+//     COORDINATOR (Role.Spec.Coordinator=true) — the orchestration MVP
+//     (ISI-5223): a coordinator (PM) claiming a ticket must be able to
+//     decompose it into sub-tickets and delegate them via the ADR-0024
+//     authoring lane, out of the box, without an explicit Team.Spec.Grants
+//     entry. This is a DELIBERATE relaxation of ADR-0024's deny-by-default
+//     posture for coordinator roles ONLY; Team.Spec.Grants remains the config
+//     seam to widen authoring to other (non-coordinator) roles.
 //
-// Deny-by-default and fail-closed: a missing Team, a Team with no grants, an
-// agent with no matching grant, and a grant naming a role that no dispatched
-// agent holds all resolve to the empty set — never error-open. Only a
-// genuine read error (not NotFound) is returned, so the reconciler requeues
-// rather than dispatching against a half-read grant.
+// Deny-by-default and fail-closed: a missing Team, a Team with no grants, a
+// non-coordinator agent with no matching Team grant, and a grant naming a role
+// that no dispatched agent holds all resolve to the empty set — never
+// error-open. Only a genuine read error (not NotFound) is returned, so the
+// reconciler requeues rather than dispatching against a half-read grant.
 func ResolveGrant(ctx context.Context, reader client.Reader, run *api.Run) (GrantSet, error) {
 	teamNS := run.Spec.TeamRef.Namespace
 	if teamNS == "" {
 		teamNS = run.Namespace
 	}
 	var team api.Team
+	teamFound := true
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
-		if isNotFound(err) {
-			return GrantSet{}, nil
+		if !isNotFound(err) {
+			return GrantSet{}, fmt.Errorf("read team %s/%s for capability grant (fail-closed): %w", teamNS, run.Spec.TeamRef.Name, err)
 		}
-		return GrantSet{}, fmt.Errorf("read team %s/%s for capability grant (fail-closed): %w", teamNS, run.Spec.TeamRef.Name, err)
-	}
-	if len(team.Spec.Grants) == 0 {
-		return GrantSet{}, nil
+		teamFound = false
 	}
 
 	// role name → granted capabilities (last write wins on duplicate roles;
-	// the CRD listMapKey=role forbids duplicates at admission).
+	// the CRD listMapKey=role forbids duplicates at admission). A missing Team
+	// yields no explicit grants, but the coordinator DEFAULT below still applies
+	// (it derives from the Role CR, not the Team's grant store).
 	byRole := make(map[string][]string, len(team.Spec.Grants))
-	for _, g := range team.Spec.Grants {
-		if g.Role == "" {
-			continue
+	if teamFound {
+		for _, g := range team.Spec.Grants {
+			if g.Role == "" {
+				continue
+			}
+			byRole[g.Role] = g.Capabilities
 		}
-		byRole[g.Role] = g.Capabilities
 	}
 
 	caps := map[string]struct{}{}
@@ -141,10 +151,42 @@ func ResolveGrant(ctx context.Context, reader client.Reader, run *api.Run) (Gran
 			}
 			caps[c] = struct{}{}
 		}
+		// ISI-5223: coordinator roles are author-capable by default.
+		coordinator, err := isCoordinatorRole(ctx, reader, &agent)
+		if err != nil {
+			return GrantSet{}, err
+		}
+		if coordinator {
+			caps[CapabilityWorkItemAuthor] = struct{}{}
+		}
 	}
 
 	if len(caps) == 0 {
 		return GrantSet{}, nil
 	}
 	return GrantSet{caps: caps}, nil
+}
+
+// isCoordinatorRole reports whether the agent's Role (agent.spec.roleRef) is a
+// coordinator (Role.Spec.Coordinator=true) — the ISI-5223 default-grant signal.
+// An empty roleRef or a Role deleted after admission is NOT a coordinator (no
+// default grant), mirroring the model-per-role resolver's treatment of a
+// dangling roleRef. Only a TRANSIENT read error (not NotFound) fails closed, so
+// a lookup glitch can never silently widen OR drop the authoring grant.
+func isCoordinatorRole(ctx context.Context, reader client.Reader, agent *api.Agent) (bool, error) {
+	if agent.Spec.RoleRef.Name == "" {
+		return false, nil
+	}
+	ns := agent.Spec.RoleRef.Namespace
+	if ns == "" {
+		ns = agent.Namespace
+	}
+	var role api.Role
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Spec.RoleRef.Name}, &role); err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read role %s/%s for coordinator default grant (fail-closed): %w", ns, agent.Spec.RoleRef.Name, err)
+	}
+	return role.Spec.Coordinator, nil
 }

@@ -223,7 +223,10 @@ func isMustInclude(el Element) bool {
 		return false
 	}
 	switch el.Kind {
-	case "description", "acceptanceCriteria", "goal", "comment":
+	// roleDirective is the dispatched agent's Role behavior prompt (ISI-5223):
+	// control-plane-authored persona/orchestration instructions. Must-include —
+	// truncating it would silently regress a coordinator to IC behavior.
+	case "roleDirective", "description", "acceptanceCriteria", "goal", "comment":
 		return true
 	}
 	return false
