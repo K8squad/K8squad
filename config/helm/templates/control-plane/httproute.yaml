@@ -32,6 +32,20 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      # SSE PRESERVATION (§13 — ISI-5229/5228): IP-only mode routes the ENTIRE
+      # `/api/*` BFF — including the browser's live progress stream (GET
+      # /api/runs/{id}/stream and the /api/projects & /api/teams status streams)
+      # — through THIS console route; the direct apiserver route below only
+      # renders on a dedicated apiserver hostname. request timeout 0s disables
+      # the route timeout so a long-lived stream is never cut mid-flight. Envoy's
+      # default route timeout is a TOTAL-duration cap (~15s) that keep-alive
+      # comment frames do NOT reset, so without this a normal idle run stream
+      # surfaces ERR_INCOMPLETE_CHUNKED_ENCODING (chunked body reset without its
+      # terminating zero-length chunk). HTTPRoute.timeouts is Extended
+      # conformance — kgateway/Envoy honor 0s; verify per class.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
       backendRefs:
         - name: ksquad-console
           port: 80
