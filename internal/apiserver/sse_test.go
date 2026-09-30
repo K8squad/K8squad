@@ -77,27 +77,83 @@ func hasPrefix(p string) func(string) bool {
 }
 func isExactly(w string) func(string) bool { return func(s string) bool { return s == w } }
 
-// A fresh connection (no Last-Event-ID) gets the preamble, replays nothing, and
-// receives a subsequently-published live event.
-func TestStreamRun_LiveTailNoReplay(t *testing.T) {
+// stubUIDResolver is a name→UID resolver for the stream-route tests. A nil map
+// (or a name not in it) resolves to "" so the handler keeps the raw name; err
+// forces the best-effort fallback path.
+type stubUIDResolver struct {
+	byName map[string]string
+	err    error
+}
+
+func (s stubUIDResolver) ResolveRunUID(_ context.Context, name string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.byName[name], nil
+}
+
+// A fresh connection (no Last-Event-ID) now BACKFILLS the durable tail before it
+// live-tails, so a terminal event published BEFORE the client connected — to zero
+// subscribers — is still delivered instead of lost forever (ISI-5248 secondary
+// fix: a fast run can 'end' before the ticket opens its EventSource).
+func TestStreamRun_FreshConnectReplaysTail(t *testing.T) {
 	hub := NewHub()
-	// A replayer that would return history — it MUST NOT be consulted without a Last-Event-ID.
 	reader := &fakeRunReader{}
-	reader.add(events.RunEvent{ID: 1, RunID: "run-1", EventType: "created", Payload: []byte(`{}`)})
+	// A pre-connect terminal event: published while no subscriber was listening.
+	reader.add(events.RunEvent{ID: 7, RunID: "run-1", EventType: "ended", Payload: []byte(`{"phase":"Succeeded"}`)})
 	hub.SetReplayer(NewRunReplayer(reader))
 
 	lines, cancel := streamHarness(t, hub, "run-1", "")
 	defer cancel()
 
-	// Preamble confirms the subscription is live before we publish.
 	waitLine(t, lines, isExactly(": subscribed run=run-1"), "subscribe preamble")
-
-	hub.Publish("run-1", Event{ID: "5", Type: "progress", Data: "hello"})
-	if got := waitLine(t, lines, hasPrefix("id: "), "first id line"); got != "id: 5" {
-		t.Fatalf("want live id 5 (no history replay), got %q", got)
+	// The pre-connect 'ended' is backfilled even without a Last-Event-ID.
+	if got := waitLine(t, lines, hasPrefix("id: "), "backfilled terminal id"); got != "id: 7" {
+		t.Fatalf("want fresh-connect backfill of pre-connect id 7, got %q", got)
 	}
-	waitLine(t, lines, isExactly("event: progress"), "event line")
-	waitLine(t, lines, isExactly("data: hello"), "data line")
+	waitLine(t, lines, isExactly("event: ended"), "ended event line")
+}
+
+// The stream route resolves the wire id (a run CR NAME) to the run UID BEFORE it
+// subscribes, so its Subscribe key matches the projector's publish key (run.UID).
+// Without this the ticket subscribes on the name and receives only keepalives —
+// the pill sticks on 'working' forever (ISI-5248).
+func TestStreamRun_ResolvesNameToUID(t *testing.T) {
+	const uid = "11111111-1111-1111-1111-111111111111"
+	hub := NewHub()
+	hub.SetRunUIDResolver(stubUIDResolver{byName: map[string]string{"intake-abc-r1": uid}})
+
+	lines, cancel := streamHarness(t, hub, "intake-abc-r1", "")
+	defer cancel()
+
+	// Preamble echoes the RESOLVED UID — the key the subscription is registered under.
+	waitLine(t, lines, isExactly(": subscribed run="+uid), "resolved subscribe preamble")
+
+	// An event published under the raw NAME reaches nobody; one under the UID (as the
+	// projector publishes) reaches this subscriber.
+	hub.Publish("intake-abc-r1", Event{ID: "1", Type: "thinking", Data: "wrong-key"})
+	hub.Publish(uid, Event{ID: "2", Type: "thinking", Data: "right-key"})
+	if got := waitLine(t, lines, hasPrefix("id: "), "event on resolved key"); got != "id: 2" {
+		t.Fatalf("want event id 2 (published under resolved UID), got %q", got)
+	}
+	waitLine(t, lines, isExactly("data: right-key"), "right-key data")
+}
+
+// A resolver miss (unknown name / error) falls back to the raw name rather than
+// failing the stream — the pre-ISI-5248 behavior, so UID-native/dev routes and
+// tests keep working.
+func TestStreamRun_ResolverMissFallsBackToName(t *testing.T) {
+	hub := NewHub()
+	hub.SetRunUIDResolver(stubUIDResolver{err: errors.New("not found")})
+
+	lines, cancel := streamHarness(t, hub, "run-raw", "")
+	defer cancel()
+
+	waitLine(t, lines, isExactly(": subscribed run=run-raw"), "fallback subscribe preamble")
+	hub.Publish("run-raw", Event{ID: "9", Type: "progress", Data: "live"})
+	if got := waitLine(t, lines, hasPrefix("id: "), "live on fallback key"); got != "id: 9" {
+		t.Fatalf("want id 9 on raw-name fallback, got %q", got)
+	}
 }
 
 // With a Last-Event-ID, the durable tail after that id is replayed first, then the

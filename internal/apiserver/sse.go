@@ -62,13 +62,27 @@ type runReplayer interface {
 	replayRun(ctx context.Context, runID string, afterID int64) ([]Event, error)
 }
 
+// runUIDResolver maps a run CR NAME — the id the console threads on the wire (GET /api/runs
+// returns run.Name; useDispatchWatch/useRunStream forward it verbatim) — to the run UID the Hub
+// publishes under. The projector fans run events keyed by coord.outbox run_id = the mint's RunID
+// claim = run.UID (runevents.go / progressmirror / prodreconcile), NOT the name, so the stream
+// route MUST resolve name→UID before Subscribe/replay or it subscribes on a key nothing ever
+// publishes to and the client sees only keepalives — the pill sticks on 'working' forever
+// (ISI-5248, same name/UID class as ISI-5209). nil ⇒ the Hub keys on the raw path var (DB-less/dev
+// routes, and tests that already pass a UID). Best-effort: a resolver error leaves the raw name as
+// the key rather than failing the stream.
+type runUIDResolver interface {
+	ResolveRunUID(ctx context.Context, name string) (string, error)
+}
+
 // Hub fans run events out to subscribed SSE connections. The zero value is not usable; use
 // NewHub. It is safe for concurrent Publish/Subscribe/Unsubscribe.
 type Hub struct {
 	mu        sync.RWMutex
 	subs      map[string]map[*subscriber]struct{} // runID → set of live subscribers
 	keepAlive time.Duration
-	replay    runReplayer // optional; nil ⇒ live-tail only (no Last-Event-ID replay)
+	replay    runReplayer    // optional; nil ⇒ live-tail only (no Last-Event-ID replay)
+	resolve   runUIDResolver // optional; nil ⇒ subscribe under the raw path var (name==UID)
 }
 
 // NewHub builds an empty Hub with the default keep-alive interval.
@@ -79,6 +93,11 @@ func NewHub() *Hub {
 // SetReplayer wires the durable per-run tail used for Last-Event-ID replay. Called once at
 // wiring time (main.go / NewServer) before the Hub serves; nil leaves the Hub live-tail only.
 func (h *Hub) SetReplayer(r runReplayer) { h.replay = r }
+
+// SetRunUIDResolver wires the run NAME→UID resolver the stream route uses to match its Subscribe
+// key to the publish key (ISI-5248). Called once at wiring time (NewServer) before the Hub serves;
+// nil leaves the Hub keyed on the raw path var.
+func (h *Hub) SetRunUIDResolver(r runUIDResolver) { h.resolve = r }
 
 // Subscribe registers a new subscriber for runID and returns it. Callers MUST Unsubscribe when
 // done (the stream handler defers it).
@@ -155,6 +174,23 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+
+	// Resolve the wire id (a run CR NAME) to the run UID the Hub publishes under (ISI-5248). The
+	// projector fans events keyed by run_id = run.UID, but the console threads run.Name, so without
+	// this the Subscribe/replay key never matches the publish key and the client sees only
+	// keepalives. Best-effort: a resolver miss (missing/forbidden run, transient read, or a
+	// non-conforming UID) falls back to the raw name — the pre-ISI-5248 behavior — rather than
+	// failing the stream, so DB-less/dev routes and UID-native callers still work. subKey stays
+	// charset-validated (a UUID is a subset of runIDPattern) so the ': subscribed' echo below can
+	// never inject SSE frames.
+	subKey := runID
+	if h.resolve != nil {
+		if uid, err := h.resolve.ResolveRunUID(ctx, runID); err == nil && uid != "" && runIDPattern.MatchString(uid) {
+			subKey = uid
+		}
+	}
+
 	// Headers MUST be set before the first flush — the initial flush commits the status line and
 	// header block, after which any header change is ignored (net/http logs a superfluous-header
 	// warning). ResponseController.Flush works across wrapped ResponseWriters (middleware) where a
@@ -173,46 +209,49 @@ func (h *Hub) streamRun(w http.ResponseWriter, r *http.Request) {
 	// Subscribe BEFORE replay so any event committed during the replay query is buffered on the
 	// live channel rather than lost in the gap between the replay snapshot and the tail. The two
 	// feeds then overlap by at most a bounded suffix, which the id-dedup below collapses exactly.
-	sub := h.Subscribe(runID)
-	defer h.Unsubscribe(runID, sub)
+	sub := h.Subscribe(subKey)
+	defer h.Unsubscribe(subKey, sub)
 
 	// Announce the open stream so a client (and tests) can confirm the tail is live immediately,
 	// before the first domain event. This is a comment line — inert to EventSource `message`.
-	// runID was validated against runIDPattern above (no CR/LF), so this echo cannot inject SSE
+	// subKey was validated against runIDPattern above (no CR/LF), so this echo cannot inject SSE
 	// frames; gosec's taint engine can't see the regexp guard, hence the suppression.
-	// #nosec G705 -- runID is charset-validated above; no CR/LF can reach the stream.
-	fmt.Fprintf(w, ": subscribed run=%s\n\n", runID)
+	// #nosec G705 -- subKey is charset-validated above; no CR/LF can reach the stream.
+	fmt.Fprintf(w, ": subscribed run=%s\n\n", subKey)
 	_ = rc.Flush()
 
-	ctx := r.Context()
-
-	// Last-Event-ID replay (§4.4 reconnect). On reconnect EventSource resends the last `id:` it saw
-	// via the Last-Event-ID header (a `?lastEventId=` query overrides it for non-EventSource clients
-	// and tests). We replay the durable outbox tail for this run STRICTLY AFTER that id, then dedup
-	// the live channel against the highest id replayed so an event carried by both feeds is written
-	// once. A fresh connection (no/blank/invalid id) replays nothing and live-tails, as before.
+	// Durable-tail replay (§4.4). On reconnect EventSource resends the last `id:` it saw via the
+	// Last-Event-ID header (a `?lastEventId=` query overrides it for non-EventSource clients and
+	// tests); we replay STRICTLY AFTER that id. A FRESH connection (no/blank/invalid id) replays
+	// the tail from the start (afterID=0, bounded by the store's per-run cap) rather than nothing:
+	// the ticket opens its EventSource only after a <=2s discovery poll, so a fast run can publish
+	// its terminal 'ended' BEFORE first connect — to zero subscribers — and the pill would stick on
+	// 'working' forever (ISI-5248). Backfilling on connect delivers that pre-connect event. Either
+	// way we dedup the live channel against the highest id replayed so an event carried by both
+	// feeds is written once; Subscribe-before-replay bounds the overlap to a suffix the id-dedup
+	// collapses exactly.
 	replayedThrough := int64(-1)
 	if h.replay != nil {
-		if afterID, ok := parseLastEventID(r); ok {
-			evs, err := h.replay.replayRun(ctx, runID, afterID)
-			if err != nil {
-				// Best-effort: a replay failure (e.g. a non-uuid runID, a DB blip) must not fail the
-				// stream. Fall through to a live tail; the client simply misses backfill this connect.
-				fmt.Fprintf(w, ": replay unavailable\n\n")
-				_ = rc.Flush()
-			} else {
-				for _, ev := range evs {
-					if err := writeEvent(w, ev); err != nil {
-						return
-					}
-					if id, perr := strconv.ParseInt(ev.ID, 10, 64); perr == nil && id > replayedThrough {
-						replayedThrough = id
-					}
+		afterID, _ := parseLastEventID(r) // (0, false) on a fresh connect ⇒ replay the full tail
+		evs, err := h.replay.replayRun(ctx, subKey, afterID)
+		if err != nil {
+			// Best-effort: a replay failure (e.g. a non-uuid subKey from the fallback path, a DB
+			// blip) must not fail the stream. Fall through to a live tail; the client simply misses
+			// backfill this connect.
+			fmt.Fprintf(w, ": replay unavailable\n\n")
+			_ = rc.Flush()
+		} else {
+			for _, ev := range evs {
+				if err := writeEvent(w, ev); err != nil {
+					return
 				}
-				if len(evs) > 0 {
-					if err := rc.Flush(); err != nil {
-						return
-					}
+				if id, perr := strconv.ParseInt(ev.ID, 10, 64); perr == nil && id > replayedThrough {
+					replayedThrough = id
+				}
+			}
+			if len(evs) > 0 {
+				if err := rc.Flush(); err != nil {
+					return
 				}
 			}
 		}

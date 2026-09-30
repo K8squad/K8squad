@@ -295,6 +295,13 @@ func NewServer(opts Options) *Server {
 	if hub == nil {
 		hub = NewHub()
 	}
+	// ISI-5248: the console threads run.Name on the wire but the Hub publishes keyed by run.UID.
+	// Give the stream route a name→UID resolver so its Subscribe/replay key matches the publish
+	// key. Best-effort — nil Runs leaves the Hub keyed on the raw path var (DB-less/dev routes,
+	// UID-native tests).
+	if opts.Runs != nil {
+		hub.SetRunUIDResolver(opts.Runs)
+	}
 	projectHub := opts.ProjectHub
 	if projectHub == nil {
 		projectHub = NewProjectHub()
