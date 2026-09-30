@@ -22,6 +22,19 @@ spec:
         - path:
             type: PathPrefix
             value: /
+      # SSE PRESERVATION (§13, §16.1 — ISI-5229/5228): the console owns `/`
+      # including the ENTIRE `/api/*` BFF, so in IP-only / shared-hostname mode
+      # the browser's live progress stream (GET /api/runs/{id}/stream and the
+      # /api/projects & /api/teams status streams) rides THIS route — the direct
+      # apiserver route below only exists on a dedicated apiserver hostname.
+      # request timeout 0s disables the route timeout so a long-lived stream is
+      # never cut mid-flight. Envoy's default route timeout is a TOTAL-duration
+      # cap (~15s) that keep-alive comment frames do NOT reset, so without this a
+      # normal idle run stream surfaces ERR_INCOMPLETE_CHUNKED_ENCODING as the
+      # gateway resets the chunked body without its terminating zero-length chunk.
+      timeouts:
+        request: "0s"
+        backendRequest: "0s"
       backendRefs:
         - name: {{ include "ksquad.console.fullname" . }}
           port: {{ .Values.console.service.port }}
