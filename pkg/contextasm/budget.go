@@ -226,7 +226,11 @@ func isMustInclude(el Element) bool {
 	// roleDirective is the dispatched agent's Role behavior prompt (ISI-5223):
 	// control-plane-authored persona/orchestration instructions. Must-include —
 	// truncating it would silently regress a coordinator to IC behavior.
-	case "roleDirective", "description", "acceptanceCriteria", "goal", "comment":
+	// teamRoster (ISI-5245) is the control-plane-authored assignable-agent NAME ↔
+	// role mapping: must-include for the same reason — truncating it strips the
+	// only valid assignee names from context, breaking the assign half of
+	// decompose-and-delegate ("Invalid agent names").
+	case "roleDirective", "teamRoster", "description", "acceptanceCriteria", "goal", "comment":
 		return true
 	}
 	return false

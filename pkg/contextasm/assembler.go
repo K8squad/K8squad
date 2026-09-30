@@ -154,6 +154,17 @@ type AssembleRequest struct {
 	// is control-plane-authored (never sourced from the sandbox), so it rides the
 	// authoritative tier alongside the task directives.
 	RolePrompt string
+	// TeamRoster is the "your team" fact: the assignable agent NAME ↔ role
+	// mapping for this Run's Team (Team.Spec.Agents), resolved control-plane-side
+	// by pkg/teamroster (ISI-5245). Empty for a team that names no agents. When
+	// set it is injected as an authoritative, must-include element ("teamRoster")
+	// right after the roleDirective: a coordinator role tells the PM to
+	// work_item_assign each sub-ticket to "an agent on this item's team", and this
+	// is the only place the run context names those agents — without it every
+	// assign fails as "Invalid agent names". Like the role prompt it is
+	// control-plane-authored (never sourced from the sandbox), so it rides the
+	// authoritative tier alongside the task directives.
+	TeamRoster string
 }
 
 // AssembleResult is the assembled envelope, the budget actually applied, the
@@ -249,7 +260,7 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 		return nil, fmt.Errorf("contextasm: artifacts: %w", err)
 	}
 
-	env := a.buildEnvelope(req.RolePrompt, wi, meta, recall, arts, req.Run.Spec.Inputs)
+	env := a.buildEnvelope(req.RolePrompt, req.TeamRoster, wi, meta, recall, arts, req.Run.Spec.Inputs)
 
 	// Deterministic resume (AC3): when resuming, reuse the budget the snapshot
 	// pinned rather than re-resolving from the live Project/Agent. Combined
@@ -422,7 +433,7 @@ func envelopeTelemetryStats(env *Envelope) assembleStats {
 
 // buildEnvelope tier-stamps the gathered facts (the ONLY envelope
 // construction path — server-side constants by source, F16).
-func (a *Assembler) buildEnvelope(rolePrompt string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, inputs map[string]string) *Envelope {
+func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, inputs map[string]string) *Envelope {
 	b := newEnvelopeBuilder()
 
 	// — Role behavior prompt (ISI-5223): the dispatched agent's resolved Role
@@ -432,6 +443,16 @@ func (a *Assembler) buildEnvelope(rolePrompt string, wi WorkItemFacts, meta Proj
 	// dropping the persona would silently regress orchestration to IC behavior.
 	if rolePrompt != "" {
 		b.addAuthoritative("roleDirective", rolePrompt, Provenance{Source: "role"})
+	}
+
+	// — Team roster (ISI-5245): the assignable agent NAME ↔ role mapping for the
+	// Run's Team, control-plane-authored, placed right after the role directive so
+	// a coordinator that has just been told to delegate immediately learns WHO it
+	// can delegate to. Must-include, never truncated (budget.go) — dropping it
+	// sends the PM back to guessing names, and work_item_assign rejects every
+	// invalid name, stalling the assign half of decompose-and-delegate.
+	if teamRoster != "" {
+		b.addAuthoritative("teamRoster", teamRoster, Provenance{Source: "team"})
 	}
 
 	// — Authoritative: the task itself (must-include, 5.9) —

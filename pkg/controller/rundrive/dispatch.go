@@ -45,6 +45,7 @@ import (
 	"github.com/K8squad/K8squad/pkg/orgops"
 	"github.com/K8squad/K8squad/pkg/roleprompt"
 	"github.com/K8squad/K8squad/pkg/taskio"
+	"github.com/K8squad/K8squad/pkg/teamroster"
 	"github.com/K8squad/K8squad/pkg/telemetry"
 	"github.com/K8squad/K8squad/pkg/telemetry/toolusage"
 )
@@ -719,6 +720,15 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		return "", err
 	}
 
+	// ISI-5245: resolve the team roster (assignable agent NAME ↔ role) so a
+	// coordinator can name a valid work_item_assign target. Injected as the same
+	// must-include element the run reconciler pins, so the dispatch render agrees
+	// with the snapshot. Fail-closed on a transient read like the role prompt above.
+	teamRoster, err := teamroster.Resolve(ctx, d.cfg.Client, &team, teamNS)
+	if err != nil {
+		return "", err
+	}
+
 	// The Source resolves the Project CRD in projNS (which honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := d.cfg.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
@@ -729,6 +739,7 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 		ContextWindow: window,
 		Existing:      run.Status.ContextSnapshot,
 		RolePrompt:    rolePrompt,
+		TeamRoster:    teamRoster,
 	})
 	if err != nil {
 		return "", err
