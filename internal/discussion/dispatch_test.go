@@ -138,10 +138,91 @@ func TestResolveAudienceRouting(t *testing.T) {
 		t.Fatalf("party routing = %v, want [john jane]", got)
 	}
 
-	// A bare party post with no @-mention dispatches nobody (no waking the whole squad).
-	bare := agentMsg("just thinking out loud", "party", "", nil)
-	if got := mustResolve(t, bare, roster); len(got) != 0 {
-		t.Fatalf("bare party = %v, want nobody", names(got))
+	// A bare HUMAN party post with no @-mention now BROADCASTS to the whole room (ISI-5265) — see
+	// TestResolveBroadcastHumanPartyWakesWholeRoom for the dedicated coverage. A bare AGENT party post
+	// still dispatches nobody (loop-safety) — see TestResolveBroadcastAgentPartyDispatchesNobody.
+}
+
+// --- ISI-5265: human party + no @-mention broadcasts to the whole room -------
+
+func TestResolveBroadcastHumanPartyWakesWholeRoom(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "idle"},
+		{Name: "amy", Status: "offline"},
+	}
+	// Human-authored (no agentID), party audience, no @-mention → every eligible agent is dispatched.
+	msg := agentMsg("standup in 5, whole squad please", "party", "", nil)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if dropped != 0 || len(targets) != 3 {
+		t.Fatalf("broadcast = %v (dropped %d), want all three [john jane amy]", names(targets), dropped)
+	}
+	for _, tg := range targets {
+		if tg.HopDepth != 1 {
+			t.Fatalf("broadcast target %q hop = %d, want 1 (human hop-0 turn)", tg.AgentName, tg.HopDepth)
+		}
+	}
+}
+
+// --- ISI-5265: an AGENT bare party post dispatches nobody (loop-safety) ------
+
+func TestResolveBroadcastAgentPartyDispatchesNobody(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "working"}}
+	// Agent-authored (agentID set), party audience, no @-mention → NOBODY. Broadcast is a hop-0 human
+	// privilege only; an agent bare party post must never N²-loop the whole squad.
+	msg := agentMsg("just narrating my work", "party", "jane", nil)
+	if got := mustResolve(t, msg, roster); len(got) != 0 {
+		t.Fatalf("agent bare party = %v, want nobody (loop-safety)", names(got))
+	}
+}
+
+// --- ISI-5265: broadcast still honours opt-out ------------------------------
+
+func TestResolveBroadcastExcludesPausedAgents(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "john", Status: "paused"},
+		{Name: "jane", Status: "blocked"},
+		{Name: "amy", Status: "disabled"},
+		{Name: "bob", Status: "working"},
+	}
+	msg := agentMsg("whole room, heads up", "party", "", nil)
+	got := names(mustResolve(t, msg, roster))
+	if len(got) != 1 || got[0] != "bob" {
+		t.Fatalf("broadcast opt-out = %v, want only the dispatchable agent bob", got)
+	}
+}
+
+// --- ISI-5265: broadcast fan-out cap enforced with a non-silent drop --------
+
+func TestResolveBroadcastRateCap(t *testing.T) {
+	roster := make([]TeamAgent, 0, maxBroadcastDispatchPerMessage+4)
+	for i := 0; i < maxBroadcastDispatchPerMessage+4; i++ {
+		// Distinct multi-rune names so a full squad exceeds the broadcast cap.
+		roster = append(roster, TeamAgent{Name: "agent-" + string(rune('a'+i)), Status: "working"})
+	}
+	msg := agentMsg("all hands", "party", "", nil)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if len(targets) != maxBroadcastDispatchPerMessage {
+		t.Fatalf("broadcast dispatched %d, want cap of %d", len(targets), maxBroadcastDispatchPerMessage)
+	}
+	if dropped != 4 {
+		t.Fatalf("broadcast dropped = %d, want 4 (non-silent truncation)", dropped)
+	}
+}
+
+// --- ISI-5265: an explicit @-mention on a party post still targets only those named ---
+
+func TestResolveExplicitMentionOnPartyDoesNotBroadcast(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+		{Name: "amy", Status: "working"},
+	}
+	// Human party post WITH an @-mention must target only the mentioned agent, never the whole room.
+	msg := agentMsg("@john can you take this?", "party", "", nil)
+	got := names(mustResolve(t, msg, roster))
+	if len(got) != 1 || got[0] != "john" {
+		t.Fatalf("explicit @-mention on party = %v, want only [john] (no broadcast)", got)
 	}
 }
 
@@ -275,6 +356,21 @@ func TestDispatchMentionsHookBestEffort(t *testing.T) {
 		agentMsg("@john hi", "party", "", nil))
 	if len(disp.calls) != 1 {
 		t.Fatalf("dispatcher called %d times, want 1 (error swallowed)", len(disp.calls))
+	}
+}
+
+// TestDispatchMentionsFromBroadcastsHumanParty proves the SHARED edge both write paths call (REST
+// Handler.postMessage and the MCP discussion_post tool) broadcasts a human bare party post to the
+// whole roster — so the two edges cannot drift on ISI-5265 broadcast behaviour.
+func TestDispatchMentionsFromBroadcastsHumanParty(t *testing.T) {
+	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "idle"}}
+	disp := &fakeDispatcher{}
+	// Human-authored: AuthorContext carries no AgentID, msg carries no agentID → hop-0 broadcast.
+	msg := agentMsg("whole squad sync", "party", "", nil)
+	DispatchMentionsFrom(context.Background(), disp, roster, "squad-a/proj",
+		AuthorContext{Principal: "user:alice", TeamID: uuid.New()}, msg)
+	if len(disp.calls) != 2 {
+		t.Fatalf("broadcast via shared edge dispatched %d, want 2 (whole roster)", len(disp.calls))
 	}
 }
 
