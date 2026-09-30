@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -274,6 +275,63 @@ func TestRunEventSource_BridgeSkipsUnresolvableOrProjectless(t *testing.T) {
 	// Neither is bridged (empty project id / unresolvable UID).
 	if ev, extra := nrecvWithin(projSub, 100*time.Millisecond); extra {
 		t.Fatalf("project bus: expected no bridged event, got id %q", ev.ID)
+	}
+}
+
+// ISI-5272: a discussion-dispatched run's no-reply terminal (failed/cancelled)
+// is echoed to the project bus as a `dispatch.failed` room event carrying the
+// (messageId, agentName) that keys the room's working watch — so the indicator
+// clears immediately. A success (`ended`) and a non-discussion run emit nothing.
+func TestRunEventSource_BridgesDiscussionTerminalFailure(t *testing.T) {
+	reader := &fakeRunReader{errLatest: errors.New("seed-at-0")}
+	hub := NewHub()
+	projectHub := NewProjectHub()
+	projSub := projectHub.Subscribe("ns/proj")
+
+	resolve := func(_ context.Context, uid string) (string, bool) {
+		if uid == "uid-1" {
+			return "ns/proj", true
+		}
+		return "", false
+	}
+	// Only run-disc is a discussion dispatch; run-board is a normal board run.
+	resolveDisc := func(_ context.Context, runID string) (string, string, bool, error) {
+		if runID == "run-disc" {
+			return "msg-7", "bmad-pm", true, nil
+		}
+		return "", "", false, nil
+	}
+	src := NewRunEventSource(reader, hub, WithProjectorPoll(5*time.Millisecond),
+		WithProjectBridge(projectHub, resolve),
+		WithDiscussionTerminalBridge(resolveDisc))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = src.Run(ctx) }()
+
+	reader.add(
+		// A discussion run's success commits a reply — NOT a dispatch.failed.
+		events.RunEvent{ID: 1, RunID: "run-disc", ProjectID: "uid-1", EventType: "ended", Payload: []byte(`{}`)},
+		// A NON-discussion run failing emits nothing on the project bus.
+		events.RunEvent{ID: 2, RunID: "run-board", ProjectID: "uid-1", EventType: "run_failed_entered", Payload: []byte(`{"to_step":"failed"}`)},
+		// The discussion run failing → a dispatch.failed room event.
+		events.RunEvent{ID: 3, RunID: "run-disc", ProjectID: "uid-1", EventType: "run_failed_entered", Payload: []byte(`{"to_step":"failed"}`)},
+	)
+
+	ev, ok := nrecvWithin(projSub, time.Second)
+	if !ok {
+		t.Fatal("project bus: expected the dispatch.failed terminal event, got none")
+	}
+	if ev.Type != "discussion" {
+		t.Fatalf("project bus: want named event %q, got %q", "discussion", ev.Type)
+	}
+	if !strings.Contains(ev.Data, `"type":"dispatch.failed"`) ||
+		!strings.Contains(ev.Data, `"agentName":"bmad-pm"`) ||
+		!strings.Contains(ev.Data, `"messageId":"msg-7"`) {
+		t.Fatalf("project bus: unexpected dispatch.failed payload: %s", ev.Data)
+	}
+	// No OTHER project event: the success and the board-run failure were skipped.
+	if extra, more := nrecvWithin(projSub, 100*time.Millisecond); more {
+		t.Fatalf("project bus: unexpected extra event: %s", extra.Data)
 	}
 }
 

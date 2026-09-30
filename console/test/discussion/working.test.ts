@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  applyDispatchFailed,
   applyReply,
   dispatchTargets,
   expireStale,
@@ -194,6 +195,48 @@ describe("expireStale", () => {
   it("never touches a replied watch", () => {
     const replied = [{ ...w[0], phase: "replied" as const }];
     expect(expireStale(replied, 10 ** 9, 60_000)[0].phase).toBe("replied");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyDispatchFailed — the ISI-5272 run-terminal signal clears a working watch.
+// ---------------------------------------------------------------------------
+
+describe("applyDispatchFailed", () => {
+  const base: DispatchWatch[] = [
+    { key: watchKey("m1", "john"), agentName: "john", messageId: "m1", phase: "working", since: 0 },
+    { key: watchKey("m1", "bmad-pm"), agentName: "bmad-pm", messageId: "m1", phase: "working", since: 0 },
+  ];
+
+  it("fails the matching agent's working watch by name (case-insensitive)", () => {
+    const out = applyDispatchFailed(base, { agentName: "JOHN" });
+    expect(out.find((w) => w.agentName === "john")?.phase).toBe("failed");
+    expect(out.find((w) => w.agentName === "bmad-pm")?.phase).toBe("working");
+  });
+
+  it("narrows to a single message when messageId is given", () => {
+    const multi: DispatchWatch[] = [
+      ...base,
+      { key: watchKey("m2", "john"), agentName: "john", messageId: "m2", phase: "working", since: 0 },
+    ];
+    const out = applyDispatchFailed(multi, { agentName: "john", messageId: "m1" });
+    expect(out.find((w) => w.key === watchKey("m1", "john"))?.phase).toBe("failed");
+    expect(out.find((w) => w.key === watchKey("m2", "john"))?.phase).toBe("working");
+  });
+
+  it("never regresses a replied watch", () => {
+    const replied = [{ ...base[0], phase: "replied" as const }];
+    expect(applyDispatchFailed(replied, { agentName: "john" })[0].phase).toBe("replied");
+  });
+
+  it("is a no-op for an unknown agent and does not mutate the input", () => {
+    const out = applyDispatchFailed(base, { agentName: "nobody" });
+    expect(out.every((w) => w.phase === "working")).toBe(true);
+    expect(base[0].phase).toBe("working"); // input untouched
+  });
+
+  it("is a no-op for an empty agent name", () => {
+    expect(applyDispatchFailed(base, { agentName: "" })).toEqual(base);
   });
 });
 

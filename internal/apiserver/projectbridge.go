@@ -83,6 +83,31 @@ func (p *roomStreamPublisher) PublishMessageCreated(projectID string, msg *discu
 	p.hub.Publish(projectID, Event{Type: projectStreamEventName, Data: string(data)})
 }
 
+// newDispatchFailedEvent marshals the room's run-terminal signal (ISI-5272): a
+// `dispatch.failed` RoomEvent on the SAME `discussion` named event the console's
+// liveFeed reducer already parses. It carries the triggering messageId (the
+// working watch's render anchor, omitted if unknown) and the dispatched agent
+// NAME — the reliable FE-side correlation, since the minted run id never reaches
+// the console (working.ts). ok=false when there is nothing the console can match a
+// watch on (no agent name), so the projector skips the publish. It is emitted by
+// the run-event projector (runevents.go), not the discussion handler, so it is a
+// free function rather than a RoomStreamPublisher method — a run terminal has no
+// handler call site.
+func newDispatchFailedEvent(messageID, agentName string) (Event, bool) {
+	if agentName == "" {
+		return Event{}, false
+	}
+	data, err := json.Marshal(struct {
+		Type      string `json:"type"`
+		MessageID string `json:"messageId,omitempty"`
+		AgentName string `json:"agentName"`
+	}{Type: "dispatch.failed", MessageID: messageID, AgentName: agentName})
+	if err != nil {
+		return Event{}, false
+	}
+	return Event{Type: projectStreamEventName, Data: string(data)}, true
+}
+
 // PublishMessageDeleted echoes a soft-retraction as a `message.deleted` event.
 func (p *roomStreamPublisher) PublishMessageDeleted(projectID string, messageID string) {
 	data, err := json.Marshal(struct {

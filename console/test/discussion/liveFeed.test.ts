@@ -83,6 +83,25 @@ describe("parseRoomEvent", () => {
       parseRoomEvent(JSON.stringify({ type: "message.created" })),
     ).toBeNull();
   });
+  it("parses a dispatch.failed run-terminal envelope (ISI-5272)", () => {
+    expect(
+      parseRoomEvent(
+        JSON.stringify({ type: "dispatch.failed", agentName: "john", messageId: "m1" }),
+      ),
+    ).toEqual({ type: "dispatch.failed", agentName: "john", messageId: "m1" });
+    // messageId is optional — omitted when the producer doesn't know it.
+    expect(
+      parseRoomEvent(JSON.stringify({ type: "dispatch.failed", agentName: "john" })),
+    ).toEqual({ type: "dispatch.failed", agentName: "john" });
+  });
+  it("rejects a dispatch.failed with no agent name (nothing to correlate)", () => {
+    expect(
+      parseRoomEvent(JSON.stringify({ type: "dispatch.failed", messageId: "m1" })),
+    ).toBeNull();
+    expect(
+      parseRoomEvent(JSON.stringify({ type: "dispatch.failed", agentName: "" })),
+    ).toBeNull();
+  });
 });
 
 describe("parseThinkingRow (ISI-5208)", () => {

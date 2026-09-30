@@ -190,6 +190,37 @@ export function applyReply(
 }
 
 /**
+ * Flip `working` watches to `failed` on a server run-terminal signal (ISI-5272):
+ * a discussion-dispatched run reached a NO-REPLY terminal state (failed/cancelled)
+ * and will never post a reply, so its watch must clear immediately rather than
+ * spin until `expireStale`'s timeout. This is the terminal-event counterpart to
+ * `applyReply` and mirrors its correlation: match by the dispatched agent NAME
+ * (`agentName`, case-insensitive) — the reliable FE-side key, since the minted run
+ * id never reaches the console. When `messageId` is supplied the match is narrowed
+ * to that triggering post's watch (the exact `${messageId}:${agentName}` key), so a
+ * later run for the same agent under a different message is left untouched; without
+ * it every still-`working` watch for that agent is failed. Only `working` entries
+ * are affected (an already `replied`/`failed` watch is never regressed). Input list
+ * is not mutated.
+ */
+export function applyDispatchFailed(
+  existing: readonly DispatchWatch[],
+  signal: { agentName: string; messageId?: string },
+): DispatchWatch[] {
+  const agent = signal.agentName.toLowerCase();
+  if (!agent) return existing.slice();
+  const targetKey = signal.messageId
+    ? watchKey(signal.messageId, signal.agentName)
+    : null;
+  return existing.map((w) => {
+    if (w.phase !== "working") return w;
+    if (w.agentName.toLowerCase() !== agent) return w;
+    if (targetKey !== null && w.key !== targetKey) return w;
+    return { ...w, phase: "failed" as const };
+  });
+}
+
+/**
  * Expire `working` watches older than `timeoutMs` to `failed` ("agent could not
  * respond"), so the room never leaves a working indicator spinning forever when
  * a run dies or never posts back (ISI-5174 AC3). Pure in `now`: the caller owns

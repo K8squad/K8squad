@@ -35,6 +35,26 @@ func NewReplyHopResolver(db *sql.DB) discussion.ReplyHopResolver {
 	return mentiondispatch.NewReplyHopResolver(db)
 }
 
+// NewDiscussionRunResolver adapts the mention-dispatch ledger's run→(message,agent) correlation
+// (mentiondispatch.NewRunCorrelationResolver) onto the run-event projector's DiscussionRunResolver seam
+// (ISI-5272), so the projector can fire a `dispatch.failed` room event when a discussion-dispatched run
+// ends without a reply. Wire it with WithDiscussionTerminalBridge. A nil db ⇒ nil resolver ⇒ the
+// projector emits no terminal room event (the room clears the watch only on the client-side timeout,
+// the pre-ISI-5272 behavior).
+func NewDiscussionRunResolver(db *sql.DB) DiscussionRunResolver {
+	if db == nil {
+		return nil
+	}
+	resolve := mentiondispatch.NewRunCorrelationResolver(db)
+	return func(ctx context.Context, runID string) (string, string, bool, error) {
+		c, ok, err := resolve(ctx, runID)
+		if err != nil || !ok {
+			return "", "", false, err
+		}
+		return c.MessageID, c.AgentName, true, nil
+	}
+}
+
 // projectResolverAdapter adapts the apiserver ProjectRefResolver (console informer cache) onto the neutral
 // mentiondispatch.ProjectResolver seam, mapping ProjectRefResolution → ResolvedProject. It keeps the
 // apiserver's own resolver type untouched.

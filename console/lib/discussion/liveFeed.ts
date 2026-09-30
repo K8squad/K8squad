@@ -10,7 +10,15 @@ import type { Message } from "./types";
 export type RoomEvent =
   | { type: "message.created"; message: Message }
   | { type: "message.updated"; message: Message }
-  | { type: "message.deleted"; id: string };
+  | { type: "message.deleted"; id: string }
+  // ISI-5272: a discussion-dispatched run reached a NO-REPLY terminal state
+  // (failed/cancelled), emitted by the apiserver run-event projector onto the
+  // per-project bus. It commits no reply message, so the `message.created` echo
+  // that normally resolves the working watch never arrives; this event flips the
+  // matching watch → "failed" immediately instead of waiting for the client
+  // timeout. `agentName` is the FE-side correlation key (the minted run id never
+  // reaches the console); `messageId` is the triggering post when known.
+  | { type: "dispatch.failed"; agentName: string; messageId?: string };
 
 /**
  * One live `thinking` envelope streamed off a run's progress mirror (ISI-5193),
@@ -95,6 +103,11 @@ export function applyRoomEvent(
       return upsertMessage(list, evt.message);
     case "message.deleted":
       return list.filter((x) => x.id !== evt.id);
+    case "dispatch.failed":
+      // A run-terminal signal carries no message — it only affects the working
+      // watch set (handled by the room component via applyDispatchFailed), so the
+      // flat message list is unchanged.
+      return list as Message[];
     default: {
       // Exhaustiveness guard: unknown events are ignored, never throw.
       return list as Message[];
@@ -114,6 +127,15 @@ export function parseRoomEvent(raw: string): RoomEvent | null {
   const e = obj as Record<string, unknown>;
   if (e.type === "message.deleted" && typeof e.id === "string") {
     return { type: "message.deleted", id: e.id };
+  }
+  if (e.type === "dispatch.failed" && typeof e.agentName === "string" && e.agentName) {
+    return {
+      type: "dispatch.failed",
+      agentName: e.agentName,
+      ...(typeof e.messageId === "string" && e.messageId
+        ? { messageId: e.messageId }
+        : {}),
+    };
   }
   if (
     (e.type === "message.created" || e.type === "message.updated") &&
