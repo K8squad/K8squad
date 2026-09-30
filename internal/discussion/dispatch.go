@@ -3,6 +3,7 @@ package discussion
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strings"
 
@@ -451,7 +452,15 @@ func DispatchMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, ros
 	if dispatcher == nil || msg == nil {
 		return
 	}
-	targets, _ := resolveMentionTargets(msg, roster)
+	targets, dropped := resolveMentionTargets(msg, roster)
+	if dropped > 0 {
+		// Non-silent truncation (the fan-out/broadcast cap guardrail): the message @-mentioned — or, for
+		// a human party post, the room held — more dispatchable agents than the cap allows, so the tail
+		// was not dispatched. Surface it here (the sole caller) so an over-cap broadcast is visible in the
+		// logs rather than silently clipped.
+		slog.WarnContext(ctx, "discussion: mention dispatch fan-out capped",
+			"projectID", projectID, "messageID", msg.ID, "dispatched", len(targets), "dropped", dropped)
+	}
 	for _, t := range targets {
 		t.ProjectID = projectID
 		t.ThreadID = msg.ThreadID
