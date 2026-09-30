@@ -45,6 +45,11 @@ type fakeAuthor struct {
 	rec          coord.WorkItemRecord
 	createErr    error
 	updateErr    error
+	// heldItem / heldErr back RunHeldWorkItem — the ISI-5244 parent-inference seam.
+	// heldForRun records the run_id the create path asked custody for.
+	heldItem   string
+	heldErr    error
+	heldForRun string
 }
 
 func (f *fakeAuthor) AgentCreateWorkItem(_ context.Context, in coord.AgentCreateWorkItemInput) (coord.WorkItemRecord, error) {
@@ -53,6 +58,11 @@ func (f *fakeAuthor) AgentCreateWorkItem(_ context.Context, in coord.AgentCreate
 		return coord.WorkItemRecord{}, f.createErr
 	}
 	return f.rec, nil
+}
+
+func (f *fakeAuthor) RunHeldWorkItem(_ context.Context, runID string) (string, error) {
+	f.heldForRun = runID
+	return f.heldItem, f.heldErr
 }
 
 func (f *fakeAuthor) AgentUpdateWorkItem(_ context.Context, id string, in coord.AgentUpdateWorkItemInput) (coord.WorkItemRecord, error) {
@@ -276,6 +286,65 @@ func TestAgentAuthorWithCapabilityCreatesChild(t *testing.T) {
 	// The capability resolver saw the server-authenticated session.
 	if !caps.called || caps.saw.Principal != "agent:john" || caps.saw.AgentID != "john" {
 		t.Fatalf("resolver did not see the session identity: %+v", caps.saw)
+	}
+}
+
+// TestAgentAuthorCreateDefaultsParentToRunCustody — the ISI-5244 fix: when the agent
+// omits parent_id, the edge resolves it to the item THIS run holds in custody (via
+// RunHeldWorkItem, keyed on the server-authenticated run_id) and forwards that as the
+// parent — the coordinator never has to know or ask for the UUID.
+func TestAgentAuthorCreateDefaultsParentToRunCustody(t *testing.T) {
+	author := &fakeAuthor{rec: coord.WorkItemRecord{ID: "child-1"}, heldItem: "epic-held"}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true})
+
+	out, rpcErr := m.callWorkItemCreate(context.Background(), grantedSession(),
+		createArgs(t, workItemCreateArgs{Title: "child"})) // parent_id omitted
+	text, isErr := result(t, out, rpcErr)
+	if isErr {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	// Custody was resolved for the session's run, and the held item became the parent.
+	if author.heldForRun != "run-1" {
+		t.Fatalf("custody resolved for wrong run: %q", author.heldForRun)
+	}
+	if author.createIn.ParentID != "epic-held" {
+		t.Fatalf("omitted parent_id not defaulted to the run's held item: %+v", author.createIn)
+	}
+}
+
+// TestAgentAuthorCreateExplicitParentSkipsInference — a supplied parent_id is used
+// verbatim and the custody-inference lookup is NOT consulted (nest-under-a-sibling
+// stays explicit).
+func TestAgentAuthorCreateExplicitParentSkipsInference(t *testing.T) {
+	author := &fakeAuthor{rec: coord.WorkItemRecord{ID: "child-1"}, heldItem: "epic-held"}
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true})
+
+	if _, rpcErr := m.callWorkItemCreate(context.Background(), grantedSession(),
+		createArgs(t, workItemCreateArgs{ParentID: "story-2", Title: "child"})); rpcErr != nil {
+		t.Fatalf("unexpected protocol error: %+v", rpcErr)
+	}
+	if author.heldForRun != "" {
+		t.Fatal("custody inference ran despite an explicit parent_id")
+	}
+	if author.createIn.ParentID != "story-2" {
+		t.Fatalf("explicit parent_id not forwarded: %+v", author.createIn)
+	}
+}
+
+// TestAgentAuthorCreateNoParentNoCustodyRefused — omitted parent_id AND the run holds
+// nothing = honest refusal that keeps root-human-only; coord is never asked to create.
+func TestAgentAuthorCreateNoParentNoCustodyRefused(t *testing.T) {
+	author := &fakeAuthor{heldItem: ""} // run holds no item
+	m := newAuthoringMCP(author, nil, &fakeCaps{grant: true})
+
+	out, rpcErr := m.callWorkItemCreate(context.Background(), grantedSession(),
+		createArgs(t, workItemCreateArgs{Title: "child"}))
+	text, isErr := result(t, out, rpcErr)
+	if !isErr || !strings.Contains(text, "holds no work item in custody") {
+		t.Fatalf("want no-custody refusal, got isErr=%v text=%q", isErr, text)
+	}
+	if author.createCalled {
+		t.Fatal("coord AgentCreateWorkItem was called despite an unresolvable parent")
 	}
 }
 

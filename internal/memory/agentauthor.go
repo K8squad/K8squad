@@ -59,6 +59,11 @@ func parseCapabilities(header string) []string {
 type WorkItemAuthor interface {
 	AgentCreateWorkItem(ctx context.Context, in coord.AgentCreateWorkItemInput) (coord.WorkItemRecord, error)
 	AgentUpdateWorkItem(ctx context.Context, workItemID string, in coord.AgentUpdateWorkItemInput) (coord.WorkItemRecord, error)
+	// RunHeldWorkItem returns the work item the authoring Run holds in live custody
+	// (or "" if none). The create tool uses it to default an omitted parent_id to the
+	// coordinator's own in-custody item, which the run context never surfaces to the
+	// agent as an argument (ISI-5244).
+	RunHeldWorkItem(ctx context.Context, runID string) (string, error)
 }
 
 // WorkItemDispatcher is the coord assign seam the PM→implementer handoff drives
@@ -198,8 +203,8 @@ var DiscussionToolNames = []string{DiscussionSearchToolName, DiscussionPostToolN
 var (
 	workItemCreateTool = mcpTool{
 		Name:        WorkItemCreateToolName,
-		Description: "Create a sub-ticket under a parent you hold in custody (a PM decomposing an epic it claimed). When you are asked to decompose work into sub-tickets, CREATE EACH ONE by calling this tool — this is the deliverable. Do NOT write the breakdown to a markdown file (e.g. docs/03-stories.md) and treat that file as the result: a file in the workspace is not a ticket and will not appear on the board. parent_id is REQUIRED — root items are human-only. Optionally hand the child straight to an implementer with assignee_agent_id. Requires the work_item.author capability; identity, team and run are server-authenticated (never arguments). Returns the created work item — report the returned ids and count in your completion summary rather than claiming 'artifacts stored in workspace'.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"parent_id":{"type":"string","description":"REQUIRED parent work-item id (uuid) you hold in custody; the child inherits its team"},"title":{"type":"string","description":"the sub-ticket title"},"body":{"type":"string","description":"optional description"},"priority":{"type":"string","description":"optional priority (validated against the coord enum)"},"work_mode":{"type":"string","description":"optional work mode (validated against the coord enum)"},"labels":{"type":"array","items":{"type":"string"},"description":"optional labels"},"assignee_agent_id":{"type":"string","description":"optional implementer agent to assign the new child to (must be in the item's team)"}},"required":["parent_id","title"]}`),
+		Description: "Create a sub-ticket under a parent you hold in custody (a PM decomposing an epic it claimed). When you are asked to decompose work into sub-tickets, CREATE EACH ONE by calling this tool — this is the deliverable. Do NOT write the breakdown to a markdown file (e.g. docs/03-stories.md) and treat that file as the result: a file in the workspace is not a ticket and will not appear on the board. parent_id defaults to the item YOU hold in custody — omit it and each child is created under the work item you were dispatched to decompose; you do NOT need to know or ask for that UUID. Pass parent_id explicitly only to nest under a different sub-ticket you also hold. Root items stay human-only. Optionally hand the child straight to an implementer with assignee_agent_id. Requires the work_item.author capability; identity, team and run are server-authenticated (never arguments). Returns the created work item — report the returned ids and count in your completion summary rather than claiming 'artifacts stored in workspace'.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"parent_id":{"type":"string","description":"optional parent work-item id (uuid) you hold in custody; the child inherits its team. Omit to default to the item your run was dispatched to decompose (the usual case) — you do not need to look this UUID up"},"title":{"type":"string","description":"the sub-ticket title"},"body":{"type":"string","description":"optional description"},"priority":{"type":"string","enum":["low","medium","high","urgent"],"description":"optional priority; one of low|medium|high|urgent"},"work_mode":{"type":"string","enum":["standard","planning"],"description":"optional work mode; one of standard|planning (omit to leave unset)"},"labels":{"type":"array","items":{"type":"string"},"description":"optional labels"},"assignee_agent_id":{"type":"string","description":"optional implementer agent to assign the new child to (must be in the item's team)"}},"required":["title"]}`),
 	}
 	workItemUpdateTool = mcpTool{
 		Name:        WorkItemUpdateToolName,
@@ -326,8 +331,25 @@ func (m *ToolMCP) callWorkItemCreate(ctx context.Context, sess mcpSession, raw j
 			return toolError("invalid arguments")
 		}
 	}
+	// Parent inference (ISI-5244): the coordinator directive tells the PM to create
+	// each sub-ticket under the item it holds, but the run context never surfaces that
+	// item's UUID as an argument — so a decomposing agent has nothing to pass. When
+	// parent_id is omitted, default it server-side to the item THIS run holds in live
+	// custody (run_id/agent/team are already server-authenticated). If the run holds
+	// no item, keep root-human-only: refuse honestly rather than attempt a root create.
+	parentID := a.ParentID
+	if parentID == "" {
+		held, herr := m.author.RunHeldWorkItem(ctx, id.runID)
+		if herr != nil {
+			return toolError("could not resolve the run's in-custody parent: " + herr.Error())
+		}
+		if held == "" {
+			return toolError("parent_id omitted and this run holds no work item in custody to default it to — supply the parent sub-ticket id (root items are human-only)")
+		}
+		parentID = held
+	}
 	rec, err := m.author.AgentCreateWorkItem(ctx, coord.AgentCreateWorkItemInput{
-		ParentID:  a.ParentID,
+		ParentID:  parentID,
 		Title:     a.Title,
 		Body:      a.Body,
 		Priority:  a.Priority,
