@@ -19,6 +19,7 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/capability"
 )
 
 // ── test harness ────────────────────────────────────────────────────────────
@@ -685,6 +686,59 @@ func TestComposeSquadMaterialize_MinimalTrioHappyPath(t *testing.T) {
 	// Provenance: 1 Team + 3 Agents, all server-stamped.
 	if len(*prov) != 4 {
 		t.Fatalf("want 4 provenance rows, got %d: %+v", len(*prov), *prov)
+	}
+}
+
+// ISI-5223: the Team compose default-grants work_item.author to the template's
+// coordinator role (manager → role-manager), so a PM/coordinator agent can
+// orchestrate (decompose + delegate) out of the box. Non-coordinator roles are
+// omitted — deny-by-default preserved.
+func TestComposeSquadMaterialize_CoordinatorGrant(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	w := do(svc.handleComposeSquad, http.MethodPost, "/api/compose/squad",
+		caller("root", teamUID, true), squadReq("minimal-trio", "acme-squad"), nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var teams ksquadv1.TeamList
+	if err := svc.applier.List(context.Background(), &teams); err != nil {
+		t.Fatalf("list teams: %v", err)
+	}
+	var team *ksquadv1.Team
+	for i := range teams.Items {
+		if teams.Items[i].Name == "acme-squad" {
+			team = &teams.Items[i]
+			break
+		}
+	}
+	if team == nil {
+		t.Fatalf("acme-squad team not applied")
+	}
+	if len(team.Spec.Grants) != 1 {
+		t.Fatalf("want 1 coordinator grant, got %+v", team.Spec.Grants)
+	}
+	g := team.Spec.Grants[0]
+	if g.Role != "role-manager" {
+		t.Fatalf("want grant on role-manager, got %q", g.Role)
+	}
+	if len(g.Capabilities) != 1 || g.Capabilities[0] != capability.CapabilityWorkItemAuthor {
+		t.Fatalf("want [work_item.author], got %+v", g.Capabilities)
+	}
+}
+
+// coordinatorGrants: only coordinator presets are granted; dedup + stable order.
+func TestCoordinatorGrantsHelper(t *testing.T) {
+	// No coordinator in the roster ⇒ no grants (solo = boss+impl).
+	if g := coordinatorGrants(squadTemplates["solo"]); g != nil {
+		t.Fatalf("solo has no coordinator, want nil grants, got %+v", g)
+	}
+	// bmad has multiple manager-preset agents ⇒ ONE deduped role-manager grant.
+	g := coordinatorGrants(squadTemplates["bmad"])
+	if len(g) != 1 || g[0].Role != "role-manager" {
+		t.Fatalf("bmad: want one deduped role-manager grant, got %+v", g)
+	}
+	if len(g[0].Capabilities) != 1 || g[0].Capabilities[0] != capability.CapabilityWorkItemAuthor {
+		t.Fatalf("want [work_item.author], got %+v", g[0].Capabilities)
 	}
 }
 

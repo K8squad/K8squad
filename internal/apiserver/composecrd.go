@@ -48,6 +48,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 
@@ -61,6 +62,7 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/auth"
+	"github.com/K8squad/K8squad/pkg/capability"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
 )
 
@@ -1291,6 +1293,56 @@ var squadTemplates = map[string][]squadAgentTemplate{
 	},
 }
 
+// coordinatorPresets is the set of seeded Role presets that are COORDINATORS
+// (Role.Spec.Coordinator=true — config/roles/role-manager.yaml). Only the
+// manager preset drives the squad's lifecycle. Kept as a static table (like
+// defaultSquadModels) because compose/squad materializes Agents referencing
+// role-<preset> without reading the seeded Role CRs; the source of truth is the
+// seeded manifests, mirrored here.
+var coordinatorPresets = map[string]bool{
+	"manager": true,
+}
+
+// coordinatorGrants returns the default capability grants for a template's
+// coordinator roles (ISI-5223, orchestration MVP): every coordinator preset in
+// the roster is granted work_item.author on the Team, so a PM/coordinator agent
+// assigned a ticket can decompose it into sub-tickets and hand them off through
+// the ADR-0024 authoring lane (work_item_create / work_item_assign) instead of
+// hitting "capability denied". Non-coordinator roles are omitted — deny-by-
+// default is preserved for them (ADR-0024a).
+//
+// This is a DELIBERATE, auditable relaxation of ADR-0024's deny-by-default
+// posture for coordinator roles only: it is written into Team.Spec.Grants (pure
+// config, not code), so the board can inspect it on the Team CR and veto it with
+// a one-line edit. Result is sorted+deduped for stable bytes across composes.
+func coordinatorGrants(agents []squadAgentTemplate) []ksquadv1.CapabilityGrant {
+	seen := map[string]bool{}
+	var roles []string
+	for _, a := range agents {
+		if !coordinatorPresets[a.Preset] {
+			continue
+		}
+		role := squadRolePrefix + a.Preset
+		if seen[role] {
+			continue
+		}
+		seen[role] = true
+		roles = append(roles, role)
+	}
+	if len(roles) == 0 {
+		return nil
+	}
+	sort.Strings(roles)
+	grants := make([]ksquadv1.CapabilityGrant, 0, len(roles))
+	for _, role := range roles {
+		grants = append(grants, ksquadv1.CapabilityGrant{
+			Role:         role,
+			Capabilities: []string{capability.CapabilityWorkItemAuthor},
+		})
+	}
+	return grants
+}
+
 // handleComposeSquad materializes a squad from a template in one authorized
 // transaction. Validation of EVERY planned object happens before any apply
 // (invariant 1); applies then proceed object-by-object (Team first, then
@@ -1355,6 +1407,16 @@ func (s *ComposeService) handleComposeSquad(w http.ResponseWriter, r *http.Reque
 	var teamPlan applyPlan
 	if req.Team != nil {
 		teamPlan = s.planTeam(*req.Team)
+		// ISI-5223: default-grant work_item.author to the template's coordinator
+		// roles on the Team it creates, so a coordinator agent can orchestrate
+		// (decompose + delegate) out of the box. Written to Team.Spec.Grants —
+		// visible + vetoable config. Only applies when this call creates the Team;
+		// an existing Team keeps its grants (a one-line Team edit adds the grant).
+		if grants := coordinatorGrants(agents); len(grants) > 0 {
+			if team, ok := teamPlan.desired.(*ksquadv1.Team); ok {
+				team.Spec.Grants = grants
+			}
+		}
 		for _, fe := range teamPlan.errs {
 			fields = append(fields, fieldError{"team." + fe.Field, fe.Message})
 		}

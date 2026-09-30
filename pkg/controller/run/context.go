@@ -20,12 +20,14 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/roleprompt"
 )
 
 // ContextAssemblers builds a per-namespace §8.5 context assembler over the
@@ -94,6 +96,24 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 	if err := r.Get(ctx, client.ObjectKey{Namespace: teamNS, Name: run.Spec.TeamRef.Name}, &team); err != nil {
 		return fmt.Errorf("read Team %s/%s for run %s/%s context assembly: %w", teamNS, run.Spec.TeamRef.Name, run.Namespace, run.Name, err)
 	}
+	// ISI-5223: resolve the agent's Role behavior prompt (Role.Spec.PromptRef)
+	// and pass it through so the snapshot path's must-include budget check agrees
+	// with the dispatcher's (which injects the same prompt as a must-include
+	// element). A nil role / no prompt yields "" (unchanged); a transient read
+	// error fails closed exactly like the agent/project/team reads above.
+	role, err := r.resolveRole(ctx, &agent)
+	if err != nil {
+		return err
+	}
+	rolePromptNS := agent.Namespace
+	if role != nil {
+		rolePromptNS = role.Namespace
+	}
+	rolePrompt, err := roleprompt.Resolve(ctx, r.Client, role, rolePromptNS)
+	if err != nil {
+		return fmt.Errorf("resolve role prompt for run %s/%s context assembly: %w", run.Namespace, run.Name, err)
+	}
+
 	// Resolve the Project CRD in the projectRef's namespace (honors a
 	// cross-namespace projectRef), not the Run's own namespace.
 	res, err := r.ContextAssemblers.For(projNS).Assemble(ctx, contextasm.AssembleRequest{
@@ -102,6 +122,7 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 		Project:       &project,
 		TeamID:        string(team.UID),
 		ContextWindow: window,
+		RolePrompt:    rolePrompt,
 	})
 	if err != nil {
 		return fmt.Errorf("assemble context for run %s/%s: %w", run.Namespace, run.Name, err)
@@ -115,4 +136,30 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 	snap.AssembledAt = &now
 	desired.ContextSnapshot = snap
 	return nil
+}
+
+// resolveRole resolves the Agent's Role via spec.roleRef for role-prompt
+// injection (ISI-5223). An empty roleRef, or a role deleted after admission,
+// contributes no role (nil) rather than failing the snapshot — a dangling
+// roleRef is admission's rejection to own, and a role removed later simply
+// injects no behavior prompt. Only a TRANSIENT read error fails closed, so a
+// lookup glitch can never silently drop a coordinator's orchestration prompt.
+// Mirrors rundrive.operatorDispatch.roleFor so both assembly paths resolve the
+// same role.
+func (r *Reconciler) resolveRole(ctx context.Context, agent *api.Agent) (*api.Role, error) {
+	if agent.Spec.RoleRef.Name == "" {
+		return nil, nil
+	}
+	ns := agent.Spec.RoleRef.Namespace
+	if ns == "" {
+		ns = agent.Namespace
+	}
+	var role api.Role
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Spec.RoleRef.Name}, &role); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("resolve Role %s/%s for Agent %s: %w", ns, agent.Spec.RoleRef.Name, agent.Name, err)
+	}
+	return &role, nil
 }
