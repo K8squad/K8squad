@@ -399,6 +399,81 @@ func TestSpineAuthorUpdate_ReparentSubtreeDepthCapExceeded(t *testing.T) {
 	assertParent(t, db, movable, story)
 }
 
+// TestSpineRunHeldWorkItem_ResolvesCustodyParent — the ISI-5244 parent-inference
+// source: RunHeldWorkItem returns the item a run holds in LIVE custody (holder set +
+// unexpired lease + matching run_id), which the MCP edge defaults an omitted parent_id
+// to. A settled claim (holder NULL, run_id retained) and an expired lease both resolve
+// to "" so the edge keeps root-human-only rather than defaulting to stale custody.
+func TestSpineRunHeldWorkItem_ResolvesCustodyParent(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	item := authorSeedItem(t, db, "", "epic")
+	s := newAuthorStore(t, db)
+
+	// Live custody: holder + future lease + this run.
+	mustExec(t, db, `UPDATE coord.claim
+		SET holder_principal = $1, run_id = $2::uuid, lease_expires_at = now() + interval '5 minutes'
+		WHERE work_item_id = $3::uuid`, authorPrinc, authorRun, item)
+	got, err := s.RunHeldWorkItem(context.Background(), authorRun)
+	if err != nil {
+		t.Fatalf("RunHeldWorkItem: %v", err)
+	}
+	if got != item {
+		t.Fatalf("live custody: got %q, want held item %q", got, item)
+	}
+
+	// An unrelated run holds nothing.
+	if got, err := s.RunHeldWorkItem(context.Background(), "00000000-0000-0000-0000-0000000000ff"); err != nil || got != "" {
+		t.Fatalf("unrelated run: got (%q,%v), want (\"\",nil)", got, err)
+	}
+
+	// Expired lease ⇒ not live custody ⇒ "" (edge falls back to root-human-only).
+	mustExec(t, db, `UPDATE coord.claim SET lease_expires_at = now() - interval '1 minute' WHERE work_item_id = $1::uuid`, item)
+	if got, err := s.RunHeldWorkItem(context.Background(), authorRun); err != nil || got != "" {
+		t.Fatalf("expired lease: got (%q,%v), want (\"\",nil)", got, err)
+	}
+
+	// Settled claim: holder cleared, run_id retained (mig 0018) ⇒ "" (not custody).
+	mustExec(t, db, `UPDATE coord.claim
+		SET holder_principal = NULL, lease_expires_at = now() + interval '5 minutes'
+		WHERE work_item_id = $1::uuid`, item)
+	if got, err := s.RunHeldWorkItem(context.Background(), authorRun); err != nil || got != "" {
+		t.Fatalf("settled claim: got (%q,%v), want (\"\",nil)", got, err)
+	}
+}
+
+// TestSpineAuthorCreate_OmittedParentThenInferredHeld — end-to-end at the coord layer:
+// an omitted parent is refused root-denied, but once resolved via RunHeldWorkItem the
+// create succeeds under that held item. Pins that the inferred id is one the create's
+// own FOR UPDATE custody re-check accepts (ISI-5244).
+func TestSpineAuthorCreate_OmittedParentThenInferredHeld(t *testing.T) {
+	db := openDB(t, dsnOrFatal(t))
+	resetAuthorSchema(t, db)
+	parent := authorSeedItem(t, db, "", "epic")
+	s := newAuthorStore(t, db)
+
+	// A bare omitted parent is still root-denied at coord (the edge, not coord, infers).
+	if _, err := s.AgentCreateWorkItem(context.Background(), authorInput("")); !errors.Is(err, coord.ErrAgentAuthorRootDenied) {
+		t.Fatalf("omitted parent at coord: got %v, want ErrAgentAuthorRootDenied", err)
+	}
+
+	// Grant live holder custody to the run, resolve it, and create under it.
+	mustExec(t, db, `UPDATE coord.claim
+		SET holder_principal = $1, run_id = $2::uuid, lease_expires_at = now() + interval '5 minutes'
+		WHERE work_item_id = $3::uuid`, authorPrinc, authorRun, parent)
+	held, err := s.RunHeldWorkItem(context.Background(), authorRun)
+	if err != nil || held != parent {
+		t.Fatalf("resolve held: got (%q,%v), want (%q,nil)", held, err, parent)
+	}
+	rec, err := s.AgentCreateWorkItem(context.Background(), authorInput(held))
+	if err != nil {
+		t.Fatalf("create under inferred parent: %v", err)
+	}
+	if rec.ParentID == nil || *rec.ParentID != parent {
+		t.Fatalf("child parent = %v, want inferred %s", rec.ParentID, parent)
+	}
+}
+
 // ---- small DB helpers (chaos lane) ----
 
 func assertParent(t *testing.T, db *sql.DB, item, wantParent string) {

@@ -250,6 +250,44 @@ func (s *WorkItemWriteStore) AgentCreateWorkItem(ctx context.Context, in AgentCr
 	return rec, nil
 }
 
+// RunHeldWorkItem returns the id of the work item the given authoring Run holds in
+// live custody — the row in coord.claim whose run_id matches, with a non-NULL holder
+// and an un-expired lease. It is the server-side source of the coordinator's own
+// in-custody UUID (ISI-5244): the MCP edge uses it to DEFAULT work_item_create's
+// parent_id when a decomposing agent omits it, since the run context never surfaces
+// that UUID to the agent as an argument. Returns ("", nil) when the run holds no such
+// item — the caller then keeps root-human-only (an omitted parent with no custody is
+// still refused, never silently promoted to a root create).
+//
+// It matches agentHoldsClaim's holder-side custody test (holder set + lease live), so
+// the id it returns is one AgentCreateWorkItem's own FOR UPDATE custody re-check will
+// accept; a claim released between this read and the create simply falls through to
+// ErrAgentAuthorNotInCustody there (no unfenced create). A settled claim (holder NULL,
+// run_id retained per mig 0018) is excluded by the holder predicate. LIMIT 1 with a
+// deterministic order is belt-and-braces: a run holds at most one live claim.
+func (s *WorkItemWriteStore) RunHeldWorkItem(ctx context.Context, runID string) (string, error) {
+	if runID == "" {
+		return "", nil
+	}
+	var wid sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT work_item_id::text FROM coord.claim
+		 WHERE run_id = $1::uuid
+		   AND holder_principal IS NOT NULL
+		   AND lease_expires_at IS NOT NULL
+		   AND lease_expires_at > now()
+		 ORDER BY renewed_at DESC NULLS LAST, acquired_at DESC NULLS LAST
+		 LIMIT 1`,
+		runID).Scan(&wid)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("coord.RunHeldWorkItem: read claim: %w", err)
+	}
+	return wid.String, nil
+}
+
 // AgentUpdateWorkItem edits one item's fields (title/body/parent) when the agent
 // holds custody of the item OR of one of its ancestors (in-custody item +
 // descendants, ADR-0024 O-3), atomically with a §6.5 'work_item_edited' audit row
