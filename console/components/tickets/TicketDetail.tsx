@@ -77,6 +77,7 @@ import {
 import { MentionPopover } from "@/components/discussion/MentionPopover";
 import {
   agentMentionSuggestions,
+  resolveBodyMentions,
   triggerFragmentBefore,
   replaceTriggerFragment,
   type MentionTrigger,
@@ -1026,58 +1027,24 @@ function Composer({
     }
   }
 
-  async function submit() {
-    const value = text.trim();
-    if (value === "" || assigningBusy) return;
-    const comment = await postComment(value);
-    if (!comment) return;
-    onOptimisticAppend(comment);
-    setText("");
-    setRefs([]);
-    setStatus({ kind: "idle" });
-    // ISI-4918 (S7 of ISI-4853): a PLAIN comment that re-dispatched a parked ticket
-    // (reTriggered=true — pkg/coord AppendHumanComment moved it → todo) mints a Run
-    // exactly like an explicit assign, so seed the SAME honest ladder. The comment
-    // path picks no agent; the re-triggered Run goes to the ticket's requested/last
-    // agent, which the parent hands us as `reTriggerAgent`. reTriggered=false (todo/
-    // backlog comment, or the live-holder guard) seeds nothing — no ladder (AC4).
-    if (comment.reTriggered) onDispatched(reTriggerAgent);
-    onPosted(comment);
-  }
-
   /**
-   * Comment-&-assign (ISI-4567 §2.3): SEQUENTIAL, not atomic — comment first,
-   * then `dispatchWorkItem`. The moment the comment lands it is kept (optimistic
-   * append + text cleared into the thread) no matter what the assign half does:
-   * the human's words are never lost to an assign 403/409/501. An assign failure
-   * shows the rail's copy inline (assignErrorMessage) and the composer stays
-   * usable; a 501 additionally latches the assign button off. Either way the
-   * parent re-fetches — the comment reconciles, and a 409 re-syncs lane truth.
+   * Dispatch `agent` onto the ticket AFTER its comment has already landed — the
+   * shared tail of both the typed-@ body path (submit, ISI-5281) and the explicit
+   * Comment-&-assign select (submitAssign, ISI-4567 §2.3). On a 200 it seeds the
+   * honest "run is on its way" ladder (onDispatched) BEFORE clearing the pick, so
+   * the placeholder card + status line appear within a frame of the 200 (ISI-4881);
+   * on failure it surfaces the rail's copy inline (assignErrorMessage) with the
+   * composer still usable, and latches the assign button off on a 501. Either way
+   * the parent re-fetches (onPosted) so the comment reconciles and a 409 re-syncs
+   * lane truth. NOT atomic: the comment is already kept by the caller, so the
+   * human's words are never lost to an assign 403/409/501.
    */
-  async function submitAssign() {
-    const value = text.trim();
-    if (value === "" || assignee === "" || assigningBusy || assignUnavailable) {
-      return;
-    }
+  async function dispatchAfterComment(agent: string, comment: PostedComment) {
     setAssignErr(null);
     setAssigning(true);
-    const comment = await postComment(value);
-    if (!comment) {
-      setAssigning(false);
-      return;
-    }
-    // Comment landed — keep it before the assign half even fires.
-    onOptimisticAppend(comment);
-    setText("");
-    setRefs([]);
-    setStatus({ kind: "idle" });
     try {
-      await dispatchWorkItem(workItemId, assignee);
-      // Dispatch 200: seed the honest "run is on its way" ladder BEFORE clearing the
-      // pick, so the placeholder card + status line appear within a frame of the 200
-      // (ISI-4881). Only reached on success — a non-200 throws to the catch below and
-      // no card is seeded (the existing role="alert" error path stands).
-      onDispatched(assignee);
+      await dispatchWorkItem(workItemId, agent);
+      onDispatched(agent);
       setAssignee("");
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
@@ -1087,6 +1054,59 @@ function Composer({
       setAssigning(false);
       onPosted(comment);
     }
+  }
+
+  async function submit() {
+    const value = text.trim();
+    if (value === "" || assigningBusy) return;
+    const comment = await postComment(value);
+    if (!comment) return;
+    // Comment landed — keep it before any dispatch half fires.
+    onOptimisticAppend(comment);
+    setText("");
+    setRefs([]);
+    setStatus({ kind: "idle" });
+    // ISI-5281: assignment is from what was TYPED. A body carrying exactly ONE
+    // resolvable @name dispatches that agent directly via the SAME machinery as
+    // Comment-&-assign — no dropdown pick, no separate button. The @-popover is now
+    // pure autocomplete; dispatch is driven by the resolved body tokens. Zero
+    // resolvable mentions (or an ambiguous 2+, deferred to WS-3 Coordinator
+    // routing) stays a plain comment, unchanged.
+    const mentioned = resolveBodyMentions(value, agents);
+    if (mentioned.length === 1) {
+      await dispatchAfterComment(mentioned[0], comment);
+      return;
+    }
+    // ISI-4918 (S7 of ISI-4853): a PLAIN comment (no resolvable mention) that
+    // re-dispatched a parked ticket (reTriggered=true — pkg/coord AppendHumanComment
+    // moved it → todo) mints a Run exactly like an explicit assign, so seed the SAME
+    // honest ladder. The comment path picks no agent; the re-triggered Run goes to
+    // the ticket's requested/last agent, which the parent hands us as `reTriggerAgent`.
+    // reTriggered=false (todo/backlog comment, or the live-holder guard) seeds nothing.
+    if (comment.reTriggered) onDispatched(reTriggerAgent);
+    onPosted(comment);
+  }
+
+  /**
+   * Comment-&-assign (ISI-4567 §2.3): the EXPLICIT roster-select path — comment
+   * first, then `dispatchWorkItem` to the picked agent. ISI-5281 makes this a
+   * convenience beside the primary typed-@ body dispatch (submit), not the only
+   * way to assign. SEQUENTIAL, not atomic: the moment the comment lands it is kept
+   * (optimistic append + text cleared) no matter what the assign half does.
+   */
+  async function submitAssign() {
+    const value = text.trim();
+    if (value === "" || assignee === "" || assigningBusy || assignUnavailable) {
+      return;
+    }
+    const comment = await postComment(value);
+    if (!comment) return;
+    // Comment landed — keep it before the assign half even fires.
+    onOptimisticAppend(comment);
+    setText("");
+    setRefs([]);
+    setStatus({ kind: "idle" });
+    await dispatchAfterComment(assignee, comment);
   }
 
   /**
@@ -1110,9 +1130,11 @@ function Composer({
 
   /**
    * Insert a picked suggestion, branching on its type (ISI-5214):
-   *   - agent → `@Name ` token AND arm the existing dispatch path (`assignee`), so
-   *     "Comment & assign" dispatches to it (ISI-5159, unchanged). The assign select
-   *     is controlled by `assignee`, so it visibly reflects the armed pick.
+   *   - agent → `@Name ` token only. ISI-5281 drops the old dropdown gate: the
+   *     popover is now PURE autocomplete and no longer arms `assignee`. Dispatch is
+   *     driven at submit time by the resolvable @-tokens actually in the body
+   *     (resolveBodyMentions), so a popover pick and a hand-typed `@Name` dispatch
+   *     identically. The explicit Comment-&-assign select stays its own path.
    *   - work_item → `#Title ` token AND collect a structured { workItemId, title }
    *     link into `refs` (deduped by id) — a LINK carried on the comment, never a
    *     dispatch. `replaceTriggerFragment` always writes the `#` prefix for a
@@ -1127,9 +1149,7 @@ function Composer({
     setText(newBefore + after);
     setMentionOpen(false);
     setFragment("");
-    if (s.type === "agent") {
-      setAssignee(s.id);
-    } else if (s.type === "work_item") {
+    if (s.type === "work_item") {
       setRefs((prev) =>
         prev.some((r) => r.workItemId === s.id)
           ? prev
