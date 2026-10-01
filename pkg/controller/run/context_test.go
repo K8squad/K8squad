@@ -77,6 +77,10 @@ func (s stubSources) Artifacts(_ context.Context, _ string) ([]contextasm.Artifa
 	return nil, nil
 }
 
+func (s stubSources) GitHubDetails(_ context.Context, _, _ string) (contextasm.GitHubDetails, error) {
+	return contextasm.GitHubDetails{}, nil
+}
+
 // stubAssemblers is a ContextAssemblers over a fixed stubSources.
 type stubAssemblers struct{ src contextasm.Sources }
 
