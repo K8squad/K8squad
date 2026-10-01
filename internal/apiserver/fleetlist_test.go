@@ -515,6 +515,8 @@ func projectObjFull(ns, name string) *ksquadv1.Project {
 				Auth: &ksquadv1.RepoAuth{CredentialSecretRef: ksquadv1.SecretRef{Name: "gh-pat", Key: "token"}},
 			},
 			Goals:           []string{"ship v1", "raise coverage"},
+			Conventions:     "squash-merge only",
+			ArchDocRefs:     []string{"docs/architecture.md", "https://wiki/adr-7"},
 			EgressPolicyRef: &ksquadv1.ObjectRef{Name: "default-egress"},
 		},
 	}
@@ -664,6 +666,11 @@ func TestProjectDetailScoping(t *testing.T) {
 	}
 	if len(d.Goals) != 2 || d.EgressPolicyRef == nil || d.EgressPolicyRef.Name != "default-egress" {
 		t.Fatalf("goals/egress: %+v", d)
+	}
+	// Non-secret descriptor fields round-trip so a full-spec compose PUT preserves
+	// them across unrelated saves (ISI-5303).
+	if d.Conventions != "squash-merge only" || len(d.ArchDocRefs) != 2 || d.ArchDocRefs[0] != "docs/architecture.md" {
+		t.Fatalf("conventions/archDocRefs: %+v / %+v", d.Conventions, d.ArchDocRefs)
 	}
 	// teamId is the owning Team UID (namespace = tenancy root) — the fleet-admin
 	// credential routing hint (ISI-4917). squad-a's widget is owned by alpha.

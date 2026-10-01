@@ -266,7 +266,15 @@ type projectRequest struct {
 		// would silently drop them (the goals/egress full-replace footgun).
 		Sync *ksquadv1.RepoSyncSpec `json:"sync,omitempty"`
 	} `json:"repo"`
-	Goals           []string       `json:"goals,omitempty"`
+	Goals []string `json:"goals,omitempty"`
+	// Conventions + ArchDocRefs are the NON-SECRET project descriptor fields
+	// edited by the Settings "Docs & conventions" card (ISI-5303, ISI-5280 WS-E).
+	// Like Goals they ride the full-spec compose PUT and are injected into every
+	// Run's context envelope by the contextsource controller. A compose PUT is a
+	// full-spec upsert, so a repo/sync-only save must carry these through
+	// untouched or it silently drops them (the goals full-replace footgun).
+	Conventions     string         `json:"conventions,omitempty"`
+	ArchDocRefs     []string       `json:"archDocRefs,omitempty"`
 	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
 }
 
@@ -750,8 +758,10 @@ func (s *ComposeService) planProject(req projectRequest) applyPlan {
 	errs = validateName("name", req.Name, errs)
 	errs = required("repo.url", req.Repo.URL, errs)
 	spec := ksquadv1.ProjectSpec{
-		Repo:  ksquadv1.RepoSpec{URL: req.Repo.URL, Ref: req.Repo.Ref},
-		Goals: req.Goals,
+		Repo:        ksquadv1.RepoSpec{URL: req.Repo.URL, Ref: req.Repo.Ref},
+		Goals:       req.Goals,
+		Conventions: req.Conventions,
+		ArchDocRefs: req.ArchDocRefs,
 	}
 	if req.Repo.Auth != nil {
 		// AD-8: repo.auth capture — the ref must name a Secret (the wizard's

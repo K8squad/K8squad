@@ -245,10 +245,14 @@ type projectRepoWire struct {
 
 // ProjectDetail is the GET /api/squad/projects/{name} authoring-spec projection.
 type ProjectDetail struct {
-	Name            string          `json:"name"`
-	Repo            projectRepoWire `json:"repo"`
-	Goals           []string        `json:"goals,omitempty"`
-	EgressPolicyRef *objectRefWire  `json:"egressPolicyRef,omitempty"`
+	Name  string          `json:"name"`
+	Repo  projectRepoWire `json:"repo"`
+	Goals []string        `json:"goals,omitempty"`
+	// Conventions + ArchDocRefs round-trip the non-secret descriptor fields so a
+	// full-spec compose PUT preserves them across unrelated saves (ISI-5303).
+	Conventions     string         `json:"conventions,omitempty"`
+	ArchDocRefs     []string       `json:"archDocRefs,omitempty"`
+	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
 	// TeamID is the owning Team's UID — the namespace the project lives in is the
 	// §12.1 tenancy root, so the Team in that namespace owns its credentials. The
 	// project-settings page forwards it as the fleet-admin routing hint for the
@@ -821,9 +825,11 @@ func roleDetail(ro *ksquadv1.Role) RoleDetail {
 // projectDetail projects a Project CR into the write-wire authoring shape (ADR-0016).
 func projectDetail(p *ksquadv1.Project) ProjectDetail {
 	d := ProjectDetail{
-		Name:  p.Name,
-		Repo:  projectRepoWire{URL: p.Spec.Repo.URL, Ref: p.Spec.Repo.Ref},
-		Goals: p.Spec.Goals,
+		Name:        p.Name,
+		Repo:        projectRepoWire{URL: p.Spec.Repo.URL, Ref: p.Spec.Repo.Ref},
+		Goals:       p.Spec.Goals,
+		Conventions: p.Spec.Conventions,
+		ArchDocRefs: p.Spec.ArchDocRefs,
 	}
 	if p.Spec.Repo.Auth != nil {
 		d.Repo.Auth = &repoAuthWire{CredentialSecretRef: secretRefWire{

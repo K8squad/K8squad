@@ -81,7 +81,12 @@ type ProjectSettings struct {
 	Project ProjectRef   `json:"project"`
 	Repo    RepoSettings `json:"repo"`
 	Auth    AuthSettings `json:"auth"`
-	CanEdit bool         `json:"canEdit"`
+	// Conventions + ArchDocRefs are the NON-SECRET descriptor fields edited by the
+	// "Docs & conventions" settings card (ISI-5303, ISI-5280 WS-E). They are plain
+	// spec text — surfacing them here does not weaken the no-token invariant (AC2).
+	Conventions string   `json:"conventions,omitempty"`
+	ArchDocRefs []string `json:"archDocRefs,omitempty"`
+	CanEdit     bool     `json:"canEdit"`
 }
 
 // ProjectSettingsService is the S1 read model. It shares the dashboard's reader
@@ -127,10 +132,12 @@ func (s *ProjectSettingsService) Settings(ctx context.Context, auth discussion.A
 	}
 
 	out := ProjectSettings{
-		Project: ProjectRef{Name: name, Namespace: ns},
-		Repo:    projectRepoSettings(&project.Spec.Repo),
-		Auth:    projectAuthSettings(&project.Spec.Repo),
-		CanEdit: canWriteProject(ctx, s.roles, auth, name),
+		Project:     ProjectRef{Name: name, Namespace: ns},
+		Repo:        projectRepoSettings(&project.Spec.Repo),
+		Auth:        projectAuthSettings(&project.Spec.Repo),
+		Conventions: project.Spec.Conventions,
+		ArchDocRefs: project.Spec.ArchDocRefs,
+		CanEdit:     canWriteProject(ctx, s.roles, auth, name),
 	}
 
 	// Last-test tri-state (AC3): the repo test-connection result is cached on the

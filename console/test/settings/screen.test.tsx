@@ -198,6 +198,56 @@ describe("<ProjectSettingsScreen> — ISI-4000 S2 ACs", () => {
     await waitFor(() => screen.getByTestId("repo-msg"));
     expect(screen.getByTestId("repo-msg").textContent).toContain("repo.url: must be a github.com URL");
   });
+
+  it("ISI-5303: the Docs card edits conventions/archDocRefs via a full-spec PUT that preserves repo/goals", async () => {
+    const calls: Array<{ url: string; method?: string; body?: string }> = [];
+    stubFetch((url, init) => {
+      calls.push({ url, method: init?.method, body: init?.body as string | undefined });
+      if (url.includes("/api/squad/projects/")) {
+        return jsonResponse(200, {
+          name: "proj-a",
+          repo: { url: "https://github.com/org/repo", ref: "main" },
+          goals: ["g1"],
+          conventions: "old",
+          archDocRefs: ["old.md"],
+        });
+      }
+      if (url.includes("/api/compose/projects/") && init?.method === "PUT") return jsonResponse(200, { operation: "updated" });
+      return jsonResponse(200, settings({ conventions: "old", archDocRefs: ["old.md"] }));
+    });
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    fireEvent.change(screen.getByTestId("docs-conventions-input"), { target: { value: "use tabs, not spaces" } });
+    fireEvent.change(screen.getByTestId("docs-ref-input-0"), { target: { value: "docs/architecture.md" } });
+    fireEvent.click(screen.getByTestId("docs-ref-add"));
+    fireEvent.change(screen.getByTestId("docs-ref-input-1"), { target: { value: "https://wiki/x" } });
+    fireEvent.submit(screen.getByTestId("settings-docs-form"));
+    await waitFor(() => screen.getByTestId("docs-msg"));
+    const put = calls.find((c) => c.url.includes("/api/compose/projects/") && c.method === "PUT");
+    const body = JSON.parse(put!.body as string);
+    expect(body.conventions).toBe("use tabs, not spaces");
+    expect(body.archDocRefs).toEqual(["docs/architecture.md", "https://wiki/x"]);
+    // full-spec round-trip: unrelated fields preserved, never wiped.
+    expect(body.goals).toEqual(["g1"]);
+    expect(body.repo.url).toBe("https://github.com/org/repo");
+  });
+
+  it("ISI-5303: a read-only viewer sees docs as text (no inputs), honoring canEdit:false", async () => {
+    stubFetch(() => jsonResponse(200, settings({ canEdit: false, conventions: "house style", archDocRefs: ["docs/a.md"] })));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    expect(screen.queryByTestId("docs-conventions-input")).toBeNull();
+    expect(screen.queryByTestId("settings-docs-form")).toBeNull();
+    expect(screen.getByTestId("docs-readonly").textContent).toContain("house style");
+    expect(screen.getByTestId("docs-readonly").textContent).toContain("docs/a.md");
+  });
+
+  it("ISI-5303: the guardrail banner is present (no secret-ref editing in the docs card)", async () => {
+    stubFetch((url) => (url.includes("/settings") ? jsonResponse(200, settings()) : jsonResponse(404, {})));
+    render(<ProjectSettingsScreen projectId="proj-a" />);
+    await waitFor(() => screen.getByTestId("settings-ready"));
+    expect(screen.getByTestId("docs-guardrail").textContent?.toLowerCase()).toContain("secret");
+  });
 });
 
 describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
@@ -227,9 +277,10 @@ describe("<ProjectSettingsScreen> — ISI-4839 section-nav scroll-spy", () => {
     render(<ProjectSettingsScreen projectId="proj-a" />);
     await waitFor(() => screen.getByTestId("settings-ready"));
 
-    // On mount the first section is active, and all three section cards are observed.
+    // On mount the first section is active, and all four section cards are observed
+    // (repository, access, sync, docs — the last added by ISI-5303).
     expect(screen.getByTestId("settings-nav-repository").className).toContain("settings__nav-link--active");
-    expect(observed.length).toBe(3);
+    expect(observed.length).toBe(4);
     expect(ioCallback).not.toBeNull();
 
     // "Access & credentials" scrolls into the trigger band → the active link follows it,

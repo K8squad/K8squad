@@ -133,4 +133,49 @@ describe("buildProjectPutBody — full-spec round-trip (AC3/AC4)", () => {
     const body = buildProjectPutBody(d, { repoUrl: "u", sync: { enabled: false } });
     expect((body.repo as Record<string, unknown>).sync).toBeUndefined();
   });
+
+  // ── ISI-5303: docs (conventions/archDocRefs) round-trip — a repo/sync save must
+  // never wipe them, and a docs save must never wipe repo/goals/egress. ──
+  it("PRESERVES existing conventions/archDocRefs through a repo-only edit (no docs overlay)", () => {
+    const d = detail({ conventions: "use tabs", archDocRefs: ["docs/arch.md", "https://x/y"] });
+    const body = buildProjectPutBody(d, { repoUrl: "https://github.com/org/new" });
+    expect(body.conventions).toBe("use tabs");
+    expect(body.archDocRefs).toEqual(["docs/arch.md", "https://x/y"]);
+  });
+
+  it("a docs overlay edits conventions/archDocRefs while PRESERVING goals/egress/repo auth", () => {
+    const d = detail({
+      conventions: "old",
+      archDocRefs: ["old.md"],
+      repo: { url: "u", auth: { credentialSecretRef: { name: "scm-pat", key: "apiKey" } } },
+    });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "u",
+      docs: { conventions: "new conventions", archDocRefs: ["docs/a.md", "docs/b.md"] },
+    });
+    expect(body.conventions).toBe("new conventions");
+    expect(body.archDocRefs).toEqual(["docs/a.md", "docs/b.md"]);
+    // unrelated owned fields still ride through
+    expect(body.goals).toEqual(["ship the thing", "keep it green"]);
+    expect(body.egressPolicyRef).toEqual({ name: "default-egress", namespace: "squad-a" });
+    expect((body.repo as Record<string, unknown>).auth).toEqual({
+      credentialSecretRef: { name: "scm-pat", key: "apiKey" },
+    });
+  });
+
+  it("a docs overlay trims blank/whitespace refs and omits an empty conventions clear", () => {
+    const d = detail({ conventions: "old", archDocRefs: ["old.md"] });
+    const body = buildProjectPutBody(d, {
+      repoUrl: "u",
+      docs: { conventions: "   ", archDocRefs: ["  ", "docs/keep.md", ""] },
+    });
+    expect(body.conventions).toBeUndefined(); // deliberate clear (omitempty ⇒ spec cleared)
+    expect(body.archDocRefs).toEqual(["docs/keep.md"]);
+  });
+
+  it("no conventions/archDocRefs ⇒ keys omitted (never an empty-array clear by accident)", () => {
+    const body = buildProjectPutBody(detail(), { repoUrl: "u" });
+    expect(body.conventions).toBeUndefined();
+    expect(body.archDocRefs).toBeUndefined();
+  });
 });

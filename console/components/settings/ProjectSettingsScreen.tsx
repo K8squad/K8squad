@@ -48,6 +48,7 @@ const SECTIONS = [
   { id: "repository", label: "Repository" },
   { id: "access", label: "Access & credentials" },
   { id: "sync", label: "Sync" },
+  { id: "docs", label: "Docs & conventions" },
 ] as const;
 
 /** Parse the compose error body ({error?, fields?}) into a single verbatim line
@@ -577,6 +578,14 @@ function RepositoryAndCredentials({
           </p>
         </section>
       )}
+
+      {/* ── Docs & conventions (ISI-5303, ISI-5280 WS-E): edit the NON-SECRET
+          descriptor fields (spec.conventions + spec.archDocRefs) injected into
+          every Run's context envelope. Editors get the DocsCard; non-editors keep
+          an honest read-only summary. The write is a full-spec compose PUT via
+          buildProjectPutBody, which round-trips repo/sync/goals/egress untouched.
+          GUARDRAIL: this card never reads or writes repo auth / secret refs. ── */}
+      <DocsCard data={data} projectId={projectId} onReload={onReload} />
     </>
   );
 }
@@ -751,6 +760,179 @@ function SyncCard({
           </button>
           {msg ? (
             <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="sync-msg" role="status">
+              {msg.text}
+            </span>
+          ) : null}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+/** Max conventions length surfaced in the char counter — advisory only; the CRD
+ *  itself sets no hard cap, but a visible ceiling keeps the field from becoming a
+ *  dumping ground that bloats every Run's context envelope. */
+const CONVENTIONS_SOFT_MAX = 4000;
+
+// ── ISI-5303 (ISI-5280 WS-E): DocsCard — edit the NON-SECRET project descriptor
+// fields. `conventions` is free-form guidance (a <textarea>); `archDocRefs` is a
+// list of URLs / repo-relative paths (an add/remove row editor). Both are
+// injected into every Run's context envelope by the contextsource controller.
+// The write is a FULL-SPEC compose PUT via buildProjectPutBody with a `docs`
+// overlay, so repo/sync/goals/egress round-trip untouched. GUARDRAIL: this card
+// renders no credential input and overlays only these two owned fields — repo
+// auth / secret refs can never be read or written here.
+function DocsCard({
+  data,
+  projectId,
+  onReload,
+}: {
+  data: ProjectSettings;
+  projectId: string;
+  onReload: () => Promise<void>;
+}) {
+  const { conventions: initialConventions, archDocRefs: initialRefs, canEdit } = data;
+  const [conventions, setConventions] = useState(initialConventions ?? "");
+  // One editable row per ref, plus never-empty so the editor always shows an input.
+  const [refs, setRefs] = useState<string[]>(
+    initialRefs && initialRefs.length ? [...initialRefs] : [""],
+  );
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<Msg | null>(null);
+
+  const setRefAt = useCallback((i: number, v: string) => {
+    setRefs((prev) => prev.map((r, idx) => (idx === i ? v : r)));
+  }, []);
+  const addRef = useCallback(() => setRefs((prev) => [...prev, ""]), []);
+  const removeRef = useCallback((i: number) => {
+    setRefs((prev) => {
+      const next = prev.filter((_, idx) => idx !== i);
+      return next.length ? next : [""];
+    });
+  }, []);
+
+  const onSave = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault();
+      setMsg(null);
+      setBusy(true);
+      try {
+        const detail = await fetchProjectDetail(projectId);
+        if (!detail) {
+          setMsg({ tone: "bad", text: "Couldn't read the current project to save — try again." });
+          return;
+        }
+        const body = buildProjectPutBody(detail, {
+          // Round-trip the authoritative repo URL (never an unsaved repo-form edit).
+          repoUrl: detail.repo.url,
+          docs: { conventions, archDocRefs: refs },
+        });
+        const res = await putProject(projectId, body);
+        if (res.ok) {
+          setMsg({ tone: "ok", text: "Docs & conventions saved." });
+          await onReload();
+        } else {
+          setMsg({ tone: "bad", text: await composeErrorText(res) });
+        }
+      } catch {
+        setMsg({ tone: "bad", text: "The compose endpoint is unreachable — try again." });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [projectId, conventions, refs, onReload],
+  );
+
+  if (!canEdit) {
+    const roRefs = (initialRefs ?? []).filter((r) => r.trim().length > 0);
+    return (
+      <section id="settings-docs" className="card settings__card" data-testid="settings-docs-panel">
+        <div className="settings__card-head">
+          <h2 className="settings__card-title">Docs &amp; conventions</h2>
+        </div>
+        <dl className="settings__health-list" data-testid="docs-readonly">
+          <div className="settings__health-row">
+            <dt>Conventions</dt>
+            <dd className="settings__health-value">
+              {initialConventions?.trim() ? initialConventions : "None set"}
+            </dd>
+          </div>
+          <div className="settings__health-row">
+            <dt>Arch-doc refs</dt>
+            <dd className="settings__health-value">
+              {roRefs.length ? roRefs.join(", ") : "None set"}
+            </dd>
+          </div>
+        </dl>
+      </section>
+    );
+  }
+
+  return (
+    <section id="settings-docs" className="card settings__card" data-testid="settings-docs-panel">
+      <div className="settings__card-head">
+        <h2 className="settings__card-title">Docs &amp; conventions</h2>
+      </div>
+      <p className="muted settings__note">
+        Project conventions and architecture-doc references are injected into every agent run&apos;s context.
+        These are non-secret descriptor fields.
+      </p>
+      <p className="muted settings__note" data-testid="docs-guardrail" role="note">
+        🔒 This panel edits descriptor text only. Repository credentials and secret references live under
+        Access &amp; credentials and are never read or changed here.
+      </p>
+      <form className="settings__form" data-testid="settings-docs-form" onSubmit={onSave}>
+        <label className="settings__field">
+          <span>Conventions</span>
+          <textarea
+            rows={6}
+            value={conventions}
+            maxLength={CONVENTIONS_SOFT_MAX}
+            onChange={(e) => setConventions(e.target.value)}
+            placeholder="Coding style, review norms, branch conventions…"
+            data-testid="docs-conventions-input"
+          />
+          <span className="muted settings__hint" data-testid="docs-conventions-count">
+            {conventions.length}/{CONVENTIONS_SOFT_MAX}
+          </span>
+        </label>
+        <fieldset className="settings__field" data-testid="docs-refs">
+          <span>Arch-doc references (URLs or repo-relative paths)</span>
+          {refs.map((r, i) => (
+            <div key={i} className="settings__row">
+              <input
+                type="text"
+                value={r}
+                onChange={(e) => setRefAt(i, e.target.value)}
+                placeholder="https://… or docs/architecture.md"
+                data-testid={`docs-ref-input-${i}`}
+              />
+              <button
+                type="button"
+                className="btn btn--ghost"
+                onClick={() => removeRef(i)}
+                aria-label={`Remove reference ${i + 1}`}
+                data-testid={`docs-ref-remove-${i}`}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="btn btn--ghost"
+            onClick={addRef}
+            data-testid="docs-ref-add"
+          >
+            Add reference
+          </button>
+        </fieldset>
+        <div className="settings__actions">
+          <button className="btn btn--primary" type="submit" disabled={busy} data-testid="docs-save">
+            {busy ? "Saving…" : "Save docs & conventions"}
+          </button>
+          {msg ? (
+            <span className={`settings__msg settings__msg--${msg.tone}`} data-testid="docs-msg" role="status">
               {msg.text}
             </span>
           ) : null}

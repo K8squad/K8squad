@@ -283,6 +283,33 @@ func TestComposeInvalidField422(t *testing.T) {
 	}
 }
 
+// ── docs descriptor fields map onto spec (ISI-5303 / ISI-5280 WS-E) ──────────
+
+// TestComposeProjectDocs — conventions + archDocRefs ride the compose wire onto
+// spec.Conventions / spec.ArchDocRefs (the "Docs & conventions" settings card
+// write). They are non-secret descriptor fields injected into every Run context.
+func TestComposeProjectDocs(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := validProject("widget")
+	req.Conventions = "squash-merge only; tabs not spaces"
+	req.ArchDocRefs = []string{"docs/architecture.md", "https://wiki/adr-7"}
+	w := do(svc.handleProject(true), http.MethodPost, "/api/projects",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Project
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "widget"}, &got); err != nil {
+		t.Fatalf("project not applied: %v", err)
+	}
+	if got.Spec.Conventions != "squash-merge only; tabs not spaces" {
+		t.Fatalf("conventions not mapped: %q", got.Spec.Conventions)
+	}
+	if len(got.Spec.ArchDocRefs) != 2 || got.Spec.ArchDocRefs[0] != "docs/architecture.md" {
+		t.Fatalf("archDocRefs not mapped: %+v", got.Spec.ArchDocRefs)
+	}
+}
+
 // ── edit makes a new revision (§6.4, DoD) ────────────────────────────────────
 
 func TestComposeEditMakesNewRevision(t *testing.T) {
