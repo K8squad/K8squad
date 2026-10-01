@@ -922,6 +922,80 @@ func TestDriveProviderBackfill(t *testing.T) {
 	}
 }
 
+// TestDriveResponseModelBackfill (R3 / ISI-5333): usage payloads without a
+// served model are backfilled with gen_ai.response.model derived from the
+// run's resolved model (ModelRoute.Model → cfg.Model) before the event leaves
+// the process, so llm.call carries gen_ai.response.model instead of 0/N. A
+// runtime that already reported a served model keeps it — the backfill only
+// fills the empty case, never overrides.
+func TestDriveResponseModelBackfill(t *testing.T) {
+	cases := []struct {
+		name         string
+		cfgModel     string
+		route        a2a.ModelRoute
+		emitResponse string
+		wantResponse string
+	}{
+		{
+			name:         "empty served model backfilled from route",
+			route:        a2a.ModelRoute{Endpoint: "https://byo.example.com/v1", Model: "qwen3.8"},
+			wantResponse: "qwen3.8",
+		},
+		{
+			name:         "empty served model backfilled from cfg model",
+			cfgModel:     "claude-sonnet-4",
+			wantResponse: "claude-sonnet-4",
+		},
+		{
+			name:         "runtime-reported served model preserved",
+			cfgModel:     "claude-sonnet-4",
+			emitResponse: "anthropic/claude-3-5-haiku",
+			wantResponse: "anthropic/claude-3-5-haiku",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, err := runtimes.Get(apiv1alpha1.RuntimeTypeOpenClaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := New(rt, &fakeRunner{
+				emits: []Progress{{Kind: a2a.EventUsage, Usage: &a2a.UsagePayload{
+					Input:         1,
+					Output:        2,
+					ResponseModel: tc.emitResponse,
+				}}},
+				outcome: Outcome{State: a2a.TaskCompleted},
+			}, Config{Identity: Identity{Name: "coder-1"}, Model: tc.cfgModel, ShimVersion: "test"})
+
+			if _, err := e.SubmitTask(context.Background(), a2a.Task{
+				A2ATaskID:  "run-response-model",
+				ModelRoute: tc.route,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ch, err := e.StreamEvents(context.Background(), "run-response-model", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotResponse string
+			for _, ev := range drain(t, ch) {
+				if ev.Type != a2a.EventUsage {
+					continue
+				}
+				p, ok := ev.Payload.(a2a.UsagePayload)
+				if !ok {
+					t.Fatalf("usage payload type %T", ev.Payload)
+				}
+				gotResponse = p.ResponseModel
+			}
+			if gotResponse != tc.wantResponse {
+				t.Errorf("responseModel = %q, want %q", gotResponse, tc.wantResponse)
+			}
+		})
+	}
+}
+
 func boolTrue() *bool { b := true; return &b }
 
 // captureRunner records the ExecSpec the engine built and settles immediately.

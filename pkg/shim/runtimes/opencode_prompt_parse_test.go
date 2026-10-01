@@ -239,14 +239,15 @@ func TestParseOpenCodeStepFinishUsageLive(t *testing.T) {
 	assert.InDelta(t, 0.001, u.CostUSD, 1e-9)
 	assert.Equal(t, int64(0), u.DurationMS, "no duration on the v1.18.27 step-finish wire")
 	assert.Equal(t, "stop", u.FinishReason, "live step_finish reason:stop maps to gen_ai.response.finish_reasons")
-	assert.Empty(t, u.ResponseModel, "v1.18.27 step-finish part carries no served-model; intentionally empty")
+	assert.Empty(t, u.ResponseModel, "v1.18.27 step-finish part carries no served model at parse; engine backfills it from the resolved model (R3, like Model)")
 	assert.Empty(t, u.ResponseID, "v1.18.27 step-finish part carries no provider response id; intentionally empty")
 }
 
 // TestParseOpenCodeStepFinishReason (GH #635): a non-stop step-finish reason
-// ("length") still maps onto FinishReason, and ResponseModel/ResponseID stay
-// empty — the v1.18.27 step-finish part carries no served model or provider
-// response id, so those are an explicit, documented no-op for this runtime.
+// ("length") still maps onto FinishReason. ResponseModel stays empty at parse
+// because this model-less part carries no served model (engine.go backfills it
+// from the resolved model, R3/ISI-5333); ResponseID stays empty — the
+// v1.18.27 part carries no provider response id, a documented no-op.
 func TestParseOpenCodeStepFinishReason(t *testing.T) {
 	line := `{"type":"step_finish","part":{"type":"step-finish","reason":"length","tokens":{"input":900,"output":256}}}`
 	out := parseOpenCodeLine(line)
@@ -272,6 +273,10 @@ func TestParseOpenCodeStepFinishLegacyCostObject(t *testing.T) {
 	require.NotNil(t, out[0].Usage)
 	u := out[0].Usage
 	assert.Equal(t, "anthropic/claude-sonnet-4", u.Model)
+	// R3 (ISI-5333): when the step-finish part DOES carry providerID/modelID,
+	// that served model maps onto gen_ai.response.model directly at parse — no
+	// engine backfill needed. opencode is single-model so served == requested.
+	assert.Equal(t, "anthropic/claude-sonnet-4", u.ResponseModel)
 	assert.Equal(t, 1200, u.Input)
 	assert.Equal(t, 340, u.Output)
 	assert.Equal(t, 50, u.Reasoning)

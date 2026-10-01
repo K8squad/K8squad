@@ -442,21 +442,32 @@ func usageFromStepFinish(part *openCodePart) *a2a.UsagePayload {
 		Output:    part.Tokens.Output,
 		Reasoning: part.Tokens.Reasoning,
 	}
-	switch {
-	case part.ProviderID != "" && part.ModelID != "":
-		u.Model = part.ProviderID + "/" + part.ModelID
-	default:
-		u.Model = part.ModelID
+	// served is the model opencode reports it actually ran the step with
+	// (providerID/modelID). It maps onto BOTH the requested model
+	// (gen_ai.request.model) and the served model (gen_ai.response.model,
+	// R3/ISI-5333): opencode is single-model, so the step reports one model
+	// that both requested and served the response — the two are equal here. A
+	// true backup-served split (served != requested) would need a runtime that
+	// reports them separately; this runtime cannot, so no information is lost by
+	// equating them.
+	served := part.ModelID
+	if part.ProviderID != "" && part.ModelID != "" {
+		served = part.ProviderID + "/" + part.ModelID
 	}
+	u.Model = served
+	// R3 (ISI-5333, GH #634/#635 residual): populate gen_ai.response.model from
+	// the served model so llm.call carries it instead of leaving it 0/N. When
+	// the v1.18.27 step-finish part omits the model (it rides message.updated,
+	// not the part), served is empty and both Model and ResponseModel are
+	// backfilled from the run's resolved model in pkg/shim/engine.go.
+	u.ResponseModel = served
 	// ISI-4383: carry the provider distinctly as gen_ai.system.
 	u.Provider = part.ProviderID
 	// GH #635: surface the wire's step-finish `reason` as
-	// gen_ai.response.finish_reasons. ResponseModel and ResponseID stay empty
-	// for this runtime by design: opencode v1.18.27's step-finish part carries
-	// no provider response id and reports a single model (requested == served),
-	// so there is nothing to map them from. This is an explicit, tested no-op —
-	// the fallback marker and response-model/response-id fields exist for
-	// runtimes that report requested-vs-served separately (ADR-0021 D2 §74).
+	// gen_ai.response.finish_reasons. ResponseID stays empty for this runtime by
+	// design: opencode v1.18.27's step-finish part carries no provider response
+	// id, so there is nothing to map it from — an explicit, tested no-op. The
+	// response-id field exists for runtimes that report it (ADR-0021 D2 §74).
 	u.FinishReason = part.Reason
 	if part.Tokens.Cache != nil {
 		u.CacheRead = part.Tokens.Cache.Read
