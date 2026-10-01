@@ -124,6 +124,45 @@ func NewReplyHopResolver(db *sql.DB) discussion.ReplyHopResolver {
 	return pgLedger{db: db}
 }
 
+// ProposalThreadResolver answers "which room thread was this run dispatched from?"
+// over the SAME dispatch ledger (ISI-5282 propose mode). It satisfies
+// memory.ProposalThreadResolver structurally (primitives-only signature), so
+// cmd/memory can hand it to the authoring tool surface without an import cycle.
+type ProposalThreadResolver struct{ db *sql.DB }
+
+// NewProposalThreadResolver builds the propose-mode thread lookup over the dispatch
+// ledger: a coordinator Run minted by a room @-mention is bound (Bind) to its drive
+// item, so runID → coord.claim.run_id → mention_dispatch.work_item_id recovers the
+// originating thread + its project/team. A propose-mode coordinator posts its
+// create_ticket/assign_agent proposals back into exactly that conversation.
+func NewProposalThreadResolver(db *sql.DB) *ProposalThreadResolver {
+	return &ProposalThreadResolver{db: db}
+}
+
+// ThreadForDispatchedRun resolves the room thread (project slug, team uid, thread id)
+// a Run was dispatched from. ok=false for any run that is NOT a room thread-run (no
+// mention_dispatch row for its claim) — there is no originating thread, so the caller
+// refuses propose mode honestly rather than guessing. A blank runID is a non-run post
+// (ok=false, no error).
+func (r *ProposalThreadResolver) ThreadForDispatchedRun(ctx context.Context, runID string) (projectID string, teamID, threadID uuid.UUID, ok bool, err error) {
+	if strings.TrimSpace(runID) == "" {
+		return "", uuid.Nil, uuid.Nil, false, nil
+	}
+	err = r.db.QueryRowContext(ctx, `
+		SELECT t.project_id, t.team_id, md.thread_id
+		  FROM discussion.mention_dispatch md
+		  JOIN coord.claim c       ON c.work_item_id = md.work_item_id
+		  JOIN discussion.thread t ON t.id = md.thread_id
+		 WHERE c.run_id = $1::uuid`, runID).Scan(&projectID, &teamID, &threadID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", uuid.Nil, uuid.Nil, false, nil // not a thread-run — no proposal thread
+	}
+	if err != nil {
+		return "", uuid.Nil, uuid.Nil, false, err
+	}
+	return projectID, teamID, threadID, true, nil
+}
+
 // DispatchMention turns one resolved @-mention into a real agent Run. It is idempotent on
 // (MessageID, AgentName): a duplicate at-least-once delivery is a no-op.
 func (m *dispatcher) DispatchMention(ctx context.Context, d discussion.MentionDispatch) error {

@@ -217,6 +217,72 @@ func TestResolveGrantCoordinatorDefaultUnionsWithTeamGrants(t *testing.T) {
 	assert.True(t, got.Has("extra.cap"), "explicit team grant for the IC role")
 }
 
+// roleCRMode builds a coordinator Role CR with an explicit CoordinatorMode.
+func roleCRMode(name, mode string) *api.Role {
+	return &api.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: runNS},
+		Spec:       api.RoleSpec{Coordinator: true, CoordinatorMode: mode},
+	}
+}
+
+// TestResolveGrantCoordinatorProposeMode (ISI-5282): a coordinator Role whose
+// CoordinatorMode is "propose" gets BOTH work_item.author AND the derived
+// coordinator.propose grant, so the authoring edge raises proposals.
+func TestResolveGrantCoordinatorProposeMode(t *testing.T) {
+	team := teamWithGrants("squad")
+	role := roleCRMode("role-manager", "propose")
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, team, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor), "propose coordinator still authors")
+	assert.True(t, got.Has(CapabilityCoordinatorPropose), "propose mode is a derived grant")
+	assert.Equal(t, []string{CapabilityCoordinatorPropose, CapabilityWorkItemAuthor}, got.List())
+}
+
+// TestResolveGrantCoordinatorAutoModeNoPropose (ISI-5282): a coordinator in auto
+// mode (explicit "auto") gets work_item.author but NOT coordinator.propose.
+func TestResolveGrantCoordinatorAutoModeNoPropose(t *testing.T) {
+	role := roleCRMode("role-manager", "auto")
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor))
+	assert.False(t, got.Has(CapabilityCoordinatorPropose), "auto mode gets no propose grant")
+}
+
+// TestResolveGrantCoordinatorEmptyModeDefaultsAuto (ISI-5282): an unset
+// CoordinatorMode defaults to auto — author-capable, no propose gate.
+func TestResolveGrantCoordinatorEmptyModeDefaultsAuto(t *testing.T) {
+	role := roleCR("role-manager", true) // Coordinator=true, CoordinatorMode=""
+	agent := agentWithRole("john", "role-manager")
+	run := grantRun("squad", "john")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.True(t, got.Has(CapabilityWorkItemAuthor))
+	assert.False(t, got.Has(CapabilityCoordinatorPropose), "empty mode defaults to auto")
+}
+
+// TestResolveGrantNonCoordinatorNeverPropose (ISI-5282): a non-coordinator role
+// never gets coordinator.propose, even if (impossibly) its mode were set.
+func TestResolveGrantNonCoordinatorNeverPropose(t *testing.T) {
+	role := &api.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: "role-implementer", Namespace: runNS},
+		Spec:       api.RoleSpec{Coordinator: false, CoordinatorMode: "propose"},
+	}
+	agent := agentWithRole("ada", "role-implementer")
+	run := grantRun("squad", "ada")
+
+	got, err := ResolveGrant(context.Background(), capClient(t, role, agent), run)
+	require.NoError(t, err)
+	assert.False(t, got.Has(CapabilityCoordinatorPropose))
+	assert.True(t, got.Empty(), "non-coordinator is deny-by-default regardless of mode")
+}
+
 // TestGrantSetZeroValueDenies: the zero-value GrantSet is deny-by-default.
 func TestGrantSetZeroValueDenies(t *testing.T) {
 	var g GrantSet

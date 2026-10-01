@@ -33,6 +33,19 @@ import (
 // widening never requires a rebuild (ADR-0024 §3).
 const CapabilityWorkItemAuthor = "work_item.author"
 
+// CapabilityCoordinatorPropose is the capability slug that marks a dispatched
+// coordinator agent as operating in PROPOSE mode (Role.Spec.CoordinatorMode ==
+// "propose", ISI-5282). It is a DERIVED grant — never a Team.Spec.Grants entry —
+// added alongside work_item.author for a coordinator Role whose CoordinatorMode
+// is propose (see ResolveGrant). It rides the SAME server-authenticated
+// capability channel work_item.author does (the run-token claim S3 / the
+// X-Agent-Capabilities header), so the authoring MCP edge learns a coordinator
+// is propose-gated from control-plane config alone — never a tool argument or a
+// client-settable field. When present, the authoring tools (work_item_create /
+// work_item_assign) raise inert discussion Proposals the human confirms, instead
+// of executing the coord write directly (auto mode, the default, is unchanged).
+const CapabilityCoordinatorPropose = "coordinator.propose"
+
 // CapabilityDiscussion is the capability slug baked into the per-run HS256
 // token for source=discussion thread-runs. It authorizes the run's token to
 // call discussion_search + discussion_post through the built-in
@@ -160,12 +173,18 @@ func ResolveGrant(ctx context.Context, reader client.Reader, run *api.Run) (Gran
 			caps[c] = struct{}{}
 		}
 		// ISI-5223: coordinator roles are author-capable by default.
-		coordinator, err := isCoordinatorRole(ctx, reader, &agent)
+		// ISI-5282: a coordinator Role whose CoordinatorMode is "propose" ALSO
+		// gets the derived coordinator.propose grant, so the authoring edge raises
+		// proposals instead of executing directly.
+		coordinator, mode, err := coordinatorRole(ctx, reader, &agent)
 		if err != nil {
 			return GrantSet{}, err
 		}
 		if coordinator {
 			caps[CapabilityWorkItemAuthor] = struct{}{}
+			if mode == CoordinatorModePropose {
+				caps[CapabilityCoordinatorPropose] = struct{}{}
+			}
 		}
 	}
 
@@ -175,15 +194,23 @@ func ResolveGrant(ctx context.Context, reader client.Reader, run *api.Run) (Gran
 	return GrantSet{caps: caps}, nil
 }
 
-// isCoordinatorRole reports whether the agent's Role (agent.spec.roleRef) is a
-// coordinator (Role.Spec.Coordinator=true) — the ISI-5223 default-grant signal.
-// An empty roleRef or a Role deleted after admission is NOT a coordinator (no
-// default grant), mirroring the model-per-role resolver's treatment of a
-// dangling roleRef. Only a TRANSIENT read error (not NotFound) fails closed, so
-// a lookup glitch can never silently widen OR drop the authoring grant.
-func isCoordinatorRole(ctx context.Context, reader client.Reader, agent *api.Agent) (bool, error) {
+// CoordinatorModePropose is the Role.Spec.CoordinatorMode value that gates
+// coordinator authoring behind a human-confirmed proposal (ISI-5282). It mirrors
+// the api.RoleSpec enum; kept here (not imported) so the derivation reads with the
+// grant slug it drives.
+const CoordinatorModePropose = "propose"
+
+// coordinatorRole reports whether the agent's Role (agent.spec.roleRef) is a
+// coordinator (Role.Spec.Coordinator=true) — the ISI-5223 default-grant signal —
+// and, if so, its CoordinatorMode (ISI-5282: "" / "auto" ⇒ execute directly,
+// "propose" ⇒ raise proposals). An empty roleRef or a Role deleted after
+// admission is NOT a coordinator (no default grant), mirroring the model-per-role
+// resolver's treatment of a dangling roleRef. Only a TRANSIENT read error (not
+// NotFound) fails closed, so a lookup glitch can never silently widen OR drop the
+// authoring grant.
+func coordinatorRole(ctx context.Context, reader client.Reader, agent *api.Agent) (bool, string, error) {
 	if agent.Spec.RoleRef.Name == "" {
-		return false, nil
+		return false, "", nil
 	}
 	ns := agent.Spec.RoleRef.Namespace
 	if ns == "" {
@@ -192,9 +219,9 @@ func isCoordinatorRole(ctx context.Context, reader client.Reader, agent *api.Age
 	var role api.Role
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: ns, Name: agent.Spec.RoleRef.Name}, &role); err != nil {
 		if isNotFound(err) {
-			return false, nil
+			return false, "", nil
 		}
-		return false, fmt.Errorf("read role %s/%s for coordinator default grant (fail-closed): %w", ns, agent.Spec.RoleRef.Name, err)
+		return false, "", fmt.Errorf("read role %s/%s for coordinator default grant (fail-closed): %w", ns, agent.Spec.RoleRef.Name, err)
 	}
-	return role.Spec.Coordinator, nil
+	return role.Spec.Coordinator, role.Spec.CoordinatorMode, nil
 }
