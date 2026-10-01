@@ -477,8 +477,19 @@ const githubIssueLabelPrefix = "ksquad.github.issue="
 // takes no build dependency on pkg/scm (the reconciler owns that write surface;
 // this is a pure reader of a column it does not own).
 type githubIssuePayload struct {
-	Body string `json:"body,omitempty"`
-	URL  string `json:"url,omitempty"`
+	Body     string               `json:"body,omitempty"`
+	URL      string               `json:"url,omitempty"`
+	Comments []githubIssueComment `json:"comments,omitempty"`
+}
+
+// githubIssueComment is the slice of the mirrored comment payload this source
+// surfaces (ISI-5308 WS-D.1): author + body + timestamp. It mirrors
+// pkg/scm.IssueComment's json tags for exactly these fields — decoded locally so
+// contextsource keeps taking no build dependency on pkg/scm.
+type githubIssueComment struct {
+	Actor     string    `json:"actor,omitempty"`
+	Body      string    `json:"body,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
 }
 
 // GitHubDetails projects the §5.4 SCM mirror of the GitHub issue a work item
@@ -557,6 +568,17 @@ func (s *Source) GitHubDetails(ctx context.Context, projectRef, workItemID strin
 			details.Body = p.Body
 			if p.URL != "" {
 				details.IssueURL = p.URL // prefer the provider's own canonical URL
+			}
+			for _, c := range p.Comments {
+				wrote := ""
+				if !c.CreatedAt.IsZero() {
+					wrote = c.CreatedAt.UTC().Format(time.RFC3339)
+				}
+				details.Comments = append(details.Comments, contextasm.GitHubComment{
+					Author:    c.Actor,
+					Body:      c.Body,
+					WrittenAt: wrote,
+				})
 			}
 		}
 		// A malformed payload degrades to ref/url/state without the body rather

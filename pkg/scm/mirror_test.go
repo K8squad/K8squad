@@ -60,6 +60,10 @@ func (s *stubProvider) CreateComment(_ context.Context, _, _, _, _ string) (stri
 	return "", fmt.Errorf("not implemented in stub")
 }
 
+func (s *stubProvider) ListIssueComments(_ context.Context, _, _ string) ([]IssueComment, error) {
+	return nil, fmt.Errorf("not implemented in stub")
+}
+
 func (s *stubProvider) UpdateIssue(_ context.Context, _, _ string, _ IssueUpdate) error {
 	return fmt.Errorf("not implemented in stub")
 }
@@ -123,6 +127,39 @@ func TestBuildMirrorRowsCarriesHeadSHAInPayload(t *testing.T) {
 	}
 	if payload.HeadSHA != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
 		t.Fatalf("payload HeadSHA = %q, want the PR head commit SHA carried through the mirror", payload.HeadSHA)
+	}
+}
+
+// TestBuildMirrorRowsCarriesIssueComments pins ISI-5308: an issue record's
+// enriched comment thread rides the row payload JSONB (no indexed column, no
+// migration — the same posture as HeadSHA), so the bridge import and the agent
+// context element can surface the upstream discussion from the local mirror.
+func TestBuildMirrorRowsCarriesIssueComments(t *testing.T) {
+	provider := &stubProvider{name: "github"}
+	rows := BuildMirrorRows("ns", "proj", provider, "github.com/acme/app", []NormalizedRecord{
+		{Kind: RecordTypeIssue, ExternalID: "7", State: "open", Title: "bug", Actor: "dev",
+			Body: "the issue body",
+			Comments: []IssueComment{
+				{ExternalID: "11", Actor: "alice", Body: "first"},
+				{ExternalID: "12", Actor: "bob", Body: "second"},
+			}},
+	}, "")
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	var payload MirrorPayload
+	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if payload.Body != "the issue body" {
+		t.Fatalf("payload Body = %q, want the issue body carried through", payload.Body)
+	}
+	if len(payload.Comments) != 2 {
+		t.Fatalf("payload Comments = %d, want 2 (thread carried in JSONB)", len(payload.Comments))
+	}
+	if payload.Comments[0].Actor != "alice" || payload.Comments[0].Body != "first" ||
+		payload.Comments[1].Actor != "bob" || payload.Comments[1].Body != "second" {
+		t.Fatalf("payload Comments wrong: %+v", payload.Comments)
 	}
 }
 

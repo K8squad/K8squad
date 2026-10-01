@@ -814,3 +814,96 @@ func TestRateLimitedErrorQuantizesDuration(t *testing.T) {
 		t.Fatalf("nanosecond fraction leaked into message: %q", msg)
 	}
 }
+
+// issueWithComments renders an issue list element carrying a comment COUNT, so
+// the fetchIssues enrichment gate (GetComments() > 0) can be exercised.
+func issueWithComments(number int, state, title, actor string, comments int) string {
+	b, _ := json.Marshal(map[string]interface{}{
+		"number":   number,
+		"title":    title,
+		"state":    state,
+		"user":     map[string]string{"login": actor},
+		"html_url": fmt.Sprintf("https://github.com/acme/app/issues/%d", number),
+		"comments": comments,
+	})
+	return string(b)
+}
+
+// TestFetchIssuesEnrichesComments pins ISI-5308: an issue that reports a comment
+// count > 0 is enriched with its thread (one ListComments call), while an issue
+// with zero comments incurs NO comment call at all — the cost is proportional to
+// real comment volume, never a blanket N+1.
+func TestFetchIssuesEnrichesComments(t *testing.T) {
+	var commentCalls int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `[%s,%s]`,
+			issueWithComments(1, "open", "has-comments", "dev", 2),
+			issueWithComments(2, "open", "no-comments", "dev", 0))
+	})
+	mux.HandleFunc("/repos/acme/app/issues/1/comments", func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&commentCalls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[
+			{"id":11,"body":"first","user":{"login":"alice"},"html_url":"https://github.com/acme/app/issues/1#issuecomment-11"},
+			{"id":12,"body":"second","user":{"login":"bob"},"html_url":"https://github.com/acme/app/issues/1#issuecomment-12"}
+		]`)
+	})
+	mux.HandleFunc("/repos/acme/app/issues/2/comments", func(http.ResponseWriter, *http.Request) {
+		t.Error("issue 2 has 0 comments; ListComments must not be called")
+	})
+	p, _ := newTestGitHubProvider(t, mux)
+
+	records, err := p.fetchIssues(context.Background(), "acme", "app", SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("fetchIssues: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
+	}
+	byNum := map[int]NormalizedRecord{}
+	for _, rec := range records {
+		byNum[rec.Number] = rec
+	}
+	one := byNum[1]
+	if len(one.Comments) != 2 {
+		t.Fatalf("issue 1 comments = %d, want 2 (%+v)", len(one.Comments), one.Comments)
+	}
+	if one.Comments[0].Body != "first" || one.Comments[0].Actor != "alice" || one.Comments[0].ExternalID != "11" {
+		t.Errorf("comment[0] wrong: %+v", one.Comments[0])
+	}
+	if one.Comments[1].Body != "second" || one.Comments[1].Actor != "bob" {
+		t.Errorf("comment[1] wrong: %+v", one.Comments[1])
+	}
+	if two := byNum[2]; len(two.Comments) != 0 {
+		t.Errorf("issue 2 (0 comments) must not be enriched: %+v", two.Comments)
+	}
+	if got := atomic.LoadInt32(&commentCalls); got != 1 {
+		t.Errorf("comment calls = %d, want exactly 1 (only the commented issue)", got)
+	}
+}
+
+// TestListIssueComments pins the standalone seam method (ISI-5308): it wraps
+// Issues.ListComments for one issue addressed by its external id, chronological.
+func TestListIssueComments(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app/issues/5/comments", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":99,"body":"only","user":{"login":"carol"},"html_url":"u"}]`)
+	})
+	p, _ := newTestGitHubProvider(t, mux)
+
+	cs, err := p.ListIssueComments(context.Background(), "https://github.com/acme/app", "5")
+	if err != nil {
+		t.Fatalf("ListIssueComments: %v", err)
+	}
+	if len(cs) != 1 || cs[0].Body != "only" || cs[0].Actor != "carol" || cs[0].ExternalID != "99" {
+		t.Fatalf("comments wrong: %+v", cs)
+	}
+
+	// A malformed external id is a deterministic 422, no retry can fix it.
+	if _, err := p.ListIssueComments(context.Background(), "https://github.com/acme/app", "not-a-number"); err == nil {
+		t.Fatal("expected error for non-numeric external id")
+	}
+}

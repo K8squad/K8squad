@@ -171,6 +171,12 @@ type Options struct {
 	// and dispatch the chosen agent in one call. Nil ⇒ the route keeps the documented
 	// 501 (a DB-less/cache-less dev run), exactly like the dispatch sibling.
 	GithubIssueDispatch GithubIssueDispatcher
+	// GithubIssueMirror lets the Epic-2 bridge mint a ticket carrying the REAL
+	// upstream issue (body + comments) by reading the §5.4 scm mirror locally
+	// (ISI-5308 WS-D.1), instead of the stub placeholder body. Nil ⇒ the bridge
+	// keeps the stub body (unchanged behaviour); it is a pure read enrichment and
+	// never gates the dispatch.
+	GithubIssueMirror GithubIssueMirrorReader
 	// DiscussionProposals is the ISI-4928 proposal confirm/dismiss seam: the discussion
 	// Store's decision-lifecycle ops (proposed → confirmed|dismissed|executed) driven by
 	// proposalConfirmHandler/proposalDismissHandler, which fan ONLY into the existing
@@ -1199,7 +1205,7 @@ func (s *Server) routes(opts Options) {
 			ghAssign.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
 		}
 		if opts.GithubIssueDispatch != nil {
-			ghAssign.HandleFunc("", githubIssueDispatchHandler(opts.GithubIssueDispatch, opts.ProjectRefs)).Methods(http.MethodPost)
+			ghAssign.HandleFunc("", githubIssueDispatchHandler(opts.GithubIssueDispatch, opts.ProjectRefs, opts.GithubIssueMirror)).Methods(http.MethodPost)
 		} else {
 			ghAssign.HandleFunc("", notImplemented("github-issue dispatch bridge", "ISI-4783: wire a coord.WorkItemWriteStore + WorkItemDispatchStore to enable")).
 				Methods(http.MethodPost)

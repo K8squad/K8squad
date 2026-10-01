@@ -62,6 +62,17 @@ type SourceProvider interface {
 	// Returns the created comment ID.
 	CreateComment(ctx context.Context, repoURL string, kind string, externalID string, comment string) (string, error)
 
+	// ListIssueComments fetches the discussion comments on ONE issue, in
+	// chronological order (ISI-5308 WS-D.1). It is the provider-knowledge half
+	// of importing a GitHub-sourced issue — on GitHub this wraps
+	// Issues.ListComments — surfaced on the seam so the repo-sync relay can
+	// mirror comments alongside the issue body and the Epic-2 bridge can import
+	// them into the minted ticket. The returned bodies are EXTERNAL, untrusted
+	// content (D8): callers fence them at the untrusted-external tier and never
+	// treat them as instructions. A provider that cannot read comments fails
+	// closed (notImplemented), never silently returns an empty set.
+	ListIssueComments(ctx context.Context, repoURL string, externalID string) ([]IssueComment, error)
+
 	// UpdateIssue applies a partial update to one provider issue (story
 	// 11.2: the outbound half of issue⇄work-item sync). The wire shape of
 	// the edit — one PATCH carrying state and labels, a state_event
@@ -205,6 +216,13 @@ type NormalizedRecord struct {
 	// Labels are the labels applied to this record.
 	Labels []string `json:"labels,omitempty"`
 
+	// Comments are the issue's discussion comments (ISI-5308), fetched during
+	// the snapshot for issue records that carry any. EXTERNAL, untrusted content
+	// — mirrored into the row payload so the bridge import and the agent context
+	// element can surface the upstream discussion without a GitHub call. Nil for
+	// non-issue records and for issues with no comments.
+	Comments []IssueComment `json:"comments,omitempty"`
+
 	// PR-specific fields
 	HeadRef string `json:"head_ref,omitempty"`
 	// HeadSHA is the PR head commit SHA (ISI-4750 E3). HeadRef carries the
@@ -226,6 +244,27 @@ type NormalizedRecord struct {
 
 	// Provider-specific raw data (for debugging)
 	Raw map[string]interface{} `json:"raw,omitempty"`
+}
+
+// IssueComment is one normalized discussion comment on an issue (ISI-5308
+// WS-D.1), the provider-agnostic shape ListIssueComments returns and the mirror
+// persists in its row payload. It is EXTERNAL, untrusted content: Body is the
+// author's text verbatim, surfaced to agents only at the untrusted-external
+// tier (reference to weigh, never commands — D8). It carries NO credential.
+type IssueComment struct {
+	// ExternalID is the provider's unique id for the comment, so a mirror pass
+	// is idempotent and a consumer can dedup/anchor on it.
+	ExternalID string `json:"external_id,omitempty"`
+	// Actor is the comment author's username — provenance for the untrusted body.
+	Actor string `json:"actor,omitempty"`
+	// Body is the comment text. External, untrusted content.
+	Body string `json:"body,omitempty"`
+	// CreatedAt is when the comment was posted.
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	// UpdatedAt is when the comment was last edited (== CreatedAt if never).
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// URL is the comment's web URL, when the provider supplies one.
+	URL string `json:"url,omitempty"`
 }
 
 // IssueUpdate is the provider-agnostic partial mutation of one issue
