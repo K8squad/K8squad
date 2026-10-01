@@ -137,6 +137,9 @@ function routeFetch(opts?: {
   role?: string;
   postStatus?: number;
   dispatchStatus?: number;
+  // ISI-5295: the apiserver tags a dispatch 409 with a `reason` so the console can
+  // render branch-appropriate copy. Tests supply the exact error body to assert it.
+  dispatchBody?: Record<string, unknown>;
   squad?: Array<{ id: string; name: string; role?: string }>;
 }) {
   const threadBody = opts?.thread ?? THREAD;
@@ -180,7 +183,7 @@ function routeFetch(opts?: {
               toState: threadBody.State,
               requestedAgent,
             })
-          : jsonResponse({ error: "x" }, dispatchStatus),
+          : jsonResponse(opts?.dispatchBody ?? { error: "x" }, dispatchStatus),
       );
     }
     if (u.includes("/api/work-items/")) {
@@ -821,5 +824,56 @@ describe("TicketDetail", () => {
       ).length;
       expect(after).toBeGreaterThan(threadCallsBefore);
     });
+  });
+
+  it("409 live_run: copy names the live run and the kill-first remedy (ISI-5295)", async () => {
+    // The reported bug's genuine-conflict case: a run is actively working. The copy
+    // must tell the user to kill it first, not the vague "moved underneath you".
+    routeFetch({
+      role: "contributor",
+      thread: DONE_UNHELD,
+      dispatchStatus: 409,
+      dispatchBody: { error: "coord: state transition conflict: live run", reason: "live_run" },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+    fireEvent.change(select, { target: { value: "agent:reviewer" } });
+
+    const err = await screen.findByTestId("detail-assignee-error");
+    expect(err.textContent ?? "").toMatch(/already in progress/i);
+    expect(err.textContent ?? "").toMatch(/kill/i);
+  });
+
+  it("409 concurrent_change: copy is the re-sync-and-retry message (ISI-5295)", async () => {
+    routeFetch({
+      role: "contributor",
+      thread: DONE_UNHELD,
+      dispatchStatus: 409,
+      dispatchBody: { error: "coord: state transition conflict: concurrent lane change", reason: "concurrent_change" },
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+    fireEvent.change(select, { target: { value: "agent:reviewer" } });
+
+    const err = await screen.findByTestId("detail-assignee-error");
+    expect(err.textContent ?? "").toMatch(/re-synced|re-sync|try assigning again/i);
+  });
+
+  it("409 with no reason (legacy apiserver): falls back to generic re-sync copy", async () => {
+    // An older apiserver returns {error} with no reason — the copy must still be the
+    // safe generic re-sync message, never a blank or a crash.
+    routeFetch({ role: "contributor", thread: DONE_UNHELD, dispatchStatus: 409 });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+
+    const select = await screen.findByTestId("detail-assignee-select");
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+    fireEvent.change(select, { target: { value: "agent:reviewer" } });
+
+    const err = await screen.findByTestId("detail-assignee-error");
+    expect((err.textContent ?? "").length).toBeGreaterThan(0);
   });
 });

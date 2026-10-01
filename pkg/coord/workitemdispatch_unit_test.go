@@ -85,15 +85,14 @@ func TestRequestDispatchRejectsBadInput(t *testing.T) {
 const (
 	dispTeam = "44444444-4444-4444-4444-444444444444"
 	dispItem = "11111111-1111-1111-1111-111111111111"
-	dispRun  = "99999999-9999-9999-9999-999999999999"
 )
 
 // SQL fragments matched with QuoteMeta so $ placeholders are literal.
 var (
-	dispLockSQL  = regexp.QuoteMeta(`SELECT state, team_id FROM coord.work_item WHERE id = $1::uuid FOR UPDATE`)
-	dispClaimSQL = regexp.QuoteMeta(`SELECT run_id FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`)
-	// The ISI-4808 re-run branch reads the live checkout holder (its liveness
-	// guard) and CAS's on the locked lane bound as $3.
+	dispLockSQL = regexp.QuoteMeta(`SELECT state, team_id FROM coord.work_item WHERE id = $1::uuid FOR UPDATE`)
+	// The re-assign (ISI-5295) and re-run (ISI-4808) branches both read the live
+	// checkout holder (their liveness guard) — the re-run branch also CAS's on the
+	// locked lane bound as $3.
 	dispHolderSQL = regexp.QuoteMeta(`SELECT holder_principal FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`)
 	// The backlog CAS moves the lane; the re-assign CAS does NOT (state stays todo);
 	// the re-run CAS moves the lane AND re-asserts the locked lane ($3) + no holder.
@@ -168,9 +167,10 @@ func TestRequestDispatchBacklogAdvancePinned(t *testing.T) {
 	}
 }
 
-// TestRequestDispatchTodoUnclaimedReassignOK — the ISI-4573 window: a todo item
-// whose coord.claim carries no run_id gets requested_agent swapped IN PLACE —
-// no lane move (CAS re-asserts state='todo', the UPDATE never sets state), a
+// TestRequestDispatchTodoUnclaimedReassignOK — the ISI-4573 window, now keyed on
+// liveness (ISI-5295): a todo item whose coord.claim holds no LIVE run
+// (holder_principal NULL) gets requested_agent swapped IN PLACE — no lane move
+// (CAS re-asserts state='todo' + holder-absent, the UPDATE never sets state), a
 // 'work_item_reassign_requested' audit row with from==to=="todo", result
 // {todo,todo}, same membership guard.
 func TestRequestDispatchTodoUnclaimedReassignOK(t *testing.T) {
@@ -182,8 +182,8 @@ func TestRequestDispatchTodoUnclaimedReassignOK(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
 		WillReturnRows(dispLockRows("todo", dispTeam))
-	mock.ExpectQuery(dispClaimSQL).WithArgs(dispItem).
-		WillReturnRows(sqlmock.NewRows([]string{"run_id"}).AddRow(nil))
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow(nil))
 	mock.ExpectExec(dispReassignUpdateQL).WithArgs(dispItem, "reviewer").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(dispAuditSQL).
@@ -209,28 +209,74 @@ func TestRequestDispatchTodoUnclaimedReassignOK(t *testing.T) {
 	}
 }
 
-// TestRequestDispatchTodoClaimedConflict — a todo item whose claim already
-// names a run is a clean 409 naming the state; NO intent write, NO audit.
-func TestRequestDispatchTodoClaimedConflict(t *testing.T) {
+// TestRequestDispatchTodoLiveHolderConflict (ISI-5295) — a todo item whose claim
+// holds a LIVE run (holder_principal set) is the ONE thing the re-assign guard now
+// refuses: a clean 409 naming the state and tagged ConflictReasonLiveRun, NO intent
+// write, NO audit. (A todo item with a live holder is a transient race — a run
+// claiming mid-dispatch, about to advance the lane out of todo — never a steady
+// state, but the guard must refuse it all the same, §3 D5.)
+func TestRequestDispatchTodoLiveHolderConflict(t *testing.T) {
 	agents := &stubAgents{names: []string{"coder"}}
 	s, mock := newDispatchSUT(t, agents)
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
 		WillReturnRows(dispLockRows("todo", dispTeam))
-	mock.ExpectQuery(dispClaimSQL).WithArgs(dispItem).
-		WillReturnRows(sqlmock.NewRows([]string{"run_id"}).AddRow(dispRun))
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow("agent:coder@run-7"))
 	mock.ExpectRollback()
 
 	_, err := s.RequestDispatch(context.Background(), dispBase())
 	if !errors.Is(err, ErrStateConflict) {
-		t.Fatalf("todo+claimed: want ErrStateConflict, got %v", err)
+		t.Fatalf("todo+live holder: want ErrStateConflict, got %v", err)
 	}
 	if !strings.Contains(err.Error(), `"todo"`) {
 		t.Fatalf("409 must name the state, got %v", err)
 	}
+	if reason, ok := DispatchConflict(err); !ok || reason != ConflictReasonLiveRun {
+		t.Fatalf("want reason=%q, got %q (ok=%v)", ConflictReasonLiveRun, reason, ok)
+	}
 	if agents.called {
-		t.Fatal("membership is moot once the claimed-run precondition fails")
+		t.Fatal("membership is moot once the live-run precondition fails")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRequestDispatchTodoStaleRunReassignOK (ISI-5295) — THE regression for the
+// reported bug: a todo item whose claim carries a STALE run_id from a prior run
+// that has since been released (holder_principal NULL — cancelprod.go nulls the
+// holder but never the run_id) MUST re-assign, not 409. The old run_id-based gate
+// turned this into the spurious "ticket moved underneath you" with no Run minted;
+// the liveness guard lets it re-stamp requested_agent in place so Intake re-mints.
+func TestRequestDispatchTodoStaleRunReassignOK(t *testing.T) {
+	agents := &stubAgents{names: []string{"coder"}}
+	s, mock := newDispatchSUT(t, agents)
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
+		WillReturnRows(dispLockRows("todo", dispTeam))
+	// A released run: holder_principal is NULL even though run_id lingers on the
+	// claim row — the query reads holder only, so a NULL holder reads unheld.
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow(nil))
+	mock.ExpectExec(dispReassignUpdateQL).WithArgs(dispItem, "coder").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(dispAuditSQL).
+		WithArgs(dispItem, "work_item_reassign_requested", "user:alice", nil, "todo", "todo", dispAuditPayload("coder")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	got, err := s.RequestDispatch(context.Background(), dispBase())
+	if err != nil {
+		t.Fatalf("stale-run re-assign must succeed, got %v", err)
+	}
+	if got.FromState != "todo" || got.ToState != "todo" || got.RequestedAgent != "coder" {
+		t.Fatalf("stale-run re-assign result: %+v", got)
+	}
+	if !agents.called {
+		t.Fatal("membership resolver must be consulted on the stale-run re-assign path")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -341,8 +387,8 @@ func TestRequestDispatchReassignAgentNotInTeam(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
 		WillReturnRows(dispLockRows("todo", dispTeam))
-	mock.ExpectQuery(dispClaimSQL).WithArgs(dispItem).
-		WillReturnRows(sqlmock.NewRows([]string{"run_id"}).AddRow(nil))
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow(nil))
 	// NO ExpectExec: a non-member never gets an intent write.
 	mock.ExpectRollback()
 
@@ -395,8 +441,8 @@ func TestRequestDispatchReassignCASConflict(t *testing.T) {
 	mock.ExpectBegin()
 	mock.ExpectQuery(dispLockSQL).WithArgs(dispItem).
 		WillReturnRows(dispLockRows("todo", dispTeam))
-	mock.ExpectQuery(dispClaimSQL).WithArgs(dispItem).
-		WillReturnRows(sqlmock.NewRows([]string{"run_id"}).AddRow(nil))
+	mock.ExpectQuery(dispHolderSQL).WithArgs(dispItem).
+		WillReturnRows(sqlmock.NewRows([]string{"holder_principal"}).AddRow(nil))
 	mock.ExpectExec(dispReassignUpdateQL).WithArgs(dispItem, "coder").
 		WillReturnResult(sqlmock.NewResult(0, 0)) // CAS matched nothing
 	mock.ExpectRollback()
@@ -404,6 +450,9 @@ func TestRequestDispatchReassignCASConflict(t *testing.T) {
 	_, err := s.RequestDispatch(context.Background(), dispBase())
 	if !errors.Is(err, ErrStateConflict) {
 		t.Fatalf("CAS miss: want ErrStateConflict, got %v", err)
+	}
+	if reason, ok := DispatchConflict(err); !ok || reason != ConflictReasonConcurrentChange {
+		t.Fatalf("CAS miss: want reason=%q, got %q (ok=%v)", ConflictReasonConcurrentChange, reason, ok)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

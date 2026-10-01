@@ -44,6 +44,62 @@ import (
 // admission does not cover; the HTTP shell maps it to 403.
 var ErrAgentNotInTeam = errors.New("coord: requested agent is not a member of the owning team")
 
+// DispatchConflictReason classifies a dispatch ErrStateConflict so the HTTP shell
+// and the console can render branch-appropriate, action-oriented copy instead of
+// one generic "moved underneath you — re-synced" message (ISI-5295). It rides in
+// the 409 body's `reason` field; a caller that does not care still sees the error
+// as a plain ErrStateConflict (errors.Is holds, below).
+type DispatchConflictReason string
+
+const (
+	// ConflictReasonLiveRun — a LIVE run holds the checkout (holder_principal set):
+	// a genuine conflict. The user must kill the current run before re-running.
+	ConflictReasonLiveRun DispatchConflictReason = "live_run"
+	// ConflictReasonConcurrentChange — the lane slipped between our FOR UPDATE read
+	// and the CAS write (0 rows affected): a stale projection; re-sync and retry.
+	ConflictReasonConcurrentChange DispatchConflictReason = "concurrent_change"
+	// ConflictReasonNotDispatchable — the item sits in a lane no dispatch verb
+	// handles (fail closed).
+	ConflictReasonNotDispatchable DispatchConflictReason = "not_dispatchable"
+)
+
+// DispatchConflictError is an ErrStateConflict that also carries a machine-readable
+// Reason. errors.Is(err, ErrStateConflict) still holds (see Is), so every existing
+// mapping — mapWorkItemWriteError → 409, reviewdispatch's benign-swallow — is
+// byte-unchanged; new callers use DispatchConflict(err) to pull the Reason so the
+// console can show precise, action-oriented copy per branch (ISI-5295).
+type DispatchConflictError struct {
+	Reason DispatchConflictReason
+	msg    string
+}
+
+func (e *DispatchConflictError) Error() string { return e.msg }
+
+// Is makes a DispatchConflictError satisfy errors.Is(err, ErrStateConflict), so the
+// HTTP status mapping and the reviewdispatch swallow keep treating it as a 409.
+func (e *DispatchConflictError) Is(target error) bool { return target == ErrStateConflict }
+
+// newDispatchConflict builds a reason-tagged ErrStateConflict. The message is
+// prefixed with ErrStateConflict's text so err.Error() reads identically to the
+// old fmt.Errorf("%w: …", ErrStateConflict) form — logs and the state-naming test
+// assertions stay byte-compatible.
+func newDispatchConflict(reason DispatchConflictReason, format string, args ...any) error {
+	return &DispatchConflictError{
+		Reason: reason,
+		msg:    fmt.Sprintf("%s: %s", ErrStateConflict.Error(), fmt.Sprintf(format, args...)),
+	}
+}
+
+// DispatchConflict extracts the machine-readable Reason from a dispatch conflict
+// error, if the error carries one. The HTTP shell uses it to tag the 409 body.
+func DispatchConflict(err error) (DispatchConflictReason, bool) {
+	var dce *DispatchConflictError
+	if errors.As(err, &dce) {
+		return dce.Reason, true
+	}
+	return "", false
+}
+
 // TeamAgentResolver lists a Team's agent composition (the names in
 // Team.Spec.Agents) by the Team CR uid. That composition lives in the Team CR
 // (Kubernetes), not the coord schema, so coord stays storage-pure via this seam:
@@ -216,33 +272,53 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 			   SET requested_agent = $2, state = 'todo', updated_at = now()
 			 WHERE id = $1::uuid AND state = 'backlog'`
 	case currentState == "todo":
-		// The re-assign precondition: coord.claim must carry no run for this item.
+		// The re-assign precondition is LIVENESS, not a historical claim (ISI-5295).
+		//
+		// The old ISI-4573 gate refused re-assign whenever coord.claim.run_id was
+		// set — but run_id is a HISTORICAL fact, never cleared: the terminal release
+		// (cancelprod.go) only nulls holder_principal + lease, so a ticket parked
+		// BACK on 'todo' (by a re-run, state='todo', or the ISI-4556 re-arm) after
+		// its prior run died carries a STALE run_id with NO live holder. Guarding on
+		// run_id spuriously 409'd that re-assign — the reported "ticket moved
+		// underneath you" with no Run minted — even though Intake would happily
+		// re-mint. The honest guard is the same holder_principal liveness the re-run
+		// branch and the comment nudge already use (ISI-4808): only a LIVE checkout
+		// blocks re-assign; a released/stale claim re-assigns and re-mints normally.
+		//
 		// The claim row is locked FOR UPDATE in the same txn so a run claiming
-		// concurrently (prodclaim.go rewrites run_id) cannot interleave with this
-		// check — either the claim commits first and we see its run_id (409), or
-		// we commit first and the claimer re-reads the swapped intent. (The lock
-		// order work_item→claim is the inverse of prodclaim's claim→work_item, so
-		// a truly simultaneous pair is resolved by Postgres' deadlock detector as
-		// a retryable infra error, never a corrupted re-assign.)
-		var runID sql.NullString
+		// concurrently (prodclaim.go writes holder_principal + advances the lane out
+		// of todo) cannot interleave with this check — either the claim commits first
+		// and we see its live holder (409), or we commit first and the claimer
+		// re-reads the swapped intent. (The lock order work_item→claim inverts
+		// prodclaim's claim→work_item, so a truly simultaneous pair is resolved by
+		// Postgres' deadlock detector as a retryable infra error, never a corrupted
+		// re-assign.)
+		var holder sql.NullString
 		err = tx.QueryRowContext(ctx, `
-			SELECT run_id FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`,
-			in.WorkItemID).Scan(&runID)
+			SELECT holder_principal FROM coord.claim WHERE work_item_id = $1::uuid FOR UPDATE`,
+			in.WorkItemID).Scan(&holder)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			// The shipped schema provisions exactly one claim row per item (mig
-			// 0001 trigger); a missing row cannot hold a run, so it reads
-			// unclaimed.
+			// 0001 trigger); a missing row holds no live run, so it reads unheld.
 		case err != nil:
-			return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: read claim: %w", err)
-		case runID.Valid:
-			return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q with a claimed run; re-assign requires an unclaimed todo item", ErrStateConflict, currentState)
+			return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: read claim holder: %w", err)
+		case holder.Valid:
+			return WorkItemDispatchResult{}, newDispatchConflict(ConflictReasonLiveRun,
+				"item is in %q with a live run (%s); re-assign requires killing the current run first", currentState, holder.String)
 		}
 		fromState, toState, eventType = "todo", "todo", "work_item_reassign_requested"
+		// CAS re-asserts state='todo' AND holder-still-absent, so a run that claimed
+		// between our read and this write fails the CAS (0 rows → ErrStateConflict
+		// below) and never has its live checkout re-assigned out from under it.
 		updateSQL = `
 			UPDATE coord.work_item
 			   SET requested_agent = $2, updated_at = now()
-			 WHERE id = $1::uuid AND state = 'todo'`
+			 WHERE id = $1::uuid AND state = 'todo'
+			   AND NOT EXISTS (
+			       SELECT 1 FROM coord.claim c
+			        WHERE c.work_item_id = coord.work_item.id
+			          AND c.holder_principal IS NOT NULL)`
 	case commentReTriggerLanes[currentState] || currentState == "done" || currentState == "cancelled":
 		// ISI-4808 RE-RUN: an already-worked ticket parked off the dispatch lanes.
 		// The working/engine lanes (commentReTriggerLanes — the six phases +
@@ -266,7 +342,8 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 		case err != nil:
 			return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: read claim holder: %w", err)
 		case holder.Valid:
-			return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q with a live run (%s); re-run requires killing the current run first", ErrStateConflict, currentState, holder.String)
+			return WorkItemDispatchResult{}, newDispatchConflict(ConflictReasonLiveRun,
+				"item is in %q with a live run (%s); re-run requires killing the current run first", currentState, holder.String)
 		}
 		fromState, toState, eventType = currentState, "todo", "work_item_rerun_requested"
 		updateArgs = append(updateArgs, currentState) // $3 — the locked lane, CAS-re-asserted
@@ -284,7 +361,8 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 			          AND c.holder_principal IS NOT NULL)`
 	default:
 		// Unknown/unhandled lane — fail closed, never guess a re-run.
-		return WorkItemDispatchResult{}, fmt.Errorf("%w: item is in %q, which is not a dispatchable lane", ErrStateConflict, currentState)
+		return WorkItemDispatchResult{}, newDispatchConflict(ConflictReasonNotDispatchable,
+			"item is in %q, which is not a dispatchable lane", currentState)
 	}
 
 	// (5) Authorization the admission layer does NOT cover (§3 D4): the agent must
@@ -309,7 +387,7 @@ func (s *WorkItemDispatchStore) RequestDispatch(ctx context.Context, in RequestD
 	if n, err := res.RowsAffected(); err != nil {
 		return WorkItemDispatchResult{}, fmt.Errorf("coord.RequestDispatch: rows: %w", err)
 	} else if n == 0 {
-		return WorkItemDispatchResult{}, fmt.Errorf("%w: concurrent lane change", ErrStateConflict)
+		return WorkItemDispatchResult{}, newDispatchConflict(ConflictReasonConcurrentChange, "concurrent lane change")
 	}
 
 	// (7) §6.5 audit provenance, same txn, fence NULL (ADR-037: a dispatch holds no

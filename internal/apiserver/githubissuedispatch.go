@@ -38,8 +38,9 @@ import (
 // The two-step is deliberately idempotent and self-healing: EnsureReviewWorkItem
 // dedups on the label so a repeat click reuses the row (created:false), and
 // RequestDispatch on that reused row either self-heals a still-backlog item (a
-// prior pass that created but failed to dispatch), re-assigns an unclaimed todo,
-// or returns a clean 409 once a run has claimed it. So we ALWAYS run both steps.
+// prior pass that created but failed to dispatch), re-assigns a todo with no live
+// run, or returns a clean 409 only while a run actively holds it (ISI-5295 keyed
+// re-assign on liveness, not a stale claim). So we ALWAYS run both steps.
 //
 // HONESTY (ADR-0013): this is a Paperclip-side dispatch ONLY. It never writes a
 // GitHub assignee. The end-of-run write-back TO the GitHub issue is the agent's job
@@ -229,8 +230,9 @@ func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefReso
 		}
 
 		// (2) dispatch the chosen agent onto it. On a reused row this self-heals a
-		// still-backlog item, re-assigns an unclaimed todo, or 409s once claimed —
-		// so a repeat click is always safe (created:false + idempotent dispatch).
+		// still-backlog item, re-assigns a todo with no live run, or 409s only while
+		// a run actively holds it — so a repeat click is always safe (created:false
+		// + idempotent dispatch, ISI-5295 liveness-keyed re-assign).
 		disp, err := store.RequestDispatch(r.Context(), coord.RequestDispatchInput{
 			WorkItemID: ens.Item.ID,
 			AgentID:    req.AgentID,
