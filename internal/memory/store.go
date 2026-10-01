@@ -431,6 +431,36 @@ func (s *PgVectorStore) SupersedeHandoffMirrors(ctx context.Context, squadID, wo
 	return tag.RowsAffected(), nil
 }
 
+// SupersedeWorkItemRecords is the WS-C republish-retire companion (the work-item sibling of
+// SupersedeHandoffMirrors). A work item is MUTABLE — its title/body change, comments append — so the
+// indexer projects each distinct revision as a NEW immutable row (the record id is derived from the
+// item id + a revision signature, so an unchanged re-sweep is an ON CONFLICT no-op, but a changed item
+// yields a new id). This soft-retracts every EARLIER live work-item record for the same (squad, work
+// item) so recall surfaces exactly the newest revision, never a stale title/body. keepID (the
+// just-written revision) is excluded; the retract is a §7.4 invalidated_at stamp, never a DELETE — the
+// superseded revisions stay queryable for audit. The work_item id lives in the record's provenance
+// jsonb (stamped by the workitemindex writer), so the predicate is a jsonb filter — no schema change,
+// and a work-item record written without that provenance is simply never superseded. Not part of the
+// Backend seam: this is the WS-C writer-side store companion, like SupersedeHandoffMirrors / Pool().
+func (s *PgVectorStore) SupersedeWorkItemRecords(ctx context.Context, squadID, workItemID, keepID string) (int64, error) {
+	if squadID == "" || workItemID == "" {
+		return 0, fmt.Errorf("supersede work item records: squadID and workItemID are required")
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE memory.memory_records SET invalidated_at = now()
+		 WHERE squad_id = $1::uuid
+		   AND kind = $2
+		   AND invalidated_at IS NULL
+		   AND id <> $3
+		   AND provenance->>'source' = $4
+		   AND provenance->>'work_item_id' = $5`,
+		squadID, KindWorkItem, keepID, ProvenanceSourceWorkItem, workItemID)
+	if err != nil {
+		return 0, fmt.Errorf("supersede work item records: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // Close releases the connection pool.
 func (s *PgVectorStore) Close() {
 	if s.pool != nil {
