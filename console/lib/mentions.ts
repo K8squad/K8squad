@@ -110,3 +110,38 @@ export function agentMentionSuggestions(
       state: a.role,
     }));
 }
+
+/**
+ * Resolve the `@name` tokens actually TYPED in a submitted body against the
+ * squad roster, returning the DISTINCT canonical agent names in first-seen order
+ * (ISI-5281). This is the body-side counterpart to {@link agentMentionSuggestions}
+ * (the live autocomplete filter): the ticket composer dispatches from what the
+ * human wrote, not from a dropdown pick — so a hand-typed `@mary` dispatches just
+ * like one chosen from the popover, and the popover becomes pure autocomplete.
+ *
+ * Token grammar mirrors {@link mentionFragmentBefore} / {@link replaceMentionFragment}
+ * exactly: a `@` at the start of the body or after a non-word char, then the
+ * `[A-Za-z0-9_-]` mention charset — so an email's `a@b` is never a mention.
+ * Resolution is a case-insensitive match on the agent NAME (the identity dispatch
+ * resolves against), so `@Mary`/`@mary` both land on the roster's canonical
+ * `mary`. A token matching no roster agent is ignored — it stays plain prose.
+ */
+export function resolveBodyMentions(
+  body: string,
+  agents: readonly AgentOption[],
+): string[] {
+  const canonicalByLower = new Map(
+    agents.map((a) => [a.name.toLowerCase(), a.name] as const),
+  );
+  const re = /(^|[^A-Za-z0-9_-])@([A-Za-z0-9_-]+)/g;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (let m = re.exec(body); m !== null; m = re.exec(body)) {
+    const canonical = canonicalByLower.get(m[2].toLowerCase());
+    if (canonical !== undefined && !seen.has(canonical)) {
+      seen.add(canonical);
+      out.push(canonical);
+    }
+  }
+  return out;
+}

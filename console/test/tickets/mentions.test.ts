@@ -7,6 +7,7 @@ import {
   agentMentionSuggestions,
   triggerFragmentBefore,
   replaceTriggerFragment,
+  resolveBodyMentions,
 } from "@/lib/mentions";
 import type { AgentOption } from "@/lib/tickets/api";
 
@@ -104,5 +105,35 @@ describe("agentMentionSuggestions", () => {
       expect(s.type).toBe("agent");
       expect(s.id).toBe(s.displayName);
     }
+  });
+});
+
+describe("resolveBodyMentions (ISI-5281 — dispatch from typed @-body)", () => {
+  it("resolves a single typed @name to its canonical roster name", () => {
+    expect(resolveBodyMentions("please look @reviewer", ROSTER)).toEqual([
+      "reviewer",
+    ]);
+  });
+  it("resolves case-insensitively to the canonical casing", () => {
+    expect(resolveBodyMentions("hey @REVIEWER", ROSTER)).toEqual(["reviewer"]);
+  });
+  it("ignores @tokens that match no roster agent", () => {
+    expect(resolveBodyMentions("ping @nobody here", ROSTER)).toEqual([]);
+  });
+  it("returns [] for a body with no mentions", () => {
+    expect(resolveBodyMentions("just a plain comment", ROSTER)).toEqual([]);
+  });
+  it("never triggers inside an email-like token", () => {
+    expect(resolveBodyMentions("mail builder@reviewer.io", ROSTER)).toEqual([]);
+  });
+  it("de-dupes a repeated mention to a single canonical name", () => {
+    expect(resolveBodyMentions("@reviewer and again @reviewer", ROSTER)).toEqual(
+      ["reviewer"],
+    );
+  });
+  it("returns all distinct resolvable names in first-seen order (2+ is ambiguous for WS-1)", () => {
+    expect(
+      resolveBodyMentions("@reviewer then @builder please", ROSTER),
+    ).toEqual(["reviewer", "builder"]);
   });
 });
