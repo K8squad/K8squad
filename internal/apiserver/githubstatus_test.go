@@ -53,7 +53,7 @@ func testGithubStatusServerAs(t *testing.T, teamID uuid.UUID, admin discussion.A
 	srv := NewServer(Options{
 		Authenticator: NewCookieAuthenticator(resolver),
 		Discussion:    discussion.NewHandler(nil),
-		GithubStatus:  NewGithubStatusService(reader, mirror, f),
+		GithubStatus:  NewGithubStatusService(reader, mirror, f, nil),
 	})
 	return srv.Handler()
 }
@@ -135,6 +135,55 @@ func TestGithubStatus_CompositeProjectId(t *testing.T) {
 		if badRec.Code != http.StatusNotFound {
 			t.Errorf("composite %q: got %d, want 404 (existence-hiding)", bad, badRec.Code)
 		}
+	}
+}
+
+// TestGithubStatus_SyncHistorySurfaced pins ISI-5309 deliverable 4: when a
+// sync-history reader is wired, the read model surfaces the recent passes
+// newest-first; a nil reader leaves syncHistory absent (the honest default).
+func TestGithubStatus_SyncHistorySurfaced(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t,
+		team("squad-a", "alpha", "dddddddd-dddd-dddd-dddd-dddddddddddd"),
+		project("squad-a", "web", "https://github.com/acme/web"),
+	)
+	mirror := scm.NewInMemoryMirrorStore()
+	hist := scm.NewInMemorySyncHistoryStore()
+	if err := hist.RecordSync(context.Background(), scm.SyncHistoryRow{
+		ProjectNamespace: "squad-a", ProjectName: "web", Kind: scm.SyncKindPoll, RecordCount: 3, Principal: "ksquad-operator",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := hist.RecordSync(context.Background(), scm.SyncHistoryRow{
+		ProjectNamespace: "squad-a", ProjectName: "web", Kind: scm.SyncKindWebhook, RecordCount: 5, Principal: "ksquad-operator",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewGithubStatusService(reader, mirror, nil, hist)
+	out, err := svc.GithubStatus(context.Background(), admin, "squad-a/web")
+	if err != nil {
+		t.Fatalf("GithubStatus: %v", err)
+	}
+	if len(out.SyncHistory) != 2 {
+		t.Fatalf("syncHistory entries = %d, want 2", len(out.SyncHistory))
+	}
+	// Newest-first: the webhook pass (recorded last) leads.
+	if out.SyncHistory[0].Kind != scm.SyncKindWebhook || out.SyncHistory[0].Count != 5 {
+		t.Fatalf("entry[0] = %+v, want webhook/5 first (newest)", out.SyncHistory[0])
+	}
+	if out.SyncHistory[1].Kind != scm.SyncKindPoll {
+		t.Fatalf("entry[1] kind = %q, want poll", out.SyncHistory[1].Kind)
+	}
+
+	// Nil history reader ⇒ syncHistory absent (honest default, omitempty on wire).
+	svcNoHist := NewGithubStatusService(reader, mirror, nil, nil)
+	outNoHist, err := svcNoHist.GithubStatus(context.Background(), admin, "squad-a/web")
+	if err != nil {
+		t.Fatalf("GithubStatus (no history): %v", err)
+	}
+	if outNoHist.SyncHistory != nil {
+		t.Fatalf("syncHistory should be nil with no reader, got %+v", outNoHist.SyncHistory)
 	}
 }
 

@@ -1264,7 +1264,11 @@ func main() {
 			IssueSync:     issuesync.NewSyncer(issueLinkStore),
 			ReviewTrigger: reviewDispatcher,
 			RunWriteBack:  runWriteBack,
-			Metrics:       scmMetrics,
+			// ISI-5309: durable sync-history — every completed mirror pass appends
+			// one append-only scm.github_sync_history row (when/kind/count/principal)
+			// the console GitHub status surfaces as "last-sync history".
+			SyncHistory: scm.NewSQLSyncHistoryStore(db),
+			Metrics:     scmMetrics,
 		}).SetupWithManager(mgr); err != nil {
 			ctrl.Log.Error(err, "unable to set up repo-sync reconciler")
 			os.Exit(1)

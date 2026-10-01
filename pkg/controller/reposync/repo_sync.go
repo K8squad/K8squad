@@ -83,6 +83,12 @@ const (
 	reasonWriteBackFail = "RunWriteBackError"
 )
 
+// SyncHistoryPrincipal is the honest, server-supplied actor stamped on every
+// scm.github_sync_history row this reconciler writes (ISI-5309): the mirror pass
+// runs as the leader-elected operator, so the pass is attributed to the operator
+// identity, never to client-supplied text.
+const SyncHistoryPrincipal = "ksquad-operator"
+
 // DefaultPollIntervalSeconds is used when spec.repo.sync.pollIntervalSeconds
 // is unset (0). The CRD defaulting stamps 300 at admission; this is the
 // in-process fallback for objects created before that default existed.
@@ -166,6 +172,15 @@ type Reconciler struct {
 	// `github_writeback` audit marker dedups) and honestly (never a GitHub
 	// assignee — ADR-0013). It authors no work item and touches no coord surface.
 	RunWriteBack *scmwriteback.Engine
+
+	// SyncHistory is the OPTIONAL durable sync-history seam (ISI-5309, WS-D.2 of
+	// ISI-5279). Nil disables it, exactly like a nil IssueSync / ReviewTrigger.
+	// When wired, every COMPLETED mirror pass appends one append-only row to
+	// scm.github_sync_history recording when / the trigger kind / the applied
+	// record count / the honest operator principal — a first-class "last-sync
+	// history" the console GitHub status reads. It carries NO secret (pass
+	// metadata only) and expresses no coordination custody.
+	SyncHistory scm.SyncHistoryStore
 
 	// BotActor is the echo-suppression identity (default scm.DefaultBotActor):
 	// provider records authored by this actor are OUR reflected writes and are
@@ -408,6 +423,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	success = true
 	span.SetAttributes(attribute.Int("ksquad.scm.mirror.record_count", applied))
 
+	// ISI-5309: append a durable sync-history row for THIS completed pass (when /
+	// trigger kind / applied count / honest operator principal). Best-effort and
+	// non-fatal: the mirror already applied and status already recorded, so a
+	// history-write failure is logged but does NOT fail the reconcile — history is
+	// an observation of the loop, never control input (same posture as status).
+	r.recordSyncHistory(ctx, project, sync.Provider, trigger, applied)
+
 	// Poll fallback (AC3): the interval comes from the spec values — two
 	// Projects with distinct intervals schedule distinctly.
 	return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, nil
@@ -437,6 +459,32 @@ func classifyTrigger(project *ksquadapi.Project) string {
 		}
 	}
 	return scmmetrics.TriggerWebhook
+}
+
+// recordSyncHistory appends one append-only scm.github_sync_history row for a
+// COMPLETED mirror pass (ISI-5309). The trigger ("webhook"|"poll", from
+// classifyTrigger) is the pass kind; applied is the row count; the principal is
+// the operator identity. It is best-effort: a nil SyncHistory seam is a no-op
+// (history disabled), and a write error is logged but never propagated — the
+// mirror already applied and status already recorded, so history must not be able
+// to fail the reconcile.
+func (r *Reconciler) recordSyncHistory(ctx context.Context, project *ksquadapi.Project, provider, trigger string, applied int) {
+	if r.SyncHistory == nil {
+		return
+	}
+	if err := r.SyncHistory.RecordSync(ctx, scm.SyncHistoryRow{
+		ProjectNamespace: project.Namespace,
+		ProjectName:      project.Name,
+		Provider:         provider,
+		Repo:             project.Spec.Repo.URL,
+		Kind:             trigger,
+		RecordCount:      applied,
+		Outcome:          scm.SyncOutcomeSuccess,
+		Principal:        SyncHistoryPrincipal,
+	}); err != nil {
+		log.FromContext(ctx).Error(err, "repo-sync: sync-history record failed (non-fatal)",
+			"project", project.Namespace+"/"+project.Name)
+	}
 }
 
 // observeRateLimit feeds the provider rate-limit headroom gauge when the
