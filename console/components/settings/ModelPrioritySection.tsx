@@ -82,27 +82,31 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
   const [endpoints, setEndpoints] = useState<ModelEndpointRow[]>([]);
   const [fallbackOpen, setFallbackOpen] = useState(false);
 
+  // Hydrate in one ordered pass (ISI-5302): the saved endpoints must load BEFORE the
+  // model config, because the persisted spec is adapter-agnostic and the adapter is
+  // inferred from the primary modelEndpointRef's provider (modelConfigFromWire). Fetch
+  // endpoints first (tolerating failure → empty list, which just degrades inference to
+  // claude and drops the "existing endpoint" escape hatch), then hydrate the form.
   useEffect(() => {
     if (!isAdmin) return; // non-admins never fetch (and would 403 anyway)
     let alive = true;
-    fetch("/api/modelendpoints", { cache: "no-store" })
-      .then(async (r) => (r.ok ? r.json() : null))
-      .then((body) => {
-        if (!alive || !body) return;
-        const rows = (body as { endpoints?: ModelEndpointRow[] })?.endpoints;
-        if (Array.isArray(rows)) setEndpoints(rows);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [isAdmin]);
+    (async () => {
+      let rows: ModelEndpointRow[] = [];
+      try {
+        const r = await fetch("/api/modelendpoints", { cache: "no-store" });
+        if (r.ok) {
+          const body = await r.json().catch(() => null);
+          const got = (body as { endpoints?: ModelEndpointRow[] })?.endpoints;
+          if (Array.isArray(got)) rows = got;
+        }
+      } catch {
+        /* endpoints are best-effort; fall through with an empty list */
+      }
+      if (!alive) return;
+      setEndpoints(rows);
 
-  useEffect(() => {
-    if (!isAdmin) return; // non-admins never fetch (and would 403 anyway)
-    let alive = true;
-    fetch("/api/modelconfig", { cache: "no-store" })
-      .then(async (r) => {
+      try {
+        const r = await fetch("/api/modelconfig", { cache: "no-store" });
         if (!alive) return;
         if (r.status === 404) {
           setLoad({ kind: "ready" }); // no default yet — empty form
@@ -113,10 +117,13 @@ export function ModelPrioritySection({ isAdmin }: { isAdmin: boolean }) {
           return;
         }
         const wire = await r.json();
-        setForm(modelConfigFromWire(wire));
+        if (!alive) return;
+        setForm(modelConfigFromWire(wire, rows));
         setLoad({ kind: "ready" });
-      })
-      .catch(() => alive && setLoad({ kind: "error", status: 0 }));
+      } catch {
+        if (alive) setLoad({ kind: "error", status: 0 });
+      }
+    })();
     return () => {
       alive = false;
     };
