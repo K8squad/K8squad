@@ -195,7 +195,7 @@ func TestMentionAndTicketReferenceCoexist(t *testing.T) {
 	}
 	// …and the @-mention still dispatches john off the body, unaffected by the reference payload.
 	msg := agentMsg("@john please look at this ticket", "party", "", payload)
-	targets, dropped := resolveMentionTargets(msg, roster)
+	targets, dropped, _ := resolveMentionTargets(msg, roster)
 	if dropped != 0 || len(targets) != 1 || targets[0].AgentName != "john" {
 		t.Fatalf("dispatch = %v (dropped %d), want exactly [john] alongside the reference", names(targets), dropped)
 	}

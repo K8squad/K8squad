@@ -8,6 +8,7 @@ package mentiondispatch
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -242,5 +243,38 @@ func TestMentionDispatchReleasesClaimOnDispatchFailure(t *testing.T) {
 	}
 	if !fl.released[ledgerKey(d.MessageID, d.AgentName)] {
 		t.Fatal("claim was not released after a mint failure — a retry would be wrongly deduped")
+	}
+}
+
+// ISI-5283 / ISI-5267 WS-2: an orchestration dispatch mints ONE drive item for the coordinator whose
+// body carries the structured directive — the mentioned agents and the verbatim request — pointing it
+// at its LIVE ISI-5220 orchestration verbs.
+func TestMentionDispatchOrchestrationDirective(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "66666666-6666-6666-6666-666666666666", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	var marks []string
+	md := newTestDispatcher(fc, fd, fl, &marks)
+
+	d := sampleDispatch()
+	d.AgentName = "coord"
+	d.Orchestrate = true
+	d.OrchestratedAgents = []string{"john", "jane"}
+	d.RequestBody = "@john @jane ship the login page"
+	if err := md.DispatchMention(context.Background(), d); err != nil {
+		t.Fatalf("DispatchMention: %v", err)
+	}
+
+	if len(fc.calls) != 1 || len(fd.calls) != 1 {
+		t.Fatalf("orchestration must mint exactly one Run: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+	if fd.calls[0].AgentID != "coord" {
+		t.Fatalf("dispatch agent = %q, want the coordinator 'coord'", fd.calls[0].AgentID)
+	}
+	body := fc.calls[0].Body
+	for _, want := range []string{"Team Coordinator", "@john", "@jane", "STRUCTURE", "work_item_create", "work_item_assign", d.RequestBody} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("orchestration body missing %q\n--- body ---\n%s", want, body)
+		}
 	}
 }

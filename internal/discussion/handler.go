@@ -98,6 +98,10 @@ func NewHandlerWithDeps(store *Store, searcher search.Searcher, org OrgReader) *
 type TeamAgent struct {
 	Name   string
 	Status string
+	// Coordinator is true for the Team's single lifecycle-driver role (Role.Spec.Coordinator,
+	// ISI-4431). The dispatch engine reads it to route a 2+-mention post to the Team Coordinator
+	// (ISI-5283 / ISI-5267 WS-2) rather than fanning out one Run per mentioned agent.
+	Coordinator bool
 }
 
 // OrgReader is the roster seam the §13 BFF supplies for mention + roster resolution (ISI-4926,

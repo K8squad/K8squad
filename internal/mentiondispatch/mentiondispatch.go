@@ -214,13 +214,46 @@ func (m *dispatcher) DispatchMention(ctx context.Context, d discussion.MentionDi
 // mentionRunTitle is the board-hidden drive item's title — descriptive for the audit trail, never seen
 // on a human board.
 func mentionRunTitle(d discussion.MentionDispatch) string {
+	if d.Orchestrate {
+		return fmt.Sprintf("Discussion coordination: @%s structure work in thread %s", d.AgentName, d.ThreadID)
+	}
 	return fmt.Sprintf("Discussion reply: @%s in thread %s", d.AgentName, d.ThreadID)
+}
+
+// orchestrationRunBody is the multi-mention coordinator directive (ISI-5283 / ISI-5267 WS-2): a post
+// that resolved 2+ @-mentions dispatches the Team's Coordinator ONCE, asking it to STRUCTURE the work
+// involving the mentioned agents rather than each agent replying independently. The coordinator is the
+// LIVE ISI-5220 orchestrator, so the directive points it at its existing authoring verbs
+// (work_item_create to decompose, work_item_assign to hand each sub-item to the right agent). The run
+// still reads the thread for full context; the structured directive just frames the task.
+func orchestrationRunBody(d discussion.MentionDispatch) string {
+	var b strings.Builder
+	mentioned := make([]string, 0, len(d.OrchestratedAgents))
+	for _, a := range d.OrchestratedAgents {
+		mentioned = append(mentioned, "@"+a)
+	}
+	involved := strings.Join(mentioned, ", ")
+	fmt.Fprintf(&b, "You are the Team Coordinator for project %q. A discussion-room post @-mentioned\n", d.ProjectID)
+	fmt.Fprintf(&b, "multiple agents (%s), so instead of each replying independently you are asked to\n", involved)
+	fmt.Fprintf(&b, "STRUCTURE the work involving %s for this ticket.\n\n", involved)
+	fmt.Fprintf(&b, "The request is: «%s»\n\n", strings.TrimSpace(d.RequestBody))
+	fmt.Fprintf(&b, "1. Read the thread (thread id %s) — the triggering message is %s —\n", d.ThreadID, d.MessageID)
+	fmt.Fprintf(&b, "   using the discussion_search tool (or GET the thread) for full context.\n")
+	fmt.Fprintf(&b, "2. Decompose the request into work items with work_item_create and assign each to the\n")
+	fmt.Fprintf(&b, "   right agent among %s with work_item_assign (your LIVE orchestration verbs).\n", involved)
+	fmt.Fprintf(&b, "3. Post a short summary of the plan IN THE ROOM by POSTing to the thread's messages\n")
+	fmt.Fprintf(&b, "   endpoint (POST /api/projects/%s/discussion/threads/%s/messages).\n", d.ProjectID, d.ThreadID)
+	fmt.Fprintf(&b, "\n[dispatch] orchestrate hopDepth=%d principal=%s\n", d.HopDepth, d.TriggeredByPrincipal)
+	return b.String()
 }
 
 // mentionRunBody is the run's instruction + thread context. The Run receives only WorkItemRef; the
 // driver fetches this body by id at dispatch time (rundrive/dispatch.go), so the agent's context is the
 // instruction to read the thread and reply in the room, plus the loop-guard hop it must run at.
 func mentionRunBody(d discussion.MentionDispatch) string {
+	if d.Orchestrate {
+		return orchestrationRunBody(d)
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You were @-mentioned in the discussion room for project %q.\n\n", d.ProjectID)
 	fmt.Fprintf(&b, "1. Read the thread (thread id %s) — the triggering message is %s.\n", d.ThreadID, d.MessageID)
