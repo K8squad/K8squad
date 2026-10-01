@@ -59,10 +59,17 @@ func TestSourceWorkItemLatest(t *testing.T) {
 		WithArgs("wi-1", tComment).
 		WillReturnRows(sqlmock.NewRows([]string{"author_principal", "body", "created_at"}).
 			AddRow("pm", "seen on arm64", tComment))
+	// Board run: no discussion ledger row ⇒ no room context (ISI-5275).
+	mock.ExpectQuery(`FROM discussion.mention_dispatch`).
+		WithArgs("wi-1").
+		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "message_id"}))
 
 	facts, err := s.WorkItem(context.Background(), "wi-1", "")
 	if err != nil {
 		t.Fatalf("WorkItem: %v", err)
+	}
+	if facts.Discussion != nil {
+		t.Errorf("board run must have no discussion context, got %+v", facts.Discussion)
 	}
 	if facts.Title != "Fix flake" || facts.Description != "make it green" {
 		t.Errorf("title/body = %q/%q", facts.Title, facts.Description)
@@ -72,6 +79,63 @@ func TestSourceWorkItemLatest(t *testing.T) {
 	}
 	if len(facts.Comments) != 1 || facts.Comments[0].Content != "seen on arm64" {
 		t.Errorf("comments = %+v", facts.Comments)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
+// ISI-5275: a work item minted from an @-mention (a row in
+// discussion.mention_dispatch) loads the room context — the bounded,
+// chronological transcript + roster + triggering message — so the agent sees
+// the conversation, not just the boilerplate "go read the thread" body.
+func TestSourceWorkItemDiscussionRun(t *testing.T) {
+	s, mock := newSourceWithDB(t)
+	mock.ExpectQuery(`FROM coord.work_item`).
+		WithArgs("wi-1").
+		WillReturnRows(sqlmock.NewRows([]string{"title", "body", "updated_at", "cutoff"}).
+			AddRow("Discussion reply: @ada in thread 9f3", "Read the thread and reply.", tItem, tItem))
+	mock.ExpectQuery(`FROM coord.comment`).
+		WithArgs("wi-1", tItem).
+		WillReturnRows(sqlmock.NewRows([]string{"author_principal", "body", "created_at"}))
+	mock.ExpectQuery(`FROM discussion.mention_dispatch`).
+		WithArgs("wi-1").
+		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "message_id"}).AddRow("thr-9f3", "msg-trig"))
+	mock.ExpectQuery(`FROM discussion.message WHERE id`).
+		WithArgs("msg-trig").
+		WillReturnRows(sqlmock.NewRows([]string{"body"}).AddRow("@ada please benchmark the MoE swap"))
+	mock.ExpectQuery(`FROM discussion.message\s+WHERE thread_id`).
+		WithArgs("thr-9f3", maxDiscussionTranscript).
+		WillReturnRows(sqlmock.NewRows([]string{"author_principal", "author_agent_id", "body", "created_at"}).
+			// newest-first (DESC), as the query returns them.
+			AddRow("ada", "agent-ada", "@ada please benchmark the MoE swap", tComment).
+			AddRow("henrik", nil, "intake feels slow since the model change", tItem))
+
+	facts, err := s.WorkItem(context.Background(), "wi-1", "")
+	if err != nil {
+		t.Fatalf("WorkItem: %v", err)
+	}
+	if facts.Discussion == nil {
+		t.Fatal("discussion run must carry room context")
+	}
+	d := facts.Discussion
+	if d.ThreadID != "thr-9f3" || d.TriggerMessage != "@ada please benchmark the MoE swap" {
+		t.Errorf("thread/trigger = %q / %q", d.ThreadID, d.TriggerMessage)
+	}
+	// Transcript reversed to chronological (oldest→newest).
+	if len(d.Transcript) != 2 || d.Transcript[0].Author != "henrik" || d.Transcript[1].Author != "ada" {
+		t.Fatalf("transcript not chronological: %+v", d.Transcript)
+	}
+	if d.Transcript[0].Content != "intake feels slow since the model change" {
+		t.Errorf("oldest message = %q", d.Transcript[0].Content)
+	}
+	// Roster de-duped, kind derived from author_agent_id presence.
+	rosterKind := map[string]string{}
+	for _, r := range d.Roster {
+		rosterKind[r.Name] = r.Kind
+	}
+	if rosterKind["henrik"] != "human" || rosterKind["ada"] != "agent" {
+		t.Errorf("roster kinds = %+v", d.Roster)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
@@ -110,6 +174,9 @@ func TestSourceWorkItemPinnedReReadsPinnedCutoff(t *testing.T) {
 	mock.ExpectQuery(`FROM coord.comment`).
 		WithArgs("wi-1", pinnedCutoff). // bounded by the PINNED cutoff, not the live one
 		WillReturnRows(sqlmock.NewRows([]string{"author_principal", "body", "created_at"}))
+	mock.ExpectQuery(`FROM discussion.mention_dispatch`).
+		WithArgs("wi-1").
+		WillReturnRows(sqlmock.NewRows([]string{"thread_id", "message_id"}))
 
 	pinned := encodeRev(tItem, pinnedCutoff)
 	facts, err := s.WorkItem(context.Background(), "wi-1", pinned)

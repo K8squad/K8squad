@@ -52,10 +52,53 @@ type WorkItemFacts struct {
 	AcceptanceCriteria []string
 	Goals              []string // work-item-level goals
 	Comments           []Comment
+
+	// Discussion, when non-nil, carries the room context for a work item that
+	// was minted from an @-mention in a discussion thread (source='discussion',
+	// ISI-5108 / mentiondispatch). The work item's own Title/Description for such
+	// a run is a STATIC "go read the thread, reply in the room" instruction — not
+	// the real conversation topic — so the production Sources populates this with
+	// the actual transcript + roster + triggering message. The assembler injects
+	// the transcript UNTRUSTED (cross-participant content, prompt-injection
+	// guardrail) and keys semantic recall off the real topic (ISI-5275).
+	// Nil for an ordinary board run.
+	Discussion *DiscussionContext
+}
+
+// DiscussionContext is the §8.5 content for a discussion-room run (ISI-5275,
+// parent ISI-5270 WS-A). It is cross-participant conversation content: the
+// transcript rides the UNTRUSTED-external tier (a room participant is not a
+// trusted KSquad principal — their words are data, never commands, exactly like
+// the memory/artifact tiers), while the roster (server-derived participant
+// names) rides the best-effort project-meta class. The triggering message is
+// carried separately so recall can key off the real topic, not the boilerplate
+// instruction in the work-item body.
+type DiscussionContext struct {
+	// ThreadID is the room thread the run must read + reply into (for legibility
+	// in the assembled context; the reply path is already in the instruction body).
+	ThreadID string
+	// TriggerMessage is the body of the @-mention that triggered the run — the
+	// single most topic-bearing line, weighted first in the recall query.
+	TriggerMessage string
+	// Transcript is the bounded, chronological (oldest→newest) tail of the thread
+	// — last N messages, already capped by the Sources read so the untrusted tier
+	// stays within the context budget.
+	Transcript []Comment
+	// Roster is the participants/agents observed in the room, de-duplicated.
+	Roster []RosterEntry
+}
+
+// RosterEntry is one room participant as the discussion context renders it: the
+// display name plus whether it is an agent or a human (so the replying agent
+// knows who it can @-mention back).
+type RosterEntry struct {
+	Name string
+	Kind string // "agent" | "human"
 }
 
 // Comment is a work-item comment (authoritative tier: part of the §8.5
-// work-item "comment history").
+// work-item "comment history"). Also reused for a discussion transcript line
+// (DiscussionContext.Transcript): {author, content, written_at}.
 type Comment struct {
 	Author    string
 	Content   string
@@ -359,7 +402,36 @@ func (a *Assembler) gatherMemoryRecall(ctx context.Context, teamID, projectID, q
 // pinned arm ignores it entirely (ids non-empty), this keeps the fresh arm
 // re-entrant by construction (§6.4). It carries only DATA (task content), never
 // commands — the recall it seeds is untrusted-tier reference (F16, §7.3).
+//
+// DISCUSSION RUNS (ISI-5275): a work item minted from an @-mention carries a
+// STATIC "go read thread X, reply in the room" instruction as its Title/Body —
+// deriving the ANN query from that boilerplate POISONS recall (every discussion
+// run queries the same instruction text, never the conversation). So when the
+// work item is a discussion run, the query keys off the REAL topic instead: the
+// triggering message (weighted first) plus the recent transcript. The work-item
+// text is deliberately NOT mixed in — it is the same poison for every room.
 func recallQueryText(wi WorkItemFacts) string {
+	if d := wi.Discussion; d != nil {
+		parts := make([]string, 0, 1+len(d.Transcript))
+		seen := make(map[string]bool, 1+len(d.Transcript))
+		add := func(s string) {
+			if s == "" || seen[s] {
+				return
+			}
+			seen[s] = true
+			parts = append(parts, s)
+		}
+		add(d.TriggerMessage)
+		for _, m := range d.Transcript {
+			add(m.Content)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+		// Empty transcript (a brand-new thread with only the trigger, already
+		// de-duped away): fall through to the work-item text rather than query
+		// on nothing.
+	}
 	parts := make([]string, 0, 2+len(wi.AcceptanceCriteria))
 	if wi.Title != "" {
 		parts = append(parts, wi.Title)
@@ -485,6 +557,23 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 		b.addProjectMeta("input", kv.k+"="+kv.v, Provenance{Source: "runInputs"})
 	}
 
+	// — Discussion-room context (ISI-5275): roster is server-derived participant
+	//   names (best-effort project-meta class); the transcript is cross-participant
+	//   conversation content and rides the UNTRUSTED-external tier so a room
+	//   participant cannot smuggle instructions into the authoritative framing. —
+	if d := wi.Discussion; d != nil {
+		if roster := formatRoster(d.Roster); roster != "" {
+			b.addProjectMeta("roster", roster, Provenance{Source: "discussion"})
+		}
+		for _, m := range d.Transcript {
+			b.addUntrustedExternal("discussionMessage", formatTranscriptLine(m), Provenance{
+				Source:    "discussion",
+				Author:    m.Author,
+				WrittenAt: m.WrittenAt,
+			})
+		}
+	}
+
 	// — Untrusted-recall: memory (§7.3 shape, reference never commands) —
 	for _, r := range recall {
 		b.addUntrustedRecall("recall", r.Content, Provenance{
@@ -563,6 +652,35 @@ func derefI64(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+// formatRoster renders the room roster as one compact, auditable line per the
+// envelope String() convention: "name (kind)", comma-joined. Empty ⇒ "" so the
+// caller skips the element entirely rather than inject a blank roster.
+func formatRoster(roster []RosterEntry) string {
+	parts := make([]string, 0, len(roster))
+	for _, r := range roster {
+		if r.Name == "" {
+			continue
+		}
+		if r.Kind != "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", r.Name, r.Kind))
+		} else {
+			parts = append(parts, r.Name)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatTranscriptLine renders one transcript message as "author: body" (author
+// omitted when blank). The content is UNTRUSTED (buildEnvelope tiers it so); the
+// author prefix is attribution the injection framing renders as data, matching
+// the recall/artifact tiers.
+func formatTranscriptLine(m Comment) string {
+	if m.Author == "" {
+		return m.Content
+	}
+	return m.Author + ": " + m.Content
 }
 
 func joinTitleBody(title, body string) string {

@@ -41,6 +41,7 @@ package contextsource
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -175,13 +176,125 @@ func (s *Source) WorkItem(ctx context.Context, id, rev string) (contextasm.WorkI
 		return contextasm.WorkItemFacts{}, err
 	}
 
+	// A work item minted from a discussion @-mention (source='discussion',
+	// ISI-5108) carries only a static "read the thread, reply in the room"
+	// instruction as its title/body. For those runs load the REAL room context —
+	// bounded transcript + roster + the triggering message — so the agent sees
+	// the conversation and recall keys off the topic, not the boilerplate
+	// (ISI-5275). A board run returns nil here (no ledger row) and is unchanged.
+	disc, err := s.discussionContext(ctx, id)
+	if err != nil {
+		return contextasm.WorkItemFacts{}, err
+	}
+
 	return contextasm.WorkItemFacts{
 		ID:          id,
 		Revision:    rev,
 		Title:       title.String,
 		Description: body.String,
 		// AcceptanceCriteria + Goals: coord-schema gap (S2-shared). Empty, not faked.
-		Comments: comments,
+		Comments:   comments,
+		Discussion: disc,
+	}, nil
+}
+
+// maxDiscussionTranscript bounds the thread tail loaded into a discussion run's
+// context (the newest N non-retracted messages). It keeps the untrusted-external
+// tier within the context budget regardless of how long the room thread grows;
+// the budgeter is a backstop, not the primary bound (ISI-5275 guardrail).
+const maxDiscussionTranscript = 30
+
+// discussionContext returns the room context for a work item minted from an
+// @-mention, or (nil, nil) for an ordinary board run. The bridge from the
+// board work item back to its thread is the discussion.mention_dispatch ledger
+// (migration 0027): mentiondispatch.Bind stamps work_item_id on the ledger row
+// BEFORE the run is dispatched, so by assembly time the row resolves the run's
+// thread_id + triggering message_id. All reads are on the same coordination
+// Postgres (discussion schema), so no extra store wiring is needed.
+func (s *Source) discussionContext(ctx context.Context, workItemID string) (*contextasm.DiscussionContext, error) {
+	var threadID, messageID string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT thread_id::text, message_id::text
+		   FROM discussion.mention_dispatch
+		  WHERE work_item_id = $1::uuid`, workItemID).
+		Scan(&threadID, &messageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil // not a discussion run — ordinary board item
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve discussion dispatch for work item %s: %w", workItemID, err)
+	}
+
+	// Triggering message — the @-mention that minted the run, the real topic.
+	var trigger sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT body FROM discussion.message WHERE id = $1::uuid`, messageID).
+		Scan(&trigger); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read triggering message %s: %w", messageID, err)
+	}
+
+	// Bounded, chronological transcript: newest N non-retracted messages, then
+	// reversed to oldest→newest for a readable chronological render.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT author_principal, author_agent_id, body, created_at
+		   FROM discussion.message
+		  WHERE thread_id = $1::uuid AND invalidated_at IS NULL
+		  ORDER BY created_at DESC, id DESC
+		  LIMIT $2`, threadID, maxDiscussionTranscript)
+	if err != nil {
+		return nil, fmt.Errorf("read discussion transcript for thread %s: %w", threadID, err)
+	}
+	defer rows.Close()
+
+	type participant struct {
+		name string
+		kind string
+	}
+	var newestFirst []contextasm.Comment
+	seenParticipant := make(map[string]bool)
+	var roster []participant
+	for rows.Next() {
+		var author, agentID, mbody sql.NullString
+		var createdAt time.Time
+		if err := rows.Scan(&author, &agentID, &mbody, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan discussion message for thread %s: %w", threadID, err)
+		}
+		newestFirst = append(newestFirst, contextasm.Comment{
+			Author:    author.String,
+			Content:   mbody.String,
+			WrittenAt: createdAt.UTC().Format(time.RFC3339Nano),
+		})
+		if author.String != "" && !seenParticipant[author.String] {
+			seenParticipant[author.String] = true
+			kind := "human"
+			if agentID.Valid && agentID.String != "" {
+				kind = "agent"
+			}
+			roster = append(roster, participant{name: author.String, kind: kind})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate discussion transcript for thread %s: %w", threadID, err)
+	}
+
+	// Reverse to chronological (oldest→newest) for the injected transcript.
+	transcript := make([]contextasm.Comment, len(newestFirst))
+	for i, m := range newestFirst {
+		transcript[len(newestFirst)-1-i] = m
+	}
+
+	// Roster was collected newest-first; present it stably by first-seen in the
+	// chronological transcript is not required (it is a set), so keep insertion.
+	entries := make([]contextasm.RosterEntry, 0, len(roster))
+	for _, p := range roster {
+		entries = append(entries, contextasm.RosterEntry{Name: p.name, Kind: p.kind})
+	}
+
+	return &contextasm.DiscussionContext{
+		ThreadID:       threadID,
+		TriggerMessage: trigger.String,
+		Transcript:     transcript,
+		Roster:         entries,
 	}, nil
 }
 

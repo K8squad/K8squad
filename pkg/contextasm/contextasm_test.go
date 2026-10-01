@@ -656,3 +656,126 @@ func TestAssembleResumePinsBudgetAndWindow(t *testing.T) {
 	assert.Equal(t, first, res2.Injection.SystemPrompt(),
 		"resume must reuse the pinned window+budget, not the changed live Agent")
 }
+
+// ============================================================================
+// ISI-5275 (parent ISI-5270 WS-A) — discussion-room context.
+//
+// A work item minted from an @-mention carries a STATIC "read thread X, reply
+// in the room" instruction as its title/body; deriving recall from that
+// boilerplate poisons the ANN query (every discussion run queries the same
+// instruction), and the room transcript + roster are never injected at all.
+// These tests pin the fix: recall keys off the real topic, the transcript rides
+// the untrusted tier, and the roster rides the best-effort project-meta class.
+// ============================================================================
+
+// discussionWI is a work item as the production Sources shapes a discussion
+// run: a boilerplate title/body PLUS the resolved room context.
+func discussionWI() WorkItemFacts {
+	return WorkItemFacts{
+		ID:          "wi-disc",
+		Revision:    "rev-1",
+		Title:       "Discussion reply: @ada in thread 9f3",
+		Description: "You were @-mentioned in the discussion room. Read the thread and reply in the room.",
+		Discussion: &DiscussionContext{
+			ThreadID:       "9f3",
+			TriggerMessage: "@ada can you benchmark the MoE model swap on the intake path?",
+			Transcript: []Comment{
+				{Author: "henrik", Content: "The intake agent feels slow since the model change.", WrittenAt: "2026-09-30T10:00:00Z"},
+				{Author: "ada", Content: "@ada can you benchmark the MoE model swap on the intake path?", WrittenAt: "2026-09-30T10:05:00Z"},
+			},
+			Roster: []RosterEntry{
+				{Name: "henrik", Kind: "human"},
+				{Name: "ada", Kind: "agent"},
+			},
+		},
+	}
+}
+
+// AC3 (the required test): the recall query builder keys off the triggering
+// message + transcript — the REAL topic — never the boilerplate work-item text.
+func TestRecallQueryTextDiscussionKeysOffTopic(t *testing.T) {
+	q := recallQueryText(discussionWI())
+
+	assert.Contains(t, q, "benchmark the MoE model swap", "triggering message is the topic")
+	assert.Contains(t, q, "intake agent feels slow", "recent transcript is topic context")
+	// The poisoned boilerplate must NOT seed the query.
+	assert.NotContains(t, q, "Discussion reply: @ada")
+	assert.NotContains(t, q, "Read the thread and reply")
+	// The triggering message equals the last transcript line — dedup keeps it once.
+	assert.Equal(t, 1, strings.Count(q, "benchmark the MoE model swap"),
+		"trigger de-duplicated against the identical transcript tail")
+}
+
+// A non-discussion (board) run is unchanged: the query is title + body + AC.
+func TestRecallQueryTextWorkItemFallback(t *testing.T) {
+	q := recallQueryText(WorkItemFacts{
+		Title:              "Fix the flaky e2e",
+		Description:        "flakes on cold caches",
+		AcceptanceCriteria: []string{"e2e green 3x"},
+	})
+	assert.Equal(t, "Fix the flaky e2e\nflakes on cold caches\ne2e green 3x", q)
+}
+
+// A discussion run whose room context is empty (brand-new thread, no trigger
+// body yet) falls back to the work-item text rather than querying on nothing.
+func TestRecallQueryTextDiscussionEmptyFallsBack(t *testing.T) {
+	q := recallQueryText(WorkItemFacts{
+		Title:       "Discussion reply: @ada in thread 9f3",
+		Description: "boilerplate",
+		Discussion:  &DiscussionContext{ThreadID: "9f3"},
+	})
+	assert.Equal(t, "Discussion reply: @ada in thread 9f3\nboilerplate", q)
+}
+
+// The transcript rides the UNTRUSTED-external tier (a room participant is not a
+// trusted principal — prompt-injection guardrail), the roster rides the
+// best-effort project-meta (authoritative, truncatable) class, and the fresh
+// recall query is seeded with the real topic — all through a full Assemble.
+func TestDiscussionContextInjectedTieredCorrectly(t *testing.T) {
+	src := fixtureSources()
+	src.wi = discussionWI()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.Run.Spec.WorkItemRef = "wi-disc"
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	// Transcript → untrusted-external, attributed, carrying the conversation.
+	ext := res.Envelope.ElementsInTier(TierUntrustedExternal)
+	var msgs []Element
+	for _, el := range ext {
+		if el.Kind == "discussionMessage" {
+			msgs = append(msgs, el)
+		}
+	}
+	require.Len(t, msgs, 2, "both transcript lines injected untrusted")
+	assert.Equal(t, "discussion", msgs[0].Provenance.Source)
+	assert.Equal(t, "henrik", msgs[0].Provenance.Author)
+	assert.Contains(t, msgs[0].Content, "intake agent feels slow")
+	// Chronological: oldest first.
+	assert.Contains(t, msgs[1].Content, "benchmark the MoE")
+
+	// Roster → authoritative tier (project-meta), but NOT must-include.
+	var roster *Element
+	for i := range res.Envelope.Elements {
+		if res.Envelope.Elements[i].Kind == "roster" {
+			roster = &res.Envelope.Elements[i]
+		}
+	}
+	require.NotNil(t, roster, "roster element present")
+	assert.Equal(t, TierAuthoritative, roster.Tier)
+	assert.Equal(t, "discussion", roster.Provenance.Source)
+	assert.Contains(t, roster.Content, "henrik (human)")
+	assert.Contains(t, roster.Content, "ada (agent)")
+	assert.False(t, isMustInclude(*roster), "discussion roster is best-effort, not must-include")
+
+	// The transcript renders behind the untrusted framing, after the task.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "ada (agent)"), strings.Index(prompt, "intake agent feels slow"),
+		"roster (authoritative) renders before the untrusted transcript")
+
+	// The fresh recall query was seeded with the topic, not the boilerplate.
+	require.NotEmpty(t, src.recallCalls)
+	assert.Contains(t, src.recallCalls[0], "benchmark the MoE model swap")
+	assert.NotContains(t, src.recallCalls[0], "Read the thread and reply")
+}
