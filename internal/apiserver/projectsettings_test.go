@@ -117,6 +117,54 @@ func TestSettingsProjectionSyncSet(t *testing.T) {
 	}
 }
 
+// TestSettingsProjectionDocs — the non-secret descriptor fields (conventions +
+// archDocRefs, ISI-5303/ISI-5280 WS-E) surface in the settings projection so the
+// "Docs & conventions" card can render + round-trip them.
+func TestSettingsProjectionDocs(t *testing.T) {
+	teamID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	p := settingsProject("squad-a", "web", "https://github.com/acme/web", "main", "", nil)
+	p.Spec.Conventions = "use tabs; squash-merge only"
+	p.Spec.ArchDocRefs = []string{"docs/architecture.md", "https://wiki/adr-7"}
+	reader := newDashboardClient(t,
+		team("squad-a", "alpha", teamID.String()),
+		p,
+	)
+	h := testSettingsServer(t, teamID, reader, nil)
+
+	_, _, s := getSettings(t, h, devToken, "web")
+	if s == nil {
+		t.Fatal("want 200 projection")
+	}
+	if s.Conventions != "use tabs; squash-merge only" {
+		t.Fatalf("conventions projection: %q", s.Conventions)
+	}
+	if len(s.ArchDocRefs) != 2 || s.ArchDocRefs[0] != "docs/architecture.md" || s.ArchDocRefs[1] != "https://wiki/adr-7" {
+		t.Fatalf("archDocRefs projection: %+v", s.ArchDocRefs)
+	}
+}
+
+// TestSettingsProjectionDocsEmpty — a project with no conventions/archDocRefs
+// projects empty (never fabricated), and the omitempty keeps them out of the body.
+func TestSettingsProjectionDocsEmpty(t *testing.T) {
+	teamID := uuid.MustParse("11111111-1111-1111-1111-111111111111")
+	reader := newDashboardClient(t,
+		team("squad-a", "alpha", teamID.String()),
+		settingsProject("squad-a", "web", "https://github.com/acme/web", "main", "", nil),
+	)
+	h := testSettingsServer(t, teamID, reader, nil)
+
+	_, body, s := getSettings(t, h, devToken, "web")
+	if s == nil {
+		t.Fatal("want 200 projection")
+	}
+	if s.Conventions != "" || len(s.ArchDocRefs) != 0 {
+		t.Fatalf("expected empty docs projection, got conventions=%q refs=%+v", s.Conventions, s.ArchDocRefs)
+	}
+	if strings.Contains(body, "\"conventions\"") || strings.Contains(body, "\"archDocRefs\"") {
+		t.Fatalf("empty docs fields must be omitted from the body: %s", body)
+	}
+}
+
 // TestSettingsProjectionSyncNil — a connected repo with sync nil surfaces
 // provider "github" (the v1 default, never blank) and syncEnabled false, and an
 // unset ref projects as the empty string.

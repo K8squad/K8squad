@@ -43,6 +43,10 @@ export interface ProjectSettings {
   project: { name: string; namespace: string };
   repo: RepoSettings;
   auth: AuthSettings;
+  /** Non-secret descriptor fields edited by the "Docs & conventions" card
+   *  (ISI-5303). Plain spec text — never carries token/Secret data. */
+  conventions?: string;
+  archDocRefs?: string[];
   canEdit: boolean;
 }
 
@@ -138,7 +142,20 @@ export interface ProjectDetail {
     sync?: RepoSyncWire | null;
   };
   goals?: string[];
+  /** Non-secret descriptor fields. Round-tripped so a full-spec compose PUT
+   *  preserves them across unrelated (repo/sync/PAT) saves (ISI-5303). */
+  conventions?: string;
+  archDocRefs?: string[];
   egressPolicyRef?: { name: string; namespace?: string } | null;
+}
+
+/** The fields the Settings DocsCard edits. When omitted, an unrelated save
+ *  round-trips the existing conventions/archDocRefs untouched (full-replace
+ *  safety, same rule as goals/egress). Empty string / empty array are
+ *  meaningful clears when the overlay IS present. */
+export interface DocsOverlay {
+  conventions: string;
+  archDocRefs: string[];
 }
 
 /** The fields the Settings SyncCard edits. `enabled:false` disables sync entirely
@@ -175,7 +192,13 @@ export const SCM_PAT_SECRET_KEY = "apiKey";
  */
 export function buildProjectPutBody(
   detail: ProjectDetail,
-  overlay: { repoUrl: string; repoRef?: string; credentialSecretRef?: WireSecretRef; sync?: SyncOverlay },
+  overlay: {
+    repoUrl: string;
+    repoRef?: string;
+    credentialSecretRef?: WireSecretRef;
+    sync?: SyncOverlay;
+    docs?: DocsOverlay;
+  },
 ): Record<string, unknown> {
   const repo: Record<string, unknown> = { url: overlay.repoUrl.trim() };
   const ref = (overlay.repoRef ?? detail.repo.ref ?? "").trim();
@@ -206,6 +229,18 @@ export function buildProjectPutBody(
 
   const body: Record<string, unknown> = { name: detail.name, repo };
   if (detail.goals && detail.goals.length) body.goals = detail.goals;
+
+  // Docs & conventions (ISI-5303): an overlay edits them; otherwise the existing
+  // values ride through unchanged so a repo/sync/PAT save never wipes them (the
+  // full-replace footgun, same rule as goals/egress). An empty string / empty
+  // array from the overlay is a deliberate clear ⇒ the field is omitted (backend
+  // omitempty ⇒ spec field cleared).
+  const conventions = (overlay.docs ? overlay.docs.conventions : detail.conventions ?? "").trim();
+  if (conventions) body.conventions = conventions;
+  const rawRefs = overlay.docs ? overlay.docs.archDocRefs : detail.archDocRefs ?? [];
+  const archDocRefs = rawRefs.map((r) => r.trim()).filter((r) => r.length > 0);
+  if (archDocRefs.length) body.archDocRefs = archDocRefs;
+
   if (detail.egressPolicyRef && detail.egressPolicyRef.name) body.egressPolicyRef = detail.egressPolicyRef;
   return body;
 }
