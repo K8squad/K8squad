@@ -7,8 +7,11 @@
 #
 # Skill wiring: every role gets `bmad` and `task-io` (the union baseline — a
 # working agent can always re-read/comment on/status its own task, ISI-3602);
-# coder/devops/code-reviewer add `github`; observability-engineer adds
-# `dynatrace`; graphical-designer adds `graphical`.
+# the repo-working roles add `github` (which pulls BOTH the git and gh toolchains,
+# ISI-5291) — product-manager (intake reads the repo), code-reviewer, coder and
+# devops-engineer; observability-engineer adds `dynatrace`; graphical-designer
+# adds `graphical`. A squad built from this template can work a GitHub issue end
+# to end out of the box, with no manual Role edit (ISI-5288 root cause B).
 #
 # Board-ops (ADR-0005 D2): the CEO + manager roles (ceo, product-manager,
 # architect, ux-designer — the roles that are a `ksquad.io/reports-to` target)
@@ -50,6 +53,11 @@ spec:
     - name: bmad
     - name: task-io
     - name: org-ops
+    # github: the PM runs intake — it reads the target repo (README, issue
+    # context) to triage and decompose an incoming GitHub issue. Without this
+    # the intake Run has no git/gh on PATH and stalls on "git not installed"
+    # (ISI-5288 root cause B / ISI-5291). The github skill pulls git+gh.
+    - name: github
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role

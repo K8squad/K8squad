@@ -1,9 +1,12 @@
 # Seeded Role preset: Implementer (AD-3, FR-6.1, ISI-3676).
 #
-# Implementer writes, tests and ships code. It carries code+test default
-# skills. The Role CRD has NO model field (F-CRD-1) — the preset default
-# model (Sonnet-5) lives console-side in console/lib/presets.ts and is set on
-# Agent.spec.model by the template-materialize flow (POST /api/compose/squad).
+# Implementer writes, tests and ships code. It carries code+test+github default
+# skills — github binds the git/gh toolchains so the developer preset can clone,
+# commit and push a repo and work a GitHub issue out of the box, with no manual
+# Role edit (ISI-5291; the recurring "git not installed" class, ISI-5288). The
+# Role CRD has NO model field (F-CRD-1) — the preset default model (Sonnet-5)
+# lives console-side in console/lib/presets.ts and is set on Agent.spec.model by
+# the template-materialize flow (POST /api/compose/squad).
 #
 # defaultSkills are UNIONED onto Agent.spec.skillRefs at materialize/run time
 # (ADR-044 step 1; api/v1alpha1/role_types.go), never replaced.
@@ -23,4 +26,5 @@ spec:
   defaultSkills:
     - name: code
     - name: test
+    - name: github
   runtimeClassHint: gvisor

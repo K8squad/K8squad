@@ -27,8 +27,10 @@ export type RolePreset = {
 
 /**
  * The three seeded Role presets (FR-6.1):
- * Boss → Opus-5 (planning+board), Implementer → Sonnet-5 (code+test),
- * Manager → Sonnet-5 (review+board).
+ * Boss → Opus-5 (planning+board), Implementer → Sonnet-5 (code+test+github),
+ * Manager → Sonnet-5 (review+board). Implementer carries `github` (git/gh
+ * toolchains) so the developer preset can work a GitHub issue out of the box
+ * (ISI-5291). Mirror of config/roles/*.spec.defaultSkills.
  */
 export const ROLE_PRESETS: Readonly<Record<RolePresetId, RolePreset>> = {
   "role-boss": {
@@ -43,7 +45,7 @@ export const ROLE_PRESETS: Readonly<Record<RolePresetId, RolePreset>> = {
     label: "Implementer",
     summary: "Writes, tests and ships code.",
     defaultModel: "claude-sonnet-5",
-    defaultSkills: ["code", "test"],
+    defaultSkills: ["code", "test", "github"],
   },
   "role-manager": {
     roleRef: "role-manager",
