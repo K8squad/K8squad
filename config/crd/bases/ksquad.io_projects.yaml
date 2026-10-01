@@ -50,6 +50,15 @@ spec:
               A Project couples an upstream source repository (mirrored, not made the
               source of truth — §5.4) with a workspace and a context budget.
             properties:
+              archDocRefs:
+                description: |-
+                  ArchDocRefs are references to the project's architecture / design
+                  documents (URLs or repo-relative paths) injected into every Run's
+                  context envelope (§8.5, ISI-5280 WS-E). These are CITATIONS the agent
+                  can cite/open, not mirrored bodies — NON-SECRET pointers only.
+                items:
+                  type: string
+                type: array
               contextBudget:
                 description: |-
                   ContextBudget is the project-level default per-tier token allocation
@@ -85,6 +94,15 @@ spec:
                   rule: (!has(self.workItem) || self.workItem >= 0) && (!has(self.projectDocs)
                     || self.projectDocs >= 0) && (!has(self.memoryRecall) || self.memoryRecall
                     >= 0) && (!has(self.artifacts) || self.artifacts >= 0)
+              conventions:
+                description: |-
+                  Conventions is free-form project convention guidance (coding style,
+                  commit/PR discipline, review norms) injected into every Run's context
+                  envelope as a project-metadata class (§8.5, ISI-5280 WS-E). Like Goals,
+                  it is DECLARATIVE, NON-SECRET descriptor text — not a credential surface.
+                  The context assembler treats it as authoritative-tier best-effort, so a
+                  large value is trimmed under budget rather than dropping the task itself.
+                type: string
               egressPolicyRef:
                 description: |-
                   EgressPolicyRef references the egress policy applied to this

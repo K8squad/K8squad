@@ -230,7 +230,12 @@ func TestSourceProjectMeta(t *testing.T) {
 	}
 	proj := &api.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "proj-1", Namespace: "proj-ns", Generation: 3},
-		Spec:       api.ProjectSpec{Repo: api.RepoSpec{URL: "https://github.com/acme/w", Ref: "main"}, Goals: []string{"g1"}},
+		Spec: api.ProjectSpec{
+			Repo:        api.RepoSpec{URL: "https://github.com/acme/w", Ref: "main"},
+			Goals:       []string{"g1"},
+			Conventions: "Conventional commits; squash-merge; review before merge.",
+			ArchDocRefs: []string{"docs/adr/0001.md", "https://arch.example/overview"},
+		},
 	}
 	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(proj).Build()
 	s := &Source{client: cl, namespace: "proj-ns"}
@@ -241,6 +246,13 @@ func TestSourceProjectMeta(t *testing.T) {
 	}
 	if meta.RepoURL != "https://github.com/acme/w" || meta.ProjectRevision != "3" || len(meta.Goals) != 1 {
 		t.Errorf("meta = %+v", meta)
+	}
+	// WS-E (ISI-5280): the new non-secret descriptor fields are injected.
+	if meta.Conventions != "Conventional commits; squash-merge; review before merge." {
+		t.Errorf("conventions not injected: %q", meta.Conventions)
+	}
+	if len(meta.ArchDocRefs) != 2 || meta.ArchDocRefs[0] != "docs/adr/0001.md" {
+		t.Errorf("arch-doc refs not injected: %v", meta.ArchDocRefs)
 	}
 	// Pinned generation mismatch fails closed.
 	if _, err := s.ProjectMeta(context.Background(), "proj-1", "2"); err == nil {
