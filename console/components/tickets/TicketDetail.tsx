@@ -200,11 +200,84 @@ function useChildren(
   return state;
 }
 
+// ISI-5312 (impl of ISI-5311): the UP-edge of the 8.17 hierarchy — the parent this
+// ticket is a direct sub-ticket of, for the rail's "Parent" quick link. The M1.5
+// thread read model (coord.TaskDetail) does NOT carry parent_id, so we resolve it
+// FRONTEND-ONLY from the Project card list (BoardItem, which DOES carry parentId +
+// title + state for every card — workitemread.go) rather than growing the backend:
+// find this item's row → its parentId → that parent's row (for the honest title +
+// status pill). No parent, an unresolvable parent (foreign/>500/non-board), or a
+// failed read all degrade to "none" ⇒ the rail renders the honest em-dash, never a
+// fabricated link (FR-I3). One extra GET per detail load, reusing listWorkItems.
+type ParentState =
+  | { kind: "loading" }
+  | { kind: "none" }
+  | { kind: "ready"; parent: WorkItem };
+
+function useParentLink(projectId: string, workItemId: string): ParentState {
+  const [state, setState] = useState<ParentState>({ kind: "loading" });
+  useEffect(() => {
+    let alive = true;
+    setState({ kind: "loading" });
+    listWorkItems(projectId)
+      .then((items) => {
+        if (!alive) return;
+        const self = items.find((i) => i.id === workItemId);
+        const parentId = self?.parentId ?? null;
+        if (!parentId) {
+          setState({ kind: "none" });
+          return;
+        }
+        const parent = items.find((i) => i.id === parentId);
+        setState(parent ? { kind: "ready", parent } : { kind: "none" });
+      })
+      .catch(() => {
+        // An honest em-dash beats a half-rendered link on a read error (FR-I3).
+        if (alive) setState({ kind: "none" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projectId, workItemId]);
+  return state;
+}
+
 function StatusChip({ state }: { state: string }) {
   return (
     <span className="ksq-chip ksq-chip--state" data-testid="detail-status">
       {stateLabel(state)}
     </span>
+  );
+}
+
+/**
+ * ISI-5312 (impl of ISI-5311): the rail "Parent" quick link — on a SUB-TICKET the
+ * right panel links back up to the parent ticket, with the parent's status pill at a
+ * glance. A root ticket (or an unresolvable parent) keeps today's honest em-dash
+ * (FR-I3). The link + chip reuse the SAME affordances the sub-ticket rows draw, so
+ * the two hierarchy directions read as one system.
+ */
+function ParentLink({
+  state,
+  issuesHref,
+}: {
+  state: ParentState;
+  issuesHref: string;
+}) {
+  if (state.kind !== "ready") {
+    return <span className="muted">—</span>;
+  }
+  const p = state.parent;
+  return (
+    <a
+      className="ksq-rail-link ksq-rail-link--parent"
+      data-testid="detail-parent-link"
+      href={`${issuesHref}/${encodeURIComponent(p.id)}`}
+      title={p.title}
+    >
+      <span className="ksq-rail-link__title">{p.title}</span>
+      <StatusChip state={p.state} />
+    </a>
   );
 }
 
@@ -1469,6 +1542,10 @@ function TicketBody({
   onRunSettled: () => void;
 }) {
   const issuesHref = `/projects/${encodeURIComponent(projectId)}/issues`;
+  // ISI-5312 (impl of ISI-5311): the rail parent quick link — resolved frontend-only
+  // from the Project card list (the thread read model carries no parent_id). "none"
+  // until resolved ⇒ the Parent row keeps its honest em-dash.
+  const parentLink = useParentLink(projectId, thread.workItemId);
   const [addingSub, setAddingSub] = useState(false);
   // Optimistically-appended comments shown immediately after a successful POST;
   // cleared once the reconciling thread re-fetch lands (a new `thread` object),
@@ -1917,9 +1994,12 @@ function TicketBody({
               <span className="muted">—</span>
             </dd>
 
+            {/* ISI-5312 (impl of ISI-5311): on a sub-ticket the Parent row is now a
+                quick link UP to the parent (title + status pill); a root ticket keeps
+                the honest em-dash. Resolved frontend-only from the Project card list. */}
             <dt className="muted">Parent</dt>
             <dd data-testid="prop-parent">
-              <span className="muted">—</span>
+              <ParentLink state={parentLink} issuesHref={issuesHref} />
             </dd>
 
             <dt className="muted">Labels</dt>
@@ -1938,6 +2018,7 @@ function TicketBody({
 
         <SubTicketStatusCard
           state={childrenState}
+          issuesHref={issuesHref}
           onAdd={() => setAddingSub(true)}
         />
 
@@ -2051,9 +2132,12 @@ function TicketBody({
  */
 function SubTicketStatusCard({
   state,
+  issuesHref,
   onAdd,
 }: {
   state: ChildrenState;
+  // ISI-5312 (impl of ISI-5311): deep-links each child quick link to its ticket.
+  issuesHref: string;
   onAdd: () => void;
 }) {
   return (
@@ -2068,7 +2152,15 @@ function SubTicketStatusCard({
           Unavailable (HTTP {state.status || "network error"}).
         </p>
       ) : (
-        <StatusRollup items={state.items} />
+        <>
+          <StatusRollup items={state.items} />
+          {/* ISI-5312 (impl of ISI-5311): the DOWN-edge — each sub-ticket as a rail
+              quick link with its status pill at a glance, so a parent shows child
+              progress without opening each one (Paperclip's right-panel pattern).
+              Clicking navigates to the child. The main-column tree stays the full
+              expandable hierarchy; this rail list is the flat at-a-glance roll-up. */}
+          <SubTicketQuickLinks items={state.items} issuesHref={issuesHref} />
+        </>
       )}
       <button
         type="button"
@@ -2079,6 +2171,40 @@ function SubTicketStatusCard({
         + Add sub-ticket
       </button>
     </section>
+  );
+}
+
+/**
+ * ISI-5312 (impl of ISI-5311): the rail sub-ticket quick links — each child as a
+ * clickable row with its status pill at a glance. Empty list renders nothing (the
+ * roll-up above already states "0 of 0 done"), so a childless ticket stays clean.
+ * Reuses the SAME StatusChip + link affordances as the Parent link and the
+ * main-column tree rows, so the hierarchy reads as one system in the rail.
+ */
+function SubTicketQuickLinks({
+  items,
+  issuesHref,
+}: {
+  items: WorkItem[];
+  issuesHref: string;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <ul className="ksq-rail-links" data-testid="detail-subticket-links">
+      {items.map((it) => (
+        <li key={it.id} className="ksq-rail-link-row">
+          <a
+            className="ksq-rail-link"
+            data-testid="detail-subticket-link"
+            href={`${issuesHref}/${encodeURIComponent(it.id)}`}
+            title={it.title}
+          >
+            <span className="ksq-rail-link__title">{it.title}</span>
+            <StatusChip state={it.state} />
+          </a>
+        </li>
+      ))}
+    </ul>
   );
 }
 

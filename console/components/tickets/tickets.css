@@ -1943,6 +1943,72 @@
 }
 
 /* ---------------------------------------------------------------------------
+ * ISI-5312 (impl of ISI-5311) — right-rail hierarchy quick links: the parent
+ * up-link (Properties "Parent" row) + the sub-ticket down-links (beneath the
+ * Sub-tickets-status roll-up). One shared skin so both directions read as one
+ * system, consistent with the rail's existing chips/rows in dark + light. Each
+ * row is a title that truncates with an ellipsis plus a status pill pinned right.
+ * ------------------------------------------------------------------------- */
+.ksq-rail-links {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ksq-rail-link-row {
+  display: flex;
+}
+
+.ksq-rail-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius-chip, 6px);
+  color: var(--text-1);
+  text-decoration: none;
+}
+
+.ksq-rail-link:hover {
+  background: var(--inset, var(--canvas));
+}
+
+.ksq-rail-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ksq-rail-link__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The status pill never shrinks below its content as the title truncates. */
+.ksq-rail-link .ksq-chip {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
+}
+
+/* The Parent up-link sits inline in the Properties <dd>, so it carries no row
+   padding of its own — only the shared title-truncation + pill treatment. */
+.ksq-rail-link--parent {
+  padding: 0;
+}
+
+.ksq-rail-link--parent:hover {
+  background: transparent;
+  text-decoration: underline;
+}
+
+/* ---------------------------------------------------------------------------
  * Rail mutation controls (ISI-4495 board ask) — the Properties-rail status
  * select + backlog assignee dispatch dropdown. Same control skin as the create
  * sheet's fields, sized for the pinned rail.
