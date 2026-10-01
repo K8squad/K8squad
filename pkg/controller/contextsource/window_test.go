@@ -32,6 +32,9 @@ func TestWindowForModel(t *testing.T) {
 		{"qwen3.8:latest", 32768},                    // ISI-5113: local fleet model, was falling to 8192 default
 		{"qwen3.6:latest", 32768},                    // longest-prefix "qwen3" wins
 		{"qwen2.5-coder", 32768},                     // bare "qwen" prefix catches older families
+		{"deepseek-flash", 65536},                    // ISI-5287: was falling to 8192 default → every run failed closed
+		{"deepseek-v4-pro", 65536},                   // hosted DeepSeek API variant
+		{"deepseek-r1:70b", 65536},                   // local Ollama variant
 		{"", DefaultContextWindow},                   // no model → default
 		{"some-unknown-model", DefaultContextWindow}, // unknown → default, never 0
 	}
