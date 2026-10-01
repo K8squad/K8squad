@@ -34,4 +34,60 @@ spec:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 {{- end }}
+{{/*
+Operator toolchain-RBAC grant (ISI-5291, out-of-band gap ProxOps flagged on
+ISI-5230). When a catalog Toolchain declares `rbac`, the operator renders a
+per-Run Role (or ClusterRole) in the tenant namespace that grants those rules
+to the agent SA (pkg/controller/run/rbac.go). Kubernetes privilege-escalation
+prevention forbids a subject from creating an RBAC object that grants verbs the
+subject does not itself already hold — so the ksquad-operator SA must carry the
+UNION of every catalog toolchain's rbac rules, or the grant CreateOrUpdate 403s
+and the kubectl toolchain silently fails to land its namespace RBAC. The
+operator's own manager ClusterRole (templates/control-plane/rbac.yaml, kept in
+lockstep with config/rbac/role.yaml) intentionally does NOT carry these tenant
+read verbs, so we mint a dedicated, separately-bound ClusterRole per
+RBAC-bearing toolchain. For the default kubectl entry this renders exactly the
+hand-applied `ksquad-operator-toolchain-kubectl-grant` object, so a fresh
+install / helm upgrade no longer depends on an out-of-band kubectl apply.
+Guarded on controlPlane.enabled because the grant's only subject is the
+operator SA, which the control plane owns.
+*/}}
+{{- if .Values.controlPlane.enabled }}
+{{- range $name, $entry := .Values.tools.defaultCatalog.entries }}
+{{- with $entry.rbac }}
+{{- with .rules }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ksquad-operator-toolchain-{{ $name }}-grant
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    ksquad.io/catalog: default
+    ksquad.io/toolchain-grant: {{ $name }}
+rules:
+  {{- toYaml . | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ksquad-operator-toolchain-{{ $name }}-grant
+  labels:
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    ksquad.io/catalog: default
+    ksquad.io/toolchain-grant: {{ $name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ksquad-operator-toolchain-{{ $name }}-grant
+subjects:
+- kind: ServiceAccount
+  name: ksquad-operator
+  namespace: {{ $catalogNS }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- end }}
