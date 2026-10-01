@@ -153,8 +153,13 @@ func TestCodexMCPWorkDirFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(empty.WorkDirFiles) != 0 {
-		t.Errorf("no MCP endpoints must materialize no config.toml; got %v", empty.WorkDirFiles)
+	// codex always carries the ISI-5329 system-context spill file; configFiles
+	// filters it out so this stays an assertion about config.toml rendering.
+	if cfgs := configFiles(empty.WorkDirFiles); len(cfgs) != 0 {
+		t.Errorf("no MCP endpoints must materialize no config.toml; got %v", cfgs)
+	}
+	if !hasEnvelopeFile(empty.WorkDirFiles) {
+		t.Errorf("codex must spill the system context to a workdir file (ISI-5329); got %v", empty.WorkDirFiles)
 	}
 
 	withMCP, err := rt.Command(LaunchContext{
@@ -169,11 +174,12 @@ func TestCodexMCPWorkDirFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(withMCP.WorkDirFiles) != 1 || withMCP.WorkDirFiles[0].Name != "config.toml" {
-		t.Fatalf("expected one config.toml workdir file; got %v", withMCP.WorkDirFiles)
+	cfgs := configFiles(withMCP.WorkDirFiles)
+	if len(cfgs) != 1 || cfgs[0].Name != "config.toml" {
+		t.Fatalf("expected one config.toml workdir file; got %v", cfgs)
 	}
-	if !strings.Contains(string(withMCP.WorkDirFiles[0].Content), "[mcp_servers.github]") {
-		t.Errorf("rendered config.toml must carry the mcp_servers table; got %q", withMCP.WorkDirFiles[0].Content)
+	if !strings.Contains(string(cfgs[0].Content), "[mcp_servers.github]") {
+		t.Errorf("rendered config.toml must carry the mcp_servers table; got %q", cfgs[0].Content)
 	}
 }
 
@@ -190,10 +196,11 @@ func TestCodexBYOModelProviderConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(spec.WorkDirFiles) != 1 || spec.WorkDirFiles[0].Name != "config.toml" {
-		t.Fatalf("BYO endpoint alone must still materialize config.toml; got %v", spec.WorkDirFiles)
+	cfgs := configFiles(spec.WorkDirFiles)
+	if len(cfgs) != 1 || cfgs[0].Name != "config.toml" {
+		t.Fatalf("BYO endpoint alone must still materialize config.toml; got %v", cfgs)
 	}
-	content := string(spec.WorkDirFiles[0].Content)
+	content := string(cfgs[0].Content)
 	if !strings.Contains(content, "[model_providers.ksquad-byo]") {
 		t.Errorf("config.toml must carry the BYO model_providers block; got %q", content)
 	}

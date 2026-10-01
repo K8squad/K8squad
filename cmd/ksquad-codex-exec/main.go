@@ -42,10 +42,31 @@ const (
 	// runtime reads its system context + work instruction from (spec §8.5).
 	envSystemContext = "KSQUAD_SYSTEM_CONTEXT"
 	envInput         = "KSQUAD_INPUT"
+	// envSystemContextFile carries the PATH to the spilled system context
+	// (ISI-5329). The shim spills the token-budgeted context to a sandbox file
+	// and sets this instead of KSQUAD_SYSTEM_CONTEXT, because a context over the
+	// kernel's per-env-string ceiling (MAX_ARG_STRLEN, 128 KiB) makes exec fail
+	// with E2BIG. When set, it takes precedence over the inline env var.
+	envSystemContextFile = "KSQUAD_SYSTEM_CONTEXT_FILE"
 	// envCodexBin overrides the codex binary resolved on PATH; used by tests
 	// (and any operator that ships codex under a non-default name).
 	envCodexBin = "KSQUAD_CODEX_BIN"
 )
+
+// resolveSystemContext returns the system-context half of the envelope. ISI-5329:
+// prefer the spilled file named by KSQUAD_SYSTEM_CONTEXT_FILE (the shim's channel
+// for a context too large for an env string); fall back to the inline
+// KSQUAD_SYSTEM_CONTEXT when the path var is unset (older shim / tests).
+func resolveSystemContext(getenv func(string) string, readFile func(string) ([]byte, error)) (string, error) {
+	if path := getenv(envSystemContextFile); path != "" {
+		b, err := readFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read %s %q: %w", envSystemContextFile, path, err)
+		}
+		return string(b), nil
+	}
+	return getenv(envSystemContext), nil
+}
 
 // buildEnvelope reassembles the single prompt codex reads from stdin out of the
 // two context env vars. The system context precedes the concrete instruction,
@@ -72,12 +93,17 @@ func buildArgs(passthrough []string) []string {
 
 // run launches codex with the envelope on stdin and returns its exit code. It
 // is factored out of main so the exec path is unit-testable with a fake codex.
-func run(passthrough []string, getenv func(string) string, stdout, stderr io.Writer) int {
+func run(passthrough []string, getenv func(string) string, readFile func(string) ([]byte, error), stdout, stderr io.Writer) int {
 	bin := getenv(envCodexBin)
 	if bin == "" {
 		bin = "codex"
 	}
-	envelope := buildEnvelope(getenv(envSystemContext), getenv(envInput))
+	systemContext, err := resolveSystemContext(getenv, readFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "ksquad-codex-exec: %v\n", err)
+		return 1
+	}
+	envelope := buildEnvelope(systemContext, getenv(envInput))
 
 	// #nosec G204 G702 -- bin is operator-controlled (fixed "codex" or the
 	// KSQUAD_CODEX_BIN override); passthrough is the codex adapter's constant
@@ -99,5 +125,5 @@ func run(passthrough []string, getenv func(string) string, stdout, stderr io.Wri
 }
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Getenv, os.ReadFile, os.Stdout, os.Stderr))
 }

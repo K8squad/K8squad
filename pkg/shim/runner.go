@@ -164,6 +164,12 @@ const (
 	// legible reason instead of hanging. Override with
 	// KSQUAD_RUNTIME_WARM_TIMEOUT; 0 disables.
 	osWarmTimeoutDefault = 3 * time.Minute
+	// maxEnvStrLen is the kernel's per-env-string ceiling (MAX_ARG_STRLEN =
+	// 32 * PAGE_SIZE = 128 KiB on Linux). An exec with any single env string
+	// at or over this fails with E2BIG. The runner guards spec.Env against it
+	// so an oversized context fails observably with a named var instead of as a
+	// raw "argument list too long" launch crash (ISI-5329).
+	maxEnvStrLen = 128 * 1024
 )
 
 func (r osRunner) quietWindow() time.Duration {
@@ -217,6 +223,23 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	if err := materializeWorkDirFiles(spec.WorkDir, spec.WorkDirFiles); err != nil {
 		return Outcome{}, err
 	}
+	// ISI-5329: a single env string longer than the kernel's MAX_ARG_STRLEN
+	// (128 KiB) makes exec fail with a raw E2BIG ("argument list too long") that
+	// surfaces as a mysterious launch crash (the ISI-5328 defect: the whole Run
+	// context was passed inline in KSQUAD_SYSTEM_CONTEXT). The large context now
+	// rides a workdir file, so any adapter env string this long is a defect —
+	// fail it observably, naming the offending var, instead of as opaque E2BIG.
+	for _, e := range spec.Env {
+		if len(e) >= maxEnvStrLen {
+			name := e
+			if i := strings.IndexByte(e, '='); i >= 0 {
+				name = e[:i]
+			}
+			return Outcome{State: a2a.TaskFailed, Reason: fmt.Sprintf(
+				"shim: env %s is %d bytes, over the %d-byte per-string exec limit (MAX_ARG_STRLEN); context must spill to a file",
+				name, len(e), maxEnvStrLen)}, nil
+		}
+	}
 	// ISI-5085: warm the model endpoint BEFORE the CLI launch (and before the
 	// first-output watchdog is armed). A cold/reloading BYO endpoint would
 	// otherwise spend >the watchdog window loading the model and the run would
@@ -233,8 +256,9 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	}
 	// #nosec G204 -- spec.Path and spec.Args are constructed entirely by the
 	// registered runtime adapter from fixed binary names + constant flags
-	// (pkg/shim/runtimes); the untrusted Run input rides ExecSpec.Env, never
-	// argv (see envelopeEnv). Launching the coding-agent CLI is the shim's job.
+	// (pkg/shim/runtimes); the untrusted Run input rides ExecSpec.Env / a spill
+	// file / stdin, never argv (see envelopeFileEnv). Launching the CLI is the
+	// shim's job.
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.WorkDir
 	// Own process group: the runtime spawns tool children that inherit the
