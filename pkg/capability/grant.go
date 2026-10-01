@@ -52,6 +52,14 @@ const CapabilityCoordinatorPropose = "coordinator.propose"
 // ksquad-memory-discussion MCPServer (ADR-0024c D4, ISI-5138).
 const CapabilityDiscussion = "discussion"
 
+// CapabilitySearch is the capability slug baked into the per-run HS256 token for
+// the built-in ksquad-memory-search MCPServer (ISI-5276, WS-B of ISI-5270). Unlike
+// work_item.author it is NOT a grant an agent must hold — the search endpoint is
+// injected for every run — it only labels the token so the memory edge's audit
+// trail records why the tenancy-scoped read token was minted. The work_item_search
+// tool itself is an untrusted READ and does not gate on this slug.
+const CapabilitySearch = "work_item.search"
+
 // GrantSet is the resolved capability set for a Run's decomposing agent(s),
 // read from the owning Team's grant store (ADR-0024a S4). The zero value is
 // the empty set — deny-by-default: an unresolved or grant-absent Run yields
