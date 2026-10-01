@@ -429,7 +429,7 @@ func main() {
 	// DB (mirror reader) and the cache (resolution + freshness); a dev run without either
 	// keeps the documented 501 so the S5c tab renders "not available yet".
 	if db != nil && dashboardReader != nil {
-		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads)
+		githubStatus = apiserver.NewGithubStatusService(dashboardReader, scm.NewSQLMirrorStore(db), workItemReads, scm.NewSQLSyncHistoryStore(db))
 		log.Printf("ksquad-apiserver: github-status read model ready (S5b scm mirror projection)")
 	}
 
