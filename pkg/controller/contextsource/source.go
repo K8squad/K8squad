@@ -344,12 +344,19 @@ func (s *Source) comments(ctx context.Context, workItemID string, cutoff time.Ti
 	return out, nil
 }
 
-// ProjectMeta reads the Project CRD's repo/ref/goals. revision pins the exact
-// Project generation: empty reads current; a non-empty pin that no longer
-// matches the live generation is a loud error (deterministic-resume contract).
+// ProjectMeta reads the Project CRD's repo/ref/goals/conventions/arch-doc
+// refs. revision pins the exact Project generation: empty reads current; a
+// non-empty pin that no longer matches the live generation is a loud error
+// (deterministic-resume contract).
 //
-// Conventions and arch-doc refs are not yet fields on the Project CRD; they
-// come back empty (the assembler tolerates empty project-meta classes, AC6).
+// SECRETS GUARDRAIL (ISI-5270 §, ISI-5280 WS-E): only NON-SECRET project
+// descriptor fields ever reach the assembler. This is an explicit allowlist by
+// construction — we hand through exactly the declarative spec fields enumerated
+// below (repo URL/ref, goals, conventions text, arch-doc citations) and NEVER a
+// free-form settings/env map. Live credentials live behind SecretRefs
+// (Spec.Repo.Auth.CredentialSecretRef) whose values this gather never reads, so
+// no PAT/token value can enter the prompt. Any future Project setting added to
+// the prompt MUST be a named field added here deliberately, never a wildcard.
 func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (contextasm.ProjectMeta, error) {
 	var proj api.Project
 	if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.namespace, Name: projectRef}, &proj); err != nil {
@@ -366,7 +373,8 @@ func (s *Source) ProjectMeta(ctx context.Context, projectRef, revision string) (
 		RepoURL:         proj.Spec.Repo.URL,
 		RepoRef:         proj.Spec.Repo.Ref,
 		Goals:           proj.Spec.Goals,
-		// Conventions + ArchDocRefs: not yet on the Project CRD. Empty, not faked.
+		Conventions:     proj.Spec.Conventions,
+		ArchDocRefs:     proj.Spec.ArchDocRefs,
 	}, nil
 }
 
