@@ -93,8 +93,9 @@ spec:
 # admin and never self-widened by the fetched body (trust boundary D8).
 #
 # Wiring: Skills attach to Roles via Role.spec.defaultSkills[] (see 05-roles.yaml)
-# — every role gets `bmad` and `task-io`; coder/devops/code-reviewer get
-# `github`; observability gets `dynatrace`; graphical-designer gets `graphical`.
+# — every role gets `bmad` and `task-io`; the repo-working roles (product-manager,
+# code-reviewer, coder, devops-engineer) get `github` (which pulls BOTH git and gh,
+# ISI-5291); observability gets `dynatrace`; graphical-designer gets `graphical`.
 # The board-ops family (`org-ops`, `project-ops`, ADR-0005) attaches only to the
 # CEO + manager roles (org-ops) and the CEO alone (project-ops); its real gate is
 # the role-scoped token scope, not attachment (see the board-ops block below).
@@ -174,7 +175,11 @@ spec:
     - issue:write
   requires:
     toolchains:
+      # gh drives the GitHub API (issues/PRs); git is the plain VCS client used
+      # to clone/checkout/commit/push. A repo-working role needs BOTH — binding
+      # github without git is the ISI-5288/5291 "git not installed" defect.
       - gh@2.98
+      - git@2.45
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Skill
@@ -713,6 +718,10 @@ spec:
     - name: bmad
     - name: task-io
     - name: org-ops
+    # github: intake reads the target repo to triage/decompose a GitHub issue;
+    # without git/gh on PATH the Run stalls on "git not installed" (ISI-5288
+    # root cause B / ISI-5291). The github skill pulls both git and gh.
+    - name: github
 ---
 apiVersion: ksquad.io/v1alpha1
 kind: Role
