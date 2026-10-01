@@ -168,6 +168,37 @@ func TestParseOpenCodeLineToolCompletedNoSummary(t *testing.T) {
 	assert.Empty(t, out[0].Tool.Summary)
 }
 
+// ISI-5332: opencode stamps state.time.start/end (Unix ms) on the terminal
+// tool frame; the parser carries them onto the result ToolPayload so the
+// telemetry spine can time the span even when only the terminal frame arrives
+// (no preceding start frame). Both completed and errored frames carry it.
+func TestParseOpenCodeLineToolCarriesExecutionWindow(t *testing.T) {
+	ok := `{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/x"},"time":{"start":1700000000000,"end":1700000000350}}}}`
+	out := parseOpenCodeLine(ok)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Equal(t, int64(1700000000000), out[0].Tool.StartedAtMS)
+	assert.Equal(t, int64(1700000000350), out[0].Tool.EndedAtMS)
+
+	errLine := `{"type":"tool_use","part":{"tool":"bash","state":{"status":"error","input":{"command":"ls"},"error":"boom","time":{"start":1700000001000,"end":1700000001120}}}}`
+	out = parseOpenCodeLine(errLine)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Equal(t, int64(1700000001000), out[0].Tool.StartedAtMS)
+	assert.Equal(t, int64(1700000001120), out[0].Tool.EndedAtMS)
+}
+
+// A frame without state.time leaves the window zero — the spine then omits the
+// duration rather than fabricating one.
+func TestParseOpenCodeLineToolNoTimeWindow(t *testing.T) {
+	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"completed","input":{}}}}`
+	out := parseOpenCodeLine(line)
+	require.Len(t, out, 1)
+	require.NotNil(t, out[0].Tool)
+	assert.Zero(t, out[0].Tool.StartedAtMS)
+	assert.Zero(t, out[0].Tool.EndedAtMS)
+}
+
 func TestParseOpenCodeLineToolInFlight(t *testing.T) {
 	line := `{"type":"tool_use","part":{"tool":"read","state":{"status":"running","input":{}}}}`
 	out := parseOpenCodeLine(line)

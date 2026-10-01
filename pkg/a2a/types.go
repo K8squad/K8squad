@@ -277,6 +277,17 @@ type ToolPayload struct {
 	// distinct) and for shell calls whose head token is not a recognized
 	// tool. +optional
 	Command string `json:"command,omitempty"`
+	// StartedAtMS / EndedAtMS are the tool call's execution window in Unix
+	// milliseconds, as the runtime reported it (opencode stamps state.time.start
+	// and state.time.end on its terminal tool frame). They let the telemetry
+	// spine place a gen_ai.tool.call span over its true extent even for an
+	// orphan result — a terminal frame with no preceding start frame, which is
+	// opencode's usual shape — so the span carries a real duration instead of
+	// collapsing to 0ms (ISI-5332). Zero when the runtime does not report
+	// timing; the spine then falls back to a point span (extent unknowable,
+	// never fabricated). +optional
+	StartedAtMS int64 `json:"startedAtMS,omitempty"`
+	EndedAtMS   int64 `json:"endedAtMS,omitempty"`
 }
 
 // recognizedShellHeads is the bounded allowlist of executable head tokens a
