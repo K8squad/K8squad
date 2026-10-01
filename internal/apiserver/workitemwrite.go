@@ -211,7 +211,14 @@ func mapWorkItemWriteError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, coord.ErrAgentNotInTeam):
 		writeJSONError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, coord.ErrStateConflict):
-		writeJSONError(w, http.StatusConflict, err.Error())
+		// A dispatch conflict carries a machine-readable reason so the console can
+		// render branch-appropriate, action-oriented copy (ISI-5295); generic state
+		// conflicts (lane move / edit CAS) carry none and keep the bare {error} body.
+		if reason, ok := coord.DispatchConflict(err); ok {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "reason": string(reason)})
+		} else {
+			writeJSONError(w, http.StatusConflict, err.Error())
+		}
 	default:
 		writeJSONError(w, http.StatusBadGateway, "work-item write unavailable")
 	}
