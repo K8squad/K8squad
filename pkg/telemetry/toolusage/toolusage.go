@@ -407,6 +407,10 @@ type Mapper struct {
 	pending map[string]pendingSpan // "task\x00tool" → open span
 	runs    map[string]trace.Span  // taskID → open run root span (ISI-4238)
 	steps   map[string]*stepTimer  // taskID → per-run llm.call step clock
+	// runIDs remembers the ksquad.run.id armed at RunStart for taskID so an
+	// activity span whose caller passed empty Labels.RunID is still joinable to
+	// its run (ISI-5331 R1 cause b: null run.id). Cleared alongside runs.
+	runIDs map[string]string // taskID → ksquad.run.id
 }
 
 // pendingSpan is one open tool/MCP call: its span and the wall-clock start
@@ -505,7 +509,46 @@ func NewMapper(tracer trace.Tracer, reg prometheus.Registerer) *Mapper {
 		pending: map[string]pendingSpan{},
 		runs:    map[string]trace.Span{},
 		steps:   map[string]*stepTimer{},
+		runIDs:  map[string]string{},
 	}
+}
+
+// runSpanContext re-roots ctx on the run's open root span so every activity
+// span (llm.call, gen_ai.tool.call, mcp.call, run.end marker) derives from
+// THAT run's run.start context and shares its trace id — never bleeding onto a
+// caller's process-level span when successive runs reuse one supervisor process
+// (ISI-5331 R1 cause a: warm-pool process-trace bleed). The map is keyed by
+// taskID, so run #2's spans re-root on run #2's run.start even if the caller
+// threaded a context still carrying run #1's parent. With no open root for
+// taskID (an event before RunStart, or an operator-side marker-only flow) it
+// returns ctx unchanged so the prior rooting behavior is preserved.
+func (m *Mapper) runSpanContext(ctx context.Context, taskID string) context.Context {
+	m.mu.Lock()
+	root, ok := m.runs[taskID]
+	m.mu.Unlock()
+	if ok && root != nil {
+		return trace.ContextWithSpan(ctx, root)
+	}
+	return ctx
+}
+
+// withRunID guarantees ksquad.run.id is present on an activity span's attrs: it
+// defers to the event's own Labels.RunID when set (spanAttrs already stamped
+// it) and otherwise falls back to the run id remembered at RunStart for taskID,
+// so a span whose caller passed empty Labels.RunID is still joinable to its run
+// (ISI-5331 R1 cause b: null run.id). A no-op when neither source knows a run
+// id — the attribute is never fabricated.
+func (m *Mapper) withRunID(taskID, labelRunID string, attrs []attribute.KeyValue) []attribute.KeyValue {
+	if labelRunID != "" {
+		return attrs
+	}
+	m.mu.Lock()
+	rid := m.runIDs[taskID]
+	m.mu.Unlock()
+	if rid != "" {
+		attrs = append(attrs, attrRunID.String(rid))
+	}
+	return attrs
 }
 
 // stopwatch returns a duration function in seconds (test-seam replaceable).
@@ -586,7 +629,14 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 		name = SpanMCPCall
 	}
 
+	// ISI-5331 R1: derive this span from the run's run.start context (keyed by
+	// taskID) so a gen_ai.tool.call / mcp.call joins its run's trace rather than
+	// a bled process-level parent, and ensure ksquad.run.id is stamped even when
+	// the caller's Labels.RunID is empty.
+	ctx = m.runSpanContext(ctx, taskID)
+
 	attrs := labels.spanAttrs()
+	attrs = m.withRunID(taskID, labels.RunID, attrs)
 	// ISI-4970 (GH #636): tool/MCP spans carry gen_ai.operation.name
 	// ("execute_tool") so a backend can tell a tool-execution span apart from
 	// a model round-trip, and ksquad.step.index so it can group the tool call
@@ -724,6 +774,11 @@ func (m *Mapper) RunStart(ctx context.Context, labels Labels, taskID string) (co
 	// Arm the per-run step clock so an llm.call whose wire omits a duration is
 	// measured from run.start onward (ISI-4238, the "7µs" fix).
 	m.steps[taskID] = &stepTimer{elapsed: m.now()}
+	// Remember this run's id so activity spans whose caller passes empty
+	// Labels.RunID still carry ksquad.run.id and join the run (ISI-5331).
+	if labels.RunID != "" {
+		m.runIDs[taskID] = labels.RunID
+	}
 	m.mu.Unlock()
 	return runCtx, span
 }
@@ -740,14 +795,22 @@ func (m *Mapper) RunEnd(ctx context.Context, taskID, state, reason string) {
 
 	m.mu.Lock()
 	root, ok := m.runs[taskID]
+	rid := m.runIDs[taskID]
 	delete(m.runs, taskID)
 	delete(m.steps, taskID)
+	delete(m.runIDs, taskID)
 	m.mu.Unlock()
 
 	// run.end marker: the terminal instant, queryable on its own.
 	endAttrs := []attribute.KeyValue{attrRunState.String(state), attrOutcome.String(outcome)}
+	if rid != "" {
+		endAttrs = append(endAttrs, attrRunID.String(rid))
+	}
 	if root != nil {
 		endAttrs = append(rootAttrs(root), endAttrs...)
+		// ISI-5331 R1: the marker is a child of this run's run.start, so it
+		// shares the run trace id even when the caller threaded a bled context.
+		ctx = trace.ContextWithSpan(ctx, root)
 	}
 	_, marker := m.start(ctx, SpanRunEnd, endAttrs)
 	if reason != "" {
@@ -813,11 +876,17 @@ func (m *Mapper) UsageEvent(ctx context.Context, labels Labels, taskID string, p
 	if !enabled.Load() || p.Model == "" {
 		return
 	}
+	// ISI-5331 R1: derive the llm.call span from the run's run.start context
+	// (keyed by taskID) so it joins its run's trace rather than a bled
+	// process-level parent, and ensure ksquad.run.id is stamped even when the
+	// caller's Labels.RunID is empty.
+	ctx = m.runSpanContext(ctx, taskID)
 	// ISI-4970 (GH #636): each model round-trip advances the run's turn
 	// counter; the llm.call span carries the new index and every tool/MCP span
 	// emitted before the next round-trip shares it.
 	stepIndex := m.advanceStep(taskID)
 	attrs := labels.spanAttrs()
+	attrs = m.withRunID(taskID, labels.RunID, attrs)
 	if labels.Endpoint != "" {
 		attrs = append(attrs, networkAttrs(labels.Endpoint)...)
 	}
@@ -994,6 +1063,7 @@ func (m *Mapper) FinishTask(ctx context.Context, taskID string) {
 		delete(m.runs, taskID)
 	}
 	delete(m.steps, taskID)
+	delete(m.runIDs, taskID)
 }
 
 func taskIDOf(key string) string {

@@ -19,6 +19,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -296,5 +298,87 @@ func TestSupervisorHandleTaskContinuesRunTrace(t *testing.T) {
 	}
 	if got == bootSpan.SpanContext().TraceID() {
 		t.Errorf("supervisor.handle_task inherited the supervisor.start boot trace %s — the ISI-5143 orphan", got)
+	}
+}
+
+// writeCred materializes the required credential files (+ optional traceparent)
+// under dir, the file↔struct contract ReadCredentialFromDir reads.
+func writeCred(t *testing.T, dir, traceparent string) {
+	t.Helper()
+	files := map[string]string{
+		"KSQUAD_COORD_URL":   "http://coord",
+		"KSQUAD_COORD_TOKEN": "tok",
+		"WORK_ITEM_ID":       "wi-1",
+		"RUN_ID":             "run-1",
+	}
+	if traceparent != "" {
+		files["TRACEPARENT"] = traceparent
+	}
+	for name, v := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(v+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+// TestSupervisorSubmitTraceContextReRootsPerRun covers ISI-5331 R1 (warm-pool
+// process-trace bleed): submitTraceContext re-reads the CURRENT credential's
+// W3C carrier per task, so a warm-pool supervisor process that serves
+// successive runs re-roots each run on ITS traceparent — never reusing the
+// first handshake's cached s.traceCtx. Two successive binds with distinct
+// traceparents must yield two distinct submit trace ids.
+func TestSupervisorSubmitTraceContextReRootsPerRun(t *testing.T) {
+	dir := t.TempDir()
+	prev := supervisorCoordMountPath
+	supervisorCoordMountPath = dir
+	t.Cleanup(func() { supervisorCoordMountPath = prev })
+
+	// run-A binds; s.traceCtx is the stale cache from the FIRST handshake (a
+	// deliberately DIFFERENT trace, so reusing it would be caught).
+	staleTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000beef")
+	staleSID, _ := oteltrace.SpanIDFromHex("000000000000beef")
+	staleCtx := oteltrace.ContextWithRemoteSpanContext(context.Background(),
+		oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: staleTID, SpanID: staleSID, TraceFlags: oteltrace.FlagsSampled, Remote: true}))
+	sup := &supervisor{traceCtx: staleCtx}
+
+	traceA := "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaa-01"
+	writeCred(t, dir, traceA)
+	gotA := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID().String()
+	if gotA != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Errorf("run-A submit trace = %s, want run-A carrier trace (not stale cache)", gotA)
+	}
+
+	// Warm-pool reuse: the operator rebinds the pod and rewrites the credential
+	// with run-B's traceparent. submitTraceContext must pick up the NEW carrier.
+	traceB := "00-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bbbbbbbbbbbbbbbb-01"
+	writeCred(t, dir, traceB)
+	gotB := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID().String()
+	if gotB != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Errorf("run-B submit trace = %s, want run-B carrier trace (R1: per-run re-root, not run-A)", gotB)
+	}
+	if gotA == gotB {
+		t.Errorf("successive runs collapsed into one trace %s (R1 bleed not fixed)", gotA)
+	}
+}
+
+// TestSupervisorSubmitTraceContextFallsBackToCache covers the fallback: with no
+// carrier on the current credential, submitTraceContext uses the cached
+// handshake context so the prior behavior is preserved.
+func TestSupervisorSubmitTraceContextFallsBackToCache(t *testing.T) {
+	dir := t.TempDir()
+	prev := supervisorCoordMountPath
+	supervisorCoordMountPath = dir
+	t.Cleanup(func() { supervisorCoordMountPath = prev })
+
+	cTID, _ := oteltrace.TraceIDFromHex("0000000000000000000000000000cace")
+	cSID, _ := oteltrace.SpanIDFromHex("0000000000000cac")
+	cached := oteltrace.ContextWithRemoteSpanContext(context.Background(),
+		oteltrace.NewSpanContext(oteltrace.SpanContextConfig{TraceID: cTID, SpanID: cSID, TraceFlags: oteltrace.FlagsSampled, Remote: true}))
+	sup := &supervisor{traceCtx: cached}
+
+	writeCred(t, dir, "") // required files present, NO traceparent
+	got := oteltrace.SpanContextFromContext(sup.submitTraceContext()).TraceID()
+	if got != cTID {
+		t.Errorf("submit trace = %s, want cached %s (fallback when no per-run carrier)", got, cTID)
 	}
 }

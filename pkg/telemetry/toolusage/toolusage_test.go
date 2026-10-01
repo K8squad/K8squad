@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/K8squad/K8squad/pkg/a2a"
 )
@@ -1139,5 +1140,84 @@ func TestStepIndexResetPerRun(t *testing.T) {
 	}
 	if got := attrMap(llm[1].Attributes())["ksquad.step.index"]; got != "1" {
 		t.Errorf("run-b llm.call ksquad.step.index = %q, want 1 (reset, not 2)", got)
+	}
+}
+
+// TestR1TraceContinuityReRootsOnRunStart covers ISI-5331 R1 cause (a): every
+// activity span derives from THAT run's run.start context even when the caller
+// threads a context that carries a DIFFERENT (process-bled) parent span. The
+// Mapper re-roots llm.call / gen_ai.tool.call / run.end on the per-taskID run
+// root, so run.start + llm.call + gen_ai.tool.call + run.end share one trace id
+// (the ISI-5147 runbook assertion), and two runs in one process (one Mapper)
+// never collapse into a single trace.
+func TestR1TraceContinuityReRootsOnRunStart(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+
+	// A long-lived PROCESS span, as a warm-pool supervisor process holds. The
+	// event calls below thread ITS context (bled), not the run.start context —
+	// the exact R1 failure shape (spans landing on the process trace). The
+	// Mapper must re-root them on the per-taskID run.start. (Giving run.start
+	// itself the right carrier parent, not this process span, is the
+	// supervisor's job — see cmd/shim/supervisor.go submitTraceContext.)
+	procTP := sdktrace.NewTracerProvider()
+	_, procSpan := procTP.Tracer("proc").Start(context.Background(), "supervisor.process")
+	bled := trace.ContextWithSpan(context.Background(), procSpan)
+
+	// run.start roots its own trace from the supervisor-provided carrier; model
+	// that here with a clean (parentless) context so run.start is the root.
+	labels := Labels{RunID: "run-1", Agent: "dev"}
+	_, runSpan := m.RunStart(context.Background(), labels, "run-1")
+	runTrace := runSpan.SpanContext().TraceID()
+
+	// Deliberately pass the BLED context (not runCtx) to every event.
+	m.UsageEvent(bled, labels, "run-1", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.ToolEvent(bled, labels, "run-1", a2a.ToolPayload{Name: "kubectl", Phase: "start"})
+	m.ToolEvent(bled, labels, "run-1", a2a.ToolPayload{Name: "kubectl", Phase: "result", OK: boolPtr(true)})
+	m.RunEnd(bled, "run-1", "completed", "")
+
+	for _, name := range []string{SpanRunStart, SpanLLMCall, SpanToolCall, SpanRunEnd} {
+		s := findSpan(t, sr, name)
+		if got := s.SpanContext().TraceID(); got != runTrace {
+			t.Errorf("%s trace id = %s, want run.start trace %s (R1: must re-root on run.start, not the bled process span)", name, got, runTrace)
+		}
+	}
+
+	// Second run on the SAME Mapper (warm-pool process reuse) roots a DISTINCT
+	// trace, and its event re-roots on ITS run.start even when the caller threads
+	// a context bled to run-1 — run ids never collapse into one trace.
+	labels2 := Labels{RunID: "run-2", Agent: "dev"}
+	run2Ctx, runSpan2 := m.RunStart(context.Background(), labels2, "run-2")
+	run2Trace := runSpan2.SpanContext().TraceID()
+	if run2Trace == runTrace {
+		t.Fatalf("run-2 run.start shares run-1 trace id %s (R1: successive runs must not collapse)", runTrace)
+	}
+	m.UsageEvent(run2Ctx, labels2, "run-2", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	run2LLM := spansByName(sr, SpanLLMCall)
+	last := run2LLM[len(run2LLM)-1]
+	if got := last.SpanContext().TraceID(); got != run2Trace {
+		t.Errorf("run-2 llm.call trace id = %s, want run-2 trace %s (R1: per-run isolation)", got, run2Trace)
+	}
+}
+
+// TestR1RunIDStampedWhenLabelsEmpty covers ISI-5331 R1 cause (b): an activity
+// span whose caller passed empty Labels.RunID still carries ksquad.run.id,
+// falling back to the run id remembered at RunStart, so the span is joinable to
+// its run. The run.end marker carries it too.
+func TestR1RunIDStampedWhenLabelsEmpty(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	ctx := context.Background()
+
+	// RunStart knows the run id; later events arrive with EMPTY Labels.RunID.
+	m.RunStart(ctx, Labels{RunID: "run-77", Agent: "dev"}, "task-x")
+	m.UsageEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.UsagePayload{Model: "m", Input: 1, Output: 1})
+	m.ToolEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.ToolPayload{Name: "git", Phase: "start"})
+	m.ToolEvent(ctx, Labels{Agent: "dev"}, "task-x", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
+	m.RunEnd(ctx, "task-x", "completed", "")
+
+	for _, name := range []string{SpanLLMCall, SpanToolCall, SpanRunEnd} {
+		s := findSpan(t, sr, name)
+		if got := attrMap(s.Attributes())["ksquad.run.id"]; got != "run-77" {
+			t.Errorf("%s ksquad.run.id = %q, want run-77 (R1: fall back to RunStart's run id)", name, got)
+		}
 	}
 }
