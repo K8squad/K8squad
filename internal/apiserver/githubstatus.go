@@ -47,6 +47,26 @@ type GithubStatus struct {
 	Branches     []GithubBranch   `json:"branches"`
 	Freshness    GithubFreshness  `json:"freshness"`
 	Sync         GithubSync       `json:"sync"`
+	// SyncHistory is the recent "last-sync history" (ISI-5309, WS-D.2): the
+	// newest-first durable record of the last N sync/import passes the operator
+	// ran, read from scm.github_sync_history. Absent (nil, omitempty) when no
+	// history reader is wired or the Project has never synced — never fabricated.
+	SyncHistory []GithubSyncHistoryEntry `json:"syncHistory,omitempty"`
+}
+
+// GithubSyncHistoryEntry is one durable sync/import pass the console renders in
+// the "last-sync history" list (ISI-5309). It is pass METADATA only — the BYO
+// token is never stored and never present here (same posture as the rest of the
+// GitHub-status read model). Kind is the pass type (webhook | poll | import |
+// manual | backfill); Count is rows applied/imported; IssueRef is the bare
+// owner/repo#N for a per-issue import pass (absent for a whole-repo mirror tick).
+type GithubSyncHistoryEntry struct {
+	Kind      string    `json:"kind"`
+	Outcome   string    `json:"outcome"`
+	Count     int       `json:"count"`
+	IssueRef  string    `json:"issueRef,omitempty"`
+	Principal string    `json:"principal,omitempty"`
+	SyncedAt  time.Time `json:"syncedAt"`
 }
 
 // GithubSync is the sync-state summary the GitHub tab renders as a freshness
@@ -202,10 +222,20 @@ type GithubStatusService struct {
 	// attached (the honest "not reviewed" default), so a deployment without the
 	// coord read store degrades cleanly rather than 500ing.
 	reviews ReviewItemFinder
+	// history is the OPTIONAL read seam over scm.github_sync_history (ISI-5309).
+	// Nil ⇒ the payload carries no syncHistory (the honest "no history" default),
+	// so a deployment without the sync-history store degrades cleanly. Read-only;
+	// it creates nothing and never crosses the custody wall.
+	history scm.SyncHistoryReader
 	// now sources the wall clock used to compute mirror age; overridable in
 	// tests. Defaulted to time.Now by the constructor.
 	now func() time.Time
 }
+
+// syncHistorySurfaceLimit bounds how many recent passes the GitHub-status read
+// model surfaces — a short recent window the console renders, not the full
+// append-only table.
+const syncHistorySurfaceLimit = 20
 
 // ReviewItemFinder is the coord read seam that resolves a PR's local review work
 // item by its plaintext anchor label (reviewtrigger.PRAnchorLabel). Implemented
@@ -220,9 +250,10 @@ type ReviewItemFinder interface {
 // when the mirror reader is unavailable the caller leaves opts.GithubStatus nil
 // and the route answers the documented 501 (AC5) rather than constructing a
 // half-wired service. reviews is optional (nil ⇒ PR cards never carry a review
-// block; every other panel is unaffected).
-func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder) *GithubStatusService {
-	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, now: time.Now}
+// block; every other panel is unaffected). history is optional (nil ⇒ no
+// syncHistory is surfaced, ISI-5309).
+func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder, history scm.SyncHistoryReader) *GithubStatusService {
+	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, history: history, now: time.Now}
 }
 
 // GithubStatus composes the payload for one Project. Resolution and every read
@@ -302,6 +333,13 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 		out.Sync = GithubSync{Reason: syncReasonNotConfigured}
 	}
 
+	// ISI-5309: attach the recent "last-sync history" (newest-first) from
+	// scm.github_sync_history, scoped to the resolved Project. Best-effort and
+	// optional: a nil history seam or a read error leaves syncHistory absent (the
+	// honest "no history" default) rather than failing the whole status read — the
+	// mirror panels above are the primary surface.
+	s.attachSyncHistory(ctx, &out, ns, name)
+
 	// GH-4: enrich the inbound server span with the domain identity + the
 	// freshness SLI, so a GitHub-tab read is queryable by project/repo and the
 	// mirror.age_seconds freshness (now - lastSuccess) the ISI-4229 SLO scores.
@@ -356,6 +394,32 @@ func (s *GithubStatusService) attachReviews(ctx context.Context, out *GithubStat
 			State:      rec.State,
 		}
 	}
+}
+
+// attachSyncHistory reads the recent sync/import passes for the resolved Project
+// and projects them onto the wire (ISI-5309). Best-effort: a nil seam or a read
+// error leaves out.SyncHistory nil (absent on the wire) — never a fabricated
+// entry. It reads only pass metadata (no secret is stored in the table).
+func (s *GithubStatusService) attachSyncHistory(ctx context.Context, out *GithubStatus, ns, name string) {
+	if s.history == nil {
+		return
+	}
+	rows, err := s.history.ListSyncHistory(ctx, ns, name, syncHistorySurfaceLimit)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	entries := make([]GithubSyncHistoryEntry, 0, len(rows))
+	for i := range rows {
+		entries = append(entries, GithubSyncHistoryEntry{
+			Kind:      rows[i].Kind,
+			Outcome:   rows[i].Outcome,
+			Count:     rows[i].RecordCount,
+			IssueRef:  rows[i].IssueRef,
+			Principal: rows[i].Principal,
+			SyncedAt:  rows[i].SyncedAt,
+		})
+	}
+	out.SyncHistory = entries
 }
 
 // syncSummary derives the wire sync-state from the resolved Project.status. The

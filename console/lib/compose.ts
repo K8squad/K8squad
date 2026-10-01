@@ -842,16 +842,44 @@ interface ModelConfigWire {
 }
 
 /**
- * modelConfigFromWire is the exact inverse of modelConfigToWire: it hydrates the
- * form from GET /api/modelconfig (AC1). `byoEnabled` derives from a non-empty
- * primary endpoint ref; `adapter` defaults to claude (the persisted spec is
- * adapter-agnostic, so the credential branch resets to the primary path on load).
+ * inferModelConfigAdapter recovers the UI-only credential branch from the persisted
+ * (adapter-agnostic) spec on load (ISI-5302). The adapter itself never rides the wire
+ * — the ModelConfig stores only the resolved model triple — so we infer it from the
+ * primary `modelEndpointRef`: if that ref names a saved endpoint whose provider is one
+ * of the opencode BYO backends (LLM_PROVIDER_OPTIONS), the admin configured opencode;
+ * otherwise we default to claude (the curated token path). Claude/codex BYO endpoints
+ * are not in that provider set, so they correctly stay on the claude branch. Without
+ * the endpoints list (GET /api/modelendpoints not yet loaded, or failed) we can't
+ * resolve the provider, so we fail safe to claude — the model triple still renders via
+ * ModelSelector, strictly better than the pre-fix always-claude mis-render.
  */
-export function modelConfigFromWire(wire: unknown): ModelConfigForm {
+export function inferModelConfigAdapter(
+  modelEndpointRef: string,
+  endpoints: readonly ModelEndpointRow[],
+): RuntimeAdapter {
+  const name = parseSecretRef(modelEndpointRef).name;
+  if (!name) return "claude";
+  const ep = endpoints.find((e) => e.name === name);
+  return ep && LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? "opencode" : "claude";
+}
+
+/**
+ * modelConfigFromWire is the (near) inverse of modelConfigToWire: it hydrates the
+ * form from GET /api/modelconfig (AC1). `byoEnabled` derives from a non-empty primary
+ * endpoint ref. `adapter` is not persisted (the spec is adapter-agnostic); it is
+ * inferred from the primary `modelEndpointRef` against the saved endpoints' providers
+ * (ISI-5302) — pass `endpoints` (GET /api/modelendpoints) so an opencode org default
+ * rehydrates onto the opencode branch instead of mis-rendering as claude. With no
+ * endpoints it falls back to claude.
+ */
+export function modelConfigFromWire(
+  wire: unknown,
+  endpoints: readonly ModelEndpointRow[] = [],
+): ModelConfigForm {
   const w = (wire ?? {}) as ModelConfigWire;
   const endpoint = secretRefToString(w.modelEndpointRef);
   return {
-    adapter: "claude",
+    adapter: inferModelConfigAdapter(endpoint, endpoints),
     model: w.model ?? "",
     modelEndpointRef: endpoint,
     byoEnabled: endpoint.length > 0,

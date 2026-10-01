@@ -33,6 +33,7 @@ import { Field } from "./fields";
 import {
   LLM_PROVIDER_OPTIONS,
   llmProviderById,
+  parseSecretRef,
   type CreateEndpointRequest,
   type FieldErrors,
   type ListedModel,
@@ -42,6 +43,27 @@ import {
 
 /** Sentinel <select> value for the "type it in" model escape hatch. */
 const CUSTOM_MODEL = "__custom_model__";
+
+/**
+ * Seed the picker's local provider/URL from the bound endpoint on first render
+ * (ISI-5302). The ModelConfig persists only the model triple, so on refresh the
+ * saved opencode selection must be recovered from `modelEndpointRef` against the
+ * saved endpoints (GET /api/modelendpoints) — otherwise the picker opens on the
+ * default backend (Ollama) and the admin's choice looks lost. Unknown/absent ref ⇒
+ * the first provider's defaults, exactly as a fresh picker starts.
+ */
+function seedFromProps(
+  modelEndpointRef: string,
+  existingEndpoints: readonly ModelEndpointRow[],
+): { provider: string; url: string } {
+  const name = parseSecretRef(modelEndpointRef).name;
+  const ep = name ? existingEndpoints.find((e) => e.name === name) : undefined;
+  const known = ep && LLM_PROVIDER_OPTIONS.some((p) => p.id === ep.provider) ? ep : undefined;
+  if (!known) {
+    return { provider: LLM_PROVIDER_OPTIONS[0].id, url: LLM_PROVIDER_OPTIONS[0].defaultUrl ?? "" };
+  }
+  return { provider: known.provider, url: known.url || (llmProviderById(known.provider)?.defaultUrl ?? "") };
+}
 
 type FetchState =
   | { kind: "idle" }
@@ -94,12 +116,18 @@ export function ProviderModelPicker({
   /** Namespaces DOM ids so primary + fallback instances don't collide. */
   idPrefix?: string;
 }) {
-  const [provider, setProvider] = useState<string>(LLM_PROVIDER_OPTIONS[0].id);
+  // Seed provider/URL from the bound endpoint so a saved opencode selection survives
+  // refresh (ISI-5302). useState initializers run once; the parent only mounts this
+  // picker after the form is hydrated, so the props are stable at first render.
+  const seed = useMemo(() => seedFromProps(modelEndpointRef, existingEndpoints), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const [provider, setProvider] = useState<string>(seed.provider);
   const spec = useMemo(() => llmProviderById(provider), [provider]);
-  const [url, setUrl] = useState<string>(LLM_PROVIDER_OPTIONS[0].defaultUrl ?? "");
+  const [url, setUrl] = useState<string>(seed.url);
   const [apiKey, setApiKey] = useState<string>("");
   const [name, setName] = useState<string>("");
-  const [models, setModels] = useState<ListedModel[]>([]);
+  // Seed the dropdown with the saved model so it renders selected before the admin
+  // re-runs "List models" (ISI-5302); a live list replaces this on fetch.
+  const [models, setModels] = useState<ListedModel[]>(() => (model.trim() ? [{ id: model.trim() }] : []));
   const [fetchState, setFetchState] = useState<FetchState>({ kind: "idle" });
   const [createState, setCreateState] = useState<CreateState>({ kind: "idle" });
   const [customModel, setCustomModel] = useState<boolean>(false);

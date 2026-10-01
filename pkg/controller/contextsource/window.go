@@ -75,6 +75,19 @@ var modelWindows = []struct {
 	// flagged above, not in this family-keyed catalog.
 	{"qwen3", 32768},
 	{"qwen", 32768},
+	// deepseek-* (deepseek-flash, deepseek-v4-pro, deepseek-chat,
+	// deepseek-reasoner, deepseek-r1, deepseek-v3) is reachable both via the
+	// hosted DeepSeek API (api.deepseek.com) and the local Ollama host
+	// (deepseek-r1:70b). Before this entry a deepseek model fell to
+	// DefaultContextWindow (8192) so the must-include tier (~10K tokens)
+	// overflowed and EVERY deepseek run failed closed at context assembly
+	// (ISI-5287: john on deepseek-flash). 65536 is DeepSeek's documented
+	// context window (64K) — a conservative, portable floor giving must-include
+	// ~6× headroom; the hosted API serves more for some variants, so this
+	// under-budgets by design (§8.5: under-budget is safe, over-budget silently
+	// breaks the runtime). Precise per-endpoint resolution is the follow-up
+	// flagged above, not this family-keyed catalog.
+	{"deepseek", 65536},
 }
 
 // WindowForModel resolves a model id to its context window in tokens. An empty

@@ -1184,6 +1184,11 @@ func (in *ProjectSpec) DeepCopyInto(out *ProjectSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.ArchDocRefs != nil {
+		in, out := &in.ArchDocRefs, &out.ArchDocRefs
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ContextBudget != nil {
 		in, out := &in.ContextBudget, &out.ContextBudget
 		*out = new(ContextBudget)

@@ -718,6 +718,75 @@ func TestReviewTriggerFailureSurfacesOwnReason(t *testing.T) {
 	}
 }
 
+// ── ISI-5309: durable sync-history rides the completed mirror pass ──
+
+// A wired SyncHistory seam gets exactly one append-only row per COMPLETED
+// reconcile, carrying the pass trigger kind, the applied (echo-suppressed) row
+// count, the repo URL and the honest operator principal — the "last-sync
+// history" the console surfaces.
+func TestSyncHistoryRecordedOnCompletedPass(t *testing.T) {
+	hist := scm.NewInMemorySyncHistoryStore()
+	r, mirror := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.SyncHistory = hist
+
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := hist.ListSyncHistory(context.Background(), testNamespace, testProject, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("sync-history rows = %d, want exactly 1 per completed pass", len(rows))
+	}
+	got := rows[0]
+	// A poll-interval pass with no webhook trigger annotation is "poll".
+	if got.Kind != scm.SyncKindPoll {
+		t.Fatalf("history kind = %q, want %q (poll-driven pass)", got.Kind, scm.SyncKindPoll)
+	}
+	// Count is the just-applied, echo-suppressed mirror row count (3, not 4).
+	if got.RecordCount != len(mirror.Rows()) || got.RecordCount != 3 {
+		t.Fatalf("history count = %d, want 3 (echo-suppressed applied count)", got.RecordCount)
+	}
+	if got.Repo != "github.com/acme/app" {
+		t.Fatalf("history repo = %q, want the project repo URL", got.Repo)
+	}
+	if got.Principal != SyncHistoryPrincipal {
+		t.Fatalf("history principal = %q, want %q", got.Principal, SyncHistoryPrincipal)
+	}
+	if got.Outcome != scm.SyncOutcomeSuccess {
+		t.Fatalf("history outcome = %q, want success", got.Outcome)
+	}
+}
+
+// A nil SyncHistory seam (history disabled — the default) leaves the reconcile
+// untouched: the seam is opt-in, exactly like a nil ReviewTrigger / IssueSync.
+func TestSyncHistoryNilIsNoop(t *testing.T) {
+	r, _ := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	// r.SyncHistory left nil.
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("reconcile with nil sync-history errored: %v", err)
+	}
+}
+
+// A sync-history write failure is NON-FATAL: the mirror already applied and
+// status already recorded, so history must not be able to fail the reconcile.
+func TestSyncHistoryWriteFailureIsNonFatal(t *testing.T) {
+	r, _ := newHarness(t, syncProject(0), &fakeProvider{name: "github", snapshot: sampleRecords()})
+	r.SyncHistory = failingSyncHistory{}
+	if _, err := r.Reconcile(context.Background(), request()); err != nil {
+		t.Fatalf("history write failure propagated into the reconcile: %v", err)
+	}
+}
+
+// failingSyncHistory is a SyncHistoryStore whose RecordSync always errors — the
+// probe for the non-fatal contract.
+type failingSyncHistory struct{}
+
+func (failingSyncHistory) RecordSync(context.Context, scm.SyncHistoryRow) error {
+	return fmt.Errorf("sync-history store down")
+}
+
 // ── ISI-4120: rate-limit windows must not hot-loop the reconciler ──
 
 // countingStatusClient counts status-subresource Patch calls — the probe

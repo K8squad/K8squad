@@ -50,6 +50,22 @@ type ProjectSpec struct {
 	// +optional
 	Goals []string `json:"goals,omitempty"`
 
+	// Conventions is free-form project convention guidance (coding style,
+	// commit/PR discipline, review norms) injected into every Run's context
+	// envelope as a project-metadata class (§8.5, ISI-5280 WS-E). Like Goals,
+	// it is DECLARATIVE, NON-SECRET descriptor text — not a credential surface.
+	// The context assembler treats it as authoritative-tier best-effort, so a
+	// large value is trimmed under budget rather than dropping the task itself.
+	// +optional
+	Conventions string `json:"conventions,omitempty"`
+
+	// ArchDocRefs are references to the project's architecture / design
+	// documents (URLs or repo-relative paths) injected into every Run's
+	// context envelope (§8.5, ISI-5280 WS-E). These are CITATIONS the agent
+	// can cite/open, not mirrored bodies — NON-SECRET pointers only.
+	// +optional
+	ArchDocRefs []string `json:"archDocRefs,omitempty"`
+
 	// ContextBudget is the project-level default per-tier token allocation
 	// (§8.5) — raise it once for projects with large architecture docs and
 	// every agent on the project inherits it. Per-Agent overrides via
