@@ -156,6 +156,20 @@ type GitHubDetails struct {
 	Body         string // mirrored issue body — EXTERNAL content, untrusted tier
 	Actor        string // issue author, provenance for the untrusted body
 	LastSyncedAt string // RFC3339 mirror observation (scm.mirror_record.mirrored_at)
+	// Comments is the mirrored issue discussion thread (ISI-5308 WS-D.1), oldest
+	// first. EXTERNAL content: each rides the untrusted-external tier as its own
+	// element so an agent sees the upstream conversation it is working — reference
+	// to weigh, never instructions (D8). Empty when the issue has no comments or
+	// the mirror has not captured them yet.
+	Comments []GitHubComment
+}
+
+// GitHubComment is one mirrored comment on the GitHub issue a work item mirrors
+// (ISI-5308). EXTERNAL, untrusted content; Author is provenance for the body.
+type GitHubComment struct {
+	Author    string
+	Body      string
+	WrittenAt string // RFC3339 comment timestamp, provenance only
 }
 
 // Sources is the control-plane gather seam for the five §8.5 content
@@ -663,6 +677,20 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 				Source:    "github",
 				Author:    gh.Actor,
 				WrittenAt: gh.LastSyncedAt,
+			})
+		}
+		// Each mirrored comment rides its own untrusted-external element (ISI-5308):
+		// the upstream discussion the agent is working, external content to weigh,
+		// never instructions. The PAT never reaches here — mirrored local data only.
+		for _, c := range gh.Comments {
+			body := strings.TrimSpace(c.Body)
+			if body == "" {
+				continue
+			}
+			b.addUntrustedExternal("githubIssueComment", body, Provenance{
+				Source:    "github",
+				Author:    c.Author,
+				WrittenAt: c.WrittenAt,
 			})
 		}
 	}

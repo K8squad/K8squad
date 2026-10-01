@@ -49,6 +49,9 @@ func (p *fakeProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []b
 func (p *fakeProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
 }
+func (p *fakeProvider) ListIssueComments(_ context.Context, _, _ string) ([]scm.IssueComment, error) {
+	return nil, fmt.Errorf("unused")
+}
 func (p *fakeProvider) CreateStatus(_ context.Context, _, _ string, _ scm.Status) error {
 	return fmt.Errorf("unused")
 }

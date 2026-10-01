@@ -80,6 +80,13 @@ type MirrorPayload struct {
 	Conclusion string    `json:"conclusion,omitempty"`
 	ExpiresAt  time.Time `json:"expires_at"`
 	Size       int64     `json:"size,omitempty"`
+	// Comments is the issue's mirrored discussion thread (ISI-5308 WS-D.1): the
+	// comment bodies the snapshot enriched the issue record with, carried in the
+	// JSONB payload — no indexed column, no migration, the same posture as
+	// HeadSHA. EXTERNAL, untrusted content: a reader (the bridge import, the
+	// agent context element) surfaces it at the untrusted-external tier only.
+	// Empty for non-issue rows and issues with no comments.
+	Comments []IssueComment `json:"comments,omitempty"`
 }
 
 // MirrorRow is one record of the untrusted-external scm mirror, keyed by
@@ -161,6 +168,7 @@ func BuildMirrorRows(projectNamespace, projectName string, provider SourceContro
 			Conclusion: rec.Conclusion,
 			ExpiresAt:  rec.ExpiresAt,
 			Size:       rec.Size,
+			Comments:   rec.Comments,
 		})
 		if err != nil {
 			// MirrorPayload contains only JSON-safe types; a marshal

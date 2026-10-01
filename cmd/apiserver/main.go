@@ -390,6 +390,7 @@ func main() {
 	// documented 501 rather than authorizing against an empty world.
 	var workItemDispatch apiserver.WorkItemDispatcher
 	var githubIssueDispatch apiserver.GithubIssueDispatcher
+	var githubIssueMirror apiserver.GithubIssueMirrorReader
 	if dashboardReader != nil {
 		dispatchStore, derr := coord.NewWorkItemDispatchStore(db, apiserver.NewClientTeamAgentResolver(dashboardReader))
 		if derr != nil {
@@ -408,6 +409,15 @@ func main() {
 			*coord.WorkItemDispatchStore
 		}{workItemWrites, dispatchStore}
 		log.Printf("ksquad-apiserver: github-issue dispatch bridge ready (POST /api/projects/{id}/github/issues/{n}/assign)")
+
+		// ISI-5308 WS-D.1: let the bridge mint tickets carrying the REAL upstream
+		// issue (body + comments) by reading the §5.4 scm mirror the operator wrote
+		// — a pure local read over the same *sql.DB, no GitHub call, no PAT. Nil db
+		// leaves it unset and the bridge keeps its stub body.
+		if db != nil {
+			githubIssueMirror = apiserver.NewGithubIssueMirror(scm.NewSQLMirrorStore(db))
+			log.Printf("ksquad-apiserver: github-issue body import ready (bridge reads scm mirror)")
+		}
 	}
 
 	// M1.5 board read models (ISI-4131): the per-Project card list + the ticket
@@ -721,6 +731,7 @@ func main() {
 		WorkItemComments:    workItemWrites, // ISI-4406: same store exposes AppendHumanComment
 		WorkItemDispatch:    workItemDispatch,
 		GithubIssueDispatch: githubIssueDispatch,
+		GithubIssueMirror:   githubIssueMirror,
 		WorkItemReads:       workItemReads,
 		ProjectRefs:         projectRefs,
 		Search:              searcher,

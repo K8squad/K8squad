@@ -58,6 +58,38 @@ func testGithubBridgeServer(t *testing.T, teamID uuid.UUID, store GithubIssueDis
 	return srv.Handler()
 }
 
+// fakeBridgeMirror is a GithubIssueMirrorReader double: it records the keys it
+// was asked for and returns a canned mirrored issue (ISI-5308).
+type fakeBridgeMirror struct {
+	mi                        MirroredIssue
+	ok                        bool
+	err                       error
+	gotNS, gotName, gotNumber string
+}
+
+func (f *fakeBridgeMirror) MirroredIssue(_ context.Context, ns, name, number string) (MirroredIssue, bool, error) {
+	f.gotNS, f.gotName, f.gotNumber = ns, name, number
+	return f.mi, f.ok, f.err
+}
+
+// testGithubBridgeServerFull wires the assign route with a resolver (so the
+// handler learns the Project CR ns/name) and an optional mirror reader (ISI-5308
+// body import). Human alice in teamID.
+func testGithubBridgeServerFull(t *testing.T, teamID uuid.UUID, store GithubIssueDispatcher, refs ProjectRefResolver, mirror GithubIssueMirrorReader) http.Handler {
+	t.Helper()
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:alice", TeamID: teamID},
+	}}
+	srv := NewServer(Options{
+		Authenticator:       NewCookieAuthenticator(resolver),
+		Discussion:          discussion.NewHandler(nil),
+		GithubIssueDispatch: store,
+		ProjectRefs:         refs,
+		GithubIssueMirror:   mirror,
+	})
+	return srv.Handler()
+}
+
 func postAssign(project, number, body, token string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+project+"/github/issues/"+number+"/assign", strings.NewReader(body))
@@ -116,6 +148,76 @@ func TestGithubAssignOK(t *testing.T) {
 	if got.WorkItemID != "wi-9" || got.IssueRef != "K8squad/K8squad#4793" || !got.Created ||
 		got.Dispatch.ToState != "todo" || got.Dispatch.RequestedAgent != "coder" {
 		t.Fatalf("response contract: %+v", got)
+	}
+}
+
+// TestGithubAssignImportsMirroredBody — ISI-5308: when the §5.4 mirror has the
+// issue, the minted ticket carries the REAL upstream body + comments (keyed by
+// the resolved Project CR ns/name + issue number), not the stub placeholder.
+func TestGithubAssignImportsMirroredBody(t *testing.T) {
+	teamID := uuid.New()
+	store := &fakeGithubBridge{
+		ensureRes:   coord.EnsureReviewWorkItemResult{Item: coord.WorkItemRecord{ID: "wi-1"}, Created: true},
+		dispatchRes: coord.WorkItemDispatchResult{WorkItemID: "wi-1", ToState: "todo", RequestedAgent: "coder"},
+	}
+	refs := &fakeProjectRefs{res: ProjectRefResolution{UID: "proj-uid", TeamUID: teamID.String(), Namespace: "team-ns", Name: "widget"}}
+	mirror := &fakeBridgeMirror{
+		ok: true,
+		mi: MirroredIssue{
+			Body: "The real upstream issue body.",
+			Comments: []MirroredIssueComment{
+				{Actor: "alice", Body: "first reply"},
+				{Actor: "bob", Body: "second reply"},
+			},
+		},
+	}
+	h := testGithubBridgeServerFull(t, teamID, store, refs, mirror)
+
+	body := `{"agentId":"coder","url":"https://github.com/o/r/issues/7"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postAssign("team-ns%2Fwidget", "7", body, devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// mirror keyed by resolved CR ns/name + issue number (NOT the UID).
+	if mirror.gotNS != "team-ns" || mirror.gotName != "widget" || mirror.gotNumber != "7" {
+		t.Fatalf("mirror lookup keys wrong: ns=%q name=%q number=%q", mirror.gotNS, mirror.gotName, mirror.gotNumber)
+	}
+	got := store.ensureIn.Body
+	if !strings.Contains(got, "The real upstream issue body.") {
+		t.Errorf("imported body missing the mirrored issue body: %q", got)
+	}
+	if !strings.Contains(got, "first reply") || !strings.Contains(got, "@alice") ||
+		!strings.Contains(got, "second reply") || !strings.Contains(got, "@bob") {
+		t.Errorf("imported body missing mirrored comments: %q", got)
+	}
+	if !strings.Contains(got, "https://github.com/o/r/issues/7") {
+		t.Errorf("imported body must still carry the issue link: %q", got)
+	}
+}
+
+// TestGithubAssignFallsBackToStubBody — ISI-5308: a mirror MISS (issue not synced
+// yet) keeps the stub body so the ticket is still minted and dispatched.
+func TestGithubAssignFallsBackToStubBody(t *testing.T) {
+	teamID := uuid.New()
+	store := &fakeGithubBridge{
+		ensureRes:   coord.EnsureReviewWorkItemResult{Item: coord.WorkItemRecord{ID: "wi-1"}, Created: true},
+		dispatchRes: coord.WorkItemDispatchResult{WorkItemID: "wi-1", ToState: "todo"},
+	}
+	refs := &fakeProjectRefs{res: ProjectRefResolution{UID: "proj-uid", TeamUID: teamID.String(), Namespace: "team-ns", Name: "widget"}}
+	mirror := &fakeBridgeMirror{ok: false} // not mirrored yet
+	h := testGithubBridgeServerFull(t, teamID, store, refs, mirror)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, postAssign("team-ns%2Fwidget", "7", `{"agentId":"coder","url":"https://github.com/o/r/issues/7"}`, devToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	got := store.ensureIn.Body
+	if !strings.Contains(got, "Imported from GitHub issue: https://github.com/o/r/issues/7") ||
+		!strings.Contains(got, "Assigned to an agent from the console GitHub Issues board") {
+		t.Errorf("mirror miss must fall back to the stub body: %q", got)
 	}
 }
 

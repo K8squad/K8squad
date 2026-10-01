@@ -52,6 +52,22 @@ const githubPerPage = 100
 // is reached; the next poll tick picks up whatever changed.
 const maxRecordsPerKind = 10000
 
+// maxIssuesWithComments bounds how many issues ONE snapshot enriches with their
+// comment thread (ISI-5308). Comment import is an extra ListComments call per
+// issue that actually has comments, so a repo with thousands of commented
+// issues could blow the API budget on a single poll tick. We cap the per-pass
+// enrichment and let subsequent ticks converge — the body is always mirrored;
+// comments beyond the cap simply arrive on a later pass. Only issues whose
+// GetComments() count is > 0 ever incur the call, so the typical pass is cheap.
+const maxIssuesWithComments = 200
+
+// maxCommentsPerIssue bounds the comments mirrored for one issue, so a single
+// pathological issue thread cannot dominate the payload JSONB or the imported
+// ticket body. The newest comments are the most relevant; the fetch is
+// chronological, so this keeps the earliest page(s) — adjust if ordering needs
+// to change.
+const maxCommentsPerIssue = 100
+
 // maxCheckRunRefs bounds the per-ref fan-out in fetchCheckRuns (default
 // branch + open PR heads). Each ref costs one paginated list call.
 const maxCheckRunRefs = 100
@@ -623,6 +639,12 @@ func (p *GitHubProvider) fetchIssues(ctx context.Context, owner, repo string, op
 		},
 	}
 
+	// Comment enrichment (ISI-5308) is bounded per pass: only issues that report
+	// a comment count > 0 incur the extra ListComments call, and no more than
+	// maxIssuesWithComments issues are enriched before we stop — the body is
+	// always mirrored, the rest of the comments catch up on a later tick.
+	commentsEnriched := 0
+
 	for {
 		issues, resp, err := p.client.Issues.ListByRepo(ctx, owner, repo, opt)
 		if err != nil {
@@ -647,6 +669,22 @@ func (p *GitHubProvider) fetchIssues(ctx context.Context, owner, repo string, op
 				Assignees:  getGitHubUsernames(issue.Assignees),
 				Labels:     getGitHubLabels(issue.Labels),
 			}
+			if issue.GetComments() > 0 && commentsEnriched < maxIssuesWithComments {
+				comments, cerr := p.listIssueComments(ctx, owner, repo, issue.GetNumber())
+				if cerr != nil {
+					// Comments are best-effort enrichment: a failure to read one
+					// issue's thread must not fail the whole snapshot (the body is
+					// already captured). Surface a rate limit, though, so the
+					// reconciler can back off respectfully instead of hammering.
+					var rl *RateLimitedError
+					if errors.As(cerr, &rl) {
+						return nil, cerr
+					}
+				} else if len(comments) > 0 {
+					record.Comments = comments
+					commentsEnriched++
+				}
+			}
 			records = append(records, record)
 		}
 
@@ -657,6 +695,57 @@ func (p *GitHubProvider) fetchIssues(ctx context.Context, owner, repo string, op
 	}
 
 	return records, nil
+}
+
+// listIssueComments fetches one issue's comment thread in chronological order,
+// bounded by maxCommentsPerIssue (ISI-5308). It is the shared implementation
+// behind the ListIssueComments seam method and the in-snapshot enrichment in
+// fetchIssues — the only place that speaks the GitHub comment API.
+func (p *GitHubProvider) listIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error) {
+	var out []IssueComment
+	opt := &github.IssueListCommentsOptions{
+		ListOptions: github.ListOptions{PerPage: githubPerPage},
+	}
+	for {
+		comments, resp, err := p.client.Issues.ListComments(ctx, owner, repo, number, opt)
+		if err != nil {
+			return nil, wrapRateLimit(err)
+		}
+		for _, c := range comments {
+			out = append(out, IssueComment{
+				ExternalID: fmt.Sprintf("%d", c.GetID()),
+				Actor:      getGitHubActor(c.GetUser()),
+				Body:       c.GetBody(),
+				CreatedAt:  c.GetCreatedAt().Time,
+				UpdatedAt:  c.GetUpdatedAt().Time,
+				URL:        c.GetHTMLURL(),
+			})
+			if len(out) >= maxCommentsPerIssue {
+				return out, nil
+			}
+		}
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+	return out, nil
+}
+
+// ListIssueComments implements the SourceProvider seam (ISI-5308): the comment
+// thread of ONE issue, addressed by the compact external id (the issue number).
+// External, untrusted content. A malformed repo URL / external id is a
+// deterministic 422 no retry can fix.
+func (p *GitHubProvider) ListIssueComments(ctx context.Context, repoURL string, externalID string) ([]IssueComment, error) {
+	owner, repo, err := parseRepoURL(repoURL)
+	if err != nil {
+		return nil, &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid repo URL: %v", err)}
+	}
+	number, err := parseExternalID(externalID)
+	if err != nil {
+		return nil, &ProviderError{HTTPCode: http.StatusUnprocessableEntity, Message: fmt.Sprintf("invalid issue ID: %v", err)}
+	}
+	return p.listIssueComments(ctx, owner, repo, number)
 }
 
 // fetchPullRequests fetches pull requests from GitHub.

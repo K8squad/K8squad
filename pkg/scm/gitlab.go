@@ -156,6 +156,11 @@ func (p *GitLabProvider) CreateComment(_ context.Context, _, _, _, _ string) (st
 	return "", gitlabNotImplemented("CreateComment")
 }
 
+// ListIssueComments is not implemented for GitLab yet — fail closed (ISI-5308).
+func (p *GitLabProvider) ListIssueComments(_ context.Context, _, _ string) ([]IssueComment, error) {
+	return nil, gitlabNotImplemented("ListIssueComments")
+}
+
 // UpdateIssue is not implemented for GitLab yet — fail closed (story 11.2
 // outbound sync is GitHub-first; the seam method exists so the sync engine
 // stays provider-neutral).

@@ -86,6 +86,9 @@ func (p *sequenceProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _
 func (p *sequenceProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
 }
+func (p *sequenceProvider) ListIssueComments(_ context.Context, _, _ string) ([]scm.IssueComment, error) {
+	return nil, fmt.Errorf("unused")
+}
 func (p *sequenceProvider) UpdateIssue(_ context.Context, _, _ string, _ scm.IssueUpdate) error {
 	return fmt.Errorf("unused")
 }
@@ -104,6 +107,9 @@ func (p *fakeProvider) ParseWebhookEvent(_ context.Context, _ http.Header, _ []b
 }
 func (p *fakeProvider) CreateComment(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", fmt.Errorf("unused")
+}
+func (p *fakeProvider) ListIssueComments(_ context.Context, _, _ string) ([]scm.IssueComment, error) {
+	return nil, fmt.Errorf("unused")
 }
 func (p *fakeProvider) UpdateIssue(_ context.Context, _, _ string, _ scm.IssueUpdate) error {
 	return fmt.Errorf("unused")

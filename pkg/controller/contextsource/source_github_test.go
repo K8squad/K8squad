@@ -18,6 +18,7 @@ package contextsource
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
@@ -38,7 +39,7 @@ func TestSourceGitHubDetailsNoLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GitHubDetails: %v", err)
 	}
-	if gh != (contextasm.GitHubDetails{}) {
+	if !reflect.DeepEqual(gh, contextasm.GitHubDetails{}) {
 		t.Errorf("expected zero value, got %+v", gh)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -86,6 +87,40 @@ func TestSourceGitHubDetailsMirrored(t *testing.T) {
 	}
 }
 
+// ISI-5308: a mirrored issue whose payload carries a comment thread surfaces the
+// comments on GitHubDetails, newest-timestamp rendered RFC3339, so the assembler
+// can emit each as an untrusted-external element.
+func TestSourceGitHubDetailsMirroredComments(t *testing.T) {
+	s, mock := newSourceWithDB(t)
+	c1 := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`unnest\(wi.labels\)`).
+		WithArgs("wi-9", githubIssueLabelPrefix+"%").
+		WillReturnRows(sqlmock.NewRows([]string{"l"}).AddRow("ksquad.github.issue=acme/widget#42"))
+	mock.ExpectQuery(`FROM scm.mirror_record`).
+		WithArgs("team-a", "proj-1", "42").
+		WillReturnRows(sqlmock.NewRows([]string{"state", "title", "actor", "payload", "mirrored_at"}).
+			AddRow("open", "Flaky cache", "octocat",
+				[]byte(`{"body":"body","comments":[{"actor":"alice","body":"first","created_at":"2026-09-30T09:00:00Z"},{"actor":"bob","body":"second"}]}`),
+				c1))
+
+	gh, err := s.GitHubDetails(context.Background(), "proj-1", "wi-9")
+	if err != nil {
+		t.Fatalf("GitHubDetails: %v", err)
+	}
+	if len(gh.Comments) != 2 {
+		t.Fatalf("comments = %d, want 2 (%+v)", len(gh.Comments), gh.Comments)
+	}
+	if gh.Comments[0].Author != "alice" || gh.Comments[0].Body != "first" || gh.Comments[0].WrittenAt != "2026-09-30T09:00:00Z" {
+		t.Errorf("comment[0] wrong: %+v", gh.Comments[0])
+	}
+	if gh.Comments[1].Author != "bob" || gh.Comments[1].Body != "second" || gh.Comments[1].WrittenAt != "" {
+		t.Errorf("comment[1] wrong (no timestamp → empty): %+v", gh.Comments[1])
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Error(err)
+	}
+}
+
 // A labelled item whose issue has NOT been mirrored yet still returns the ref +
 // a URL derived from the label alone — the agent gets the link; body/state fill
 // in once the mirror catches up.
@@ -125,7 +160,7 @@ func TestSourceGitHubDetailsMalformedLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GitHubDetails: %v", err)
 	}
-	if gh != (contextasm.GitHubDetails{}) {
+	if !reflect.DeepEqual(gh, contextasm.GitHubDetails{}) {
 		t.Errorf("expected zero value for malformed label, got %+v", gh)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

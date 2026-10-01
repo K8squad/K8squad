@@ -140,6 +140,14 @@ func resolveProjectFleetWideWithUID(ctx context.Context, reader client.Reader, p
 type ProjectRefResolution struct {
 	UID     string
 	TeamUID string
+	// Namespace and Name are the resolved Project CR coordinates (ISI-5308): the
+	// coord board keys on the UID, but the §5.4 scm mirror keys its rows on the
+	// Project CR (namespace, name), so a caller reading the mirror (the GitHub
+	// bridge's issue-body import) needs both. Empty when the resolver cannot
+	// supply them (a UID-passthrough caller or a fake) — the mirror read is then
+	// skipped and the caller keeps its fallback.
+	Namespace string
+	Name      string
 }
 
 // ProjectRefResolver resolves the console's project reference to the Project CR
@@ -204,7 +212,7 @@ func (r clientProjectRefResolver) ResolveProjectRef(ctx context.Context, project
 	case nameMatches > 1:
 		return ProjectRefResolution{}, ErrProjectAmbiguous
 	}
-	out := ProjectRefResolution{UID: string(match.UID)}
+	out := ProjectRefResolution{UID: string(match.UID), Namespace: match.Namespace, Name: match.Name}
 	if team, err := teamInNamespace(ctx, r.reader, match.Namespace); err != nil {
 		return ProjectRefResolution{}, err
 	} else if team != nil {

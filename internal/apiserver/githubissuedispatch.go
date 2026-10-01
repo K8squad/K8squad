@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/pkg/coord"
@@ -60,6 +62,41 @@ type GithubIssueDispatcher interface {
 	RequestDispatch(ctx context.Context, in coord.RequestDispatchInput) (coord.WorkItemDispatchResult, error)
 }
 
+// GithubIssueMirrorReader reads the already-mirrored body + comments of one
+// GitHub issue from the §5.4 scm mirror so the bridge can mint a ticket carrying
+// the REAL upstream issue instead of a stub placeholder (ISI-5308 WS-D.1). It is
+// a PURE LOCAL read of scm.mirror_record — written by the operator repo-sync
+// relay, which is the ONLY component that holds the PAT — so the apiserver never
+// calls GitHub and the credential never enters this path (the investigation on
+// ISI-5279: the apiserver SA holds secrets:create, not secrets:get, and cannot
+// fetch GitHub itself). The seam is optional: a host without it (or a mirror
+// that has not caught up) falls back to the stub body, never a hard failure.
+type GithubIssueMirrorReader interface {
+	// MirroredIssue returns the mirrored issue addressed by (project CR
+	// namespace/name, issue number). ok=false means the mirror has no row for it
+	// yet — the caller keeps the stub body and the real one fills in on a later
+	// sync. An error is a genuine read failure (DB down), not a cache miss.
+	MirroredIssue(ctx context.Context, projectNamespace, projectName, number string) (mi MirroredIssue, ok bool, err error)
+}
+
+// MirroredIssue is the slice of the §5.4 mirror the bridge imports: the external
+// issue body + its comment thread, already captured locally. EXTERNAL, untrusted
+// content (D8) — the imported ticket body carries it verbatim but marks it as
+// mirrored upstream content, never as instructions.
+type MirroredIssue struct {
+	Body     string
+	URL      string
+	Title    string
+	Comments []MirroredIssueComment
+}
+
+// MirroredIssueComment is one mirrored issue comment the bridge imports.
+type MirroredIssueComment struct {
+	Actor     string
+	Body      string
+	CreatedAt time.Time
+}
+
 // githubIssueLabelPrefix keys the dedup/join label the whole Epic-2/Epic-4 bridge
 // agrees on (ISI-4757): `ksquad.github.issue=owner/repo#N`. It is BOTH the
 // idempotency key for the create and the join key Epic-4's local-agent badge reads
@@ -93,7 +130,7 @@ type githubIssueAssignResponse struct {
 
 // githubIssueDispatchHandler answers POST
 // /api/projects/{projectId}/github/issues/{number}/assign.
-func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefResolver) http.HandlerFunc {
+func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefResolver, mirror GithubIssueMirrorReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth, ok := discussion.AuthFromContext(r.Context())
 		if !ok || auth.Principal == "" {
@@ -120,6 +157,7 @@ func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefReso
 		// like the human work-item create (workitemwrite.go): the Project's owning
 		// Team is the minted ticket's tenancy, so it is immediately dispatchable.
 		projectTeam := ""
+		projectNS, projectName := "", ""
 		if refs != nil {
 			resolved, err := refs.ResolveProjectRef(r.Context(), projectID)
 			if mapProjectRefError(w, err) {
@@ -127,6 +165,7 @@ func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefReso
 			}
 			projectID = resolved.UID
 			projectTeam = resolved.TeamUID
+			projectNS, projectName = resolved.Namespace, resolved.Name
 		}
 
 		var req githubIssueAssignRequest
@@ -162,9 +201,19 @@ func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefReso
 		if title == "" {
 			title = "GitHub issue " + issueRef
 		}
-		body := "Imported from GitHub issue: " + req.URL +
-			"\n\nAssigned to an agent from the console GitHub Issues board (ISI-4749). " +
-			"At the end of the run the agent posts its result back to the ticket and the linked GitHub issue."
+		// The minted ticket body: prefer the REAL upstream issue (body + comments)
+		// already mirrored locally (ISI-5308), falling back to the stub when the
+		// mirror has not caught up — the ticket is always created, the agent always
+		// gets the link, and the real content fills in on a repeat click or when
+		// the context assembler reads the mirror directly at run time.
+		body := stubIssueBody(req.URL)
+		if mirror != nil && projectNS != "" && projectName != "" {
+			if mi, ok, err := mirror.MirroredIssue(r.Context(), projectNS, projectName, number); err == nil && ok {
+				body = importedIssueBody(req.URL, mi)
+			}
+			// A mirror read error is non-fatal: the stub body still mints a valid,
+			// idempotent ticket, so a transient DB hiccup never blocks a dispatch.
+		}
 
 		// (1) find-or-create the mirror ticket, idempotent on the issue label.
 		ens, err := store.EnsureReviewWorkItem(r.Context(), coord.EnsureReviewWorkItemInput{
@@ -199,6 +248,64 @@ func githubIssueDispatchHandler(store GithubIssueDispatcher, refs ProjectRefReso
 			Dispatch:   disp,
 		})
 	}
+}
+
+// stubIssueBody is the minimal minted-ticket body used before the §5.4 mirror
+// has captured the real upstream issue (ISI-5308 fallback): the link plus the
+// bridge provenance note. It is the pre-ISI-5308 behaviour, preserved verbatim
+// so a store-less / not-yet-mirrored dispatch is unchanged.
+func stubIssueBody(url string) string {
+	return "Imported from GitHub issue: " + url +
+		"\n\nAssigned to an agent from the console GitHub Issues board (ISI-4749). " +
+		"At the end of the run the agent posts its result back to the ticket and the linked GitHub issue."
+}
+
+// bridgeImportedCommentCap bounds how many mirrored comments the minted ticket
+// body carries, so one long thread cannot bloat coord.work_item.description. The
+// full thread still reaches the agent through the untrusted-external GitHubDetails
+// context element (ISI-5279); this is the human-facing ticket summary.
+const bridgeImportedCommentCap = 20
+
+// importedIssueBody builds the minted-ticket body from the mirrored upstream
+// issue (ISI-5308): the real issue body followed by a bounded, clearly-fenced
+// rendering of its comment thread, then the bridge provenance note. The upstream
+// content is EXTERNAL and is labelled as such so a reader (human or agent) treats
+// it as mirrored reference, never as instructions (D8). No credential is involved
+// — every byte here came from the local mirror.
+func importedIssueBody(url string, mi MirroredIssue) string {
+	var b strings.Builder
+	b.WriteString("Imported from GitHub issue: ")
+	b.WriteString(url)
+	b.WriteString("\n\n")
+	if body := strings.TrimSpace(mi.Body); body != "" {
+		b.WriteString("--- Upstream issue (mirrored, external content) ---\n")
+		b.WriteString(body)
+		b.WriteString("\n")
+	}
+	if n := len(mi.Comments); n > 0 {
+		shown := mi.Comments
+		if n > bridgeImportedCommentCap {
+			shown = shown[:bridgeImportedCommentCap]
+		}
+		fmt.Fprintf(&b, "\n--- Comments (%d, mirrored external content) ---\n", n)
+		for _, c := range shown {
+			who := c.Actor
+			if who == "" {
+				who = "unknown"
+			}
+			when := ""
+			if !c.CreatedAt.IsZero() {
+				when = " (" + c.CreatedAt.UTC().Format(time.RFC3339) + ")"
+			}
+			fmt.Fprintf(&b, "\n@%s%s:\n%s\n", who, when, strings.TrimSpace(c.Body))
+		}
+		if n > len(shown) {
+			fmt.Fprintf(&b, "\n… %d more comment(s) omitted; see the linked issue.\n", n-len(shown))
+		}
+	}
+	b.WriteString("\nAssigned to an agent from the console GitHub Issues board (ISI-4749). " +
+		"At the end of the run the agent posts its result back to the ticket and the linked GitHub issue.")
+	return b.String()
 }
 
 // deriveGithubIssueRef builds the compact `owner/repo#N` ref from the issue's
