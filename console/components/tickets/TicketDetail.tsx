@@ -395,7 +395,7 @@ function AssigneeControl({
       onAssigned(); // re-fetch — the requested_agent stamp (+ lane advance) follows
     } catch (e) {
       const code = e instanceof ApiError ? e.status : 0;
-      setErr(assignErrorMessage(code));
+      setErr(assignErrorMessage(code, e instanceof ApiError ? e.body : undefined));
       onAssigned(); // a 409 means the lane moved under us — re-sync
     } finally {
       setBusy(false);
@@ -807,18 +807,48 @@ function canComment(role: string): boolean {
 }
 
 /**
+ * Pull the apiserver's machine-readable dispatch-conflict reason out of a 409 body
+ * (ISI-5295). The body is `{error, reason}` JSON forwarded verbatim through the BFF;
+ * a missing/legacy body (older apiserver, non-dispatch 409) yields "" so the caller
+ * falls back to the generic re-sync copy. Best-effort — never throws.
+ */
+function dispatchConflictReason(body?: string): string {
+  if (!body) return "";
+  try {
+    const parsed = JSON.parse(body) as { reason?: unknown };
+    return typeof parsed.reason === "string" ? parsed.reason : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Assign-half error copy (403/409/501/other) — ONE map shared by the rail
  * AssigneeControl and the composer's Comment-&-assign (ISI-4567 §2.3 "copy
  * mirrors the rail"), so the two surfaces can never drift apart.
+ *
+ * ISI-5295: a 409 is no longer a single vague "moved underneath you". The
+ * apiserver tags the conflict with a reason so the copy tells the user WHAT
+ * happened and WHAT to do next — a live run they must kill before re-running, vs a
+ * stale projection that just re-synced, vs an undispatchable lane. `body` is the
+ * ApiError body (the forwarded `{error, reason}` JSON); absent ⇒ generic 409 copy.
  */
-function assignErrorMessage(code: number): string {
-  return code === 403
-    ? "That agent isn't a member of this project's team."
-    : code === 409
-      ? "The ticket moved underneath you — re-synced from the server."
-      : code === 501
-        ? "Assigning agents isn't hosted on this deployment yet."
-        : "Couldn't assign the agent. Try again.";
+function assignErrorMessage(code: number, body?: string): string {
+  if (code === 403) return "That agent isn't a member of this project's team.";
+  if (code === 501) return "Assigning agents isn't hosted on this deployment yet.";
+  if (code === 409) {
+    switch (dispatchConflictReason(body)) {
+      case "live_run":
+        return "An agent run is already in progress on this ticket. Kill the current run first, then re-run.";
+      case "not_dispatchable":
+        return "This ticket can't be assigned from its current state.";
+      default:
+        // concurrent_change, or an older apiserver with no reason: the lane slipped
+        // under us and we've re-synced — retrying usually works.
+        return "The ticket just changed — we re-synced to the latest. Try assigning again.";
+    }
+  }
+  return "Couldn't assign the agent. Try again.";
 }
 
 type ComposerStatus =
@@ -1055,7 +1085,7 @@ function Composer({
       setAssignee("");
     } catch (err) {
       const code = err instanceof ApiError ? err.status : 0;
-      setAssignErr(assignErrorMessage(code));
+      setAssignErr(assignErrorMessage(code, err instanceof ApiError ? err.body : undefined));
       if (code === 501) setAssignUnavailable(true);
     } finally {
       setAssigning(false);

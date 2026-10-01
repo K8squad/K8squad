@@ -402,6 +402,19 @@ var allowedSurface = map[string]string{
 	"NewWorkItemDispatchStore":              "§8.6 constructor (db + Team-agent resolver)",
 	"WorkItemDispatchStore.RequestDispatch": "§8.6/§6.5 agent-∈-Team check + intent write + backlog→todo CAS + audit, no-fence, Team-scoped",
 
+	// ISI-5295: a dispatch ErrStateConflict carries a machine-readable reason so
+	// the HTTP shell + console render branch-appropriate copy (live run vs stale
+	// projection vs undispatchable lane) instead of one generic "moved underneath
+	// you". NOT a new channel — it is diagnostic metadata on the existing §8.6 409.
+	"DispatchConflictReason":         "ISI-5295 §8.6 classification of a dispatch 409 for precise console copy",
+	"ConflictReasonLiveRun":          "ISI-5295 §8.6 reason: a LIVE run holds the checkout (kill it to re-run)",
+	"ConflictReasonConcurrentChange": "ISI-5295 §8.6 reason: lane slipped between lock read and CAS (re-sync + retry)",
+	"ConflictReasonNotDispatchable":  "ISI-5295 §8.6 reason: item sits in a lane no dispatch verb handles (fail closed)",
+	"DispatchConflictError":          "ISI-5295 §8.6 ErrStateConflict carrying a Reason; errors.Is(ErrStateConflict) holds",
+	"DispatchConflictError.Error":    "ISI-5295 §8.6 error string (byte-compatible with the old %w-wrapped form)",
+	"DispatchConflictError.Is":       "ISI-5295 §8.6 makes the reason-tagged conflict satisfy errors.Is(ErrStateConflict)",
+	"DispatchConflict":               "ISI-5295 §8.6 extracts the Reason from a dispatch conflict error for the HTTP shell",
+
 	// ADR-0024 §5 (ISI-4741): the AGENT-facing half of the board dispatch — the
 	// PM→implementer handoff. NOT an agent-to-agent channel: it adds one custody
 	// gate (caller holds the item or an ancestor) then delegates to the single-
