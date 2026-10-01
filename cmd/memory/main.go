@@ -31,6 +31,7 @@ import (
 	"github.com/K8squad/K8squad/internal/handoffmirror"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/internal/mentiondispatch"
+	"github.com/K8squad/K8squad/internal/workitemindex"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
 	"github.com/K8squad/K8squad/pkg/search"
@@ -228,6 +229,13 @@ func main() {
 	// posture as the discussion indexer — a coord-schema absence or DB problem disables mirroring with a
 	// log line, never preventing the memory service (and its reads) from starting (AC6).
 	startHandoffMirror(ctx, cfg.DatabaseURL, store, embedder)
+
+	// Best-effort work-item→pgvector indexer (WS-C of ISI-5270, ISI-5277): projects committed board
+	// work items (title/body/comments) into the memory index out of band so a ticket becomes
+	// semantically recallable inside the Context Assembler — the same fail-open outbox-relay posture as
+	// the discussion indexer / handoff mirror. A coord-schema absence or DB problem disables indexing
+	// with a log line, never preventing the memory service (and its reads) from starting.
+	startWorkItemIndexer(ctx, cfg.DatabaseURL, store, embedder)
 
 	mux := http.NewServeMux()
 	tools.Mount(mux)
@@ -441,6 +449,34 @@ func startHandoffMirror(ctx context.Context, dsn string, store *memory.PgVectorS
 	log.Printf("ksquad-memory: handoff mirror running (interval=%s)", interval)
 	go func() {
 		m.Run(ctx, interval)
+		_ = db.Close()
+	}()
+}
+
+// startWorkItemIndexer launches the best-effort work-item→memory indexer (WS-C, ISI-5277) in the
+// background. Deliberately fail-open, exactly like the discussion indexer / handoff mirror: any setup
+// problem disables indexing with a log line rather than taking down the memory service — recall of a
+// ticket is a fast-follow property, never a gate on the board or the service. It is cursor-backed (the
+// *memory.PgVectorStore), so it resumes from its last committed watermark across a restart; the
+// superseder is the same store, so a re-projected revision soft-retracts the item's earlier revisions
+// and recall surfaces only the newest title/body/comments. The sweep tolerates a missing coord schema
+// (its query error is logged and retried), so it can start before the coord spine is provisioned.
+func startWorkItemIndexer(ctx context.Context, dsn string, store *memory.PgVectorStore, embedder memory.Embedder) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: work-item indexer disabled (open db: %v)", err)
+		return
+	}
+	ix := workitemindex.NewIndexer(workitemindex.NewSQLSource(db), store, embedder, store, 0).WithCursor(store)
+	interval := 15 * time.Second
+	if v := os.Getenv("WORK_ITEM_INDEX_INTERVAL"); v != "" {
+		if d, perr := time.ParseDuration(v); perr == nil {
+			interval = d
+		}
+	}
+	log.Printf("ksquad-memory: work-item indexer running (interval=%s)", interval)
+	go func() {
+		ix.Run(ctx, interval)
 		_ = db.Close()
 	}()
 }

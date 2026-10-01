@@ -27,6 +27,14 @@ const TrustUntrusted = "untrusted"
 // (which is text, not the uuid substrate columns) back out of the record's provenance for these rows.
 const KindDiscussion = "discussion"
 
+// KindWorkItem marks a memory record projected from a coord.work_item row (WS-C of ISI-5270, the
+// work-item semantic index). Like KindDiscussion/KindHandoffMirror it is a SERVER-PROJECTED kind — the
+// workitemindex outbox relay is its only writer, never the agent-facing memory_write tool — so an agent
+// cannot forge a "ticket" that recall then surfaces as a real, attributed work item. Recall surfaces it
+// like any other untrusted knowledge (scoped, attributed), which is what makes OTHER tickets
+// semantically recallable inside the Context Assembler.
+const KindWorkItem = "work-item"
+
 // Author is the attributed, server-stamped authorship of a read result. agent-vs-human is DERIVED from
 // AgentID (never a stored flag), mirroring discussion.Message.AuthorKind and the memory provenance.
 type Author struct {
@@ -125,6 +133,49 @@ func NewHandoffProvenance(uri, sha256, workItemID, runID string, auditID int64, 
 	return b
 }
 
+// ProvenanceSourceWorkItem is the provenance.source value the WS-C work-item indexer stamps on
+// work-item rows. Like the discussion/handoff sources, it is the marker buildEnvelope keys on to
+// surface the honest TEXT provenance (coord's created_by principal is text; the memory uuid substrate
+// columns carry deterministic derivations) back out of the record — provenance in = provenance out.
+const ProvenanceSourceWorkItem = "work-item"
+
+// workItemProvenance is the honest coord.work_item triple-plus carried in a projected work-item
+// record's provenance jsonb: the item id, board lane, the server-stamped created_by principal (coord
+// has NO agent identity column — the principal text IS the attribution, so author_agent_id stays nil
+// and is_agent is derived false, exactly like the handoff mirror), the comment count folded into the
+// content, and both timestamps. WorkItemID is the supersede key: a re-projected revision of the same
+// item soft-retracts its earlier mirrors (SupersedeWorkItemRecords) so recall surfaces only the newest.
+type workItemProvenance struct {
+	Source          string `json:"source"`
+	WorkItemID      string `json:"work_item_id"`
+	State           string `json:"state"`
+	AuthorPrincipal string `json:"author_principal"`
+	CommentCount    int    `json:"comment_count"`
+	CreatedAt       string `json:"created_at"` // RFC3339 — the item's original creation time
+	WrittenAt       string `json:"written_at"` // RFC3339 — the item's last-activity time (updated_at ⊔ last comment)
+}
+
+// NewWorkItemProvenance builds the provenance jsonb the WS-C work-item indexer stamps on a projected
+// work-item record. buildEnvelope reads exactly these fields back out — provenance in = provenance out,
+// no laundering. Taking primitives (not a coord type) keeps this package decoupled from pkg/coord
+// exactly as NewDiscussionProvenance/NewHandoffProvenance keep it decoupled from their sources.
+func NewWorkItemProvenance(workItemID, state, principal string, commentCount int, createdAt, writtenAt time.Time) json.RawMessage {
+	p := workItemProvenance{
+		Source:          ProvenanceSourceWorkItem,
+		WorkItemID:      workItemID,
+		State:           state,
+		AuthorPrincipal: principal,
+		CommentCount:    commentCount,
+		CreatedAt:       createdAt.Format(time.RFC3339Nano),
+		WrittenAt:       writtenAt.Format(time.RFC3339Nano),
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return b
+}
+
 // NewDiscussionProvenance builds the provenance jsonb the 10.2 indexer stamps on a projected discussion
 // record. buildEnvelope reads exactly these fields back out — provenance in = provenance out, no
 // laundering. Taking primitives (not the discussion type) keeps this package decoupled from discussion.
@@ -189,6 +240,25 @@ func buildEnvelope(h SearchHit) Envelope {
 				AgentID:   p.AuthorAgentID,
 				IsAgent:   p.AuthorAgentID != nil,
 				RunID:     &run,
+			}
+			if t, err := time.Parse(time.RFC3339Nano, p.WrittenAt); err == nil {
+				env.WrittenAt = t
+			}
+			return env
+		}
+	}
+	// Projected work item (WS-C): attribution is the honest text provenance the indexer stamped — the
+	// coord created_by principal is TEXT ("agent:coder", "alice@corp"), not a uuid, and surfacing the
+	// substrate derivation would launder authorship. No agent id / run linkage: coord has neither on the
+	// item, so agent_id stays nil (is_agent derived false) exactly like the handoff mirror.
+	if h.Kind == KindWorkItem {
+		var p workItemProvenance
+		if len(h.Provenance) > 0 && json.Unmarshal(h.Provenance, &p) == nil && p.Source == ProvenanceSourceWorkItem {
+			env.Author = Author{
+				Principal: p.AuthorPrincipal,
+				AgentID:   nil,
+				IsAgent:   false,
+				RunID:     nil,
 			}
 			if t, err := time.Parse(time.RFC3339Nano, p.WrittenAt); err == nil {
 				env.WrittenAt = t
