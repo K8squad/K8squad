@@ -262,16 +262,28 @@ func (s *ProdReconcileStore) Advance(expected, next reconcile.Step, fence *int64
 	//     outbox tenancy/subject component, NOT NULL) and squad are derived from the
 	//     work_item row in the SAME statement so no extra identifier has to be
 	//     threaded through the Store.
+	//
+	//     ISI-5334 (P2-5): the payload also carries the run's trace_id. The relay's
+	//     runTraceContext (pkg/events/trace.go) reconstructs a remote span context
+	//     from it, so this `ksquad.run.*.reconcile_advanced` producer span — and the
+	//     consumer span that continues the injected carrier — JOIN the run trace
+	//     instead of each rooting its own. Without it a reconcile_advanced row
+	//     carries neither trace_carrier nor trace_id and the NATS hop was invisible
+	//     to the run trace, unlike the WS-D lifecycle events below which already
+	//     stamp trace_id. NULLIF keeps an untraced run (empty traceID) cleanly NULL,
+	//     so the relay falls back to a fresh trace exactly as before.
 	if _, err := tx.ExecContext(s.ctx, `
 		INSERT INTO coord.outbox
 		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
 		SELECT 'run', wi.project_id, wi.team_id::text, 'reconcile_advanced',
 		       wi.id, $2::uuid,
 		       jsonb_build_object('from_step', $3::text, 'to_step', $4::text,
-		                          'fence_token', $5::bigint)
+		                          'fence_token', $5::bigint,
+		                          'run_id', $2::text,
+		                          'trace_id', NULLIF($6::text, ''))
 		  FROM coord.work_item wi
 		 WHERE wi.id = $1::uuid`,
-		s.workItemID, s.runID, string(expected), string(next), fenceAfter); err != nil {
+		s.workItemID, s.runID, string(expected), string(next), fenceAfter, s.traceID); err != nil {
 		s.fail(fmt.Errorf("coord.ProdReconcileStore.Advance: outbox: %w", err))
 		return false
 	}
