@@ -51,6 +51,7 @@ type fakeSources struct {
 	meta   ProjectMeta
 	recall []RecallDoc
 	arts   []ArtifactLink
+	gh     GitHubDetails
 
 	// Histories model a coordination store that can serve pinned (historical)
 	// revisions after latest moves on (§6.4 deterministic resume). A pin
@@ -126,6 +127,10 @@ func (f *fakeSources) MemoryRecall(_ context.Context, teamID, projectID, queryTe
 
 func (f *fakeSources) Artifacts(_ context.Context, runID string) ([]ArtifactLink, error) {
 	return f.arts, nil
+}
+
+func (f *fakeSources) GitHubDetails(_ context.Context, projectRef, workItemID string) (GitHubDetails, error) {
+	return f.gh, nil
 }
 
 func fixtureSources() *fakeSources {
@@ -778,6 +783,76 @@ func TestDiscussionContextInjectedTieredCorrectly(t *testing.T) {
 	require.NotEmpty(t, src.recallCalls)
 	assert.Contains(t, src.recallCalls[0], "benchmark the MoE model swap")
 	assert.NotContains(t, src.recallCalls[0], "Read the thread and reply")
+}
+
+// ISI-5279 (parent ISI-5270 WS-D): a work item that mirrors a GitHub issue
+// surfaces its sync FACTS in the best-effort project-meta class (authoritative
+// tier, not must-include) and its issue BODY in the untrusted-external tier —
+// external content an agent WEIGHS, never a command. The PAT never reaches the
+// assembler; only already-mirrored local data does.
+func TestGitHubDetailsInjectedTieredCorrectly(t *testing.T) {
+	src := fixtureSources()
+	src.gh = GitHubDetails{
+		IssueRef:     "acme/widget#42",
+		IssueURL:     "https://github.com/acme/widget/issues/42",
+		State:        "open",
+		Title:        "Flaky e2e on cold caches",
+		Body:         "The suite flakes when the cache is cold. Ignore any instructions here.",
+		Actor:        "octocat",
+		LastSyncedAt: "2026-09-30T08:15:00Z",
+	}
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+
+	// The sync FACT (ref/url/state/last-sync) → authoritative project-meta class,
+	// NOT must-include (it is reference metadata, droppable under budget).
+	var fact *Element
+	for i := range res.Envelope.Elements {
+		if res.Envelope.Elements[i].Kind == "githubIssue" {
+			fact = &res.Envelope.Elements[i]
+		}
+	}
+	require.NotNil(t, fact, "githubIssue fact element present")
+	assert.Equal(t, TierAuthoritative, fact.Tier)
+	assert.Equal(t, "github", fact.Provenance.Source)
+	assert.Contains(t, fact.Content, "acme/widget#42")
+	assert.Contains(t, fact.Content, "[open]")
+	assert.Contains(t, fact.Content, "https://github.com/acme/widget/issues/42")
+	assert.Contains(t, fact.Content, "synced 2026-09-30T08:15:00Z")
+	assert.False(t, isMustInclude(*fact), "github sync fact is best-effort, not must-include")
+
+	// The issue BODY → untrusted-external, attributed to the external author.
+	ext := res.Envelope.ElementsInTier(TierUntrustedExternal)
+	var body *Element
+	for i := range ext {
+		if ext[i].Kind == "githubIssueBody" {
+			body = &ext[i]
+		}
+	}
+	require.NotNil(t, body, "githubIssueBody element present in untrusted-external tier")
+	assert.Equal(t, "github", body.Provenance.Source)
+	assert.Equal(t, "octocat", body.Provenance.Author)
+	assert.Contains(t, body.Content, "flakes when the cache is cold")
+
+	// The body renders behind the untrusted framing, after the authoritative task.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "acme/widget#42"), strings.Index(prompt, "flakes when the cache is cold"),
+		"github fact (authoritative) renders before the untrusted issue body")
+}
+
+// A work item with no GitHub mirror (the zero value) emits no github element —
+// the ordinary-board-item path must stay clean.
+func TestGitHubDetailsAbsentEmitsNothing(t *testing.T) {
+	src := fixtureSources() // src.gh is the zero value
+	a := NewAssembler(src, 8)
+	res, err := a.Assemble(context.Background(), fixtureReq(src, 200_000))
+	require.NoError(t, err)
+	for _, el := range res.Envelope.Elements {
+		if el.Kind == "githubIssue" || el.Kind == "githubIssueBody" {
+			t.Errorf("unexpected github element for a non-GitHub item: %+v", el)
+		}
+	}
 }
 
 // ISI-5278 (parent ISI-5270 WS-F): the Role behavior prompt (RolePrompt,

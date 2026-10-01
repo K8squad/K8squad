@@ -41,8 +41,10 @@ package contextsource
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -454,4 +456,129 @@ func (s *Source) Artifacts(ctx context.Context, runID string) ([]contextasm.Arti
 		return nil, fmt.Errorf("iterate artifacts for run %s: %w", runID, err)
 	}
 	return out, nil
+}
+
+// githubIssueLabelPrefix is the Epic-2 dedup/join label the GitHub-issue →
+// work-item bridge stamps (internal/apiserver/githubissuedispatch.go): the value
+// is `owner/repo#N`. The context source reads it back to find the mirrored issue.
+const githubIssueLabelPrefix = "ksquad.github.issue="
+
+// githubIssuePayload is the slice of the §5.4 mirror payload JSONB this source
+// needs: the issue body + its canonical URL. It mirrors pkg/scm.MirrorPayload's
+// json tags for exactly these two fields — decoded locally so contextsource
+// takes no build dependency on pkg/scm (the reconciler owns that write surface;
+// this is a pure reader of a column it does not own).
+type githubIssuePayload struct {
+	Body string `json:"body,omitempty"`
+	URL  string `json:"url,omitempty"`
+}
+
+// GitHubDetails projects the §5.4 SCM mirror of the GitHub issue a work item
+// mirrors into the Run context (ISI-5279 WS-D, parent ISI-5270 — agents working
+// a GitHub-sourced ticket could not see the upstream issue). It is a pure LOCAL
+// read: the issue body was already mirrored into scm.mirror_record by the
+// repo-sync reconciler (pkg/controller/reposync), so nothing here calls GitHub
+// and the project credential Secret (the PAT) is never touched — the assembler
+// fences the body into the untrusted-external tier regardless.
+//
+// Tolerant by construction (AC6): a work item with no ksquad.github.issue label
+// is an ordinary board item → zero value, no element. A labelled item whose
+// issue has not been mirrored yet still returns the ref + derived URL from the
+// label alone, so the agent at least gets the link; state/title/body fill in
+// once the mirror catches up. A malformed label is treated as "no issue" rather
+// than failing the whole assembly.
+func (s *Source) GitHubDetails(ctx context.Context, projectRef, workItemID string) (contextasm.GitHubDetails, error) {
+	// 1. The work-item label carries the join key `owner/repo#N`. unnest in SQL
+	//    avoids a driver text[]-array scan and returns at most one matching label.
+	var label sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT l
+		   FROM coord.work_item wi, unnest(wi.labels) AS l
+		  WHERE wi.id = $1::uuid AND l LIKE $2
+		  ORDER BY l
+		  LIMIT 1`, workItemID, githubIssueLabelPrefix+"%").
+		Scan(&label)
+	if errors.Is(err, sql.ErrNoRows) {
+		return contextasm.GitHubDetails{}, nil // ordinary board item — no GitHub mirror
+	}
+	if err != nil {
+		return contextasm.GitHubDetails{}, fmt.Errorf("read github label for work item %s: %w", workItemID, err)
+	}
+
+	ref, repo, number, ok := parseGithubIssueLabel(label.String)
+	if !ok {
+		// Matched the prefix but not owner/repo#N — skip rather than mislead.
+		return contextasm.GitHubDetails{}, nil
+	}
+	details := contextasm.GitHubDetails{
+		IssueRef: ref,
+		IssueURL: "https://github.com/" + repo + "/issues/" + number,
+	}
+
+	// 2. The mirror row (external-owned, untrusted-external by schema CHECK). The
+	//    issue number is the mirror external_id (pkg/scm fetchIssues). The mirror
+	//    is keyed on the Project CR (namespace, name) the reconciler wrote under —
+	//    s.namespace is this Run's namespace (== the Project's) and projectRef is
+	//    the Project CR name (same pair ProjectMeta resolves the CRD by).
+	var state, title, actor sql.NullString
+	var payloadRaw []byte
+	var mirroredAt sql.NullTime
+	err = s.db.QueryRowContext(ctx,
+		`SELECT state, title, actor, payload, mirrored_at
+		   FROM scm.mirror_record
+		  WHERE project_namespace = $1 AND project_name = $2
+		    AND kind = 'issue' AND external_id = $3`,
+		s.namespace, projectRef, number).
+		Scan(&state, &title, &actor, &payloadRaw, &mirroredAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return details, nil // labelled, not yet mirrored — ref + URL are still useful
+	}
+	if err != nil {
+		return contextasm.GitHubDetails{}, fmt.Errorf("read github mirror for issue %s: %w", ref, err)
+	}
+
+	details.State = state.String
+	details.Title = title.String
+	details.Actor = actor.String
+	if mirroredAt.Valid {
+		details.LastSyncedAt = mirroredAt.Time.UTC().Format(time.RFC3339)
+	}
+	if len(payloadRaw) > 0 && string(payloadRaw) != "null" {
+		var p githubIssuePayload
+		if jerr := json.Unmarshal(payloadRaw, &p); jerr == nil {
+			details.Body = p.Body
+			if p.URL != "" {
+				details.IssueURL = p.URL // prefer the provider's own canonical URL
+			}
+		}
+		// A malformed payload degrades to ref/url/state without the body rather
+		// than failing assembly — the mirror body is best-effort reference.
+	}
+	return details, nil
+}
+
+// parseGithubIssueLabel splits a `ksquad.github.issue=owner/repo#N` label into
+// the bare ref (`owner/repo#N`), the `owner/repo`, and the issue number `N`. It
+// returns ok=false for anything that is not that exact shape (missing prefix,
+// no `#`, a non-numeric number, or empty parts) so a malformed label is ignored
+// rather than fabricating a bogus issue link.
+func parseGithubIssueLabel(label string) (ref, repo, number string, ok bool) {
+	if !strings.HasPrefix(label, githubIssueLabelPrefix) {
+		return "", "", "", false
+	}
+	ref = strings.TrimPrefix(label, githubIssueLabelPrefix)
+	hash := strings.LastIndex(ref, "#")
+	if hash <= 0 || hash == len(ref)-1 {
+		return "", "", "", false
+	}
+	repo, number = ref[:hash], ref[hash+1:]
+	if !strings.Contains(repo, "/") {
+		return "", "", "", false
+	}
+	for _, c := range number {
+		if c < '0' || c > '9' {
+			return "", "", "", false
+		}
+	}
+	return ref, repo, number, true
 }

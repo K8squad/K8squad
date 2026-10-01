@@ -137,6 +137,27 @@ type ArtifactLink struct {
 	Body   string // mirrored content excerpt (data, never instructions)
 }
 
+// GitHubDetails is the §5.4 SCM-mirror projection for a work item that mirrors
+// a GitHub issue — the ones the Epic-2 bridge mints carrying the
+// `ksquad.github.issue=owner/repo#N` label (ISI-4757). It exists so a dispatched
+// agent sees the upstream issue it is actually working (ISI-5279 WS-D, parent
+// ISI-5270): the stable sync FACTS (ref/url/state/last-sync) are control-plane
+// observations and ride the best-effort project-meta class, while the issue BODY
+// is EXTERNAL content and rides the untrusted-external tier — reference data to
+// weigh, never instructions (D8 guardrail). It carries NO secret: the GitHub PAT
+// lives in the project credential Secret and never enters the context path.
+// The zero value (an ordinary board item, or a mirror not yet caught up) emits
+// no element — tolerant exactly like an empty recall/artifact class (AC6).
+type GitHubDetails struct {
+	IssueRef     string // owner/repo#N (derived from the work-item label)
+	IssueURL     string // canonical issue html URL
+	State        string // open|closed (mirrored provider state); empty if unmirrored
+	Title        string // mirrored issue title; empty if unmirrored
+	Body         string // mirrored issue body — EXTERNAL content, untrusted tier
+	Actor        string // issue author, provenance for the untrusted body
+	LastSyncedAt string // RFC3339 mirror observation (scm.mirror_record.mirrored_at)
+}
+
 // Sources is the control-plane gather seam for the five §8.5 content
 // classes. The Run reconciler wires production readers (apiserver/coord
 // store, Project CRD, memory service 6.6, SCM mirror 5.4); tests fake it.
@@ -160,6 +181,13 @@ type Sources interface {
 	// Artifacts lists the Run's linked artifacts (§5.4 mirror / §6.1
 	// artifact rows).
 	Artifacts(ctx context.Context, runID string) ([]ArtifactLink, error)
+	// GitHubDetails reads the §5.4 SCM-mirror projection of the GitHub issue a
+	// work item mirrors (the `ksquad.github.issue=owner/repo#N` label). The zero
+	// value (no label, or no mirror row yet) emits nothing — tolerant, like an
+	// empty artifact/recall class (AC6). It is deliberately NOT pinned by a
+	// revision: the mirror is level-triggered untrusted-external reference, not
+	// part of the deterministic-resume snapshot, so it always reads current.
+	GitHubDetails(ctx context.Context, projectRef, workItemID string) (GitHubDetails, error)
 }
 
 // Assembler builds §8.5 envelopes. Construct with NewAssembler; the zero
@@ -302,8 +330,14 @@ func (a *Assembler) Assemble(ctx context.Context, req AssembleRequest) (_ *Assem
 	if err != nil {
 		return nil, fmt.Errorf("contextasm: artifacts: %w", err)
 	}
+	// GitHub issue mirror (ISI-5279 WS-D): current (never pinned) — the mirror is
+	// untrusted-external reference, not part of the deterministic-resume snapshot.
+	gh, err := a.gatherGitHubDetails(ctx, req.Run.Spec.ProjectRef.Name, req.Run.Spec.WorkItemRef)
+	if err != nil {
+		return nil, fmt.Errorf("contextasm: github details: %w", err)
+	}
 
-	env := a.buildEnvelope(req.RolePrompt, req.TeamRoster, wi, meta, recall, arts, req.Run.Spec.Inputs)
+	env := a.buildEnvelope(req.RolePrompt, req.TeamRoster, wi, meta, recall, arts, gh, req.Run.Spec.Inputs)
 
 	// Deterministic resume (AC3): when resuming, reuse the budget the snapshot
 	// pinned rather than re-resolving from the live Project/Agent. Combined
@@ -450,6 +484,23 @@ func (a *Assembler) gatherArtifacts(ctx context.Context, runID string) ([]Artifa
 	return arts, err
 }
 
+// gatherGitHubDetails wraps the §5.4 SCM-mirror read for the work item's GitHub
+// issue in a `contextasm.source.github_details` span (o11y §2.2). Never pinned:
+// the mirror is level-triggered untrusted-external reference, read current every
+// drive (result_count 1 when an issue ref resolved, else 0). It reads only the
+// LOCAL mirror — no GitHub call, no credential — so it is a plain DB read latency
+// point like the others.
+func (a *Assembler) gatherGitHubDetails(ctx context.Context, projectRef, workItemID string) (GitHubDetails, error) {
+	ctx, span := startSourceSpan(ctx, "github_details", false)
+	gh, err := a.sources.GitHubDetails(ctx, projectRef, workItemID)
+	n := 0
+	if gh.IssueRef != "" {
+		n = 1
+	}
+	endSourceSpan(span, n, err)
+	return gh, err
+}
+
 func startSourceSpan(ctx context.Context, source string, pinned bool) (context.Context, trace.Span) {
 	return telemetry.Tracer().Start(ctx, "contextasm.source."+source, trace.WithAttributes(
 		attribute.String("code.namespace", "github.com/K8squad/K8squad/pkg/contextasm"),
@@ -505,7 +556,7 @@ func envelopeTelemetryStats(env *Envelope) assembleStats {
 
 // buildEnvelope tier-stamps the gathered facts (the ONLY envelope
 // construction path — server-side constants by source, F16).
-func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, inputs map[string]string) *Envelope {
+func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFacts, meta ProjectMeta, recall []RecallDoc, arts []ArtifactLink, gh GitHubDetails, inputs map[string]string) *Envelope {
 	b := newEnvelopeBuilder()
 
 	// — Role behavior prompt (ISI-5223): the dispatched agent's resolved Role
@@ -582,6 +633,38 @@ func (a *Assembler) buildEnvelope(rolePrompt, teamRoster string, wi WorkItemFact
 			WrittenAt: r.WrittenAt,
 			Scope:     r.Scope,
 		}, r.Score)
+	}
+
+	// — GitHub issue mirror (ISI-5279 WS-D): a work item that mirrors a GitHub
+	//   issue surfaces its sync FACTS (ref/url/state/last-sync — control-plane
+	//   observations, best-effort project-meta class) plus the issue BODY. The
+	//   body is EXTERNAL content and rides the untrusted-external tier (reference
+	//   to WEIGH, never commands); the facts are our own mirror metadata, not
+	//   external text, so they sit with the other project-meta facts. The PAT
+	//   never reaches here — only already-mirrored local data (D8). —
+	if gh.IssueRef != "" {
+		fact := gh.IssueRef
+		if gh.State != "" {
+			fact += " [" + gh.State + "]"
+		}
+		if gh.IssueURL != "" {
+			fact += " " + gh.IssueURL
+		}
+		if gh.LastSyncedAt != "" {
+			fact += " (synced " + gh.LastSyncedAt + ")"
+		}
+		b.addProjectMeta("githubIssue", fact, Provenance{Source: "github"})
+		if body := strings.TrimSpace(gh.Body); body != "" {
+			header := gh.IssueRef
+			if gh.Title != "" {
+				header += " — " + gh.Title
+			}
+			b.addUntrustedExternal("githubIssueBody", header+"\n"+body, Provenance{
+				Source:    "github",
+				Author:    gh.Actor,
+				WrittenAt: gh.LastSyncedAt,
+			})
+		}
 	}
 
 	// — Untrusted-external: synced repo/PR/artifact content (D8) —
