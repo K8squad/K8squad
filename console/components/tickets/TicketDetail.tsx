@@ -28,7 +28,7 @@
 // LIVE — it posts to POST /api/work-items/{id}/comments (ISI-4406) for contributor+
 // callers and keeps the honest "not wired here" gap when that endpoint is absent.
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 // The detail route (`/projects/[id]/issues/[workItemId]`) mounts this component
 // directly — TicketsScreen (the list/kanban) is NOT in its module graph, so its
 // `import "./tickets.css"` never reaches this route. Without this import the
@@ -97,6 +97,12 @@ import type { LiveThinkingRow } from "@/lib/tickets/thread";
 import { DispatchPendingCard } from "./DispatchPendingCard";
 import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
 import { ticketWorkingView } from "@/lib/tickets/working";
+import { TicketProposals, type StructuringManager } from "./TicketProposals";
+import {
+  TicketNode,
+  useTreeKeyboardNav,
+  type TreeController,
+} from "./SubTicketTree";
 
 type ThreadState =
   | { kind: "loading" }
@@ -1332,9 +1338,16 @@ function Composer({
 export function TicketDetail({
   projectId,
   workItemId,
+  proposalThreadId = null,
 }: {
   projectId: string;
   workItemId: string;
+  // ISI-5284 (WS-4): the discussion thread a propose-mode coordinator posts this
+  // ticket's proposal cards into, when one is reachable. Null (the default on
+  // merged main) ⇒ the proposals surface renders its honest D3 fallback — no
+  // reachable thread handle exists for a ticket-dispatched coordinator yet (that
+  // wiring is owned by ISI-5283 WS-2 / a follow-up; see TicketProposals.tsx).
+  proposalThreadId?: string | null;
 }) {
   // The thread re-fetches after a human comment posts, reconciling the optimistic
   // append against server truth (bumped by the composer via onCommentPosted).
@@ -1384,9 +1397,11 @@ export function TicketDetail({
           thread={thread.thread}
           childrenState={children}
           role={role}
+          proposalThreadId={proposalThreadId}
           onChildCreated={() => setChildReload((k) => k + 1)}
           onCommentPosted={() => setThreadReload((k) => k + 1)}
           onRunSettled={() => setThreadReload((k) => k + 1)}
+          onProposalExecuted={() => setChildReload((k) => k + 1)}
         />
       )}
     </div>
@@ -1398,16 +1413,23 @@ function TicketBody({
   thread,
   childrenState,
   role,
+  proposalThreadId,
   onChildCreated,
   onCommentPosted,
   onRunSettled,
+  onProposalExecuted,
 }: {
   projectId: string;
   thread: NormalizedThread;
   childrenState: ChildrenState;
   role: string;
+  // ISI-5284 (WS-4): see TicketDetail — null ⇒ proposals surface shows the D3 fallback.
+  proposalThreadId: string | null;
   onChildCreated: () => void;
   onCommentPosted: () => void;
+  // ISI-5284 (WS-4): a confirmed create executes a new sub-ticket; reload children
+  // so the sub-ticket tree re-syncs to server truth (no optimistic fabrication).
+  onProposalExecuted: () => void;
   // ISI-5248: fired once when the in-flight dispatch reaches a terminal state, so the
   // ORIGINAL tab reloads the durable thread and renders the agent's reply comment
   // WITHOUT a manual reload. The live per-run SSE resolves the ladder to
@@ -1587,6 +1609,60 @@ function TicketBody({
     });
   }
 
+  // ISI-5284 (WS-4): render the ticket's children — including any sub-tickets a
+  // confirmed coordinator proposal just minted — through the SHARED SubTicketTree
+  // (story 8.17), so the hierarchy reads identically to the Kanban/List views. The
+  // top level is the children read already loaded (useChildren); deeper levels
+  // lazy-load on expand exactly like TicketsScreen's controller. Client-only view
+  // state (expand/collapse) — never a mutation, never a fabricated child.
+  const [childrenCache, setChildrenCache] = useState<Record<string, WorkItem[]>>(
+    {},
+  );
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const loadChildren = useCallback(
+    async (parentId: string): Promise<WorkItem[]> => {
+      const kids = await listWorkItems(projectId, { parentId });
+      setChildrenCache((prev) => ({ ...prev, [parentId]: kids }));
+      return kids;
+    },
+    [projectId],
+  );
+  const toggleChild = useCallback(
+    (parentId: string) => {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        if (next.has(parentId)) next.delete(parentId);
+        else {
+          if (childrenCache[parentId] == null) void loadChildren(parentId);
+          next.add(parentId);
+        }
+        return next;
+      });
+    },
+    [childrenCache, loadChildren],
+  );
+  const tree: TreeController = useMemo(
+    () => ({
+      childrenOf: (parentId) => childrenCache[parentId],
+      childCountOf: (item) =>
+        item.childCount ?? childrenCache[item.id]?.length ?? 0,
+      isExpanded: (parentId) => expanded.has(parentId),
+      toggle: toggleChild,
+    }),
+    [childrenCache, expanded, toggleChild],
+  );
+  const treeKeyDown = useTreeKeyboardNav();
+
+  // ISI-5284 (WS-4): the coordinator orchestration run powering the "manager is
+  // structuring the work" pill — surfaced ONLY when a coordinator proposal thread
+  // is linked to this ticket (proposalThreadId) AND a dispatch is in flight. On
+  // merged main proposalThreadId is null, so this stays null and the pill never
+  // competes with the single-agent "is working…" row below.
+  const structuringManager: StructuringManager | null =
+    proposalThreadId && dispatch && dispatchWatch
+      ? { name: dispatch.agent, state: dispatchWatch.state }
+      : null;
+
   // This very ticket, synthesized from the thread we already loaded, handed to the
   // "Add sub-ticket" sheet as its LOCKED parent (fixedParent, ISI-4504) so the
   // create always files a child of the ticket in view.
@@ -1659,10 +1735,28 @@ function TicketBody({
           </div>
         </section>
 
-        {/* S2 mount region — the dependency-tree component (ISI-4448) replaces this
-            flat list with a parent → this-ticket → sub-tickets tree. Until then the
-            honest sub-ticket list stands in. */}
-        <SubTickets state={childrenState} issuesHref={issuesHref} />
+        {/* ISI-5284 (WS-4) — coordinator propose-mode proposals on the ticket
+            surface. Renders the SAME ProposalCard the discussion room uses; confirm
+            fans into proposalconfirm.go and reloads the children so the resulting
+            sub-ticket lands in the tree below. Falls back honestly (D3) when no
+            coordinator thread is reachable — never a fabricated card. */}
+        <TicketProposals
+          projectId={projectId}
+          threadId={proposalThreadId}
+          manager={structuringManager}
+          onExecuted={onProposalExecuted}
+          issuesHref={issuesHref}
+        />
+
+        {/* S2 — the ticket's sub-tickets, rendered through the shared SubTicketTree
+            (story 8.17): a parent → sub-ticket hierarchy that reads identically to
+            the Kanban/List views, lazy-loading deeper levels on expand. */}
+        <SubTickets
+          state={childrenState}
+          issuesHref={issuesHref}
+          tree={tree}
+          onTreeKeyDown={treeKeyDown}
+        />
 
         {/* S3 (ISI-4449) — the agent-run → GitHub-style comment renderer. Each
             comment renders as a run bubble (avatar spine + header + run meta
@@ -2013,9 +2107,15 @@ function StatusRollup({ items }: { items: WorkItem[] }) {
 function SubTickets({
   state,
   issuesHref,
+  tree,
+  onTreeKeyDown,
 }: {
   state: ChildrenState;
   issuesHref: string;
+  // ISI-5284 (WS-4): the shared 8.17 tree controller (childrenCache + expand set),
+  // owned by TicketBody so an expand lazy-loads deeper children in place.
+  tree: TreeController;
+  onTreeKeyDown: (evt: React.KeyboardEvent<HTMLDivElement>) => void;
 }) {
   return (
     <section className="card" data-testid="detail-subtickets">
@@ -2040,18 +2140,51 @@ function SubTickets({
             {subTicketProgress(state.items).done} of{" "}
             {subTicketProgress(state.items).total} done
           </p>
-          <ul className="ksq-subticket-list">
+          {/* The shared SubTicketTree (story 8.17): each root child is a tree node
+              with a disclosure caret + child-count badge; expanding lazy-loads that
+              parent's direct children one indented level down. READ + NAVIGATE only
+              (R6) — the detail surface never mutates a node here. */}
+          <div
+            className="ksq-subticket-tree"
+            data-testid="detail-subticket-tree"
+            onKeyDown={onTreeKeyDown}
+          >
             {state.items.map((it) => (
-              <li key={it.id} data-testid="detail-subticket">
-                <a href={`${issuesHref}/${encodeURIComponent(it.id)}`}>{it.title}</a>
-                <span className="ksq-chip ksq-chip--state">{stateLabel(it.state)}</span>
-              </li>
+              <TicketNode
+                key={it.id}
+                item={it}
+                depth={0}
+                tree={tree}
+                renderNode={renderSubTicketNode(issuesHref)}
+              />
             ))}
-          </ul>
+          </div>
         </>
       )}
     </section>
   );
+}
+
+/**
+ * The per-node renderer the SubTicketTree calls back with (item, its disclosure
+ * toggle, depth). One sub-ticket row: the caret (when the item has children), a
+ * deep-link to the ticket, and its lane chip — the SAME link + chip the old flat
+ * list drew, so the row reads unchanged while gaining the tree affordance.
+ */
+function renderSubTicketNode(issuesHref: string) {
+  return function SubTicketNodeRow(
+    item: WorkItem,
+    toggle: React.ReactNode,
+    _depth: number,
+  ) {
+    return (
+      <div className="ksq-subticket-row" data-testid="detail-subticket">
+        {toggle}
+        <a href={`${issuesHref}/${encodeURIComponent(item.id)}`}>{item.title}</a>
+        <span className="ksq-chip ksq-chip--state">{stateLabel(item.state)}</span>
+      </div>
+    );
+  };
 }
 
 export default TicketDetail;

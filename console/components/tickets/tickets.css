@@ -1968,3 +1968,114 @@
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+
+/* ---------------------------------------------------------------------------
+ * ISI-5284 (WS-4) — coordinator propose-mode proposal cards on the TICKET
+ * surface. These rules MIRROR discussion.css's .ksq-proposal* set because the
+ * ticket route does NOT load discussion.css (route-scoped CSS — same reasoning
+ * as the .ksq-working* mirror for ISI-5196). ProposalCard is rendered verbatim,
+ * so the markup + class names match the room exactly and read as one family.
+ * ------------------------------------------------------------------------- */
+.ksq-ticket-proposals__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ksq-ticket-proposals__working {
+  margin-bottom: 8px;
+}
+
+.ksq-proposal {
+  border: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+.ksq-proposal__action {
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 4px;
+}
+.ksq-proposal__body {
+  margin: 0 0 8px;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+.ksq-proposal__footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ksq-proposal__phase {
+  --chip-base: var(--status-idle);
+}
+.ksq-proposal__phase[data-phase="proposed"] {
+  --chip-base: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ksq-proposal__phase[data-phase="confirmed"] {
+  --chip-base: var(--status-paused);
+}
+.ksq-proposal__phase[data-phase="dismissed"] {
+  --chip-base: var(--status-idle);
+}
+.ksq-proposal__phase[data-phase="executed"] {
+  --chip-base: var(--status-running);
+  border-color: var(--status-running);
+  color: var(--status-running);
+}
+.ksq-proposal__decided {
+  font-size: 11px;
+  color: var(--text-2);
+}
+.ksq-proposal__actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+}
+.ksq-proposal__btn {
+  border-radius: var(--radius);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ksq-proposal__btn--confirm {
+  background: var(--accent);
+  color: #ffffff;
+  border: 1px solid var(--accent);
+}
+.ksq-proposal__btn--dismiss {
+  background: transparent;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+.ksq-proposal__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The D3 "assign individually" link in the honest no-coordinator fallback. */
+.ksq-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.ksq-link:hover {
+  text-decoration: underline;
+}
+
+/* ISI-5284 (WS-4) — the sub-ticket tree rows (shared SubTicketTree, story 8.17).
+ * The row lays the caret + title link + lane chip on one baseline; the tree's
+ * own .ksq-tree-* indent/caret rules (already mirrored into this file) handle the
+ * nesting. */
+.ksq-subticket-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}

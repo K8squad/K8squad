@@ -9,6 +9,8 @@ import {
   stepVerbFromThinking,
   ticketWorkingLabel,
   ticketWorkingView,
+  managerStructuringLabel,
+  ticketManagerStructuringView,
 } from "@/lib/tickets/working";
 
 describe("phaseFromDispatchState — ladder → WorkingPhase", () => {
@@ -132,5 +134,36 @@ describe("ticketWorkingView — composed pill", () => {
       phase: "working",
       label: "Fragua is working…",
     });
+  });
+});
+
+describe("ticketManagerStructuringView — coordinator propose-mode pill (ISI-5284)", () => {
+  it("labels each phase with the structuring copy, not the single-agent copy", () => {
+    expect(managerStructuringLabel("coordinator", "working")).toBe(
+      "coordinator is structuring the work…",
+    );
+    expect(managerStructuringLabel("coordinator", "replied")).toBe(
+      "coordinator structured the work",
+    );
+    expect(managerStructuringLabel("coordinator", "failed")).toBe(
+      "coordinator couldn’t structure the work",
+    );
+  });
+
+  it("projects the honest ladder onto the structuring view (ignores the step verb)", () => {
+    expect(ticketManagerStructuringView("coordinator", "picking_up")).toEqual({
+      agentName: "coordinator",
+      phase: "working",
+      label: "coordinator is structuring the work…",
+    });
+    expect(ticketManagerStructuringView("coordinator", "succeeded")).toEqual({
+      agentName: "coordinator",
+      phase: "replied",
+      label: "coordinator structured the work",
+    });
+  });
+
+  it("returns null when there is no manager to attribute the work to", () => {
+    expect(ticketManagerStructuringView("", "working")).toBeNull();
   });
 });
