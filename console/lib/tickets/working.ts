@@ -175,3 +175,50 @@ export function ticketWorkingView(
     label: ticketWorkingLabel(agentName, phase, stepVerb),
   };
 }
+
+// ---------------------------------------------------------------------------
+// ISI-5284 (WS-4): the coordinator propose-mode "Manager is structuring the
+// work" indicator. The ticket surface dispatches a Team's Coordinator role once
+// for a 2+-mention comment (ISI-5283 / ISI-5267 WS-2); while that orchestration
+// run is live it is NOT answering a single human — it is DECOMPOSING the work
+// into proposals. This is the SAME run signal + the SAME WorkingPhase vocabulary
+// + the SAME ksq-working* pill (TicketWorkingIndicator) the single-agent view
+// uses — only the copy changes to name the coordinator role's distinct activity,
+// so the two surfaces stay one visual family (AC4). Pure, like the rest of this
+// module.
+// ---------------------------------------------------------------------------
+
+/** The pill label for the coordinator's structuring phase (WS-4 AC4 copy). */
+export function managerStructuringLabel(
+  managerName: string,
+  phase: WorkingPhase,
+): string {
+  switch (phase) {
+    case "replied":
+      return `${managerName} structured the work`;
+    case "failed":
+      return `${managerName} couldn’t structure the work`;
+    case "working":
+      return `${managerName} is structuring the work…`;
+  }
+}
+
+/**
+ * Project the coordinator run's honest ladder onto the structuring pill. Mirrors
+ * ticketWorkingView but with the manager-structuring copy; returns null when
+ * there is no coordinator to attribute the work to (nothing to render). The step
+ * verb is intentionally NOT surfaced here — "structuring the work" is the whole
+ * truth of the propose-mode phase, and a per-tool verb would mis-describe it.
+ */
+export function ticketManagerStructuringView(
+  managerName: string,
+  state: DispatchState,
+): TicketWorkingView | null {
+  if (!managerName) return null;
+  const phase = phaseFromDispatchState(state);
+  return {
+    agentName: managerName,
+    phase,
+    label: managerStructuringLabel(managerName, phase),
+  };
+}
