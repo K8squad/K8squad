@@ -779,3 +779,49 @@ func TestDiscussionContextInjectedTieredCorrectly(t *testing.T) {
 	assert.Contains(t, src.recallCalls[0], "benchmark the MoE model swap")
 	assert.NotContains(t, src.recallCalls[0], "Read the thread and reply")
 }
+
+// ISI-5278 (parent ISI-5270 WS-F): the Role behavior prompt (RolePrompt,
+// resolved from Role.Spec.PromptRef by pkg/roleprompt) must reach DISCUSSION
+// runs, not just board/ticket runs. Discussion runs are not a separate dispatch
+// path — an @-mention mints a normal Run CR (internal/mentiondispatch) that
+// flows through the one rundrive assembler — so a run that carries room context
+// (transcript + roster, untrusted/best-effort) must STILL inject the role
+// directive as the first authoritative, must-include element. This pins the
+// "both ticket and discussion runs" guarantee at the assembler seam: the role
+// identity and the discussion context coexist without either suppressing the
+// other.
+func TestRolePromptInjectedForDiscussionRun(t *testing.T) {
+	src := fixtureSources()
+	src.wi = discussionWI()
+	a := NewAssembler(src, 8)
+	req := fixtureReq(src, 200_000)
+	req.Run.Spec.WorkItemRef = "wi-disc"
+	req.RolePrompt = "You are the coordinator. Decompose and delegate via work_item_create."
+	res, err := a.Assemble(context.Background(), req)
+	require.NoError(t, err)
+
+	// The role directive is still FIRST and authoritative even though this run's
+	// work item carries a discussion room context.
+	first := res.Envelope.Elements[0]
+	assert.Equal(t, "roleDirective", first.Kind)
+	assert.Equal(t, TierAuthoritative, first.Tier)
+	assert.Equal(t, "role", first.Provenance.Source)
+	assert.Contains(t, first.Content, "Decompose and delegate")
+	assert.True(t, isMustInclude(first), "role directive is must-include on a discussion run too")
+
+	// The room transcript still rides the untrusted-external tier alongside it —
+	// the role identity does not displace the discussion context.
+	var sawMsg bool
+	for _, el := range res.Envelope.ElementsInTier(TierUntrustedExternal) {
+		if el.Kind == "discussionMessage" {
+			sawMsg = true
+		}
+	}
+	assert.True(t, sawMsg, "discussion transcript still injected on a role-promoted run")
+
+	// Rendered: the role directive frames the prompt, before the untrusted room
+	// transcript.
+	prompt := res.Injection.SystemPrompt()
+	assert.Less(t, strings.Index(prompt, "Decompose and delegate"), strings.Index(prompt, "intake agent feels slow"),
+		"role directive renders before the untrusted discussion transcript")
+}
