@@ -43,7 +43,7 @@ func feed(parse func(string) []Progress, lines ...string) []Progress {
 // call runs from step_start to step_finish. Here step_start=…000 and
 // step_finish=…420 → DurationMS=420 (a real 420ms request), not zero.
 func TestOpenCodeStepDurationFromTimestamps(t *testing.T) {
-	parse := newOpenCodeParser()
+	parse := newOpenCodeParser(nil)
 	out := feed(parse,
 		`{"type":"step_start","timestamp":1763000500000,"part":{"type":"step-start"}}`,
 		`{"type":"text","part":{"type":"text","text":"thinking"}}`,
@@ -67,7 +67,7 @@ func TestOpenCodeStepDurationFromTimestamps(t *testing.T) {
 // Step 1: 500000→500300 = 300ms. A 5s tool runs. Step 2: 505300→505500 =
 // 200ms. Neither step absorbs the 5s tool gap.
 func TestOpenCodeStepDurationExcludesToolTime(t *testing.T) {
-	parse := newOpenCodeParser()
+	parse := newOpenCodeParser(nil)
 	out := feed(parse,
 		`{"type":"step_start","timestamp":1763000500000,"part":{"type":"step-start"}}`,
 		`{"type":"step_finish","timestamp":1763000500300,"part":{"type":"step-finish","modelID":"qwen3:8b","tokens":{"input":10,"output":5}}}`,
@@ -90,7 +90,7 @@ func TestOpenCodeStepDurationExcludesToolTime(t *testing.T) {
 // report a scalar `duration`, the parser must not overwrite it with the
 // synthesized timestamp latency — the wire value is authoritative.
 func TestOpenCodeStepDurationWireDurationWins(t *testing.T) {
-	parse := newOpenCodeParser()
+	parse := newOpenCodeParser(nil)
 	out := feed(parse,
 		`{"type":"step_start","timestamp":1763000500000,"part":{"type":"step-start"}}`,
 		`{"type":"step_finish","timestamp":1763000509999,"part":{"type":"step-finish","modelID":"qwen3:8b","tokens":{"input":10,"output":5},"duration":4200}}`,
@@ -106,7 +106,7 @@ func TestOpenCodeStepDurationWireDurationWins(t *testing.T) {
 // telemetry mapper's wall-clock step-clock fallback (ISI-4238) still applies.
 // The synthesis is strictly additive — never worse than before.
 func TestOpenCodeStepDurationDegradesWithoutStartTimestamp(t *testing.T) {
-	parse := newOpenCodeParser()
+	parse := newOpenCodeParser(nil)
 	out := feed(parse,
 		`{"type":"step_start","part":{"type":"step-start"}}`,
 		`{"type":"step_finish","timestamp":1763000500420,"part":{"type":"step-finish","modelID":"qwen3:8b","tokens":{"input":10,"output":5}}}`,
@@ -121,7 +121,7 @@ func TestOpenCodeStepDurationDegradesWithoutStartTimestamp(t *testing.T) {
 // stateful wrapper must produce the same events as the stateless parser for
 // non-step lines (text, tool_use, error), so wrapping is behavior-preserving.
 func TestOpenCodeStepDurationStatelessParityForNonStepLines(t *testing.T) {
-	parse := newOpenCodeParser()
+	parse := newOpenCodeParser(nil)
 	line := `{"type":"tool_use","part":{"type":"tool","tool":"read","state":{"status":"completed","input":{"path":"/x"}}}}`
 	got := feed(parse, line)
 	want := parseOpenCodeLine(line)
