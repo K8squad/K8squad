@@ -47,12 +47,16 @@ function Harness({
   existingEndpoints = [],
   errors = {},
   onChangeSpy,
+  initialModel = "",
+  initialRef = "",
 }: {
   existingEndpoints?: ModelEndpointRow[];
   errors?: FieldErrors;
   onChangeSpy?: (n: { model?: string; modelEndpointRef?: string }) => void;
+  initialModel?: string;
+  initialRef?: string;
 }) {
-  const [f, setF] = useState({ model: "", modelEndpointRef: "" });
+  const [f, setF] = useState({ model: initialModel, modelEndpointRef: initialRef });
   return (
     <ProviderModelPicker
       label="Model"
@@ -170,6 +174,48 @@ describe("<ProviderModelPicker> — ISI-5006 backend-driven model picker", () =>
     );
     fireEvent.change(screen.getByTestId("primary-existing"), { target: { value: "my-ollama" } });
     expect(onChangeSpy).toHaveBeenCalledWith({ modelEndpointRef: "my-ollama" });
+  });
+
+  // ── ISI-5302: seed local state from props so a saved opencode selection survives refresh ──
+
+  it("seeds the url-mode backend, URL, and saved model from the bound endpoint (no re-list)", () => {
+    stubEndpoints({});
+    render(
+      <Harness
+        existingEndpoints={[{ name: "lan-ollama", provider: "ollama", url: "http://10.0.0.5:11434", hasToken: false }]}
+        initialModel="llama3.1:8b"
+        initialRef="lan-ollama"
+      />,
+    );
+    expect((screen.getByTestId("primary-provider") as HTMLSelectElement).value).toBe("ollama");
+    expect((screen.getByTestId("primary-url") as HTMLInputElement).value).toBe("http://10.0.0.5:11434");
+    // The saved model renders as the selected option without the admin clicking "List models".
+    expect((screen.getByTestId("primary-model") as HTMLSelectElement).value).toBe("llama3.1:8b");
+    expect(screen.getByTestId("primary-bound").textContent).toMatch(/lan-ollama/);
+  });
+
+  it("seeds an apiKey-mode backend (deepseek) from the bound endpoint", () => {
+    stubEndpoints({});
+    render(
+      <Harness
+        existingEndpoints={[{ name: "my-deepseek", provider: "deepseek", url: "", hasToken: true }]}
+        initialModel="deepseek-chat"
+        initialRef="my-deepseek"
+      />,
+    );
+    expect((screen.getByTestId("primary-provider") as HTMLSelectElement).value).toBe("deepseek");
+    expect(screen.queryByTestId("primary-url")).toBeNull(); // apiKey mode — no URL field
+    expect(screen.getByTestId("primary-key")).not.toBeNull();
+    expect((screen.getByTestId("primary-model") as HTMLSelectElement).value).toBe("deepseek-chat");
+  });
+
+  it("falls back to the default backend when the ref is not a known opencode endpoint", () => {
+    stubEndpoints({});
+    render(<Harness existingEndpoints={[]} initialModel="some-model" initialRef="ghost-endpoint" />);
+    expect((screen.getByTestId("primary-provider") as HTMLSelectElement).value).toBe("ollama");
+    expect((screen.getByTestId("primary-url") as HTMLInputElement).value).toBe("http://localhost:11434");
+    // The saved model id still seeds so it's visible even when the provider can't be resolved.
+    expect((screen.getByTestId("primary-model") as HTMLSelectElement).value).toBe("some-model");
   });
 
   it("supports the type-it-in model escape hatch", () => {
