@@ -168,6 +168,20 @@ func main() {
 		} else {
 			log.Printf("ksquad-memory: agent work-item authoring tools mounted (create/update; assign honestly unavailable — no Team-agent resolver, ISI-4743)")
 		}
+		// ISI-5282 propose-mode coordinator: a coordinator run carrying the
+		// coordinator.propose grant (Role.Spec.CoordinatorMode=propose, derived by the
+		// operator into the run token) RAISES create_ticket/assign_agent discussion
+		// Proposals instead of executing work_item_create/_assign directly — the human
+		// confirms them through the existing proposalconfirm.go fan-out. Reuses the
+		// discussion.Store (proposal poster) + the mention-dispatch ledger (originating
+		// thread). Fail-open: if the discussion DB can't open, propose mode is unwired and
+		// a propose-gated call is refused honestly (never silently executed in auto mode).
+		if proposer := openCoordinatorProposer(cfg.DatabaseURL); proposer != nil {
+			mcpTools.WithCoordinatorPropose(proposer)
+			log.Printf("ksquad-memory: propose-mode coordinator authoring wired (coordinator.propose → create_ticket/assign_agent proposals; ISI-5282)")
+		} else {
+			log.Printf("ksquad-memory: propose-mode coordinator authoring off (discussion DB unavailable) — a propose-gated coordinator call is refused honestly")
+		}
 		// ADR-0024a S3/D2 (ISI-4869): enable the token-auth (sandbox) path when the
 		// shared HS256 signing key is distributed to this process (D2 option (a) —
 		// the SAME KSQUAD_JWT_SIGNING_KEY the control plane mints with). A sandbox
@@ -319,6 +333,23 @@ func openDiscussionDispatch(dsn string, resolver coord.TeamAgentResolver, refs m
 	// parity, no regression. When S1b builds it, hand the same resolver in here and to the REST handler.
 	var refResolver discussion.TicketRefResolver // nil until ISI-5170
 	return memory.NewDiscussionDispatch(dispatcher, hop, roster, refResolver)
+}
+
+// openCoordinatorProposer builds the propose-mode coordinator wiring (ISI-5282) over the shared Postgres,
+// fail-open exactly like openDiscussionDispatch: any setup problem returns nil so the caller leaves propose
+// mode unwired (a propose-gated coordinator call is then refused honestly at the edge, never silently
+// executed). It reuses the SAME fenced discussion.Store the discussion_post tool rides as the proposal
+// POSTER (Store.PostProposal), and the SAME discussion.mention_dispatch ledger the dispatch-on-mention path
+// rides as the thread RESOLVER (runID → the originating room thread). The db handle lives for the process
+// lifetime (it backs the tool surface), so it is intentionally not closed here.
+func openCoordinatorProposer(dsn string) *memory.CoordinatorProposer {
+	db := openDiscussionDB(dsn)
+	if db == nil {
+		return nil // openDiscussionDB already logged the open failure
+	}
+	poster := discussion.NewStore(db)
+	resolver := mentiondispatch.NewProposalThreadResolver(db)
+	return memory.NewCoordinatorProposer(resolver, poster)
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is
