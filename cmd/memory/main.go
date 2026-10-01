@@ -33,6 +33,7 @@ import (
 	"github.com/K8squad/K8squad/internal/mentiondispatch"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/mcpauthtoken"
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 // decodeSigningKey mirrors cmd/operator.decodeSigningKey / internal/apiserver's
@@ -123,6 +124,21 @@ func main() {
 	// headers (INV3). discussion_post rides the same fenced discuss writer as the HTTP shim, so it is
 	// advertised and served only when the discussion DB opened (nil ⇒ unmounted, AC5) (ISI-4085).
 	mcpTools := memory.NewToolMCP(readSvc, writeSvc, discuss)
+
+	// ISI-5276 (WS-B of ISI-5270): the work_item_search MCP tool over the SAME
+	// pkg/search.Searcher the apiserver's GET /api/search handler rides and the SAME
+	// 0012 FTS index — so an agent in a ticket OR a discussion run can run the
+	// cross-ticket full-text search that until now only the console could reach.
+	// Fail-open, matching discussion_post / the authoring lane: a DB handle that
+	// can't open leaves the tool unmounted rather than taking down the memory
+	// service. RBAC is enforced in-query by the Searcher (ADR-039); the MCP edge
+	// always fences to the caller's server-authenticated Team.
+	if finder := openWorkItemSearcher(cfg.DatabaseURL); finder != nil {
+		mcpTools.WithWorkItemSearch(finder)
+		log.Printf("ksquad-memory: work_item_search tool mounted (cross-ticket FTS over coord.work_item, team-scoped; ISI-5276)")
+	} else {
+		log.Printf("ksquad-memory: work_item_search tool disabled (search DB unavailable) — reads still serve")
+	}
 
 	// ADR-0024 agent work-item authoring lane (ISI-4741): the capability-gated
 	// work_item_create / _update / _assign MCP tools, backed by coord over the SAME
@@ -319,6 +335,27 @@ func openDiscussionDispatch(dsn string, resolver coord.TeamAgentResolver, refs m
 	// parity, no regression. When S1b builds it, hand the same resolver in here and to the REST handler.
 	var refResolver discussion.TicketRefResolver // nil until ISI-5170
 	return memory.NewDiscussionDispatch(dispatcher, hop, roster, refResolver)
+}
+
+// openWorkItemSearcher builds the pkg/search.Searcher backing the work_item_search MCP tool (ISI-5276)
+// over the shared Postgres, fail-open exactly like openDiscussionDB / openAgentAuthor: any setup problem
+// returns nil so the caller leaves work_item_search unmounted rather than taking down the memory service.
+// It is the SAME Searcher the apiserver's GET /api/search handler rides (one FTS read model, two edges —
+// HTTP for the console, MCP for agents), so they cannot drift. The handle lives for the process lifetime
+// (it backs the tool surface), so it is intentionally not closed here.
+func openWorkItemSearcher(dsn string) search.Searcher {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		log.Printf("ksquad-memory: work_item_search tool disabled (open db: %v)", err)
+		return nil
+	}
+	finder, err := search.NewPostgresSearcher(db)
+	if err != nil {
+		log.Printf("ksquad-memory: work_item_search tool disabled (searcher: %v)", err)
+		_ = db.Close()
+		return nil
+	}
+	return finder
 }
 
 // startDiscussionIndexer launches the best-effort discussion→memory indexer in the background. It is

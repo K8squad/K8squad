@@ -200,6 +200,22 @@ const (
 // status.observedTools (ADR-0024c D1, ISI-5138).
 var DiscussionToolNames = []string{DiscussionSearchToolName, DiscussionPostToolName}
 
+// WorkItemSearchToolName is the name of the cross-ticket full-text search tool
+// (ISI-5276, WS-B of ISI-5270). Exported so the built-in ksquad-memory-search
+// MCPServer provisioner (pkg/controller/team) and the always-on injection gate
+// (pkg/capability) share one source of truth with the tool literal in toolmcp.go,
+// exactly as the authoring/discussion names do — change it here, it changes
+// everywhere.
+const WorkItemSearchToolName = "work_item_search"
+
+// SearchToolNames is the compiled-in tool surface the built-in ksquad-memory-search
+// MCPServer exposes — the seed the operator writes to status.observedTools and the
+// toolFilter.allow it sets. Unlike the authoring (capability-gated) and discussion
+// (source=discussion only) servers, this one is injected for EVERY run so an agent
+// in a ticket OR a discussion run can search the cross-ticket work-item corpus
+// (ISI-5276 §2 gap note).
+var SearchToolNames = []string{WorkItemSearchToolName}
+
 var (
 	workItemCreateTool = mcpTool{
 		Name:        WorkItemCreateToolName,

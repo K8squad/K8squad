@@ -383,6 +383,12 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 	if err := r.ensureDiscussionMCPServer(ctx, teamObj, nsName, ns.UID); err != nil {
 		return fmt.Errorf("ensure discussion MCPServer: %w", err)
 	}
+	// ISI-5276 (WS-B of ISI-5270): built-in memory-search MCPServer for
+	// cross-ticket work-item search. Injected for EVERY run (not capability- or
+	// source-gated), so the tool reaches agents in both ticket and discussion runs.
+	if err := r.ensureSearchMCPServer(ctx, teamObj, nsName, ns.UID); err != nil {
+		return fmt.Errorf("ensure search MCPServer: %w", err)
+	}
 	return nil
 }
 

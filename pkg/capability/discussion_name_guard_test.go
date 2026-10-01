@@ -34,6 +34,14 @@ func TestDiscussionServerNamePinnedToProvisioner(t *testing.T) {
 	assert.Equal(t, team.DiscussionMCPServerName, discussionMCPServerName)
 }
 
+// TestSearchServerNamePinnedToProvisioner pins the ISI-5276 search-endpoint
+// injection's built-in server name to the provisioner's canonical constant, so a
+// rename on either side fails here rather than silently looking up a server that
+// no longer exists (the injection would then always fail-open to no tool).
+func TestSearchServerNamePinnedToProvisioner(t *testing.T) {
+	assert.Equal(t, team.SearchMCPServerName, searchMCPServerName)
+}
+
 // TestDiscussionAllowSetPinnedToMemoryConstants pins the D3 gate's discussion
 // allow-set check to the compiled-in memory constants so name drift fails here
 // rather than silently letting through zero tools.

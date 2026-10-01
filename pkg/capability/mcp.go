@@ -133,6 +133,10 @@ const discussionMCPServerName = "ksquad-memory-discussion"
 // exposes. Referenced by the guard test to detect drift from memory constants.
 var discussionAllowedTools = []string{"discussion_search", "discussion_post"}
 
+// searchMCPServerName mirrors pkg/controller/team.SearchMCPServerName. A guard
+// test (discussion_name_guard_test.go) pins the two together.
+const searchMCPServerName = "ksquad-memory-search"
+
 // ResolveMCP resolves a Run's MCP demand fail-closed (ADR-044 step 4):
 //
 //   - every referenced MCPServer must exist (admission cache may be stale);
@@ -199,6 +203,18 @@ func ResolveMCP(ctx context.Context, reader client.Reader, run *api.Run, reqs *R
 		if err := injectDiscussionEndpoint(ctx, reader, run, reqs, &endpoints, &servers); err != nil {
 			return nil, nil, err
 		}
+	}
+
+	// ISI-5276 (WS-B of ISI-5270): work_item_search auto-injection. UNLIKE the
+	// authoring (capability-gated) and discussion (source=discussion only)
+	// endpoints, the built-in ksquad-memory-search server is injected for EVERY
+	// run — ticket and discussion alike — so cross-ticket search reaches agents in
+	// both run types (the §2 gap note). RBAC stays in-query (ADR-039): the memory
+	// MCP edge fences every search to the run's server-authenticated Team. Fail-
+	// closed: a missing built-in server or empty observedTools rejects assembly
+	// loudly, exactly as the other two injections do.
+	if err := injectSearchEndpoint(ctx, reader, run, reqs, &endpoints, &servers); err != nil {
+		return nil, nil, err
 	}
 
 	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].Name < endpoints[j].Name })
@@ -272,6 +288,49 @@ func injectDiscussionEndpoint(ctx context.Context, reader client.Reader, run *ap
 	ep, err := endpointFor(run, reqs, key, &server)
 	if err != nil {
 		return err
+	}
+	*endpoints = append(*endpoints, *ep)
+	*servers = append(*servers, server.DeepCopy())
+	return nil
+}
+
+// injectSearchEndpoint appends the built-in memory-search endpoint to EVERY run's
+// resolved set (ISI-5276, WS-B of ISI-5270), no-op if the built-in is already in
+// MCPRefs (reserved name, never wired twice). It is called unconditionally (not
+// capability- or source-gated) so work_item_search reaches agents in both ticket
+// and discussion runs.
+//
+// Unlike the authoring/discussion injections it is FAIL-OPEN, not fail-closed:
+// those runs are minted specifically for a capability (a source=discussion run
+// MUST have its reply tools, so a missing server is a hard error). work_item_search
+// is a cross-cutting READ enhancement every run gets — a generic run must never
+// terminal-fail because this optional server is absent (e.g. the rollout window
+// before the Team controller has provisioned it, or a deployment that disables it).
+// So a not-found server, or a server whose tool surface has not resolved, simply
+// skips the injection — the run assembles without the tool rather than failing. A
+// genuine reader (API) error still propagates, since that breaks every other Get in
+// the same reconcile anyway.
+func injectSearchEndpoint(ctx context.Context, reader client.Reader, run *api.Run, reqs *Requirements, endpoints *[]Endpoint, servers *[]*api.MCPServer) error {
+	for i := range *endpoints {
+		if (*endpoints)[i].Name == searchMCPServerName {
+			return nil // already resolved via MCPRefs — do not double-inject
+		}
+	}
+
+	key := run.Namespace + "/" + searchMCPServerName
+	var server api.MCPServer
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: searchMCPServerName}, &server); err != nil {
+		if isNotFound(err) {
+			return nil // fail-open: the optional search tool is simply not wired for this run
+		}
+		return fmt.Errorf("read built-in search mcpserver %s: %w", key, err)
+	}
+
+	ep, err := endpointFor(run, reqs, key, &server)
+	if err != nil {
+		// Fail-open: an unresolved tool surface (empty observedTools, drifted spec)
+		// drops the optional search tool rather than failing the whole run.
+		return nil
 	}
 	*endpoints = append(*endpoints, *ep)
 	*servers = append(*servers, server.DeepCopy())

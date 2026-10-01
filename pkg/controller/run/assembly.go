@@ -127,6 +127,10 @@ func (a *Assembler) Resolve(ctx context.Context, run *api.Run) (*ResolvedEnvelop
 	a.bindAuthoringCredential(run, endpoints)
 	// ADR-0024c D4: bind the discussion token credential for source=discussion runs.
 	a.bindDiscussionCredential(run, endpoints)
+	// ISI-5276 (WS-B): bind the search token credential — the built-in memory-search
+	// endpoint is injected for every run, so every run also binds its own per-run
+	// token so the sandbox can authenticate work_item_search to the memory /mcp edge.
+	a.bindSearchCredential(run, endpoints)
 
 	return &ResolvedEnvelope{
 		Requirements: reqs,
@@ -171,6 +175,10 @@ func (a *Assembler) EnsureManifest(ctx context.Context, run *api.Run) (*api.Capa
 		if err := a.ensureDiscussionToken(ctx, run, recorded); err != nil {
 			return nil, err
 		}
+		// ISI-5276 (WS-B): re-ensure the search token from the recorded ref.
+		if err := a.ensureSearchToken(ctx, run, recorded); err != nil {
+			return nil, err
+		}
 		return run.Status.CapabilityManifest, nil
 	}
 
@@ -189,6 +197,10 @@ func (a *Assembler) EnsureManifest(ctx context.Context, run *api.Run) (*api.Capa
 	}
 	// ADR-0024c D4: mint and ensure the discussion token for source=discussion runs.
 	if err := a.ensureDiscussionToken(ctx, run, env.Endpoints); err != nil {
+		return nil, err
+	}
+	// ISI-5276 (WS-B): mint and ensure the search token for every run.
+	if err := a.ensureSearchToken(ctx, run, env.Endpoints); err != nil {
 		return nil, err
 	}
 	return env.Manifest, nil
@@ -492,6 +504,106 @@ func (a *Assembler) ensureDiscussionToken(ctx context.Context, run *api.Run, eps
 			return nil
 		}
 		return fmt.Errorf("create discussion-token secret %s/%s: %w", run.Namespace, name, err)
+	}
+	return nil
+}
+
+// searchTokenSecretName is the deterministic per-run Secret for the search
+// capability token (ISI-5276, WS-B). Namespaced to the Run.
+func searchTokenSecretName(run *api.Run) string {
+	return run.Name + "-search-token"
+}
+
+// searchEndpoint returns the injected built-in memory-search endpoint in eps, or
+// nil when it was not injected (fail-open: a namespace without the built-in
+// search server, so there is nothing to bind).
+func searchEndpoint(eps []capability.Endpoint) *capability.Endpoint {
+	for i := range eps {
+		if eps[i].Name == team.SearchMCPServerName {
+			return &eps[i]
+		}
+	}
+	return nil
+}
+
+// bindSearchCredential points the injected search endpoint's credentialSecretRef
+// at the per-run token Secret (ISI-5276, WS-B). Mirrors bindDiscussionCredential:
+// no-op without a minter, an agent-less Run, or when the search endpoint was not
+// injected (fail-open, so an absent built-in server leaves the run credential-less
+// rather than wedging the pod on a SecretKeyRef that will never be written).
+func (a *Assembler) bindSearchCredential(run *api.Run, eps []capability.Endpoint) {
+	if a.Minter == nil || len(run.Spec.Agents) == 0 {
+		return
+	}
+	ep := searchEndpoint(eps)
+	if ep == nil {
+		return
+	}
+	ep.CredentialSecretRef = &api.SecretRef{Name: searchTokenSecretName(run)}
+	ep.EnvNames = []string{capability.CredentialEnvName(ep.Name)}
+}
+
+// ensureSearchToken mints the Run's search capability token and writes it to the
+// per-run Secret the search endpoint references (ISI-5276, WS-B). Mirrors
+// ensureDiscussionToken; the token's team scope is the Team's tenancy-root UID
+// (NOT its CR name) so the memory edge's ::uuid cast accepts it (the ISI-5189
+// discipline), and Capabilities = ["work_item.search"] purely as an audit label —
+// the untrusted-read tool does not gate on it.
+func (a *Assembler) ensureSearchToken(ctx context.Context, run *api.Run, eps []capability.Endpoint) error {
+	if a.Minter == nil || len(run.Spec.Agents) == 0 {
+		return nil
+	}
+	ep := searchEndpoint(eps)
+	if ep == nil || ep.CredentialSecretRef == nil || ep.CredentialSecretRef.Name == "" {
+		return nil
+	}
+	name := ep.CredentialSecretRef.Name
+
+	var existing corev1.Secret
+	err := a.Get(ctx, client.ObjectKey{Namespace: run.Namespace, Name: name}, &existing)
+	if err == nil {
+		return nil // already provisioned — leave the pod-visible token be
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("get search-token secret %s/%s: %w", run.Namespace, name, err)
+	}
+
+	teamUID, err := a.teamTenancyUID(ctx, run)
+	if err != nil {
+		return err
+	}
+
+	token, err := a.Minter.Mint(mcpauthtoken.Claims{
+		TeamID:       teamUID,
+		Principal:    string(run.GetOwnedBy()),
+		AgentID:      run.Spec.Agents[0].Name,
+		RunID:        string(run.UID),
+		Capabilities: []string{capability.CapabilitySearch},
+	})
+	if err != nil {
+		return fmt.Errorf("mint run search token for %s/%s: %w", run.Namespace, run.Name, err)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: run.Namespace,
+			Labels:    map[string]string{"app": "k8squad-run", "ksquad.io/run": run.Name},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: api.GroupVersion.String(),
+				Kind:       "Run",
+				Name:       run.Name,
+				UID:        run.UID,
+			}},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{authoringTokenSecretKey: []byte(token)},
+	}
+	if err := a.Create(ctx, secret); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("create search-token secret %s/%s: %w", run.Namespace, name, err)
 	}
 	return nil
 }

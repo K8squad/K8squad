@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/K8squad/K8squad/internal/discussion"
+	"github.com/K8squad/K8squad/pkg/search"
 )
 
 // ToolMCP is the MCP JSON-RPC 2.0 transport for the memory tool surface (Story 6.2 / ISI-3179). It is
@@ -53,6 +54,15 @@ type ToolMCP struct {
 	// the REST handler. Nil ⇒ the tool posts exactly as before. See WithDiscussionDispatch. Named `mentions`
 	// (not `dispatch`) to avoid colliding with the JSON-RPC dispatch method below.
 	mentions *DiscussionDispatch
+	// finder is the optional work_item_search backend (ISI-5276, WS-B of ISI-5270):
+	// the SAME pkg/search.Searcher the /api/search HTTP handler rides, wrapped as an
+	// MCP tool so an agent in a ticket OR a discussion run can search the cross-ticket
+	// work-item FTS corpus. RBAC is enforced in-query by the Searcher (ADR-039): the
+	// tool fences every search to the session's server-authenticated Team (sess.team),
+	// never fleet-wide — an MCP caller is a team-scoped agent, so there is no admin /
+	// AllTeams path here. Nil ⇒ the tool is unmounted (a DB-less deployment), exactly
+	// like discussion_post with a nil discuss writer. See WithWorkItemSearch.
+	finder search.Searcher
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -85,6 +95,19 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 // tool coordination-free. Returns the receiver for chaining at construction.
 func (m *ToolMCP) WithDiscussionDispatch(dispatch *DiscussionDispatch) *ToolMCP {
 	m.mentions = dispatch
+	return m
+}
+
+// WithWorkItemSearch wires the work_item_search tool (ISI-5276, WS-B of ISI-5270): the
+// SAME pkg/search.Searcher the /api/search HTTP handler rides, so an agent in a ticket
+// or discussion run can run the cross-ticket full-text work-item search over MCP — the
+// FTS corpus that until now was reachable only over HTTP by the console. The Searcher
+// enforces RBAC in-query (ADR-039); this tool always fences to the session's Team
+// (never AllTeams), since an MCP caller is a team-scoped agent, not a fleet admin.
+// Passing a nil searcher leaves the tool unmounted, exactly as a nil discuss writer
+// unmounts discussion_post. Returns the receiver for chaining at construction.
+func (m *ToolMCP) WithWorkItemSearch(finder search.Searcher) *ToolMCP {
+	m.finder = finder
 	return m
 }
 
@@ -335,6 +358,11 @@ func (m *ToolMCP) toolsList() any {
 	if m.discuss != nil {
 		tools = append(tools, discussionPostTool)
 	}
+	// work_item_search (ISI-5276) is advertised whenever a Searcher is wired — a
+	// DB-less deployment leaves it out, exactly like discussion_post with no writer.
+	if m.finder != nil {
+		tools = append(tools, workItemSearchTool)
+	}
 	// The ADR-0024 authoring tools (ISI-4741) are advertised whenever the author
 	// store is wired — the capability gate bites at call time, not by hiding the
 	// tool, so an ungranted agent gets an honest capability-denied error rather than
@@ -388,6 +416,16 @@ var (
 		Name:        "discussion_post",
 		Description: "Post to a project's discussion room, scoped to the caller team. Omit thread_id to open a new thread (title required); pass thread_id to reply into it (optionally parent_message_id to nest). Author and tenancy are server-authenticated (never arguments). Returns the server-stamped thread (on open) or message (on reply) so you can cite what you wrote.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"project_id":{"type":"string","description":"the discussion room's project id (uuid); narrows within the caller team"},"thread_id":{"type":"string","description":"omit to open a new thread; present (uuid) to reply into that thread"},"title":{"type":"string","description":"thread title, required when opening a new thread (thread_id omitted)"},"body":{"type":"string","description":"the thread's first message (on open) or the reply body"},"parent_message_id":{"type":"string","description":"optional reply target (uuid) within the thread; ignored when opening"}},"required":["project_id","body"]}`),
+	}
+	// workItemSearchTool is the full-text, cross-ticket work-item search (ISI-5276): the MCP peer of
+	// GET /api/search, over the SAME pkg/search.Searcher and the 0012 FTS index. RBAC is server-enforced
+	// in-query (ADR-039) and fenced to the caller team — never an argument, never fleet-wide. `query` is
+	// the raw text (websearch_to_tsquery grammar: quoted phrases, OR, leading-minus negation); `limit`
+	// bounds the page (server clamps 1..50). Advertised only when a Searcher is wired.
+	workItemSearchTool = mcpTool{
+		Name:        WorkItemSearchToolName,
+		Description: "Full-text search across the caller team's tickets / work items (title + body), scoped to the caller team (server-authenticated, never an argument). Use it to find other tickets by topic before you duplicate work, to locate related or blocking tickets, or to cite prior work. Returns relevance-ranked hits {type, id, projectId, title, snippet (with <mark> highlights), state, rank, updatedAt}. query supports quoted phrases, OR, and -negation; limit bounds the page (default 20, max 50).",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"full-text search text; supports quoted phrases, OR, and leading-minus negation"},"limit":{"type":"integer","description":"max results (default 20, clamped to 50)","minimum":1}},"required":["query"]}`),
 	}
 )
 
@@ -459,6 +497,11 @@ func (m *ToolMCP) toolsCall(ctx context.Context, sess mcpSession, params json.Ra
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // a write — unmounted read-only
 		}
 		return m.callDiscussionPost(ctx, sess, p.Arguments)
+	case workItemSearchTool.Name:
+		if m.finder == nil {
+			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // unmounted in a DB-less deployment
+		}
+		return m.callWorkItemSearch(ctx, sess, p.Arguments)
 	case workItemCreateTool.Name:
 		if m.author == nil {
 			return toolError(fmt.Sprintf("unknown tool: %s", p.Name)) // authoring unmounted
@@ -524,6 +567,47 @@ func (m *ToolMCP) callDiscussionSearch(ctx context.Context, sess mcpSession, raw
 		return toolError(err.Error())
 	}
 	return toolResult(searchResponse{Results: out})
+}
+
+// workItemSearchArgs is the work_item_search argument shape (ISI-5276). team is DELIBERATELY absent —
+// the RBAC scope comes from the session header (sess.team), never a tool argument (INV3 / ADR-039).
+type workItemSearchArgs struct {
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+// workItemSearchResponse is the work_item_search result envelope: the relevance-ordered hits as the
+// pkg/search.Result wire shape (same fields the console's /api/search renders). Always a JSON array
+// (never null) so a caller can render an empty state without a nil guard.
+type workItemSearchResponse struct {
+	Results []search.Result `json:"results"`
+}
+
+// callWorkItemSearch runs the cross-ticket FTS over the session's Team (ISI-5276). RBAC is enforced
+// in-query by the Searcher (ADR-039): the Team predicate is bound from sess.team (server-authenticated),
+// and AllTeams is always false — an MCP caller is a team-scoped agent, never a fleet admin, so there is
+// no path to widen past its Team. A blank query (ErrEmptyQuery) is surfaced as a tool error the model can
+// react to, mirroring the HTTP handler's 400.
+func (m *ToolMCP) callWorkItemSearch(ctx context.Context, sess mcpSession, raw json.RawMessage) (any, *jsonrpcError) {
+	var a workItemSearchArgs
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return toolError("invalid arguments")
+		}
+	}
+	out, err := m.finder.Search(ctx, search.Query{
+		Text:     a.Query,
+		TeamID:   sess.team, // server-authenticated Team scope (§12.1) — never an argument
+		AllTeams: false,     // MCP callers are team-scoped agents; no fleet-wide search over MCP
+		Limit:    a.Limit,   // the Searcher clamps 1..maxLimit defensively
+	})
+	if err != nil {
+		return toolError(err.Error())
+	}
+	if out == nil {
+		out = []search.Result{}
+	}
+	return toolResult(workItemSearchResponse{Results: out})
 }
 
 // diaryReadArgs is the diary_read argument shape. team is absent — it comes from the session (header),
