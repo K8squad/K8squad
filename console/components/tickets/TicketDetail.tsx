@@ -90,7 +90,8 @@ import { allowedTargets, workingPhaseOf } from "@/lib/tickets/transitions";
 import { CreateTicketSheet } from "./CreateTicketSheet";
 import { AssigneeChipView } from "./RailAssigneeChip";
 import { useDispatchWatch, type DispatchWatch } from "@/lib/tickets/useDispatchWatch";
-import { useTicketRunStream } from "@/lib/tickets/useTicketRunStream";
+import { useTicketRunStream, ambientRunId } from "@/lib/tickets/useTicketRunStream";
+import { useActiveRunDiscovery } from "@/lib/tickets/useActiveRunDiscovery";
 import type { LiveThinkingRow } from "@/lib/tickets/thread";
 import { DispatchPendingCard } from "./DispatchPendingCard";
 import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
@@ -1424,6 +1425,22 @@ function TicketBody({
     dispatchWatch?.runId,
     onCommentPosted,
   );
+  // ISI-5287 (child of ISI-5285): the ambient stream above + the self-dispatch ladder
+  // both key off the thread read model (thread.runId/state) or this tab's own dispatch,
+  // so a tab already open with NOTHING live never learns a run started afterwards — the
+  // thread is only re-fetched on a comment post or a streamed run's terminal. That left
+  // the originally-open tab stuck on "working" while a fresh tab showed the reply
+  // (Henrik's ISI-5285 repro). `streaming` is true exactly when a live stream is already
+  // open — the self-dispatch ladder owns a run, OR the ambient hook has a holding run to
+  // tail; while it is FALSE (the idle gap) this discovery poll watches GET /api/runs for
+  // a newly-started run on this ticket and reloads the thread when one appears, which
+  // populates thread.runId/state and engages the ambient stream above (fresh-connect
+  // backfill then replays anything emitted before the connect). One bus, no second
+  // EventSource — just the existing discovery source useDispatchWatch already uses.
+  const streaming =
+    Boolean(dispatchWatch?.runId) ||
+    ambientRunId(thread.runId, thread.state, dispatchWatch?.runId) !== "";
+  useActiveRunDiscovery(thread.workItemId, thread.runId, streaming, onCommentPosted);
   // ISI-5248 defense-in-depth: the SELF-DISPATCH run (dispatchWatch.runId) is the one
   // useTicketRunStream deliberately skips above, so nothing else reloads the thread when
   // THIS page's own dispatch settles. When that ladder reaches terminal (succeeded/
