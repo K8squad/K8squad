@@ -109,7 +109,7 @@ func TestDispatchHopRoundTrip(t *testing.T) {
 func TestResolveDispatchesExactlyOne(t *testing.T) {
 	roster := []TeamAgent{{Name: "john", Status: "working"}, {Name: "jane", Status: "idle"}}
 	msg := agentMsg("hey @john please look", "party", "", nil) // human-authored (no agentID)
-	targets, dropped := resolveMentionTargets(msg, roster)
+	targets, dropped, _ := resolveMentionTargets(msg, roster)
 	if dropped != 0 || len(targets) != 1 {
 		t.Fatalf("targets = %v (dropped %d), want exactly [john]", names(targets), dropped)
 	}
@@ -132,10 +132,12 @@ func TestResolveAudienceRouting(t *testing.T) {
 		t.Fatalf("direct routing = %v, want [john] only", got)
 	}
 
-	// party + @agent dispatches each mentioned agent.
-	party := agentMsg("@john and @jane", "party", "", nil)
-	if got := names(mustResolve(t, party, roster)); len(got) != 2 {
-		t.Fatalf("party routing = %v, want [john jane]", got)
+	// party + a SINGLE @agent dispatches exactly that agent. (A party post that resolves 2+ mentions
+	// now routes to the Team Coordinator instead of fanning out — ISI-5283, covered by the dedicated
+	// TestResolveMultiMention* cases below.)
+	party := agentMsg("@john please take this", "party", "", nil)
+	if got := names(mustResolve(t, party, roster)); len(got) != 1 || got[0] != "john" {
+		t.Fatalf("party routing = %v, want [john]", got)
 	}
 
 	// A bare HUMAN party post with no @-mention now BROADCASTS to the whole room (ISI-5265) — see
@@ -153,7 +155,7 @@ func TestResolveBroadcastHumanPartyWakesWholeRoom(t *testing.T) {
 	}
 	// Human-authored (no agentID), party audience, no @-mention → every eligible agent is dispatched.
 	msg := agentMsg("standup in 5, whole squad please", "party", "", nil)
-	targets, dropped := resolveMentionTargets(msg, roster)
+	targets, dropped, _ := resolveMentionTargets(msg, roster)
 	if dropped != 0 || len(targets) != 3 {
 		t.Fatalf("broadcast = %v (dropped %d), want all three [john jane amy]", names(targets), dropped)
 	}
@@ -201,7 +203,7 @@ func TestResolveBroadcastRateCap(t *testing.T) {
 		roster = append(roster, TeamAgent{Name: "agent-" + string(rune('a'+i)), Status: "working"})
 	}
 	msg := agentMsg("all hands", "party", "", nil)
-	targets, dropped := resolveMentionTargets(msg, roster)
+	targets, dropped, _ := resolveMentionTargets(msg, roster)
 	if len(targets) != maxBroadcastDispatchPerMessage {
 		t.Fatalf("broadcast dispatched %d, want cap of %d", len(targets), maxBroadcastDispatchPerMessage)
 	}
@@ -228,7 +230,7 @@ func TestResolveExplicitMentionOnPartyDoesNotBroadcast(t *testing.T) {
 
 func mustResolve(t *testing.T, msg *Message, roster []TeamAgent) []MentionDispatch {
 	t.Helper()
-	targets, _ := resolveMentionTargets(msg, roster)
+	targets, _, _ := resolveMentionTargets(msg, roster)
 	return targets
 }
 
@@ -293,23 +295,27 @@ func TestResolveSkipsSelfMention(t *testing.T) {
 	}
 }
 
-// --- rate/cost cap ----------------------------------------------------------
-
-func TestResolveRateCap(t *testing.T) {
-	roster := []TeamAgent{}
-	body := ""
+// --- ISI-5283: a large explicit @-mention set collapses to ONE coordinator dispatch ---
+//
+// Before ISI-5283 an @-mention post that named more agents than maxMentionDispatchPerMessage was
+// capped and the tail dropped. Now a 2+-mention post routes to the Team Coordinator ONCE, so the
+// per-message fan-out cap is never reached by explicit mentions — a post naming the whole squad is a
+// single coordinator dispatch, no drops.
+func TestResolveMultiMentionCollapsesToCoordinator(t *testing.T) {
+	roster := []TeamAgent{{Name: "coord", Status: "working", Coordinator: true}}
+	body := "@coord "
 	for i := 0; i < maxMentionDispatchPerMessage+3; i++ {
-		name := string(rune('a' + i))
+		name := "agent-" + string(rune('a'+i))
 		roster = append(roster, TeamAgent{Name: name, Status: "working"})
 		body += "@" + name + " "
 	}
 	msg := agentMsg(body, "party", "", nil)
-	targets, dropped := resolveMentionTargets(msg, roster)
-	if len(targets) != maxMentionDispatchPerMessage {
-		t.Fatalf("dispatched %d, want cap of %d", len(targets), maxMentionDispatchPerMessage)
+	targets, dropped, fallback := resolveMentionTargets(msg, roster)
+	if fallback || dropped != 0 {
+		t.Fatalf("fallback=%v dropped=%d, want a clean single coordinator dispatch", fallback, dropped)
 	}
-	if dropped != 3 {
-		t.Fatalf("dropped = %d, want 3 (non-silent truncation)", dropped)
+	if len(targets) != 1 || targets[0].AgentName != "coord" || !targets[0].Orchestrate {
+		t.Fatalf("targets = %+v, want one orchestration dispatch to coord", targets)
 	}
 }
 
@@ -381,4 +387,130 @@ func TestDispatchMentionsHookNoDispatcherNoop(t *testing.T) {
 	h.dispatchMentions(context.Background(), "squad-a/proj",
 		AuthorContext{Principal: "user:alice", TeamID: uuid.New()},
 		agentMsg("@john hi", "party", "", nil))
+}
+
+// ============================================================================
+// ISI-5283 / ISI-5267 WS-2: multi-mention (2+) routing → Team Coordinator role
+// ============================================================================
+
+// Two resolvable mentions route to the Team Coordinator as a SINGLE orchestration dispatch carrying
+// the structured directive (the mentioned agents + the verbatim request body), NOT one Run per agent.
+func TestResolveMultiMentionRoutesToCoordinator(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "idle", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("@john and @jane can you ship the login page?", "party", "", nil)
+	targets, dropped, fallback := resolveMentionTargets(msg, roster)
+	if fallback || dropped != 0 {
+		t.Fatalf("fallback=%v dropped=%d, want a clean coordinator dispatch", fallback, dropped)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %v, want exactly ONE dispatch (to the coordinator)", names(targets))
+	}
+	got := targets[0]
+	if got.AgentName != "coord" {
+		t.Fatalf("dispatched %q, want the coordinator 'coord'", got.AgentName)
+	}
+	if !got.Orchestrate {
+		t.Fatal("coordinator dispatch must set Orchestrate")
+	}
+	if got.HopDepth != 1 {
+		t.Fatalf("hop = %d, want 1 (human turn)", got.HopDepth)
+	}
+	if len(got.OrchestratedAgents) != 2 || got.OrchestratedAgents[0] != "john" || got.OrchestratedAgents[1] != "jane" {
+		t.Fatalf("OrchestratedAgents = %v, want [john jane] in first-seen order", got.OrchestratedAgents)
+	}
+	if got.RequestBody != msg.Body {
+		t.Fatalf("RequestBody = %q, want the verbatim comment body", got.RequestBody)
+	}
+}
+
+// The threshold is 2 RESOLVABLE mentions (D2): a post naming two agents where only one is on the
+// roster stays an ordinary single-agent dispatch, never a coordinator hand-off.
+func TestResolveTwoMentionsOnlyOneResolvableStaysDirect(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+	}
+	msg := agentMsg("@john and @ghost please look", "party", "", nil)
+	targets, _, fallback := resolveMentionTargets(msg, roster)
+	if fallback {
+		t.Fatal("one resolvable mention must not trip the multi-mention coordinator route")
+	}
+	if len(targets) != 1 || targets[0].AgentName != "john" || targets[0].Orchestrate {
+		t.Fatalf("targets = %+v, want a single direct dispatch to john", targets)
+	}
+}
+
+// D3 fallback: 2+ resolvable mentions on a Team with NO Coordinator role dispatch NOBODY (the caller
+// surfaces a picker) — the engine never silently fans out to every mentioned agent.
+func TestResolveMultiMentionNoCoordinatorFallsBack(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("@john @jane split this up", "party", "", nil)
+	targets, dropped, fallback := resolveMentionTargets(msg, roster)
+	if !fallback {
+		t.Fatal("2+ mentions with no coordinator must signal the D3 picker fallback")
+	}
+	if len(targets) != 0 || dropped != 0 {
+		t.Fatalf("fallback must dispatch nobody, got targets=%v dropped=%d", names(targets), dropped)
+	}
+}
+
+// A coordinator role that is opted out (paused/blocked) is NOT dispatchable, so a multi-mention post
+// falls back to the picker rather than waking a paused coordinator or fanning out.
+func TestResolveMultiMentionPausedCoordinatorFallsBack(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "paused", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("@john @jane go", "party", "", nil)
+	targets, _, fallback := resolveMentionTargets(msg, roster)
+	if !fallback || len(targets) != 0 {
+		t.Fatalf("paused coordinator must fall back: fallback=%v targets=%v", fallback, names(targets))
+	}
+}
+
+// The coordinator itself authoring a 2+-mention post must not self-dispatch; it falls back to the
+// picker instead of looping on itself.
+func TestResolveMultiMentionByCoordinatorFallsBack(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	// Coordinator (agent-authored) @-mentions two teammates. selfAgent == coord → no self-dispatch.
+	msg := agentMsg("@john @jane let's structure this", "party", "coord", nil)
+	targets, _, fallback := resolveMentionTargets(msg, roster)
+	if !fallback || len(targets) != 0 {
+		t.Fatalf("coordinator self-authored multi-mention must fall back: fallback=%v targets=%v", fallback, names(targets))
+	}
+}
+
+// A bare human party broadcast (no @-mention) is NOT a multi-mention post: it keeps the whole-room
+// fan-out and is never collapsed to the coordinator, even when the roster has a coordinator role.
+func TestResolveBroadcastNotRoutedToCoordinator(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("whole squad, standup now", "party", "", nil)
+	targets, _, fallback := resolveMentionTargets(msg, roster)
+	if fallback {
+		t.Fatal("a broadcast must not trip the coordinator fallback")
+	}
+	if len(targets) != 3 {
+		t.Fatalf("broadcast = %v, want all three agents (fan-out preserved)", names(targets))
+	}
+	for _, tg := range targets {
+		if tg.Orchestrate {
+			t.Fatalf("broadcast target %q must not be an orchestration dispatch", tg.AgentName)
+		}
+	}
 }

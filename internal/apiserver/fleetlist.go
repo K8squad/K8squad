@@ -84,13 +84,17 @@ type TeamDetail struct {
 // that stays the per-agent detail/org read (org.go) which resolves Runs; a fleet
 // LIST keeps the projection cheap.
 type AgentListEntry struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Namespace  string `json:"namespace"`
-	Runtime    string `json:"runtime,omitempty"`
-	Role       string `json:"role,omitempty"`
-	Model      string `json:"model,omitempty"`
-	SkillCount int    `json:"skillCount"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+	Runtime   string `json:"runtime,omitempty"`
+	Role      string `json:"role,omitempty"`
+	// Coordinator mirrors the referenced Role's Role.Spec.Coordinator (ISI-4431): the Team's single
+	// lifecycle-driver role. The ticket composer reads it to route a 2+-mention comment to the Team
+	// Coordinator instead of fanning out one dispatch per mentioned agent (ISI-5283 / ISI-5267 WS-2).
+	Coordinator bool   `json:"coordinator,omitempty"`
+	Model       string `json:"model,omitempty"`
+	SkillCount  int    `json:"skillCount"`
 }
 
 // FleetAgentList is the GET /api/squad/agents payload.
@@ -454,17 +458,30 @@ func (r *ClientFleetListReader) Agents(ctx context.Context, teamUID string, admi
 	if err := r.reader.List(ctx, &agents, opts...); err != nil {
 		return FleetAgentList{}, err
 	}
+	// Resolve the coordinator flag per agent off its referenced Role (ISI-5283). Roles are listed in
+	// the SAME scope as the agents and indexed by name; a dangling roleRef simply resolves to false
+	// (the Role's own guard owns rejection — this projection never fabricates a coordinator badge).
+	coordinatorRole := map[string]bool{}
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles, opts...); err == nil {
+		for i := range roles.Items {
+			if roles.Items[i].Spec.Coordinator {
+				coordinatorRole[roles.Items[i].Name] = true
+			}
+		}
+	}
 	out := FleetAgentList{Agents: []AgentListEntry{}, Fleet: admin}
 	for i := range agents.Items {
 		a := &agents.Items[i]
 		out.Agents = append(out.Agents, AgentListEntry{
-			ID:         string(a.UID),
-			Name:       a.Name,
-			Namespace:  a.Namespace,
-			Runtime:    a.Spec.RuntimeRef.Name,
-			Role:       a.Spec.RoleRef.Name,
-			Model:      a.Spec.Model,
-			SkillCount: len(a.Spec.SkillRefs),
+			ID:          string(a.UID),
+			Name:        a.Name,
+			Namespace:   a.Namespace,
+			Runtime:     a.Spec.RuntimeRef.Name,
+			Role:        a.Spec.RoleRef.Name,
+			Coordinator: a.Spec.RoleRef.Name != "" && coordinatorRole[a.Spec.RoleRef.Name],
+			Model:       a.Spec.Model,
+			SkillCount:  len(a.Spec.SkillRefs),
 		})
 	}
 	sortByNamespaceName(out.Agents, func(e AgentListEntry) (string, string) { return e.Namespace, e.Name })

@@ -837,9 +837,21 @@ func projectNamespace(projectID string) string {
 func toTeamAgents(agents []apiserver.OrgAgent) []discussion.TeamAgent {
 	out := make([]discussion.TeamAgent, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, discussion.TeamAgent{Name: a.Name, Status: a.Status})
+		out = append(out, discussion.TeamAgent{Name: a.Name, Status: a.Status, Coordinator: hasCoordinatorRole(a)})
 	}
 	return out
+}
+
+// hasCoordinatorRole reports whether any of an agent's role badges is its Team's Coordinator role
+// (ISI-5283 / ISI-5267 WS-2). The Team-admission webhook enforces at most one coordinator role per
+// Team, so at most one roster agent carries it.
+func hasCoordinatorRole(a apiserver.OrgAgent) bool {
+	for _, r := range a.Roles {
+		if r.Coordinator {
+			return true
+		}
+	}
+	return false
 }
 
 // rosterForMentions returns the mention roster seam, or nil when the org projection is unavailable

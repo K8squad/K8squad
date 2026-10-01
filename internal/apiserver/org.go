@@ -61,10 +61,13 @@ const (
 )
 
 // RoleBadge is a Role badge on an Agent node (read-only, from the Role CRD, §5.1). ID is the Role
-// object UID; Name is its metadata.name.
+// object UID; Name is its metadata.name. Coordinator mirrors Role.Spec.Coordinator — the team's
+// single lifecycle-driver role (ISI-4431), surfaced here so the discussion dispatch engine can route
+// a multi-mention post to the Team's Coordinator (ISI-5283 / ISI-5267 WS-2) instead of fanning out.
 type RoleBadge struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Coordinator bool   `json:"coordinator,omitempty"`
 }
 
 // OrgAgent is an Agent node in the org diagram (8.10) and the header of the detail page (8.11).
@@ -525,6 +528,7 @@ func projectAgent(
 		badge := RoleBadge{Name: a.Spec.RoleRef.Name}
 		if role, ok := roleByName[a.Spec.RoleRef.Name]; ok {
 			badge.ID = string(role.UID)
+			badge.Coordinator = role.Spec.Coordinator
 		}
 		roles = append(roles, badge)
 	}

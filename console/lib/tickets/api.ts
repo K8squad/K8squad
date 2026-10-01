@@ -130,6 +130,10 @@ export interface AgentOption {
    * "role — name" label so a human picks by function not opaque handle
    * (ISI-4807 §2). Empty when the agent declares no role. */
   role?: string;
+  /** True when the agent's Role is its Team's Coordinator (fleetlist.go
+   * AgentListEntry.Coordinator, ISI-4431). The composer routes a 2+-mention
+   * comment to this agent instead of fanning out (ISI-5283 / ISI-5267 WS-2). */
+  coordinator?: boolean;
 }
 
 /** The dropdown label for an assignable agent: "role — name" when the agent
@@ -156,12 +160,13 @@ export async function listSquadAgents(): Promise<AgentOption[]> {
     const payload = (await res.json()) as { agents?: unknown };
     const rows = Array.isArray(payload.agents) ? payload.agents : [];
     const mapped = rows
-      .map((r) => r as { id?: unknown; name?: unknown; role?: unknown })
+      .map((r) => r as { id?: unknown; name?: unknown; role?: unknown; coordinator?: unknown })
       .filter((r) => typeof r.id === "string" && typeof r.name === "string")
       .map((r) => ({
         id: r.id as string,
         name: r.name as string,
         role: typeof r.role === "string" ? (r.role as string) : undefined,
+        coordinator: r.coordinator === true,
       }));
     // Dedupe by agent NAME (ISI-4807 §1): a fleet/admin caller's GET /api/squad/agents
     // spans every squad namespace (fleetlist.go scope), so an agent present in two

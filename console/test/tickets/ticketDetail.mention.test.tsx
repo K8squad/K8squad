@@ -217,6 +217,73 @@ describe("TicketDetail — @-mention autocomplete + body dispatch (ISI-5159/ISI-
     expect(dispatchCall()).toBeUndefined();
   });
 
+  it("a body with 2+ resolvable mentions dispatches the Team Coordinator ONCE (ISI-5283 WS-2)", async () => {
+    // Roster carries a coordinator role; the two @-mentions must collapse to a single
+    // dispatch to that coordinator, never one dispatch per mentioned agent.
+    const squadWithCoord = [
+      { id: "ag-0", name: "lead", role: "coordinator", coordinator: true },
+      { id: "ag-1", name: "builder" },
+      { id: "ag-2", name: "reviewer" },
+    ];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const u = String(url);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (u.includes("/api/session"))
+        return Promise.resolve(jsonResponse({ globalRole: "contributor" }));
+      if (u.includes("/api/squad/agents"))
+        return Promise.resolve(jsonResponse({ agents: squadWithCoord }));
+      if (u.includes("/api/runs")) return Promise.resolve(jsonResponse([]));
+      if (u.includes("/comments") && method === "POST")
+        return Promise.resolve(jsonResponse(POSTED_COMMENT, 201));
+      if (u.includes("/dispatch") && method === "POST")
+        return Promise.resolve(
+          jsonResponse({ workItemId: "wi-1", fromState: "backlog", toState: "todo" }),
+        );
+      if (u.includes("/api/work-items/")) return Promise.resolve(jsonResponse(THREAD));
+      return Promise.resolve(jsonResponse([]));
+    });
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await readyComposer();
+
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "@builder and @reviewer please split this up" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    await waitFor(() => expect(dispatchCall()).toBeTruthy());
+    // Exactly one dispatch, to the coordinator — not one per mentioned agent.
+    const dispatches = fetchMock.mock.calls.filter(
+      ([u, init]) =>
+        String(u).includes("/dispatch") &&
+        (init?.method ?? "GET").toUpperCase() === "POST",
+    );
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0]?.[1]?.body).toBe(JSON.stringify({ agentId: "lead" }));
+  });
+
+  it("2+ mentions with NO coordinator surfaces a prompt and does NOT fan out (ISI-5283 D3)", async () => {
+    // Default SQUAD has no coordinator → the composer must dispatch nobody and prompt
+    // the human to pick one agent, rather than silently fanning out to both.
+    routeFetch();
+    render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);
+    await readyComposer();
+
+    fireEvent.change(screen.getByTestId("detail-composer-input"), {
+      target: { value: "@builder and @reviewer take this" },
+    });
+    fireEvent.click(screen.getByTestId("detail-composer-submit"));
+
+    // The D3 prompt appears…
+    await waitFor(() =>
+      expect(screen.getByTestId("detail-composer-assign-error")).toBeTruthy(),
+    );
+    expect(
+      screen.getByTestId("detail-composer-assign-error").textContent,
+    ).toContain("no coordinator");
+    // …and nobody was dispatched.
+    expect(dispatchCall()).toBeUndefined();
+  });
+
   it("the explicit Comment-&-assign select still dispatches its picked agent", async () => {
     routeFetch();
     render(<TicketDetail projectId="ns/demo" workItemId="wi-1" />);

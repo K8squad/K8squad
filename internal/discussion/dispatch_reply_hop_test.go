@@ -96,7 +96,7 @@ func TestReplyHopBoundsAgentChainEndToEnd(t *testing.T) {
 	h1.SetReplyHopResolver(fakeHopResolver{hop: 1, ok: true})
 	payload1 := h1.stampReplyHop(context.Background(), agentRunAuth("coder", "run-hop1"), nil)
 	reply1 := agentMsg("@reviewer please take a look", "party", "coder", payload1)
-	targets, _ := resolveMentionTargets(reply1, roster)
+	targets, _, _ := resolveMentionTargets(reply1, roster)
 	if len(targets) != 1 || targets[0].AgentName != "reviewer" {
 		t.Fatalf("hop-1 reply dispatched %v, want exactly [reviewer]", names(targets))
 	}
@@ -109,7 +109,7 @@ func TestReplyHopBoundsAgentChainEndToEnd(t *testing.T) {
 	h2.SetReplyHopResolver(fakeHopResolver{hop: 2, ok: true})
 	payload2 := h2.stampReplyHop(context.Background(), agentRunAuth("reviewer", "run-hop2"), nil)
 	reply2 := agentMsg("@coder back to you", "party", "reviewer", payload2)
-	bounded, _ := resolveMentionTargets(reply2, roster)
+	bounded, _, _ := resolveMentionTargets(reply2, roster)
 	if len(bounded) != 0 {
 		t.Fatalf("hop-2 reply dispatched %v, want the chain bounded (nobody at hop 3)", names(bounded))
 	}

@@ -64,6 +64,20 @@ type MentionDispatch struct {
 	// always present; TriggeredByAgentID set ⇒ an agent authored the trigger (the loop-guard signal).
 	TriggeredByPrincipal string
 	TriggeredByAgentID   *string
+
+	// Orchestrate marks this as a MULTI-MENTION coordinator dispatch (ISI-5283 / ISI-5267 WS-2):
+	// instead of one Run per mentioned agent, a post that resolves 2+ mentions dispatches the Team's
+	// Coordinator role ONCE (AgentName is the coordinator) with a structured directive to structure
+	// the work involving the mentioned agents. The coordinator is the LIVE ISI-5220 orchestrator
+	// (work_item_create + work_item_assign). When false this is an ordinary single-agent reply
+	// dispatch and the two fields below are empty.
+	Orchestrate bool
+	// OrchestratedAgents is the resolved (roster-matched) set of mentioned agents the coordinator is
+	// asked to structure the work for, in first-seen order. Set only when Orchestrate is true.
+	OrchestratedAgents []string
+	// RequestBody is the verbatim triggering comment body — the "the request is: «…»" half of the
+	// coordinator directive. Set only when Orchestrate is true.
+	RequestBody string
 }
 
 // MentionDispatcher is the seam the §13 apiserver supplies: it turns a resolved MentionDispatch into a
@@ -342,7 +356,7 @@ func dispatchableStatus(status string) bool {
 // applies every guardrail EXCEPT idempotency (which is the seam's job) so it is exhaustively unit
 // testable without a database. `dropped` reports how many candidates the rate cap discarded, so the
 // caller can log a non-silent truncation.
-func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionDispatch, dropped int) {
+func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionDispatch, dropped int, fallback bool) {
 	// (1) Loop guard: hop this message sits at (human post ⇒ 0). The run a mention here dispatches
 	// runs at hop+1; if that would exceed the cap, an agent-authored message dispatches nobody — the
 	// paid-loop backstop. A human post always passes (0+1 ≤ cap).
@@ -352,7 +366,7 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 	}
 	nextHop := msgHop + 1
 	if nextHop > maxMentionHopDepth {
-		return nil, 0
+		return nil, 0, false
 	}
 
 	// (2) Audience routing: direct:<agent> targets exactly that agent (ignoring body @-tokens); a
@@ -372,7 +386,7 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 		candidates = parseMentions(msg.Body)
 		if len(candidates) == 0 {
 			if msg.AuthorAgentID != nil {
-				return nil, 0 // agent party + no @-mention: dispatch nobody (loop-safety)
+				return nil, 0, false // agent party + no @-mention: dispatch nobody (loop-safety)
 			}
 			// human party + no @-mention: broadcast to every roster agent (guardrails below still
 			// apply — opt-out, self-exclusion, de-dupe, and the broadcast fan-out cap).
@@ -386,11 +400,13 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 		}
 	}
 	if len(candidates) == 0 {
-		return nil, 0
+		return nil, 0, false
 	}
 
 	// (3) Resolve each candidate against the roster (case-insensitive), applying the opt-out and
-	// self-mention guardrails, de-duplicating, and capping the fan-out.
+	// self-mention guardrails and de-duplicating. The full resolvable set is collected FIRST — before
+	// the fan-out cap — so the multi-mention routing decision (ISI-5283) keys on the TRUE count of
+	// resolvable agents, not the post-cap count.
 	byName := make(map[string]TeamAgent, len(roster))
 	for _, a := range roster {
 		if a.Name != "" {
@@ -403,14 +419,7 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 		selfAgent = strings.ToLower(*msg.AuthorAgentID)
 	}
 
-	// A whole-room broadcast rides the larger squad-sized cap; an explicit @-mention party post (or a
-	// direct: post) stays on the smaller per-message cap. Either way the fan-out is bounded and excess
-	// is surfaced via `dropped`, never dispatched silently (ISI-5265 req 4).
-	dispatchCap := maxMentionDispatchPerMessage
-	if broadcast {
-		dispatchCap = maxBroadcastDispatchPerMessage
-	}
-
+	resolved := make([]TeamAgent, 0, len(candidates))
 	seen := make(map[string]bool, len(candidates))
 	for _, name := range candidates {
 		key := strings.ToLower(name)
@@ -428,6 +437,53 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 			continue // an agent never auto-dispatches itself
 		}
 		seen[key] = true
+		resolved = append(resolved, agent)
+	}
+	if len(resolved) == 0 {
+		return nil, 0, false
+	}
+
+	// (4) Multi-mention routing (ISI-5283 / ISI-5267 WS-2, decision D2): an EXPLICIT @-mention post
+	// that resolves 2+ agents does NOT fan out one Run per mentioned agent. Instead it dispatches the
+	// Team's Coordinator role ONCE, carrying a structured directive to structure the work involving the
+	// mentioned agents — the coordinator is the LIVE ISI-5220 orchestrator (work_item_create +
+	// work_item_assign). The threshold is the count of RESOLVABLE mentions (D2), so "@a @ghost" with
+	// only @a on the roster stays a single direct dispatch. A whole-room broadcast (human party, no @)
+	// is NOT a multi-mention post and keeps its fan-out.
+	if !broadcast && len(resolved) >= 2 {
+		coord, ok := coordinatorOf(roster)
+		// A coordinator that authored the triggering post would self-dispatch; treat that as "no
+		// coordinator available" so it falls back to the picker rather than looping on itself.
+		if ok && strings.ToLower(coord.Name) == selfAgent {
+			ok = false
+		}
+		if !ok {
+			// D3 fallback: the Team has NO (dispatchable) Coordinator role. Do NOT silently fan out to
+			// every mentioned agent — signal the caller to surface a lightweight picker/prompt instead.
+			return nil, 0, true
+		}
+		mentioned := make([]string, 0, len(resolved))
+		for _, a := range resolved {
+			mentioned = append(mentioned, a.Name) // canonical roster casing, first-seen order
+		}
+		return []MentionDispatch{{
+			AgentName:          coord.Name, // canonical roster casing
+			HopDepth:           nextHop,
+			Orchestrate:        true,
+			OrchestratedAgents: mentioned,
+			RequestBody:        msg.Body,
+		}}, 0, false
+	}
+
+	// (5) Single-agent / broadcast path: one dispatch per resolved agent, bounded by the fan-out cap.
+	// A whole-room broadcast rides the larger squad-sized cap; a single @-mention (or a direct: post)
+	// stays on the smaller per-message cap. Either way the fan-out is bounded and excess is surfaced via
+	// `dropped`, never dispatched silently (ISI-5265 req 4).
+	dispatchCap := maxMentionDispatchPerMessage
+	if broadcast {
+		dispatchCap = maxBroadcastDispatchPerMessage
+	}
+	for _, agent := range resolved {
 		if len(targets) >= dispatchCap {
 			dropped++ // rate cap: count the drop so the caller can log a non-silent truncation
 			continue
@@ -437,7 +493,20 @@ func resolveMentionTargets(msg *Message, roster []TeamAgent) (targets []MentionD
 			HopDepth:  nextHop,
 		})
 	}
-	return targets, dropped
+	return targets, dropped, false
+}
+
+// coordinatorOf returns the Team's single Coordinator-role agent (Role.Spec.Coordinator, ISI-4431 —
+// the Team-admission webhook enforces ≤1 per Team) if one is on the roster AND dispatchable. ok=false
+// when the Team configures no coordinator role, or its coordinator is opted out (paused/blocked) —
+// either way the multi-mention caller must fall back to a picker (D3) rather than fan out (ISI-5283).
+func coordinatorOf(roster []TeamAgent) (TeamAgent, bool) {
+	for _, a := range roster {
+		if a.Coordinator && a.Name != "" && dispatchableStatus(a.Status) {
+			return a, true
+		}
+	}
+	return TeamAgent{}, false
 }
 
 // DispatchMentionsFrom is the shared post-commit trigger BOTH room write edges call (ISI-5125): the
@@ -452,7 +521,16 @@ func DispatchMentionsFrom(ctx context.Context, dispatcher MentionDispatcher, ros
 	if dispatcher == nil || msg == nil {
 		return
 	}
-	targets, dropped := resolveMentionTargets(msg, roster)
+	targets, dropped, fallback := resolveMentionTargets(msg, roster)
+	if fallback {
+		// Multi-mention (2+) post on a Team with no dispatchable Coordinator role (ISI-5283 D3). We
+		// deliberately dispatch NOBODY rather than silently fanning out to every mentioned agent; the
+		// console submit surface turns this into a lightweight picker/prompt. Surface it here (the sole
+		// caller) so the non-dispatch is visible in the logs rather than looking like a dropped post.
+		slog.InfoContext(ctx, "discussion: multi-mention with no coordinator — fan-out suppressed, picker expected",
+			"projectID", projectID, "messageID", msg.ID)
+		return
+	}
 	if dropped > 0 {
 		// Non-silent truncation (the fan-out/broadcast cap guardrail): the message @-mentioned — or, for
 		// a human party post, the room held — more dispatchable agents than the cap allows, so the tail

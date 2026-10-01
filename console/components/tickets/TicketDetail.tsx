@@ -1070,12 +1070,29 @@ function Composer({
     // ISI-5281: assignment is from what was TYPED. A body carrying exactly ONE
     // resolvable @name dispatches that agent directly via the SAME machinery as
     // Comment-&-assign — no dropdown pick, no separate button. The @-popover is now
-    // pure autocomplete; dispatch is driven by the resolved body tokens. Zero
-    // resolvable mentions (or an ambiguous 2+, deferred to WS-3 Coordinator
-    // routing) stays a plain comment, unchanged.
+    // pure autocomplete; dispatch is driven by the resolved body tokens.
     const mentioned = resolveBodyMentions(value, agents);
     if (mentioned.length === 1) {
       await dispatchAfterComment(mentioned[0], comment);
+      return;
+    }
+    // ISI-5283 (WS-2): a body resolving 2+ @names does NOT fan out one dispatch per
+    // agent. It dispatches the Team's Coordinator role ONCE (the LIVE ISI-5220
+    // orchestrator) onto this ticket; the coordinator reads the comment — "structure
+    // the work involving @A, @B…" — and decomposes/assigns via work_item_create +
+    // work_item_assign. D3 fallback: a Team with no coordinator surfaces a lightweight
+    // prompt to pick one agent (the Comment-&-assign select) rather than silently
+    // fanning out to everyone mentioned.
+    if (mentioned.length >= 2) {
+      const coordinator = agents.find((a) => a.coordinator);
+      if (coordinator) {
+        await dispatchAfterComment(coordinator.name, comment);
+        return;
+      }
+      setAssignErr(
+        `You mentioned ${mentioned.length} agents but this team has no coordinator to structure the work. Pick one agent with “Comment & assign”.`,
+      );
+      onPosted(comment);
       return;
     }
     // ISI-4918 (S7 of ISI-4853): a PLAIN comment (no resolvable mention) that
