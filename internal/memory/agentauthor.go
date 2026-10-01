@@ -331,6 +331,18 @@ func (m *ToolMCP) callWorkItemCreate(ctx context.Context, sess mcpSession, raw j
 			return toolError("invalid arguments")
 		}
 	}
+	// Propose mode (ISI-5282): a coordinator carrying the coordinator.propose grant
+	// does NOT author directly — it raises an inert create_ticket proposal the human
+	// confirms (then proposalconfirm.go fans out the real create). The gate bites AFTER
+	// requireAuthor, so deny-by-default and the coordinator's work_item.author grant are
+	// unchanged. A propose-gated session with no proposer wired is refused honestly
+	// here — never silently executed in auto mode (which would defeat the human gate).
+	if sessionIsProposeCoordinator(sess) {
+		if m.proposer == nil {
+			return toolError("propose mode is enabled for this coordinator, but no proposal channel is wired in this deployment; cannot author directly under a propose gate")
+		}
+		return m.proposer.ProposeCreate(ctx, id, a)
+	}
 	// Parent inference (ISI-5244): the coordinator directive tells the PM to create
 	// each sub-ticket under the item it holds, but the run context never surfaces that
 	// item's UUID as an argument — so a decomposing agent has nothing to pass. When
@@ -425,6 +437,17 @@ func (m *ToolMCP) callWorkItemAssign(ctx context.Context, sess mcpSession, raw j
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return toolError("invalid arguments")
 		}
+	}
+	// Propose mode (ISI-5282): raise an assign_agent proposal instead of dispatching
+	// directly (symmetric with callWorkItemCreate). The ticket already exists, so the
+	// proposal carries its id + the requested assignee; proposalconfirm.go drives the
+	// same RequestDispatch after the human confirms. Unwired-but-gated is refused
+	// honestly, never executed.
+	if sessionIsProposeCoordinator(sess) {
+		if m.proposer == nil {
+			return toolError("propose mode is enabled for this coordinator, but no proposal channel is wired in this deployment; cannot author directly under a propose gate")
+		}
+		return m.proposer.ProposeAssign(ctx, id, a)
 	}
 	if a.ID == "" || a.AssigneeAgentID == "" {
 		return toolError("id and assignee_agent_id required")

@@ -53,6 +53,13 @@ type ToolMCP struct {
 	// the REST handler. Nil ⇒ the tool posts exactly as before. See WithDiscussionDispatch. Named `mentions`
 	// (not `dispatch`) to avoid colliding with the JSON-RPC dispatch method below.
 	mentions *DiscussionDispatch
+	// proposer is the optional propose-mode wiring (ISI-5282): when set, a
+	// work_item_create / work_item_assign call made by a coordinator carrying the
+	// coordinator.propose grant RAISES an inert discussion Proposal instead of
+	// executing the coord write directly. Nil ⇒ propose mode is unwired, and a
+	// propose-gated call is refused honestly at the edge (never silently executed).
+	// See WithCoordinatorPropose and coordinatorpropose.go.
+	proposer *CoordinatorProposer
 }
 
 // NewToolMCP wires the MCP transport to a ReadService and (optionally) a WriteService plus a
@@ -85,6 +92,20 @@ func (m *ToolMCP) WithWorkItemAuthor(author WorkItemAuthor, dispatcher WorkItemD
 // tool coordination-free. Returns the receiver for chaining at construction.
 func (m *ToolMCP) WithDiscussionDispatch(dispatch *DiscussionDispatch) *ToolMCP {
 	m.mentions = dispatch
+	return m
+}
+
+// WithCoordinatorPropose wires propose-mode coordinator authoring (ISI-5282): when
+// set, a work_item_create / work_item_assign call made by a coordinator whose session
+// carries the coordinator.propose grant raises an inert discussion Proposal (the human
+// confirms it through the existing proposalconfirm.go fan-out) instead of executing the
+// coord write directly. A nil proposer (the default, or a deployment that could not
+// build the thread resolver / proposal poster) leaves propose mode unwired — a
+// propose-gated call is then refused honestly at the edge, never silently executed in
+// auto mode. auto-mode coordinators and non-coordinator agents are unaffected. Returns
+// the receiver for chaining at construction.
+func (m *ToolMCP) WithCoordinatorPropose(proposer *CoordinatorProposer) *ToolMCP {
+	m.proposer = proposer
 	return m
 }
 

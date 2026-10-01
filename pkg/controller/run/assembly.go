@@ -327,19 +327,33 @@ func (a *Assembler) ensureAuthoringToken(ctx context.Context, run *api.Run, eps 
 		return err
 	}
 
+	// Caps sourced from the grant, never the sandbox: the authoring endpoint is
+	// present only for a work_item.author-granted Run (S2 gate), so work_item.author
+	// is always baked in here. ISI-5282 adds a SECOND derived cap — coordinator.propose
+	// — for a coordinator Run whose Role.Spec.CoordinatorMode is "propose", so the
+	// authoring MCP edge raises proposals instead of executing directly. Re-resolving
+	// the grant here (a cheap, fail-closed control-plane read) keeps the minted token's
+	// cap set agreeing with ResolveGrant by construction, without threading the envelope
+	// through this seam. A read error fails closed: refuse to mint rather than mint a
+	// token missing the propose gate (which would silently fall back to direct execute).
+	authCaps := []string{capability.CapabilityWorkItemAuthor}
+	grants, err := capability.ResolveGrant(ctx, a.Client, run)
+	if err != nil {
+		return fmt.Errorf("resolve grant for authoring token caps %s/%s: %w", run.Namespace, run.Name, err)
+	}
+	if grants.Has(capability.CapabilityCoordinatorPropose) {
+		authCaps = append(authCaps, capability.CapabilityCoordinatorPropose)
+	}
+
 	token, err := a.Minter.Mint(mcpauthtoken.Claims{
 		TeamID:    teamUID,
 		Principal: string(run.GetOwnedBy()),
 		// The dispatched (decomposing) agent, matched against the work item's
 		// dispatch claim by S5 custody-match. Mirrors the task-io writer's
 		// principal derivation (rundrive.SecretCredentialWriter).
-		AgentID: run.Spec.Agents[0].Name,
-		RunID:   string(run.UID),
-		// Caps sourced from the grant, never the sandbox: the authoring
-		// endpoint is present only for a work_item.author-granted Run (S2
-		// gate). A wider cap vocabulary must record the granted slugs on the
-		// manifest and revisit this.
-		Capabilities: []string{capability.CapabilityWorkItemAuthor},
+		AgentID:      run.Spec.Agents[0].Name,
+		RunID:        string(run.UID),
+		Capabilities: authCaps,
 	})
 	if err != nil {
 		return fmt.Errorf("mint run authoring token for %s/%s: %w", run.Namespace, run.Name, err)
