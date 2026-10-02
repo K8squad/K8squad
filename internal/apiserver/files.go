@@ -152,6 +152,17 @@ type GitChange struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// writePreparing writes HTTP 202 with a preparing typed body (ADR-0025 D1/S2c).
+// The client must poll the same endpoint with backoff until the reader is warm and returns 200.
+func writePreparing(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(FileErrorBody{
+		Error: "reader pod is warming up; retry shortly",
+		Code:  ErrCodePreparing,
+	})
+}
+
 // ErrWorkspaceBusy is returned by a WorkspaceReader when the workspace PVC is held
 // by an active run on a node that the reader pod cannot co-schedule with. The route
 // surfaces this as a 200 with degraded=true served from the LAST-COMMITTED SNAPSHOT
@@ -205,6 +216,13 @@ func writeRetryableDegraded(w http.ResponseWriter) {
 		Error: "workspace reader timed out; retry shortly",
 		Code:  ErrCodeRetryableDegraded,
 	})
+}
+
+// ReaderPreWarmer is an optional capability of WorkspaceReader: it starts a background reader-pod
+// launch for a project without blocking (ADR-0025 D1/S2a). *ReaderPodWorkspaceReader implements it.
+// When the WorkspaceReader does not implement this interface, pre-warm requests are silently no-ops.
+type ReaderPreWarmer interface {
+	PreWarm(projectID string)
 }
 
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
@@ -263,6 +281,10 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 			case errors.Is(err, ErrProjectNotFound):
 				// Unknown projectId: existence-hiding 404, same as the dashboard spine.
 				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrReaderPreparing):
+				// ADR-0025 D1/S2c: reader pod is launching; client must poll with back-off.
+				writePreparing(w)
 				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: busy is a first-class degraded state (AC7) — serve the
@@ -341,6 +363,9 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
 				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrReaderPreparing):
+				writePreparing(w)
 				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: serve the last-committed snapshot bytes when available.
@@ -425,6 +450,9 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 			case errors.Is(err, ErrProjectNotFound):
 				writeJSONError(w, http.StatusNotFound, "project not found")
 				return
+			case errors.Is(err, ErrReaderPreparing):
+				writePreparing(w)
+				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: stat from the last-committed snapshot when available.
 				var snapErr error
@@ -449,6 +477,19 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 		}
 
 		writeJSON(w, http.StatusOK, st)
+	}
+}
+
+// projectFilesWarm returns the handler for POST /api/projects/{projectId}/files/warm (ADR-0025 D1/S2a).
+// It triggers a background reader-pod pre-warm for the project so subsequent GET /files calls
+// are more likely to find a warm reader rather than returning 202. Always responds 202 Accepted.
+func (s *Server) projectFilesWarm(reader WorkspaceReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
+		if pw, ok := reader.(ReaderPreWarmer); ok {
+			pw.PreWarm(projectID)
+		}
+		writePreparing(w)
 	}
 }
 
@@ -496,4 +537,142 @@ func busyStat(ctx context.Context, busy BusySnapshotReader, projectID, filePath 
 		return nil, ErrNoWorkspaceSnapshot
 	}
 	return busy.StatSnapshotFile(ctx, projectID, filePath)
+}
+
+// streamEntry is one NDJSON line in the /files/stream response (ADR-0025 D5).
+// Non-entry lines carry metadata (preamble, done marker).
+type streamEntry struct {
+	// Entry fields (populated for real directory entries).
+	Name string `json:"name,omitempty"`
+	Type string `json:"type,omitempty"`
+	Size int64  `json:"size,omitempty"`
+	// Preamble fields (first line only, entry fields empty).
+	Degraded bool   `json:"degraded,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	// Done is true on the final line.
+	Done bool `json:"done,omitempty"`
+}
+
+// projectFilesStream returns the handler for GET /api/projects/{projectId}/files/stream
+// (ADR-0025 D5). It iterates through all listing pages and writes each batch of entries
+// as NDJSON (application/x-ndjson), flushing after every page, so wide directories begin
+// rendering at the client before the full listing is complete. When reader is nil the
+// handler answers 501.
+func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotReader) http.HandlerFunc {
+	if reader == nil {
+		return notImplemented("project file-explorer stream", "ISI-5348: wire a WorkspaceReader (S4a reader-pod client) to enable")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
+
+		rawPath := r.URL.Query().Get("path")
+		cleanPath, err := workspaceJailPath(rawPath)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid path: "+err.Error())
+			return
+		}
+
+		flusher, canFlush := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		enc := json.NewEncoder(w)
+
+		// writeLine encodes v as one NDJSON line and flushes if the transport supports it.
+		writeLine := func(v any) bool {
+			if err := enc.Encode(v); err != nil {
+				return false
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+			return true
+		}
+
+		// Resolve degraded state: try the live reader; on ErrWorkspaceBusy fall back to snapshot.
+		degraded := false
+		degradedReason := ""
+
+		// Iterate pages. For each page we call ListDir (which is cached for 300 ms on the
+		// reader, so re-expand clicks within the TTL cost nothing extra).
+		page := 0
+		firstPage := true
+		for {
+			rctx, rcancel := withReaderTimeout(r.Context())
+			listing, listErr := reader.ListDir(rctx, projectID, cleanPath, page)
+			rcancel()
+
+			if listErr != nil {
+				switch {
+				case errors.Is(listErr, ErrProjectNotFound):
+					// On the first page the headers are not written yet so we can still 404.
+					if firstPage {
+						writeJSONError(w, http.StatusNotFound, "project not found")
+						return
+					}
+					// Mid-stream: write error sentinel and close.
+					_ = enc.Encode(FileErrorBody{Error: "project not found", Code: ErrCodeNotFound})
+					return
+				case errors.Is(listErr, ErrWorkspaceBusy):
+					// Degrade to snapshot for the remaining pages.
+					var snapErr error
+					listing, snapErr = busyList(r.Context(), busy, projectID, cleanPath, page)
+					if snapErr != nil {
+						listing = &DirListing{Entries: []DirEntry{}}
+					}
+					degraded = true
+					degradedReason = reasonWorkspaceBusy
+				case errors.Is(listErr, ErrNoBrowseTarget):
+					listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
+					degradedReason = reasonNoBrowseTarget
+				case isTimeout(listErr):
+					if firstPage {
+						writeRetryableDegraded(w)
+						return
+					}
+					// Mid-stream: write retryable error sentinel.
+					_ = enc.Encode(FileErrorBody{Error: "workspace reader timed out; retry shortly", Code: ErrCodeRetryableDegraded})
+					return
+				default:
+					if firstPage {
+						writeJSONError(w, http.StatusInternalServerError, "workspace read error")
+						return
+					}
+					return
+				}
+			}
+			if listing.Degraded {
+				degraded = true
+				degradedReason = listing.Reason
+			}
+
+			// Write a preamble line on the first response to convey degraded state before entries.
+			if firstPage {
+				w.WriteHeader(http.StatusOK)
+				preamble := streamEntry{Degraded: degraded, Reason: degradedReason}
+				if !writeLine(preamble) {
+					return
+				}
+				firstPage = false
+			}
+
+			// Write each entry as a separate NDJSON line.
+			for _, e := range listing.Entries {
+				if !writeLine(streamEntry{Name: e.Name, Type: e.Type, Size: e.Size}) {
+					return
+				}
+			}
+
+			if listing.NextPage == 0 {
+				break
+			}
+			page = listing.NextPage
+		}
+
+		// Terminal done marker so the client knows the stream is complete (not truncated).
+		_ = enc.Encode(streamEntry{Done: true})
+		if canFlush {
+			flusher.Flush()
+		}
+	}
 }

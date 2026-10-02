@@ -41,6 +41,7 @@ package apiserver
 // server-assigned generation semantics.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -201,6 +202,30 @@ func required(field, value string, errs []fieldError) []fieldError {
 type teamRequest struct {
 	Name              string `json:"name"`
 	NamespaceStrategy string `json:"namespaceStrategy,omitempty"`
+	// Agents + Projects are the squad composition member-refs (TeamSpec.Agents /
+	// .Projects), surfaced read-side as name lists on TeamDetail (fleetlist.go).
+	// A compose PUT is a full-spec upsert, so an edit that did not carry them
+	// through would silently drop the whole composition on every Team save
+	// (ISI-5360 Gap 4) — writable here, mapped back to ObjectRef{Name} so the
+	// edit form round-trips the TeamDetail name lists verbatim.
+	Agents   []string `json:"agents,omitempty"`
+	Projects []string `json:"projects,omitempty"`
+	// Grants bind capability slugs to roles in this squad's composition
+	// (TeamSpec.Grants, ADR-0024a D3). Pure config — widening a grant is a Team
+	// edit, never a rebuild. Surfaced read-side on TeamDetail; writable here with
+	// the same no-silent-drop discipline (ISI-5360 Gap 4). The squad onboarding
+	// path (composeSquad) still default-grants coordinator roles over this.
+	Grants []capabilityGrantWire `json:"grants,omitempty"`
+}
+
+// capabilityGrantWire is the compose wire shape for one TeamSpec.Grants entry
+// (CapabilityGrant, team_types.go). It is the exact round-trip shape TeamDetail
+// projects back (fleetlist.go teamGrantsToWire), so the console's fromWire is the
+// inverse of toWire. The CRD requires role (MinLength=1) and ≥1 capability
+// (MinItems=1); planTeam enforces both as pre-apply field-level 422s.
+type capabilityGrantWire struct {
+	Role         string   `json:"role"`
+	Capabilities []string `json:"capabilities"`
 }
 
 type objectRefWire struct {
@@ -327,6 +352,25 @@ type roleRequest struct {
 	// secondary model for mid-Run rate_limited recovery. Reuses fallbackModelWire
 	// verbatim (its own optional modelEndpointRef is the role's ONE BYO endpoint seam).
 	FallbackModel *fallbackModelWire `json:"fallbackModel,omitempty"`
+	// ActivePhases / Coordinator / CoordinatorMode persist the phase-lifecycle spec
+	// fields (role_types.go, ISI-4431 E3/E5). Before ISI-5358 roleRequest lacked
+	// them, so a compose PUT — a full-spec REPLACE — silently wiped any phase/
+	// coordinator config the edit-form could not resend (ISI-5305 §5 Gap 2). Enum
+	// and coordinator-cardinality validation stays at admission (the Role/Team
+	// webhooks); the wire only carries them through for a lossless round-trip.
+	ActivePhases    []string `json:"activePhases,omitempty"`
+	Coordinator     bool     `json:"coordinator,omitempty"`
+	CoordinatorMode string   `json:"coordinatorMode,omitempty"`
+	// ResourceVersion and UsedBy are READ-ONLY fields RoleDetail projects (ISI-5361
+	// Gaps 6/7). The role PUT decode is strict (decodeComposeRequestStrict,
+	// ISI-5358 Gap 2), so
+	// the write struct must ACCEPT them for the edit-form's read→edit→write loop to
+	// round-trip without a 400 — but planRole ignores both. ResourceVersion's
+	// optimistic-concurrency consumption is server-side CAS on the live object
+	// (upsert) / future S2 compose-PUT wiring; UsedBy is a derived blast-radius index
+	// with no spec meaning. Tolerated-and-dropped, never persisted.
+	ResourceVersion string  `json:"resourceVersion,omitempty"`
+	UsedBy          *UsedBy `json:"usedBy,omitempty"`
 }
 
 type skillRequest struct {
@@ -341,7 +385,18 @@ type skillRequest struct {
 			Path    string `json:"path,omitempty"`
 		} `json:"git,omitempty"`
 	} `json:"source"`
+	// McpToolRefs are the granted MCP tool endpoints (SkillSpec.McpToolRefs) —
+	// part of the CRD-authorized capability envelope. SkillView already projects
+	// them read-side as a name list, so an edit that did not write them back was a
+	// silent drop on every skill PUT (ISI-5360 Gap 3). Mapped to ObjectRef{Name},
+	// the exact inverse of the SkillView projection (objectRefNames).
+	McpToolRefs []string `json:"mcpToolRefs,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
+	// Toolchains + Sidecars are SkillSpec.Requires (the operator's pod-assembly
+	// needs, §5.3.4), surfaced flat on SkillView. Writable here with the same
+	// no-silent-drop discipline so the edit form round-trips them (ISI-5360 Gap 3).
+	Toolchains []string `json:"toolchains,omitempty"`
+	Sidecars   []string `json:"sidecars,omitempty"`
 }
 
 // modelConfigRequest is the compose wire shape for the org-default model tier
@@ -872,9 +927,26 @@ func (s *ComposeService) planTeam(req teamRequest) applyPlan {
 	if strategy == "" {
 		strategy = "perTeam" // the compose default; the reconciler owns the semantics (§12.1)
 	}
+	spec := ksquadv1.TeamSpec{NamespaceStrategy: strategy}
+	for _, n := range req.Agents {
+		spec.Agents = append(spec.Agents, ksquadv1.ObjectRef{Name: n})
+	}
+	for _, n := range req.Projects {
+		spec.Projects = append(spec.Projects, ksquadv1.ObjectRef{Name: n})
+	}
+	// Grants: fail-closed validation mirroring the CRD (role non-empty, ≥1
+	// capability) so an invalid grant is a clean pre-apply 422, never a partial
+	// apply or an opaque admission reject (ISI-5360 Gap 4, no-silent-drop).
+	for i, g := range req.Grants {
+		errs = required(fmt.Sprintf("grants[%d].role", i), g.Role, errs)
+		if len(g.Capabilities) == 0 {
+			errs = append(errs, fieldError{fmt.Sprintf("grants[%d].capabilities", i), "must list at least one capability"})
+		}
+		spec.Grants = append(spec.Grants, ksquadv1.CapabilityGrant{Role: g.Role, Capabilities: g.Capabilities})
+	}
 	team := &ksquadv1.Team{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
-		Spec:       ksquadv1.TeamSpec{NamespaceStrategy: strategy},
+		Spec:       spec,
 	}
 	return applyPlan{
 		kind:  "Team",
@@ -983,6 +1055,9 @@ func (s *ComposeService) planRole(req roleRequest) applyPlan {
 		PromptRef:        req.PromptRef.toRef(),
 		RuntimeClassHint: req.RuntimeClassHint,
 		Model:            req.Model,
+		ActivePhases:     req.ActivePhases,
+		Coordinator:      req.Coordinator,
+		CoordinatorMode:  req.CoordinatorMode,
 	}
 	for _, ds := range req.DefaultSkills {
 		spec.DefaultSkills = append(spec.DefaultSkills, ds.toRef())
@@ -1036,6 +1111,13 @@ func (s *ComposeService) planSkill(req skillRequest) applyPlan {
 	spec := ksquadv1.SkillSpec{
 		Source:      ksquadv1.SkillSource{Type: ksquadv1.SkillSourceType(req.Source.Type), Inline: req.Source.Inline},
 		Permissions: req.Permissions,
+		Requires: ksquadv1.SkillRequires{
+			Toolchains: req.Toolchains,
+			Sidecars:   req.Sidecars,
+		},
+	}
+	for _, n := range req.McpToolRefs {
+		spec.McpToolRefs = append(spec.McpToolRefs, ksquadv1.ObjectRef{Name: n})
 	}
 	if req.Source.Git != nil {
 		spec.Source.Git = &ksquadv1.GitSkillSource{
@@ -1121,12 +1203,33 @@ func modelConfigToWire(mc *ksquadv1.ModelConfig) modelConfigRequest {
 // `null` / empty body yields an empty (non-nil) map — an edit that touches
 // nothing — never a nil map that would fall back to a full-spec replace.
 func decodeComposeRequest(w http.ResponseWriter, r *http.Request, v any) (map[string]json.RawMessage, bool) {
+	return decodeComposeBody(w, r, v, false)
+}
+
+// decodeComposeRequestStrict is decodeComposeRequest with the strict typed
+// decode (ISI-5358 Gap 2, role path): DisallowUnknownFields turns a would-be
+// silent drop into a loud 400, so a client sending a field the roleRequest wire
+// does not model learns of it instead of losing live config. The sent-fields
+// map is still captured — strict and merge semantics compose: unknown fields
+// are rejected, known-but-unsent ones are merged from the live object.
+func decodeComposeRequestStrict(w http.ResponseWriter, r *http.Request, v any) (map[string]json.RawMessage, bool) {
+	return decodeComposeBody(w, r, v, true)
+}
+
+func decodeComposeBody(w http.ResponseWriter, r *http.Request, v any, strict bool) (map[string]json.RawMessage, bool) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "unable to read request body")
 		return nil, false
 	}
-	if err := json.Unmarshal(body, v); err != nil {
+	if strict {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return nil, false
+		}
+	} else if err := json.Unmarshal(body, v); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return nil, false
 	}
@@ -1180,7 +1283,12 @@ func (s *ComposeService) handleAgent(create bool) http.HandlerFunc {
 func (s *ComposeService) handleRole(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req roleRequest
-		sent, ok := decodeComposeRequest(w, r, &req)
+		// Strict decode (ISI-5358 Gap 2): an unknown field is a loud 400 rather
+		// than a silent drop, so the model-per-role UI can never quietly wipe
+		// phase/coordinator config it failed to re-send on a full-spec PUT. The
+		// sent map (ISI-5359) still threads into the field-scoped merge, so
+		// known-but-unsent fields are merged from the live object.
+		sent, ok := decodeComposeRequestStrict(w, r, &req)
 		if !ok {
 			return
 		}

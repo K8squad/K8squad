@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,16 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver"
 )
+
+// listCacheTTL is the short-lived dedup window for directory listing calls (ADR-0025 D5).
+// Rapid re-expand clicks within this window share one reader-pod round-trip.
+const listCacheTTL = 300 * time.Millisecond
+
+// listCacheEntry holds one cached DirListing and its expiry.
+type listCacheEntry struct {
+	result  *DirListing
+	expires time.Time
+}
 
 // ErrNoBrowseTarget is returned by a ReaderSpecResolver when a project has no completed Run / PVC to
 // browse yet. The route maps it to an empty (non-degraded) listing so S4c renders "nothing to browse"
@@ -62,6 +73,11 @@ type readerSession struct {
 	handle     readerpod.Handle
 	client     readClient
 	lastAccess time.Time
+
+	// listCacheMu guards listCache. The cache is per-session so it is naturally invalidated when the
+	// pod is torn down and a fresh session is created (ADR-0025 D5).
+	listCacheMu sync.Mutex
+	listCache   map[string]*listCacheEntry
 }
 
 // ReaderPodWorkspaceReader implements WorkspaceReader by managing per-project reader-pod sessions.
@@ -79,8 +95,15 @@ type ReaderPodWorkspaceReader struct {
 	idle time.Duration
 	now  func() time.Time
 
-	mu       sync.Mutex
-	sessions map[string]*readerSession
+	mu         sync.Mutex
+	sessions   map[string]*readerSession
+	// preparing tracks projects whose reader pod is launching in the background (ADR-0025 D1/S2a).
+	// Entries are added at launch start and removed when the launch completes (success or failure).
+	preparing  map[string]struct{}
+	// lastErr stores the terminal error from the most recent failed background launch for a project.
+	// session() surfaces it on the next call and then clears it, so callers polling after a 202
+	// eventually see the real error (ErrWorkspaceBusy, ErrNoBrowseTarget, …) rather than looping.
+	lastErr    map[string]error
 }
 
 // NewReaderPodWorkspaceReader builds the S4b-wire WorkspaceReader. idle is the no-read window after
@@ -90,14 +113,16 @@ func NewReaderPodWorkspaceReader(resolver ReaderSpecResolver, launcher readerpod
 		idle = defaultReaderIdle
 	}
 	return &ReaderPodWorkspaceReader{
-		resolver: resolver,
-		launcher: launcher,
-		reaper:   reaper,
-		dial:     func(baseURL string) readClient { return readclient.New(baseURL, nil) },
-		ready:    waitReaderReady,
-		idle:     idle,
-		now:      time.Now,
-		sessions: map[string]*readerSession{},
+		resolver:  resolver,
+		launcher:  launcher,
+		reaper:    reaper,
+		dial:      func(baseURL string) readClient { return readclient.New(baseURL, nil) },
+		ready:     waitReaderReady,
+		idle:      idle,
+		now:       time.Now,
+		sessions:  map[string]*readerSession{},
+		preparing: map[string]struct{}{},
+		lastErr:   map[string]error{},
 	}
 }
 
@@ -105,11 +130,30 @@ const defaultReaderIdle = 5 * time.Minute
 
 // ListDir launches-or-reuses the project's reader pod and returns its directory listing, mapped to
 // the apiserver wire type. A busy workspace surfaces as ErrWorkspaceBusy (the route degrades).
+//
+// Results are cached for listCacheTTL (ADR-0025 D5): rapid re-expand clicks within the window share
+// one reader-pod round-trip. The cache is keyed by dirPath+page and lives on the session, so it is
+// automatically busted when the pod is torn down and recreated.
 func (r *ReaderPodWorkspaceReader) ListDir(ctx context.Context, projectID, dirPath string, page int) (*DirListing, error) {
 	sess, err := r.session(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
+
+	cacheKey := dirPath + "\x00" + strconv.Itoa(page)
+	now := r.now()
+
+	sess.listCacheMu.Lock()
+	if sess.listCache == nil {
+		sess.listCache = make(map[string]*listCacheEntry)
+	}
+	if entry, ok := sess.listCache[cacheKey]; ok && now.Before(entry.expires) {
+		cached := entry.result
+		sess.listCacheMu.Unlock()
+		return cached, nil
+	}
+	sess.listCacheMu.Unlock()
+
 	wire, err := sess.client.List(ctx, dirPath, page)
 	if err != nil {
 		return nil, mapReadErr(err)
@@ -118,7 +162,13 @@ func (r *ReaderPodWorkspaceReader) ListDir(ctx context.Context, projectID, dirPa
 	for _, e := range wire.Entries {
 		entries = append(entries, DirEntry{Name: e.Name, Type: e.Type, Size: e.Size})
 	}
-	return &DirListing{Entries: entries, NextPage: wire.NextPage}, nil
+	result := &DirListing{Entries: entries, NextPage: wire.NextPage}
+
+	sess.listCacheMu.Lock()
+	sess.listCache[cacheKey] = &listCacheEntry{result: result, expires: r.now().Add(listCacheTTL)}
+	sess.listCacheMu.Unlock()
+
+	return result, nil
 }
 
 // ReadFile launches-or-reuses the project's reader pod and returns file content, mapped to the
@@ -170,9 +220,35 @@ func (r *ReaderPodWorkspaceReader) StatFile(ctx context.Context, projectID, file
 	return st, nil
 }
 
-// session returns the live reader session for projectID, launching one on first use. It touches
-// lastAccess on every call so an actively-browsed project is never reaped mid-session.
-func (r *ReaderPodWorkspaceReader) session(ctx context.Context, projectID string) (*readerSession, error) {
+// ErrReaderPreparing is returned by session() when the reader pod for a project is launching in the
+// background but is not yet ready. Routes map this to HTTP 202 (ADR-0025 D1/S2c) so the client
+// polls with back-off instead of hanging until the 45 s per-request timeout fires.
+var ErrReaderPreparing = errors.New("apiserver: reader pod is warming up; retry shortly")
+
+// PreWarm starts a background launch for projectID if no warm or in-flight session exists.
+// It is a fire-and-forget call: the first GET on the project's files routes triggers it automatically,
+// but callers can also invoke it proactively on project open (S2a) to reduce the first-request latency.
+func (r *ReaderPodWorkspaceReader) PreWarm(projectID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.sessions[projectID]; ok {
+		return // already warm
+	}
+	if _, ok := r.preparing[projectID]; ok {
+		return // already launching
+	}
+	r.preparing[projectID] = struct{}{}
+	go r.launchBackground(projectID) //nolint:gosec // G118: intentional — launch outlives the caller; uses its own 90s timeout inside
+}
+
+// session returns the live reader session for projectID (ADR-0025 D1/S2c). Unlike the original
+// synchronous launch, this method never blocks waiting for pod readiness: if no warm session exists
+// it starts a background launch and immediately returns ErrReaderPreparing, which the route translates
+// to HTTP 202 so the client polls rather than timing out. Subsequent calls return the ready session
+// once launchBackground completes, or the terminal error if the launch failed.
+//
+// It touches lastAccess on every successful call so an actively-browsed project is never reaped.
+func (r *ReaderPodWorkspaceReader) session(_ context.Context, projectID string) (*readerSession, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -181,42 +257,76 @@ func (r *ReaderPodWorkspaceReader) session(ctx context.Context, projectID string
 		return sess, nil
 	}
 
-	// AC2/AC3: the Spec is derived server-side from the coord record — the client path never reaches
-	// this call, so it can never widen the mount or credential scope.
+	// Surface a stored terminal error from the most recent failed launch (e.g. ErrWorkspaceBusy,
+	// ErrNoBrowseTarget). Clear it so the next poll kicks off a fresh attempt.
+	if err, ok := r.lastErr[projectID]; ok {
+		delete(r.lastErr, projectID)
+		return nil, err
+	}
+
+	// Reader not warm — kick off a background launch if not already in flight.
+	if _, ok := r.preparing[projectID]; !ok {
+		r.preparing[projectID] = struct{}{}
+		go r.launchBackground(projectID) //nolint:gosec // G118: intentional — launch outlives the request; uses its own 90s timeout inside
+	}
+	return nil, ErrReaderPreparing
+}
+
+// launchBackground launches the reader pod for projectID in a background goroutine (ADR-0025 D1/S2a).
+// On success it stores the ready session; on failure it removes the preparing entry so the next
+// session() call retries. The launch uses its own 90 s timeout independent of any client request.
+func (r *ReaderPodWorkspaceReader) launchBackground(projectID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	// AC2/AC3: spec is derived server-side from the coord record.
 	spec, err := r.resolver.ResolveReaderSpec(ctx, projectID)
-	if err != nil {
-		return nil, err // ErrWorkspaceBusy / ErrNoBrowseTarget flow straight through to the route
-	}
-	if err := spec.Validate(); err != nil {
-		return nil, fmt.Errorf("readerpodreader: resolver returned an invalid spec: %w", err)
+	if err == nil {
+		err = spec.Validate()
+		if err != nil {
+			err = fmt.Errorf("readerpodreader: resolver returned an invalid spec: %w", err)
+		}
 	}
 
-	handle, err := r.launcher.Launch(ctx, spec)
-	if err != nil {
+	var handle readerpod.Handle
+	if err == nil {
+		handle, err = r.launcher.Launch(ctx, spec)
 		if errors.Is(err, readerpod.ErrDisabled) {
-			// Feature flag off — degrade to snapshot-only, same as a nil reader (busy semantics).
-			return nil, ErrWorkspaceBusy
+			err = ErrWorkspaceBusy
+		} else if err != nil {
+			err = fmt.Errorf("readerpodreader: launch reader for project %s: %w", projectID, err)
 		}
-		return nil, fmt.Errorf("readerpodreader: launch reader for project %s: %w", projectID, err)
 	}
 
-	base := handle.BaseURL()
-	if r.ready != nil {
-		if err := r.ready(ctx, base); err != nil {
-			// Reader never came up — tear it down so we don't leak, then surface busy/degraded.
+	var client readClient
+	if err == nil && r.ready != nil {
+		if readyErr := r.ready(ctx, handle.BaseURL()); readyErr != nil {
 			_ = r.reaper.ReapHandle(context.Background(), handle)
-			return nil, ErrWorkspaceBusy
+			err = ErrWorkspaceBusy
+		} else {
+			client = r.dial(handle.BaseURL())
 		}
+	} else if err == nil {
+		client = r.dial(handle.BaseURL())
 	}
 
-	sess := &readerSession{handle: handle, client: r.dial(base), lastAccess: r.now()}
-	r.sessions[projectID] = sess
-	return sess, nil
+	r.mu.Lock()
+	delete(r.preparing, projectID)
+	if err == nil {
+		r.sessions[projectID] = &readerSession{handle: handle, client: client, lastAccess: r.now()}
+	} else {
+		// Store terminal error so the next session() call surfaces it instead of looping on
+		// ErrReaderPreparing. The error is consumed once (cleared on read) so the caller after
+		// that gets a fresh ErrReaderPreparing and a new launch attempt.
+		r.lastErr[projectID] = err
+	}
+	r.mu.Unlock()
 }
 
 // SweepIdle tears down every session idle for longer than r.idle, plus a cluster-side orphan sweep
 // for readers this process lost track of (e.g. after a restart). It returns the number of sessions
-// reaped. A host drives it on a ticker (see Run); it is exported so a test can drive one sweep.
+// reaped. In-flight launches (preparing map) are never reaped here — they have their own 90 s timeout.
+// A host drives it on a ticker (see Run); it is exported so a test can drive one sweep.
 func (r *ReaderPodWorkspaceReader) SweepIdle(ctx context.Context) int {
 	cutoff := r.now().Add(-r.idle)
 

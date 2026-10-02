@@ -111,6 +111,7 @@ func twoSquadObjs(uidA, uidB string) []client.Object {
 const (
 	fleetUIDA = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	fleetUIDB = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	fleetUIDC = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 )
 
 // --- reader: admin fleet-wide vs tenant-scoped ---------------------------------------------------
@@ -308,6 +309,44 @@ func TestFleetTeamDetailAdminAnyTeam(t *testing.T) {
 	}
 	if len(d.Projects) != 2 || d.Projects[0] != "api" || d.Projects[1] != "cli" {
 		t.Fatalf("projects (sorted): %+v", d.Projects)
+	}
+}
+
+// TestFleetTeamDetailProjectsGrants is the read sibling of the ISI-5360 Gap 4
+// write mapping: TeamDetail must surface TeamSpec.Grants so the Compose edit form
+// hydrates them and a PUT round-trips them (same no-silent-drop discipline as the
+// member-refs). An absent Grants list projects as [] (never null).
+func TestFleetTeamDetailProjectsGrants(t *testing.T) {
+	granted := team("squad-g", "gamma", fleetUIDA)
+	granted.Spec.Grants = []ksquadv1.CapabilityGrant{
+		{Role: "role-manager", Capabilities: []string{"work_item.author"}},
+		{Role: "role-boss", Capabilities: []string{"work_item.author", "run.dispatch"}},
+	}
+	r := newFleetReader(t, granted)
+	d, err := r.Team(context.Background(), "", fleetUIDA, true)
+	if err != nil {
+		t.Fatalf("Team(admin): %v", err)
+	}
+	if len(d.Grants) != 2 {
+		t.Fatalf("want 2 grants projected, got %+v", d.Grants)
+	}
+	if d.Grants[0].Role != "role-manager" || len(d.Grants[0].Capabilities) != 1 ||
+		d.Grants[0].Capabilities[0] != "work_item.author" {
+		t.Fatalf("grant[0] garbled: %+v", d.Grants[0])
+	}
+	if d.Grants[1].Role != "role-boss" || len(d.Grants[1].Capabilities) != 2 {
+		t.Fatalf("grant[1] garbled: %+v", d.Grants[1])
+	}
+
+	// A team with no grants projects [] (never null) so the console never branches.
+	bare := team("squad-h", "eta", fleetUIDB)
+	r2 := newFleetReader(t, bare)
+	d2, err := r2.Team(context.Background(), "", fleetUIDB, true)
+	if err != nil {
+		t.Fatalf("Team(admin, bare): %v", err)
+	}
+	if d2.Grants == nil {
+		t.Fatalf("empty grants must project as [] not null")
 	}
 }
 
@@ -765,5 +804,100 @@ func TestFleetAgentDetailHandlerTenantHiding(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &d)
 	if d.RuntimeRef.Name != "claude-code" {
 		t.Fatalf("tenant must resolve own squad regardless of ?team=, got runtime %q", d.RuntimeRef.Name)
+	}
+}
+
+// --- ISI-5361: resourceVersion (Gap 6) + reverse used-by index (Gap 7) ---------------------------
+
+// TestTeamDetailCarriesResourceVersion asserts the Team detail projection surfaces
+// the CR's metadata.resourceVersion so a Compose edit can do an optimistic
+// compare-and-swap on save (ISI-5361 Gap 6). The fake client stamps a non-empty
+// resourceVersion on every stored object.
+func TestTeamDetailCarriesResourceVersion(t *testing.T) {
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	d, err := r.Team(context.Background(), fleetUIDA, fleetUIDA, false)
+	if err != nil {
+		t.Fatalf("Team: %v", err)
+	}
+	if d.ResourceVersion == "" {
+		t.Fatalf("team detail must carry resourceVersion for optimistic concurrency")
+	}
+}
+
+// TestRoleDetailUsedByIndex asserts the Role detail's reverse used-by index lists
+// exactly the Agents whose roleRef names it — the blast radius surfaced before an
+// edit (ISI-5361 Gap 7) — and carries the resourceVersion (Gap 6). A role nobody
+// references carries an empty, non-nil Agents list ([] never null); the Roles field
+// is never populated for a Role's used-by.
+func TestRoleDetailUsedByIndex(t *testing.T) {
+	objs := []client.Object{
+		teamWithMembers("squad-c", "gamma", fleetUIDC, nil, nil),
+		roleObj("squad-c", "shared-role", "r-c", "p", ""),
+		roleObj("squad-c", "orphan-role", "r-c2", "p", ""),
+		agentObj("squad-c", "ag1", "a1", "claude", "shared-role", "m"),
+		agentObj("squad-c", "ag2", "a2", "claude", "shared-role", "m"),
+	}
+	r := newFleetReader(t, objs...)
+	ctx := context.Background()
+
+	d, err := r.RoleDetail(ctx, fleetUIDC, "shared-role", "", false)
+	if err != nil {
+		t.Fatalf("RoleDetail(shared-role): %v", err)
+	}
+	if got := d.UsedBy.Agents; len(got) != 2 || got[0] != "ag1" || got[1] != "ag2" {
+		t.Fatalf("role used-by agents: got %+v, want [ag1 ag2]", got)
+	}
+	if d.UsedBy.Roles != nil {
+		t.Fatalf("a Role's used-by must not carry Roles: %+v", d.UsedBy.Roles)
+	}
+	if d.ResourceVersion == "" {
+		t.Fatalf("role detail must carry resourceVersion")
+	}
+
+	orphan, err := r.RoleDetail(ctx, fleetUIDC, "orphan-role", "", false)
+	if err != nil {
+		t.Fatalf("RoleDetail(orphan-role): %v", err)
+	}
+	if orphan.UsedBy.Agents == nil {
+		t.Fatalf("an unreferenced role's used-by agents must be [] not null")
+	}
+	if len(orphan.UsedBy.Agents) != 0 {
+		t.Fatalf("orphan-role should have no referrers: %+v", orphan.UsedBy.Agents)
+	}
+}
+
+// TestSkillViewUsedByIndex asserts the Skill detail's reverse used-by index counts
+// both direct Agent references (skillRefs) and transitive Role references
+// (defaultSkills) in the skill's namespace (ISI-5361 Gap 7), and carries the
+// resourceVersion (Gap 6). Empty used-by lists are non-nil ([] never null).
+func TestSkillViewUsedByIndex(t *testing.T) {
+	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
+	ctx := context.Background()
+
+	// squad-a: agent-a grants sk-a via skillRefs; role "dev" lists sk-a in defaultSkills.
+	v, err := r.Skill(ctx, fleetUIDA, "sk-a", false)
+	if err != nil {
+		t.Fatalf("Skill(sk-a): %v", err)
+	}
+	if len(v.UsedBy.Agents) != 1 || v.UsedBy.Agents[0] != "agent-a" {
+		t.Fatalf("skill used-by agents: got %+v, want [agent-a]", v.UsedBy.Agents)
+	}
+	if len(v.UsedBy.Roles) != 1 || v.UsedBy.Roles[0] != "dev" {
+		t.Fatalf("skill used-by roles (defaultSkills): got %+v, want [dev]", v.UsedBy.Roles)
+	}
+	if v.ResourceVersion == "" {
+		t.Fatalf("skill view must carry resourceVersion")
+	}
+
+	// sk-b in squad-b is referenced by no agent and no role.
+	vb, err := r.Skill(ctx, fleetUIDB, "sk-b", false)
+	if err != nil {
+		t.Fatalf("Skill(sk-b): %v", err)
+	}
+	if vb.UsedBy.Agents == nil || vb.UsedBy.Roles == nil {
+		t.Fatalf("empty used-by lists must be non-nil ([] never null): %+v", vb.UsedBy)
+	}
+	if len(vb.UsedBy.Agents) != 0 || len(vb.UsedBy.Roles) != 0 {
+		t.Fatalf("sk-b should have no referrers: %+v", vb.UsedBy)
 	}
 }

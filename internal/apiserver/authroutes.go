@@ -695,6 +695,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return nil
 }
 
+// decodeJSONStrict's DisallowUnknownFields contract for the compose role path
+// lives on in decodeComposeRequestStrict (composecrd.go, ISI-5359 merge of
+// ISI-5358 Gap 2) — the strict typed decode plus the sent-fields map.
+
 func userIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(decodePathVar(mux.Vars(r)["id"]))
 	if err != nil {

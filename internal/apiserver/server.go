@@ -916,6 +916,15 @@ func (s *Server) routes(opts Options) {
 		}
 		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
+		// ADR-0025 D5: streaming NDJSON listing — iterates pages and flushes each batch so
+		// wide directories begin rendering at the client before the full listing completes.
+		filesStream := s.router.Path("/api/projects/{projectId:.+}/files/stream").Subrouter()
+		filesStream.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesStream.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesStream.HandleFunc("", s.projectFilesStream(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
+
 		filesContent := s.router.Path("/api/projects/{projectId:.+}/files/content").Subrouter()
 		filesContent.Use(authz)
 		if opts.ProjectRoles != nil {
@@ -941,6 +950,18 @@ func (s *Server) routes(opts Options) {
 			filesStat.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
 		}
 		filesStat.HandleFunc("", s.projectFilesStat(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
+
+		// ADR-0025 D1/S2a: POST /api/projects/{projectId}/files/warm — explicit pre-warm trigger.
+		// Fires a background reader-pod launch so subsequent GET /files calls see a warm reader.
+		// Always returns 202 Accepted. Same authz + Viewer gate as the read routes.
+		if opts.WorkspaceReader != nil {
+			filesWarm := s.router.Path("/api/projects/{projectId:.+}/files/warm").Subrouter()
+			filesWarm.Use(authz)
+			if opts.ProjectRoles != nil {
+				filesWarm.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+			}
+			filesWarm.HandleFunc("", s.projectFilesWarm(opts.WorkspaceReader)).Methods(http.MethodPost)
+		}
 
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less

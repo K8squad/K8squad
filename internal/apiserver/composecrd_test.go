@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -529,6 +530,105 @@ func TestComposeRolePersistsModelAndFallback(t *testing.T) {
 	}
 }
 
+// ── a Role composed with phase + coordinator config persists it (ISI-5358 Gap 2) ───────────────
+//
+// Before ISI-5358 roleRequest/planRole lacked activePhases/coordinator/coordinatorMode, so a
+// compose PUT silently discarded them. They must now ride the wire onto Role.spec.
+func TestComposeRolePersistsPhaseAndCoordinator(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := roleRequest{
+		Project:         "widget",
+		Name:            "lead",
+		PromptRef:       objectRefWire{Name: "lead-prompt"},
+		ActivePhases:    []string{"implementation", "code_review"},
+		Coordinator:     true,
+		CoordinatorMode: "propose",
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Role
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "lead"}, &got); err != nil {
+		t.Fatalf("role not applied: %v", err)
+	}
+	if !reflect.DeepEqual(got.Spec.ActivePhases, []string{"implementation", "code_review"}) {
+		t.Fatalf("activePhases not persisted: %+v", got.Spec.ActivePhases)
+	}
+	if !got.Spec.Coordinator || got.Spec.CoordinatorMode != "propose" {
+		t.Fatalf("coordinator config not persisted: coordinator=%v mode=%q", got.Spec.Coordinator, got.Spec.CoordinatorMode)
+	}
+}
+
+// ── the headline round-trip: read → edit → write loses NOTHING (ISI-5358 AC) ────────────────────
+//
+// A Role carrying all five Model-Per-Role / phase-lifecycle fields must survive the full
+// edit-form loop: Role.spec → roleDetail read projection → JSON (what the UI holds) →
+// roleRequest decode → planRole → Role.spec. The projected spec must equal the original, proving
+// an inline edit that re-sends the read payload unchanged drops no field (ISI-5305 §5 Gap 2).
+func TestRoleDetailReadWriteRoundTrip(t *testing.T) {
+	orig := &ksquadv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: "architect"},
+		Spec: ksquadv1.RoleSpec{
+			PromptRef:        ksquadv1.ObjectRef{Name: "architect-prompt"},
+			RuntimeClassHint: "gvisor",
+			Model:            "claude-opus-4-8",
+			FallbackModel: &ksquadv1.FallbackModel{
+				Model:            "claude-haiku-4-5",
+				ModelEndpointRef: &ksquadv1.SecretRef{Name: "fb-endpoint", Key: "url"},
+			},
+			DefaultSkills:   []ksquadv1.ObjectRef{{Name: "git"}},
+			ActivePhases:    []string{"design", "implementation"},
+			Coordinator:     true,
+			CoordinatorMode: "auto",
+		},
+	}
+
+	// 1. project to the read wire the UI GETs.
+	detail := roleDetail(orig)
+	// 2. serialize exactly as the HTTP layer would, then feed it back as the edit body.
+	wire, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal RoleDetail: %v", err)
+	}
+	var req roleRequest
+	dec := json.NewDecoder(bytes.NewReader(wire))
+	dec.DisallowUnknownFields() // the strict role decode path must accept its own read shape.
+	if err := dec.Decode(&req); err != nil {
+		t.Fatalf("RoleDetail JSON is not a valid roleRequest (strict decode): %v\nwire=%s", err, wire)
+	}
+	// 3. re-plan and compare specs.
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	plan := svc.planRole(req)
+	if len(plan.errs) != 0 {
+		t.Fatalf("round-trip plan had validation errors: %+v", plan.errs)
+	}
+	rewritten := plan.desired.(*ksquadv1.Role)
+	if !reflect.DeepEqual(rewritten.Spec, orig.Spec) {
+		t.Fatalf("round-trip lost data:\n orig=%+v\n got =%+v", orig.Spec, rewritten.Spec)
+	}
+}
+
+// ── the strict role decode rejects unknown fields (ISI-5358 Gap 2) ──────────────────────────────
+//
+// DisallowUnknownFields turns a would-be silent drop into a loud 400 so a client that sends a
+// field the wire does not model learns of it instead of losing config on a full-spec replace.
+func TestHandleRoleRejectsUnknownField(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	body := map[string]any{
+		"project":       "widget",
+		"name":          "engineer",
+		"promptRef":     map[string]any{"name": "engineer-prompt"},
+		"notARealField": "boom",
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field want 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // ── a Role composed with a blank model inherits the org default (no phantom persist) ───────────
 //
 // A blank role-tier model is valid — it means "inherit the system-default ModelConfig". The empty
@@ -643,6 +743,111 @@ func TestComposeSkillSourceValidation(t *testing.T) {
 				caller("alice", teamUID, false), req, nil)
 			if w.Code != tc.want {
 				t.Fatalf("%s: want %d, got %d: %s", tc.name, tc.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// ── Skill capability-envelope round-trip (ISI-5360 Gap 3) ────────────────────
+
+// TestComposeSkillRoundTripsCapabilityEnvelope proves mcpToolRefs + requires
+// (toolchains/sidecars) are WRITTEN through compose. SkillView already projects
+// them read-side, so before this fix an edit-save silently dropped them on every
+// PUT (the full-spec upsert replaces the spec). Writing a skill with every field
+// set and reading the applied CR back is the round-trip AC.
+func TestComposeSkillRoundTripsCapabilityEnvelope(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := skillRequest{Project: "widget", Name: "pg-migrate"}
+	req.Source.Type = "inline"
+	req.Source.Inline = "run the migration"
+	req.McpToolRefs = []string{"pg-mcp", "schema-mcp"}
+	req.Permissions = []string{"db.write"}
+	req.Toolchains = []string{"go@1.23", "node@22"}
+	req.Sidecars = []string{"dockerd"}
+
+	w := do(svc.handleSkill(true), http.MethodPost, "/api/skills",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got ksquadv1.Skill
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "pg-migrate"}, &got); err != nil {
+		t.Fatalf("skill not applied: %v", err)
+	}
+	// objectRefNames sorts: pg-mcp < schema-mcp.
+	if mcp := objectRefNames(got.Spec.McpToolRefs); len(mcp) != 2 || mcp[0] != "pg-mcp" || mcp[1] != "schema-mcp" {
+		t.Fatalf("mcpToolRefs dropped/garbled: %+v", got.Spec.McpToolRefs)
+	}
+	if tc := got.Spec.Requires.Toolchains; len(tc) != 2 || tc[0] != "go@1.23" || tc[1] != "node@22" {
+		t.Fatalf("requires.toolchains dropped: %+v", tc)
+	}
+	if sc := got.Spec.Requires.Sidecars; len(sc) != 1 || sc[0] != "dockerd" {
+		t.Fatalf("requires.sidecars dropped: %+v", sc)
+	}
+	if p := got.Spec.Permissions; len(p) != 1 || p[0] != "db.write" {
+		t.Fatalf("permissions garbled: %+v", p)
+	}
+}
+
+// ── Team grants + member-refs round-trip (ISI-5360 Gap 4) ────────────────────
+
+// TestComposeTeamRoundTripsGrantsAndMembers proves grants + Agents/Projects
+// member-refs are WRITTEN through compose (admin-only). Before this fix planTeam
+// mapped only namespaceStrategy, so a Team edit silently blew away the whole
+// composition and every grant on each save.
+func TestComposeTeamRoundTripsGrantsAndMembers(t *testing.T) {
+	svc, _ := newComposeFixture(t, nil)
+	req := teamRequest{
+		Name:              "acme-squad",
+		NamespaceStrategy: "perTeam",
+		Agents:            []string{"cade", "pam"},
+		Projects:          []string{"widget"},
+		Grants: []capabilityGrantWire{
+			{Role: "role-manager", Capabilities: []string{capability.CapabilityWorkItemAuthor}},
+		},
+	}
+	w := do(svc.handleTeam(true), http.MethodPost, "/api/teams",
+		caller("root", teamUID, true), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Team is the tenancy root → lands in the control-plane namespace, not a squad ns.
+	var got ksquadv1.Team
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: defaultSystemNamespace, Name: "acme-squad"}, &got); err != nil {
+		t.Fatalf("team not applied: %v", err)
+	}
+	if g := got.Spec.Grants; len(g) != 1 || g[0].Role != "role-manager" ||
+		len(g[0].Capabilities) != 1 || g[0].Capabilities[0] != capability.CapabilityWorkItemAuthor {
+		t.Fatalf("grants dropped/garbled: %+v", g)
+	}
+	if names := objectRefNames(got.Spec.Agents); len(names) != 2 || names[0] != "cade" || names[1] != "pam" {
+		t.Fatalf("agent member-refs dropped: %+v", got.Spec.Agents)
+	}
+	if names := objectRefNames(got.Spec.Projects); len(names) != 1 || names[0] != "widget" {
+		t.Fatalf("project member-refs dropped: %+v", got.Spec.Projects)
+	}
+}
+
+// TestComposeTeamGrantValidation fails closed on a malformed grant BEFORE any
+// apply (invariant 1), mirroring the CRD's role (MinLength=1) + capabilities
+// (MinItems=1) constraints as clean field-level 422s.
+func TestComposeTeamGrantValidation(t *testing.T) {
+	svc, _ := newComposeFixture(t, nil)
+	for _, tc := range []struct {
+		name  string
+		grant capabilityGrantWire
+	}{
+		{"empty-role", capabilityGrantWire{Role: "", Capabilities: []string{capability.CapabilityWorkItemAuthor}}},
+		{"no-capabilities", capabilityGrantWire{Role: "role-manager"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := teamRequest{Name: "bad-" + tc.name, Grants: []capabilityGrantWire{tc.grant}}
+			w := do(svc.handleTeam(true), http.MethodPost, "/api/teams",
+				caller("root", teamUID, true), req, nil)
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("%s: want 422, got %d: %s", tc.name, w.Code, w.Body.String())
 			}
 		})
 	}

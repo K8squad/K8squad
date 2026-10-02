@@ -253,6 +253,7 @@ func main() {
 	// files routes keep the documented 501. The idle-sweep goroutine is the AC6 metering teardown
 	// loop; the pod's 900s ActiveDeadline stays the kubelet backstop.
 	var workspaceReader apiserver.WorkspaceReader
+	var workspaceBusyReader apiserver.BusySnapshotReader
 	if cfg.BuildReaderPodEnabled && dashboardReader != nil {
 		if rpClient, rerr := apiserver.NewReaderPodClient(); rerr != nil {
 			log.Printf("ksquad-apiserver: reader-pod client unavailable — project file-explorer keeps the documented 501: %v", rerr)
@@ -266,6 +267,17 @@ func main() {
 			workspaceReader = rpReader
 			go rpReader.Run(ctx, 0) // idle sweeps on the reader's idle window
 			log.Printf("ksquad-apiserver: S4a reader-pod file explorer wired (image %s, idle-teardown sweep running)", rpCfg.ReaderImage)
+
+			// ADR-0025 D4: CSI point-in-time snapshot reader for busy workspaces (infra-gated,
+			// ISI-5350). Reuses the same launcher + resolver (CoordReaderSpecResolver also
+			// implements SnapshotSpecProvider). On non-CSI clusters (e.g. local-path test cluster)
+			// the probe returns false and all calls return ErrNoWorkspaceSnapshot — the honest floor.
+			if csiClient, disc, cerr := apiserver.NewCSISnapshotClient(); cerr != nil {
+				log.Printf("ksquad-apiserver: CSI snapshot client unavailable — busy workspace falls back to honest empty (ADR-0025 D4 infra-gated): %v", cerr)
+			} else {
+				workspaceBusyReader = apiserver.NewCSISnapshotBusyReader(disc, csiClient, launcher, rpCfg, resolver)
+				log.Printf("ksquad-apiserver: ADR-0025 D4 CSI snapshot busy-reader wired (non-CSI clusters degrade honestly)")
+			}
 		}
 	}
 
@@ -725,6 +737,7 @@ func main() {
 		Builds:              builds,
 		Artifacts:           artifacts,
 		WorkspaceReader:     workspaceReader,
+		WorkspaceBusyReader: workspaceBusyReader,
 		AuditTrail:          apiserver.NewPostgresAuditTrailReader(db),
 		WorkItemState:       workItemState,
 		WorkItemWrites:      workItemWrites,
