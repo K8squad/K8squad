@@ -337,6 +337,44 @@ func (s *supervisor) runTraceContext(base context.Context) context.Context {
 	return base
 }
 
+// submitTraceContext returns the background-rooted trace context the engine
+// should submit the current task on: the run's OWN W3C carrier, re-extracted
+// from the credential per task (ISI-5331 R1). awaitCredential extracts the
+// carrier only on the first handshake into s.traceCtx; a warm-pool supervisor
+// process that serves successive runs would otherwise parent every later run's
+// run.start on the FIRST run's distributed span, collapsing two run ids into
+// one trace (the R1 "6fa6ec8e, no run.start" symptom). Re-reading the current
+// credential gives run #2 its own traceparent so each run roots a distinct
+// trace. It is background-rooted (never the request ctx) so the run's span
+// lifetime is not tied to HTTP stream teardown (ISI-5144). Falls back to the
+// cached handshake context, then the bare background context.
+func (s *supervisor) submitTraceContext() context.Context {
+	base := context.Background()
+	if cred, ok, err := taskio.ReadCredentialFromDir(supervisorCoordMountPath); err == nil && ok {
+		carrier := map[string]string{}
+		if cred.TraceParent != "" {
+			carrier["traceparent"] = cred.TraceParent
+		}
+		if cred.TraceState != "" {
+			carrier["tracestate"] = cred.TraceState
+		}
+		if len(carrier) > 0 {
+			if tctx := telemetry.Extract(base, carrier); trace.SpanContextFromContext(tctx).IsValid() {
+				return tctx
+			}
+		}
+	}
+	s.mu.RLock()
+	tctx := s.traceCtx
+	s.mu.RUnlock()
+	if tctx != nil {
+		if sc := trace.SpanContextFromContext(tctx); sc.IsValid() {
+			return trace.ContextWithSpanContext(base, sc)
+		}
+	}
+	return base
+}
+
 // teardownTelemetry snapshots the OTel shutdown for runSupervisor's exit
 // path (nil before the handshake initialized the spine).
 func (s *supervisor) teardownTelemetry() telemetry.ShutdownFunc {
@@ -472,13 +510,17 @@ func (s *supervisor) handleTask(w http.ResponseWriter, r *http.Request) {
 	// (streaming lifetime) stays with the stream below. NB: this is
 	// intentionally NOT the handle_task span ctx — that carries r.Context()'s
 	// cancellation (ISI-5144 runTraceContext), which would tie the run's
-	// lifetime to HTTP stream teardown. traceCtx is background-rooted.
-	submitCtx := r.Context()
-	s.mu.RLock()
-	if s.traceCtx != nil {
-		submitCtx = s.traceCtx
-	}
-	s.mu.RUnlock()
+	// lifetime to HTTP stream teardown. The submit context is background-rooted.
+	//
+	// ISI-5331 R1 (warm-pool process-trace bleed): re-root on THIS run's
+	// carrier, not the once-cached s.traceCtx. A warm-pool supervisor process
+	// serves successive runs; awaitCredential extracts the carrier only on the
+	// first handshake, so reusing s.traceCtx would parent run #2's run.start on
+	// run #1's distributed span → both run ids collapse into one trace with no
+	// fresh run.start. submitTraceContext re-reads the current credential's W3C
+	// carrier per task so each run roots its own trace; it falls back to the
+	// cached context, then the bare (background) request context.
+	submitCtx := s.submitTraceContext()
 
 	if _, err := engine.SubmitTask(submitCtx, task); err != nil {
 		taskHandleSpan.SetStatus(codes.Error, fmt.Sprintf("submit task: %v", err))
