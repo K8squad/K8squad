@@ -13,7 +13,9 @@
 // (ISI-5359 field-scoped merge writes). Until those land on main, a PUT can silently destroy unsent
 // fields — so every mutate affordance here (Edit inline, model pencil, + Add skill) is rendered
 // DISABLED with an honest "ships after S1+S2" title. This increment is the read-only surface the
-// gated Frame 02 edit will later hang off; nothing here writes.
+// gated Frame 02 edit will later hang off; nothing here writes. It also carries NO coordination
+// affordance (claim/assign/reassign/dispatch) — that stays server-side (R6 scope guard, see
+// test/agents/no-coordination.test.ts); role changes, when editing lands, go through Edit inline.
 
 import { useState } from "react";
 
@@ -314,12 +316,7 @@ export function NodeDetail({
           crumb={["Org", r.node.namespace, r.node.name]}
           name={r.node.name}
           kind="agent"
-          actions={
-            <>
-              <GatedAction label="Edit inline" />
-              <GatedAction label="Reassign role" />
-            </>
-          }
+          actions={<GatedAction label="Edit inline" />}
         >
           <AgentOverview agent={r.node} />
         </DetailShell>
