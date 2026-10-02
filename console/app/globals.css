@@ -5209,6 +5209,182 @@ a:hover {
   font-size: 12px;
 }
 
+/* ---- Inline editors (Frame 02/03 — model-per-role + skills chips) ---- */
+.roster-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.roster-edit__card {
+  padding: 14px 16px;
+}
+.roster-edit__row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.roster-edit__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.roster-edit__label {
+  font-size: 12px;
+  color: var(--text-hi);
+}
+.roster-edit__input {
+  box-sizing: border-box;
+  max-width: 420px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text-1);
+  background: var(--canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+}
+.roster-edit__input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Save ladder (Frame 04): Saving… / Saved / Error — colours ride the status tokens. */
+.roster-edit__ladder {
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+.roster-edit__ladder--saving {
+  color: var(--status-paused);
+}
+.roster-edit__ladder--saved {
+  color: var(--status-running);
+}
+.roster-edit__ladder--error {
+  color: var(--status-blocked);
+}
+/* Provenance chips (ISI-4822/4823 mapping: role=violet, agent=green, org-default=accent). */
+.roster-edit__prov {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+.roster-edit__prov--role {
+  color: var(--ksq-run);
+  border-color: var(--ksq-run);
+}
+.roster-edit__prov--agent {
+  color: var(--status-running);
+  border-color: var(--status-running);
+}
+.roster-edit__prov--default {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Blast-radius confirm (Frame 02 step 3): pessimistic inline card, not a modal. */
+.roster-edit__confirm {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--status-paused);
+  border-radius: var(--radius-control);
+  background: color-mix(in srgb, var(--status-paused) 8%, var(--surface));
+}
+.roster-edit__confirm-head {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-hi);
+}
+.roster-edit__confirm-diff {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.roster-edit__from {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+.roster-edit__arrow {
+  opacity: 0.6;
+}
+.roster-edit__confirm-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-hi);
+}
+.roster-edit__confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+/* Skill chips (Frame 03): provenance split + removable × + the add-picker. */
+.roster-edit__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.roster-edit__chip--role {
+  color: var(--ksq-run);
+  border-color: color-mix(in srgb, var(--ksq-run) 55%, var(--border));
+}
+.roster-edit__chip--agent {
+  color: var(--status-running);
+  border-color: color-mix(in srgb, var(--status-running) 55%, var(--border));
+}
+.roster-edit__chip-x {
+  margin-left: 6px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.roster-edit__chip-x:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.roster-edit__picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 10px;
+}
+.roster-edit__picker-input {
+  max-width: 280px;
+}
+.roster-edit__picker-list {
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--canvas);
+  max-width: 280px;
+}
+.roster-edit__picker-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  border-radius: var(--radius-chip);
+  cursor: pointer;
+}
+.roster-edit__picker-option:hover {
+  background: var(--surface);
+}
+.roster-edit__picker-empty {
+  margin: 0;
+  font-size: 12px;
+}
+.roster-detail__compose-link {
+  text-decoration: none;
+}
+
 /* ---- States + skeleton ---- */
 .roster-state {
   background: var(--surface);

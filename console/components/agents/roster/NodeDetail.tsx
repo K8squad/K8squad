@@ -1,23 +1,22 @@
 "use client";
 
 // components/agents/roster/NodeDetail.tsx — the master-detail right pane of the Agents & Team
-// redesign (ISI-5362 / S5; mockups ISI-5306 Frame 01/02).
+// redesign (ISI-5362 / S5; mockups ISI-5306 Frame 01/02/03).
 //
-// Renders the selected rail node read-only: breadcrumb + name + type badge + tab strip
-// (Overview · Model · Skills · Advanced) + a read-only Overview per node kind. The headline is the
-// Agent Overview's "effective model" line with server-painted provenance — reused verbatim from the
-// shipped <EffectiveModelReadout> (ISI-4822/4892) so "where did this model come from" reads
-// identically here and in the compose form.
+// Renders the selected rail node: breadcrumb + name + type badge + tab strip
+// (Overview · Model · Skills · Advanced) + per-tab content. The Overview is the read-only
+// composite (role chip, server-painted effective-model provenance, skill summary); the Model
+// and Skills tabs host the INLINE EDITORS (Frame 02/03) — RoleModelPanel / AgentModelPanel /
+// AgentSkillsPanel / RoleSkillsPanel — which write through the field-scoped merge PUT
+// (ISI-5359) now that the S1 (ISI-5358) + S2 gates are merged on main. The editors are keyed
+// by node identity so switching nodes remounts them with fresh detail reads.
 //
-// GATE (ISI-5362 AC): inline EDIT-SAVE is blocked on S1 (ISI-5358 role round-trip) + S2
-// (ISI-5359 field-scoped merge writes). Until those land on main, a PUT can silently destroy unsent
-// fields — so every mutate affordance here (Edit inline, model pencil, + Add skill) is rendered
-// DISABLED with an honest "ships after S1+S2" title. This increment is the read-only surface the
-// gated Frame 02 edit will later hang off; nothing here writes. It also carries NO coordination
-// affordance (claim/assign/reassign/dispatch) — that stays server-side (R6 scope guard, see
-// test/agents/no-coordination.test.ts); role changes, when editing lands, go through Edit inline.
+// Full-form editing (identity, runtime, credentials) stays on the compose screen — the header
+// action deep-links there rather than duplicating the wizard. It also carries NO coordination
+// affordance (claim/assign/dispatch) — that stays server-side (R6 scope guard, see
+// test/agents/no-coordination.test.ts).
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { EffectiveModelReadout } from "@/components/compose/EffectiveModelReadout";
 import {
@@ -28,21 +27,8 @@ import {
   type RosterSkill,
   type RosterTeam,
 } from "@/lib/agents/roster";
-
-const GATE_TITLE =
-  "Inline editing ships after ISI-5358 (role round-trip) + ISI-5359 (merge writes) land — until then a save could drop unsent fields.";
-
-/** A mutate affordance that is intentionally inert until the edit backend (S1+S2) merges. */
-function GatedAction({ label }: { label: string }) {
-  return (
-    <button type="button" className="btn" disabled aria-disabled="true" title={GATE_TITLE}>
-      {label}
-      <span className="roster-detail__soon" aria-hidden="true">
-        soon
-      </span>
-    </button>
-  );
-}
+import { AgentModelPanel, RoleModelPanel } from "./ModelPanel";
+import { AgentSkillsPanel, RoleSkillsPanel } from "./SkillsPanel";
 
 type NodeTab = "overview" | "model" | "skills" | "advanced";
 const TABS: ReadonlyArray<{ key: NodeTab; label: string }> = [
@@ -69,18 +55,31 @@ function Breadcrumb({ parts }: { parts: string[] }) {
   );
 }
 
+/** Deep-link into the compose wizard's edit mode — the full-form editor for this node. */
+function EditInCompose({ kind, name }: { kind: string; name: string }) {
+  const href = `/compose?kind=${encodeURIComponent(kind)}&mode=edit&name=${encodeURIComponent(name)}`;
+  return (
+    <a className="btn roster-detail__compose-link" href={href}>
+      Full-form edit
+    </a>
+  );
+}
+
 function DetailShell({
   crumb,
   name,
   kind,
   actions,
+  tabContent = {},
   children,
 }: {
   crumb: string[];
   name: string;
   kind: string;
-  actions: React.ReactNode;
-  children: React.ReactNode;
+  actions: ReactNode;
+  /** Per-tab bodies; a missing entry falls back to the tab's read-only copy. */
+  tabContent?: Partial<Record<NodeTab, ReactNode>>;
+  children: ReactNode;
 }) {
   const [tab, setTab] = useState<NodeTab>("overview");
   return (
@@ -109,10 +108,7 @@ function DetailShell({
         ))}
       </div>
       <div className="roster-detail__body">
-        {/* The Overview carries the full read in this increment; the rich editable Model/Skills
-            panels are the gated Frame 02/03 follow-ups (ISI-5358/5359), so non-overview tabs show
-            a read-only summary rather than a half-built editor. */}
-        {tab === "overview" ? children : <TabFallback tab={tab} />}
+        {tab === "overview" ? children : (tabContent[tab] ?? <TabFallback tab={tab} />)}
       </div>
     </section>
   );
@@ -121,9 +117,9 @@ function DetailShell({
 function TabFallback({ tab }: { tab: NodeTab }) {
   const copy: Record<NodeTab, string> = {
     overview: "",
-    model: "The editable model-per-role panel (Frame 02) ships after ISI-5358 + ISI-5359. The current effective model is shown on the Overview tab.",
-    skills: "The provenance-split skill chips + capability matrix (Frame 03) ship next. The skill count is shown on the Overview tab.",
-    advanced: "Advanced identity and scheduling fields are read-only for now.",
+    model: "The effective model is shown on the Overview tab.",
+    skills: "The skill summary is shown on the Overview tab.",
+    advanced: "Advanced identity and scheduling fields are read-only here — use Full-form edit.",
   };
   return <p className="muted">{copy[tab]}</p>;
 }
@@ -190,7 +186,8 @@ function RoleOverview({ role }: { role: RosterRole }) {
         <dd>{role.runtimeClassHint ?? <span className="muted">—</span>}</dd>
       </dl>
       <p className="muted roster-detail__note">
-        Model-per-role editing (with blast-radius) ships after ISI-5358 + ISI-5359.
+        A shared library object — model and default-skill edits on the Model / Skills tabs show
+        their blast radius before saving.
       </p>
     </div>
   );
@@ -296,9 +293,15 @@ function resolve(
 export function NodeDetail({
   roster,
   selection,
+  team,
+  onRosterChanged,
 }: {
   roster: Roster;
   selection: NonNullable<RosterSelection>;
+  /** The admin cross-squad selector — threads to the detail reads and edit PUTs. */
+  team?: string;
+  /** An inline editor saved — the workspace refetches the roster (counts, chips, readouts). */
+  onRosterChanged: () => void;
 }) {
   const r = resolve(roster, selection);
   if (!r) {
@@ -316,7 +319,22 @@ export function NodeDetail({
           crumb={["Org", r.node.namespace, r.node.name]}
           name={r.node.name}
           kind="agent"
-          actions={<GatedAction label="Edit inline" />}
+          actions={<EditInCompose kind="agents" name={r.node.name} />}
+          tabContent={{
+            // Keyed by node identity: switching agents remounts the editors with fresh reads.
+            model: (
+              <AgentModelPanel key={r.node.name} agentName={r.node.name} team={team} onSaved={onRosterChanged} />
+            ),
+            skills: (
+              <AgentSkillsPanel
+                key={r.node.name}
+                agentName={r.node.name}
+                roster={roster}
+                team={team}
+                onSaved={onRosterChanged}
+              />
+            ),
+          }}
         >
           <AgentOverview agent={r.node} />
         </DetailShell>
@@ -327,7 +345,7 @@ export function NodeDetail({
           crumb={["Org", r.node.name]}
           name={r.node.name}
           kind="team"
-          actions={<GatedAction label="Edit inline" />}
+          actions={<EditInCompose kind="teams" name={r.node.name} />}
         >
           <TeamOverview team={r.node} />
         </DetailShell>
@@ -338,7 +356,21 @@ export function NodeDetail({
           crumb={["Library", "Roles", r.node.name]}
           name={r.node.name}
           kind="role"
-          actions={<GatedAction label="Edit inline" />}
+          actions={<EditInCompose kind="roles" name={r.node.name} />}
+          tabContent={{
+            model: (
+              <RoleModelPanel key={r.node.name} roleName={r.node.name} team={team} onSaved={onRosterChanged} />
+            ),
+            skills: (
+              <RoleSkillsPanel
+                key={r.node.name}
+                roleName={r.node.name}
+                roster={roster}
+                team={team}
+                onSaved={onRosterChanged}
+              />
+            ),
+          }}
         >
           <RoleOverview role={r.node} />
         </DetailShell>
@@ -349,7 +381,7 @@ export function NodeDetail({
           crumb={["Library", "Skills", r.node.name]}
           name={r.node.name}
           kind="skill"
-          actions={<GatedAction label="Edit inline" />}
+          actions={<EditInCompose kind="skills" name={r.node.name} />}
         >
           <SkillOverview skill={r.node} />
         </DetailShell>

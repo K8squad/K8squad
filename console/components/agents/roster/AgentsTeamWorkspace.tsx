@@ -4,9 +4,10 @@
 // redesign (ISI-5362 / S5; mockups ISI-5306). Loads the two-axis roster, owns the selected-node
 // state, and lays out the rail + detail two-pane master-detail.
 //
-// Read-only surface: it composes the shipped fleet LIST reads (lib/agents/roster.loadRoster) and
-// the per-agent effective-model read; it issues no mutating verb. The gated inline-edit path
-// (Frame 02, blocked on ISI-5358 + ISI-5359) lives disabled inside <NodeDetail>.
+// Reads compose the shipped fleet LIST reads (lib/agents/roster.loadRoster) + the per-agent
+// effective-model read; the inline editors (Model / Skills tabs, Frame 02/03) write through the
+// field-scoped merge PUT (ISI-5359) and call back `onRosterChanged` so the rail's counts, role
+// chips and readouts re-derive from a fresh server read after every save.
 
 import { useCallback, useEffect, useState } from "react";
 
@@ -35,7 +36,8 @@ function isEmpty(roster: Roster): boolean {
 export function AgentsTeamWorkspace({ team }: { team?: string }) {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [selection, setSelection] = useState<RosterSelection>(null);
-  // `nonce` forces a reload on Retry without threading the abort controller through state.
+  // `nonce` forces a reload on Retry — and after any inline-editor save — without threading the
+  // abort controller through state.
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
@@ -67,7 +69,12 @@ export function AgentsTeamWorkspace({ team }: { team?: string }) {
       />
       <div className="roster-workspace__detail">
         {selection ? (
-          <NodeDetail roster={state.roster} selection={selection} />
+          <NodeDetail
+            roster={state.roster}
+            selection={selection}
+            team={team}
+            onRosterChanged={retry}
+          />
         ) : (
           <DetailPlaceholder />
         )}
