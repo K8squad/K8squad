@@ -397,6 +397,18 @@ func (e *Engine) drive(ctx context.Context, tk *task, spec runtimes.ExecSpec) {
 		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.Provider == "" && tk.provider != "" {
 			p.Usage.Provider = tk.provider
 		}
+		// R3 (ISI-5333): usage payloads without a served model (opencode
+		// v1.18.27's step-finish omits modelID — the served model rides
+		// message.updated, not the part) are attributed to the run's RESOLVED
+		// model before the event leaves the process, so gen_ai.response.model is
+		// populated for every llm.call instead of staying 0/N. opencode is
+		// single-model and cannot report a backup-served split, so the served
+		// model equals the resolved (== requested) model here; a runtime that
+		// reports requested-vs-served separately keeps its own value — the
+		// backfill only fills the empty case, it never overrides.
+		if p.Kind == a2a.EventUsage && p.Usage != nil && p.Usage.ResponseModel == "" && tk.model != "" {
+			p.Usage.ResponseModel = tk.model
+		}
 		tk.emitProgress(p)
 		if e.telemetry != nil {
 			switch p.Kind {
