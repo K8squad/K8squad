@@ -152,6 +152,17 @@ type GitChange struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// writePreparing writes HTTP 202 with a preparing typed body (ADR-0025 D1/S2c).
+// The client must poll the same endpoint with backoff until the reader is warm and returns 200.
+func writePreparing(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(FileErrorBody{
+		Error: "reader pod is warming up; retry shortly",
+		Code:  ErrCodePreparing,
+	})
+}
+
 // ErrWorkspaceBusy is returned by a WorkspaceReader when the workspace PVC is held
 // by an active run on a node that the reader pod cannot co-schedule with. The route
 // surfaces this as a 200 with degraded=true served from the LAST-COMMITTED SNAPSHOT
@@ -205,6 +216,13 @@ func writeRetryableDegraded(w http.ResponseWriter) {
 		Error: "workspace reader timed out; retry shortly",
 		Code:  ErrCodeRetryableDegraded,
 	})
+}
+
+// ReaderPreWarmer is an optional capability of WorkspaceReader: it starts a background reader-pod
+// launch for a project without blocking (ADR-0025 D1/S2a). *ReaderPodWorkspaceReader implements it.
+// When the WorkspaceReader does not implement this interface, pre-warm requests are silently no-ops.
+type ReaderPreWarmer interface {
+	PreWarm(projectID string)
 }
 
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
@@ -263,6 +281,10 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 			case errors.Is(err, ErrProjectNotFound):
 				// Unknown projectId: existence-hiding 404, same as the dashboard spine.
 				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrReaderPreparing):
+				// ADR-0025 D1/S2c: reader pod is launching; client must poll with back-off.
+				writePreparing(w)
 				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: busy is a first-class degraded state (AC7) — serve the
@@ -341,6 +363,9 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
 				writeJSONError(w, http.StatusNotFound, "project not found")
+				return
+			case errors.Is(err, ErrReaderPreparing):
+				writePreparing(w)
 				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: serve the last-committed snapshot bytes when available.
@@ -425,6 +450,9 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 			case errors.Is(err, ErrProjectNotFound):
 				writeJSONError(w, http.StatusNotFound, "project not found")
 				return
+			case errors.Is(err, ErrReaderPreparing):
+				writePreparing(w)
+				return
 			case errors.Is(err, ErrWorkspaceBusy):
 				// ISI-5140: stat from the last-committed snapshot when available.
 				var snapErr error
@@ -449,6 +477,19 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 		}
 
 		writeJSON(w, http.StatusOK, st)
+	}
+}
+
+// projectFilesWarm returns the handler for POST /api/projects/{projectId}/files/warm (ADR-0025 D1/S2a).
+// It triggers a background reader-pod pre-warm for the project so subsequent GET /files calls
+// are more likely to find a warm reader rather than returning 202. Always responds 202 Accepted.
+func (s *Server) projectFilesWarm(reader WorkspaceReader) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
+		if pw, ok := reader.(ReaderPreWarmer); ok {
+			pw.PreWarm(projectID)
+		}
+		writePreparing(w)
 	}
 }
 

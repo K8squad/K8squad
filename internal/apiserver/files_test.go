@@ -344,6 +344,28 @@ func TestProjectFiles_Member_Returns200(t *testing.T) {
 	}
 }
 
+// TestProjectFiles_Preparing_Returns202: when the WorkspaceReader returns ErrReaderPreparing (cold
+// start, ADR-0025 D1/S2c) the route returns 202 Accepted with code=preparing so the client polls.
+func TestProjectFiles_Preparing_Returns202(t *testing.T) {
+	reader := &fakeWorkspaceReader{err: ErrReaderPreparing}
+	authn := filesAuthn("alice", true)
+	srv := buildFilesServer(reader, nil, authn)
+
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj-cold/files", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusAccepted {
+		t.Errorf("preparing: got %d, want 202 (body: %s)", w.Code, w.Body.String())
+	}
+	var body FileErrorBody
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Code != ErrCodePreparing {
+		t.Errorf("code = %q, want %q", body.Code, ErrCodePreparing)
+	}
+}
+
 // ---- /files/content route ------------------------------------------------
 
 func TestProjectFilesContent_NilReader_Returns501(t *testing.T) {
