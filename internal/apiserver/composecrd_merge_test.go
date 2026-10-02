@@ -137,6 +137,67 @@ func TestComposeEditRoleNullDeletesSentFieldOnly(t *testing.T) {
 	}
 }
 
+// ── Agent: partial PUT on an inherit-model agent (ISI-5362 wire alignment) ────
+//
+// planAgent's wire-level required("model") outlived ISI-4892's blank-means-
+// inherit contract: an Agent whose primary model is blank (inheriting the Role
+// tier) could never be compose-PUT at all — every inline edit (here: a
+// skills-only change) 422ed on a field the caller never meant to set, because
+// the admission-required round-trip re-sent model:"" verbatim. The check is
+// dropped (the webhook's GuardAgentModelResolves stays the fail-closed
+// authority); this test pins the roster's exact flow — seed an inherit-model
+// agent, PUT only skillRefs (+ the admission-required identity fields), and
+// assert the skill change lands while the blank primary and every other unsent
+// field ride through.
+func TestComposeEditAgentPartialPutBlankModelKeepsUnsentFields(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+
+	// Seed with a BLANK primary model — legal on the CRD (inherit), un-creatable
+	// through compose until the wire-level required() was dropped.
+	seed := agentRequest{
+		Project:             "widget",
+		Name:                "agent-7",
+		RuntimeRef:          objectRefWire{Name: "claude-code"},
+		RoleRef:             objectRefWire{Name: "engineer"},
+		CredentialSecretRef: secretRefWire{Name: "agent-7-cred"},
+		SkillRefs:           []objectRefWire{{Name: "git"}},
+	}
+	if w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), seed, nil); w.Code != http.StatusCreated {
+		t.Fatalf("seed blank-model agent create failed: %d %s", w.Code, w.Body.String())
+	}
+
+	// Skills-only edit: skillRefs changes; model is sent blank (round-tripped from
+	// the detail read) and must stay blank, not 422 and not materialize a value.
+	partial := map[string]any{
+		"project":             "widget",
+		"name":                "agent-7",
+		"runtimeRef":          map[string]any{"name": "claude-code"},
+		"roleRef":             map[string]any{"name": "engineer"},
+		"credentialSecretRef": map[string]any{"name": "agent-7-cred"},
+		"skillRefs":           []map[string]any{{"name": "git"}, {"name": "kubectl"}},
+	}
+	w := do(svc.handleAgent(false), http.MethodPut, "/api/agents/agent-7",
+		caller("bob", teamUID, false), partial, map[string]string{"name": "agent-7"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("partial agent edit want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "agent-7"}, &got); err != nil {
+		t.Fatalf("get agent after partial edit: %v", err)
+	}
+	if len(got.Spec.SkillRefs) != 2 || got.Spec.SkillRefs[1].Name != "kubectl" {
+		t.Errorf("sent field skillRefs must be updated, got %v", got.Spec.SkillRefs)
+	}
+	if got.Spec.Model != "" {
+		t.Errorf("blank primary model must round-trip blank (inherit), got %q", got.Spec.Model)
+	}
+	if got.Spec.RoleRef.Name != "engineer" || got.Spec.CredentialSecretRef.Name != "agent-7-cred" {
+		t.Errorf("round-tripped identity fields must survive: roleRef=%v cred=%v", got.Spec.RoleRef, got.Spec.CredentialSecretRef)
+	}
+}
+
 // ── Skill: partial PUT keeps unsent capability fields ─────────────────────────
 //
 // source is admission-required so even a one-field permissions edit must send

@@ -1009,7 +1009,15 @@ func (s *ComposeService) planAgent(req agentRequest) applyPlan {
 	errs = required("runtimeRef.name", req.RuntimeRef.Name, errs)
 	errs = required("roleRef.name", req.RoleRef.Name, errs)
 	errs = required("credentialSecretRef.name", req.CredentialSecretRef.Name, errs)
-	errs = required("model", req.Model, errs)
+	// Model is INTENTIONALLY not required (ISI-4892 / S3 Flow C, aligned here for the roster
+	// inline-edit path, ISI-5362): Agent.spec.model is optional on the CRD (ISI-4430) and a
+	// blank primary means "inherit" — the Model-Per-Role resolver falls through to the Role
+	// tier, then the org-default ModelConfig. The admission webhook's GuardAgentModelResolves
+	// stays the fail-closed authority (an agent resolving empty at EVERY tier is rejected
+	// there, with the full three-tier context this handler lacks), so dropping the wire-level
+	// check does not open a model-less hole; it lets an inline edit (e.g. a skills-only PUT on
+	// an inherit-model agent) round-trip a blank primary instead of 422ing on a field the
+	// caller never meant to set.
 	spec := ksquadv1.AgentSpec{
 		RuntimeRef:          req.RuntimeRef.toRef(),
 		RoleRef:             req.RoleRef.toRef(),
