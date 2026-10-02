@@ -868,7 +868,13 @@ func main() {
 		// shim binary absent the constructor errors and the drive loop keeps
 		// its ledger-only dispatcher — an honest, loudly-logged degraded
 		// state, never a silently broken dispatch.
-		mapper := toolusage.NewMapper(telemetry.Tracer(), metrics.Registry)
+		// ISI-5335 P1-4: the operator's event-relay Mapper writes the ksquad_*
+		// metrics but emits NO spans — the shim's supervisor-native run trace
+		// (ISI-5331) is now the canonical, continuous one, so re-projecting the
+		// same llm.call / gen_ai.tool.call series here would double-count the
+		// trace view. Metrics + the RunLLMStatusWriter CR-status projection are
+		// unaffected; only the duplicate span emission is suppressed.
+		mapper := toolusage.NewMapper(telemetry.Tracer(), metrics.Registry, toolusage.WithSpanProjection(false))
 
 		// Run-scoped task-io token (ISI-3601 S2): mint with the SAME shared
 		// HS256 key the apiserver verifies with (KSQUAD_JWT_SIGNING_KEY), so
