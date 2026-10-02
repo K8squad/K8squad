@@ -646,7 +646,7 @@ func (m *Mapper) ToolEvent(ctx context.Context, labels Labels, taskID string, p 
 	case "result":
 		outcome := mapOutcome(p.OK)
 		attrs = append(attrs, attrOutcome.String(outcome))
-		m.settle(ctx, taskID, toolName, name, attrs, outcome, func(d float64) {
+		m.settle(ctx, taskID, toolName, name, attrs, outcome, toolTimingFrom(p), func(d float64) {
 			if isMCP {
 				m.ins.MCPDur.WithLabelValues(p.Server, p.Name).Observe(d)
 			}
@@ -1023,10 +1023,11 @@ func (m *Mapper) startWithOptions(ctx context.Context, name string, opts []trace
 
 // settle closes the open span for (taskID, tool) — or, when none is pending
 // (orphan result), records a fresh complete span. onDuration receives the
-// measured start→result seconds when a pending span existed (never called
-// for synthesized ones — duration is only truthfully measurable
-// start→result).
-func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []attribute.KeyValue, outcome string, onDuration func(float64)) {
+// measured seconds whenever a truthful duration exists: a paired call's
+// start→result wall-clock, or an orphan result whose runtime reported its
+// execution window (tm). It is never called for an orphan with no reported
+// timing — that span's extent is unknowable and is never fabricated.
+func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []attribute.KeyValue, outcome string, tm toolTiming, onDuration func(float64)) {
 	key := spanKey(taskID, tool)
 	m.mu.Lock()
 	ps, ok := m.pending[key]
@@ -1036,11 +1037,33 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	m.mu.Unlock()
 
 	if !ok {
-		// Orphan result (no start seen): the span's extent is unknowable — the
-		// start instant never arrived — so it carries outcome but no duration
-		// (never fabricated). The synthesized span is still complete + visible.
-		_, span := m.start(ctx, name, attrs)
-		span.End()
+		// Orphan result (no start seen): the start frame never arrived —
+		// at-least-once redelivery, mid-stream attach, or opencode streaming only
+		// a terminal tool frame (its usual shape, ISI-5332). When the runtime
+		// reported the call's execution window (tm), place the span over that true
+		// extent so its duration is real instead of collapsing to a 0ms point;
+		// otherwise emit a point span (extent unknowable — never fabricated).
+		// Either way derive an OTel status from the outcome, so a failed tool call
+		// surfaces as a failed span rather than only a ksquad outcome attribute.
+		opts := []trace.SpanStartOption{}
+		if !tm.start.IsZero() {
+			opts = append(opts, trace.WithTimestamp(tm.start))
+		}
+		opts = append(opts, trace.WithAttributes(attrs...))
+		_, span := m.startWithOptions(ctx, name, opts)
+		d, measured := tm.durationSecs()
+		if measured {
+			span.SetAttributes(attrDurationMS.Int64(durationMS(d)))
+		}
+		setToolStatus(span, outcome)
+		if !tm.end.IsZero() {
+			span.End(trace.WithTimestamp(tm.end))
+		} else {
+			span.End()
+		}
+		if measured && onDuration != nil {
+			onDuration(d)
+		}
 		return
 	}
 	// Duration is truthfully measurable start→result for a paired call: stamp
@@ -1049,16 +1072,57 @@ func (m *Mapper) settle(ctx context.Context, taskID, tool, name string, attrs []
 	d := ps.start()
 	ps.span.SetAttributes(attrs...)
 	ps.span.SetAttributes(attrDurationMS.Int64(durationMS(d)))
-	switch outcome {
-	case outcomeError:
-		ps.span.SetStatus(codes.Error, "")
-	case outcomeSuccess:
-		ps.span.SetStatus(codes.Ok, "")
-	}
+	setToolStatus(ps.span, outcome)
 	ps.span.End()
 	if onDuration != nil {
 		onDuration(d)
 	}
+}
+
+// setToolStatus derives a tool/MCP span's OTel status from the call outcome:
+// a failed call is codes.Error, a success is codes.Ok, and an unknown outcome
+// is left Unset (the emitter could not tell — never guessed). Shared by the
+// paired and orphan-result settle paths so both carry a status (ISI-5332: the
+// orphan path previously set neither duration nor status).
+func setToolStatus(span trace.Span, outcome string) {
+	switch outcome {
+	case outcomeError:
+		span.SetStatus(codes.Error, "")
+	case outcomeSuccess:
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// toolTiming is a tool call's runtime-reported execution window (zero fields =
+// not reported). opencode stamps it on the terminal tool frame; it lets the
+// orphan-result settle path place a span over its true extent (ISI-5332).
+type toolTiming struct {
+	start time.Time
+	end   time.Time
+}
+
+// toolTimingFrom lifts a ToolPayload's Unix-millisecond start/end onto a
+// toolTiming. Non-positive timestamps (the absent default) stay zero so
+// durationSecs reports "not measured" rather than a fabricated extent.
+func toolTimingFrom(p a2a.ToolPayload) toolTiming {
+	var tm toolTiming
+	if p.StartedAtMS > 0 {
+		tm.start = time.UnixMilli(p.StartedAtMS)
+	}
+	if p.EndedAtMS > 0 {
+		tm.end = time.UnixMilli(p.EndedAtMS)
+	}
+	return tm
+}
+
+// durationSecs returns the reported start→end seconds and true when both ends
+// are present and ordered; otherwise (0, false) — a missing or non-monotonic
+// window yields no duration rather than a fabricated or negative one.
+func (t toolTiming) durationSecs() (float64, bool) {
+	if t.start.IsZero() || t.end.IsZero() || !t.end.After(t.start) {
+		return 0, false
+	}
+	return t.end.Sub(t.start).Seconds(), true
 }
 
 // durationMS converts a seconds duration to whole milliseconds (rounded) for

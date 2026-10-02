@@ -386,6 +386,65 @@ func TestOrphanResultSynthesizesSpan(t *testing.T) {
 	findSpan(t, sr, SpanToolCall) // presence asserted inside
 }
 
+// TestOrphanResultCarriesDurationAndStatus (ISI-5332): an orphan result — a
+// terminal tool frame with no preceding start (opencode's usual shape) — that
+// carries the runtime's execution window places the span over that true extent
+// (real ksquad.duration.ms, EndTime-StartTime matching the window) and derives
+// an OTel Ok status from the success outcome, instead of the old 0ms,
+// status-less point span.
+func TestOrphanResultCarriesDurationAndStatus(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"}, "t", a2a.ToolPayload{
+		Name: "git", Phase: "result", OK: boolPtr(true),
+		StartedAtMS: 1_700_000_000_000, EndedAtMS: 1_700_000_000_350, // 350ms window
+	})
+	span := findSpan(t, sr, SpanToolCall)
+	if got := attrMap(span.Attributes())["ksquad.duration.ms"]; got != "350" {
+		t.Errorf("orphan tool.call duration.ms = %q, want 350", got)
+	}
+	if d := span.EndTime().Sub(span.StartTime()); d < 340*time.Millisecond || d > 360*time.Millisecond {
+		t.Errorf("orphan span wall-clock extent = %v, want ~350ms", d)
+	}
+	if span.Status().Code != codes.Ok {
+		t.Errorf("orphan success status = %v, want Ok", span.Status().Code)
+	}
+}
+
+// TestOrphanResultFailedSpanStatus (ISI-5332): a failed orphan result marks the
+// span codes.Error so a failed tool call surfaces as a failed span, not merely
+// a ksquad.outcome attribute.
+func TestOrphanResultFailedSpanStatus(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"}, "t", a2a.ToolPayload{
+		Name: "kubectl", Phase: "result", OK: boolPtr(false),
+		StartedAtMS: 1_700_000_000_000, EndedAtMS: 1_700_000_000_120,
+	})
+	span := findSpan(t, sr, SpanToolCall)
+	if span.Status().Code != codes.Error {
+		t.Errorf("orphan failure status = %v, want Error", span.Status().Code)
+	}
+	if got := attrMap(span.Attributes())["ksquad.duration.ms"]; got != "120" {
+		t.Errorf("orphan tool.call duration.ms = %q, want 120", got)
+	}
+}
+
+// TestOrphanResultNoTimingStillCarriesStatus (ISI-5332): with no reported
+// window the span's extent stays unknowable (no fabricated duration), but it
+// still carries an outcome-derived OTel status.
+func TestOrphanResultNoTimingStillCarriesStatus(t *testing.T) {
+	m, sr, _ := newTestMapper(t)
+	m.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"}, "t", a2a.ToolPayload{
+		Name: "git", Phase: "result", OK: boolPtr(true),
+	})
+	span := findSpan(t, sr, SpanToolCall)
+	if _, ok := attrMap(span.Attributes())["ksquad.duration.ms"]; ok {
+		t.Errorf("orphan with no timing must not fabricate ksquad.duration.ms: %v", attrMap(span.Attributes()))
+	}
+	if span.Status().Code != codes.Ok {
+		t.Errorf("orphan success status = %v, want Ok", span.Status().Code)
+	}
+}
+
 // TestFinishTaskSweepsPending: a start with no result is swept when the task
 // settles, ending with unknown outcome.
 func TestFinishTaskSweepsPending(t *testing.T) {

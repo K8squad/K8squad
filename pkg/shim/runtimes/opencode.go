@@ -203,6 +203,16 @@ type openCodePart struct {
 		// Error is the alternate field older/other opencode builds stash the
 		// failure reason in; read as a fallback when Output is empty on error.
 		Error string `json:"error"`
+		// Time is the tool call's execution window opencode stamps on its
+		// terminal tool frame: start/end in Unix milliseconds. It is the only
+		// in-band signal of a tool call's duration when opencode streams just the
+		// completed/error frame (no preceding running frame) — the orphan-result
+		// shape the telemetry spine otherwise cannot time (ISI-5332). nil on
+		// in-flight states and builds that omit it. +optional
+		Time *struct {
+			Start int64 `json:"start"`
+			End   int64 `json:"end"`
+		} `json:"time"`
 	} `json:"state"`
 	// Tokens is the step-finish usage block; nil on shapes that do not
 	// carry it (then step_finish stays bookkeeping, ISI-4238).
@@ -357,6 +367,13 @@ func parseOpenCodeLine(line string) []Progress {
 			}
 		default: // pending/running — the call is in flight
 			tool.Phase = "start"
+		}
+		// ISI-5332: carry opencode's reported execution window onto the result
+		// frame so the telemetry spine can time the span even when the start
+		// frame never arrived (opencode's usual single terminal-frame shape).
+		if ev.Part.State.Time != nil {
+			tool.StartedAtMS = ev.Part.State.Time.Start
+			tool.EndedAtMS = ev.Part.State.Time.End
 		}
 		return []Progress{{Kind: a2a.EventTool, Tool: tool, ToolArgs: args}}
 	case "text":
