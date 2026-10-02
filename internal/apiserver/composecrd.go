@@ -320,6 +320,15 @@ type roleRequest struct {
 	// secondary model for mid-Run rate_limited recovery. Reuses fallbackModelWire
 	// verbatim (its own optional modelEndpointRef is the role's ONE BYO endpoint seam).
 	FallbackModel *fallbackModelWire `json:"fallbackModel,omitempty"`
+	// ActivePhases / Coordinator / CoordinatorMode persist the phase-lifecycle spec
+	// fields (role_types.go, ISI-4431 E3/E5). Before ISI-5358 roleRequest lacked
+	// them, so a compose PUT — a full-spec REPLACE — silently wiped any phase/
+	// coordinator config the edit-form could not resend (ISI-5305 §5 Gap 2). Enum
+	// and coordinator-cardinality validation stays at admission (the Role/Team
+	// webhooks); the wire only carries them through for a lossless round-trip.
+	ActivePhases    []string `json:"activePhases,omitempty"`
+	Coordinator     bool     `json:"coordinator,omitempty"`
+	CoordinatorMode string   `json:"coordinatorMode,omitempty"`
 }
 
 type skillRequest struct {
@@ -851,6 +860,9 @@ func (s *ComposeService) planRole(req roleRequest) applyPlan {
 		PromptRef:        req.PromptRef.toRef(),
 		RuntimeClassHint: req.RuntimeClassHint,
 		Model:            req.Model,
+		ActivePhases:     req.ActivePhases,
+		Coordinator:      req.Coordinator,
+		CoordinatorMode:  req.CoordinatorMode,
 	}
 	for _, ds := range req.DefaultSkills {
 		spec.DefaultSkills = append(spec.DefaultSkills, ds.toRef())
@@ -1013,7 +1025,10 @@ func (s *ComposeService) handleAgent(create bool) http.HandlerFunc {
 func (s *ComposeService) handleRole(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req roleRequest
-		if err := decodeJSON(w, r, &req); err != nil {
+		// Strict decode (ISI-5358 Gap 2): an unknown field is a loud 400 rather
+		// than a silent drop, so the model-per-role UI can never quietly wipe
+		// phase/coordinator config it failed to re-send on a full-spec PUT.
+		if err := decodeJSONStrict(w, r, &req); err != nil {
 			return
 		}
 		s.applyEdit(w, r, create, s.planRole(req))
