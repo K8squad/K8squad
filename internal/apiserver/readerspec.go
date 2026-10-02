@@ -237,3 +237,64 @@ func (r *CoordReaderSpecResolver) teamSandboxNamespace(ctx context.Context, team
 }
 
 var _ ReaderSpecResolver = (*CoordReaderSpecResolver)(nil)
+
+// SnapshotSpec implements SnapshotSpecProvider. It resolves the namespace, PVC name and reader SA
+// for a project WITHOUT performing a busy check or requiring a completed run — it is designed for
+// the D4 path where we KNOW the workspace is busy and want to snapshot the live PVC.
+//
+// Namespace resolution: we derive the team from the active claim (the run that holds the PVC)
+// rather than a completed-run audit row, because the snapshot is taken WHILE busy. If no active
+// claim exists (race — the run completed between busy check and snapshot request), we fall back to
+// the latest work item's team_id so the snapshot still has a namespace.
+func (r *CoordReaderSpecResolver) SnapshotSpec(ctx context.Context, projectID string) (namespace, pvcName, readerSAName string, err error) {
+	if projectID == "" {
+		return "", "", "", ErrProjectNotFound
+	}
+
+	author, ok := discussion.AuthFromContext(ctx)
+	if !ok {
+		return "", "", "", errors.New("readerspec.SnapshotSpec: no author context (fail closed)")
+	}
+	var name, uid string
+	if author.IsAdmin {
+		_, name, uid, err = resolveProjectFleetWideWithUID(ctx, r.reader, projectID)
+	} else {
+		_, name, uid, err = resolveProjectInTeamWithUID(ctx, r.reader, author.TeamID.String(), projectID)
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+
+	// Prefer the team from the active claim (the busy run). Fall back to any work-item team.
+	var teamID string
+	err = r.db.QueryRowContext(ctx, `
+		SELECT w.team_id::text
+		  FROM coord.claim c
+		  JOIN coord.work_item w ON w.id = c.work_item_id
+		 WHERE w.project_id = $1::uuid
+		   AND c.holder_principal IS NOT NULL
+		   AND c.run_id IS NOT NULL
+		   AND (c.lease_expires_at IS NULL OR c.lease_expires_at > now())
+		   AND w.team_id IS NOT NULL
+		 LIMIT 1`, uid).Scan(&teamID)
+	if err != nil {
+		// Fall back: any work item for this project.
+		err = r.db.QueryRowContext(ctx, `
+			SELECT team_id::text
+			  FROM coord.work_item
+			 WHERE project_id = $1::uuid
+			   AND team_id IS NOT NULL
+			 LIMIT 1`, uid).Scan(&teamID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("readerspec.SnapshotSpec: resolve team for %s: %w", name, err)
+		}
+	}
+
+	sandboxNS, err := r.teamSandboxNamespace(ctx, teamID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("readerspec.SnapshotSpec: namespace for %s: %w", name, err)
+	}
+	return sandboxNS, workspace.ProjectPVCName(name), teamctrl.AgentServiceAccount, nil
+}
+
+var _ SnapshotSpecProvider = (*CoordReaderSpecResolver)(nil)

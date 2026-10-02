@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -235,4 +236,29 @@ func NewRepoAuthTestClient() (RepoAuthTestClient, error) {
 		return nil, fmt.Errorf("build repo-auth test client: %w", err)
 	}
 	return c, nil
+}
+
+// NewCSISnapshotClient builds the DIRECT (uncached) client and discovery client used by the
+// ADR-0025 D4 CSISnapshotBusyReader (csisnapshotreader.go). The scheme carries corev1 (PVC
+// create/delete) and the unstructured passthrough needed for VolumeSnapshot CRD objects
+// (no snapshot-crd dep — unstructured.Unstructured covers all GVR operations at runtime).
+// A separate discovery.DiscoveryClient from the same rest.Config powers the capability probe.
+func NewCSISnapshotClient() (c client.Client, disc discovery.DiscoveryInterface, err error) {
+	cfg, rerr := config.GetConfig()
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("resolve kube config: %w", rerr)
+	}
+	scheme := runtime.NewScheme()
+	if rerr := corev1.AddToScheme(scheme); rerr != nil {
+		return nil, nil, fmt.Errorf("register corev1 scheme: %w", rerr)
+	}
+	c, rerr = client.New(cfg, client.Options{Scheme: scheme})
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("build csi-snapshot client: %w", rerr)
+	}
+	disc, rerr = discovery.NewDiscoveryClientForConfig(cfg)
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("build discovery client: %w", rerr)
+	}
+	return c, disc, nil
 }
