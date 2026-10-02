@@ -942,6 +942,18 @@ func (s *Server) routes(opts Options) {
 		}
 		filesStat.HandleFunc("", s.projectFilesStat(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
+		// ADR-0025 D1/S2a: POST /api/projects/{projectId}/files/warm — explicit pre-warm trigger.
+		// Fires a background reader-pod launch so subsequent GET /files calls see a warm reader.
+		// Always returns 202 Accepted. Same authz + Viewer gate as the read routes.
+		if opts.WorkspaceReader != nil {
+			filesWarm := s.router.Path("/api/projects/{projectId:.+}/files/warm").Subrouter()
+			filesWarm.Use(authz)
+			if opts.ProjectRoles != nil {
+				filesWarm.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+			}
+			filesWarm.HandleFunc("", s.projectFilesWarm(opts.WorkspaceReader)).Methods(http.MethodPost)
+		}
+
 		// 8.6 credential/auth-state (ISI-2902): the per-agent BYO-credential surface behind the
 		// same choke point. A wired reader serves the Team-scoped projection; a cluster-less
 		// dev run keeps the documented 501. POST /api/credentials/connect is the 7.7

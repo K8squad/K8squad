@@ -107,6 +107,47 @@ func newTestReader(t *testing.T, resolver ReaderSpecResolver, l *fakeLauncher, r
 	return r
 }
 
+// --- test helpers -------------------------------------------------------------------
+
+// pollUntilReady polls ListDir until it returns something other than ErrReaderPreparing,
+// or until timeout. It is the async-model analogue of the old synchronous session().
+func pollUntilReady(t *testing.T, r *ReaderPodWorkspaceReader, projectID string) (*DirListing, error) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		dl, err := r.ListDir(context.Background(), projectID, ".", 0)
+		if err == nil {
+			return dl, nil
+		}
+		if !errors.Is(err, ErrReaderPreparing) {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pollUntilReady(%s): still ErrReaderPreparing after 2s", projectID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitNoErr polls ListDir until it returns a non-preparing error or timeout.
+func pollUntilError(t *testing.T, r *ReaderPodWorkspaceReader, projectID string) error {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := r.ListDir(context.Background(), projectID, ".", 0)
+		if err != nil && !errors.Is(err, ErrReaderPreparing) {
+			return err
+		}
+		if err == nil {
+			t.Fatalf("pollUntilError(%s): got nil error, want terminal error", projectID)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pollUntilError(%s): still ErrReaderPreparing after 2s", projectID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // --- tests -------------------------------------------------------------------
 
 // TestReaderPodWorkspaceReader_LaunchOncePerProject: the first read launches a reader; subsequent
@@ -116,16 +157,20 @@ func TestReaderPodWorkspaceReader_LaunchOncePerProject(t *testing.T) {
 	rc := &fakeReadClient{}
 	r := newTestReader(t, &fakeResolver{spec: validReaderSpec()}, l, rc)
 
-	if _, err := r.ListDir(context.Background(), "proj-1", "dir", 0); err != nil {
+	// First call returns ErrReaderPreparing; poll until warm.
+	if _, err := pollUntilReady(t, r, "proj-1"); err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
 	if _, err := r.ReadFile(context.Background(), "proj-1", "a.go", 0, 0); err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if l.launches != 1 {
-		t.Errorf("launches = %d, want 1 (session reused)", l.launches)
+	l.mu.Lock()
+	launches := l.launches
+	l.mu.Unlock()
+	if launches != 1 {
+		t.Errorf("launches = %d, want 1 (session reused)", launches)
 	}
-	if len(rc.listPaths) != 1 || rc.listPaths[0] != "dir" {
+	if len(rc.listPaths) != 1 || rc.listPaths[0] != "." {
 		t.Errorf("list paths = %v", rc.listPaths)
 	}
 	if len(rc.readPaths) != 1 || rc.readPaths[0] != "a.go" {
@@ -137,7 +182,7 @@ func TestReaderPodWorkspaceReader_LaunchOncePerProject(t *testing.T) {
 func TestReaderPodWorkspaceReader_WireMapping(t *testing.T) {
 	r := newTestReader(t, &fakeResolver{spec: validReaderSpec()}, &fakeLauncher{}, &fakeReadClient{})
 
-	dl, err := r.ListDir(context.Background(), "proj-1", ".", 0)
+	dl, err := pollUntilReady(t, r, "proj-1")
 	if err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
@@ -159,7 +204,9 @@ func TestReaderPodWorkspaceReader_Containment(t *testing.T) {
 	res := &fakeResolver{spec: validReaderSpec()}
 	r := newTestReader(t, res, &fakeLauncher{}, &fakeReadClient{})
 
-	// A hostile path must not change what the resolver is asked (only the projectID).
+	// Warm the session so the resolver has been called.
+	pollUntilReady(t, r, "proj-1")
+	// A hostile path must not change what the resolver was asked (only the projectID).
 	_, _ = r.ListDir(context.Background(), "proj-1", "../../etc/passwd", 0)
 	if len(res.seen) != 1 || res.seen[0] != "proj-1" {
 		t.Errorf("resolver saw %v, want exactly [proj-1] — path must not influence spec derivation", res.seen)
@@ -168,9 +215,10 @@ func TestReaderPodWorkspaceReader_Containment(t *testing.T) {
 
 // TestReaderPodWorkspaceReader_Busy: a resolver that reports the workspace busy surfaces as
 // ErrWorkspaceBusy so the route degrades to the last-committed snapshot (AC7).
+// With async launch the error arrives on the second poll (first call returns ErrReaderPreparing).
 func TestReaderPodWorkspaceReader_Busy(t *testing.T) {
 	r := newTestReader(t, &fakeResolver{err: ErrWorkspaceBusy}, &fakeLauncher{}, &fakeReadClient{})
-	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); !errors.Is(err, ErrWorkspaceBusy) {
+	if err := pollUntilError(t, r, "proj-1"); !errors.Is(err, ErrWorkspaceBusy) {
 		t.Fatalf("err = %v, want ErrWorkspaceBusy", err)
 	}
 }
@@ -182,7 +230,7 @@ func TestReaderPodWorkspaceReader_FlagOffDegrades(t *testing.T) {
 	r := NewReaderPodWorkspaceReader(&fakeResolver{spec: validReaderSpec()}, l, newFakeReaper(t, l), time.Minute)
 	r.ready = func(context.Context, string) error { return nil }
 	r.dial = func(string) readClient { return &fakeReadClient{} }
-	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); !errors.Is(err, ErrWorkspaceBusy) {
+	if err := pollUntilError(t, r, "proj-1"); !errors.Is(err, ErrWorkspaceBusy) {
 		t.Fatalf("flag-off err = %v, want ErrWorkspaceBusy", err)
 	}
 }
@@ -191,8 +239,23 @@ func TestReaderPodWorkspaceReader_FlagOffDegrades(t *testing.T) {
 // ErrNoBrowseTarget unchanged for the route to render "nothing to browse".
 func TestReaderPodWorkspaceReader_NoBrowseTarget(t *testing.T) {
 	r := newTestReader(t, &fakeResolver{err: ErrNoBrowseTarget}, &fakeLauncher{}, &fakeReadClient{})
-	if _, err := r.ReadFile(context.Background(), "proj-1", "a.go", 0, 0); !errors.Is(err, ErrNoBrowseTarget) {
+	if err := pollUntilError(t, r, "proj-1"); !errors.Is(err, ErrNoBrowseTarget) {
 		t.Fatalf("err = %v, want ErrNoBrowseTarget", err)
+	}
+}
+
+// TestReaderPodWorkspaceReader_Preparing202: the first cold request returns ErrReaderPreparing
+// and a subsequent call succeeds once the background launch completes.
+func TestReaderPodWorkspaceReader_Preparing202(t *testing.T) {
+	r := newTestReader(t, &fakeResolver{spec: validReaderSpec()}, &fakeLauncher{}, &fakeReadClient{})
+	// First call must return ErrReaderPreparing immediately (cold start).
+	_, err := r.ListDir(context.Background(), "proj-cold", ".", 0)
+	if !errors.Is(err, ErrReaderPreparing) {
+		t.Fatalf("first cold call = %v, want ErrReaderPreparing", err)
+	}
+	// Subsequent polls must eventually return a real listing.
+	if _, err := pollUntilReady(t, r, "proj-cold"); err != nil {
+		t.Fatalf("pollUntilReady: %v", err)
 	}
 }
 
@@ -205,7 +268,7 @@ func TestReaderPodWorkspaceReader_SweepIdle_TearsDown(t *testing.T) {
 	r.idle = 2 * time.Minute
 	r.now = func() time.Time { return now }
 
-	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+	if _, err := pollUntilReady(t, r, "proj-1"); err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
 	// Advance the clock past the idle window and sweep.
@@ -213,15 +276,21 @@ func TestReaderPodWorkspaceReader_SweepIdle_TearsDown(t *testing.T) {
 	if reaped := r.SweepIdle(context.Background()); reaped != 1 {
 		t.Fatalf("SweepIdle reaped %d, want 1", reaped)
 	}
-	if l.teardowns != 1 {
-		t.Errorf("teardowns = %d, want 1", l.teardowns)
+	l.mu.Lock()
+	td := l.teardowns
+	l.mu.Unlock()
+	if td != 1 {
+		t.Errorf("teardowns = %d, want 1", td)
 	}
 	// A subsequent read re-launches a fresh reader.
-	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+	if _, err := pollUntilReady(t, r, "proj-1"); err != nil {
 		t.Fatalf("ListDir after sweep: %v", err)
 	}
-	if l.launches != 2 {
-		t.Errorf("launches = %d, want 2 (relaunch after idle teardown)", l.launches)
+	l.mu.Lock()
+	launches := l.launches
+	l.mu.Unlock()
+	if launches != 2 {
+		t.Errorf("launches = %d, want 2 (relaunch after idle teardown)", launches)
 	}
 }
 
@@ -233,14 +302,17 @@ func TestReaderPodWorkspaceReader_ActiveSessionNotReaped(t *testing.T) {
 	r.idle = 10 * time.Minute
 	r.now = func() time.Time { return now }
 
-	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+	if _, err := pollUntilReady(t, r, "proj-1"); err != nil {
 		t.Fatalf("ListDir: %v", err)
 	}
 	now = now.Add(1 * time.Minute)
 	if reaped := r.SweepIdle(context.Background()); reaped != 0 {
 		t.Fatalf("SweepIdle reaped %d, want 0 (still within idle window)", reaped)
 	}
-	if l.teardowns != 0 {
-		t.Errorf("teardowns = %d, want 0", l.teardowns)
+	l.mu.Lock()
+	td := l.teardowns
+	l.mu.Unlock()
+	if td != 0 {
+		t.Errorf("teardowns = %d, want 0", td)
 	}
 }
