@@ -75,6 +75,11 @@ type TeamDetail struct {
 	NamespaceStrategy string   `json:"namespaceStrategy,omitempty"`
 	Agents            []string `json:"agents"`
 	Projects          []string `json:"projects"`
+	// Grants projects TeamSpec.Grants (role→capability bindings, ADR-0024a D3) so
+	// the Compose Team edit form hydrates them and a PUT round-trips them instead
+	// of dropping them — the read sibling of the teamRequest.Grants write mapping
+	// (ISI-5360 Gap 4). Non-nil on the wire ([] never null).
+	Grants []capabilityGrantWire `json:"grants"`
 }
 
 // AgentListEntry is one Agent row in the fleet agent list. ID is the object UID
@@ -457,6 +462,7 @@ func (r *ClientFleetListReader) Team(ctx context.Context, teamUID, targetUID str
 			NamespaceStrategy: t.Spec.NamespaceStrategy,
 			Agents:            objectRefNames(t.Spec.Agents),
 			Projects:          objectRefNames(t.Spec.Projects),
+			Grants:            teamGrantsToWire(t.Spec.Grants),
 		}
 		return detail, nil
 	}
@@ -878,6 +884,20 @@ func teamListEntry(t *ksquadv1.Team) TeamListEntry {
 		AgentCount:   len(t.Spec.Agents),
 		ProjectCount: len(t.Spec.Projects),
 	}
+}
+
+// teamGrantsToWire projects TeamSpec.Grants onto the compose wire shape
+// (capabilityGrantWire, composecrd.go) — the exact inverse of the
+// teamRequest.Grants write mapping, so fromWire(TeamDetail) reconstructs the
+// edit form and a PUT round-trips every grant (ISI-5360 Gap 4). Never-nil ([]
+// not null); each grant's Capabilities is likewise non-nil. Order is preserved
+// as authored (Grants is a listMapKey=role list — stable by role).
+func teamGrantsToWire(grants []ksquadv1.CapabilityGrant) []capabilityGrantWire {
+	out := make([]capabilityGrantWire, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, capabilityGrantWire{Role: g.Role, Capabilities: nonNil(g.Capabilities)})
+	}
+	return out
 }
 
 // objectRefNames extracts the Name of each ref into a fresh, never-nil, sorted

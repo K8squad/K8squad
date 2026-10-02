@@ -748,6 +748,111 @@ func TestComposeSkillSourceValidation(t *testing.T) {
 	}
 }
 
+// ── Skill capability-envelope round-trip (ISI-5360 Gap 3) ────────────────────
+
+// TestComposeSkillRoundTripsCapabilityEnvelope proves mcpToolRefs + requires
+// (toolchains/sidecars) are WRITTEN through compose. SkillView already projects
+// them read-side, so before this fix an edit-save silently dropped them on every
+// PUT (the full-spec upsert replaces the spec). Writing a skill with every field
+// set and reading the applied CR back is the round-trip AC.
+func TestComposeSkillRoundTripsCapabilityEnvelope(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("alice", "widget", auth.ProjectRoleMaintainer))
+	req := skillRequest{Project: "widget", Name: "pg-migrate"}
+	req.Source.Type = "inline"
+	req.Source.Inline = "run the migration"
+	req.McpToolRefs = []string{"pg-mcp", "schema-mcp"}
+	req.Permissions = []string{"db.write"}
+	req.Toolchains = []string{"go@1.23", "node@22"}
+	req.Sidecars = []string{"dockerd"}
+
+	w := do(svc.handleSkill(true), http.MethodPost, "/api/skills",
+		caller("alice", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got ksquadv1.Skill
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "pg-migrate"}, &got); err != nil {
+		t.Fatalf("skill not applied: %v", err)
+	}
+	// objectRefNames sorts: pg-mcp < schema-mcp.
+	if mcp := objectRefNames(got.Spec.McpToolRefs); len(mcp) != 2 || mcp[0] != "pg-mcp" || mcp[1] != "schema-mcp" {
+		t.Fatalf("mcpToolRefs dropped/garbled: %+v", got.Spec.McpToolRefs)
+	}
+	if tc := got.Spec.Requires.Toolchains; len(tc) != 2 || tc[0] != "go@1.23" || tc[1] != "node@22" {
+		t.Fatalf("requires.toolchains dropped: %+v", tc)
+	}
+	if sc := got.Spec.Requires.Sidecars; len(sc) != 1 || sc[0] != "dockerd" {
+		t.Fatalf("requires.sidecars dropped: %+v", sc)
+	}
+	if p := got.Spec.Permissions; len(p) != 1 || p[0] != "db.write" {
+		t.Fatalf("permissions garbled: %+v", p)
+	}
+}
+
+// ── Team grants + member-refs round-trip (ISI-5360 Gap 4) ────────────────────
+
+// TestComposeTeamRoundTripsGrantsAndMembers proves grants + Agents/Projects
+// member-refs are WRITTEN through compose (admin-only). Before this fix planTeam
+// mapped only namespaceStrategy, so a Team edit silently blew away the whole
+// composition and every grant on each save.
+func TestComposeTeamRoundTripsGrantsAndMembers(t *testing.T) {
+	svc, _ := newComposeFixture(t, nil)
+	req := teamRequest{
+		Name:              "acme-squad",
+		NamespaceStrategy: "perTeam",
+		Agents:            []string{"cade", "pam"},
+		Projects:          []string{"widget"},
+		Grants: []capabilityGrantWire{
+			{Role: "role-manager", Capabilities: []string{capability.CapabilityWorkItemAuthor}},
+		},
+	}
+	w := do(svc.handleTeam(true), http.MethodPost, "/api/teams",
+		caller("root", teamUID, true), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Team is the tenancy root → lands in the control-plane namespace, not a squad ns.
+	var got ksquadv1.Team
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: defaultSystemNamespace, Name: "acme-squad"}, &got); err != nil {
+		t.Fatalf("team not applied: %v", err)
+	}
+	if g := got.Spec.Grants; len(g) != 1 || g[0].Role != "role-manager" ||
+		len(g[0].Capabilities) != 1 || g[0].Capabilities[0] != capability.CapabilityWorkItemAuthor {
+		t.Fatalf("grants dropped/garbled: %+v", g)
+	}
+	if names := objectRefNames(got.Spec.Agents); len(names) != 2 || names[0] != "cade" || names[1] != "pam" {
+		t.Fatalf("agent member-refs dropped: %+v", got.Spec.Agents)
+	}
+	if names := objectRefNames(got.Spec.Projects); len(names) != 1 || names[0] != "widget" {
+		t.Fatalf("project member-refs dropped: %+v", got.Spec.Projects)
+	}
+}
+
+// TestComposeTeamGrantValidation fails closed on a malformed grant BEFORE any
+// apply (invariant 1), mirroring the CRD's role (MinLength=1) + capabilities
+// (MinItems=1) constraints as clean field-level 422s.
+func TestComposeTeamGrantValidation(t *testing.T) {
+	svc, _ := newComposeFixture(t, nil)
+	for _, tc := range []struct {
+		name  string
+		grant capabilityGrantWire
+	}{
+		{"empty-role", capabilityGrantWire{Role: "", Capabilities: []string{capability.CapabilityWorkItemAuthor}}},
+		{"no-capabilities", capabilityGrantWire{Role: "role-manager"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := teamRequest{Name: "bad-" + tc.name, Grants: []capabilityGrantWire{tc.grant}}
+			w := do(svc.handleTeam(true), http.MethodPost, "/api/teams",
+				caller("root", teamUID, true), req, nil)
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("%s: want 422, got %d: %s", tc.name, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func mustJSON(t *testing.T, w *httptest.ResponseRecorder, v any) {
