@@ -353,6 +353,15 @@ type roleRequest struct {
 	ActivePhases    []string `json:"activePhases,omitempty"`
 	Coordinator     bool     `json:"coordinator,omitempty"`
 	CoordinatorMode string   `json:"coordinatorMode,omitempty"`
+	// ResourceVersion and UsedBy are READ-ONLY fields RoleDetail projects (ISI-5361
+	// Gaps 6/7). The role PUT decode is strict (decodeJSONStrict, ISI-5358 Gap 2), so
+	// the write struct must ACCEPT them for the edit-form's read→edit→write loop to
+	// round-trip without a 400 — but planRole ignores both. ResourceVersion's
+	// optimistic-concurrency consumption is server-side CAS on the live object
+	// (upsert) / future S2 compose-PUT wiring; UsedBy is a derived blast-radius index
+	// with no spec meaning. Tolerated-and-dropped, never persisted.
+	ResourceVersion string  `json:"resourceVersion,omitempty"`
+	UsedBy          *UsedBy `json:"usedBy,omitempty"`
 }
 
 type skillRequest struct {
