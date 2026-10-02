@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -526,6 +527,105 @@ func TestComposeRolePersistsModelAndFallback(t *testing.T) {
 		got.Spec.FallbackModel.ModelEndpointRef.Name != "fb-endpoint" ||
 		got.Spec.FallbackModel.ModelEndpointRef.Key != "url" {
 		t.Fatalf("role fallback endpoint ref not persisted: %+v", got.Spec.FallbackModel.ModelEndpointRef)
+	}
+}
+
+// ── a Role composed with phase + coordinator config persists it (ISI-5358 Gap 2) ───────────────
+//
+// Before ISI-5358 roleRequest/planRole lacked activePhases/coordinator/coordinatorMode, so a
+// compose PUT silently discarded them. They must now ride the wire onto Role.spec.
+func TestComposeRolePersistsPhaseAndCoordinator(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := roleRequest{
+		Project:         "widget",
+		Name:            "lead",
+		PromptRef:       objectRefWire{Name: "lead-prompt"},
+		ActivePhases:    []string{"implementation", "code_review"},
+		Coordinator:     true,
+		CoordinatorMode: "propose",
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Role
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "lead"}, &got); err != nil {
+		t.Fatalf("role not applied: %v", err)
+	}
+	if !reflect.DeepEqual(got.Spec.ActivePhases, []string{"implementation", "code_review"}) {
+		t.Fatalf("activePhases not persisted: %+v", got.Spec.ActivePhases)
+	}
+	if !got.Spec.Coordinator || got.Spec.CoordinatorMode != "propose" {
+		t.Fatalf("coordinator config not persisted: coordinator=%v mode=%q", got.Spec.Coordinator, got.Spec.CoordinatorMode)
+	}
+}
+
+// ── the headline round-trip: read → edit → write loses NOTHING (ISI-5358 AC) ────────────────────
+//
+// A Role carrying all five Model-Per-Role / phase-lifecycle fields must survive the full
+// edit-form loop: Role.spec → roleDetail read projection → JSON (what the UI holds) →
+// roleRequest decode → planRole → Role.spec. The projected spec must equal the original, proving
+// an inline edit that re-sends the read payload unchanged drops no field (ISI-5305 §5 Gap 2).
+func TestRoleDetailReadWriteRoundTrip(t *testing.T) {
+	orig := &ksquadv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: "architect"},
+		Spec: ksquadv1.RoleSpec{
+			PromptRef:        ksquadv1.ObjectRef{Name: "architect-prompt"},
+			RuntimeClassHint: "gvisor",
+			Model:            "claude-opus-4-8",
+			FallbackModel: &ksquadv1.FallbackModel{
+				Model:            "claude-haiku-4-5",
+				ModelEndpointRef: &ksquadv1.SecretRef{Name: "fb-endpoint", Key: "url"},
+			},
+			DefaultSkills:   []ksquadv1.ObjectRef{{Name: "git"}},
+			ActivePhases:    []string{"design", "implementation"},
+			Coordinator:     true,
+			CoordinatorMode: "auto",
+		},
+	}
+
+	// 1. project to the read wire the UI GETs.
+	detail := roleDetail(orig)
+	// 2. serialize exactly as the HTTP layer would, then feed it back as the edit body.
+	wire, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatalf("marshal RoleDetail: %v", err)
+	}
+	var req roleRequest
+	dec := json.NewDecoder(bytes.NewReader(wire))
+	dec.DisallowUnknownFields() // the strict role decode path must accept its own read shape.
+	if err := dec.Decode(&req); err != nil {
+		t.Fatalf("RoleDetail JSON is not a valid roleRequest (strict decode): %v\nwire=%s", err, wire)
+	}
+	// 3. re-plan and compare specs.
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	plan := svc.planRole(req)
+	if len(plan.errs) != 0 {
+		t.Fatalf("round-trip plan had validation errors: %+v", plan.errs)
+	}
+	rewritten := plan.desired.(*ksquadv1.Role)
+	if !reflect.DeepEqual(rewritten.Spec, orig.Spec) {
+		t.Fatalf("round-trip lost data:\n orig=%+v\n got =%+v", orig.Spec, rewritten.Spec)
+	}
+}
+
+// ── the strict role decode rejects unknown fields (ISI-5358 Gap 2) ──────────────────────────────
+//
+// DisallowUnknownFields turns a would-be silent drop into a loud 400 so a client that sends a
+// field the wire does not model learns of it instead of losing config on a full-spec replace.
+func TestHandleRoleRejectsUnknownField(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	body := map[string]any{
+		"project":       "widget",
+		"name":          "engineer",
+		"promptRef":     map[string]any{"name": "engineer-prompt"},
+		"notARealField": "boom",
+	}
+	w := do(svc.handleRole(true), http.MethodPost, "/api/roles",
+		caller("bob", teamUID, false), body, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field want 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

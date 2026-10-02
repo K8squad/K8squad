@@ -230,6 +230,17 @@ type RoleDetail struct {
 	PromptRef        objectRefWire   `json:"promptRef"`
 	DefaultSkills    []objectRefWire `json:"defaultSkills,omitempty"`
 	RuntimeClassHint string          `json:"runtimeClassHint,omitempty"`
+	// Model / FallbackModel / ActivePhases / Coordinator / CoordinatorMode are the
+	// Model-Per-Role (ISI-4430) and phase-lifecycle (ISI-4431) spec fields the
+	// edit-form must READ so an inline edit re-sends them unchanged. Omitting them
+	// from the projection meant the compose PUT — a full-spec REPLACE — silently
+	// wiped whatever the form could not see (ISI-5358 / ISI-5305 §5 Gap 2). JSON
+	// tags mirror the write shape (roleRequest) byte-for-byte for a clean round-trip.
+	Model           string             `json:"model,omitempty"`
+	FallbackModel   *fallbackModelWire `json:"fallbackModel,omitempty"`
+	ActivePhases    []string           `json:"activePhases,omitempty"`
+	Coordinator     bool               `json:"coordinator,omitempty"`
+	CoordinatorMode string             `json:"coordinatorMode,omitempty"`
 }
 
 // projectRepoWire mirrors projectRequest.Repo byte-for-byte (composecrd.go).
@@ -815,9 +826,20 @@ func roleDetail(ro *ksquadv1.Role) RoleDetail {
 		Name:             ro.Name,
 		PromptRef:        objectRefWire{Name: ro.Spec.PromptRef.Name, Namespace: ro.Spec.PromptRef.Namespace},
 		RuntimeClassHint: ro.Spec.RuntimeClassHint,
+		Model:            ro.Spec.Model,
+		ActivePhases:     ro.Spec.ActivePhases,
+		Coordinator:      ro.Spec.Coordinator,
+		CoordinatorMode:  ro.Spec.CoordinatorMode,
 	}
 	for _, ds := range ro.Spec.DefaultSkills {
 		d.DefaultSkills = append(d.DefaultSkills, objectRefWire{Name: ds.Name, Namespace: ds.Namespace})
+	}
+	if fb := ro.Spec.FallbackModel; fb != nil {
+		w := &fallbackModelWire{Model: fb.Model}
+		if fb.ModelEndpointRef != nil {
+			w.ModelEndpointRef = &secretRefWire{Name: fb.ModelEndpointRef.Name, Key: fb.ModelEndpointRef.Key}
+		}
+		d.FallbackModel = w
 	}
 	return d
 }
