@@ -16,7 +16,7 @@
 // time it is opened (GET .../files?path=), so a deep workspace never front-loads
 // the whole tree. Selecting a file fetches its content (GET .../files/content).
 
-import { Component, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { Component, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import hljs from "highlight.js/lib/core";
 import hlGo from "highlight.js/lib/languages/go";
 import hlTypescript from "highlight.js/lib/languages/typescript";
@@ -41,6 +41,9 @@ import {
   codeLanguage,
   imageDataUrl,
   retryDelayMs,
+  FILE_REASON_NO_BROWSE_TARGET,
+  FILE_REASON_WORKSPACE_BUSY,
+  RETRY_MAX_ATTEMPTS,
   type FileEntry,
   type FileContent,
   type FileStat,
@@ -58,7 +61,7 @@ hljs.registerLanguage("yaml", hlYaml);
 
 /** Per-directory lazy-load state, keyed by the directory's workspace-relative
  * path ("" = root). A directory is fetched the first time it is expanded. */
-type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean; reason?: string }>;
+type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean; reason?: string; snapshotTakenAt?: string }>;
 
 // ISI-4705: the largest byte window the rich renderers (highlight.js code view,
 // ReactMarkdown) will process on the main thread. A capped read is up to 1 MiB
@@ -98,6 +101,14 @@ const TREE_ICON = {
   image: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 13a1 1 0 1 0 0-2 1 1 0 0 0 0 2 M20 19l-4-4-3 3-2-2-3 3",
   media: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M10 12.5v5l4-2.5z",
   archive: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M11 12h2 M11 15h2 M11 18h2",
+  // ISI-5339 (S6): state-frame glyphs for the six honest states + the freshness
+  // pill — same 24-grid / currentColor vocabulary as the tree icons above.
+  clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2",
+  refresh: "M23 4v6h-6 M1 20v-6h6 M3.51 9a9 9 0 0 1 14.85-3.36L23 10 M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
+  lock: "M5 11h14v10H5z M8 11V7a4 4 0 0 1 8 0v4",
+  info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 16v-4 M12 8h.01",
+  box: "M21 8l-9-5-9 5v8l9 5 9-5z M3 8l9 5 9-5 M12 13v8",
+  alert: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 8v4 M12 16h.01",
 } as const;
 
 /** One tree glyph. A single <path> renders every subpath in the `d` string, so
@@ -168,6 +179,180 @@ function fileTypeGlyph(name: string): { icon: keyof typeof TREE_ICON; tone: stri
   return FILE_TYPE[ext] ?? { icon: "file", tone: "default" };
 }
 
+// ——— ISI-5339 (S6): Frame 01/02/03 progressive-loading + honest-state pieces ———
+// Zero new design tokens: every hue is an existing status token
+// (--status-running / --status-paused / --status-idle / --status-blocked /
+// --accent) and every radius an existing --radius-* (spec §"reskin only").
+
+/** A coarse relative age for the freshness pill ("just now", "12s ago"). */
+function relativeAge(ms: number): string {
+  if (ms < 10_000) return "just now";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Frame 03·A — the Live/Snapshot freshness pill for the Files header. A trust
+ * signal, never an alarm: Live = green dot + pulse on the live PVC read;
+ * Snapshot = amber clock over a point-in-time snapshot, with the absolute
+ * timestamp on hover (`snapshotTakenAt` when the wire carries it, else the time
+ * the listing was fetched). The pulse ring honours prefers-reduced-motion
+ * (CSS below renders a static dot). */
+function FreshnessPill({
+  mode,
+  fetchedAt,
+  snapshotTakenAt,
+}: {
+  mode: "live" | "snapshot";
+  fetchedAt: number;
+  snapshotTakenAt?: string;
+}) {
+  // Freshness updates while you browse (spec §3): a slow 10 s tick is enough —
+  // the label is coarse ("12s ago"), not a stopwatch.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 10_000);
+    return () => clearInterval(t);
+  }, []);
+  const parsed = snapshotTakenAt ? Date.parse(snapshotTakenAt) : NaN;
+  const anchor = Number.isNaN(parsed) ? fetchedAt : parsed;
+  const abs = new Date(anchor).toLocaleString();
+  if (mode === "live") {
+    return (
+      <span
+        className="file-explorer__pill file-explorer__pill--live"
+        data-testid="files-pill-live"
+        title={`Live workspace — refreshed ${abs}`}
+      >
+        <span className="file-explorer__pill-dot" aria-hidden="true" />
+        Live · {relativeAge(now - fetchedAt)}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="file-explorer__pill file-explorer__pill--snapshot"
+      data-testid="files-pill-snapshot"
+      title={`Snapshot taken ${abs}`}
+    >
+      <TreeIcon name="clock" className="file-explorer__pill-clock" />
+      Snapshot · {relativeAge(now - anchor)}
+    </span>
+  );
+}
+
+/** Frame 01 — skeleton tree rows (muted rounded bars) while a listing is in
+ * flight. `aria-hidden` bars; the surrounding region carries the single
+ * aria-busy "Loading files…" label (spec §6). */
+function SkeletonRows({ depth, count = 5 }: { depth: number; count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }, (_, i) => (
+        <li key={i} aria-hidden="true">
+          <div
+            className={`file-explorer__skeleton file-explorer__skeleton--w${(i % 3) + 1}`}
+            style={{ marginLeft: 8 + depth * 14 }}
+            data-testid="files-skeleton"
+          />
+        </li>
+      ))}
+    </>
+  );
+}
+
+/** Frame 01 — the bounded "spinning up" strip (blue): spin glyph + honest copy
+ * + a determinate-FEELING progress bar keyed to the bounded poll budget, not an
+ * indeterminate spinner that reads as hung (spec §1). Driven by the 202
+ * preparing contract; no retryAfterMs on the wire so progress is attempt-based
+ * (spec §8 open point 2 fallback). */
+function SpinningUpStrip({ attempt }: { attempt: number }) {
+  const pct = Math.min(100, Math.round((attempt / RETRY_MAX_ATTEMPTS) * 100));
+  return (
+    <div className="file-explorer__spinup" role="status" data-testid="files-preparing">
+      <TreeIcon name="refresh" className="file-explorer__spin file-explorer__spin--accent" />
+      <div className="file-explorer__spinup-copy">
+        <p className="file-explorer__spinup-title">Spinning up the file reader…</p>
+        <p className="muted">
+          Getting a read-only view of this workspace ready. This usually takes a few seconds.
+        </p>
+        <div className="file-explorer__progress" aria-hidden="true">
+          <div className="file-explorer__progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Frame 03·B — the amber read-timeout banner: auto-retry with a visible
+ * attempt budget + a [Retry now] that refetches immediately and keeps the
+ * user's place in the tree (spec §4). role="status": polite, expected. */
+function RetryBanner({ attempt, onRetryNow }: { attempt: number; onRetryNow: () => void }) {
+  const seconds = Math.round(retryDelayMs(attempt) / 1000);
+  return (
+    <div className="banner banner--warn" role="status" data-testid="files-retrying">
+      <p className="file-explorer__banner-title">
+        <TreeIcon name="refresh" className="file-explorer__spin" /> This is taking longer than
+        usual — retrying…
+      </p>
+      <p className="muted">
+        We&apos;re retrying automatically — attempt {attempt} of {RETRY_MAX_ATTEMPTS}, next try in{" "}
+        {seconds}s. You can wait or retry now; your place in the tree is kept.
+      </p>
+      <button type="button" className="btn" onClick={onRetryNow} data-testid="files-retry-now">
+        Retry now
+      </button>
+    </div>
+  );
+}
+
+/** Frame 02 — one honest state frame: badge (top-right) + framed icon + title
+ * + body, each state visually distinct so fabricated-empty, genuinely-empty,
+ * and busy never look alike (spec §2). */
+function StateFrame({
+  tone,
+  badge,
+  icon,
+  title,
+  body,
+  testId,
+  action,
+  alert,
+  detail,
+}: {
+  tone: "accent" | "amber" | "slate" | "rose";
+  badge: string;
+  icon: keyof typeof TREE_ICON;
+  title: string;
+  body: string;
+  testId: string;
+  action?: ReactNode;
+  alert?: boolean;
+  detail?: string;
+}) {
+  return (
+    <div
+      className={`file-explorer__state file-explorer__state--${tone}`}
+      role={alert ? "alert" : "status"}
+      data-testid={testId}
+      title={detail}
+    >
+      <span className={`file-explorer__state-badge file-explorer__state-badge--${tone}`}>
+        {badge}
+      </span>
+      <div className={`file-explorer__state-frame file-explorer__state-frame--${tone}`}>
+        <TreeIcon name={icon} className="file-explorer__state-icon" />
+      </div>
+      <h2 className="file-explorer__state-title">{title}</h2>
+      <p className="muted file-explorer__state-body">{body}</p>
+      {action}
+    </div>
+  );
+}
+
 /** A reporting error boundary around the File Explorer subtree (ISI-4705). The
  * files route had NO boundary, so any render throw — a bad payload, a renderer
  * choking on a large file — propagated to the root and white-screened the whole
@@ -230,6 +415,21 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   const [preview, setPreview] = useState<FilesState<FileContent>>({ kind: "loading" });
   // ISI-4651: the selected file's stat / change metadata (details pane).
   const [stat, setStat] = useState<FilesState<FileStat>>({ kind: "loading" });
+  // ISI-5339 (S6): [Retry now] / [Try again] bump this to cancel any scheduled
+  // back-off timer and refetch the root immediately (tree position preserved).
+  const [rootTick, setRootTick] = useState(0);
+  // The pending auto-retry timer, kept cancellable for Retry now.
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // When the current root listing landed — drives the Live freshness label.
+  const [rootFetchedAt, setRootFetchedAt] = useState<number | null>(null);
+
+  const refreshRoot = useCallback(() => {
+    if (retryTimer.current) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+    setRootTick((t) => t + 1);
+  }, []);
 
   const loadDir = useCallback(
     async (path: string, signal?: AbortSignal): Promise<DirState> => {
@@ -240,15 +440,16 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
         // ISI-5140: preserve `reason` — the render logic (busyDegraded / noTarget)
         // keys the workspace-busy banner on reason==="workspace_busy"; dropping it
         // here left busyDegraded permanently false, so the banner never rendered.
-        data: { entries: state.data.entries ?? [], degraded: state.data.degraded, reason: state.data.reason },
+        data: { entries: state.data.entries ?? [], degraded: state.data.degraded, reason: state.data.reason, snapshotTakenAt: state.data.snapshotTakenAt },
       };
     },
     [projectId],
   );
 
-  // Load the root listing once (and on project change).
+  // Load the root listing once (and on project change / Retry now).
   // ADR-0025 D2: AbortController cancels the in-flight request on unmount / project
-  // change; retrying state triggers a scheduled retry with exponential back-off.
+  // change; retrying/preparing states schedule a bounded back-off retry
+  // (ISI-5339 §1: no row — and no strip — spins forever).
   useEffect(() => {
     let alive = true;
     const ac = new AbortController();
@@ -256,26 +457,35 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     setDirs({});
     setOpen(new Set());
     setSelected(null);
+    setRootFetchedAt(null);
 
-    async function fetchRoot(attempt: number) {
+    async function fetchRoot(attempt: number, isRetry = false) {
       try {
-        const s =
-          attempt === 1
-            ? await loadDir("", ac.signal)
-            : await (async (): Promise<DirState> => {
-                const raw = await listProjectFilesAttempt(projectId, "", attempt, ac.signal);
-                if (raw.kind !== "ready") return raw;
+        // ISI-5339 (S6): only the INITIAL fetch goes through loadDir; every
+        // scheduled retry/preparing poll uses listProjectFilesAttempt so the
+        // attempt budget actually escalates (the old code keyed on
+        // `attempt === 1`, so every retry re-entered the first-fetch path and
+        // the bounded 3-attempt terminal could never fire — it retried
+        // "attempt 1" forever).
+        const s = !isRetry
+          ? await loadDir("", ac.signal)
+          : await (async (): Promise<DirState> => {
+              const raw = await listProjectFilesAttempt(projectId, "", attempt, ac.signal);
+              if (raw.kind !== "ready") return raw;
                 return {
                   kind: "ready",
-                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason },
+                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason, snapshotTakenAt: raw.data.snapshotTakenAt },
                 };
-              })();
+            })();
         if (!alive) return;
-        if (s.kind === "retrying") {
+        if (s.kind === "retrying" || s.kind === "preparing") {
           setRoot(s);
           const delay = retryDelayMs(s.attempt);
-          setTimeout(() => { if (alive) void fetchRoot(s.attempt); }, delay);
+          retryTimer.current = setTimeout(() => {
+            if (alive) void fetchRoot(s.attempt, true);
+          }, delay);
         } else {
+          if (s.kind === "ready") setRootFetchedAt(Date.now());
           setRoot(s);
         }
       } catch {
@@ -287,8 +497,12 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     return () => {
       alive = false;
       ac.abort();
+      if (retryTimer.current) {
+        clearTimeout(retryTimer.current);
+        retryTimer.current = null;
+      }
     };
-  }, [loadDir, projectId]);
+  }, [loadDir, projectId, rootTick]);
 
   const toggleDir = useCallback(
     (path: string) => {
@@ -328,21 +542,36 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     [projectId],
   );
 
-  // ——— terminal honest states for the whole tab (root listing) ———
-  if (root.kind === "loading") {
+  // ——— progressive / honest states for the whole tab (root listing) ———
+  // ISI-5339 Frame 01: loading / preparing / retrying NEVER blank the tab —
+  // the shell paints instantly with skeleton rows (plus the bounded spinning-up
+  // strip on 202 preparing, or the amber retry banner on read-timeout).
+  if (root.kind === "loading" || root.kind === "preparing" || root.kind === "retrying") {
     return (
-      <section aria-busy="true" data-testid="files-loading">
-        <h1>File Explorer</h1>
-        <p className="muted">Loading workspace files…</p>
-      </section>
-    );
-  }
-  // ADR-0025 D2: retryable-degraded — reader pod is cold-starting; show progress.
-  if (root.kind === "retrying") {
-    return (
-      <section aria-busy="true" data-testid="files-retrying">
-        <h1>File Explorer</h1>
-        <p className="muted">Workspace reader is starting up — retrying… (attempt {root.attempt})</p>
+      <section
+        aria-busy="true"
+        aria-label="Loading files…"
+        data-testid={root.kind === "loading" ? "files-loading" : undefined}
+      >
+        <header>
+          <h1>File Explorer</h1>
+          <p className="muted">Read-only view of this project&apos;s workspace files.</p>
+        </header>
+        {root.kind === "preparing" && <SpinningUpStrip attempt={root.attempt} />}
+        {root.kind === "retrying" && <RetryBanner attempt={root.attempt} onRetryNow={refreshRoot} />}
+        <div className="file-explorer">
+          <nav className="file-explorer__tree" aria-label="Workspace files" data-testid="files-tree">
+            <ul>
+              <SkeletonRows depth={0} />
+            </ul>
+          </nav>
+          <div className="file-explorer__preview" data-testid="files-preview">
+            <p className="muted">Select a file to preview its contents.</p>
+          </div>
+          <aside className="file-explorer__details" data-testid="files-details" aria-label="File details">
+            <p className="muted">Select a file to see its details.</p>
+          </aside>
+        </div>
       </section>
     );
   }
@@ -354,52 +583,109 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   }
   if (root.kind === "not-wired") {
     return honest(
-      "File Explorer not available yet",
-      "The workspace reader is not wired in this deployment (the reader pod / files route is not exposed here yet).",
+      "File Explorer isn't available in this deployment yet",
+      "The workspace reader isn't wired here yet — files browsing arrives with the next rollout.",
     );
   }
   if (root.kind === "error") {
-    return honest(
-      "Couldn't load files",
-      `The workspace read failed${root.status ? ` (HTTP ${root.status})` : ""} — retry shortly.`,
+    // ISI-5339 §4 terminal: retries exhausted / hard failure — an alert with a
+    // manual [Try again]; the raw HTTP code stays in the tooltip, never as the
+    // headline ("never a bare 504/500").
+    return (
+      <section data-testid="file-explorer">
+        <h1>File Explorer</h1>
+        <StateFrame
+          tone="rose"
+          badge="ERROR"
+          icon="alert"
+          title="We couldn't load these files."
+          body="Something went wrong reading this workspace — it isn't your files that are missing. Try again in a moment."
+          testId="files-error"
+          alert
+          action={
+            <button type="button" className="btn" onClick={refreshRoot} data-testid="files-try-again">
+              Try again
+            </button>
+          }
+          detail={root.status ? `HTTP ${root.status}` : undefined}
+        />
+      </section>
     );
   }
 
   const rootEntries = root.data.entries;
   const degraded = root.data.degraded === true;
-  // ISI-5140: the busy banner is shown ONLY when snapshot bytes are actually being
-  // served (degraded + reason="workspace_busy"). The no-completed-run empty state
-  // (reason="no_browse_target", degraded=false) is honest, not a degradation.
-  const busyDegraded = degraded && root.data.reason === "workspace_busy";
-  const noTarget = !degraded && root.data.reason === "no_browse_target";
+  // ISI-5339 §5 map — states bind to the ADR-0025 §D2 reason vocabulary
+  // (ISI-5140 wire labels), never to bare HTTP codes or boolean guesses:
+  //   degraded + workspace_busy + rows  → busy_snapshot (amber Snapshot pill)
+  //   degraded + workspace_busy + none  → snapshot_unavailable (LIVE PAUSED)
+  //   degraded=false + no_browse_target → no-run (NO RUN YET)
+  //   plain 200 + 0 rows                → empty (EMPTY)
+  const snapshotMode = degraded && root.data.reason === FILE_REASON_WORKSPACE_BUSY;
+  const noTarget = !degraded && root.data.reason === FILE_REASON_NO_BROWSE_TARGET;
+
+  // Frame 03·A: the pill is always present when a listing is shown.
+  const pill = rootFetchedAt != null && rootEntries.length > 0 && (
+    <FreshnessPill
+      mode={snapshotMode ? "snapshot" : "live"}
+      fetchedAt={rootFetchedAt}
+      snapshotTakenAt={root.data.snapshotTakenAt}
+    />
+  );
 
   return (
     <section data-testid="file-explorer">
-      <header>
-        <h1>File Explorer</h1>
+      <header className="file-explorer__header">
+        <h1>File Explorer {pill}</h1>
         <p className="muted">Read-only view of this project&apos;s workspace files.</p>
       </header>
 
-      {busyDegraded && rootEntries.length > 0 && (
-        <div className="banner banner--info" role="status" data-testid="files-busy-banner">
-          Workspace busy — showing last-committed state. Files reflect the last commit, not
-          live edits, while an agent holds the workspace.
-        </div>
-      )}
-      {busyDegraded && rootEntries.length === 0 && (
-        <div className="banner banner--info" role="status" data-testid="files-busy-banner">
-          Workspace busy — no last-committed snapshot is available yet. Files will
-          reappear when the agent releases the workspace.
+      {/* Frame 02 · busy_snapshot — a served snapshot with real rows: amber
+          banner + Snapshot pill. "Real data, slightly stale", never an alarm. */}
+      {snapshotMode && rootEntries.length > 0 && (
+        <div className="banner banner--warn" role="status" data-testid="files-busy-banner">
+          <strong>
+            Showing a snapshot from{" "}
+            {root.data.snapshotTakenAt ? new Date(root.data.snapshotTakenAt).toLocaleString() : "the last commit"}
+          </strong>
+          <p className="muted">
+            An agent is editing this workspace right now, so you&apos;re seeing a point-in-time
+            snapshot. The live view returns automatically when the agent is done.
+          </p>
         </div>
       )}
 
-      {rootEntries.length === 0 ? (
-        <EmptyState
+      {/* Frame 02 · snapshot_unavailable — busy with NO servable snapshot. The
+          single most important copy change in the spec (closes F1): a distinct
+          labelled LIVE PAUSED state with a lock — NEVER an empty file panel. */}
+      {snapshotMode && rootEntries.length === 0 ? (
+        <StateFrame
+          tone="slate"
+          badge="LIVE PAUSED"
+          icon="lock"
+          title="Live view paused while the agent works"
+          body="An agent is actively editing this workspace and a browsable snapshot isn't available for this workspace type yet. The file list returns when the agent releases it."
+          testId="files-snapshot-unavailable"
+        />
+      ) : noTarget ? (
+        /* Frame 02 · no-run — the honest "nothing has produced a workspace yet". */
+        <StateFrame
+          tone="slate"
+          badge="NO RUN YET"
+          icon="info"
+          title="No files to show yet"
+          body="This project hasn't produced a workspace yet. Files appear after the first run completes."
+          testId="files-no-run"
+        />
+      ) : rootEntries.length === 0 ? (
+        /* Frame 02 · empty — genuinely-empty workspace, distinct from no-run. */
+        <StateFrame
+          tone="slate"
+          badge="EMPTY"
+          icon="box"
+          title="This workspace is empty"
+          body="No files have been created here yet. Files appear here as agents work in this workspace."
           testId="files-empty"
-          title={noTarget ? "No completed run yet" : "No files yet"}
-          why={noTarget
-            ? "This project has no completed run yet, so there is no workspace to browse. Files appear after the first run finishes."
-            : "This project's workspace has no files yet."}
         />
       ) : (
         <div className="file-explorer">
@@ -461,6 +747,11 @@ function TreeNode({
   const isOpen = open.has(entry.path);
   const pad = { paddingLeft: 8 + depth * 14 };
   const fileGlyph = fileTypeGlyph(entry.name); // ISI-4747 follow-up: type-aware file icon
+  // ISI-5339 Frame 01: while an open directory's listing is in flight, the row's
+  // caret itself spins (inline per-row spinner) — the tree is never blocked and
+  // every other row stays interactive.
+  const childLoading =
+    isDir && isOpen && (!dirs[entry.path] || dirs[entry.path].kind === "loading" || dirs[entry.path].kind === "preparing");
 
   // ISI-4652: per-row download. A sibling anchor (not nested in the row button —
   // interactive elements cannot nest), so a download click never toggles/selects.
@@ -516,7 +807,7 @@ function TreeNode({
         >
           <TreeIcon
             name="chevron"
-            className={`file-explorer__caret${isOpen ? " file-explorer__caret--open" : ""}`}
+            className={`file-explorer__caret${isOpen ? " file-explorer__caret--open" : ""}${childLoading ? " file-explorer__spin" : ""}`}
           />
           <TreeIcon
             name={isOpen ? "folderOpen" : "folder"}
@@ -528,9 +819,13 @@ function TreeNode({
       </div>
       {isOpen && (
         <ul>
-          {!childState || childState.kind === "loading" ? (
-            <li className="muted" style={{ paddingLeft: 8 + (depth + 1) * 14 }} data-testid="files-dir-loading">
-              Loading…
+          {!childState || childState.kind === "loading" || childState.kind === "preparing" ? (
+            // ISI-5339 Frame 01: skeleton children indented beneath the row —
+            // not a blocking full-tree spinner.
+            <li data-testid="files-dir-loading" aria-busy="true">
+              <ul>
+                <SkeletonRows depth={depth + 1} count={3} />
+              </ul>
             </li>
           ) : childState.kind === "ready" ? (
             childState.data.entries.length === 0 ? (
@@ -599,7 +894,14 @@ function DetailsPane({
     return <p className="muted">Your session has expired — sign in to see file details.</p>;
   }
   if (state.kind === "retrying") {
-    return <p className="muted">Starting workspace reader…</p>;
+    return <p className="muted">This is taking longer than usual — retrying…</p>;
+  }
+  if (state.kind === "preparing") {
+    return (
+      <p className="muted" aria-busy="true" data-testid="files-details-preparing">
+        Spinning up the file reader…
+      </p>
+    );
   }
   if (state.kind === "not-found" || state.kind === "error") {
     return (
@@ -717,7 +1019,14 @@ function PreviewPane({
     return <p className="muted">Your session has expired — sign in to preview files.</p>;
   }
   if (state.kind === "retrying") {
-    return <p className="muted">Starting workspace reader…</p>;
+    return <p className="muted">This is taking longer than usual — retrying…</p>;
+  }
+  if (state.kind === "preparing") {
+    return (
+      <p className="muted" aria-busy="true">
+        Spinning up the file reader…
+      </p>
+    );
   }
   if (state.kind === "error") {
     return (
