@@ -45,13 +45,6 @@ type groupLister interface {
 // external-snapshotter (https://github.com/kubernetes-csi/external-snapshotter).
 const volumeSnapshotGroup = "snapshot.storage.k8s.io"
 
-// volumeSnapshotGVR is the GVR used for all VolumeSnapshot unstructured operations.
-var volumeSnapshotGVR = schema.GroupVersionResource{
-	Group:    volumeSnapshotGroup,
-	Version:  "v1",
-	Resource: "volumesnapshots",
-}
-
 // csiSnapshotTimeout is the per-operation deadline: snapshot-readiness wait + pod-readiness wait.
 // Must stay well inside the 45 s readerTimeout (files.go) so the outer context cancels us cleanly.
 const csiSnapshotTimeout = 40 * time.Second
@@ -82,8 +75,8 @@ type CSISnapshotBusyReader struct {
 	dial      func(baseURL string) readClient
 
 	// csiProbed / csiAvailable are the lazy capability-probe cache.
-	probeMu     sync.Mutex
-	csiProbed   bool
+	probeMu      sync.Mutex
+	csiProbed    bool
 	csiAvailable bool
 }
 
