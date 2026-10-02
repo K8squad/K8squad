@@ -538,3 +538,141 @@ func busyStat(ctx context.Context, busy BusySnapshotReader, projectID, filePath 
 	}
 	return busy.StatSnapshotFile(ctx, projectID, filePath)
 }
+
+// streamEntry is one NDJSON line in the /files/stream response (ADR-0025 D5).
+// Non-entry lines carry metadata (preamble, done marker).
+type streamEntry struct {
+	// Entry fields (populated for real directory entries).
+	Name string `json:"name,omitempty"`
+	Type string `json:"type,omitempty"`
+	Size int64  `json:"size,omitempty"`
+	// Preamble fields (first line only, entry fields empty).
+	Degraded bool   `json:"degraded,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	// Done is true on the final line.
+	Done bool `json:"done,omitempty"`
+}
+
+// projectFilesStream returns the handler for GET /api/projects/{projectId}/files/stream
+// (ADR-0025 D5). It iterates through all listing pages and writes each batch of entries
+// as NDJSON (application/x-ndjson), flushing after every page, so wide directories begin
+// rendering at the client before the full listing is complete. When reader is nil the
+// handler answers 501.
+func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotReader) http.HandlerFunc {
+	if reader == nil {
+		return notImplemented("project file-explorer stream", "ISI-5348: wire a WorkspaceReader (S4a reader-pod client) to enable")
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := decodePathVar(mux.Vars(r)["projectId"])
+
+		rawPath := r.URL.Query().Get("path")
+		cleanPath, err := workspaceJailPath(rawPath)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid path: "+err.Error())
+			return
+		}
+
+		flusher, canFlush := w.(http.Flusher)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		enc := json.NewEncoder(w)
+
+		// writeLine encodes v as one NDJSON line and flushes if the transport supports it.
+		writeLine := func(v any) bool {
+			if err := enc.Encode(v); err != nil {
+				return false
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+			return true
+		}
+
+		// Resolve degraded state: try the live reader; on ErrWorkspaceBusy fall back to snapshot.
+		degraded := false
+		degradedReason := ""
+
+		// Iterate pages. For each page we call ListDir (which is cached for 300 ms on the
+		// reader, so re-expand clicks within the TTL cost nothing extra).
+		page := 0
+		firstPage := true
+		for {
+			rctx, rcancel := withReaderTimeout(r.Context())
+			listing, listErr := reader.ListDir(rctx, projectID, cleanPath, page)
+			rcancel()
+
+			if listErr != nil {
+				switch {
+				case errors.Is(listErr, ErrProjectNotFound):
+					// On the first page the headers are not written yet so we can still 404.
+					if firstPage {
+						writeJSONError(w, http.StatusNotFound, "project not found")
+						return
+					}
+					// Mid-stream: write error sentinel and close.
+					_ = enc.Encode(FileErrorBody{Error: "project not found", Code: ErrCodeNotFound})
+					return
+				case errors.Is(listErr, ErrWorkspaceBusy):
+					// Degrade to snapshot for the remaining pages.
+					var snapErr error
+					listing, snapErr = busyList(r.Context(), busy, projectID, cleanPath, page)
+					if snapErr != nil {
+						listing = &DirListing{Entries: []DirEntry{}}
+					}
+					degraded = true
+					degradedReason = reasonWorkspaceBusy
+				case errors.Is(listErr, ErrNoBrowseTarget):
+					listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
+					degradedReason = reasonNoBrowseTarget
+				case isTimeout(listErr):
+					if firstPage {
+						writeRetryableDegraded(w)
+						return
+					}
+					// Mid-stream: write retryable error sentinel.
+					_ = enc.Encode(FileErrorBody{Error: "workspace reader timed out; retry shortly", Code: ErrCodeRetryableDegraded})
+					return
+				default:
+					if firstPage {
+						writeJSONError(w, http.StatusInternalServerError, "workspace read error")
+						return
+					}
+					return
+				}
+			}
+			if listing.Degraded {
+				degraded = true
+				degradedReason = listing.Reason
+			}
+
+			// Write a preamble line on the first response to convey degraded state before entries.
+			if firstPage {
+				w.WriteHeader(http.StatusOK)
+				preamble := streamEntry{Degraded: degraded, Reason: degradedReason}
+				if !writeLine(preamble) {
+					return
+				}
+				firstPage = false
+			}
+
+			// Write each entry as a separate NDJSON line.
+			for _, e := range listing.Entries {
+				if !writeLine(streamEntry{Name: e.Name, Type: e.Type, Size: e.Size}) {
+					return
+				}
+			}
+
+			if listing.NextPage == 0 {
+				break
+			}
+			page = listing.NextPage
+		}
+
+		// Terminal done marker so the client knows the stream is complete (not truncated).
+		_ = enc.Encode(streamEntry{Done: true})
+		if canFlush {
+			flusher.Flush()
+		}
+	}
+}

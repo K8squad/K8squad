@@ -316,3 +316,63 @@ func TestReaderPodWorkspaceReader_ActiveSessionNotReaped(t *testing.T) {
 		t.Errorf("teardowns = %d, want 0", td)
 	}
 }
+
+// TestListDirCache_DeduplicatesRapidReexpand: two ListDir calls within listCacheTTL should only
+// reach the reader pod once (ADR-0025 D5 — short-TTL listing cache).
+func TestListDirCache_DeduplicatesRapidReexpand(t *testing.T) {
+	rc := &fakeReadClient{}
+	r := newTestReader(t, &fakeResolver{spec: validReaderSpec()}, &fakeLauncher{}, rc)
+
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return now }
+
+	// First call — must hit the pod.
+	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+		t.Fatalf("first ListDir: %v", err)
+	}
+	if len(rc.listPaths) != 1 {
+		t.Fatalf("want 1 pod call after first ListDir, got %d", len(rc.listPaths))
+	}
+
+	// Second call within TTL — must be served from cache (pod call count unchanged).
+	now = now.Add(listCacheTTL / 2)
+	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+		t.Fatalf("second ListDir (within TTL): %v", err)
+	}
+	if len(rc.listPaths) != 1 {
+		t.Errorf("want 1 pod call (cache hit), got %d", len(rc.listPaths))
+	}
+
+	// Third call after TTL — must re-hit the pod.
+	now = now.Add(listCacheTTL)
+	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+		t.Fatalf("third ListDir (after TTL): %v", err)
+	}
+	if len(rc.listPaths) != 2 {
+		t.Errorf("want 2 pod calls after TTL expiry, got %d", len(rc.listPaths))
+	}
+}
+
+// TestListDirCache_DifferentKeysNotShared: cache is keyed by (dirPath, page) so different paths
+// and pages do not share entries.
+func TestListDirCache_DifferentKeysNotShared(t *testing.T) {
+	rc := &fakeReadClient{}
+	r := newTestReader(t, &fakeResolver{spec: validReaderSpec()}, &fakeLauncher{}, rc)
+
+	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+	r.now = func() time.Time { return now }
+
+	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
+		t.Fatalf("ListDir ./0: %v", err)
+	}
+	if _, err := r.ListDir(context.Background(), "proj-1", "src", 0); err != nil {
+		t.Fatalf("ListDir src/0: %v", err)
+	}
+	if _, err := r.ListDir(context.Background(), "proj-1", ".", 1); err != nil {
+		t.Fatalf("ListDir ./1: %v", err)
+	}
+	// All three are distinct keys — expect 3 pod calls.
+	if len(rc.listPaths) != 3 {
+		t.Errorf("want 3 pod calls for 3 distinct keys, got %d", len(rc.listPaths))
+	}
+}

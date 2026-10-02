@@ -916,6 +916,15 @@ func (s *Server) routes(opts Options) {
 		}
 		filesDir.HandleFunc("", s.projectFiles(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
 
+		// ADR-0025 D5: streaming NDJSON listing — iterates pages and flushes each batch so
+		// wide directories begin rendering at the client before the full listing completes.
+		filesStream := s.router.Path("/api/projects/{projectId:.+}/files/stream").Subrouter()
+		filesStream.Use(authz)
+		if opts.ProjectRoles != nil {
+			filesStream.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		filesStream.HandleFunc("", s.projectFilesStream(opts.WorkspaceReader, opts.WorkspaceBusyReader)).Methods(http.MethodGet)
+
 		filesContent := s.router.Path("/api/projects/{projectId:.+}/files/content").Subrouter()
 		filesContent.Use(authz)
 		if opts.ProjectRoles != nil {
