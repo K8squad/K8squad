@@ -58,7 +58,13 @@ func (openCode) DefaultModel() a2a.ModelInfo {
 }
 
 func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
-	env := envelopeEnv(lc)
+	// ISI-5329: opencode's entire prompt (system context + instruction) rides
+	// stdin via EnvelopePrompt below — it never reads the KSQUAD_SYSTEM_CONTEXT
+	// env the other runtimes use. Setting that env was redundant AND fatal: the
+	// token-budgeted context routinely exceeds the kernel's per-env-string
+	// ceiling (MAX_ARG_STRLEN, 128 KiB), so exec died with E2BIG before opencode
+	// ever started (ISI-5328). Carry no context env at all.
+	var env []string
 	if lc.Credential != "" {
 		env = append(env, "OPENCODE_API_KEY="+lc.Credential)
 	}

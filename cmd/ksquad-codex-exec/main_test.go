@@ -100,7 +100,7 @@ func TestRunDeliversEnvelopeOnStdinNotArgv(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	passthrough := []string{"--model", "gpt-5-codex"}
-	if code := run(passthrough, getenv, &out, &errOut); code != 0 {
+	if code := run(passthrough, getenv, os.ReadFile, &out, &errOut); code != 0 {
 		t.Fatalf("run exit=%d stderr=%q", code, errOut.String())
 	}
 
@@ -125,6 +125,85 @@ func TestRunDeliversEnvelopeOnStdinNotArgv(t *testing.T) {
 	// ...and the assembled envelope is delivered on stdin.
 	if want := buildEnvelope(systemContext, input); string(gotStdin) != want {
 		t.Fatalf("stdin = %q, want %q", gotStdin, want)
+	}
+}
+
+// TestRunReadsSystemContextFromFile is the ISI-5329 proof: when
+// KSQUAD_SYSTEM_CONTEXT_FILE points at a spill file, the wrapper reads the
+// system context from it (NOT from the oversized-prone inline env var) and
+// delivers the assembled envelope on stdin — so a context far larger than the
+// kernel's 128 KiB per-env-string ceiling reaches codex without tripping exec.
+func TestRunReadsSystemContextFromFile(t *testing.T) {
+	dir := t.TempDir()
+	stdinFile := filepath.Join(dir, "stdin")
+
+	fake := filepath.Join(dir, "codex")
+	script := "#!/bin/sh\ncat > \"$HELPER_STDIN_FILE\"\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil { // #nosec G306 -- test fake must be executable
+		t.Fatal(err)
+	}
+
+	// A system context well past MAX_ARG_STRLEN (128 KiB) — the size that trips
+	// E2BIG when passed inline as an env string.
+	bigContext := strings.Repeat("A", 300*1024)
+	ctxFile := filepath.Join(dir, "ksquad-system-context.txt")
+	if err := os.WriteFile(ctxFile, []byte(bigContext), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	input := "fix the bug"
+	env := map[string]string{
+		envCodexBin:          fake,
+		envSystemContextFile: ctxFile,
+		envInput:             input,
+	}
+	t.Setenv("HELPER_STDIN_FILE", stdinFile)
+	getenv := func(k string) string { return env[k] }
+
+	var out, errOut bytes.Buffer
+	if code := run([]string{"--model", "gpt-5-codex"}, getenv, os.ReadFile, &out, &errOut); code != 0 {
+		t.Fatalf("run exit=%d stderr=%q", code, errOut.String())
+	}
+
+	gotStdin, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := buildEnvelope(bigContext, input); string(gotStdin) != want {
+		t.Fatalf("stdin len=%d, want the assembled envelope len=%d", len(gotStdin), len(want))
+	}
+}
+
+// TestRunFilePrecedenceAndFallback: the file var wins when set; otherwise the
+// inline env var is used (older shim / tests).
+func TestRunFilePrecedenceAndFallback(t *testing.T) {
+	getenv := func(m map[string]string) func(string) string {
+		return func(k string) string { return m[k] }
+	}
+	readFile := func(string) ([]byte, error) { return []byte("from-file"), nil }
+
+	// File var set → file wins over inline.
+	got, err := resolveSystemContext(getenv(map[string]string{
+		envSystemContextFile: "/spill",
+		envSystemContext:     "from-inline",
+	}), readFile)
+	if err != nil || got != "from-file" {
+		t.Fatalf("file must win: got %q err %v", got, err)
+	}
+
+	// File var unset → inline fallback.
+	got, err = resolveSystemContext(getenv(map[string]string{
+		envSystemContext: "from-inline",
+	}), readFile)
+	if err != nil || got != "from-inline" {
+		t.Fatalf("inline fallback: got %q err %v", got, err)
+	}
+
+	// File var set but unreadable → a clear error, not a silent empty context.
+	_, err = resolveSystemContext(getenv(map[string]string{envSystemContextFile: "/nope"}),
+		func(string) ([]byte, error) { return nil, os.ErrNotExist })
+	if err == nil {
+		t.Fatal("expected an error when the spill file cannot be read")
 	}
 }
 

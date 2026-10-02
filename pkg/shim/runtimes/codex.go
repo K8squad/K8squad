@@ -72,7 +72,10 @@ func (codex) DefaultModel() a2a.ModelInfo {
 func (r codex) Command(lc LaunchContext) (ExecSpec, error) {
 	// Envelope rides env (never argv) so the prompt stays out of the process
 	// table; the ksquad-codex-exec wrapper pipes it into `codex exec -` (D4).
-	env := envelopeEnv(lc)
+	// ISI-5329: the large system context spills to a workdir file (ctxFile) and
+	// only its path travels in the env, so a token-budgeted context no longer
+	// overruns the kernel's per-env-string ceiling and trips exec with E2BIG.
+	env, ctxFile := envelopeFileEnv(lc)
 	// Codex speaks the OpenAI wire natively, so the per-user credential AND a
 	// BYO model route (story 5.7) both map onto OPENAI_API_KEY. Emit exactly
 	// one: a BYO endpoint carries its own token+base URL via modelRouteEnv;
@@ -99,6 +102,10 @@ func (r codex) Command(lc LaunchContext) (ExecSpec, error) {
 		},
 		Env:     env,
 		WorkDir: lc.WorkDir,
+		// ISI-5329: the spilled system-context file, materialized in the workdir
+		// before launch; the ksquad-codex-exec wrapper reads it via
+		// KSQUAD_SYSTEM_CONTEXT_FILE and pipes the envelope into codex on stdin.
+		WorkDirFiles: []WorkDirFile{ctxFile},
 		// ISI-4732: codex `exec --json` emits a JSONL thread-event stream on
 		// stdout (thread.started / turn.started / item.completed / turn.completed
 		// / error — ISI-3644 research §2). Decode it into typed Progress so tool

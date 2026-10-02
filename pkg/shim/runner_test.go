@@ -215,6 +215,37 @@ func TestOSRunnerMapsExitCodes(t *testing.T) {
 	}
 }
 
+// TestOSRunnerGuardsOversizedEnvString is the ISI-5329 defensive guard: an env
+// string at/over the kernel's MAX_ARG_STRLEN (128 KiB) would make exec fail
+// with a raw E2BIG. The runner must reject it BEFORE launch with a legible
+// TaskFailed reason naming the offending var — never as an opaque launch crash.
+func TestOSRunnerGuardsOversizedEnvString(t *testing.T) {
+	ok := writeScript(t, "echo done")
+	oversized := "KSQUAD_SYSTEM_CONTEXT=" + strings.Repeat("x", maxEnvStrLen)
+	outcome, err := osRunner{}.Run(context.Background(),
+		runtimes.ExecSpec{Path: ok, Env: []string{oversized}}, func(Progress) {})
+	if err != nil {
+		t.Fatalf("guard must fail via Outcome, not error: %v", err)
+	}
+	if outcome.State != a2a.TaskFailed {
+		t.Fatalf("oversized env must fail the run; outcome=%+v", outcome)
+	}
+	if !strings.Contains(outcome.Reason, "KSQUAD_SYSTEM_CONTEXT") || !strings.Contains(outcome.Reason, "MAX_ARG_STRLEN") {
+		t.Errorf("reason must name the var and the limit; got %q", outcome.Reason)
+	}
+}
+
+// TestOSRunnerAllowsNormalEnv guards against a false positive: an env string
+// comfortably under the ceiling launches normally.
+func TestOSRunnerAllowsNormalEnv(t *testing.T) {
+	ok := writeScript(t, "echo done")
+	outcome, err := osRunner{}.Run(context.Background(),
+		runtimes.ExecSpec{Path: ok, Env: []string{"KSQUAD_INPUT=fix the bug"}}, func(Progress) {})
+	if err != nil || outcome.State != a2a.TaskCompleted {
+		t.Fatalf("normal env must run; outcome=%+v err=%v", outcome, err)
+	}
+}
+
 // TestOSRunnerFirstOutputWatchdogFailsLoudly is the ISI-5036 regression: a
 // runtime that accepts the task but never reaches its model call (the
 // provider accepted the connection and never streamed) emits no stdout at

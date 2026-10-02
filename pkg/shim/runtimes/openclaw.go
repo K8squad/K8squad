@@ -55,17 +55,20 @@ func (openClaw) DefaultModel() a2a.ModelInfo {
 }
 
 func (r openClaw) Command(lc LaunchContext) (ExecSpec, error) {
-	env := envelopeEnv(lc)
+	// ISI-5329: the large system context spills to a workdir file; only its path
+	// rides the env, so a token-budgeted context cannot trip exec with E2BIG.
+	env, ctxFile := envelopeFileEnv(lc)
 	// Credential → native OpenClaw key (story 5.4). Never logged.
 	if lc.Credential != "" {
 		env = append(env, "OPENCLAW_API_KEY="+lc.Credential)
 	}
 	env = append(env, modelRouteEnv(lc.ModelRoute)...)
 	spec := ExecSpec{
-		Path:    "openclaw",
-		Args:    []string{"run", "--format=json", "--model=" + resolveModel(r, lc)},
-		Env:     env,
-		WorkDir: lc.WorkDir,
+		Path:         "openclaw",
+		Args:         []string{"run", "--format=json", "--model=" + resolveModel(r, lc)},
+		Env:          env,
+		WorkDir:      lc.WorkDir,
+		WorkDirFiles: []WorkDirFile{ctxFile},
 	}
 	// Epic C (ADR-044 step 6): openclaw.json's mcp.servers section,
 	// rendered from the projected IR at start.

@@ -28,6 +28,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// configFiles returns the WorkDirFiles an adapter rendered that are NOT the
+// ISI-5329 system-context spill file — i.e. the native MCP/provider config
+// files these assertions care about. Every env-channel runtime
+// (codex/hermes/openclaw) now always carries envelopeFileName; opencode never
+// does (its prompt rides stdin), so filtering it here keeps the MCP-render
+// assertions about config files, not envelope delivery.
+func configFiles(files []WorkDirFile) []WorkDirFile {
+	out := make([]WorkDirFile, 0, len(files))
+	for _, f := range files {
+		if f.Name == envelopeFileName {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// hasEnvelopeFile reports whether the adapter spilled the ISI-5329 system-context
+// file into the workdir (true for every env-channel runtime).
+func hasEnvelopeFile(files []WorkDirFile) bool {
+	for _, f := range files {
+		if f.Name == envelopeFileName {
+			return true
+		}
+	}
+	return false
+}
+
 func mcpEndpoints() []capability.Endpoint {
 	return []capability.Endpoint{
 		{
@@ -67,9 +95,11 @@ func TestOpenClawRendersMCPConfigToWorkDir(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := spec.Command(LaunchContext{MCPEndpoints: mcpEndpoints(), WorkDir: "/w"})
 	require.NoError(t, err)
-	require.Len(t, exec.WorkDirFiles, 1)
-	assert.Equal(t, "openclaw.json", exec.WorkDirFiles[0].Name)
-	assert.Contains(t, string(exec.WorkDirFiles[0].Content), "github-mcp")
+	assert.True(t, hasEnvelopeFile(exec.WorkDirFiles), "ISI-5329 context spill file present")
+	cfgs := configFiles(exec.WorkDirFiles)
+	require.Len(t, cfgs, 1)
+	assert.Equal(t, "openclaw.json", cfgs[0].Name)
+	assert.Contains(t, string(cfgs[0].Content), "github-mcp")
 }
 
 func TestHermesPassthroughEnv(t *testing.T) {
@@ -77,7 +107,8 @@ func TestHermesPassthroughEnv(t *testing.T) {
 	require.NoError(t, err)
 	exec, err := spec.Command(LaunchContext{MCPEndpoints: mcpEndpoints(), WorkDir: "/w"})
 	require.NoError(t, err)
-	assert.Empty(t, exec.WorkDirFiles, "hermes consumes the IR, no native file")
+	assert.True(t, hasEnvelopeFile(exec.WorkDirFiles), "ISI-5329 context spill file present")
+	assert.Empty(t, configFiles(exec.WorkDirFiles), "hermes consumes the IR, no native config file")
 	found := false
 	for _, e := range exec.Env {
 		if len(e) > len("HERMES_MCP_CONFIG=") && e[:len("HERMES_MCP_CONFIG=")] == "HERMES_MCP_CONFIG=" {
@@ -94,7 +125,10 @@ func TestNoEndpointsNoFiles(t *testing.T) {
 		require.NoError(t, err)
 		exec, err := spec.Command(LaunchContext{WorkDir: "/w"})
 		require.NoError(t, err)
-		assert.Empty(t, exec.WorkDirFiles, "%s renders nothing without endpoints", flavor)
+		// No MCP endpoints → no native config file. The env-channel runtimes
+		// (openclaw/hermes) still carry the ISI-5329 context spill file, which
+		// configFiles filters out; opencode carries no workdir file at all.
+		assert.Empty(t, configFiles(exec.WorkDirFiles), "%s renders no config without endpoints", flavor)
 	}
 }
 

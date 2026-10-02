@@ -56,7 +56,9 @@ func (hermes) DefaultModel() a2a.ModelInfo {
 }
 
 func (r hermes) Command(lc LaunchContext) (ExecSpec, error) {
-	env := envelopeEnv(lc)
+	// ISI-5329: the large system context spills to a workdir file; only its path
+	// rides the env, so a token-budgeted context cannot trip exec with E2BIG.
+	env, ctxFile := envelopeFileEnv(lc)
 	if lc.Credential != "" {
 		env = append(env, "HERMES_API_KEY="+lc.Credential)
 	}
@@ -71,10 +73,11 @@ func (r hermes) Command(lc LaunchContext) (ExecSpec, error) {
 		}
 	}
 	return ExecSpec{
-		Path:    "hermes",
-		Args:    []string{"agent", "--output=json", "--model", resolveModel(r, lc)},
-		Env:     env,
-		WorkDir: lc.WorkDir,
+		Path:         "hermes",
+		Args:         []string{"agent", "--output=json", "--model", resolveModel(r, lc)},
+		Env:          env,
+		WorkDir:      lc.WorkDir,
+		WorkDirFiles: []WorkDirFile{ctxFile},
 	}, nil
 }
 

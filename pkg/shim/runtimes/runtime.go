@@ -28,6 +28,7 @@ package runtimes
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"sync"
 
@@ -258,14 +259,42 @@ func resolveModel(rt Runtime, lc LaunchContext) string {
 	}
 }
 
-// envelopeEnv returns the context-envelope env pair every v1 CLI reads its
-// system context + work instruction from. Passing via env (not argv) keeps the
-// prompt out of the process table.
-func envelopeEnv(lc LaunchContext) []string {
-	return []string{
-		"KSQUAD_SYSTEM_CONTEXT=" + lc.Envelope.SystemContext,
-		"KSQUAD_INPUT=" + lc.Envelope.Input,
+const (
+	// envSystemContext is the inline system-context env var the pre-ISI-5329
+	// shim set. Readers still honor it as a fallback, but the shim NO LONGER
+	// sets it for env-channel runtimes: a context at the token budget (200K
+	// tokens ≈ hundreds of KiB) overruns the kernel's per-env-string ceiling
+	// (MAX_ARG_STRLEN, 128 KiB) and makes exec fail with E2BIG ("argument list
+	// too long") — the ISI-5328 crash.
+	envSystemContext = "KSQUAD_SYSTEM_CONTEXT"
+	// envSystemContextFile carries the PATH to the spilled system context
+	// (ISI-5329). Only the short path travels in the environment; the context
+	// itself rides a sandbox file, lifting the per-string byte ceiling.
+	envSystemContextFile = "KSQUAD_SYSTEM_CONTEXT_FILE"
+	// envInput is the concrete work-instruction half. It is bounded (the Run's
+	// task text, not the assembled context) so it stays inline in the env.
+	envInput = "KSQUAD_INPUT"
+)
+
+// envelopeFileName is the sandbox workdir file the system-context half of the
+// envelope spills to for env-channel runtimes (ISI-5329).
+const envelopeFileName = "ksquad-system-context.txt"
+
+// envelopeFileEnv delivers the context envelope to an env-channel runtime
+// (codex/hermes/openclaw) WITHOUT placing the large system context in an env
+// string. The system-context half spills to a workdir file; only its path rides
+// KSQUAD_SYSTEM_CONTEXT_FILE, and the bounded work instruction stays inline in
+// KSQUAD_INPUT. Passing via env (not argv) still keeps the prompt out of the
+// process table. The returned WorkDirFile is appended to ExecSpec.WorkDirFiles
+// so the runner materializes it before launch; readers prefer the file and fall
+// back to the inline KSQUAD_SYSTEM_CONTEXT (older reader / tests). opencode does
+// NOT use this — its whole prompt rides stdin (see openCode.Command).
+func envelopeFileEnv(lc LaunchContext) ([]string, WorkDirFile) {
+	env := []string{
+		envSystemContextFile + "=" + filepath.Join(lc.WorkDir, envelopeFileName),
+		envInput + "=" + lc.Envelope.Input,
 	}
+	return env, WorkDirFile{Name: envelopeFileName, Content: []byte(lc.Envelope.SystemContext)}
 }
 
 // EnvelopePrompt reassembles the single prompt a stdin-reading CLI consumes
