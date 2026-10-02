@@ -576,6 +576,72 @@ describe("FileExplorerTab", () => {
     expect(spy.mock.calls.length).toBe(4);
   });
 
+  // ISI-5355 reconciliation: a lazy expand can hit the same cold reader the
+  // root does. The expand row follows the SAME bounded retry ladder — an
+  // inline amber "retrying" row with the attempt budget and a manual
+  // [Retry now] — instead of the misread terminal "Couldn't load this folder."
+  it("child expand on a typed 503: inline retry row with [Retry now], refetch succeeds (ISI-5355)", async () => {
+    let srcCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const u = new URL(url, "http://localhost");
+        if (u.searchParams.get("path") === "src") {
+          srcCalls += 1;
+          if (srcCalls === 1) return Promise.resolve(retryable503());
+          const json = () => Promise.resolve({ path: "src", entries: [{ name: "main.ts", path: "src/main.ts", type: "file", size: 2 }] });
+          return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+        }
+        const json = () => Promise.resolve({ path: "", entries: [{ name: "src", path: "src", type: "dir" }] });
+        return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("files-tree")).toBeTruthy());
+    fireEvent.click(screen.getByText("src"));
+    // Transient 503 → the inline amber retry row names the budget…
+    await waitFor(() => expect(screen.getByTestId("files-dir-retrying")).toBeTruthy());
+    expect(screen.getByText(/retrying/i)).toBeTruthy();
+    expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
+    // …never the terminal "couldn't load" copy for a transient failure.
+    expect(screen.queryByTestId("files-dir-error")).toBeNull();
+    // [Retry now] refetches the dir immediately and the children render.
+    fireEvent.click(screen.getByTestId("files-dir-retry-now"));
+    await waitFor(() => expect(screen.getByText("main.ts")).toBeTruthy());
+    expect(srcCalls).toBe(2);
+  });
+
+  // ISI-5355 reconciliation: terminal per-row failure keeps a real retry path —
+  // dirs[path] is already set, so without the [Retry] affordance a collapsed
+  // re-expand can never reload the folder.
+  it("child expand terminal failure: honest row + [Retry] refetches that dir (ISI-5355)", async () => {
+    let srcCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const u = new URL(url, "http://localhost");
+        if (u.searchParams.get("path") === "src") {
+          srcCalls += 1;
+          if (srcCalls === 1) {
+            return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve(null) } as unknown as Response);
+          }
+          const json = () => Promise.resolve({ path: "src", entries: [{ name: "main.ts", path: "src/main.ts", type: "file", size: 2 }] });
+          return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+        }
+        const json = () => Promise.resolve({ path: "", entries: [{ name: "src", path: "src", type: "dir" }] });
+        return Promise.resolve({ ok: true, status: 200, json, clone: () => ({ json }) } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("files-tree")).toBeTruthy());
+    fireEvent.click(screen.getByText("src"));
+    await waitFor(() => expect(screen.getByTestId("files-dir-error")).toBeTruthy());
+    expect(screen.getByText(/Couldn't load this folder/i)).toBeTruthy();
+    fireEvent.click(screen.getByTestId("files-dir-retry"));
+    await waitFor(() => expect(screen.getByText("main.ts")).toBeTruthy());
+    expect(srcCalls).toBe(2);
+  });
+
   // ISI-4705: the S4b `/files` wire payload omits `path` on each entry. The tree
   // keys its open-state and lazy child listings by `path`; when every path is
   // `undefined` a single expand collapses ALL directories into one shared open +

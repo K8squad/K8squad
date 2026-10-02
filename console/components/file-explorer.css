@@ -585,3 +585,41 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ——— ISI-5355 reconciliation: per-directory retry rows. A lazy expand that
+   hits a cold reader renders an inline amber retry row (attempt counter +
+   [Retry now]) and, on terminal failure, an honest note with [Retry] — the
+   row can otherwise never be reloaded (dirs[path] is already set). Same
+   tokens as the rest of the tab, nothing new. ——— */
+
+.file-explorer__rowloading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.file-explorer__rowloading--warn {
+  color: var(--status-paused, #fbbf24);
+}
+
+/* Small quiet in-row action — the .btn base is far too tall for a tree row. */
+.file-explorer__rowaction {
+  flex: none;
+  padding: 1px 10px;
+  border-radius: var(--radius-chip, 6px);
+  border: 1px solid var(--border, #2a2a2a);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.file-explorer__rowaction:hover,
+.file-explorer__rowaction:focus-visible {
+  border-color: var(--accent, #3d7dff);
+  color: var(--accent, #3d7dff);
+  outline: none;
+}

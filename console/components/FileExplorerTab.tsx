@@ -422,6 +422,33 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // When the current root listing landed — drives the Live freshness label.
   const [rootFetchedAt, setRootFetchedAt] = useState<number | null>(null);
+  // S6 reconciliation (ISI-5355): per-directory back-off timers so a lazy
+  // expand that hits a cold reader follows the same bounded ladder as the
+  // root — no row spins forever, and every pending row reaches loaded /
+  // retrying / error with a manual retry affordance.
+  const dirTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const aliveRef = useRef(true);
+  // Guards against a stale (previous-project) async continuation writing into
+  // the fresh project's dir map — workspace-relative keys like "src" collide.
+  const projectIdRef = useRef(projectId);
+
+  // Reset the whole tab ONLY on project change. [Retry now]/[Try again]
+  // (rootTick) deliberately keep the expanded tree + selection — ISI-5339 §4:
+  // "manual retry always available; preserves tree position."
+  useEffect(() => {
+    aliveRef.current = true;
+    projectIdRef.current = projectId;
+    setDirs({});
+    setOpen(new Set());
+    setSelected(null);
+    setRootFetchedAt(null);
+    const timers = dirTimers.current;
+    return () => {
+      aliveRef.current = false;
+      for (const t of timers.values()) clearTimeout(t);
+      timers.clear();
+    };
+  }, [projectId]);
 
   const refreshRoot = useCallback(() => {
     if (retryTimer.current) {
@@ -453,10 +480,10 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   useEffect(() => {
     let alive = true;
     const ac = new AbortController();
+    // Only the root state cycles here — the expanded tree, selection, and
+    // dirTimers are owned by the [projectId] effect above so a manual retry
+    // preserves tree position (ISI-5339 §4).
     setRoot({ kind: "loading" });
-    setDirs({});
-    setOpen(new Set());
-    setSelected(null);
     setRootFetchedAt(null);
 
     async function fetchRoot(attempt: number, isRetry = false) {
@@ -504,6 +531,62 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     };
   }, [loadDir, projectId, rootTick]);
 
+  // S6 reconciliation (ISI-5355): a lazy expand pays the same reader warm-up the
+  // root can — a typed 503/202 on expand is a TRANSIENT state, so the row
+  // follows the same bounded back-off ladder (mirroring fetchRoot's isRetry
+  // routing) and ends in an honest row with a manual retry, never a spin-
+  // forever row and never a misread "Couldn't load this folder." terminal.
+  const loadDirRetry = useCallback(
+    function loadDirRetryInner(path: string, attempt: number, isRetry = false) {
+      const forProject = projectId;
+      void (async () => {
+        let s: DirState;
+        try {
+          s = !isRetry
+            ? await loadDir(path)
+            : await (async (): Promise<DirState> => {
+                const raw = await listProjectFilesAttempt(projectId, path, attempt);
+                if (raw.kind !== "ready") return raw;
+                return {
+                  kind: "ready",
+                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason, snapshotTakenAt: raw.data.snapshotTakenAt },
+                };
+              })();
+        } catch {
+          s = { kind: "error", status: 0 };
+        }
+        // Drop results from a superseded project / unmounted tab.
+        if (!aliveRef.current || projectIdRef.current !== forProject) return;
+        setDirs((d) => ({ ...d, [path]: s }));
+        if (s.kind === "retrying" || s.kind === "preparing") {
+          const nextAttempt = s.attempt;
+          const t = setTimeout(() => {
+            dirTimers.current.delete(path);
+            loadDirRetryInner(path, nextAttempt, true);
+          }, retryDelayMs(nextAttempt));
+          dirTimers.current.set(path, t);
+        } else {
+          dirTimers.current.delete(path);
+        }
+      })();
+    },
+    [loadDir, projectId],
+  );
+
+  // Manual retry for a single directory row (inline [Retry now] / [Retry]).
+  const retryDir = useCallback(
+    (path: string) => {
+      const t = dirTimers.current.get(path);
+      if (t) {
+        clearTimeout(t);
+        dirTimers.current.delete(path);
+      }
+      setDirs((cur) => ({ ...cur, [path]: { kind: "loading" } }));
+      loadDirRetry(path, 1);
+    },
+    [loadDirRetry],
+  );
+
   const toggleDir = useCallback(
     (path: string) => {
       setOpen((prev) => {
@@ -513,18 +596,16 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
           return next;
         }
         next.add(path);
-        // Lazy-load the first time this directory is opened.
-        setDirs((cur) => {
-          if (cur[path]) return cur;
-          void loadDir(path)
-            .then((s) => setDirs((d) => ({ ...d, [path]: s })))
-            .catch(() => setDirs((d) => ({ ...d, [path]: { kind: "error", status: 0 } })));
-          return { ...cur, [path]: { kind: "loading" } };
-        });
         return next;
       });
+      // Lazy-load the first time this directory is opened (and keep any prior
+      // listing on re-open — toggling never refetches a loaded dir).
+      if (!dirs[path]) {
+        setDirs((cur) => (cur[path] ? cur : { ...cur, [path]: { kind: "loading" } }));
+        loadDirRetry(path, 1);
+      }
     },
-    [loadDir],
+    [dirs, loadDirRetry],
   );
 
   const selectFile = useCallback(
@@ -702,6 +783,7 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
                   selected={selected}
                   onToggle={toggleDir}
                   onSelect={selectFile}
+                  onRetryDir={retryDir}
                 />
               ))}
             </ul>
@@ -733,6 +815,7 @@ function TreeNode({
   selected,
   onToggle,
   onSelect,
+  onRetryDir,
 }: {
   projectId: string;
   entry: FileEntry;
@@ -742,6 +825,7 @@ function TreeNode({
   selected: string | null;
   onToggle: (path: string) => void;
   onSelect: (path: string) => void;
+  onRetryDir: (path: string) => void;
 }) {
   const isDir = entry.type === "dir";
   const isOpen = open.has(entry.path);
@@ -821,11 +905,34 @@ function TreeNode({
         <ul>
           {!childState || childState.kind === "loading" || childState.kind === "preparing" ? (
             // ISI-5339 Frame 01: skeleton children indented beneath the row —
-            // not a blocking full-tree spinner.
+            // not a blocking full-tree spinner. (A `preparing` child is mid-
+            // poll: the loadDirRetry ladder is driving it to a terminal state.)
             <li data-testid="files-dir-loading" aria-busy="true">
               <ul>
                 <SkeletonRows depth={depth + 1} count={3} />
               </ul>
+            </li>
+          ) : childState.kind === "retrying" ? (
+            // ISI-5355 reconciliation: the expand hit the timeout budget — an
+            // inline amber retry row with the same bounded attempt counter and
+            // a manual [Retry now] (Frame03·B affordance, row-local).
+            <li
+              className="muted file-explorer__rowloading file-explorer__rowloading--warn"
+              style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+              role="status"
+              data-testid="files-dir-retrying"
+            >
+              <span>
+                Taking longer than usual — retrying… (attempt {childState.attempt} of {RETRY_MAX_ATTEMPTS})
+              </span>
+              <button
+                type="button"
+                className="file-explorer__rowaction"
+                onClick={() => onRetryDir(entry.path)}
+                data-testid="files-dir-retry-now"
+              >
+                Retry now
+              </button>
             </li>
           ) : childState.kind === "ready" ? (
             childState.data.entries.length === 0 ? (
@@ -852,12 +959,28 @@ function TreeNode({
                   selected={selected}
                   onToggle={onToggle}
                   onSelect={onSelect}
+                  onRetryDir={onRetryDir}
                 />
               ))
             )
           ) : (
-            <li className="muted" style={{ paddingLeft: 8 + (depth + 1) * 14 }}>
+            // Terminal per-row failure: honest note + a retry affordance — the
+            // row can never be re-opened into data otherwise (dirs[path] is
+            // set, so a collapse/re-expand does not refetch).
+            <li
+              className="muted file-explorer__rowloading file-explorer__rowloading--warn"
+              style={{ paddingLeft: 8 + (depth + 1) * 14 }}
+              data-testid="files-dir-error"
+            >
               Couldn&apos;t load this folder.
+              <button
+                type="button"
+                className="file-explorer__rowaction"
+                onClick={() => onRetryDir(entry.path)}
+                data-testid="files-dir-retry"
+              >
+                Retry
+              </button>
             </li>
           )}
         </ul>
