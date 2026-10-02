@@ -1280,3 +1280,115 @@ func TestR1RunIDStampedWhenLabelsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// newSuppressedMapper wires a Mapper with span projection OFF (the operator-side
+// event-relay posture, ISI-5335 P1-4) to the same in-memory recorder + registry
+// as newTestMapper, so a test can assert "no spans, but metrics still flow".
+func newSuppressedMapper(t *testing.T) (*Mapper, *tracetest.SpanRecorder, *prometheus.Registry) {
+	t.Helper()
+	sr := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr))
+	reg := prometheus.NewRegistry()
+	m := NewMapper(tp.Tracer("test"), reg, WithSpanProjection(false))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	return m, sr, reg
+}
+
+// TestSpanProjectionSuppressedEmitsNoSpans (ISI-5335 P1-4): the operator-side
+// Mapper (WithSpanProjection(false)) emits NONE of the run/llm/tool/skill/mcp
+// spans even though its tracer is live — once the shim's supervisor-native run
+// trace is canonical (ISI-5331), the operator's belt-and-braces re-projection of
+// the same series is a pure duplicate and is suppressed.
+func TestSpanProjectionSuppressedEmitsNoSpans(t *testing.T) {
+	m, sr, _ := newSuppressedMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "r1", Agent: "a"}
+
+	m.RunStart(ctx, labels, "task-1")
+	m.UsageEvent(ctx, labels, "task-1", a2a.UsagePayload{Model: "gpt", Input: 10, Output: 5})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "git", Phase: "start"})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "start", Server: "github-mcp"})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "result", OK: boolPtr(true), Server: "github-mcp"})
+	m.SkillEvent(ctx, labels, a2a.SkillLoadPayload{Name: "restart-deploy", OK: boolPtr(true)})
+	m.RunEnd(ctx, "task-1", "completed", "")
+
+	if n := len(sr.Ended()); n != 0 {
+		t.Errorf("span-suppressed mapper emitted %d spans, want 0", n)
+	}
+}
+
+// TestSpanProjectionSuppressedKeepsMetrics (ISI-5335 P1-4): suppression is
+// span-only — every ksquad_* counter/histogram still increments, including the
+// duration-measured ksquad_mcp_call_duration_seconds (its timing rides the
+// pending map, not the span), so the operator keeps its aggregate metrics.
+func TestSpanProjectionSuppressedKeepsMetrics(t *testing.T) {
+	m, _, reg := newSuppressedMapper(t)
+	ctx := context.Background()
+	labels := Labels{RunID: "r1", Agent: "a"}
+
+	m.RunStart(ctx, labels, "task-1")
+	m.UsageEvent(ctx, labels, "task-1", a2a.UsagePayload{Model: "gpt", Input: 10, Output: 5})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "git", Phase: "start"})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "start", Server: "github-mcp"})
+	m.ToolEvent(ctx, labels, "task-1", a2a.ToolPayload{Name: "create_pr", Phase: "result", OK: boolPtr(true), Server: "github-mcp"})
+	m.SkillEvent(ctx, labels, a2a.SkillLoadPayload{Name: "restart-deploy", OK: boolPtr(true)})
+
+	if got := counterValue(t, reg, "ksquad_llm_calls_total"); got != 1 {
+		t.Errorf("ksquad_llm_calls_total = %v, want 1 (metrics survive span suppression)", got)
+	}
+	if got := counterValue(t, reg, "ksquad_llm_tokens_total"); got != 15 {
+		t.Errorf("ksquad_llm_tokens_total = %v, want 15 (input 10 + output 5)", got)
+	}
+	if got := counterValue(t, reg, "ksquad_tool_calls_total"); got != 1 {
+		t.Errorf("ksquad_tool_calls_total = %v, want 1", got)
+	}
+	if got := counterValue(t, reg, "ksquad_skill_loads_total"); got != 1 {
+		t.Errorf("ksquad_skill_loads_total = %v, want 1", got)
+	}
+
+	mf, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMCP := false
+	for _, f := range mf {
+		if f.GetName() == "ksquad_mcp_call_duration_seconds" {
+			foundMCP = true
+			if len(f.GetMetric()) == 0 || f.GetMetric()[0].GetHistogram().GetSampleCount() == 0 {
+				t.Errorf("mcp duration histogram has no samples under span suppression")
+			}
+		}
+	}
+	if !foundMCP {
+		t.Errorf("ksquad_mcp_call_duration_seconds not exported under span suppression")
+	}
+}
+
+// TestSpanProjectionDefaultEmits guards the shim posture: a Mapper built WITHOUT
+// the option (or with WithSpanProjection(true)) still emits spans — suppression
+// is opt-in and must never leak onto the shim's canonical Mapper.
+func TestSpanProjectionDefaultEmits(t *testing.T) {
+	m, sr, _ := newTestMapper(t) // no option → emit
+	m.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"},
+		"t", a2a.ToolPayload{Name: "git", Phase: "start"})
+	m.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"},
+		"t", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
+	if len(spansByName(sr, SpanToolCall)) == 0 {
+		t.Errorf("default mapper emitted no gen_ai.tool.call span; suppression must be opt-in")
+	}
+
+	// Explicit WithSpanProjection(true) is identical to the default.
+	sr2 := tracetest.NewSpanRecorder()
+	tp2 := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr2))
+	t.Cleanup(func() { _ = tp2.Shutdown(context.Background()) })
+	m2 := NewMapper(tp2.Tracer("test"), prometheus.NewRegistry(), WithSpanProjection(true))
+	m2.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"},
+		"t", a2a.ToolPayload{Name: "git", Phase: "start"})
+	m2.ToolEvent(context.Background(), Labels{RunID: "r", Agent: "a"},
+		"t", a2a.ToolPayload{Name: "git", Phase: "result", OK: boolPtr(true)})
+	if len(spansByName(sr2, SpanToolCall)) == 0 {
+		t.Errorf("WithSpanProjection(true) emitted no span; must match default")
+	}
+}

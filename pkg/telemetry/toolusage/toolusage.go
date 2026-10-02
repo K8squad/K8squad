@@ -403,6 +403,16 @@ type Mapper struct {
 	now    func() func() float64
 	ins    *Instruments
 
+	// suppressSpans, when true, makes this Mapper emit NO OTLP spans while still
+	// writing every ksquad_* metric (ISI-5335 P1-4). It is the operator-side
+	// event-relay posture: once the shim's supervisor-native run trace is the
+	// canonical, continuous one (ISI-5331), the operator's belt-and-braces
+	// re-projection of the same llm.call / gen_ai.tool.call series is a pure
+	// duplicate in the trace view. Set once at construction (WithSpanProjection)
+	// and never mutated, so it is read without the lock — the concurrent-use
+	// invariant holds. The shim Mappers leave it false (emit).
+	suppressSpans bool
+
 	mu      sync.Mutex
 	pending map[string]pendingSpan // "task\x00tool" → open span
 	runs    map[string]trace.Span  // taskID → open run root span (ISI-4238)
@@ -496,13 +506,35 @@ func (m *Mapper) stepIndex(taskID string) int64 {
 	return st.index
 }
 
+// MapperOption configures a Mapper at construction (functional-option pattern
+// so NewMapper's existing (tracer, reg) callers are untouched — the shim passes
+// none).
+type MapperOption func(*Mapper)
+
+// WithSpanProjection controls whether this Mapper emits OTLP spans; it defaults
+// to true (emit). The operator-side event-relay Mapper passes WithSpanProjection(false)
+// (ISI-5335 P1-4): once the shim's supervisor-native spans are the canonical,
+// continuous run trace (ISI-5331), the operator's belt-and-braces re-projection
+// of the same llm.call / gen_ai.tool.call series is a pure duplicate in the
+// trace view. Span LINKS were rejected as the alternative — a link needs the
+// target's SpanContext, but the operator only ever sees the run root trace id,
+// never the shim's individual span ids, so a link would carry nothing the
+// canonical span lacks. Suppression keeps every ksquad_* metric (including the
+// duration-measured ksquad_mcp_call_duration_seconds, whose timing rides the
+// pending map, not the span) and the RunLLMStatusWriter CR-status projection —
+// only the duplicate span emission stops.
+func WithSpanProjection(emit bool) MapperOption {
+	return func(m *Mapper) { m.suppressSpans = !emit }
+}
+
 // NewMapper builds a Mapper over tracer. reg non-nil registers the metric
 // set on it (pass the controller-runtime metrics registry in the operator,
 // or a dedicated registry in tests); nil keeps the instruments unregistered.
 // A nil tracer degrades to no-op spans (the telemetry spine's pre-Setup
-// posture: safe before Setup, exporting after).
-func NewMapper(tracer trace.Tracer, reg prometheus.Registerer) *Mapper {
-	return &Mapper{
+// posture: safe before Setup, exporting after). Options tune emission
+// (WithSpanProjection).
+func NewMapper(tracer trace.Tracer, reg prometheus.Registerer, opts ...MapperOption) *Mapper {
+	m := &Mapper{
 		tracer:  tracer,
 		now:     stopwatch,
 		ins:     newInstruments(reg),
@@ -511,6 +543,10 @@ func NewMapper(tracer trace.Tracer, reg prometheus.Registerer) *Mapper {
 		steps:   map[string]*stepTimer{},
 		runIDs:  map[string]string{},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // runSpanContext re-roots ctx on the run's open root span so every activity
@@ -1076,16 +1112,20 @@ func taskIDOf(key string) string {
 }
 
 func (m *Mapper) start(ctx context.Context, name string, attrs []attribute.KeyValue) (context.Context, trace.Span) {
-	if m.tracer == nil {
+	// ISI-5335: suppressSpans is the operator-side dedup gate — a no-op span
+	// (same degrade as the nil-tracer pre-Setup posture) so no duplicate span is
+	// exported, while every ksquad_* metric write around this call still runs.
+	if m.tracer == nil || m.suppressSpans {
 		return ctx, noopSpan()
 	}
 	return m.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
 // startWithOptions is start with explicit SpanStartOptions (UsageEvent's
-// truthful step-duration timestamps); it shares the nil-tracer degrade.
+// truthful step-duration timestamps); it shares the nil-tracer / span-suppression
+// degrade (ISI-5335).
 func (m *Mapper) startWithOptions(ctx context.Context, name string, opts []trace.SpanStartOption) (context.Context, trace.Span) {
-	if m.tracer == nil {
+	if m.tracer == nil || m.suppressSpans {
 		return ctx, noopSpan()
 	}
 	return m.tracer.Start(ctx, name, opts...)
