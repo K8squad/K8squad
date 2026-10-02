@@ -16,6 +16,8 @@ import { proxyJson } from "@/lib/bff";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
+// ADR-0025 D2: 60 s to cover cold-start reader pod reads.
+export const maxDuration = 60;
 
 export async function GET(
   req: NextRequest,

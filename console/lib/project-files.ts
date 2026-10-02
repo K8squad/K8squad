@@ -78,12 +78,27 @@ export type FileGitChange = {
   timestamp: string;
 };
 
+// Error taxonomy codes (ADR-0025 §taxonomy) — mirror of the Go ErrCode* constants.
+export const FILE_ERR_RETRYABLE_DEGRADED = "retryable_degraded" as const;
+export const FILE_ERR_SNAPSHOT_UNAVAILABLE = "snapshot_unavailable" as const;
+export const FILE_ERR_PREPARING = "preparing" as const;
+export const FILE_ERR_NOT_FOUND = "not_found" as const;
+
+/** Typed error body returned by the apiserver on 503/retryable errors (ADR-0025 §taxonomy). */
+export type FileErrorBody = {
+  error: string;
+  code: string;
+};
+
 /** The distinct honest state an HTTP status carries (mirrors SquadOverview /
  * GitHubStatusTab). 404 ⇒ existence-hiding not-found; 501 ⇒ the reader is not
  * wired in this deployment (S4a/S4b pending) → "File Explorer not available yet",
- * never fabricated rows (AC5). */
+ * never fabricated rows (AC5).
+ * `retrying` ⇒ transient 503 retryable-degraded (ADR-0025 D2); client is
+ * auto-retrying with back-off. `attempt` is 1-based. */
 export type FilesState<T> =
   | { kind: "loading" }
+  | { kind: "retrying"; attempt: number }
   | { kind: "unauthenticated" }
   | { kind: "not-found" }
   | { kind: "not-wired" }
@@ -104,20 +119,73 @@ export function classifyFilesStatus<T>(status: number): FilesState<T> {
   }
 }
 
+// ADR-0025 D2: bounded auto-retry config for retryable-degraded (503) responses.
+const RETRY_MAX_ATTEMPTS = 4;
+const RETRY_BASE_MS = 2_000; // 2 s, 4 s, 8 s, 16 s (capped at 16 s)
+
+/** Compute the back-off delay for attempt `n` (1-based). */
+export function retryDelayMs(attempt: number): number {
+  return Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), 16_000);
+}
+
+/** Whether a 503 response carries a retryable_degraded error code. */
+async function isRetryableDegraded(res: Response): Promise<boolean> {
+  if (res.status !== 503) return false;
+  try {
+    const body: FileErrorBody = await res.clone().json();
+    return body.code === FILE_ERR_RETRYABLE_DEGRADED || body.code === FILE_ERR_PREPARING;
+  } catch {
+    return false;
+  }
+}
+
 /** List a directory through the BFF choke point. `path` defaults to the
  * workspace root (""). Returns the classified state directly (200 ⇒ ready) so a
- * caller never fabricates rows on a non-200. */
+ * caller never fabricates rows on a non-200.
+ * `signal` is forwarded to fetch so callers can cancel in-flight requests. */
 export async function listProjectFiles(
   projectId: string,
   path = "",
+  signal?: AbortSignal,
 ): Promise<FilesState<FileListing>> {
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
   const res = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
-    { cache: "no-store" },
+    { cache: "no-store", signal },
   );
   if (res.ok) {
     return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
+  }
+  // ADR-0025 D2: 503 retryable-degraded is signalled to the caller so the component
+  // can show "retrying…" and schedule the next attempt — the fetcher itself does NOT
+  // loop so that React state drives each visible transition.
+  if (await isRetryableDegraded(res)) {
+    return { kind: "retrying", attempt: 1 };
+  }
+  return classifyFilesStatus<FileListing>(res.status);
+}
+
+/** Variant used by the component retry loop: carries the current attempt number so
+ * the state accurately reflects which attempt is in progress. */
+export async function listProjectFilesAttempt(
+  projectId: string,
+  path: string,
+  attempt: number,
+  signal?: AbortSignal,
+): Promise<FilesState<FileListing>> {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
+    { cache: "no-store", signal },
+  );
+  if (res.ok) {
+    return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
+  }
+  if (await isRetryableDegraded(res)) {
+    if (attempt >= RETRY_MAX_ATTEMPTS) {
+      return { kind: "error", status: 503 };
+    }
+    return { kind: "retrying", attempt: attempt + 1 };
   }
   return classifyFilesStatus<FileListing>(res.status);
 }
@@ -158,14 +226,15 @@ export function normalizeListing(dir: string, listing: WireFileListing): FileLis
 }
 
 /** Read a file's content through the BFF choke point. Read-only — there is no
- * write counterpart by design (§D3). */
+ * write counterpart by design (§D3). `signal` is forwarded to fetch. */
 export async function readProjectFile(
   projectId: string,
   path: string,
+  signal?: AbortSignal,
 ): Promise<FilesState<FileContent>> {
   const res = await fetch(
     `/api/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(path)}`,
-    { cache: "no-store" },
+    { cache: "no-store", signal },
   );
   if (res.ok) {
     return { kind: "ready", data: normalizeContent(path, (await res.json()) as FileContent) };

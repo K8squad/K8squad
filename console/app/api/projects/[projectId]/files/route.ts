@@ -16,6 +16,9 @@ import { proxyJson } from "@/lib/bff";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
+// ADR-0025 D2: allow up to 60 s so the gateway never cuts off a cold-start reader
+// read (reader pod healthz wait can take 20–30 s; 60 s gives clear headroom).
+export const maxDuration = 60;
 
 export async function GET(
   req: NextRequest,

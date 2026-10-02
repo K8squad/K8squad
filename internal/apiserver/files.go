@@ -25,9 +25,37 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 )
+
+// readerTimeout is the per-request timeout budget for reader-pod calls (ADR-0025 D2).
+// A cold-start reader pod (ISI-5132) can take 20–30 s to come up; 45 s gives it
+// headroom while staying well inside any gateway limit. On timeout the route
+// returns a typed retryable-degraded response rather than a bare 500.
+const readerTimeout = 45 * time.Second
+
+// File-read error-taxonomy codes (ADR-0025 §taxonomy). These are the only string
+// values ever written into FileErrorBody.Code so all three layers (apiserver, BFF,
+// client) share a single vocabulary.
+const (
+	// ErrCodeRetryableDegraded labels a transient error the client should retry
+	// with back-off (reader timeout / cold start). HTTP 503.
+	ErrCodeRetryableDegraded = "retryable_degraded"
+	// ErrCodeSnapshotUnavailable labels a workspace-busy state where the last-committed
+	// snapshot also cannot be served. HTTP 200 degraded.
+	ErrCodeSnapshotUnavailable = "snapshot_unavailable"
+	// ErrCodePreparing labels a reader pod that launched but has not yet completed
+	// its healthz check (cold start in progress). HTTP 503.
+	ErrCodePreparing = "preparing"
+	// ErrCodeNotFound labels a path that does not exist in the workspace. HTTP 404.
+	ErrCodeNotFound = "not_found"
+)
+
+// ErrReaderTimeout is returned when a reader-pod call exceeds readerTimeout.
+// The routes surface it as HTTP 503 with code=retryable_degraded.
+var ErrReaderTimeout = errors.New("files: reader call exceeded per-request timeout")
 
 // WorkspaceReader is the narrow read seam the files routes consume. S4a's reader-pod
 // client will implement this; tests supply a map-backed stub.
@@ -151,6 +179,34 @@ type BusySnapshotReader interface {
 // pre-ISI-2900). The routes surface it as the honest degraded empty form.
 var ErrNoWorkspaceSnapshot = errors.New("no last-committed workspace snapshot available")
 
+// FileErrorBody is the JSON body returned on typed file-read errors (ADR-0025 §taxonomy).
+// The BFF relays it verbatim; the client reads Code to drive retry / display logic.
+type FileErrorBody struct {
+	Error string `json:"error"` // human-readable
+	Code  string `json:"code"`  // machine-readable taxonomy code
+}
+
+// withReaderTimeout wraps ctx with the per-request reader timeout (ADR-0025 D2).
+// The caller is responsible for calling the returned cancel.
+func withReaderTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, readerTimeout)
+}
+
+// isTimeout reports whether err is or wraps a context deadline/timeout.
+func isTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrReaderTimeout)
+}
+
+// writeRetryableDegraded writes HTTP 503 with a retryable_degraded typed body.
+func writeRetryableDegraded(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(FileErrorBody{
+		Error: "workspace reader timed out; retry shortly",
+		Code:  ErrCodeRetryableDegraded,
+	})
+}
+
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
 // the workspace jail (equivalent to the pod-internal jail in S4a, AC3). It returns
 // the cleaned relative path, or an error if the path escapes.
@@ -199,7 +255,9 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 			}
 		}
 
-		listing, err := reader.ListDir(r.Context(), projectID, cleanPath, page)
+		rctx, rcancel := withReaderTimeout(r.Context())
+		defer rcancel()
+		listing, err := reader.ListDir(rctx, projectID, cleanPath, page)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
@@ -223,6 +281,10 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 				// degraded=false + reason so S4c renders "no completed run yet"
 				// without the busy banner (ISI-5140).
 				listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
+			case isTimeout(err):
+				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
+				writeRetryableDegraded(w)
+				return
 			default:
 				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
 				return
@@ -272,7 +334,9 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 			}
 		}
 
-		fc, err := reader.ReadFile(r.Context(), projectID, cleanPath, offset, length)
+		rctx, rcancel := withReaderTimeout(r.Context())
+		defer rcancel()
+		fc, err := reader.ReadFile(rctx, projectID, cleanPath, offset, length)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
@@ -291,6 +355,10 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				fc = &FileContent{Data: []byte{}, ContentType: "text", Reason: reasonNoBrowseTarget}
+			case isTimeout(err):
+				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
+				writeRetryableDegraded(w)
+				return
 			default:
 				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
 				return
@@ -349,7 +417,9 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 			return
 		}
 
-		st, err := reader.StatFile(r.Context(), projectID, cleanPath)
+		rctx, rcancel := withReaderTimeout(r.Context())
+		defer rcancel()
+		st, err := reader.StatFile(rctx, projectID, cleanPath)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
@@ -368,6 +438,10 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				st = &FileStat{Name: path.Base(cleanPath), Type: "file", Reason: reasonNoBrowseTarget}
+			case isTimeout(err):
+				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
+				writeRetryableDegraded(w)
+				return
 			default:
 				writeJSONError(w, http.StatusInternalServerError, "workspace read error")
 				return

@@ -262,11 +262,19 @@ func (r *ReaderPodWorkspaceReader) Run(ctx context.Context, interval time.Durati
 	}
 }
 
-// mapReadErr translates a reader-pod protocol error into the seam's error contract: a 404 from the
-// pod is a genuine not-found (surfaced as-is to the route, which 500s on any non-busy error today —
-// the route treats only ErrWorkspaceBusy specially). It exists as the single classification point so
-// pod status codes never leak verbatim.
+// mapReadErr translates a reader-pod protocol error into the seam's error contract. It is the single
+// classification point so pod status codes and context errors never leak verbatim into the route layer.
+//
+//   - 404 from the pod → path-not-found (route 500s today; a future story can surface 404).
+//   - 400 "not a directory" → ErrNotDirectory (download route fall-back, ISI-4650).
+//   - context.DeadlineExceeded / context.Canceled on the per-request timeout → ErrReaderTimeout
+//     (route returns retryable-degraded 503, ADR-0025 D2).
 func mapReadErr(err error) error {
+	// ADR-0025 D2: a timed-out reader call becomes a typed retryable-degraded error so the
+	// route can return a structured 503 instead of a bare 500.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %v", ErrReaderTimeout, err)
+	}
 	var se *readclient.StatusError
 	if errors.As(err, &se) {
 		switch se.Code {
