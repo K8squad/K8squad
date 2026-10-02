@@ -80,6 +80,12 @@ type TeamDetail struct {
 	// of dropping them — the read sibling of the teamRequest.Grants write mapping
 	// (ISI-5360 Gap 4). Non-nil on the wire ([] never null).
 	Grants []capabilityGrantWire `json:"grants"`
+	// ResourceVersion is the Team CR's metadata.resourceVersion at read time
+	// (ISI-5361, design ISI-5305 §5 Gap 6). The Compose edit form echoes it back on
+	// a PUT so the save is an optimistic compare-and-swap against the object the
+	// caller actually edited — a concurrent write surfaces as a conflict rather
+	// than a silent lost update. Opaque to the console; never parsed, only round-tripped.
+	ResourceVersion string `json:"resourceVersion,omitempty"`
 }
 
 // AgentListEntry is one Agent row in the fleet agent list. ID is the object UID
@@ -168,6 +174,27 @@ type SkillView struct {
 	Permissions []string `json:"permissions"`
 	Toolchains  []string `json:"toolchains"`
 	Sidecars    []string `json:"sidecars"`
+	// ResourceVersion is the Skill CR's metadata.resourceVersion at read time
+	// (ISI-5361 Gap 6) — see TeamDetail.ResourceVersion. Round-tripped on a compose
+	// PUT for optimistic concurrency; opaque to the console.
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	// UsedBy is the reverse reference index (ISI-5361 Gap 7): the Agents whose
+	// skillRefs grant this skill and the Roles whose defaultSkills include it, so
+	// the editor sees the blast radius before a save — editing a shared Skill
+	// changes every referencing Agent/Role.
+	UsedBy UsedBy `json:"usedBy"`
+}
+
+// UsedBy is a reverse "used by" reference index on a Role/Skill detail (ISI-5361,
+// design ISI-5305 §5 Gap 7). It names the objects that reference the resource so the
+// console can render the blast radius of an edit — changing a shared Role or Skill
+// propagates to every referencing Agent. Counts are len(Agents)/len(Roles). Agents
+// is always present and non-nil ([] never null). Roles is populated only for a
+// Skill's used-by (the Roles whose defaultSkills list it); it is omitted — read as
+// zero — on a Role's used-by, where "roles referencing a role" has no meaning.
+type UsedBy struct {
+	Agents []string `json:"agents"`
+	Roles  []string `json:"roles,omitempty"`
 }
 
 // ── Authoring-spec detail projections (ADR-0016 / ISI-4002) ───────────────────
@@ -246,6 +273,14 @@ type RoleDetail struct {
 	ActivePhases    []string           `json:"activePhases,omitempty"`
 	Coordinator     bool               `json:"coordinator,omitempty"`
 	CoordinatorMode string             `json:"coordinatorMode,omitempty"`
+	// ResourceVersion is the Role CR's metadata.resourceVersion at read time
+	// (ISI-5361 Gap 6) — see TeamDetail.ResourceVersion. Round-tripped on a compose
+	// PUT for optimistic concurrency; opaque to the console.
+	ResourceVersion string `json:"resourceVersion,omitempty"`
+	// UsedBy is the reverse reference index (ISI-5361 Gap 7): the Agents whose
+	// roleRef names this Role, so the editor sees the blast radius before a save —
+	// editing a shared Role re-roots every referencing Agent.
+	UsedBy UsedBy `json:"usedBy"`
 }
 
 // projectRepoWire mirrors projectRequest.Repo byte-for-byte (composecrd.go).
@@ -463,6 +498,7 @@ func (r *ClientFleetListReader) Team(ctx context.Context, teamUID, targetUID str
 			Agents:            objectRefNames(t.Spec.Agents),
 			Projects:          objectRefNames(t.Spec.Projects),
 			Grants:            teamGrantsToWire(t.Spec.Grants),
+			ResourceVersion:   t.ResourceVersion,
 		}
 		return detail, nil
 	}
@@ -589,21 +625,32 @@ func (r *ClientFleetListReader) Skill(ctx context.Context, teamUID, name string,
 	s := matches[0]
 	tr := nsTeam[s.Namespace]
 	view := SkillView{
-		Name:        s.Name,
-		Namespace:   s.Namespace,
-		UID:         string(s.UID),
-		TeamUID:     tr.uid,
-		TeamName:    tr.name,
-		SourceType:  string(s.Spec.Source.Type),
-		Inline:      s.Spec.Source.Inline,
-		McpToolRefs: objectRefNames(s.Spec.McpToolRefs),
-		Permissions: nonNil(s.Spec.Permissions),
-		Toolchains:  nonNil(s.Spec.Requires.Toolchains),
-		Sidecars:    nonNil(s.Spec.Requires.Sidecars),
+		Name:            s.Name,
+		Namespace:       s.Namespace,
+		UID:             string(s.UID),
+		TeamUID:         tr.uid,
+		TeamName:        tr.name,
+		SourceType:      string(s.Spec.Source.Type),
+		Inline:          s.Spec.Source.Inline,
+		McpToolRefs:     objectRefNames(s.Spec.McpToolRefs),
+		Permissions:     nonNil(s.Spec.Permissions),
+		Toolchains:      nonNil(s.Spec.Requires.Toolchains),
+		Sidecars:        nonNil(s.Spec.Requires.Sidecars),
+		ResourceVersion: s.ResourceVersion,
+		UsedBy:          UsedBy{Agents: []string{}, Roles: []string{}},
 	}
 	if g := s.Spec.Source.Git; g != nil {
 		view.RepoRef, view.Ref, view.Path = g.RepoRef, g.Ref, g.Path
 	}
+	// Reverse "used by" index (ISI-5361 Gap 7): the Agents (skillRefs) and Roles
+	// (defaultSkills) in the skill's own namespace that reference it — the blast
+	// radius of editing a shared skill. A read failure is a genuine read-model
+	// outage (502), never a silently-zero count.
+	used, err := r.skillUsedBy(ctx, s.Namespace, s.Name)
+	if err != nil {
+		return SkillView{}, err
+	}
+	view.UsedBy = used
 	return view, nil
 }
 
@@ -631,6 +678,63 @@ func (r *ClientFleetListReader) Roles(ctx context.Context, teamUID string, admin
 	}
 	sortByNamespaceName(out.Roles, func(e RoleListEntry) (string, string) { return e.Namespace, e.Name })
 	return out, nil
+}
+
+// roleUsedBy builds the reverse "used by" index for a Role (ISI-5361 Gap 7): the
+// names of the Agents in ns whose roleRef names roleName — the blast radius an
+// editor sees before changing a shared Role (every listed Agent re-roots on save).
+// Agents and Roles are co-namespaced within a squad (§12.1), so a name match within
+// ns is the reference (mirroring the coordinatorRole indexing in Agents). The slice
+// is non-nil ([] never null) and sorted for a deterministic wire order.
+func (r *ClientFleetListReader) roleUsedBy(ctx context.Context, ns, roleName string) (UsedBy, error) {
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents, client.InNamespace(ns)); err != nil {
+		return UsedBy{}, err
+	}
+	u := UsedBy{Agents: []string{}}
+	for i := range agents.Items {
+		if agents.Items[i].Spec.RoleRef.Name == roleName {
+			u.Agents = append(u.Agents, agents.Items[i].Name)
+		}
+	}
+	sort.Strings(u.Agents)
+	return u, nil
+}
+
+// skillUsedBy builds the reverse "used by" index for a Skill (ISI-5361 Gap 7): the
+// Agents in ns whose skillRefs grant skillName, plus the Roles in ns whose
+// defaultSkills include it — both surfaced because a shared skill reaches Agents
+// directly and transitively through a Role's default set. Slices are non-nil ([]
+// never null) and sorted for a deterministic wire order.
+func (r *ClientFleetListReader) skillUsedBy(ctx context.Context, ns, skillName string) (UsedBy, error) {
+	var agents ksquadv1.AgentList
+	if err := r.reader.List(ctx, &agents, client.InNamespace(ns)); err != nil {
+		return UsedBy{}, err
+	}
+	u := UsedBy{Agents: []string{}, Roles: []string{}}
+	for i := range agents.Items {
+		for _, sr := range agents.Items[i].Spec.SkillRefs {
+			if sr.Name == skillName {
+				u.Agents = append(u.Agents, agents.Items[i].Name)
+				break
+			}
+		}
+	}
+	var roles ksquadv1.RoleList
+	if err := r.reader.List(ctx, &roles, client.InNamespace(ns)); err != nil {
+		return UsedBy{}, err
+	}
+	for i := range roles.Items {
+		for _, ds := range roles.Items[i].Spec.DefaultSkills {
+			if ds.Name == skillName {
+				u.Roles = append(u.Roles, roles.Items[i].Name)
+				break
+			}
+		}
+	}
+	sort.Strings(u.Agents)
+	sort.Strings(u.Roles)
+	return u, nil
 }
 
 // detailNamespace resolves the namespace an authoring-detail read filters within
@@ -764,7 +868,17 @@ func (r *ClientFleetListReader) RoleDetail(ctx context.Context, teamUID, name, t
 		if ro.Name != name {
 			continue
 		}
-		return roleDetail(ro), nil
+		detail := roleDetail(ro)
+		// Reverse "used by" index (ISI-5361 Gap 7): the Agents in the role's own
+		// namespace whose roleRef names it — the blast radius of editing a shared
+		// role. A read failure is a genuine read-model outage (502), never a
+		// silently-zero count.
+		used, uerr := r.roleUsedBy(ctx, ro.Namespace, ro.Name)
+		if uerr != nil {
+			return RoleDetail{}, uerr
+		}
+		detail.UsedBy = used
+		return detail, nil
 	}
 	return RoleDetail{}, ErrTeamNotFound
 }
@@ -836,6 +950,8 @@ func roleDetail(ro *ksquadv1.Role) RoleDetail {
 		ActivePhases:     ro.Spec.ActivePhases,
 		Coordinator:      ro.Spec.Coordinator,
 		CoordinatorMode:  ro.Spec.CoordinatorMode,
+		ResourceVersion:  ro.ResourceVersion,
+		UsedBy:           UsedBy{Agents: []string{}},
 	}
 	for _, ds := range ro.Spec.DefaultSkills {
 		d.DefaultSkills = append(d.DefaultSkills, objectRefWire{Name: ds.Name, Namespace: ds.Namespace})
