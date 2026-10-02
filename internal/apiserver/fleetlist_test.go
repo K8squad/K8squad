@@ -311,6 +311,44 @@ func TestFleetTeamDetailAdminAnyTeam(t *testing.T) {
 	}
 }
 
+// TestFleetTeamDetailProjectsGrants is the read sibling of the ISI-5360 Gap 4
+// write mapping: TeamDetail must surface TeamSpec.Grants so the Compose edit form
+// hydrates them and a PUT round-trips them (same no-silent-drop discipline as the
+// member-refs). An absent Grants list projects as [] (never null).
+func TestFleetTeamDetailProjectsGrants(t *testing.T) {
+	granted := team("squad-g", "gamma", fleetUIDA)
+	granted.Spec.Grants = []ksquadv1.CapabilityGrant{
+		{Role: "role-manager", Capabilities: []string{"work_item.author"}},
+		{Role: "role-boss", Capabilities: []string{"work_item.author", "run.dispatch"}},
+	}
+	r := newFleetReader(t, granted)
+	d, err := r.Team(context.Background(), "", fleetUIDA, true)
+	if err != nil {
+		t.Fatalf("Team(admin): %v", err)
+	}
+	if len(d.Grants) != 2 {
+		t.Fatalf("want 2 grants projected, got %+v", d.Grants)
+	}
+	if d.Grants[0].Role != "role-manager" || len(d.Grants[0].Capabilities) != 1 ||
+		d.Grants[0].Capabilities[0] != "work_item.author" {
+		t.Fatalf("grant[0] garbled: %+v", d.Grants[0])
+	}
+	if d.Grants[1].Role != "role-boss" || len(d.Grants[1].Capabilities) != 2 {
+		t.Fatalf("grant[1] garbled: %+v", d.Grants[1])
+	}
+
+	// A team with no grants projects [] (never null) so the console never branches.
+	bare := team("squad-h", "eta", fleetUIDB)
+	r2 := newFleetReader(t, bare)
+	d2, err := r2.Team(context.Background(), "", fleetUIDB, true)
+	if err != nil {
+		t.Fatalf("Team(admin, bare): %v", err)
+	}
+	if d2.Grants == nil {
+		t.Fatalf("empty grants must project as [] not null")
+	}
+}
+
 func TestFleetTeamDetailTenantForeignHidden(t *testing.T) {
 	r := newFleetReader(t, twoSquadObjs(fleetUIDA, fleetUIDB)...)
 	// Tenant A asking for team B's UID is existence-hiding ErrTeamNotFound (never a 403 leak).
