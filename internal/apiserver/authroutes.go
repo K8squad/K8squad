@@ -695,23 +695,9 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	return nil
 }
 
-// decodeJSONStrict decodes like decodeJSON but rejects unknown fields
-// (DisallowUnknownFields). It is the compose-role decode path (ISI-5358 /
-// ISI-5305 §5 Gap 2): a field the roleRequest wire does not model would
-// otherwise be dropped silently, and because a compose PUT REPLACES the whole
-// spec that silent drop wipes live config on every edit-save. Surfacing it as a
-// 400 turns a silent data-loss into a loud, fixable contract error. Scoped to
-// the role path deliberately — the other compose/auth decoders keep the lenient
-// contract they shipped with.
-func decodeJSONStrict(w http.ResponseWriter, r *http.Request, v any) error {
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(v); err != nil {
-		writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
-		return err
-	}
-	return nil
-}
+// decodeJSONStrict's DisallowUnknownFields contract for the compose role path
+// lives on in decodeComposeRequestStrict (composecrd.go, ISI-5359 merge of
+// ISI-5358 Gap 2) — the strict typed decode plus the sent-fields map.
 
 func userIDParam(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	id, err := uuid.Parse(decodePathVar(mux.Vars(r)["id"]))

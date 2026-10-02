@@ -41,15 +41,20 @@ package apiserver
 // server-assigned generation semantics.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -284,19 +289,22 @@ type projectRequest struct {
 		Ref  string        `json:"ref,omitempty"`
 		Auth *repoAuthWire `json:"auth,omitempty"`
 		// Sync round-trips spec.repo.sync (§5.4, ISI-4843). Nil ⇒ sync disabled.
-		// The WHOLE sub-spec rides the wire — a compose PUT is a full-spec upsert
-		// (not a merge), so the Settings SyncCard editing only poll/reflect must
-		// carry provider/webhookSecretRef/mirror/issueSync through untouched or it
-		// would silently drop them (the goals/egress full-replace footgun).
+		// The WHOLE sub-spec rides the wire. Since ISI-5359 a compose PUT is a
+		// FIELD-SCOPED merge, so a save that omits `repo` leaves repo.sync intact;
+		// but a save that DOES send `repo` replaces the whole repo object (top-level
+		// merge), so the Settings SyncCard editing only poll/reflect must still carry
+		// provider/webhookSecretRef/mirror/issueSync through untouched when it sends
+		// repo, or they are dropped within that one field.
 		Sync *ksquadv1.RepoSyncSpec `json:"sync,omitempty"`
 	} `json:"repo"`
 	Goals []string `json:"goals,omitempty"`
 	// Conventions + ArchDocRefs are the NON-SECRET project descriptor fields
 	// edited by the Settings "Docs & conventions" card (ISI-5303, ISI-5280 WS-E).
-	// Like Goals they ride the full-spec compose PUT and are injected into every
-	// Run's context envelope by the contextsource controller. A compose PUT is a
-	// full-spec upsert, so a repo/sync-only save must carry these through
-	// untouched or it silently drops them (the goals full-replace footgun).
+	// Like Goals they ride the compose PUT and are injected into every Run's context
+	// envelope by the contextsource controller. Since ISI-5359 the PUT merges per
+	// top-level field, so a repo/sync-only save (one that does not send conventions/
+	// archDocRefs/goals) now leaves these intact — the goals full-replace footgun is
+	// closed at the server.
 	Conventions     string         `json:"conventions,omitempty"`
 	ArchDocRefs     []string       `json:"archDocRefs,omitempty"`
 	EgressPolicyRef *objectRefWire `json:"egressPolicyRef,omitempty"`
@@ -354,7 +362,8 @@ type roleRequest struct {
 	Coordinator     bool     `json:"coordinator,omitempty"`
 	CoordinatorMode string   `json:"coordinatorMode,omitempty"`
 	// ResourceVersion and UsedBy are READ-ONLY fields RoleDetail projects (ISI-5361
-	// Gaps 6/7). The role PUT decode is strict (decodeJSONStrict, ISI-5358 Gap 2), so
+	// Gaps 6/7). The role PUT decode is strict (decodeComposeRequestStrict,
+	// ISI-5358 Gap 2), so
 	// the write struct must ACCEPT them for the edit-form's read→edit→write loop to
 	// round-trip without a 400 — but planRole ignores both. ResourceVersion's
 	// optimistic-concurrency consumption is server-side CAS on the live object
@@ -533,9 +542,11 @@ func (s *ComposeService) create(ctx context.Context, obj client.Object) (int, er
 // present ⇒ a NEW revision (existing+1) via Update (never an in-place snapshot
 // mutation — in-flight Runs already snapshotted); absent ⇒ Create at revision 1.
 // `obj` carries the desired spec; `existing` is a fresh zero object of the same
-// concrete type used to read the current revision + resourceVersion. Returns the
+// concrete type used to read the current revision + resourceVersion. `sent` is
+// the set of request fields the caller actually provided — when non-nil the
+// Update is a FIELD-SCOPED MERGE (ISI-5359), not a full-spec replace. Returns the
 // new revision, whether it was an update, and any error.
-func (s *ComposeService) upsert(ctx context.Context, ns, name string, obj, existing client.Object) (rev int, updated bool, err error) {
+func (s *ComposeService) upsert(ctx context.Context, ns, name string, obj, existing client.Object, sent map[string]json.RawMessage) (rev int, updated bool, err error) {
 	getErr := s.applier.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, existing)
 	switch {
 	case apierrors.IsNotFound(getErr):
@@ -544,15 +555,130 @@ func (s *ComposeService) upsert(ctx context.Context, ns, name string, obj, exist
 	case getErr != nil:
 		return 0, false, getErr
 	}
+	// Field-scoped merge (Gap 1): the PUT must only touch the fields the caller
+	// sent. The historical behavior Updated `obj` — a freshly-built object carrying
+	// ONLY the narrow wire's fields — which silently wiped every live spec field the
+	// caller did not (or could not) resend. Instead merge the sent fields onto a
+	// fresh copy of the live object, so unsent fields (and spec fields the wire does
+	// not even model, e.g. activePhases / ownedBy) are carried through verbatim.
+	// `sent == nil` ⇒ no merge: the fixed-identity ModelConfig upsert keeps its
+	// deliberate full-spec replace.
+	target := obj
+	if sent != nil {
+		merged, mErr := mergeSpecFields(existing, obj, sent)
+		if mErr != nil {
+			return 0, false, mErr
+		}
+		target = merged
+	}
 	next := readRevision(existing) + 1
-	setRevision(obj, next)
+	setRevision(target, next)
 	// Carry the current resourceVersion so the Update is a compare-and-swap on the
 	// live object the caller edited — a concurrent change surfaces as a conflict.
-	obj.SetResourceVersion(existing.GetResourceVersion())
-	if err := s.applier.Update(ctx, obj); err != nil {
+	target.SetResourceVersion(existing.GetResourceVersion())
+	if err := s.applier.Update(ctx, target); err != nil {
 		return 0, false, err
 	}
 	return next, true, nil
+}
+
+// mergeSpecFields computes the field-scoped merge of the live object `existing`
+// with the caller-authored fields on `desired`, returning a fresh object of the
+// same concrete type ready to Update (ISI-5359 / ISI-5305 §5 Gap 1). It is an
+// RFC 7386-style JSON merge patch restricted to top-level spec fields:
+//
+//   - a field in `sent` whose value is present ⇒ taken from `desired` (the
+//     post-validation, defaulted spec), overwriting the live value;
+//   - a field in `sent` whose value is JSON null ⇒ deleted (cleared to zero);
+//   - every other live spec field ⇒ carried through from `existing` untouched,
+//     including fields the narrow compose wire does not model at all.
+//
+// Non-spec request fields (name, project) never match a spec key, so they are
+// ignored. All live metadata (labels, operator-managed annotations, uid,
+// resourceVersion) rides through from `existing` — the Update is a true
+// read-modify-write, not a bare rebuild. The merged document is decoded into a
+// zero-valued object so a null-delete genuinely clears the field rather than
+// leaving a stale value from `desired`.
+func mergeSpecFields(existing, desired client.Object, sent map[string]json.RawMessage) (client.Object, error) {
+	spec, err := specFields(existing)
+	if err != nil {
+		return nil, err
+	}
+	authored, err := specFields(desired)
+	if err != nil {
+		return nil, err
+	}
+	for key, raw := range sent {
+		switch {
+		case isJSONNull(raw):
+			delete(spec, key) // RFC 7386 delete; a no-op for non-spec keys (name/project)
+		default:
+			if v, ok := authored[key]; ok {
+				spec[key] = v // overwrite with the defaulted, validated spec value
+			}
+			// else: a sent-but-omitempty-empty scalar, or a non-spec field — left
+			// untouched (to CLEAR an optional field, send it as JSON null).
+		}
+	}
+	// Re-encode the live object's full document with the merged spec, then decode
+	// into a fresh zero of its concrete type so no stale subfield survives a delete.
+	doc, err := objectDocument(existing)
+	if err != nil {
+		return nil, err
+	}
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return nil, err
+	}
+	doc["spec"] = specJSON
+	docJSON, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	fresh, ok := reflect.New(reflect.TypeOf(existing).Elem()).Interface().(client.Object)
+	if !ok {
+		return nil, fmt.Errorf("apiserver: merge target %T is not a client.Object", existing)
+	}
+	if err := json.Unmarshal(docJSON, fresh); err != nil {
+		return nil, err
+	}
+	return fresh, nil
+}
+
+// specFields marshals a CR and returns its `spec` as a top-level field map (an
+// empty, non-nil map for a spec-less or empty object).
+func specFields(obj client.Object) (map[string]json.RawMessage, error) {
+	doc, err := objectDocument(obj)
+	if err != nil {
+		return nil, err
+	}
+	fields := map[string]json.RawMessage{}
+	if spec, ok := doc["spec"]; ok && len(spec) > 0 {
+		if err := json.Unmarshal(spec, &fields); err != nil {
+			return nil, err
+		}
+	}
+	return fields, nil
+}
+
+// objectDocument marshals a CR to its top-level JSON field map (metadata, spec,
+// status, …) so the spec can be swapped without disturbing the rest.
+func objectDocument(obj client.Object) (map[string]json.RawMessage, error) {
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+// isJSONNull reports whether a raw request value is the JSON literal null (the
+// RFC 7386 delete sentinel).
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 // readRevision parses the RevisionAnnotation off a CR (absent/garbage ⇒ 0, so the
@@ -600,6 +726,14 @@ type applyPlan struct {
 	fixedNamespace string
 	desired        client.Object // spec/name filled; namespace set by run()
 	existing       client.Object // fresh zero of the same type
+	// editFields is the set of top-level request fields the caller actually sent on
+	// a PUT edit (the raw JSON object keys), used by upsert() for the field-scoped
+	// merge (ISI-5359 / ISI-5305 §5 Gap 1): only these fields overwrite the live
+	// spec; every unsent field — INCLUDING spec fields the narrow wire does not even
+	// model — is carried through from the existing CR. Nil ⇒ no merge (the pre-5359
+	// full-spec-replace), so POST creates and the fixed-identity ModelConfig upsert
+	// are untouched.
+	editFields map[string]json.RawMessage
 }
 
 // applyOutcome is the result of applying one plan against the cluster. Exactly
@@ -670,7 +804,7 @@ func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorCont
 	if create {
 		rev, applyErr = s.create(ctx, plan.desired)
 	} else {
-		rev, updated, applyErr = s.upsert(ctx, ns, name, plan.desired, plan.existing)
+		rev, updated, applyErr = s.upsert(ctx, ns, name, plan.desired, plan.existing, plan.editFields)
 	}
 	switch {
 	case errors.Is(applyErr, errConflict):
@@ -1060,33 +1194,89 @@ func modelConfigToWire(mc *ksquadv1.ModelConfig) modelConfigRequest {
 // Route handlers — thin decode shells over run()
 // ============================================================================
 
+// decodeComposeRequest reads the request body ONCE and decodes it into BOTH the
+// typed wire struct `v` and a raw top-level field map (ISI-5359). The raw map is
+// the set of fields the caller actually sent, which the PUT edit path threads
+// into the field-scoped merge so an unsent field is never wiped. The route caps
+// the body (maxBytesBody, server.go §13), so io.ReadAll is bounded. On a
+// malformed body it writes the 400 (like decodeJSON) and returns ok=false. A
+// `null` / empty body yields an empty (non-nil) map — an edit that touches
+// nothing — never a nil map that would fall back to a full-spec replace.
+func decodeComposeRequest(w http.ResponseWriter, r *http.Request, v any) (map[string]json.RawMessage, bool) {
+	return decodeComposeBody(w, r, v, false)
+}
+
+// decodeComposeRequestStrict is decodeComposeRequest with the strict typed
+// decode (ISI-5358 Gap 2, role path): DisallowUnknownFields turns a would-be
+// silent drop into a loud 400, so a client sending a field the roleRequest wire
+// does not model learns of it instead of losing live config. The sent-fields
+// map is still captured — strict and merge semantics compose: unknown fields
+// are rejected, known-but-unsent ones are merged from the live object.
+func decodeComposeRequestStrict(w http.ResponseWriter, r *http.Request, v any) (map[string]json.RawMessage, bool) {
+	return decodeComposeBody(w, r, v, true)
+}
+
+func decodeComposeBody(w http.ResponseWriter, r *http.Request, v any, strict bool) (map[string]json.RawMessage, bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "unable to read request body")
+		return nil, false
+	}
+	if strict {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+			return nil, false
+		}
+	} else if err := json.Unmarshal(body, v); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return nil, false
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		// A top-level JSON array/scalar cannot carry named compose fields; the typed
+		// decode above only accepts an object for these struct targets, so this is a
+		// belt-and-suspenders guard rather than a reachable path.
+		writeJSONError(w, http.StatusBadRequest, "request body must be a JSON object")
+		return nil, false
+	}
+	if raw == nil { // body was the literal `null`
+		raw = map[string]json.RawMessage{}
+	}
+	return raw, true
+}
+
 func (s *ComposeService) handleTeam(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req teamRequest
-		if err := decodeJSON(w, r, &req); err != nil {
+		sent, ok := decodeComposeRequest(w, r, &req)
+		if !ok {
 			return
 		}
-		s.applyEdit(w, r, create, s.planTeam(req))
+		s.applyEdit(w, r, create, s.planTeam(req), sent)
 	}
 }
 
 func (s *ComposeService) handleProject(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req projectRequest
-		if err := decodeJSON(w, r, &req); err != nil {
+		sent, ok := decodeComposeRequest(w, r, &req)
+		if !ok {
 			return
 		}
-		s.applyEdit(w, r, create, s.planProject(req))
+		s.applyEdit(w, r, create, s.planProject(req), sent)
 	}
 }
 
 func (s *ComposeService) handleAgent(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req agentRequest
-		if err := decodeJSON(w, r, &req); err != nil {
+		sent, ok := decodeComposeRequest(w, r, &req)
+		if !ok {
 			return
 		}
-		s.applyEdit(w, r, create, s.planAgent(req))
+		s.applyEdit(w, r, create, s.planAgent(req), sent)
 	}
 }
 
@@ -1095,21 +1285,25 @@ func (s *ComposeService) handleRole(create bool) http.HandlerFunc {
 		var req roleRequest
 		// Strict decode (ISI-5358 Gap 2): an unknown field is a loud 400 rather
 		// than a silent drop, so the model-per-role UI can never quietly wipe
-		// phase/coordinator config it failed to re-send on a full-spec PUT.
-		if err := decodeJSONStrict(w, r, &req); err != nil {
+		// phase/coordinator config it failed to re-send on a full-spec PUT. The
+		// sent map (ISI-5359) still threads into the field-scoped merge, so
+		// known-but-unsent fields are merged from the live object.
+		sent, ok := decodeComposeRequestStrict(w, r, &req)
+		if !ok {
 			return
 		}
-		s.applyEdit(w, r, create, s.planRole(req))
+		s.applyEdit(w, r, create, s.planRole(req), sent)
 	}
 }
 
 func (s *ComposeService) handleSkill(create bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req skillRequest
-		if err := decodeJSON(w, r, &req); err != nil {
+		sent, ok := decodeComposeRequest(w, r, &req)
+		if !ok {
 			return
 		}
-		s.applyEdit(w, r, create, s.planSkill(req))
+		s.applyEdit(w, r, create, s.planSkill(req), sent)
 	}
 }
 
@@ -1166,12 +1360,15 @@ func (s *ComposeService) handleModelConfigGet() http.HandlerFunc {
 
 // applyEdit binds the {name} path var (PUT) to the desired object's name so an
 // edit targets the path identity, then delegates to run(). For POST the name is
-// the body's own name (already set by the plan).
-func (s *ComposeService) applyEdit(w http.ResponseWriter, r *http.Request, create bool, plan applyPlan) {
+// the body's own name (already set by the plan). `sent` is the raw set of fields
+// the caller provided; on an edit it rides onto the plan so upsert() performs the
+// field-scoped merge (ISI-5359) — it is ignored for a create.
+func (s *ComposeService) applyEdit(w http.ResponseWriter, r *http.Request, create bool, plan applyPlan, sent map[string]json.RawMessage) {
 	if !create {
 		if id, ok := pathVar(r, "name"); ok && id != "" {
 			plan.desired.SetName(id)
 		}
+		plan.editFields = sent
 	}
 	s.run(w, r, create, plan)
 }

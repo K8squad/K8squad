@@ -129,6 +129,27 @@ func pollUntilReady(t *testing.T, r *ReaderPodWorkspaceReader, projectID string)
 	}
 }
 
+// warmListSession polls ReadFile until the reader session is ready, so listing-cache tests can
+// measure ListDir behavior without the async launch (ADR-0025 D1) racing the measurements.
+// ReadFile does not touch the listing cache, so the measured ListDir sequence starts cold.
+func warmListSession(t *testing.T, r *ReaderPodWorkspaceReader, projectID string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := r.ReadFile(context.Background(), projectID, "warmup", 0, 3)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrReaderPreparing) {
+			t.Fatalf("warmListSession(%s): %v", projectID, err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("warmListSession(%s): still ErrReaderPreparing after 2s", projectID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // waitNoErr polls ListDir until it returns a non-preparing error or timeout.
 func pollUntilError(t *testing.T, r *ReaderPodWorkspaceReader, projectID string) error {
 	t.Helper()
@@ -326,6 +347,10 @@ func TestListDirCache_DeduplicatesRapidReexpand(t *testing.T) {
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	r.now = func() time.Time { return now }
 
+	// Warm the session via ReadFile first: the async launch (D1) returns ErrReaderPreparing
+	// from the first ListDir, which would otherwise be mistaken for a cache result.
+	warmListSession(t, r, "proj-1")
+
 	// First call — must hit the pod.
 	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
 		t.Fatalf("first ListDir: %v", err)
@@ -361,6 +386,10 @@ func TestListDirCache_DifferentKeysNotShared(t *testing.T) {
 
 	now := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
 	r.now = func() time.Time { return now }
+
+	// Warm the session via ReadFile first so every ListDir below measures cache behavior,
+	// not the async launch's ErrReaderPreparing window (ADR-0025 D1).
+	warmListSession(t, r, "proj-1")
 
 	if _, err := r.ListDir(context.Background(), "proj-1", ".", 0); err != nil {
 		t.Fatalf("ListDir ./0: %v", err)
