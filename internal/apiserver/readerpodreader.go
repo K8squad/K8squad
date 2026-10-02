@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,16 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver"
 )
+
+// listCacheTTL is the short-lived dedup window for directory listing calls (ADR-0025 D5).
+// Rapid re-expand clicks within this window share one reader-pod round-trip.
+const listCacheTTL = 300 * time.Millisecond
+
+// listCacheEntry holds one cached DirListing and its expiry.
+type listCacheEntry struct {
+	result  *DirListing
+	expires time.Time
+}
 
 // ErrNoBrowseTarget is returned by a ReaderSpecResolver when a project has no completed Run / PVC to
 // browse yet. The route maps it to an empty (non-degraded) listing so S4c renders "nothing to browse"
@@ -62,6 +73,11 @@ type readerSession struct {
 	handle     readerpod.Handle
 	client     readClient
 	lastAccess time.Time
+
+	// listCacheMu guards listCache. The cache is per-session so it is naturally invalidated when the
+	// pod is torn down and a fresh session is created (ADR-0025 D5).
+	listCacheMu sync.Mutex
+	listCache   map[string]*listCacheEntry
 }
 
 // ReaderPodWorkspaceReader implements WorkspaceReader by managing per-project reader-pod sessions.
@@ -105,11 +121,30 @@ const defaultReaderIdle = 5 * time.Minute
 
 // ListDir launches-or-reuses the project's reader pod and returns its directory listing, mapped to
 // the apiserver wire type. A busy workspace surfaces as ErrWorkspaceBusy (the route degrades).
+//
+// Results are cached for listCacheTTL (ADR-0025 D5): rapid re-expand clicks within the window share
+// one reader-pod round-trip. The cache is keyed by dirPath+page and lives on the session, so it is
+// automatically busted when the pod is torn down and recreated.
 func (r *ReaderPodWorkspaceReader) ListDir(ctx context.Context, projectID, dirPath string, page int) (*DirListing, error) {
 	sess, err := r.session(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
+
+	cacheKey := dirPath + "\x00" + strconv.Itoa(page)
+	now := r.now()
+
+	sess.listCacheMu.Lock()
+	if sess.listCache == nil {
+		sess.listCache = make(map[string]*listCacheEntry)
+	}
+	if entry, ok := sess.listCache[cacheKey]; ok && now.Before(entry.expires) {
+		cached := entry.result
+		sess.listCacheMu.Unlock()
+		return cached, nil
+	}
+	sess.listCacheMu.Unlock()
+
 	wire, err := sess.client.List(ctx, dirPath, page)
 	if err != nil {
 		return nil, mapReadErr(err)
@@ -118,7 +153,13 @@ func (r *ReaderPodWorkspaceReader) ListDir(ctx context.Context, projectID, dirPa
 	for _, e := range wire.Entries {
 		entries = append(entries, DirEntry{Name: e.Name, Type: e.Type, Size: e.Size})
 	}
-	return &DirListing{Entries: entries, NextPage: wire.NextPage}, nil
+	result := &DirListing{Entries: entries, NextPage: wire.NextPage}
+
+	sess.listCacheMu.Lock()
+	sess.listCache[cacheKey] = &listCacheEntry{result: result, expires: r.now().Add(listCacheTTL)}
+	sess.listCacheMu.Unlock()
+
+	return result, nil
 }
 
 // ReadFile launches-or-reuses the project's reader pod and returns file content, mapped to the

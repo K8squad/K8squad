@@ -15,6 +15,7 @@ package apiserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -582,5 +583,149 @@ func TestProjectFilesStat_ProjectNotFound_Returns404(t *testing.T) {
 	srv.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("stat unknown project: got %d, want 404 (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// ---- /files/stream (ADR-0025 D5) ----------------------------------------
+
+// countingReader wraps fakeWorkspaceReader and counts ListDir calls.
+type countingReader struct {
+	fakeWorkspaceReader
+	calls int
+}
+
+func (c *countingReader) ListDir(ctx context.Context, projectID, dirPath string, page int) (*DirListing, error) {
+	c.calls++
+	return c.fakeWorkspaceReader.ListDir(ctx, projectID, dirPath, page)
+}
+
+func TestProjectFilesStream_NilReader_Returns501(t *testing.T) {
+	srv := buildFilesServer(nil, nil, filesAuthn("u1", true))
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=.", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusNotImplemented {
+		t.Errorf("nil reader: got %d, want 501", w.Code)
+	}
+}
+
+func TestProjectFilesStream_HappyPath_SinglePage(t *testing.T) {
+	reader := &fakeWorkspaceReader{listing: &DirListing{
+		Entries: []DirEntry{
+			{Name: "a.go", Type: "file", Size: 100},
+			{Name: "src", Type: "dir"},
+		},
+	}}
+	srv := buildFilesServer(reader, nil, filesAuthn("u1", true))
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=.", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/x-ndjson") {
+		t.Errorf("want application/x-ndjson, got %q", ct)
+	}
+
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	// expect: preamble + 2 entries + done = 4 lines
+	if len(lines) != 4 {
+		t.Fatalf("want 4 NDJSON lines, got %d: %q", len(lines), w.Body.String())
+	}
+	// Last line must be {"done":true}
+	var last streamEntry
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &last); err != nil || !last.Done {
+		t.Errorf("last line must be done marker, got %q", lines[len(lines)-1])
+	}
+	// Second line must be first entry
+	var first streamEntry
+	if err := json.Unmarshal([]byte(lines[1]), &first); err != nil || first.Name != "a.go" {
+		t.Errorf("second line must be a.go entry, got %q", lines[1])
+	}
+}
+
+// multiPageReader serves different DirListing responses per page index.
+type multiPageReader struct {
+	pages []*DirListing
+}
+
+func (p *multiPageReader) ListDir(_ context.Context, _, _ string, page int) (*DirListing, error) {
+	if page >= len(p.pages) {
+		return &DirListing{}, nil
+	}
+	return p.pages[page], nil
+}
+
+func (p *multiPageReader) ReadFile(_ context.Context, _, _ string, _, _ int64) (*FileContent, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (p *multiPageReader) StatFile(_ context.Context, _, _ string) (*FileStat, error) {
+	return nil, errors.New("not implemented")
+}
+
+func TestProjectFilesStream_MultiPage(t *testing.T) {
+	reader := &multiPageReader{pages: []*DirListing{
+		{Entries: []DirEntry{{Name: "a", Type: "file"}}, NextPage: 1},
+		{Entries: []DirEntry{{Name: "b", Type: "dir"}}, NextPage: 0},
+	}}
+	srv := buildFilesServer(reader, nil, filesAuthn("u1", true))
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=.", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	// preamble + entry a + entry b + done = 4 lines
+	if len(lines) != 4 {
+		t.Fatalf("want 4 NDJSON lines, got %d: %q", len(lines), w.Body.String())
+	}
+	var entryA, entryB streamEntry
+	if err := json.Unmarshal([]byte(lines[1]), &entryA); err != nil || entryA.Name != "a" {
+		t.Errorf("want entry a at line 1, got %q", lines[1])
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &entryB); err != nil || entryB.Name != "b" {
+		t.Errorf("want entry b at line 2, got %q", lines[2])
+	}
+}
+
+func TestProjectFilesStream_BusyDegraded(t *testing.T) {
+	reader := &fakeWorkspaceReader{err: ErrWorkspaceBusy}
+	busy := &fakeBusySnapshotReader{listing: &DirListing{
+		Entries: []DirEntry{{Name: "snap.go", Type: "file"}},
+	}}
+	srv := buildFilesServerBusy(reader, busy, nil, filesAuthn("u1", true))
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=.", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
+	// preamble + 1 entry + done = 3 lines
+	if len(lines) != 3 {
+		t.Fatalf("want 3 lines, got %d: %q", len(lines), w.Body.String())
+	}
+	var preamble streamEntry
+	if err := json.Unmarshal([]byte(lines[0]), &preamble); err != nil {
+		t.Fatalf("decode preamble: %v", err)
+	}
+	if !preamble.Degraded || preamble.Reason != reasonWorkspaceBusy {
+		t.Errorf("preamble must be degraded workspace_busy, got %+v", preamble)
+	}
+}
+
+func TestProjectFilesStream_TraversalRejected(t *testing.T) {
+	srv := buildFilesServer(&fakeWorkspaceReader{listing: &DirListing{}}, nil, filesAuthn("u1", true))
+	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=../secret", nil)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("traversal: got %d, want 400", w.Code)
 	}
 }
