@@ -3,12 +3,11 @@
 // into ONE two-axis master-detail surface: ORG (Teams ▸ Agents) + LIBRARY (Roles, Skills) +
 // ORG DEFAULTS (the ModelConfig singleton).
 //
-// This increment is the READ-ONLY surface (rail + detail + effective-model provenance). Inline
-// edit-save (Frame 02) is GATED on ISI-5358 (role round-trip) + ISI-5359 (field-scoped merge
-// writes) — until those land on main, a save could silently drop unsent fields — so every mutate
-// affordance renders disabled (see NodeDetail). The surface ships as its own route first so it does
-// not regress the shipped /agents page while the redesign is completed; nav consolidation lands
-// with the edit path.
+// Inline edit (Frame 02/03) is LIVE: the Model and Skills tabs write through the field-scoped
+// merge PUT (ISI-5359, merged) with the role round-trip (ISI-5358, merged) — a save sends only
+// its edited field, so unsent live fields survive. Shared-role edits confirm their blast radius
+// (the usedBy index, ISI-5361) before committing. Full-form editing stays on /compose; nav
+// consolidation lands with the follow-up increment.
 
 import { AgentsTeamWorkspace } from "@/components/agents/roster/AgentsTeamWorkspace";
 import { viewer } from "@/lib/session";
@@ -33,7 +32,8 @@ export default async function AgentsTeamPage({
         <h1>Agents &amp; Team</h1>
         <p className="muted">
           Your org, roles and skills in one place — Teams ▸ Agents, the shared Roles/Skills library,
-          and the org default model. Read-only: click any node to see its detail and effective model.
+          and the org default model. Open any node to read its detail; the Model and Skills tabs
+          edit inline (shared-role changes show their blast radius first).
         </p>
       </header>
       <AgentsTeamWorkspace team={scopedTeam} />
