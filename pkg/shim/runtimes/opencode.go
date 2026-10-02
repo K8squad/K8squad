@@ -18,6 +18,7 @@ package runtimes
 
 import (
 	"encoding/json"
+	"strings"
 
 	apiv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/a2a"
@@ -109,7 +110,7 @@ func (r openCode) Command(lc LaunchContext) (ExecSpec, error) {
 		// synthesizes each step's true model latency from opencode's own
 		// step_start→step_finish event timestamps, so the llm.call span
 		// reflects real request duration instead of a microsecond point.
-		Parse:      newOpenCodeParser(),
+		Parse:      newOpenCodeParser(mcpServerNames(lc.MCPEndpoints)),
 		WorkDir:    lc.WorkDir,
 		SettleLine: openCodeSettleLine,
 	}
@@ -283,7 +284,7 @@ type openCodeLineMeta struct {
 // telemetry mapper's wall-clock step-clock fallback (ISI-4238) still applies —
 // so this is strictly additive: accurate when opencode reports timing, no worse
 // than before when it does not.
-func newOpenCodeParser() func(line string) []Progress {
+func newOpenCodeParser(mcpServers []string) func(line string) []Progress {
 	var stepStartMS int64 // step_start timestamp of the in-flight step; 0 = none
 	return func(line string) []Progress {
 		var meta openCodeLineMeta
@@ -292,6 +293,7 @@ func newOpenCodeParser() func(line string) []Progress {
 			stepStartMS = meta.Timestamp
 		}
 		progs := parseOpenCodeLine(line)
+		enrichMCPTool(progs, mcpServers)
 		if meta.Type == "step_finish" {
 			if stepStartMS > 0 && meta.Timestamp > stepStartMS {
 				dur := meta.Timestamp - stepStartMS
@@ -306,6 +308,74 @@ func newOpenCodeParser() func(line string) []Progress {
 		}
 		return progs
 	}
+}
+
+// mcpServerNames extracts the MCP server keys from the Run's endpoint set. These
+// are exactly the server keys opencode renders into opencode.json's `mcp` section
+// (pkg/capability.RenderOpenCodeConfig keys doc.MCP by ep.Name), and opencode
+// flattens an MCP tool onto stdout as `<server>_<tool>` — so the names recovered
+// here are what enrichMCPTool matches a tool_use event against.
+func mcpServerNames(endpoints []capability.Endpoint) []string {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		if ep.Name != "" {
+			names = append(names, ep.Name)
+		}
+	}
+	return names
+}
+
+// enrichMCPTool stamps ToolPayload.Server on the tool events whose name names an
+// MCP server (ISI-5334 P2-6). opencode's --format=json wire flattens an
+// MCP-served call to `<server>_<tool>` and, unlike codex (which carries server +
+// tool separately), sets no server field — so without this the telemetry mapper
+// sees Server="" and buckets the call as a local gen_ai.tool.call (span kind
+// internal, categorized `system`) instead of an mcp.call (SpanKindClient, mcp
+// duration histogram, ksquad.mcp.server). Matching the LONGEST server prefix
+// splits the flattened name back into server + bare tool, so the span reads the
+// same as the codex path (bare tool name + Server). A tool that matches no server
+// is left untouched (local call). No-op when the Run declares no MCP servers.
+func enrichMCPTool(progs []Progress, mcpServers []string) {
+	if len(mcpServers) == 0 {
+		return
+	}
+	for i := range progs {
+		t := progs[i].Tool
+		if progs[i].Kind != a2a.EventTool || t == nil || t.Server != "" || t.Name == "" {
+			continue
+		}
+		if server, bare, ok := mcpServerFor(t.Name, mcpServers); ok {
+			t.Server = server
+			t.Name = bare
+		}
+	}
+}
+
+// mcpServerFor splits an opencode flattened tool name (`<server>_<tool>`) into its
+// server and bare tool by matching the LONGEST server key that the name equals or
+// prefixes (with the `_` join). Longest-match disambiguates overlapping keys
+// (e.g. `ksquad-memory` vs `ksquad-memory-discussion`). Returns ok=false when no
+// server matches — a local/CLI tool.
+func mcpServerFor(name string, mcpServers []string) (server, bareTool string, ok bool) {
+	best := ""
+	for _, s := range mcpServers {
+		if s == "" {
+			continue
+		}
+		if (name == s || strings.HasPrefix(name, s+"_")) && len(s) > len(best) {
+			best = s
+		}
+	}
+	if best == "" {
+		return "", "", false
+	}
+	if name == best {
+		return best, best, true // a server with a single same-named tool
+	}
+	return best, name[len(best)+1:], true
 }
 
 func parseOpenCodeLine(line string) []Progress {

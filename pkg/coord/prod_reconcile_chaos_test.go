@@ -282,6 +282,53 @@ func TestProdReconcile(t *testing.T) {
 		}
 	})
 
+	// R6b (ISI-5334 P2-5): the coarse reconcile_advanced outbox rows now carry the
+	// run's trace_id (and run_id) in their payload. The relay's runTraceContext
+	// (pkg/events/trace.go) reconstructs a remote span context from it, so each
+	// `ksquad.run.*.reconcile_advanced` NATS producer/consumer span JOINS the run
+	// trace instead of rooting its own — previously these rows carried neither
+	// trace_carrier nor trace_id and the hop was invisible to the run trace.
+	t.Run("R6b_reconcile_advanced_carries_trace_id", func(t *testing.T) {
+		s, _ := seedItem(t, ctx, dsn)
+		db := openDB(t, dsn)
+		// seedItem binds the claim/run to this fixed run id.
+		const run = "22222222-2222-2222-2222-222222222222"
+		s.WithTraceID("trace-abc")
+		fence := s.Fence()
+		if err := reconcile.Reconcile(&recordingEffects{}, s, reconcile.Options{Durable: true, Fence: fence}); err != nil {
+			t.Fatalf("durable drive: %v", err)
+		}
+		if s.Err() != nil {
+			t.Fatalf("store error during drive: %v", s.Err())
+		}
+		rows, err := db.QueryContext(ctx, `
+			SELECT payload->>'trace_id', payload->>'run_id'
+			  FROM coord.outbox
+			 WHERE run_id=$1::uuid AND event_type='reconcile_advanced'
+			 ORDER BY id`, run)
+		if err != nil {
+			t.Fatalf("query reconcile_advanced: %v", err)
+		}
+		defer rows.Close()
+		var n int
+		for rows.Next() {
+			var trace, runID *string
+			if err := rows.Scan(&trace, &runID); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			n++
+			if trace == nil || *trace != "trace-abc" {
+				t.Fatalf("reconcile_advanced row %d trace_id = %v, want trace-abc", n, trace)
+			}
+			if runID == nil || *runID != run {
+				t.Fatalf("reconcile_advanced row %d run_id = %v, want %s", n, runID, run)
+			}
+		}
+		if n != 5 {
+			t.Fatalf("reconcile_advanced rows = %d, want 5 (one per happy-path advance)", n)
+		}
+	})
+
 	// R5: fence-first reclaim is monotonic and stamps reclaim_fenced_at (§6.3).
 	t.Run("R5_monotonic_reclaim_marker", func(t *testing.T) {
 		s, wi := seedItem(t, ctx, dsn)
