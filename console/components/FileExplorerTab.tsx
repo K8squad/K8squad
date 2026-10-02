@@ -30,6 +30,7 @@ import { EmptyState } from "@/components/forms/EmptyState";
 import { reportClientError } from "@/lib/client-errors";
 import {
   listProjectFiles,
+  listProjectFilesAttempt,
   readProjectFile,
   statProjectFile,
   downloadProjectFileUrl,
@@ -39,6 +40,7 @@ import {
   previewKind,
   codeLanguage,
   imageDataUrl,
+  retryDelayMs,
   type FileEntry,
   type FileContent,
   type FileStat,
@@ -230,8 +232,8 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   const [stat, setStat] = useState<FilesState<FileStat>>({ kind: "loading" });
 
   const loadDir = useCallback(
-    async (path: string): Promise<DirState> => {
-      const state = await listProjectFiles(projectId, path);
+    async (path: string, signal?: AbortSignal): Promise<DirState> => {
+      const state = await listProjectFiles(projectId, path, signal);
       if (state.kind !== "ready") return state;
       return {
         kind: "ready",
@@ -245,23 +247,48 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   );
 
   // Load the root listing once (and on project change).
+  // ADR-0025 D2: AbortController cancels the in-flight request on unmount / project
+  // change; retrying state triggers a scheduled retry with exponential back-off.
   useEffect(() => {
     let alive = true;
+    const ac = new AbortController();
     setRoot({ kind: "loading" });
     setDirs({});
     setOpen(new Set());
     setSelected(null);
-    loadDir("")
-      .then((s) => {
-        if (alive) setRoot(s);
-      })
-      .catch(() => {
+
+    async function fetchRoot(attempt: number) {
+      try {
+        const s =
+          attempt === 1
+            ? await loadDir("", ac.signal)
+            : await (async (): Promise<DirState> => {
+                const raw = await listProjectFilesAttempt(projectId, "", attempt, ac.signal);
+                if (raw.kind !== "ready") return raw;
+                return {
+                  kind: "ready",
+                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason },
+                };
+              })();
+        if (!alive) return;
+        if (s.kind === "retrying") {
+          setRoot(s);
+          const delay = retryDelayMs(s.attempt);
+          setTimeout(() => { if (alive) void fetchRoot(s.attempt); }, delay);
+        } else {
+          setRoot(s);
+        }
+      } catch {
         if (alive) setRoot({ kind: "error", status: 0 });
-      });
+      }
+    }
+
+    void fetchRoot(1);
     return () => {
       alive = false;
+      ac.abort();
     };
-  }, [loadDir]);
+  }, [loadDir, projectId]);
 
   const toggleDir = useCallback(
     (path: string) => {
@@ -307,6 +334,15 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
       <section aria-busy="true" data-testid="files-loading">
         <h1>File Explorer</h1>
         <p className="muted">Loading workspace files…</p>
+      </section>
+    );
+  }
+  // ADR-0025 D2: retryable-degraded — reader pod is cold-starting; show progress.
+  if (root.kind === "retrying") {
+    return (
+      <section aria-busy="true" data-testid="files-retrying">
+        <h1>File Explorer</h1>
+        <p className="muted">Workspace reader is starting up — retrying… (attempt {root.attempt})</p>
       </section>
     );
   }
@@ -562,6 +598,9 @@ function DetailsPane({
   if (state.kind === "unauthenticated") {
     return <p className="muted">Your session has expired — sign in to see file details.</p>;
   }
+  if (state.kind === "retrying") {
+    return <p className="muted">Starting workspace reader…</p>;
+  }
   if (state.kind === "not-found" || state.kind === "error") {
     return (
       <p className="muted" data-testid="files-details-unavailable">
@@ -676,6 +715,9 @@ function PreviewPane({
   }
   if (state.kind === "unauthenticated") {
     return <p className="muted">Your session has expired — sign in to preview files.</p>;
+  }
+  if (state.kind === "retrying") {
+    return <p className="muted">Starting workspace reader…</p>;
   }
   if (state.kind === "error") {
     return (
