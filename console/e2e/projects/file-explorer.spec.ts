@@ -190,7 +190,7 @@ test.describe("ISI-4653 · File Explorer browse / preview / download", () => {
         "workspace has no files to activate.",
     );
 
-    test("renders 'no files yet' for an empty workspace (AC5)", async ({
+    test("renders the honest empty state for an empty workspace (AC5)", async ({
       page,
     }) => {
       const emptyProject = encodeURIComponent(
@@ -199,7 +199,7 @@ test.describe("ISI-4653 · File Explorer browse / preview / download", () => {
       await page.goto(`/projects/${emptyProject}/files`);
 
       await expect(page.getByTestId("files-empty")).toBeVisible();
-      await expect(page.getByText(/No files yet/)).toBeVisible();
+      await expect(page.getByText(/This workspace is empty/)).toBeVisible();
     });
   });
 

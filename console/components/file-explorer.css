@@ -261,6 +261,277 @@
   background: var(--info-bg, rgba(90, 130, 200, 0.12));
 }
 
+/* ——— ISI-5339 (S6): Frame 01/02/03 progressive loading + honest states ———
+   Zero new design tokens: hues are the existing status palette
+   (--status-running / --status-paused / --status-idle / --status-blocked /
+   --accent), radii the existing --radius-* set. */
+
+/* Amber info tone for the snapshot banner + retry banner: expected-and-working,
+   never the rose error hue. */
+.banner--warn {
+  border: 1px solid var(--status-paused, #fbbf24);
+  background: color-mix(in srgb, var(--status-paused, #fbbf24) 12%, transparent);
+}
+
+.banner--warn p,
+.banner--info p {
+  margin: 4px 0 0;
+}
+
+.banner-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--status-paused, #fbbf24);
+}
+
+/* The Files header hosts the freshness pill beside the title. */
+.file-explorer__header h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Frame 03·A — freshness pill: trust signal, not alarm. */
+.file-explorer__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 10px;
+  border-radius: var(--radius-chip, 6px);
+  border: 1px solid var(--border, #25324b);
+  white-space: nowrap;
+  cursor: default;
+}
+
+.file-explorer__pill--live {
+  color: var(--status-running, #34d399);
+  border-color: color-mix(in srgb, var(--status-running, #34d399) 40%, transparent);
+}
+
+.file-explorer__pill--snapshot {
+  color: var(--status-paused, #fbbf24);
+  border-color: color-mix(in srgb, var(--status-paused, #fbbf24) 40%, transparent);
+}
+
+.file-explorer__pill-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* The pulse ring reads "live"; it renders a static dot under
+   prefers-reduced-motion (below). */
+.file-explorer__pill-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid currentColor;
+  opacity: 0.5;
+  animation: file-explorer-pulse 2s ease-out infinite;
+}
+
+.file-explorer__pill-clock {
+  color: currentColor;
+}
+
+@keyframes file-explorer-pulse {
+  0% { transform: scale(0.6); opacity: 0.6; }
+  70% { transform: scale(1.4); opacity: 0; }
+  100% { transform: scale(1.4); opacity: 0; }
+}
+
+/* Frame 01 — skeleton rows: muted rounded bars, gently shimmering. */
+.file-explorer__skeleton {
+  height: 12px;
+  border-radius: var(--radius-chip, 6px);
+  background: var(--inset, #0e1626);
+  border: 1px solid var(--border, #25324b);
+  margin: 7px 8px;
+  animation: file-explorer-shimmer 1.4s ease-in-out infinite;
+}
+
+.file-explorer__skeleton--w1 { width: 62%; }
+.file-explorer__skeleton--w2 { width: 84%; }
+.file-explorer__skeleton--w3 { width: 48%; }
+
+@keyframes file-explorer-shimmer {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+/* The shared spin animation: inline per-row caret spinner, the spinning-up
+   strip glyph, and the retry banner glyph. */
+.file-explorer__spin {
+  animation: file-explorer-rotate 0.9s linear infinite;
+  color: var(--muted, #7e8ca6);
+}
+
+.file-explorer__spin--accent {
+  color: var(--accent, #3d7dff);
+}
+
+@keyframes file-explorer-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* Frame 01 — the bounded spinning-up strip (blue, 202 preparing). */
+.file-explorer__spinup {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  border: 1px solid color-mix(in srgb, var(--accent, #3d7dff) 40%, transparent);
+  background: color-mix(in srgb, var(--accent, #3d7dff) 10%, transparent);
+  border-radius: var(--radius-control, 8px);
+  padding: 10px 14px;
+  margin: 0 0 12px;
+}
+
+.file-explorer__spinup > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.file-explorer__spinup-title {
+  margin: 0 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent, #3d7dff);
+}
+
+.file-explorer__spinup-copy p {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+/* Determinate-FEELING progress bar: the fill advances with the bounded poll
+   budget, so the strip never reads as an indeterminate hung spinner. */
+.file-explorer__progress {
+  height: 3px;
+  max-width: 280px;
+  border-radius: 2px;
+  background: var(--inset, #0e1626);
+  overflow: hidden;
+}
+
+.file-explorer__progress-fill {
+  height: 100%;
+  background: var(--accent, #3d7dff);
+  transition: width 300ms ease;
+}
+
+/* Frame 02 — one honest state frame: badge + framed icon + title + body.
+   Each tone reuses the status palette so states are distinguishable at a
+   glance and never mistaken for one another (spec §2). */
+.file-explorer__state {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 8px;
+  border: 1px solid var(--border, #25324b);
+  border-radius: var(--radius-card, 12px);
+  padding: 34px 24px 24px;
+  max-width: 460px;
+  margin: 8px auto;
+}
+
+.file-explorer__state-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: var(--radius-chip, 6px);
+  border: 1px solid var(--border, #25324b);
+  color: var(--muted, #7e8ca6);
+}
+
+.file-explorer__state-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--border, #25324b);
+  background: var(--inset, #0e1626);
+}
+
+.file-explorer__state-title {
+  margin: 6px 0 0;
+  font-size: 16px;
+}
+
+.file-explorer__state-body {
+  margin: 0;
+  font-size: 13px;
+}
+
+.file-explorer__state--accent .file-explorer__state-badge,
+.file-explorer__state--accent .file-explorer__state-icon,
+.file-explorer__state--accent .file-explorer__state-title {
+  color: var(--accent, #3d7dff);
+}
+.file-explorer__state--accent .file-explorer__state-badge {
+  border-color: color-mix(in srgb, var(--accent, #3d7dff) 40%, transparent);
+}
+
+.file-explorer__state--amber .file-explorer__state-badge,
+.file-explorer__state--amber .file-explorer__state-icon,
+.file-explorer__state--amber .file-explorer__state-title {
+  color: var(--status-paused, #fbbf24);
+}
+.file-explorer__state--amber .file-explorer__state-badge {
+  border-color: color-mix(in srgb, var(--status-paused, #fbbf24) 40%, transparent);
+}
+
+.file-explorer__state--slate .file-explorer__state-icon,
+.file-explorer__state--slate .file-explorer__state-title {
+  color: var(--status-idle, #64748b);
+}
+
+.file-explorer__state--rose .file-explorer__state-badge,
+.file-explorer__state--rose .file-explorer__state-icon,
+.file-explorer__state--rose .file-explorer__state-title {
+  color: var(--status-blocked, #fb7185);
+}
+.file-explorer__state--rose .file-explorer__state-badge,
+.file-explorer__state--rose {
+  border-color: color-mix(in srgb, var(--status-blocked, #fb7185) 40%, transparent);
+}
+
+.file-explorer__state .btn {
+  margin-top: 6px;
+}
+
+/* A11y (spec §6): every animation honours prefers-reduced-motion — spinners
+   stop, shimmer freezes, the Live pulse ring collapses to a static dot. */
+@media (prefers-reduced-motion: reduce) {
+  .file-explorer__spin,
+  .file-explorer__skeleton,
+  .file-explorer__pill-dot::after {
+    animation: none;
+  }
+  .file-explorer__pill-dot::after {
+    opacity: 0;
+  }
+  .file-explorer__progress-fill {
+    transition: none;
+  }
+}
+
 /* ISI-4651: right-hand details pane (name / path / type / size / modified /
    git last change). Mirrors the preview pane framing. */
 

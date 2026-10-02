@@ -37,6 +37,10 @@ export type FileListing = {
   // empty state. Must survive to the component — it drives which banner renders.
   reason?: string;
   truncated?: boolean;
+  // RFC3339 instant the served snapshot was taken (ADR-0025 §7.2). Absent on
+  // the wire today (spec §8 open point 1) — the freshness pill falls back to
+  // the time the listing was fetched, never fabricating a timestamp.
+  snapshotTakenAt?: string;
 };
 
 /** GET /api/projects/{id}/files/content?path=<file> response. `data` is base64
@@ -84,6 +88,11 @@ export const FILE_ERR_SNAPSHOT_UNAVAILABLE = "snapshot_unavailable" as const;
 export const FILE_ERR_PREPARING = "preparing" as const;
 export const FILE_ERR_NOT_FOUND = "not_found" as const;
 
+// Degraded-listing reason labels (ISI-5140, files.go DirListing.Reason) — the
+// ADR-0025 §D2 vocabulary the six honest states bind to (ISI-5339 spec §5).
+export const FILE_REASON_WORKSPACE_BUSY = "workspace_busy" as const;
+export const FILE_REASON_NO_BROWSE_TARGET = "no_browse_target" as const;
+
 /** Typed error body returned by the apiserver on 503/retryable errors (ADR-0025 §taxonomy). */
 export type FileErrorBody = {
   error: string;
@@ -91,13 +100,16 @@ export type FileErrorBody = {
 };
 
 /** The distinct honest state an HTTP status carries (mirrors SquadOverview /
- * GitHubStatusTab). 404 ⇒ existence-hiding not-found; 501 ⇒ the reader is not
- * wired in this deployment (S4a/S4b pending) → "File Explorer not available yet",
- * never fabricated rows (AC5).
+ *  GitHubStatusTab). 404 ⇒ existence-hiding not-found; 501 ⇒ the reader is not
+ *  wired in this deployment (S4a/S4b pending) → "File Explorer not available yet",
+ *  never fabricated rows (AC5).
+ * `preparing` ⇒ HTTP 202 reader-warming (ADR-0025 D1/S2c): the reader pod
+ * launched but hasn't passed healthz — the client polls with back-off.
  * `retrying` ⇒ transient 503 retryable-degraded (ADR-0025 D2); client is
  * auto-retrying with back-off. `attempt` is 1-based. */
 export type FilesState<T> =
   | { kind: "loading" }
+  | { kind: "preparing"; attempt: number }
   | { kind: "retrying"; attempt: number }
   | { kind: "unauthenticated" }
   | { kind: "not-found" }
@@ -120,8 +132,11 @@ export function classifyFilesStatus<T>(status: number): FilesState<T> {
 }
 
 // ADR-0025 D2: bounded auto-retry config for retryable-degraded (503) responses.
-const RETRY_MAX_ATTEMPTS = 4;
-const RETRY_BASE_MS = 2_000; // 2 s, 4 s, 8 s, 16 s (capped at 16 s)
+// ISI-5339 spec §4: the retry affordance is a 3-attempt terminal — the banner
+// counts "Attempt {n} of RETRY_MAX_ATTEMPTS" and the terminal error panel takes
+// over when the budget is exhausted.
+export const RETRY_MAX_ATTEMPTS = 3;
+const RETRY_BASE_MS = 2_000; // 2 s, 4 s, 8 s (capped at 16 s)
 
 /** Compute the back-off delay for attempt `n` (1-based). */
 export function retryDelayMs(attempt: number): number {
@@ -139,6 +154,15 @@ async function isRetryableDegraded(res: Response): Promise<boolean> {
   }
 }
 
+/** Whether a 2xx response is actually the 202 reader-warming body (ADR-0025
+ * D1/S2c). MUST be checked BEFORE `res.ok`: 202 is inside the 2xx band, so the
+ * ok-branch would otherwise try to read `{error, code}` as a listing and render
+ * a fabricated-empty tree — exactly the bug the honest-states spec exists to
+ * kill (ISI-5339 spec §2, "fabricated-empty"). */
+function isPreparingStatus(status: number): boolean {
+  return status === 202;
+}
+
 /** List a directory through the BFF choke point. `path` defaults to the
  * workspace root (""). Returns the classified state directly (200 ⇒ ready) so a
  * caller never fabricates rows on a non-200.
@@ -153,6 +177,10 @@ export async function listProjectFiles(
     `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
     { cache: "no-store", signal },
   );
+  // 202 preparing (ADR-0025 D1/S2c) must be classified BEFORE the ok-branch.
+  if (isPreparingStatus(res.status)) {
+    return { kind: "preparing", attempt: 1 };
+  }
   if (res.ok) {
     return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
   }
@@ -178,6 +206,15 @@ export async function listProjectFilesAttempt(
     `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
     { cache: "no-store", signal },
   );
+  if (isPreparingStatus(res.status)) {
+    // Preparing polls share the same bounded budget as retries (ISI-5339 §1:
+    // "no row spins forever") — a reader that never warms surfaces the honest
+    // terminal error instead of an endless spinning-up strip.
+    if (attempt >= RETRY_MAX_ATTEMPTS) {
+      return { kind: "error", status: 202 };
+    }
+    return { kind: "preparing", attempt: attempt + 1 };
+  }
   if (res.ok) {
     return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
   }
@@ -236,6 +273,9 @@ export async function readProjectFile(
     `/api/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(path)}`,
     { cache: "no-store", signal },
   );
+  if (isPreparingStatus(res.status)) {
+    return { kind: "preparing", attempt: 1 };
+  }
   if (res.ok) {
     return { kind: "ready", data: normalizeContent(path, (await res.json()) as FileContent) };
   }
@@ -265,6 +305,9 @@ export async function statProjectFile(
     `/api/projects/${encodeURIComponent(projectId)}/files/stat?path=${encodeURIComponent(path)}`,
     { cache: "no-store" },
   );
+  if (isPreparingStatus(res.status)) {
+    return { kind: "preparing", attempt: 1 };
+  }
   if (res.ok) {
     return { kind: "ready", data: (await res.json()) as FileStat };
   }

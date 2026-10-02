@@ -4,7 +4,7 @@
 // degraded banner over the snapshot, AC5 empty + 501, and 404 existence-hiding.
 
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, fireEvent, within } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent, within, act } from "@testing-library/react";
 import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
 import { normalizeListing, normalizeContent } from "@/lib/project-files";
 import { reportClientError } from "@/lib/client-errors";
@@ -20,10 +20,23 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 /** base64 of a UTF-8 string (jsdom has Buffer). */
 const b64 = (s: string) => Buffer.from(s, "utf-8").toString("base64");
+
+/** A 503 retryable-degraded Response (ADR-0025 D2 taxonomy body), with the
+ * clone() seam isRetryableDegraded reads. */
+const retryable503 = (): Response => {
+  const body = { error: "workspace reader timed out; retry shortly", code: "retryable_degraded" };
+  return {
+    ok: false,
+    status: 503,
+    json: () => Promise.resolve(body),
+    clone: () => ({ json: () => Promise.resolve(body) }),
+  } as unknown as Response;
+};
 
 /** Route the BFF endpoints to per-path canned responses. `listings` is keyed
  * by the `path` query (root = ""); `contents` and `stats` by the file path.
@@ -329,6 +342,69 @@ describe("FileExplorerTab", () => {
     expect(screen.getByTestId("files-loading")).toBeTruthy();
   });
 
+  // ISI-5339 Frame 01: loading is PROGRESSIVE — the shell paints instantly with
+  // skeleton rows, never a full-tab blank spinner.
+  it("paints the tab shell with skeleton rows instead of a blank loading panel (ISI-5339 F01)", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})) as unknown as typeof fetch);
+    render(<FileExplorerTab projectId="web" />);
+    const tab = screen.getByTestId("files-loading");
+    expect(screen.getAllByText("File Explorer").length).toBeGreaterThan(0);
+    // Skeleton bars render, are aria-hidden, and the region is aria-busy.
+    const skel = screen.getAllByTestId("files-skeleton");
+    expect(skel.length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByRole("region", { name: "Loading files…" }) as HTMLElement).toBeTruthy();
+    expect(tab.getAttribute("aria-busy")).toBe("true");
+  });
+
+  // ISI-5339 Frame 01 + D2 taxonomy: a 202 preparing response must NEVER be
+  // parsed as an ok listing (202 is 2xx!) — that fabricated-empty bug is exactly
+  // what the honest-states spec exists to kill.
+  it("shows the bounded spinning-up strip on 202 preparing, never a fabricated empty tree (ISI-5339 F01)", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call++;
+        if (call === 1) {
+          // 202 preparing: ok=true on the wire — the trap.
+          return Promise.resolve({
+            ok: true,
+            status: 202,
+            json: () => Promise.resolve({ error: "reader pod is warming up; retry shortly", code: "preparing" }),
+          } as unknown as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              path: "",
+              entries: [{ name: "README.md", path: "README.md", type: "file", size: 12 }],
+            }),
+        } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    render(<FileExplorerTab projectId="web" />);
+
+    await waitFor(() => expect(screen.getByTestId("files-preparing")).toBeTruthy());
+    expect(screen.getByText("Spinning up the file reader…")).toBeTruthy();
+    expect(screen.getByText(/This usually takes a few seconds/)).toBeTruthy();
+    // The determinate-feeling progress bar advances with the bounded budget.
+    expect(screen.getByTestId("files-preparing").querySelector(".file-explorer__progress-fill")).toBeTruthy();
+    // NOT an empty listing, NOT an empty state — the strip holds the shell.
+    expect(screen.queryByTestId("files-empty")).toBeNull();
+    expect(screen.queryByTestId("files-no-run")).toBeNull();
+    expect(screen.getAllByTestId("files-skeleton").length).toBeGreaterThan(0);
+
+    // The poll lands: the strip is replaced by the real tree.
+    await waitFor(
+      () => expect(screen.getByTestId("file-explorer")).toBeTruthy(),
+      { timeout: 4000 },
+    );
+    expect(screen.getByText("README.md")).toBeTruthy();
+    expect(screen.queryByTestId("files-preparing")).toBeNull();
+  });
+
   it("shows the workspace-busy degraded banner over the last-committed snapshot (AC4)", async () => {
     routeFetch({
       // Mirror the server contract (files.go): a workspace-busy snapshot answers
@@ -338,23 +414,107 @@ describe("FileExplorerTab", () => {
     });
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-busy-banner")).toBeTruthy());
-    expect(screen.getByText(/workspace busy/i)).toBeTruthy();
+    // ISI-5339 F02 busy_snapshot copy: human, not engine-speak.
+    expect(screen.getByText(/Showing a snapshot from/)).toBeTruthy();
+    expect(screen.getByText(/point-in-time snapshot/)).toBeTruthy();
     // The snapshot rows still render — busy is informational, never a blank error.
     expect(screen.getByText("app.go")).toBeTruthy();
+    // Frame 03: the amber Snapshot pill is present with the banner.
+    expect(screen.getByTestId("files-pill-snapshot").textContent).toMatch(/Snapshot · /);
   });
 
-  it("renders 'no files yet' for an empty workspace (AC5)", async () => {
+  // ISI-5339 F02 snapshot_unavailable — the F1 closer: busy with NO servable
+  // snapshot is a distinct LIVE PAUSED state, NEVER an empty file panel.
+  it("renders LIVE PAUSED (lock) for busy-with-no-snapshot — never an empty listing (ISI-5339 F02)", async () => {
+    routeFetch({
+      listings: { "": { path: "", degraded: true, reason: "workspace_busy", entries: [] } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("files-snapshot-unavailable")).toBeTruthy());
+    expect(screen.getByText("Live view paused while the agent works")).toBeTruthy();
+    expect(screen.getByText(/returns when the agent releases it/)).toBeTruthy();
+    expect(screen.getByText("LIVE PAUSED")).toBeTruthy();
+    // The critical distinction: it is NOT the empty state and NOT the snapshot banner.
+    expect(screen.queryByTestId("files-empty")).toBeNull();
+    expect(screen.queryByTestId("files-no-run")).toBeNull();
+    expect(screen.queryByTestId("files-busy-banner")).toBeNull();
+  });
+
+  it("renders 'This workspace is empty' for an empty workspace (AC5)", async () => {
     routeFetch({ listings: { "": { path: "", entries: [] } } });
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-empty")).toBeTruthy());
-    expect(screen.getByText(/No files yet/)).toBeTruthy();
+    expect(screen.getByText("This workspace is empty")).toBeTruthy();
+    expect(screen.getByText(/No files have been created here yet/)).toBeTruthy();
+  });
+
+  // ISI-5339 F02 no-run: distinct from genuinely-empty (different badge + copy).
+  it("renders the NO RUN YET state distinct from empty (ISI-5339 F02)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [], reason: "no_browse_target" } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("files-no-run")).toBeTruthy());
+    expect(screen.getByText("No files to show yet")).toBeTruthy();
+    expect(screen.getByText(/hasn't produced a workspace yet/)).toBeTruthy();
+    expect(screen.getByText("NO RUN YET")).toBeTruthy();
+    expect(screen.queryByTestId("files-empty")).toBeNull();
+  });
+
+  // ISI-5339 F03·A: the Live pill with green dot + relative freshness.
+  it("shows the Live freshness pill on a live listing (ISI-5339 F03)", async () => {
+    routeFetch({
+      listings: { "": { path: "", entries: [{ name: "README.md", path: "README.md", type: "file", size: 12 }] } },
+    });
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("files-pill-live")).toBeTruthy());
+    expect(screen.getByTestId("files-pill-live").textContent).toMatch(/Live · just now/);
+    expect(screen.getByTestId("files-pill-live").querySelector(".file-explorer__pill-dot")).toBeTruthy();
+    // Tooltip carries the accessible absolute timestamp.
+    expect(screen.getByTestId("files-pill-live").getAttribute("title")).toMatch(/Live workspace — refreshed /);
+  });
+
+  // ISI-5339 F01: lazy expand is an inline per-row spinner + skeleton children;
+  // the tree is never blocked by a pending directory fetch.
+  it("expands lazily with an inline row spinner and skeleton children — the tree never blocks (ISI-5339 F01)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const u = new URL(url, "http://localhost");
+        if (u.searchParams.get("path") === "src") return new Promise(() => {}); // pending child listing
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              path: "",
+              entries: [
+                { name: "src", path: "src", type: "dir" },
+                { name: "README.md", path: "README.md", type: "file", size: 5 },
+              ],
+            }),
+        } as unknown as Response);
+      }) as unknown as typeof fetch,
+    );
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("file-explorer")).toBeTruthy());
+
+    fireEvent.click(screen.getByText("src"));
+    // Inline per-row spinner: the src row's caret spins.
+    const srcBtn = screen.getByText("src").closest("button");
+    expect(srcBtn?.querySelector(".file-explorer__spin")).toBeTruthy();
+    // Skeleton children indented beneath the row.
+    expect(screen.getByTestId("files-dir-loading")).toBeTruthy();
+    // The rest of the tree stays interactive — no full-tab block.
+    expect(screen.getByText("README.md")).toBeTruthy();
+    expect(screen.getByTestId("files-preview")).toBeTruthy();
   });
 
   it("renders honest 'not available yet' on 501 (AC5)", async () => {
     routeFetch({ listings: { "": 501 } });
     render(<FileExplorerTab projectId="web" />);
     await waitFor(() => expect(screen.getByTestId("files-honest")).toBeTruthy());
-    expect(screen.getByText(/not available yet/)).toBeTruthy();
+    expect(screen.getByText(/isn't available in this deployment yet/)).toBeTruthy();
   });
 
   it("renders an existence-hiding not-found on 404 (no leak)", async () => {
@@ -364,6 +524,56 @@ describe("FileExplorerTab", () => {
     expect(screen.getByText(/No files/)).toBeTruthy();
     // Never leaks a distinguishing "forbidden" vs "missing" — 404 is uniform.
     expect(screen.queryByText(/forbidden|403|permission/i)).toBeNull();
+  });
+
+  // ——— ISI-5339 (S6): Frame 03·B retry affordance ———
+
+  it("shows the amber retry banner with attempt budget and [Retry now] on 503 read-timeout (ISI-5339 F03)", async () => {
+    const spy = vi.fn(() => Promise.resolve(retryable503()));
+    vi.stubGlobal("fetch", spy as unknown as typeof fetch);
+    render(<FileExplorerTab projectId="web" />);
+
+    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
+    expect(screen.getByText(/This is taking longer than usual — retrying/)).toBeTruthy();
+    expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
+    expect(screen.getByText(/your place in the tree is kept/i)).toBeTruthy();
+    // Human copy, never a bare 503.
+    expect(screen.queryByText(/503/)).toBeNull();
+    expect(screen.getByTestId("files-retry-now")).toBeTruthy();
+    // Progressive shell: skeleton rows under the banner, tree never blanks.
+    expect(screen.getAllByTestId("files-skeleton").length).toBeGreaterThan(0);
+
+    // Retry now refetches IMMEDIATELY — no waiting out the back-off timer.
+    const before = spy.mock.calls.length;
+    fireEvent.click(screen.getByTestId("files-retry-now"));
+    await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThan(before));
+    // Still retrying (server is still down) — the budget restarts, no terminal yet.
+    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
+  });
+
+  it("gives up after the 3-attempt budget into a role=alert terminal with [Try again] (ISI-5339 F03)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const spy = vi.fn(() => Promise.resolve(retryable503()));
+    vi.stubGlobal("fetch", spy as unknown as typeof fetch);
+    render(<FileExplorerTab projectId="web" />);
+
+    await waitFor(() => expect(screen.getByTestId("files-retrying")).toBeTruthy());
+    expect(screen.getByText(/attempt 1 of 3/i)).toBeTruthy();
+
+    await act(async () => { vi.advanceTimersByTime(2_100); });
+    await waitFor(() => expect(screen.getByText(/attempt 2 of 3/i)).toBeTruthy());
+
+    await act(async () => { vi.advanceTimersByTime(4_100); });
+    await waitFor(() => expect(screen.getByText(/attempt 3 of 3/i)).toBeTruthy());
+
+    await act(async () => { vi.advanceTimersByTime(8_100); });
+    // Terminal: role=alert, human copy, manual Try again — never a bare 504/500.
+    await waitFor(() => expect(screen.getByTestId("files-error")).toBeTruthy());
+    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getByText("We couldn't load these files.")).toBeTruthy();
+    expect(screen.getByTestId("files-try-again")).toBeTruthy();
+    // Bounded: exactly the initial fetch + 3 budgeted attempts, no more.
+    expect(spy.mock.calls.length).toBe(4);
   });
 
   // ISI-4705: the S4b `/files` wire payload omits `path` on each entry. The tree
