@@ -108,13 +108,61 @@ func TestCoordReaderSpecResolver_Busy(t *testing.T) {
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	// D3: the Run CR for the project is in Running phase → PVC physically held.
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-a", Namespace: "squad-sandbox"},
+		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "demo"}},
+	}
+	run.Status.Phase = ksquadv1.RunPhaseRunning
+	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").WithObjects(run).Build())
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
 	_, err = r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
 	if !errors.Is(err, ErrWorkspaceBusy) {
 		t.Fatalf("err = %v, want ErrWorkspaceBusy", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
+// TestCoordReaderSpecResolver_BusyStaleClaimTerminalRun verifies ADR-0025 D3: a live coord.claim
+// row with an unexpired lease must NOT block the explorer when the corresponding Run CR has
+// already reached a terminal phase (Succeeded). The PVC is physically free; the stale claim
+// row must not cause a false-positive busy.
+func TestCoordReaderSpecResolver_BusyStaleClaimTerminalRun(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// DB reports a live claim (stale — run completed but claim not yet cleared).
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	// D3: the Run CR is Succeeded → PVC released. The browse target exists.
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+	// Run CR is in terminal Succeeded phase — the stale DB claim must not block.
+	run := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-done", Namespace: "squad-sandbox"},
+		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "demo"}},
+	}
+	run.Status.Phase = ksquadv1.RunPhaseSucceeded
+	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").WithObjects(run).Build())
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	spec, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if err != nil {
+		t.Fatalf("stale-claim + terminal run should resolve, got err: %v", err)
+	}
+	if spec.RunID != rsRunID {
+		t.Errorf("RunID = %q, want %q", spec.RunID, rsRunID)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("sql: %v", err)

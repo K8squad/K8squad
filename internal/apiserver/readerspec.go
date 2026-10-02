@@ -104,8 +104,9 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 
 	// AC7 busy check FIRST: when a running agent holds the Project's work (live claim), the RWO
 	// PVC cannot be co-mounted read-only — degrade to the snapshot reader instead of launching a
-	// reader pod that would wedge Pending.
-	busy, err := r.projectBusy(ctx, uid)
+	// reader pod that would wedge Pending. D3: pass name so the physical Run-CR check can scope
+	// to this project without re-resolving it.
+	busy, err := r.projectBusy(ctx, uid, name)
 	if err != nil {
 		return readerpod.Spec{}, err
 	}
@@ -146,11 +147,27 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 	return spec, nil
 }
 
-// projectBusy reports whether any of the Project's work items is under a LIVE claim (holder set,
-// lease unexpired) — the AC7 "PVC held by a running agent" predicate. An expired lease is
-// reclaimable (§6.3) and does NOT block a read-only browse.
-func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID string) (bool, error) {
-	var busy bool
+// projectBusy reports whether the Project's workspace PVC is physically held by a running agent.
+//
+// The check is two-phase (ADR-0025 D3 — path-scoped busy gate):
+//
+//  1. DB fast-path: if no coord.claim row has an unexpired lease for this project, the PVC is
+//     definitely free — return false immediately. An expired lease is reclaimable (§6.3) and
+//     does NOT block a read-only browse.
+//
+//  2. Physical truth: if the DB reports a live claim, cross-check against the Run CRs. A Run
+//     that has reached a terminal phase (Succeeded/Failed/Cancelled) has released its RWO PVC
+//     mount, even if the coord.claim row has not yet been cleaned up (e.g., RunDrive still
+//     committing the final audit row). Only a Run in an active phase (Running/Claiming/Paused/
+//     Canceling) actually holds the mount. This closes the "stale claim blocks live browse"
+//     false-positive (ADR-0025 R3/F1) without changing the DB schema.
+//
+// Fail-safe: if the Kubernetes cache is unreachable, the busy state is conserved (true) rather
+// than allowing a reader pod that would wedge Pending. The projectName argument must match
+// Run.Spec.ProjectRef.Name for the filter to be accurate.
+func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID, projectName string) (bool, error) {
+	// Phase 1: coord.claim DB check.
+	var dbClaimed bool
 	err := r.db.QueryRowContext(ctx, `
 		SELECT EXISTS(
 		    SELECT 1
@@ -160,11 +177,35 @@ func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID st
 		       AND c.holder_principal IS NOT NULL
 		       AND c.run_id IS NOT NULL
 		       AND (c.lease_expires_at IS NULL OR c.lease_expires_at > now())
-		)`, projectUID).Scan(&busy)
+		)`, projectUID).Scan(&dbClaimed)
 	if err != nil {
 		return false, fmt.Errorf("readerspec: busy check for project %s: %w", projectUID, err)
 	}
-	return busy, nil
+	if !dbClaimed {
+		return false, nil // no live claim → PVC definitely free
+	}
+
+	// Phase 2: physical truth via Run CR phase. A terminal Run has released the RWO mount;
+	// only non-terminal phases mean the PVC is still physically held.
+	var runs ksquadv1.RunList
+	if err := r.reader.List(ctx, &runs); err != nil {
+		// Cannot reach informer cache — fail safe (preserve busy=true) rather than launching a
+		// reader pod that would wedge Pending.
+		return true, nil
+	}
+	for i := range runs.Items {
+		run := &runs.Items[i]
+		if run.Spec.ProjectRef.Name != projectName {
+			continue
+		}
+		switch run.Status.Phase {
+		case ksquadv1.RunPhaseRunning, ksquadv1.RunPhaseClaiming,
+			ksquadv1.RunPhasePaused, ksquadv1.RunPhaseCanceling:
+			return true, nil // PVC physically held by this run
+		}
+	}
+	// All matching Run CRs are in terminal phases (or none found) — stale DB claim only; PVC released.
+	return false, nil
 }
 
 // latestBrowseTarget returns the Project's latest completed (succeeded) Run — the target the reader
@@ -237,3 +278,64 @@ func (r *CoordReaderSpecResolver) teamSandboxNamespace(ctx context.Context, team
 }
 
 var _ ReaderSpecResolver = (*CoordReaderSpecResolver)(nil)
+
+// SnapshotSpec implements SnapshotSpecProvider. It resolves the namespace, PVC name and reader SA
+// for a project WITHOUT performing a busy check or requiring a completed run — it is designed for
+// the D4 path where we KNOW the workspace is busy and want to snapshot the live PVC.
+//
+// Namespace resolution: we derive the team from the active claim (the run that holds the PVC)
+// rather than a completed-run audit row, because the snapshot is taken WHILE busy. If no active
+// claim exists (race — the run completed between busy check and snapshot request), we fall back to
+// the latest work item's team_id so the snapshot still has a namespace.
+func (r *CoordReaderSpecResolver) SnapshotSpec(ctx context.Context, projectID string) (namespace, pvcName, readerSAName string, err error) {
+	if projectID == "" {
+		return "", "", "", ErrProjectNotFound
+	}
+
+	author, ok := discussion.AuthFromContext(ctx)
+	if !ok {
+		return "", "", "", errors.New("readerspec.SnapshotSpec: no author context (fail closed)")
+	}
+	var name, uid string
+	if author.IsAdmin {
+		_, name, uid, err = resolveProjectFleetWideWithUID(ctx, r.reader, projectID)
+	} else {
+		_, name, uid, err = resolveProjectInTeamWithUID(ctx, r.reader, author.TeamID.String(), projectID)
+	}
+	if err != nil {
+		return "", "", "", err
+	}
+
+	// Prefer the team from the active claim (the busy run). Fall back to any work-item team.
+	var teamID string
+	err = r.db.QueryRowContext(ctx, `
+		SELECT w.team_id::text
+		  FROM coord.claim c
+		  JOIN coord.work_item w ON w.id = c.work_item_id
+		 WHERE w.project_id = $1::uuid
+		   AND c.holder_principal IS NOT NULL
+		   AND c.run_id IS NOT NULL
+		   AND (c.lease_expires_at IS NULL OR c.lease_expires_at > now())
+		   AND w.team_id IS NOT NULL
+		 LIMIT 1`, uid).Scan(&teamID)
+	if err != nil {
+		// Fall back: any work item for this project.
+		err = r.db.QueryRowContext(ctx, `
+			SELECT team_id::text
+			  FROM coord.work_item
+			 WHERE project_id = $1::uuid
+			   AND team_id IS NOT NULL
+			 LIMIT 1`, uid).Scan(&teamID)
+		if err != nil {
+			return "", "", "", fmt.Errorf("readerspec.SnapshotSpec: resolve team for %s: %w", name, err)
+		}
+	}
+
+	sandboxNS, err := r.teamSandboxNamespace(ctx, teamID)
+	if err != nil {
+		return "", "", "", fmt.Errorf("readerspec.SnapshotSpec: namespace for %s: %w", name, err)
+	}
+	return sandboxNS, workspace.ProjectPVCName(name), teamctrl.AgentServiceAccount, nil
+}
+
+var _ SnapshotSpecProvider = (*CoordReaderSpecResolver)(nil)
