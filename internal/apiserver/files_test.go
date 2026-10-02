@@ -588,17 +588,6 @@ func TestProjectFilesStat_ProjectNotFound_Returns404(t *testing.T) {
 
 // ---- /files/stream (ADR-0025 D5) ----------------------------------------
 
-// countingReader wraps fakeWorkspaceReader and counts ListDir calls.
-type countingReader struct {
-	fakeWorkspaceReader
-	calls int
-}
-
-func (c *countingReader) ListDir(ctx context.Context, projectID, dirPath string, page int) (*DirListing, error) {
-	c.calls++
-	return c.fakeWorkspaceReader.ListDir(ctx, projectID, dirPath, page)
-}
-
 func TestProjectFilesStream_NilReader_Returns501(t *testing.T) {
 	srv := buildFilesServer(nil, nil, filesAuthn("u1", true))
 	r := httptest.NewRequest(http.MethodGet, "/api/projects/proj1/files/stream?path=.", nil)
