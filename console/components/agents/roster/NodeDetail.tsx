@@ -26,6 +26,7 @@ import {
   type RosterSelection,
   type RosterSkill,
   type RosterTeam,
+  teamUidForNamespace,
 } from "@/lib/agents/roster";
 import { AgentModelPanel, RoleModelPanel } from "./ModelPanel";
 import { AgentSkillsPanel, RoleSkillsPanel } from "./SkillsPanel";
@@ -126,7 +127,7 @@ function TabFallback({ tab }: { tab: NodeTab }) {
 
 // ── Per-kind Overviews ───────────────────────────────────────────────────────
 
-function AgentOverview({ agent }: { agent: RosterAgent }) {
+function AgentOverview({ agent, team }: { agent: RosterAgent; team?: string }) {
   return (
     <div className="roster-detail__grid">
       <div className="card roster-detail__card">
@@ -155,7 +156,7 @@ function AgentOverview({ agent }: { agent: RosterAgent }) {
         <h3 className="roster-detail__card-head">Effective model</h3>
         {/* Reused shipped read-out: server-side resolver paints Agent → Role → Org-default
             provenance. Keyed by the persisted agent name. */}
-        <EffectiveModelReadout agentName={agent.name} />
+        <EffectiveModelReadout agentName={agent.name} team={team} />
       </div>
     </div>
   );
@@ -298,7 +299,9 @@ export function NodeDetail({
 }: {
   roster: Roster;
   selection: NonNullable<RosterSelection>;
-  /** The admin cross-squad selector — threads to the detail reads and edit PUTs. */
+  /** The admin cross-squad URL selector — the FALLBACK team scope; the selected node's own
+   *  owning-team UID (derived from its namespace) wins so a fleet admin's detail reads always
+   *  target the squad of the node they clicked (ISI-5416). */
   team?: string;
   /** An inline editor saved — the workspace refetches the roster (counts, chips, readouts). */
   onRosterChanged: () => void;
@@ -313,7 +316,11 @@ export function NodeDetail({
   }
 
   switch (r.kind) {
-    case "agent":
+    case "agent": {
+      // ISI-5416: the detail reads need the OWNING team's UID — the rail is fleet-wide for an
+      // admin, so the URL selector can be absent (or point elsewhere) while the clicked node
+      // still carries its own squad namespace. The node-derived scope wins; URL is the fallback.
+      const nodeTeam = teamUidForNamespace(roster, r.node.namespace) ?? team;
       return (
         <DetailShell
           crumb={["Org", r.node.namespace, r.node.name]}
@@ -323,22 +330,23 @@ export function NodeDetail({
           tabContent={{
             // Keyed by node identity: switching agents remounts the editors with fresh reads.
             model: (
-              <AgentModelPanel key={r.node.name} agentName={r.node.name} team={team} onSaved={onRosterChanged} />
+              <AgentModelPanel key={r.node.name} agentName={r.node.name} team={nodeTeam} onSaved={onRosterChanged} />
             ),
             skills: (
               <AgentSkillsPanel
                 key={r.node.name}
                 agentName={r.node.name}
                 roster={roster}
-                team={team}
+                team={nodeTeam}
                 onSaved={onRosterChanged}
               />
             ),
           }}
         >
-          <AgentOverview agent={r.node} />
+          <AgentOverview agent={r.node} team={nodeTeam} />
         </DetailShell>
       );
+    }
     case "team":
       return (
         <DetailShell
@@ -350,7 +358,10 @@ export function NodeDetail({
           <TeamOverview team={r.node} />
         </DetailShell>
       );
-    case "role":
+    case "role": {
+      // Same node-derived act-as-team as the agent case — a Role lives in a squad namespace the
+      // roster's ORG axis already knows, so the detail read scopes to the clicked node's team.
+      const nodeTeam = teamUidForNamespace(roster, r.node.namespace) ?? team;
       return (
         <DetailShell
           crumb={["Library", "Roles", r.node.name]}
@@ -359,14 +370,14 @@ export function NodeDetail({
           actions={<EditInCompose kind="roles" name={r.node.name} />}
           tabContent={{
             model: (
-              <RoleModelPanel key={r.node.name} roleName={r.node.name} team={team} onSaved={onRosterChanged} />
+              <RoleModelPanel key={r.node.name} roleName={r.node.name} team={nodeTeam} onSaved={onRosterChanged} />
             ),
             skills: (
               <RoleSkillsPanel
                 key={r.node.name}
                 roleName={r.node.name}
                 roster={roster}
-                team={team}
+                team={nodeTeam}
                 onSaved={onRosterChanged}
               />
             ),
@@ -375,6 +386,7 @@ export function NodeDetail({
           <RoleOverview role={r.node} />
         </DetailShell>
       );
+    }
     case "skill":
       return (
         <DetailShell

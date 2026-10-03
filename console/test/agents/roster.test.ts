@@ -4,6 +4,7 @@ import {
   buildRoster,
   filterRoster,
   isSelected,
+  teamUidForNamespace,
   type AgentWire,
   type RoleWire,
   type SkillWire,
@@ -95,5 +96,22 @@ describe("isSelected", () => {
 
   it("matches the org-default singleton on kind alone", () => {
     expect(isSelected({ kind: "orgDefault" }, r.orgDefault)).toBe(true);
+  });
+});
+
+// ISI-5416: a fleet admin's authoring DETAIL reads must carry ?team=<owning Team UID> — the
+// server resolves the selector by UID (detailNamespace), and without it every inline-editor
+// read 404s. The node-derived scope comes from the node's namespace via the roster's ORG axis.
+describe("teamUidForNamespace", () => {
+  const r = buildRoster(teams, agents, roles, skills);
+
+  it("resolves an agent/role namespace to its owning Team's UID", () => {
+    expect(teamUidForNamespace(r, "ns-plat")).toBe("t-plat");
+    expect(teamUidForNamespace(r, "ns-growth")).toBe("t-growth");
+  });
+
+  it("returns undefined for a namespace no listed Team occupies (caller falls back)", () => {
+    expect(teamUidForNamespace(r, "ns-gone")).toBeUndefined();
+    expect(teamUidForNamespace(r, "")).toBeUndefined();
   });
 });
