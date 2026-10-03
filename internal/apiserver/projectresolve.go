@@ -27,8 +27,9 @@ import (
 // resolveTeamNamespace resolves a caller's Team UID to its namespace (the §12.1
 // "a squad IS a namespace" boundary). A UID that resolves to no Team is
 // ErrTeamNotFound (404). This is the dashboard's team-scope root; the compose
-// write model keeps its own Status.Namespace-gated variant (a write needs the
-// namespace reconciled, a read tolerates the metadata namespace).
+// write model (composecrd.go teamNamespace, ISI-5415) resolves identically —
+// the Team CR's metadata (home) namespace — so a write lands exactly where
+// these reads look.
 func resolveTeamNamespace(ctx context.Context, reader client.Reader, teamUID string) (string, error) {
 	if teamUID == "" {
 		return "", ErrTeamNotFound
