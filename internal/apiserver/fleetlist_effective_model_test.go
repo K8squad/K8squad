@@ -21,9 +21,12 @@ import (
 	"errors"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/modelendpoint"
@@ -130,6 +133,78 @@ func TestEffectiveModelFailClosed(t *testing.T) {
 	if view.RoleName != "empty-role" {
 		t.Errorf("roleName should still label the ref, got %q", view.RoleName)
 	}
+}
+
+// agentWithEndpoint builds an agent whose spec.model wins the agent tier AND
+// carries a BYO modelEndpointRef — the posture that fail-closed to a 502 before
+// ISI-5420 (its endpoint Secret has to be read through a corev1-capable reader,
+// not the ksquad-only informer cache).
+func agentWithEndpoint(ns, name, uid, model, role, secretName string) *ksquadv1.Agent {
+	a := agentObj(ns, name, uid, "claude-code", role, model)
+	a.Spec.ModelEndpointRef = &ksquadv1.SecretRef{Name: secretName}
+	return a
+}
+
+// endpointSecret builds a BYO endpoint Secret in the 7.5 credential shape
+// (endpointURL [+ apiToken]) that the resolver's ResolveRef reads.
+func endpointSecret(ns, name, url string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Data:       map[string][]byte{modelendpoint.KeyEndpointURL: []byte(url)},
+	}
+}
+
+// TestEffectiveModelBYOEndpoint is the ISI-5420 regression: an agent whose
+// winning tier carries a modelEndpointRef resolves to 200 with its model when
+// the fleet reader is handed a DIRECT corev1-capable secretReader — even though
+// the primary reader (the production informer cache) carries ONLY the ksquad
+// CRDs and would fail a Secret Get with "no kind is registered". The second
+// sub-case pins the pre-fix behaviour: with no secretReader (resolver falls back
+// to the ksquad-only reader) the Secret Get errors, the handler maps it to 502.
+func TestEffectiveModelBYOEndpoint(t *testing.T) {
+	ctx := context.Background()
+	objs := []client.Object{
+		teamWithMembers("bmad-squad", "bmad", fleetUIDA, []string{"john"}, nil),
+		agentWithEndpoint("bmad-squad", "john", "ag-john", "deepseek-flash", "coder", "deepseek-endpoint"),
+		roleWithModel("bmad-squad", "coder", "r-coder", ""),
+	}
+	// Primary reader: ksquad-only scheme, exactly like the production cache — it
+	// cannot decode corev1.Secret.
+	cacheReader := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
+
+	// Direct secret reader over a corev1 scheme, holding the endpoint Secret in
+	// the agent's team namespace.
+	secretScheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(secretScheme); err != nil {
+		t.Fatalf("register corev1 scheme: %v", err)
+	}
+	secretReader := fake.NewClientBuilder().WithScheme(secretScheme).
+		WithObjects(endpointSecret("bmad-squad", "deepseek-endpoint", "https://deepseek.example/v1")).Build()
+
+	t.Run("resolves 200 with dedicated secret reader", func(t *testing.T) {
+		r := NewClientFleetListReader(cacheReader, secretReader)
+		view, err := r.EffectiveModel(ctx, fleetUIDA, "john", "", false)
+		if err != nil {
+			t.Fatalf("EffectiveModel: unexpected error (the 502 ISI-5420 fixes): %v", err)
+		}
+		if view.Unresolved {
+			t.Fatalf("EffectiveModel: unexpected unresolved verdict: %+v", view)
+		}
+		if view.Model != "deepseek-flash" || view.Tier != "agent" {
+			t.Errorf("view = {Model:%q Tier:%q}, want {deepseek-flash agent}", view.Model, view.Tier)
+		}
+	})
+
+	t.Run("fail-closes to an error without a corev1 reader (pre-fix 502)", func(t *testing.T) {
+		r := NewClientFleetListReader(cacheReader, nil)
+		_, err := r.EffectiveModel(ctx, fleetUIDA, "john", "", false)
+		if err == nil {
+			t.Fatal("want a non-nil error (handler → 502) when the Secret Get rides the ksquad-only reader")
+		}
+		if errors.Is(err, modelendpoint.ErrNoModel) {
+			t.Fatalf("want a transient read error, not the fail-closed ErrNoModel: %v", err)
+		}
+	})
 }
 
 // TestEffectiveModelScoping mirrors AgentDetail's existence-hiding contract: an

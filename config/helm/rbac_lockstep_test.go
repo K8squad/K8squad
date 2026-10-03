@@ -227,6 +227,11 @@ func TestApiserverClusterRoleLeastPrivilege(t *testing.T) {
 		{APIGroups: []string{"ksquad.io"}, Resources: []string{"otelconfigs"}, Verbs: []string{"get", "list", "create", "update"}},
 		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "create", "delete"}},
 		{APIGroups: []string{""}, Resources: []string{"services"}, Verbs: []string{"get", "list", "create", "delete"}},
+		// secrets get (ISI-5420): the effective-model resolver reads the winning
+		// tier's BYO endpoint Secret (in the agent's dynamic team namespace or the
+		// operator namespace) through the DIRECT corev1 client. GET only — one
+		// Secret by name, never list/watch/write.
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}},
 	}
 	if w, g := normalize(want), normalize(got); !reflect.DeepEqual(w, g) {
 		t.Fatalf("apiserver ClusterRole drift: chart rbac.yaml grant is not the least-privilege set.\n"+

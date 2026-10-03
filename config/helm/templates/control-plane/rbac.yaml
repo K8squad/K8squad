@@ -287,6 +287,20 @@ rules:
 - apiGroups: [""]
   resources: [services]
   verbs: [get, list, create, delete]
+# secrets get (ISI-5420): the Model-Per-Role effective-model resolver
+# (pkg/modelendpoint, behind GET /api/squad/agents/{name}/effective-model) reads
+# the winning tier's BYO endpoint Secret. That Secret lives in the agent's TEAM
+# namespace (agent tier) or the operator namespace (default tier); team
+# namespaces are provisioned dynamically, so the grant is cluster-scoped. GET
+# only — the resolver reads one endpoint Secret by name and never lists, watches,
+# or writes (the model-endpoint write surface is the separate namespaced Role
+# below). The read rides the DIRECT corev1 client (cache.go
+# NewModelEndpointSecretReader), not the ksquad-only informer cache, so no
+# cluster-wide Secret informer/watch is started. Without this grant the Secret
+# Get 403s and every BYO-endpoint agent's effective-model read-out 502s.
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

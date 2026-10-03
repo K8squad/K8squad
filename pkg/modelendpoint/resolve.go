@@ -182,16 +182,39 @@ func (e *ErrUnresolved) Unwrap() error { return e.Err }
 // its admission reader; the reconciler its manager client — the seam stays
 // unit-testable against a fake).
 type Resolver struct {
-	// Reader reads Agents/Roles/ModelConfig/Secrets. In production it is the
-	// manager's CACHE-backed client, so ResolveEffective's ModelConfig Get is
-	// served from the informer cache (the "cached Get of the singleton" seam),
-	// not a live API round-trip; tests pass a fake client.
+	// Reader reads Agents/Roles/ModelConfig. In production it is the manager's
+	// CACHE-backed client, so ResolveEffective's ModelConfig Get is served from
+	// the informer cache (the "cached Get of the singleton" seam), not a live API
+	// round-trip; tests pass a fake client.
 	Reader client.Reader
+
+	// SecretReader reads the BYO endpoint Secret in ResolveRef. It exists as a
+	// separate seam because the production Reader may be an informer cache whose
+	// scheme carries ONLY the ksquad CRDs (internal/apiserver/cache.go
+	// NewCacheReader) — a corev1.Secret Get through such a cache fails with "no
+	// kind is registered for the type v1.Secret", a non-NotFound error that
+	// fail-closes every BYO-endpoint agent to a 502 (ISI-5420). The apiserver
+	// wires a DIRECT (uncached) corev1-capable client here; callers whose Reader
+	// already decodes Secrets (the webhook's admission reader, the reconciler's
+	// manager client) leave it nil and secretReader() falls back to Reader.
+	SecretReader client.Reader
 
 	// SystemNamespace is where the ModelConfig "default" singleton lives. Empty
 	// means DefaultSystemNamespace ("k8squad-system"). Wired from the
 	// operator's POD_NAMESPACE so the seam stays overridable in tests.
 	SystemNamespace string
+}
+
+// secretReader returns the reader used for the endpoint-Secret Get: the
+// dedicated SecretReader when set, else Reader. Keeping the fallback means the
+// seam stays single-reader for every caller whose client already decodes
+// corev1 (webhook, reconciler, tests) and only the apiserver cache path opts
+// into the split.
+func (r *Resolver) secretReader() client.Reader {
+	if r.SecretReader != nil {
+		return r.SecretReader
+	}
+	return r.Reader
 }
 
 // systemNamespace returns the configured operator namespace or the default.
@@ -378,7 +401,7 @@ func (r *Resolver) defaultModelConfig(ctx context.Context) (mc api.ModelConfig, 
 func (r *Resolver) ResolveRef(ctx context.Context, namespace string, ref *api.SecretRef, model string) (Endpoint, error) {
 	var secret corev1.Secret
 	key := client.ObjectKey{Namespace: namespace, Name: ref.Name}
-	if err := r.Reader.Get(ctx, key, &secret); err != nil {
+	if err := r.secretReader().Get(ctx, key, &secret); err != nil {
 		return Endpoint{}, &ErrUnresolved{
 			SecretNamespace: namespace,
 			SecretName:      ref.Name,

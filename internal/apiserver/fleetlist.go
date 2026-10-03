@@ -378,13 +378,23 @@ var ErrSkillNotFound = errors.New("apiserver: no skill matches the caller's scop
 // (the informer cache in the host; a fake client in tests). Read-only.
 type ClientFleetListReader struct {
 	reader client.Reader
+
+	// secretReader is the DIRECT (uncached) corev1-capable reader the
+	// effective-model resolver uses for the BYO endpoint-Secret Get (ISI-5420).
+	// The shared informer cache (reader) carries only the ksquad CRDs, so a
+	// Secret Get through it fail-closes every BYO-endpoint agent to a 502; this
+	// dedicated reader decodes corev1. Nil in tests whose fixtures have no BYO
+	// endpoint — the resolver then falls back to reader.
+	secretReader client.Reader
 }
 
 // NewClientFleetListReader builds the fleet-list read model over a client.Reader
 // (the informer cache in the host). The reader's scheme must have api/v1alpha1
-// registered (see NewCacheReader).
-func NewClientFleetListReader(r client.Reader) *ClientFleetListReader {
-	return &ClientFleetListReader{reader: r}
+// registered (see NewCacheReader). secretReader is the DIRECT corev1-capable
+// reader for the effective-model resolver's endpoint-Secret Get (ISI-5420); pass
+// nil when the fixture has no BYO endpoint (the resolver falls back to reader).
+func NewClientFleetListReader(r client.Reader, secretReader client.Reader) *ClientFleetListReader {
+	return &ClientFleetListReader{reader: r, secretReader: secretReader}
 }
 
 // scope returns the List options that fence a list to the caller's tenancy: nil
@@ -829,7 +839,7 @@ func (r *ClientFleetListReader) EffectiveModel(ctx context.Context, teamUID, nam
 		}
 	}
 
-	resolver := modelendpoint.Resolver{Reader: r.reader}
+	resolver := modelendpoint.Resolver{Reader: r.reader, SecretReader: r.secretReader}
 	primary, fallback, tier, ok, err := resolver.ResolveEffective(ctx, agent, role)
 	if errors.Is(err, modelendpoint.ErrNoModel) {
 		// Fail-closed (ISI-4430 D3): a non-error verdict for the read-out — it

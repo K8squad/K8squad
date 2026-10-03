@@ -81,6 +81,46 @@ func TestResolveProviderDefaultPosture(t *testing.T) {
 	assert.Equal(t, "provider-default/qwen3:14b", ep.String())
 }
 
+// TestResolveRefUsesSecretReader is the ISI-5420 seam contract: when a dedicated
+// SecretReader is set, ResolveRef reads the endpoint Secret through IT, not the
+// primary Reader. The primary Reader here is a ksquad-only fake (no corev1 in its
+// scheme) — exactly the apiserver informer cache that fail-closed BYO-endpoint
+// agents to a 502 — yet resolution succeeds because the Secret Get rides the
+// corev1-capable SecretReader. A nil SecretReader (every other caller) falls back
+// to the Reader, so the single-reader seam is unchanged for the webhook/reconciler.
+func TestResolveRefUsesSecretReader(t *testing.T) {
+	// Primary reader: ksquad CRDs only — a corev1.Secret Get through it errors.
+	ksquadOnly := runtime.NewScheme()
+	require.NoError(t, api.AddToScheme(ksquadOnly))
+	cacheReader := fake.NewClientBuilder().WithScheme(ksquadOnly).Build()
+
+	// Dedicated secret reader: corev1 scheme, holding the endpoint Secret.
+	corev1Scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(corev1Scheme))
+	secretReader := fake.NewClientBuilder().WithScheme(corev1Scheme).
+		WithObjects(endpointSecret("amelia-ollama", map[string][]byte{
+			"endpointURL": []byte("http://ollama.svc:11434/v1"),
+			"apiToken":    []byte("sekrit"),
+		})).Build()
+
+	ref := &api.SecretRef{Name: "amelia-ollama"}
+
+	t.Run("resolves through the dedicated secret reader", func(t *testing.T) {
+		r := &Resolver{Reader: cacheReader, SecretReader: secretReader}
+		ep, err := r.ResolveRef(context.Background(), ns, ref, "qwen3:14b")
+		require.NoError(t, err)
+		assert.Equal(t, "http://ollama.svc:11434/v1", ep.BaseURL)
+		assert.Equal(t, "sekrit", ep.Token)
+		assert.Equal(t, "amelia-ollama", ep.SecretName)
+	})
+
+	t.Run("falls back to Reader and fail-closes when SecretReader is nil", func(t *testing.T) {
+		r := &Resolver{Reader: cacheReader}
+		_, err := r.ResolveRef(context.Background(), ns, ref, "qwen3:14b")
+		require.Error(t, err, "a Secret Get through the ksquad-only Reader must fail (pre-fix 502)")
+	})
+}
+
 // TestResolveBYOEndpoint: the 7.5 happy shape — endpointURL + optional
 // apiToken — resolves to the OpenAI-compatible base URL with the model
 // served from it, and the Secret name rides along as provenance.

@@ -237,7 +237,19 @@ func main() {
 		teams = apiserver.NewClientTeamsReader(cacheReader)
 		credentials = apiserver.NewClientCredentialReader(cacheReader)
 		org = apiserver.NewClientOrgReader(cacheReader)
-		fleetList = apiserver.NewClientFleetListReader(cacheReader)
+		// ISI-5420: the effective-model resolver's BYO endpoint-Secret Get cannot
+		// ride the ksquad-only informer cache (a corev1.Secret Get through it fails
+		// "no kind is registered"), so it gets a DIRECT corev1-capable reader. A
+		// build failure here is non-fatal — the fleet list still serves; only the
+		// effective-model read-out of BYO-endpoint agents degrades (Resolver then
+		// falls back to the cache reader and fail-closes to the pre-fix 502).
+		var endpointSecretReader client.Reader
+		if sr, serr := apiserver.NewModelEndpointSecretReader(); serr != nil {
+			log.Printf("ksquad-apiserver: model-endpoint secret reader unavailable — BYO-endpoint effective-model reads may 502: %v", serr)
+		} else {
+			endpointSecretReader = sr
+		}
+		fleetList = apiserver.NewClientFleetListReader(cacheReader, endpointSecretReader)
 		onboarding = apiserver.NewClientOnboardingReader(cacheReader)
 		otelConfig = apiserver.NewClientOTelConfigSource(cacheReader)
 		dashboardReader = cacheReader
