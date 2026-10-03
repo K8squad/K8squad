@@ -76,7 +76,7 @@ func TestNFR2SecretNeverInTelemetry(t *testing.T) {
 
 	// --- drive the secret-bearing create path with the sentinel value -------
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h,

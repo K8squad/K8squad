@@ -141,7 +141,7 @@ func agentWithCredential(ns, name, secretName string) *ksquadv1.Agent {
 // appears in the response.
 func TestCredentialTestHappyPathGreen(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555555")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "alice-anthropic", "apiKey", secretValueCanary)
 	shared := agentWithCredential("ksquad-team-alpha", "boss", "alice-anthropic")
 	solo := agentWithCredential("ksquad-team-alpha", "impl", "other-cred")
@@ -184,7 +184,7 @@ func TestCredentialTestHappyPathGreen(t *testing.T) {
 	// AC2 cache: per-credential flag + per-agent mirror for referencing
 	// agents only.
 	var updated ksquadv1.Team
-	if err := svc.client.Get(t.Context(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &updated); err != nil {
+	if err := svc.client.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &updated); err != nil {
 		t.Fatalf("team: %v", err)
 	}
 	if recorded, passed := CredentialTestFlag(&updated, "alice-anthropic"); !recorded || !passed {
@@ -203,7 +203,7 @@ func TestCredentialTestHappyPathGreen(t *testing.T) {
 // red; 429 is honest "not confirmed".
 func TestCredentialTestRedAndUnreachable(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555556")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	shared := agentWithCredential("ksquad-team-alpha", "boss", "k")
 
@@ -242,7 +242,7 @@ func TestCredentialTestRedAndUnreachable(t *testing.T) {
 		}
 
 		var updated ksquadv1.Team
-		if err := svc.client.Get(t.Context(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &updated); err != nil {
+		if err := svc.client.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &updated); err != nil {
 			t.Fatalf("%s: team: %v", tc.name, err)
 		}
 		if recorded, passed := CredentialTestFlag(&updated, "k"); !recorded || passed {
@@ -258,7 +258,7 @@ func TestCredentialTestRedAndUnreachable(t *testing.T) {
 // dialect (Authorization: Bearer).
 func TestCredentialTestOpenAIFamily(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555557")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	svc, _, fp := newCredentialTester(t, tm, cred)
 	h := testCredentialTestServer(t, teamID, svc)
@@ -278,7 +278,7 @@ func TestCredentialTestOpenAIFamily(t *testing.T) {
 // (ISI-3891). A ref without endpointURL is a 422 naming the field.
 func TestCredentialTestBYOEndpoint(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555558")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	endpoint := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-alpha", Name: "glm-endpoint"},
@@ -319,7 +319,7 @@ func TestCredentialTestBYOEndpoint(t *testing.T) {
 // honestly un-completes the milestone, and the response never echoes the URL.
 func TestCredentialTestBYOEndpointEgressBlocked(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555560")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	shared := agentWithCredential("ksquad-team-alpha", "boss", "k")
 
@@ -367,7 +367,7 @@ func TestCredentialTestBYOEndpointEgressBlocked(t *testing.T) {
 			// The blocked red is CACHED like any red (AC2): the
 			// per-credential and per-agent flags flip to failed.
 			var team ksquadv1.Team
-			if err := c.Get(context.Background(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &team); err != nil {
+			if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &team); err != nil {
 				t.Fatalf("read team: %v", err)
 			}
 			if recorded, passed := CredentialTestFlag(&team, "k"); !recorded || passed {
@@ -395,7 +395,7 @@ func allowAllPolicy(ns string) *ksquadv1.EgressPolicy {
 // public-provider path carries NO pin (not caller-chosen, default dial).
 func TestCredentialTestBYOProbeDialPinned(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555561")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	endpoint := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "ksquad-team-alpha", Name: "byo"},
@@ -511,7 +511,7 @@ func TestPinnedProbeDialIgnoresHostnameResolution(t *testing.T) {
 // caller's own namespace.
 func TestCredentialTestMissingAndForeign(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555559")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	foreign := managedCredential("ksquad-team-beta", "k", "apiKey", secretValueCanary)
 	svc, _, fp := newCredentialTester(t, tm, foreign)
 	h := testCredentialTestServer(t, teamID, svc)
@@ -530,7 +530,7 @@ func TestCredentialTestMissingAndForeign(t *testing.T) {
 // credential: 404, never a 403 that confirms it exists.
 func TestCredentialTestUnlabelledSecret404(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-55555555555a")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	stranger := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "ksquad-team-alpha",
@@ -554,7 +554,7 @@ func TestCredentialTestUnlabelledSecret404(t *testing.T) {
 // lifecycle: documented 501 pointing at ISI-2899, no probe dialed.
 func TestCredentialTestHumanSeat501(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-55555555555b")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	seat := managedCredential("ksquad-team-alpha", "seat", "token", secretValueCanary)
 	seat.Labels[credential.LabelCredentialClass] = "human-seat"
 	svc, _, fp := newCredentialTester(t, tm, seat)
@@ -577,7 +577,7 @@ func TestCredentialTestHumanSeat501(t *testing.T) {
 // shape mismatch; both without dialing.
 func TestCredentialTestValidation(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-55555555555c")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	empty := managedCredential("ksquad-team-alpha", "empty", "apiKey", "   ")
 	svc, _, fp := newCredentialTester(t, tm, cred, empty)
@@ -604,7 +604,7 @@ func TestCredentialTestValidation(t *testing.T) {
 // (existence-hiding); no session is 401 at the choke point.
 func TestCredentialTestTeamScopeAndAuth(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-55555555555d")
-	otherTeam := teamWithStatus("teams", "alpha", "22222222-2222-3333-4444-555555555555", "ksquad-team-alpha")
+	otherTeam := teamWithStatus("ksquad-team-alpha", "alpha", "22222222-2222-3333-4444-555555555555", "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	svc, _, _ := newCredentialTester(t, otherTeam, cred)
 	h := testCredentialTestServer(t, teamID, svc)
@@ -639,7 +639,7 @@ func TestCredentialTestNilTester501(t *testing.T) {
 // body ever contains the stored material.
 func TestCredentialTestNoEchoSweep(t *testing.T) {
 	teamID := uuid.MustParse("21111111-2222-3333-4444-55555555555f")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "k", "apiKey", secretValueCanary)
 	shared := agentWithCredential("ksquad-team-alpha", "boss", "k")
 

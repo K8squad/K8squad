@@ -250,7 +250,10 @@ func (s *CredentialTestService) handleCredentialTest(w http.ResponseWriter, r *h
 		writeJSONError(w, http.StatusBadGateway, "team scope resolution unavailable")
 		return
 	}
-	ns := team.Status.Namespace
+	// HOME ns (Team CR metadata): the probe reads exactly what the write wrote
+	// — SecretWriteService resolves the same way post-ISI-5415 — and lists the
+	// Agent mirror set where compose now writes Agents.
+	ns := team.Namespace
 
 	// Read the STORED Secret (AC1: the client never re-sends the value).
 	var secret corev1.Secret
@@ -517,9 +520,11 @@ func (s *CredentialTestService) agentsReferencing(ctx context.Context, ns, credN
 }
 
 // resolveTeam resolves the caller's Team UID to the Team object itself (the
-// probe needs both the reconciled namespace and the CR to annotate). Same
-// discipline as secretwrite.teamNamespace: unknown UID or un-reconciled
-// namespace is ErrTeamNamespaceUnresolved (404), never a shared fallback.
+// probe needs the Team's HOME namespace — where the Secret was written,
+// ISI-5415 — and the CR to annotate). Same discipline as
+// secretwrite.teamNamespace: unknown UID or un-reconciled team is
+// ErrTeamNamespaceUnresolved (404), never a shared fallback. Status.Namespace
+// gates "a provisioned squad" only; the read target is the home ns.
 func (s *CredentialTestService) resolveTeam(ctx context.Context, teamUID string) (*ksquadv1.Team, error) {
 	if teamUID == "" {
 		return nil, ErrTeamNamespaceUnresolved
@@ -540,8 +545,9 @@ func (s *CredentialTestService) resolveTeam(ctx context.Context, teamUID string)
 // (ISI-3937). It is called ONLY after the caller's own team proved unresolvable AND
 // the caller is an admin, so it never widens a bound caller's scope. Selection follows
 // fleetAdminTeam (explicit teamId, or the single team by default, or ErrSelectTeam when
-// the admin must choose); the returned Team's status.namespace is the same tenancy root
-// the stored Secret was written into, so the probe reads exactly what the write wrote.
+// the admin must choose); the returned Team's HOME namespace is the same tenancy root
+// the stored Secret was written into (ISI-5415), so the probe reads exactly what the
+// write wrote.
 func (s *CredentialTestService) resolveFleetTeam(ctx context.Context, requestedTeamID string) (*ksquadv1.Team, error) {
 	var teams ksquadv1.TeamList
 	if err := s.client.List(ctx, &teams); err != nil {

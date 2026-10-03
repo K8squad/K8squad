@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,8 +47,12 @@ func secretWriteScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// teamWithStatus is a Team whose reconciler has stamped its squad namespace —
-// the shape the write path resolves against.
+// teamWithStatus models the split-namespace layout (ISI-4128): ns is the
+// Team's HOME namespace (CR metadata — where credential Secrets and config
+// CRDs live, ISI-5415), squadNS the EXEC namespace the reconciler stamps into
+// Status.Namespace (where Run CRs live). Deliberately distinct in callers: a
+// write that resolves the target from Status.Namespace lands the Secret where
+// no read ever looks (ISI-5415 companion fix).
 func teamWithStatus(ns, name, uid, squadNS string) *ksquadv1.Team {
 	tm := team(ns, name, uid)
 	tm.Status.Namespace = squadNS
@@ -91,7 +96,7 @@ func postCredential(t *testing.T, h http.Handler, body string, withAuth bool) *h
 // value.
 func TestCredentialCreateHappyPath(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
-	svc, c := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"alice-anthropic","runtime":"claude-code","class":"service-account","value":"`+secretValueCanary+`"}`, true)
@@ -139,7 +144,7 @@ func keysOf(m map[string][]byte) []string {
 // default (service-account) and lands under the same apiKey key.
 func TestCredentialCreateDefaultClass(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555556")
-	svc, c := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"openai-key","runtime":"codex","value":"`+secretValueCanary+`"}`, true)
@@ -163,7 +168,7 @@ func TestCredentialCreateDefaultClass(t *testing.T) {
 // ISI-2899, and NO Secret is written.
 func TestCredentialCreateHumanSeat501(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555557")
-	svc, c := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"alice-oauth","runtime":"claude-code","class":"human-seat","value":"`+secretValueCanary+`"}`, true)
@@ -186,7 +191,7 @@ func TestCredentialCreateHumanSeat501(t *testing.T) {
 // names the field, never the value.
 func TestCredentialCreateValidation(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555558")
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	cases := map[string]string{
@@ -215,7 +220,7 @@ func TestCredentialCreateValidation(t *testing.T) {
 // ceiling is rejected before decode.
 func TestCredentialCreateBodyBound(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555559")
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	big := `{"name":"ok-name","runtime":"claude-code","class":"service-account","value":"` + strings.Repeat("A", credentialMaxValueBytes+4<<10) + `"}`
@@ -229,7 +234,7 @@ func TestCredentialCreateBodyBound(t *testing.T) {
 // writes nothing (existence-hiding, §12.1).
 func TestCredentialCreateTeamScope(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-55555555555a")
-	svc, c := newSecretWriter(t, teamWithStatus("teams", "alpha", "22222222-2222-3333-4444-555555555555", "ksquad-team-alpha"))
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", "22222222-2222-3333-4444-555555555555", "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"alice-anthropic","runtime":"claude-code","class":"service-account","value":"`+secretValueCanary+`"}`, true)
@@ -257,7 +262,7 @@ func TestCredentialCreateConflict(t *testing.T) {
 		},
 		Data: map[string][]byte{"apiKey": []byte("pre-existing")},
 	}
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"), existing)
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"), existing)
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"alice-anthropic","runtime":"claude-code","class":"service-account","value":"`+secretValueCanary+`"}`, true)
@@ -272,7 +277,7 @@ func TestCredentialCreateConflict(t *testing.T) {
 // TestCredentialCreateUnauthenticated — no session ⇒ 401 at the choke point.
 func TestCredentialCreateUnauthenticated(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-55555555555c")
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	rec := postCredential(t, h, `{"name":"x","runtime":"claude-code","value":"`+secretValueCanary+`"}`, false)
@@ -300,7 +305,7 @@ func TestCredentialCreateNilWriter501(t *testing.T) {
 // branch: no response body ever contains the submitted value.
 func TestCredentialCreateNoEchoSweep(t *testing.T) {
 	teamID := uuid.MustParse("11111111-2222-3333-4444-55555555555e")
-	svc, _ := newSecretWriter(t, teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha"))
+	svc, _ := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
 	h := testSecretWriteServer(t, teamID, svc)
 
 	bodies := []string{
@@ -316,5 +321,74 @@ func TestCredentialCreateNoEchoSweep(t *testing.T) {
 		if strings.Contains(rec.Body.String(), secretValueCanary) {
 			t.Fatalf("case %d: status %d echoes the value: %s", i, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// ── credential Secrets land in the HOME namespace, never the EXEC ns (ISI-5415) ──
+//
+// Mirrors TestComposeWriteTargetsHomeNotExecNamespace for the credential write
+// path: the console list (ClientCredentialReader.teamNamespace), the
+// test-connection probe (CredentialTestService) and the Agent admission
+// webhook GuardAgentSecret all resolve the Secret in the Team HOME ns (the
+// Agent's own ns post-ISI-5415). A write that resolved Status.Namespace (the
+// exec ns where Run CRs live) forked the Secret from every read and made
+// GuardAgentSecret reject agent creates whose mandatory Secret sat in the
+// exec ns.
+func TestSecretWriteTargetsHomeNotExecNamespace(t *testing.T) {
+	teamID := uuid.MustParse("11111111-2222-3333-4444-55555555555f")
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha"))
+	h := testSecretWriteServer(t, teamID, svc)
+
+	rec := postCredential(t, h, `{"name":"alice-anthropic","runtime":"claude-code","class":"service-account","value":"`+secretValueCanary+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	var out credentialCreateResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Namespace != "ksquad-team-alpha" {
+		t.Fatalf("create must report the HOME ns %q, got %q", "ksquad-team-alpha", out.Namespace)
+	}
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alice-anthropic"}, &got); err != nil {
+		t.Fatalf("secret must exist in the home ns: %v", err)
+	}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "exec-ksquad-team-alpha", Name: "alice-anthropic"}, &got); !apierrors.IsNotFound(err) {
+		t.Fatalf("secret must NOT be written to the exec ns %s (Status.Namespace): %v", "exec-ksquad-team-alpha", err)
+	}
+}
+
+// TestSecretWriteFleetTargetsHomeNotExecNamespace — the fleet-admin branch
+// (fleetTeamNamespace, ISI-3937) resolves the target team's HOME ns too: the
+// probe and the admission webhook read the Secret there regardless of which
+// branch minted it. fleetAdminTeam's Status.Namespace gate stays a selection
+// signal, never the write target.
+func TestSecretWriteFleetTargetsHomeNotExecNamespace(t *testing.T) {
+	squadUID := "11111111-2222-3333-4444-555555555555"
+	adminUID := uuid.MustParse("99999999-9999-9999-9999-999999999999")
+	svc, c := newSecretWriter(t, teamWithStatus("ksquad-team-alpha", "alpha", squadUID, "exec-ksquad-team-alpha"))
+
+	// Fleet-wide admin: a team_id that backs no Team CR (ISI-3921) + IsAdmin,
+	// exactly the branch that falls through to fleetTeamNamespace.
+	resolver := &StaticSessionResolver{Sessions: map[string]discussion.AuthorContext{
+		devToken: {Principal: "user:root", TeamID: adminUID, IsAdmin: true},
+	}}
+	srv := NewServer(Options{
+		Authenticator: NewCookieAuthenticator(resolver),
+		Discussion:    discussion.NewHandler(nil),
+		SecretWriter:  svc,
+	})
+
+	rec := postCredential(t, srv.Handler(), `{"name":"root-key","runtime":"claude-code","class":"service-account","value":"`+secretValueCanary+`"}`, true)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("fleet-admin create: got %d, want 201 (body %s)", rec.Code, rec.Body.String())
+	}
+	var got corev1.Secret
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "root-key"}, &got); err != nil {
+		t.Fatalf("secret must exist in the target team's home ns: %v", err)
+	}
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "exec-ksquad-team-alpha", Name: "root-key"}, &got); !apierrors.IsNotFound(err) {
+		t.Fatalf("secret must NOT be written to the exec ns %s (Status.Namespace): %v", "exec-ksquad-team-alpha", err)
 	}
 }
