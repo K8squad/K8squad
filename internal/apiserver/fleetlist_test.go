@@ -90,7 +90,7 @@ func roleObj(ns, name, uid, prompt, hint string, defaultSkills ...string) *ksqua
 func newFleetReader(t *testing.T, objs ...client.Object) *ClientFleetListReader {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
-	return NewClientFleetListReader(c)
+	return NewClientFleetListReader(c, nil)
 }
 
 // Two-squad fleet fixture: squad-a (team alpha) and squad-b (team beta), each with one agent,

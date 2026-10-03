@@ -156,6 +156,37 @@ func NewModelEndpointClient() (ModelEndpointClient, error) {
 	return c, nil
 }
 
+// NewModelEndpointSecretReader builds the DIRECT (uncached) corev1-only reader
+// the Model-Per-Role effective-model resolver uses to Get a BYO endpoint Secret
+// (ISI-5420). The apiserver's other read models ride the shared informer cache
+// (NewCacheReader), whose scheme carries ONLY the ksquad CRDs — a corev1.Secret
+// Get through that cache fails with "no kind is registered for the type
+// v1.Secret", a non-NotFound error that fail-closes every BYO-endpoint agent's
+// GET .../effective-model to a 502. Rather than widen the cache to start a
+// cluster-wide Secret informer (and the broad watch grant that implies), the
+// resolver's Secret Get rides this dedicated direct client: it needs only
+// `get secrets` (the endpoint Secret lives in the agent's team namespace, or the
+// operator namespace for the default tier). The scheme carries corev1 only; the
+// client is cluster-scoped because team namespaces are provisioned dynamically.
+// Like the other direct clients it hits the API server live and fails rather
+// than degrading silently; the caller decides whether a build failure is fatal
+// or leaves the effective-model read-out unavailable.
+func NewModelEndpointSecretReader() (client.Reader, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("resolve kube config: %w", err)
+	}
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("register corev1 scheme: %w", err)
+	}
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("build model-endpoint secret reader: %w", err)
+	}
+	return c, nil
+}
+
 // NewReaderPodClient builds the DIRECT (uncached) client the S4a reader-pod
 // launcher + reaper use (ISI-4079). The launcher creates/deletes reader pods and
 // their paired ClusterIP Services, and the reaper's orphan sweep lists pods — a
