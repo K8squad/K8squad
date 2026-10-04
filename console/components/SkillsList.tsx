@@ -11,8 +11,9 @@
 // Scoping is AUTHORITATIVE in the apiserver — admin ⇒ fleet-wide (ADR-0010), tenant ⇒ their Team
 // namespace — so this screen never asks for or receives a Team selector; cross-Team data is absent by
 // construction, not filtered client-side (AC5). The list row carries only the fields SkillListEntry
-// projects (name, namespace, sourceType); the OWNING-TEAM deep link (/agents?team={teamUid}, ISI-3943
-// AC2 idiom) lives on the expanded SkillView, which is the projection that carries teamUid/teamName.
+// projects (name, namespace, sourceType); the OWNING-TEAM deep link (/agents-team?team={teamUid},
+// the ISI-3943 AC2 idiom retargeted to the unified surface by ISI-5432) lives on the expanded
+// SkillView, which is the projection that carries teamUid/teamName.
 // Every terminal HTTP state the BFF relays gets a distinct honest rendering, mirroring ProjectsList.
 
 import { useCallback, useEffect, useState } from "react";
@@ -292,7 +293,7 @@ function SkillDetail({ detail, fleet }: { detail: DetailState; fleet: boolean })
               <>
                 {" · "}
                 <Link
-                  href={`/agents?team=${encodeURIComponent(d.teamUid)}`}
+                  href={`/agents-team?team=${encodeURIComponent(d.teamUid)}`}
                   className="muted"
                   data-testid="skills-detail-team-link"
                 >

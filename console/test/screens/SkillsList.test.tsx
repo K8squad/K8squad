@@ -95,7 +95,7 @@ describe("<SkillsList> — ISI-3962 S2 Skills list/view surface", () => {
     await waitFor(() => expect(screen.getByTestId("skills-detail-team-link")).toBeTruthy());
     const link = screen.getByTestId("skills-detail-team-link");
     expect(link.tagName).toBe("A");
-    expect(link.getAttribute("href")).toBe("/agents?team=uid-beta");
+    expect(link.getAttribute("href")).toBe("/agents-team?team=uid-beta");
   });
 
   it("does NOT surface a team deep link for a tenant (fleet:false)", async () => {

@@ -6,8 +6,10 @@
 // Inline edit (Frame 02/03) is LIVE: the Model and Skills tabs write through the field-scoped
 // merge PUT (ISI-5359, merged) with the role round-trip (ISI-5358, merged) — a save sends only
 // its edited field, so unsent live fields survive. Shared-role edits confirm their blast radius
-// (the usedBy index, ISI-5361) before committing. Full-form editing stays on /compose; nav
-// consolidation lands with the follow-up increment.
+// (the usedBy index, ISI-5361) before committing. Full-form editing stays on /compose.
+//
+// Nav consolidation LANDED (ISI-5432): this is the canonical org surface — the rail's one
+// "Agents & Team" node points here, and the legacy /teams + /agents list routes redirect to it.
 
 import { AgentsTeamWorkspace } from "@/components/agents/roster/AgentsTeamWorkspace";
 import { viewer } from "@/lib/session";

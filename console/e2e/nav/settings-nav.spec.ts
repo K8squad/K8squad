@@ -7,7 +7,7 @@
 // nav layer (test/nav/nav.test.ts) and the ModelPrioritySection/OtlpConfigScreen boundaries
 // (test/settings/*).
 //
-// Convention (mirrors e2e/nav/teams-nav-tree.spec.ts + e2e/projects/project-id-roundtrip.spec.ts):
+// Convention (mirrors e2e/nav/agents-team-nav.spec.ts + e2e/projects/project-id-roundtrip.spec.ts):
 // semantic locators only, user-visible outcome assertions, and a source-scaffolded skip-with-reason
 // until a live console is reachable. Set KSQUAD_CONSOLE_E2E=1 to activate.
 

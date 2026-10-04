@@ -151,6 +151,19 @@ export function filterRoster(roster: Roster, query: string): Roster {
 // ── Selection ────────────────────────────────────────────────────────────────
 
 /**
+ * teamUidForNamespace resolves a node's namespace to its owning Team's UID — the `?team=`
+ * act-as-team value the authoring DETAIL reads require for a fleet admin (a name is not
+ * fleet-unique; the server resolves the selector by Team UID, never by name). Every rail node
+ * (agent, role, skill) carries the namespace of the squad it lives in, and the roster's ORG axis
+ * already holds every listed Team, so the selected node's own scope is derivable client-side
+ * without a picker. Returns undefined for a namespace no listed Team occupies (projection skew —
+ * the caller falls back to the URL selector, if any). Pure.
+ */
+export function teamUidForNamespace(roster: Roster, namespace: string): string | undefined {
+  return roster.teams.find((t) => t.namespace === namespace)?.uid;
+}
+
+/**
  * The currently-selected rail node, keyed by its stable identity (Agent by UID; Team by UID;
  * library objects by name — their rename-proof key within a squad). `null` = nothing selected yet
  * (the detail pane shows its placeholder). Discriminated by `kind` so NodeDetail renders the right
