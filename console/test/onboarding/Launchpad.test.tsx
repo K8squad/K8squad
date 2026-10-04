@@ -100,7 +100,7 @@ describe("frame 06 — resume (AC3)", () => {
     expect(lockedChip).toBeTruthy();
     expect(lockedChip!.textContent).toBe("Locked");
     const reviews = screen.getAllByRole("link", { name: "Review" });
-    expect(reviews.map((r) => r.getAttribute("href"))).toEqual(["/teams", "/agents"]);
+    expect(reviews.map((r) => r.getAttribute("href"))).toEqual(["/agents-team", "/agents-team"]);
     expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "2");
   });
 

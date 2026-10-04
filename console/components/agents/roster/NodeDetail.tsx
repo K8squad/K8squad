@@ -66,6 +66,22 @@ function EditInCompose({ kind, name }: { kind: string; name: string }) {
   );
 }
 
+/**
+ * ISI-5432: the agent drill-in to the (kept) /agents/{id} detail route — status, live run
+ * history and logs live there, not in the roster pane. With the legacy /agents list retired
+ * this link is the surface's discoverable path to it.
+ */
+function AgentRunsLink({ agentId }: { agentId: string }) {
+  return (
+    <a
+      className="btn roster-detail__compose-link"
+      href={`/agents/${encodeURIComponent(agentId)}`}
+    >
+      Runs &amp; detail
+    </a>
+  );
+}
+
 function DetailShell({
   crumb,
   name,
@@ -326,7 +342,12 @@ export function NodeDetail({
           crumb={["Org", r.node.namespace, r.node.name]}
           name={r.node.name}
           kind="agent"
-          actions={<EditInCompose kind="agents" name={r.node.name} />}
+          actions={
+            <>
+              <AgentRunsLink agentId={r.node.id} />
+              <EditInCompose kind="agents" name={r.node.name} />
+            </>
+          }
           tabContent={{
             // Keyed by node identity: switching agents remounts the editors with fresh reads.
             model: (

@@ -21,10 +21,10 @@ function byId(nodes: NavNode[]): Map<string, NavNode> {
 }
 
 describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
-  it("locks projects/agents but keeps Dashboard, Overview, Compose and Settings open", () => {
+  it("locks projects/agents-team but keeps Dashboard, Overview, Compose and Settings open", () => {
     const locked = byId(withOnboardingLock(navTree(), false));
     expect(locked.get("projects")?.locked).toBe(true);
-    expect(locked.get("agents")?.locked).toBe(true);
+    expect(locked.get("agents-team")?.locked).toBe(true);
     // Settings + children stay OPEN pre-Team (ISI-3870): an admin on an empty tenant must
     // reach OTel config / Credentials; the padlock is a journey affordance, not RBAC.
     expect(locked.get("settings")?.locked).toBeFalsy();
@@ -47,13 +47,13 @@ describe("withOnboardingLock — FR-1.4 gating until a Team exists", () => {
   it("returns the tree untouched once a Team exists (AC4 — everything unlocks)", () => {
     const tree = navTree();
     expect(withOnboardingLock(tree, true)).toBe(tree);
-    expect(byId(withOnboardingLock(tree, true)).get("agents")?.locked).toBeFalsy();
+    expect(byId(withOnboardingLock(tree, true)).get("agents-team")?.locked).toBeFalsy();
   });
 
   it("never mutates the canonical tree", () => {
     const tree = navTree();
     withOnboardingLock(tree, false);
-    expect(byId(tree).get("agents")?.locked).toBeFalsy();
+    expect(byId(tree).get("agents-team")?.locked).toBeFalsy();
   });
 });
 
@@ -61,19 +61,19 @@ describe("lock vs prune — locked nodes stay VISIBLE at every breakpoint", () =
   it("visibleNav prunes by access but never by lock", () => {
     const lockedTree = withOnboardingLock(navTree(), false);
     const ids = visibleNav(lockedTree, "user").map((n) => n.id);
-    // 'agents' is locked yet still present; 'users' is admin-only AND locked — pruned by
+    // 'agents-team' is locked yet still present; 'users' is admin-only — pruned by
     // access, the only node a plain user never sees.
-    expect(ids).toContain("agents");
+    expect(ids).toContain("agents-team");
     expect(ids).not.toContain("users");
   });
 
   it("the lock survives the mobile bottom-nav budget and the drawer flattening", () => {
     const lockedTree = withOnboardingLock(navTree(), false);
     const { bottom, drawer } = mobileNav("user", lockedTree);
-    const agentsInBottom = bottom.find((n) => n.id === "agents");
-    const agentsInDrawer = drawer.find((n) => n.id === "agents");
-    expect(agentsInBottom?.locked).toBe(true);
-    expect(agentsInDrawer?.locked).toBe(true);
+    const unifiedInBottom = bottom.find((n) => n.id === "agents-team");
+    const unifiedInDrawer = drawer.find((n) => n.id === "agents-team");
+    expect(unifiedInBottom?.locked).toBe(true);
+    expect(unifiedInDrawer?.locked).toBe(true);
   });
 
   it("carries the optional badge field through the derivation (AD-10 model)", () => {

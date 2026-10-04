@@ -81,7 +81,7 @@ describe("<ProjectsList> — S6 AC2 row retarget into the S1 workspace (ISI-3967
     await waitFor(() => expect(screen.getByTestId("projects-ready")).toBeTruthy());
     const agentsLinks = screen.getAllByTestId("projects-agents-link");
     expect(agentsLinks.length).toBe(2);
-    expect(agentsLinks[0].getAttribute("href")).toBe("/agents?team=uid-alpha");
+    expect(agentsLinks[0].getAttribute("href")).toBe("/agents-team?team=uid-alpha");
   });
 
   it("renders the empty state when the wire sends projects: null (nil-slice contract)", async () => {

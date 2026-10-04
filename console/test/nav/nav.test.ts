@@ -33,20 +33,36 @@ function allIds(access: AccessLevel): string[] {
   return out;
 }
 
-describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725)", () => {
-  it("has the mock's top-level rail order, with SETTINGS as a section (not a link)", () => {
+describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725), consolidated (ISI-5432)", () => {
+  it("has the consolidated top-level rail order, with SETTINGS as a section (not a link)", () => {
     expect(ids("user")).toEqual([
       "overview",
       "compose",
-      "teams",
+      "agents-team",
       "projects",
-      "agents",
       "runs",
       "settings",
     ]);
     const settings = navTree().find((n) => n.id === "settings");
     expect(settings?.section).toBe(true);
     expect(settings?.href).toBe(""); // a header never navigates
+  });
+
+  it("carries ONE unified Agents & Team node at /agents-team (ISI-5432) — no legacy Teams/Agents nodes", () => {
+    const tree = navTree();
+    const unified = tree.find((n) => n.id === "agents-team");
+    expect(unified).toMatchObject({
+      id: "agents-team",
+      label: "Agents & Team",
+      href: "/agents-team",
+      scope: "global",
+    });
+    // The legacy nodes are GONE — /teams and /agents are redirects, not destinations.
+    expect(tree.find((n) => n.id === "teams")).toBeUndefined();
+    expect(tree.find((n) => n.id === "agents")).toBeUndefined();
+    // The retired Teams rail island leaves no marker behind (only Projects stays dynamic).
+    expect(unified?.dynamicChildren).toBeUndefined();
+    expect(tree.find((n) => n.id === "projects")?.dynamicChildren).toBe("projects");
   });
 
   it("groups LLM Settings · OTel · Credentials · Plugins · Users&Roles under SETTINGS", () => {
@@ -98,6 +114,13 @@ describe("mobileNav — role filtering happens BEFORE the 5-item budget (story 8
 });
 
 describe("breadcrumbFor — /users reads as a labelled trail", () => {
+  it("labels the unified surface 'Agents & Team' on /agents-team (ISI-5432)", () => {
+    const crumbs = breadcrumbFor("/agents-team");
+    expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Agents & Team"]);
+    const last = crumbs[crumbs.length - 1];
+    expect(last).toEqual({ label: "Agents & Team", href: null });
+  });
+
   it("labels the users route 'Users & Roles' as the current (unlinked) crumb", () => {
     const crumbs = breadcrumbFor("/users");
     expect(crumbs[0]).toEqual({ label: "Dashboard", href: "/" });
@@ -117,5 +140,11 @@ describe("breadcrumbFor — /users reads as a labelled trail", () => {
     expect(crumbs.map((c) => c.label)).toEqual(["Dashboard", "Settings", "Configuration"]);
     const last = crumbs[crumbs.length - 1];
     expect(last).toEqual({ label: "Configuration", href: null });
+  });
+
+  it("labels the unified surface 'Agents & Team' on /agents-team (ISI-5432)", () => {
+    const crumbs = breadcrumbFor("/agents-team");
+    const last = crumbs[crumbs.length - 1];
+    expect(last).toEqual({ label: "Agents & Team", href: null });
   });
 });

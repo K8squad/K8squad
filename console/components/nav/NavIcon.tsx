@@ -5,6 +5,7 @@ export type NavIconId =
   | "overview"
   | "compose"
   | "teams"
+  | "agents-team"
   | "projects"
   | "agents"
   | "project"
@@ -34,6 +35,10 @@ const P: Record<NavIconId, string> = {
     "M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z",
   teams:
     "M9 11a3 3 0 100-6 3 3 0 000 6zM3 20v-1c0-2.2 2.7-4 6-4s6 1.8 6 4v1H3zm13-9a3 3 0 10-1-5.8M21 20v-1c0-1.8-1.6-3-3.5-3.6",
+  // Agents & Team (ISI-5432): the unified surface node — the org glyph (one agent among its
+  // squad) standing for the folded Teams+Agents pair. Reads as "a team of agents" at rail size.
+  "agents-team":
+    "M12 5a2.5 2.5 0 110 5 2.5 2.5 0 010-5zM5 13a2 2 0 110 4 2 2 0 010-4zm14 0a2 2 0 110 4 2 2 0 010-4zM12 12c2.7 0 5 1.2 5 2.8V17H7v-2.2C7 13.2 9.3 12 12 12z",
   projects:
     "M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z",
   agents:

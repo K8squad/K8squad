@@ -54,12 +54,15 @@ export type NavNode = {
    * STATIC accordion known at module load (project sub-nav) — a `dynamicChildren` node hosts a
    * sub-tree whose contents are fetched at runtime by a scoped client island, not by `navTree()`.
    * `navTree()` stays pure: it only STAMPS this marker; it never carries the fetched data. The
-   * shell (`ConsoleShell.tsx`) reads the marker and mounts the matching island (e.g. `"teams"` →
-   * `<TeamsNavTree/>`, which expands Teams → team(s) → that team's agents) in place of the static
-   * `children` accordion. Additive: it does not disturb the `children`/`section` contracts, and the
-   * node keeps its own `href` so the label still navigates (the island owns only expand + children).
+   * shell (`ConsoleShell.tsx`) reads the marker and mounts the matching island in place of the
+   * static `children` accordion. Additive: it does not disturb the `children`/`section`
+   * contracts, and the node keeps its own `href` so the label still navigates (the island owns
+   * only expand + children). The former `"teams"` marker was RETIRED with the Teams rail island
+   * when nav consolidated onto /agents-team (ISI-5432): the unified surface's two-axis ORG panel
+   * (Teams ▸ Agents, filterable, with role chips) supersedes the rail's fetched sub-tree, so
+   * only the Projects island remains.
    */
-  dynamicChildren?: "teams" | "projects";
+  dynamicChildren?: "projects";
 };
 
 /**
@@ -98,10 +101,11 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
 
 /**
  * The canonical top-level nav tree, aligned to the ISI-3641 onboarding redesign mock
- * `06-onboarding-hub` (ISI-3716 deviation spec → ISI-3725). Rail, top→bottom:
+ * `06-onboarding-hub` (ISI-3716 deviation spec → ISI-3725), then CONSOLIDATED for the unified
+ * Agents & Team surface (ISI-5432, the ISI-5357/5362 follow-up). Rail, top→bottom:
  *
- *   Overview · Compose · Teams · Projects · Agents · Runs
- *   ─ SETTINGS ─ (section header)  OTel · Credentials · Plugins · Users & Roles
+ *   Overview · Compose · Agents & Team · Projects · Runs
+ *   ─ SETTINGS ─ (section header)  LLM Settings · OTel · Credentials · Plugins · Users & Roles
  *
  * Deltas from the old tree: Dashboard(/`) dropped (Overview is the root); Compose promoted to 2nd;
  * Teams + Runs promoted to top-level items; the old project-scoped `Project` node (Build/Tickets/
@@ -110,6 +114,14 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
  * SECTION HEADER grouping OTel/Credentials/Plugins/Users&Roles instead of a single
  * Settings→Configuration accordion. "OTel" retargets the OTLP config surface (`/settings/configuration`,
  * story 8.12 / OtlpConfigScreen — the same screen ISI-3717 Track 2 enriches).
+ *
+ * ISI-5432 nav consolidation: the separate Teams (/teams, dynamicChildren "teams" island) and
+ * Agents (/agents) nodes are GONE — folded into ONE "Agents & Team" node at /agents-team, the
+ * two-axis master-detail surface (ORG: Teams ▸ Agents · LIBRARY: Roles/Skills · ORG DEFAULTS:
+ * ModelConfig). The Teams rail sub-tree does NOT survive: its team(s)→agents browse, counts and
+ * role chips are the unified surface's own ORG panel now. The legacy /teams and /agents LIST
+ * routes stay as redirects (admin ?team=<TeamUID> scoping preserved) so old links land on the
+ * canonical surface; the /agents/{id} DETAIL route stays live as the drill-in (run history).
  */
 export function navTree(): NavNode[] {
   return [
@@ -125,18 +137,23 @@ export function navTree(): NavNode[] {
       href: "/compose",
       scope: "global",
     },
-    // Teams is the rail's first DYNAMIC sub-tree (ISI-4001 / ISI-3995): the label still links to
-    // the Teams list (/teams), and the `dynamicChildren: "teams"` marker tells the shell to mount
-    // the lazy-loading <TeamsNavTree/> island (team(s) → agents) as its expandable children.
-    // navTree() stays pure — the teams/agents are fetched by the island, never by this function.
-    { id: "teams", label: "Teams", href: "/teams", scope: "global", dynamicChildren: "teams" },
-    // Projects is the rail's second DYNAMIC sub-tree (ISI-4090): the label still links to the
+    // Agents & Team (ISI-5432 / ISI-5357+5362): ONE node for the unified surface. Replaces the
+    // legacy Teams node (/teams + its dynamicChildren:"teams" rail island) and the legacy Agents
+    // node (/agents) — the two-axis ORG panel inside /agents-team owns the team(s)→agents browse
+    // the island used to fetch, with filter + counts + role chips. `id` is the NavIcon key and
+    // the active-match token for /agents-team AND the surviving /agents/{id} detail drill-in.
+    {
+      id: "agents-team",
+      label: "Agents & Team",
+      href: "/agents-team",
+      scope: "global",
+    },
+    // Projects is the rail's remaining DYNAMIC sub-tree (ISI-4090): the label still links to the
     // Projects list (/projects), and `dynamicChildren: "projects"` tells the shell to mount the
     // lazy-loading <ProjectsNavTree/> island (project(s) → that project's Build/Tickets/Runs/
     // Discussion/GitHub sections) as its expandable children. navTree() stays pure — the projects
-    // are fetched by the island, never by this function. Mirrors the Teams marker above.
+    // are fetched by the island, never by this function.
     { id: "projects", label: "Projects", href: "/projects", scope: "global", dynamicChildren: "projects" },
-    { id: "agents", label: "Agents", href: "/agents", scope: "global" },
     { id: "runs", label: "Runs", href: "/runs", scope: "global" },
     {
       // SETTINGS — a non-navigating section header (see NavNode.section), NOT the old
@@ -273,6 +290,7 @@ export type Crumb = { label: string; href: string | null };
 
 const SECTION_LABEL: Record<string, string> = {
   overview: "Overview",
+  "agents-team": "Agents & Team",
   agents: "Agents",
   compose: "Compose",
   teams: "Teams",
@@ -366,7 +384,9 @@ export type OnboardingProgress = {
  */
 export const ONBOARDING_MILESTONE_HREF: Record<string, string> = {
   team: "/compose",
-  agents: "/agents",
+  // ISI-5432: the agents milestone reviews the squad on the unified surface (the legacy /agents
+  // list redirects there); "add your agents" reads the ORG axis' Teams ▸ Agents tree.
+  agents: "/agents-team",
   models: "/credentials",
   project: "/compose",
 };
@@ -381,11 +401,11 @@ export const ONBOARDING_MILESTONE_HREF: Record<string, string> = {
  * config is a deployment-level concern and Credentials is milestone ③'s own surface, so an
  * admin on an empty tenant must still reach them — the padlock is a journey affordance, not
  * RBAC, and the approved ISI-3641 mock frames 01/06 show no rail padlocks. Only projects and
- * agents keep the FR-1.4 gate.
+ * the unified agents surface keep the FR-1.4 gate (ISI-5432: "agents" → "agents-team").
  */
 const LOCKED_UNTIL_TEAM: ReadonlySet<string> = new Set([
   "projects",
-  "agents",
+  "agents-team",
 ]);
 
 /**

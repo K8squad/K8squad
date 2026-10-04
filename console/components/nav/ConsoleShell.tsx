@@ -28,7 +28,6 @@ import { Logo } from "@/components/Logo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { GlobalSearch } from "@/components/search/GlobalSearch";
 import { NavIcon } from "@/components/nav/NavIcon";
-import { TeamsNavTree } from "@/components/nav/TeamsNavTree";
 import { ProjectsNavTree } from "@/components/nav/ProjectsNavTree";
 import { NavErrorBoundary } from "@/components/nav/NavErrorBoundary";
 import { NavigatingProjectSelector } from "@/components/nav/ProjectSelector";
@@ -50,9 +49,12 @@ function activeIds(pathname: string): Set<string> {
   const ids = new Set<string>();
   if (pathname.startsWith("/overview")) ids.add("overview");
   if (pathname.startsWith("/compose")) ids.add("compose");
-  if (pathname.startsWith("/teams")) ids.add("teams");
+  // ISI-5432: ONE unified node. `startsWith("/agents")` covers BOTH /agents-team and the
+  // surviving /agents/{id} detail drill-in (and the legacy /teams path, which server-redirects
+  // to /agents-team before the client ever settles on it). The separate teams match is gone
+  // with the folded node.
+  if (pathname.startsWith("/agents")) ids.add("agents-team");
   if (pathname.startsWith("/projects")) ids.add("projects");
-  if (pathname.startsWith("/agents")) ids.add("agents");
   if (pathname.startsWith("/runs")) ids.add("runs");
   if (pathname.startsWith("/credentials")) ids.add("credentials");
   if (pathname.startsWith("/plugins")) ids.add("plugins");
@@ -241,29 +243,12 @@ export function ConsoleShell({
         </div>
         <nav className="rail__nav">
           {nodes.map((n) =>
-            n.dynamicChildren === "teams" ? (
-              // Teams (ISI-4001 / ISI-3995): the rail's first DYNAMIC, lazy-loaded sub-tree. The
-              // static NodeLink accordion is replaced by the TeamsNavTree island (team(s) → agents),
-              // wrapped so a fetch/render failure degrades to the plain Teams link, never blanking
-              // the rail. The label still links to /teams; the island owns expand + fetched children.
-              <div key={n.id} className="rail__group">
-                <NavErrorBoundary
-                  fallback={
-                    <NodeLink
-                      node={n}
-                      active={ids.has(n.id)}
-                      projectId={activeProject}
-                    />
-                  }
-                >
-                  <TeamsNavTree active={ids.has(n.id)} pathname={pathname} />
-                </NavErrorBoundary>
-              </div>
-            ) : n.dynamicChildren === "projects" ? (
-              // Projects (ISI-4090): the rail's second DYNAMIC, lazy-loaded sub-tree. Same shape as
-              // Teams — the label links to /projects, the ProjectsNavTree island owns expand +
-              // project(s) → Build/Tickets/Runs/Discussion/GitHub sections, and a fetch/render
-              // failure degrades to the plain Projects link rather than blanking the rail.
+            n.dynamicChildren === "projects" ? (
+              // Projects (ISI-4090): the rail's remaining DYNAMIC, lazy-loaded sub-tree (the Teams
+              // island was retired with the /agents-team consolidation, ISI-5432). The label links
+              // to /projects, the ProjectsNavTree island owns expand + project(s) → Build/Tickets/
+              // Runs/Discussion/GitHub sections, and a fetch/render failure degrades to the plain
+              // Projects link rather than blanking the rail.
               <div key={n.id} className="rail__group">
                 <NavErrorBoundary
                   fallback={

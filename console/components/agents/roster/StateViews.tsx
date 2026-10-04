@@ -4,9 +4,10 @@
 // Agents & Team redesign (ISI-5362 / S5; mockups ISI-5306 Frame 04).
 //
 // Every terminal state renders an honest, legible surface — never a spinner-only blank or
-// internal story-reference copy (the SessionTeamOrg discipline). The loading state is a shimmer
-// skeleton that mirrors the rail + detail two-pane layout so the page does not reflow when data
-// lands. These are read-only, presentational, and theme-invariant (globals.css tokens only).
+// internal story-reference copy (the same discipline the old org-diagram screens held). The
+// loading state is a shimmer skeleton that mirrors the rail + detail two-pane layout so the
+// page does not reflow when data lands. These are read-only, presentational, and
+// theme-invariant (globals.css tokens only).
 
 /** Shimmer skeleton mirroring the rail + detail panes — shown while the four fleet lists load. */
 export function RosterLoading() {

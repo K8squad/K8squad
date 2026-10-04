@@ -29,14 +29,14 @@ describe("SetupChip — AC2 (incomplete + dismissed → persistent chip)", () =>
     );
   });
 
-  it("routes milestone ids through the shared table (team → /compose, agents → /agents)", () => {
+  it("routes milestone ids through the shared table (team → /compose, agents → /agents-team)", () => {
     const { unmount } = render(
       <SetupChip progress={{ ...partial, nextMilestone: "team", done: 0 }} />,
     );
     expect(screen.getByTestId("setup-chip")).toHaveAttribute("href", "/compose");
     unmount();
     render(<SetupChip progress={{ ...partial, nextMilestone: "agents", done: 1 }} />);
-    expect(screen.getByTestId("setup-chip")).toHaveAttribute("href", "/agents");
+    expect(screen.getByTestId("setup-chip")).toHaveAttribute("href", "/agents-team");
   });
 });
 

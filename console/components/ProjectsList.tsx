@@ -14,9 +14,10 @@
 // /projects/{namespace/name} — the same {namespace}/{name} id ProjectSelector uses, and the
 // strongest fleet-wide qualifier available pre-ISI-3941. The sub-nav there reaches tickets,
 // runs et al. Secondarily, when the owning Team's UID resolved, the row keeps the jump into
-// that Team's agents org (/agents?team={teamUid}, ISI-3943 AC2) so an admin can hop from a
-// fleet project straight to its squad's agents. Every terminal HTTP state the BFF relays gets
-// a distinct honest rendering, mirroring SquadOverview.
+// that squad's roster (/agents-team?team={teamUid} — the ISI-3943 AC2 seam, retargeted to the
+// unified surface by ISI-5432) so an admin can hop from a fleet project straight to its
+// squad's agents. Every terminal HTTP state the BFF relays gets a distinct honest rendering,
+// mirroring SquadOverview.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -206,7 +207,7 @@ export function ProjectsList() {
               </div>
               {p.teamUid ? (
                 <Link
-                  href={`/agents?team=${encodeURIComponent(p.teamUid)}`}
+                  href={`/agents-team?team=${encodeURIComponent(p.teamUid)}`}
                   className="muted"
                   style={{ fontSize: 13 }}
                   data-testid="projects-agents-link"

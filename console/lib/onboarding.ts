@@ -62,7 +62,10 @@ export const ONBOARDING_MILESTONES: ReadonlyArray<OnboardingMilestone> = [
     why: "A squad is a Team of agents that work as one unit.",
     tag: "Boss · Implementation · Manager",
     spine: "Team",
-    reviewHref: "/teams",
+    // ISI-5432: both org milestones review on the unified surface — the legacy /teams and
+    // /agents lists redirect there anyway, and the ORG axis is where a Team (and its agents)
+    // is actually inspected now.
+    reviewHref: "/agents-team",
     summaryTag: "1 team",
   },
   {
@@ -72,7 +75,7 @@ export const ONBOARDING_MILESTONES: ReadonlyArray<OnboardingMilestone> = [
     why: "Start from a starter-squad template, then tune.",
     tag: "3 roles, pre-wired",
     spine: "Agents",
-    reviewHref: "/agents",
+    reviewHref: "/agents-team",
     summaryTag: "preset squad",
   },
   {

@@ -2,7 +2,8 @@
 
 // components/nav/ProjectsNavTree.tsx — the Projects rail sub-tree (ISI-4090).
 //
-// The rail's SECOND dynamic, lazy-loaded sub-tree (after Teams / ISI-4001). `navTree()` stays pure
+// The rail's remaining dynamic, lazy-loaded sub-tree (its sibling, the Teams island of
+// ISI-4001, was retired by the /agents-team nav consolidation, ISI-5432). `navTree()` stays pure
 // and static (lib/nav.ts); this scoped client island is mounted by ConsoleShell where the Projects
 // node's accordion would render (marker: NavNode.dynamicChildren === "projects"). It expands in two
 // levels:
@@ -15,10 +16,10 @@
 // Data REUSE-ONLY (no new backend): projects = GET /api/projects (story 8.13 BFF, the same list the
 // ProjectSelector reads — {id,name}; upstream scoping is enforced server-side, the island renders
 // whatever it returns and never synthesizes a project). The 5 sections are STATIC — projectSubnav()
-// from lib/nav.ts — so, unlike TeamsNavTree, expanding a project needs NO second fetch.
+// from lib/nav.ts — so expanding a project needs NO second fetch.
 //
 // URL-is-state: only expand/collapse lives in client state (top-level persisted per user via
-// localStorage, mirroring TeamsNavTree). Which project + section is ACTIVE is a pure derivation of
+// localStorage). Which project + section is ACTIVE is a pure derivation of
 // the pathname, and the active project is auto-expanded so a deep link always shows its section in
 // context (SSR-safe: pathname is deterministic on server and client alike).
 //
@@ -157,7 +158,7 @@ export function ProjectsNavTree({
   return (
     <div className="rail__tree" data-testid="projects-nav-tree">
       {/* Projects row: the label links to /projects; a SEPARATE chevron toggles the sub-tree —
-          two distinct, keyboard-operable affordances (mirrors TeamsNavTree). */}
+          two distinct, keyboard-operable affordances. */}
       <div className="rail__treerow">
         <Link
           href="/projects"
