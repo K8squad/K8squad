@@ -30,10 +30,11 @@ package apiserver
 //
 // First-class degradations (the route degrades rather than 5xx's):
 //   - ErrNoBrowseTarget: no completed (succeeded) Run for the Project yet.
-//   - ErrWorkspaceBusy (AC7): the Project's PVC is RWO and a running agent holds it — signalled
-//     when any of the Project's work items carries a live coord claim (holder + unexpired lease),
-//     so a read-only co-mount is impossible while an agent runs. The route degrades to an empty
-//     listing with degraded=true (files.go) rather than launching a reader that would wedge Pending.
+//   - ErrWorkspaceBusy (AC7): the Project's PVC is RWO and a live agent pod physically mounts it
+//     read-write (ISI-5437: the Run CR phase is NOT trusted — zombie Runs read free), so a
+//     read-only co-mount is impossible while that pod lives. The route degrades to an empty
+//     listing with degraded=true (files.go) rather than launching a reader that would wedge
+//     Pending.
 
 import (
 	"context"
@@ -41,6 +42,7 @@ import (
 	"errors"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -53,22 +55,34 @@ import (
 // CoordReaderSpecResolver is the coord-backed ReaderSpecResolver wired by cmd/apiserver when the
 // BuildReaderPod flag is on. It holds no mutable state, so it is safe for concurrent use.
 type CoordReaderSpecResolver struct {
-	db     *sql.DB
+	db *sql.DB
+	// reader serves the ksquad CRDs (Project/Team/Run) from the host's shared informer cache.
 	reader client.Reader
+	// pods is a DIRECT corev1-capable reader for the busy check's physical pod scan. It must be
+	// separate from reader: the shared informer cache's scheme carries ONLY the ksquad CRDs
+	// (cache.go NewCacheReader), so a corev1.Pod List through it fails "no kind is registered" —
+	// under the busy check's fail-safe that would conserve busy=true forever, reintroducing the
+	// exact ISI-5437 wedge the physical check exists to close. cmd/apiserver wires the same
+	// direct client the reader-pod launcher/reaper use (NewReaderPodClient), whose ClusterRole
+	// already grants cluster-wide pod list.
+	pods client.Reader
 }
 
 // NewCoordReaderSpecResolver binds the resolver to the coordination store (browse-target + busy
-// queries) and the host's shared informer cache (Project/Team resolution). Both are hard
-// dependencies: a nil db or reader fails closed at construct time rather than degrading at request
-// time.
-func NewCoordReaderSpecResolver(db *sql.DB, reader client.Reader) (*CoordReaderSpecResolver, error) {
+// queries), the host's shared informer cache (Project/Team resolution) and a corev1-capable pod
+// reader (physical busy check). All are hard dependencies: a nil db, reader or pod reader fails
+// closed at construct time rather than degrading at request time.
+func NewCoordReaderSpecResolver(db *sql.DB, reader, podReader client.Reader) (*CoordReaderSpecResolver, error) {
 	if db == nil {
 		return nil, errors.New("apiserver.NewCoordReaderSpecResolver: nil db")
 	}
 	if reader == nil {
 		return nil, errors.New("apiserver.NewCoordReaderSpecResolver: nil client.Reader")
 	}
-	return &CoordReaderSpecResolver{db: db, reader: reader}, nil
+	if podReader == nil {
+		return nil, errors.New("apiserver.NewCoordReaderSpecResolver: nil pod reader")
+	}
+	return &CoordReaderSpecResolver{db: db, reader: reader, pods: podReader}, nil
 }
 
 // browseTarget is one row of the latest-completed-Run lookup.
@@ -102,10 +116,10 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 		return readerpod.Spec{}, err
 	}
 
-	// AC7 busy check FIRST: when a running agent holds the Project's work (live claim), the RWO
-	// PVC cannot be co-mounted read-only — degrade to the snapshot reader instead of launching a
-	// reader pod that would wedge Pending. D3: pass name so the physical Run-CR check can scope
-	// to this project without re-resolving it.
+	// AC7 busy check FIRST: when a live pod physically holds the Project's RWO PVC read-write, a
+	// read-only co-mount is impossible — degrade to the snapshot reader instead of launching a
+	// reader pod that would wedge Pending. ISI-5437: the decision is based on the PHYSICAL PVC
+	// mount (pod scan in the claiming teams' sandbox namespaces), never on Run CR phase.
 	busy, err := r.projectBusy(ctx, uid, name)
 	if err != nil {
 		return readerpod.Spec{}, err
@@ -147,65 +161,100 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 	return spec, nil
 }
 
-// projectBusy reports whether the Project's workspace PVC is physically held by a running agent.
+// projectBusy reports whether the Project's workspace PVC is physically held by a live agent pod.
 //
-// The check is two-phase (ADR-0025 D3 — path-scoped busy gate):
+// The check is two-phase (ADR-0025 D3 — path-scoped busy gate; ISI-5437 — physical truth):
 //
-//  1. DB fast-path: if no coord.claim row has an unexpired lease for this project, the PVC is
-//     definitely free — return false immediately. An expired lease is reclaimable (§6.3) and
-//     does NOT block a read-only browse.
+//  1. DB fast-path: collect the DISTINCT teams whose coord.claim rows hold an unexpired lease
+//     for this project. No rows ⇒ no live claim ⇒ the PVC is definitely free — return false
+//     immediately. An expired lease is reclaimable (§6.3) and does NOT block a read-only browse.
+//     The team_ids scope Phase 2 to the sandbox namespaces where a holder pod could run.
 //
-//  2. Physical truth: if the DB reports a live claim, cross-check against the Run CRs. A Run
-//     that has reached a terminal phase (Succeeded/Failed/Cancelled) has released its RWO PVC
-//     mount, even if the coord.claim row has not yet been cleaned up (e.g., RunDrive still
-//     committing the final audit row). Only a Run in an active phase (Running/Claiming/Paused/
-//     Canceling) actually holds the mount. This closes the "stale claim blocks live browse"
-//     false-positive (ADR-0025 R3/F1) without changing the DB schema.
+//  2. Physical truth: for each claiming team's sandbox namespace, list pods and report busy only
+//     if some non-terminal pod (Running/Pending) MOUNTS the Project's RWO PVC read-write
+//     (volume persistentVolumeClaim.claimName == workspace.ProjectPVCName, readOnly=false).
+//     Run CR status.phase is deliberately NOT consulted: on k8squad-test 34 zombie Runs
+//     (phase Running/Claiming, no backing pod, dangling status.sandboxRef) tripped the old phase
+//     switch and held the explorer on workspace_busy forever while the PVC was actually free
+//     (ISI-5437). A read-only mount (a live reader pod) does not count — it must not make the
+//     workspace look busy to the very check that gates reader launch.
 //
-// Fail-safe: if the Kubernetes cache is unreachable, the busy state is conserved (true) rather
-// than allowing a reader pod that would wedge Pending. The projectName argument must match
-// Run.Spec.ProjectRef.Name for the filter to be accurate.
+// Fail-safe: if the team's sandbox namespace cannot be resolved, or the pod list errors, the busy
+// state is conserved (true) rather than allowing a reader pod that would wedge Pending (RWO
+// Multi-Attach). The projectName argument feeds workspace.ProjectPVCName for the claim match.
 func (r *CoordReaderSpecResolver) projectBusy(ctx context.Context, projectUID, projectName string) (bool, error) {
-	// Phase 1: coord.claim DB check.
-	var dbClaimed bool
-	err := r.db.QueryRowContext(ctx, `
-		SELECT EXISTS(
-		    SELECT 1
-		      FROM coord.claim c
-		      JOIN coord.work_item w ON w.id = c.work_item_id
-		     WHERE w.project_id = $1::uuid
-		       AND c.holder_principal IS NOT NULL
-		       AND c.run_id IS NOT NULL
-		       AND (c.lease_expires_at IS NULL OR c.lease_expires_at > now())
-		)`, projectUID).Scan(&dbClaimed)
+	// Phase 1: coord.claim DB check, scoped to the claiming teams.
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT w.team_id::text
+		  FROM coord.claim c
+		  JOIN coord.work_item w ON w.id = c.work_item_id
+		 WHERE w.project_id = $1::uuid
+		   AND c.holder_principal IS NOT NULL
+		   AND c.run_id IS NOT NULL
+		   AND (c.lease_expires_at IS NULL OR c.lease_expires_at > now())
+		   AND w.team_id IS NOT NULL`, projectUID)
 	if err != nil {
 		return false, fmt.Errorf("readerspec: busy check for project %s: %w", projectUID, err)
 	}
-	if !dbClaimed {
+	defer rows.Close()
+	var teamIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return false, fmt.Errorf("readerspec: busy check for project %s: %w", projectUID, err)
+		}
+		teamIDs = append(teamIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("readerspec: busy check for project %s: %w", projectUID, err)
+	}
+	if len(teamIDs) == 0 {
 		return false, nil // no live claim → PVC definitely free
 	}
 
-	// Phase 2: physical truth via Run CR phase. A terminal Run has released the RWO mount;
-	// only non-terminal phases mean the PVC is still physically held.
-	var runs ksquadv1.RunList
-	if err := r.reader.List(ctx, &runs); err != nil {
-		// Cannot reach informer cache — fail safe (preserve busy=true) rather than launching a
-		// reader pod that would wedge Pending.
-		return true, nil
-	}
-	for i := range runs.Items {
-		run := &runs.Items[i]
-		if run.Spec.ProjectRef.Name != projectName {
-			continue
+	// Phase 2: physical truth — a live pod must actually mount the RWO PVC. Zombie Run CRs
+	// (phase=Running, no pod) read as NOT busy; only a real holder pod reads busy.
+	pvcName := workspace.ProjectPVCName(projectName)
+	for _, teamID := range teamIDs {
+		sandboxNS, err := r.teamSandboxNamespace(ctx, teamID)
+		if err != nil {
+			// Cannot resolve where the claim's pod would run — cannot prove the PVC free.
+			return true, nil
 		}
-		switch run.Status.Phase {
-		case ksquadv1.RunPhaseRunning, ksquadv1.RunPhaseClaiming,
-			ksquadv1.RunPhasePaused, ksquadv1.RunPhaseCanceling:
-			return true, nil // PVC physically held by this run
+		var pods corev1.PodList
+		if err := r.pods.List(ctx, &pods, client.InNamespace(sandboxNS)); err != nil {
+			// Pod scan unreachable — fail safe (preserve busy=true) rather than launching a
+			// reader pod that would wedge Pending.
+			return true, nil
+		}
+		for i := range pods.Items {
+			if podHoldsPVCRW(&pods.Items[i], pvcName) {
+				return true, nil // PVC physically held by this pod
+			}
 		}
 	}
-	// All matching Run CRs are in terminal phases (or none found) — stale DB claim only; PVC released.
+	// No live pod mounts the claim in any claiming team's namespace — stale DB claim / zombie
+	// Run CRs only; the PVC is physically free.
 	return false, nil
+}
+
+// podHoldsPVCRW reports whether pod is in a non-terminal phase and mounts the named PVC claim
+// READ-WRITE. A reader pod's read-only mount does not hold an RWO claim against a second-node
+// writer, so ReadOnly PVC mounts are ignored: the busy gate must not be tripped by the reader
+// pods it launches itself. Pending counts as held — the volume is in the pod's spec, so a
+// co-mounted reader can already hit Multi-Attach.
+func podHoldsPVCRW(pod *corev1.Pod, claimName string) bool {
+	switch pod.Status.Phase {
+	case corev1.PodRunning, corev1.PodPending:
+	default:
+		return false // Succeeded/Failed pods have released their mounts
+	}
+	for _, v := range pod.Spec.Volumes {
+		if pvc := v.PersistentVolumeClaim; pvc != nil && pvc.ClaimName == claimName && !pvc.ReadOnly {
+			return true
+		}
+	}
+	return false
 }
 
 // latestBrowseTarget returns the Project's latest completed (succeeded) Run — the target the reader
