@@ -220,10 +220,15 @@ func (r *ClientCredentialReader) Credentials(ctx context.Context, teamUID string
 	return out, nil
 }
 
-// teamNamespace resolves the Team UID to its namespace (the §12.1 tenancy root), memoized:
-// a Team's UID is immutable for the object's lifetime, so the cluster-wide list runs at most
-// once per distinct UID per reader — repeat page loads never re-deep-copy every Team
-// (PR #87 review perf note; overview.go keeps its inline shape until it adopts the same memo).
+// teamNamespace resolves the Team UID to its HOME namespace (the §12.1 tenancy
+// root), memoized: a Team's UID is immutable for the object's lifetime, so the
+// cluster-wide list runs at most once per distinct UID per reader — repeat
+// page loads never re-deep-copy every Team (PR #87 review perf note;
+// overview.go keeps its inline shape until it adopts the same memo). The
+// resolution itself is the ONE shared core (resolveTeamHomeNamespace,
+// teamhomens.go, ISI-5422); this adapter adds ONLY the memo and the read
+// model's ErrTeamNotFound vocabulary (handlers answer 404 through that
+// sentinel). Only a successful resolve is memoized — a miss stays a miss.
 func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID string) (string, error) {
 	if teamUID == "" {
 		return "", ErrTeamNotFound
@@ -241,42 +246,38 @@ func (r *ClientCredentialReader) teamNamespace(ctx context.Context, teamUID stri
 	if ns, ok := r.teamNS[teamUID]; ok {
 		return ns, nil
 	}
-	var teams ksquadv1.TeamList
-	if err := r.reader.List(ctx, &teams); err != nil {
-		return "", err
+	ns, err := resolveTeamHomeNamespace(ctx, r.reader, teamUID)
+	if err != nil {
+		return "", errTeamNotFoundFrom(err)
 	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			ns := teams.Items[i].Namespace
-			r.teamNS[teamUID] = ns
-			return ns, nil
-		}
-	}
-	return "", ErrTeamNotFound
+	r.teamNS[teamUID] = ns
+	return ns, nil
 }
 
 // fleetTeamNamespace resolves the namespace a fleet-wide admin's credential list
 // targets (ISI-3937). It is called ONLY after the caller's own team proved
 // unresolvable AND the caller is an admin, so it never widens a bound caller's
 // scope. Selection follows fleetAdminTeam (explicit teamId, or the single team by
-// default, or ErrSelectTeam when the admin must choose). The target's own namespace
-// is returned — the same tenancy root a bound list uses — and fleetAdminTeam's
-// existence-hiding "unresolved" is mapped to this reader's ErrTeamNotFound vocabulary.
-// Not memoized: the fleet-admin selection is request-shaped (it depends on teamId and
-// the current team set), not a stable per-UID fact.
+// default, or ErrSelectTeam when the admin must choose); the target's own HOME
+// namespace (teamHomeNamespace, the same fail-closed extraction a bound list
+// uses) is returned. fleetAdminTeam's existence-hiding "unresolved" — and an
+// empty home ns — map to this reader's ErrTeamNotFound vocabulary. Not
+// memoized: the fleet-admin selection is request-shaped (it depends on teamId
+// and the current team set), not a stable per-UID fact.
 func (r *ClientCredentialReader) fleetTeamNamespace(ctx context.Context, requestedTeamID string) (string, error) {
 	var teams ksquadv1.TeamList
 	if err := r.reader.List(ctx, &teams); err != nil {
 		return "", err
 	}
 	team, err := fleetAdminTeam(teams.Items, requestedTeamID)
-	if errors.Is(err, ErrTeamNamespaceUnresolved) {
-		return "", ErrTeamNotFound
-	}
 	if err != nil {
-		return "", err
+		return "", errTeamNotFoundFrom(err)
 	}
-	return team.Namespace, nil
+	ns, err := teamHomeNamespace(team)
+	if err != nil {
+		return "", errTeamNotFoundFrom(err)
+	}
+	return ns, nil
 }
 
 // credentialHold extracts the paused-on-credential signal from one Run: phase Paused AND a

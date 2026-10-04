@@ -24,26 +24,18 @@ import (
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 )
 
-// resolveTeamNamespace resolves a caller's Team UID to its namespace (the §12.1
-// "a squad IS a namespace" boundary). A UID that resolves to no Team is
-// ErrTeamNotFound (404). This is the dashboard's team-scope root; the compose
-// write model (composecrd.go teamNamespace, ISI-5415) resolves identically —
-// the Team CR's metadata (home) namespace — so a write lands exactly where
-// these reads look.
+// resolveTeamNamespace resolves a caller's Team UID to its HOME namespace (the
+// §12.1 "a squad IS a namespace" boundary) through the ONE shared core
+// (resolveTeamHomeNamespace, teamhomens.go, ISI-5422), mapped onto this read
+// spine's ErrTeamNotFound vocabulary (404, existence-hiding). The compose and
+// secret write models resolve through the same core — a write lands exactly
+// where these reads look.
 func resolveTeamNamespace(ctx context.Context, reader client.Reader, teamUID string) (string, error) {
-	if teamUID == "" {
-		return "", ErrTeamNotFound
+	ns, err := resolveTeamHomeNamespace(ctx, reader, teamUID)
+	if err != nil {
+		return "", errTeamNotFoundFrom(err)
 	}
-	var teams ksquadv1.TeamList
-	if err := reader.List(ctx, &teams); err != nil {
-		return "", err
-	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			return teams.Items[i].Namespace, nil
-		}
-	}
-	return "", ErrTeamNotFound
+	return ns, nil
 }
 
 // resolveProjectInTeam is the NON-ADMIN scope resolver: resolve the caller's Team

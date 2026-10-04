@@ -519,26 +519,24 @@ func (s *CredentialTestService) agentsReferencing(ctx context.Context, ns, credN
 	return out
 }
 
-// resolveTeam resolves the caller's Team UID to the Team object itself (the
-// probe needs the Team's HOME namespace — where the Secret was written,
-// ISI-5415 — and the CR to annotate). Same discipline as
-// secretwrite.teamNamespace: unknown UID or un-reconciled team is
-// ErrTeamNamespaceUnresolved (404), never a shared fallback. Status.Namespace
-// gates "a provisioned squad" only; the read target is the home ns.
+// resolveTeam resolves the caller's Team UID to the Team object itself through
+// the shared match core (matchTeamByUID, teamhomens.go, ISI-5422) — the probe
+// needs the Team's HOME namespace (where the Secret was written, ISI-5415)
+// and the CR to annotate. Unknown UID is ErrTeamNamespaceUnresolved (404),
+// never a shared fallback. The probe keeps ONE gate of its own on top of the
+// shared match: Status.Namespace must be set ("a provisioned squad", the same
+// signal fleetAdminTeam gates on) — a probe against an un-reconciled Team
+// would read a namespace the Secret write also refused, so it fails closed
+// the same way.
 func (s *CredentialTestService) resolveTeam(ctx context.Context, teamUID string) (*ksquadv1.Team, error) {
-	if teamUID == "" {
-		return nil, ErrTeamNamespaceUnresolved
-	}
-	var teams ksquadv1.TeamList
-	if err := s.client.List(ctx, &teams); err != nil {
+	team, err := matchTeamByUID(ctx, s.client, teamUID)
+	if err != nil {
 		return nil, err
 	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID && teams.Items[i].Status.Namespace != "" {
-			return &teams.Items[i], nil
-		}
+	if team.Status.Namespace == "" {
+		return nil, ErrTeamNamespaceUnresolved
 	}
-	return nil, ErrTeamNamespaceUnresolved
+	return team, nil
 }
 
 // resolveFleetTeam resolves the target Team for a fleet-wide admin's test-connection

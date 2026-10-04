@@ -483,18 +483,15 @@ func writeTierGranted(role string) bool {
 // Apply — team-namespace scope (invariant 3) + upsert-with-revision (4)
 // ============================================================================
 
-// ErrTeamNamespaceUnresolved is returned when the caller's Team UID resolves to
-// no Team (or a Team without a reconciled namespace). The handler answers 404 —
-// a caller with no Team scope has nowhere to apply.
-var ErrTeamNamespaceUnresolved = errors.New("apiserver: caller team namespace unresolved")
-
 // teamNamespace resolves the caller's Team UID to its HOME namespace (the Team
 // CR's own metadata namespace — where the config CRDs this surface authors
-// live), the SAME resolution the dashboard/settings read models use
-// (resolveTeamNamespace, projectresolve.go) and the run intake's composition
-// resolution honors (ISI-4820: composition CRs are authored in Team.Namespace).
-// An unknown UID is ErrTeamNamespaceUnresolved (404) — never a fallback to a
-// shared namespace.
+// live) through the ONE shared resolver (teamhomens.go, ISI-5422): match by
+// UID, return Team.Namespace, fail closed with ErrTeamNamespaceUnresolved
+// (404) on an unknown UID or an empty home ns — never a fallback to a shared
+// namespace. The dashboard/settings read models (resolveTeamNamespace,
+// projectresolve.go) resolve through the same core, so a write lands exactly
+// where the reads look, and the run intake's composition resolution honors the
+// same home-ns rule (ISI-4820).
 //
 // Status.Namespace is deliberately NOT the answer (ISI-5415): it is the EXEC
 // namespace the operator provisions for Run CRs (the split-namespace layout,
@@ -503,25 +500,7 @@ var ErrTeamNamespaceUnresolved = errors.New("apiserver: caller team namespace un
 // every read resolved it in the home ns, so the upsert Get missed the live
 // object and minted a duplicate instead of an edit.
 func (s *ComposeService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
-	if teamUID == "" {
-		return "", ErrTeamNamespaceUnresolved
-	}
-	var teams ksquadv1.TeamList
-	if err := s.applier.List(ctx, &teams); err != nil {
-		return "", err
-	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			// A Team CR cannot exist outside its (existing) home namespace, so
-			// an empty metadata namespace is impossible in a real cluster; the
-			// guard keeps a mis-seeded fake/dev host from writing a
-			// namespace-less CR.
-			if ns := teams.Items[i].Namespace; ns != "" {
-				return ns, nil
-			}
-		}
-	}
-	return "", ErrTeamNamespaceUnresolved
+	return resolveTeamHomeNamespace(ctx, s.applier, teamUID)
 }
 
 // composeResult is the response body for an apply.
