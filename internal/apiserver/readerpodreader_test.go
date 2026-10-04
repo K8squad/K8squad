@@ -3,6 +3,7 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver"
+	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 // --- fakes -------------------------------------------------------------------
@@ -403,5 +405,86 @@ func TestListDirCache_DifferentKeysNotShared(t *testing.T) {
 	// All three are distinct keys — expect 3 pod calls.
 	if len(rc.listPaths) != 3 {
 		t.Errorf("want 3 pod calls for 3 distinct keys, got %d", len(rc.listPaths))
+	}
+}
+
+// --- ISI-5431: author propagation through the background launch ----------------------------
+//
+// authRequiringResolver mimics the PRODUCTION CoordReaderSpecResolver (readerspec.go): resolution
+// fails closed when the ctx carries no authenticated author. Before ISI-5431, session() discarded
+// the request ctx and launchBackground resolved on a bare context.Background(), so every background
+// launch failed with "readerspec: no author context" and the File Explorer looped 202↔500 forever.
+//
+// Note the middleware invariant modelled here: a BFF-stamped author ALWAYS has a Principal, so an
+// author-less launch (ok=false) and a zero-value author (Principal="") both mean "unauthenticated"
+// and fail closed.
+type authRequiringResolver struct {
+	inner *fakeResolver
+}
+
+func (a *authRequiringResolver) ResolveReaderSpec(ctx context.Context, projectID string) (readerpod.Spec, error) {
+	author, ok := discussion.AuthFromContext(ctx)
+	if !ok || author.Principal == "" {
+		return readerpod.Spec{}, errors.New("readerspec: no author context (fail closed)")
+	}
+	return a.inner.ResolveReaderSpec(ctx, projectID)
+}
+
+// pollAuthedReady polls ListDir with ctx until the session warms (nil) or a terminal error fires.
+func pollAuthedReady(t *testing.T, r *ReaderPodWorkspaceReader, ctx context.Context, projectID string) error {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := r.ListDir(ctx, projectID, ".", 0)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrReaderPreparing) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pollAuthedReady(%s): still ErrReaderPreparing after 2s", projectID)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestReaderPodWorkspaceReader_BackgroundLaunchCarriesAuthor: a read issued on an AUTHENTICATED
+// request ctx must warm successfully even though the resolver fails closed without an author —
+// i.e. the author survives the hop from session() into the detached background launch ctx.
+func TestReaderPodWorkspaceReader_BackgroundLaunchCarriesAuthor(t *testing.T) {
+	res := &authRequiringResolver{inner: &fakeResolver{spec: validReaderSpec()}}
+	r := newTestReader(t, res, &fakeLauncher{}, &fakeReadClient{})
+
+	ctx := discussion.WithAuth(context.Background(), readerspecAuth())
+	if err := pollAuthedReady(t, r, ctx, "proj-1"); err != nil {
+		t.Fatalf("ListDir with authenticated ctx: %v (author was dropped from the background launch)", err)
+	}
+}
+
+// TestReaderPodWorkspaceReader_PreWarmCarriesAuthor: PreWarm must capture the caller's author the
+// same way — a pre-warm issued with an authenticated ctx must yield a usable session, not a
+// fail-closed launch error.
+func TestReaderPodWorkspaceReader_PreWarmCarriesAuthor(t *testing.T) {
+	res := &authRequiringResolver{inner: &fakeResolver{spec: validReaderSpec()}}
+	r := newTestReader(t, res, &fakeLauncher{}, &fakeReadClient{})
+
+	ctx := discussion.WithAuth(context.Background(), readerspecAuth())
+	r.PreWarm(ctx, "proj-1")
+	if err := pollAuthedReady(t, r, ctx, "proj-1"); err != nil {
+		t.Fatalf("ListDir after authenticated PreWarm: %v (author was dropped from the background launch)", err)
+	}
+}
+
+// TestReaderPodWorkspaceReader_UnauthenticatedLaunchFailsClosed: negative control — with NO author
+// in the request ctx the fail-closed resolver error must surface (this is the pre-ISI-5431
+// behaviour every caller saw, and the reason the author capture above is required).
+func TestReaderPodWorkspaceReader_UnauthenticatedLaunchFailsClosed(t *testing.T) {
+	res := &authRequiringResolver{inner: &fakeResolver{spec: validReaderSpec()}}
+	r := newTestReader(t, res, &fakeLauncher{}, &fakeReadClient{})
+
+	err := pollAuthedReady(t, r, context.Background(), "proj-1")
+	if err == nil || !strings.Contains(err.Error(), "no author context") {
+		t.Fatalf("err = %v, want fail-closed no-author-context error", err)
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readclient"
 	"github.com/K8squad/K8squad/internal/buildbrowser/readerpod/readserver"
+	"github.com/K8squad/K8squad/internal/discussion"
 )
 
 // listCacheTTL is the short-lived dedup window for directory listing calls (ADR-0025 D5).
@@ -228,7 +229,11 @@ var ErrReaderPreparing = errors.New("apiserver: reader pod is warming up; retry 
 // PreWarm starts a background launch for projectID if no warm or in-flight session exists.
 // It is a fire-and-forget call: the first GET on the project's files routes triggers it automatically,
 // but callers can also invoke it proactively on project open (S2a) to reduce the first-request latency.
-func (r *ReaderPodWorkspaceReader) PreWarm(projectID string) {
+//
+// ISI-5431: the caller's ctx is consulted ONLY to capture the authenticated author — the launch
+// itself runs on its own detached 90s context (see launchBackground), so pre-warming never extends
+// the request's lifetime.
+func (r *ReaderPodWorkspaceReader) PreWarm(ctx context.Context, projectID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.sessions[projectID]; ok {
@@ -238,7 +243,8 @@ func (r *ReaderPodWorkspaceReader) PreWarm(projectID string) {
 		return // already launching
 	}
 	r.preparing[projectID] = struct{}{}
-	go r.launchBackground(projectID) //nolint:gosec // G118: intentional — launch outlives the caller; uses its own 90s timeout inside
+	author, _ := discussion.AuthFromContext(ctx)
+	go r.launchBackground(projectID, author) //nolint:gosec // G118: intentional — launch outlives the caller; uses its own 90s timeout inside
 }
 
 // session returns the live reader session for projectID (ADR-0025 D1/S2c). Unlike the original
@@ -248,7 +254,12 @@ func (r *ReaderPodWorkspaceReader) PreWarm(projectID string) {
 // once launchBackground completes, or the terminal error if the launch failed.
 //
 // It touches lastAccess on every successful call so an actively-browsed project is never reaped.
-func (r *ReaderPodWorkspaceReader) session(_ context.Context, projectID string) (*readerSession, error) {
+//
+// ISI-5431: the request ctx is used to capture the authenticated author for the background launch.
+// It is NOT handed to the goroutine: the request ctx is cancelled when the HTTP response is written,
+// which would abort the launch mid-flight (and, before the author fix, ResolveReaderSpec failed
+// closed on the author-less Background ctx, surfacing as the File Explorer 202↔500 loop).
+func (r *ReaderPodWorkspaceReader) session(ctx context.Context, projectID string) (*readerSession, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -264,10 +275,12 @@ func (r *ReaderPodWorkspaceReader) session(_ context.Context, projectID string) 
 		return nil, err
 	}
 
-	// Reader not warm — kick off a background launch if not already in flight.
+	// Reader not warm — kick off a background launch if not already in flight. Capture the author
+	// from the REQUEST ctx and carry it into the launch: the resolver fails closed without one.
+	author, _ := discussion.AuthFromContext(ctx)
 	if _, ok := r.preparing[projectID]; !ok {
 		r.preparing[projectID] = struct{}{}
-		go r.launchBackground(projectID) //nolint:gosec // G118: intentional — launch outlives the request; uses its own 90s timeout inside
+		go r.launchBackground(projectID, author) //nolint:gosec // G118: intentional — launch outlives the request; uses its own 90s timeout inside
 	}
 	return nil, ErrReaderPreparing
 }
@@ -275,8 +288,19 @@ func (r *ReaderPodWorkspaceReader) session(_ context.Context, projectID string) 
 // launchBackground launches the reader pod for projectID in a background goroutine (ADR-0025 D1/S2a).
 // On success it stores the ready session; on failure it removes the preparing entry so the next
 // session() call retries. The launch uses its own 90 s timeout independent of any client request.
-func (r *ReaderPodWorkspaceReader) launchBackground(projectID string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+//
+// ISI-5431: author is the authenticated caller captured by session/PreWarm before detaching from
+// the request ctx. The launch seeds a FRESH context with that author (never reuses the request ctx,
+// which is cancelled when the response is written) so ResolveReaderSpec's fail-closed author check
+// passes while the launch still outlives the request.
+//
+// Security note (shared warm pool): the pool is keyed by projectID and shared across callers, so
+// the FIRST caller's author resolves the Spec for the shared session. This is safe: the resolved
+// Spec (PVC/namespace/reader SA) is a function of the project alone — identical regardless of which
+// authorized caller resolves it — and every subsequent read is independently gated by the route's
+// requireProjectRole(Viewer), so no caller gains access to a project it could not already read.
+func (r *ReaderPodWorkspaceReader) launchBackground(projectID string, author discussion.AuthorContext) {
+	ctx, cancel := context.WithTimeout(discussion.WithAuth(context.Background(), author), 90*time.Second)
 	defer cancel()
 
 	// AC2/AC3: spec is derived server-side from the coord record.
