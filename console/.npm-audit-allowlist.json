@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Expiry-dated npm-audit allowlist — the ONLY escape hatch for the `npm audit (console)` L4 security gate (ISI-5426).",
+    "Mirrors .trivyignore (ISI-2245, §6.2): reviewed like code, never a silent perpetual mute.",
+    "Keys are GHSA advisory ids. Each entry MUST carry `expires` (YYYY-MM-DD) and a one-line `justification`.",
+    "The security.yml npm-audit step FAILS the build when: (a) a high/critical advisory is NOT allowlisted here,",
+    "or (b) an allowlisted entry is past its `expires` date. An allowlisted advisory that is no longer present",
+    "(upstream fixed / chain dropped) emits a ::warning:: so the stale entry gets removed — same discipline as trivy.",
+    "An unfixable finding still needs an entry; a fix landing upstream turns a muted HIGH into a gating one, so track it here."
+  ],
+  "advisories": {
+    "GHSA-vfj7-8cjw-p6xm": {
+      "expires": "2026-12-15",
+      "justification": "braces <=3.0.3 stack-exhaustion DoS; NO upstream fix (latest published braces is 3.0.3 and the advisory covers <=3.0.3; micromatch@4.0.8 still pins braces ^3.0.3). Dev-only: reaches solely via eslint-config-next -> @next/eslint-plugin-next -> fast-glob -> micromatch -> braces, never in the shipped console runtime. Remove when braces publishes a fixed release or eslint-config-next's chain drops it (npm's only 'fix' is a semver-major eslint-config-next@14 downgrade that breaks Next-15 parity)."
+    }
+  }
+}
