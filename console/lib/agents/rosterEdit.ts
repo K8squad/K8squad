@@ -121,8 +121,12 @@ export async function putCompose(
   kind: "agents" | "roles",
   name: string,
   body: Record<string, unknown>,
+  team?: string,
 ): Promise<void> {
-  const res = await fetch(`/api/compose/${kind}/${encodeURIComponent(name)}`, {
+  // The act-as-team selector (ISI-5419) the roster surface already uses on its
+  // reads, carried onto the write so a fleet admin's inline save lands in the
+  // squad whose node they edited (resolved admin-only, by Team UID, server-side).
+  const res = await fetch(`/api/compose/${kind}/${encodeURIComponent(name)}${teamQS(team)}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),

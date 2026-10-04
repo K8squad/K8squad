@@ -180,7 +180,7 @@ export function RoleModelPanel({
   async function commit() {
     setSave({ kind: "saving" });
     try {
-      await putCompose("roles", detail.name, roleModelPut(detail, { model, fallbackModel: fallback }));
+      await putCompose("roles", detail.name, roleModelPut(detail, { model, fallbackModel: fallback }), team);
       setSave({ kind: "saved" });
       setEdit({ kind: "view" });
       setNonce((n) => n + 1); // re-read: provenance + resourceVersion + usedBy refresh
@@ -333,7 +333,7 @@ export function AgentModelPanel({
   async function commit(next: string) {
     setSave({ kind: "saving" });
     try {
-      await putCompose("agents", detail.name, agentModelPut(detail, next));
+      await putCompose("agents", detail.name, agentModelPut(detail, next), team);
       setSave({ kind: "saved" });
       setEditing(false);
       setNonce((n) => n + 1); // re-read: the override row + the readout below refresh

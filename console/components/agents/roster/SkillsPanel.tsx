@@ -178,7 +178,7 @@ export function AgentSkillsPanel({
   async function saveBindings(next: string[]) {
     setSave({ kind: "saving" });
     try {
-      await putCompose("agents", detail.name, agentSkillsPut(detail, next));
+      await putCompose("agents", detail.name, agentSkillsPut(detail, next), team);
       setSave({ kind: "saved" });
       setNonce((n) => n + 1); // re-read skillRefs + refresh the rail's count via the parent
       onSaved();
@@ -258,7 +258,7 @@ export function RoleSkillsPanel({
   async function saveBindings(next: string[]) {
     setSave({ kind: "saving" });
     try {
-      await putCompose("roles", detail.name, roleSkillsPut(detail, next));
+      await putCompose("roles", detail.name, roleSkillsPut(detail, next), team);
       setSave({ kind: "saved" });
       setNonce((n) => n + 1);
       onSaved();

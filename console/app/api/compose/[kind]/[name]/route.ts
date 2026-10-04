@@ -23,7 +23,18 @@ export async function PUT(
   if (!isComposeKind(kind)) {
     return Response.json({ error: "unknown compose kind" }, { status: 404 });
   }
-  return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}`, "PUT");
+  // Forward the `?team=` act-as-team selector (ISI-5419) the same way DELETE does:
+  // a fleet admin editing a node in another squad carries the node-derived team on
+  // the write so the upsert lands in THAT squad's namespace, not the admin's own.
+  // The apiserver honors it for admins only (resolved by Team UID); a non-admin's
+  // selector is ignored there. (Project scope for a PUT travels in the body, not
+  // the query, so only `team` is forwarded.)
+  const forwarded = new URLSearchParams();
+  const team = req.nextUrl.searchParams.get("team");
+  if (team) forwarded.set("team", team);
+  const query = forwarded.toString();
+  const suffix = query ? `?${query}` : "";
+  return proxyJsonWrite(req, `/api/${kind}/${encodeURIComponent(name)}${suffix}`, "PUT");
 }
 
 // DELETE /api/compose/{kind}/{name} → apiserver DELETE /api/{kind}/{name} (ISI-4107).

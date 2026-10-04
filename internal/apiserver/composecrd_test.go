@@ -27,7 +27,7 @@ import (
 // ── test harness ────────────────────────────────────────────────────────────
 
 const (
-	teamNS   = "team-acme"  // the caller's Team HOME namespace (CR metadata)
+	teamNS   = "team-acme" // the caller's Team HOME namespace (CR metadata)
 	teamUID  = "11111111-1111-1111-1111-111111111111"
 	otherNS  = "team-globex" // a foreign tenant's HOME namespace
 	otherUID = "22222222-2222-2222-2222-222222222222"
@@ -37,7 +37,7 @@ const (
 	// Status.Namespace landed config CRDs here, forking them from every read
 	// (ISI-5415). The fixture models the split so any such regression fails
 	// every assertion that expects writes in teamNS/otherNS.
-	execTeamNS = "exec-team-acme"
+	execTeamNS  = "exec-team-acme"
 	execOtherNS = "exec-team-globex"
 )
 
@@ -491,6 +491,118 @@ func TestComposeWriteTargetsHomeNotExecNamespace(t *testing.T) {
 	}
 	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: execTeamNS, Name: "backend-dev"}, &got); !apierrors.IsNotFound(err) {
 		t.Fatalf("agent must NOT be written to the exec ns %s (Status.Namespace): %v", execTeamNS, err)
+	}
+}
+
+// ── admin act-as-team override on the WRITE path (ISI-5419) ──────────────────
+//
+// The roster inline-edit surface carries a node-derived `?team=` on its reads; PR
+// #766 fixed the READ, this fixes the WRITE. A fleet admin editing a node in
+// another squad must land the upsert in THAT squad's namespace — resolved by Team
+// UID via teamNamespace, exactly like FleetListReader.detailNamespace — never the
+// admin's own namespace, which would fork a duplicate CR (the cross-tenant forked
+// -write failure mode).
+
+// seedAgent is a helper: a live Agent CR in ns with the admission-required
+// identity fields plus a known model, so an edit's field-scoped merge has a live
+// object to update.
+func seedAgent(name, ns, model string) *ksquadv1.Agent {
+	return &ksquadv1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: ksquadv1.AgentSpec{
+			RuntimeRef:          ksquadv1.ObjectRef{Name: "claude-code"},
+			RoleRef:             ksquadv1.ObjectRef{Name: "engineer"},
+			CredentialSecretRef: ksquadv1.SecretRef{Name: "owner-cred"},
+			Model:               model,
+		},
+	}
+}
+
+func agentModelEdit(name, model string) agentRequest {
+	req := agentRequest{Name: name, Model: model}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "owner-cred"}
+	return req
+}
+
+func TestComposeAdminActAsTeamTargetsSelectedSquad(t *testing.T) {
+	// A live agent "cade" exists ONLY in the foreign squad's HOME namespace.
+	svc, _ := newComposeFixture(t, nil, seedAgent("cade", otherNS, "old-model"))
+	// Admin (bound to acme) edits cade with ?team=<globex UID> — the act-as-team
+	// selector the roster read already uses, now forwarded on the write.
+	w := do(svc.handleAgent(false), http.MethodPut, "/api/agents/cade?team="+otherUID,
+		caller("root", teamUID, true), agentModelEdit("cade", "new-model"),
+		map[string]string{"name": "cade"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("admin act-as-team edit want 200 (updated in-place), got %d: %s", w.Code, w.Body.String())
+	}
+	var res composeResult
+	mustJSON(t, w, &res)
+	if res.Namespace != otherNS {
+		t.Fatalf("edit must target the selected squad's HOME ns %q, got %q", otherNS, res.Namespace)
+	}
+	// The foreign-squad object was updated in-place (new model, revision stamped).
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: otherNS, Name: "cade"}, &got); err != nil {
+		t.Fatalf("agent must still live in the selected squad ns %s: %v", otherNS, err)
+	}
+	if got.Spec.Model != "new-model" {
+		t.Fatalf("model edit must apply in the selected squad, got %q", got.Spec.Model)
+	}
+	// And NO forked duplicate landed in the admin's own namespace (the bug).
+	var forked ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "cade"}, &forked); !apierrors.IsNotFound(err) {
+		t.Fatalf("edit must NOT fork a CR into the admin's own ns %s: %v", teamNS, err)
+	}
+}
+
+func TestComposeUnboundAdminActAsTeamResolves(t *testing.T) {
+	// An admin whose own Team UID backs NO Team (the bootstrap/dangling-root case)
+	// would 404 on any team-scoped write without the selector; with ?team= the
+	// write resolves the selected squad and succeeds (ISI-5419 consequence #1).
+	const unboundUID = "99999999-9999-9999-9999-999999999999"
+	svc, _ := newComposeFixture(t, nil, seedAgent("cade", otherNS, "old-model"))
+	w := do(svc.handleAgent(false), http.MethodPut, "/api/agents/cade?team="+otherUID,
+		caller("root", unboundUID, true), agentModelEdit("cade", "new-model"),
+		map[string]string{"name": "cade"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("unbound admin act-as-team edit want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: otherNS, Name: "cade"}, &got); err != nil {
+		t.Fatalf("edit must land in the selected squad ns %s: %v", otherNS, err)
+	}
+	if got.Spec.Model != "new-model" {
+		t.Fatalf("model edit must apply, got %q", got.Spec.Model)
+	}
+}
+
+func TestComposeNonAdminActAsTeamIgnored(t *testing.T) {
+	// A non-admin's ?team= selector must be IGNORED — the write stays in the
+	// caller's OWN namespace, never widened to the named squad. The foreign-squad
+	// object stays untouched; a NEW CR is minted in the caller's own namespace.
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor),
+		seedAgent("cade", otherNS, "foreign-model"))
+	req := agentModelEdit("cade", "mine-model")
+	req.Project = "widget" // write-tier membership scope (non-admin RBAC)
+	w := do(svc.handleAgent(false), http.MethodPut, "/api/agents/cade?team="+otherUID,
+		caller("bob", teamUID, false), req, map[string]string{"name": "cade"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("non-admin edit of an absent-in-own-ns name upserts a NEW CR (201), got %d: %s", w.Code, w.Body.String())
+	}
+	// The foreign squad's agent is untouched — the selector never crossed tenancy.
+	var foreign ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: otherNS, Name: "cade"}, &foreign); err != nil {
+		t.Fatalf("foreign agent vanished: %v", err)
+	}
+	if foreign.Spec.Model != "foreign-model" {
+		t.Fatalf("non-admin selector must NOT mutate the foreign squad, got %q", foreign.Spec.Model)
+	}
+	// The write landed in the caller's own namespace instead.
+	var mine ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "cade"}, &mine); err != nil {
+		t.Fatalf("non-admin write must land in the caller's own ns %s: %v", teamNS, err)
 	}
 }
 
