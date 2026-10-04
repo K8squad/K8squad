@@ -5209,6 +5209,84 @@ a:hover {
   font-size: 12px;
 }
 
+/* ---- Team detail: reporting-structure diagram + skills rollup (ISI-5439) ---- */
+.roster-diagram {
+  font-size: 13px;
+}
+.roster-diagram__level {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 20px;
+  position: relative;
+}
+.roster-diagram__level > li {
+  position: relative;
+  padding: 6px 0 0 14px;
+}
+/* Elbow connectors drawn with borders — no asset, theme-invariant. */
+.roster-diagram__level > li::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 50%;
+  width: 12px;
+  border-left: 1px solid var(--border, #334);
+  border-bottom: 1px solid var(--border, #334);
+}
+.roster-diagram__level > li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: -6px;
+  border-left: 1px solid var(--border, #334);
+}
+.roster-diagram__node {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--border, #334);
+  border-radius: 6px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+}
+.roster-diagram__node--coord {
+  border-color: var(--status-running, #4a9);
+}
+.roster-diagram__node-name {
+  font-weight: 600;
+}
+.roster-diagram__node-role {
+  color: var(--ksq-run);
+  font-size: 12px;
+}
+.roster-diagram__node-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--status-running, #4a9);
+}
+.roster-diagram__root {
+  margin-bottom: 2px;
+}
+.roster-detail__skill-rollup {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.roster-detail__skill-rollup-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.roster-detail__skill-rollup-by {
+  font-size: 12px;
+}
+
 /* ---- Inline editors (Frame 02/03 — model-per-role + skills chips) ---- */
 .roster-edit {
   display: flex;

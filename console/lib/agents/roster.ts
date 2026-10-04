@@ -118,10 +118,32 @@ export function buildRoster(
       ...t,
       agents: byNamespace.get(t.namespace) ?? [],
     })),
-    roles: roles.map((r) => ({ kind: "role" as const, ...r })),
-    skills: skills.map((s) => ({ kind: "skill" as const, ...s })),
+    // ISI-5439(1): the fleet role/skill lists can carry the same library object more than once
+    // (aggregated per referencing agent/team server-side), which rendered duplicate rail rows. The
+    // rail's UI identity for a library object is its NAME — selection + NodeDetail.resolve key by
+    // name, so two rows sharing a name are already indistinguishable here — so dedupe by name,
+    // keeping the first occurrence (and thus also collapsing exact uid duplicates). Order preserved.
+    roles: dedupeByName(roles).map((r) => ({ kind: "role" as const, ...r })),
+    skills: dedupeByName(skills).map((s) => ({ kind: "skill" as const, ...s })),
     orgDefault: { kind: "orgDefault", name: "Default model" },
   };
+}
+
+/**
+ * dedupeByName keeps the first item for each `name`, preserving input order. Library objects (roles,
+ * skills) are identified in this surface by name — their rename-proof key within a squad and the key
+ * the rail selection + detail resolver both use — so a repeat name is a duplicate row, not a second
+ * object. Pure. (ISI-5439(1).)
+ */
+export function dedupeByName<T extends { name: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (seen.has(item.name)) continue;
+    seen.add(item.name);
+    out.push(item);
+  }
+  return out;
 }
 
 /**
@@ -146,6 +168,60 @@ export function filterRoster(roster: Roster, query: string): Roster {
     skills: roster.skills.filter((s) => hit(s.name)),
     orgDefault: roster.orgDefault,
   };
+}
+
+// ── Team detail rollups (ISI-5439(3)) ───────────────────────────────────────
+
+/**
+ * teamHierarchy splits a team's agents into coordinator root(s) and the members that report up to
+ * them — the data the Team detail's hierarchy diagram draws (coordinator → members edges). We use
+ * the one reporting signal the fleet agent list carries, `coordinator`, so the tree is honest to
+ * the backend without a heavyweight graph model: coordinators are the roots, everyone else is a
+ * member edge beneath them. A team with no flagged coordinator yields an empty `coordinators` list
+ * (the diagram then renders a flat member row under the team root). Pure.
+ */
+export interface TeamHierarchy {
+  coordinators: RosterAgent[];
+  members: RosterAgent[];
+}
+
+export function teamHierarchy(team: RosterTeam): TeamHierarchy {
+  const coordinators: RosterAgent[] = [];
+  const members: RosterAgent[] = [];
+  for (const a of team.agents) {
+    if (a.coordinator) coordinators.push(a);
+    else members.push(a);
+  }
+  return { coordinators, members };
+}
+
+/**
+ * teamSkillSummary rolls up the skills loaded on a team: the union of every role's default skills
+ * for the roles that live in the team's namespace, attributed back to the role(s) that load each
+ * one. Deduped by skill name, sorted for a stable readable list. This is the honest view from the
+ * fleet lists — the agent list carries only a skill COUNT, not names, while roles carry their
+ * `defaultSkills` by name, so a role is the finest-grained attribution available without a per-agent
+ * detail fetch. Pure. (ISI-5439(3b).)
+ */
+export interface TeamSkillRollup {
+  skill: string;
+  /** The role(s) in this team that load the skill as a default, sorted; empty if none attributed. */
+  roles: string[];
+}
+
+export function teamSkillSummary(roster: Roster, team: RosterTeam): TeamSkillRollup[] {
+  const bySkill = new Map<string, Set<string>>();
+  for (const role of roster.roles) {
+    if (role.namespace !== team.namespace) continue;
+    for (const skill of role.defaultSkills) {
+      const attributed = bySkill.get(skill) ?? new Set<string>();
+      attributed.add(role.name);
+      bySkill.set(skill, attributed);
+    }
+  }
+  return [...bySkill.entries()]
+    .map(([skill, roles]) => ({ skill, roles: [...roles].sort((a, b) => a.localeCompare(b)) }))
+    .sort((a, b) => a.skill.localeCompare(b.skill));
 }
 
 // ── Selection ────────────────────────────────────────────────────────────────
