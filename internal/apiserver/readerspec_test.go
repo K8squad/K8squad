@@ -3,13 +3,16 @@ package apiserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -25,12 +28,20 @@ const (
 	rsProjUID   = "22222222-2222-2222-2222-222222222222"
 	rsRunID     = "33333333-3333-3333-3333-333333333333"
 	rsCommitSHA = "0123456789abcdef0123456789abcdef01234567"
+	rsGhostUID  = "99999999-9999-9999-9999-999999999999"
 )
 
+// readerspecReader builds the fake cluster both resolver readers ride. One client carries BOTH
+// schemes (ksquad CRDs for the reader field, corev1 for the pod-scan field) and is handed in for
+// both arguments — production wires two different clients (cache + direct), but both projections
+// are Reader-interface pure, so a single fake is faithful.
 func readerspecReader(t *testing.T, teamStatusNS string) *fake.ClientBuilder {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("scheme: %v", err)
 	}
 	team := &ksquadv1.Team{
@@ -47,6 +58,64 @@ func readerspecAuth() discussion.AuthorContext {
 	return discussion.AuthorContext{Principal: "viewer@example.com", TeamID: uuid.MustParse(rsTeamUID)}
 }
 
+// claimTeamRows mocks the Phase-1 busy query: one row per claiming team, no rows = no live claim.
+func claimTeamRows(teamIDs ...string) *sqlmock.Rows {
+	rows := sqlmock.NewRows([]string{"team_id"})
+	for _, id := range teamIDs {
+		rows.AddRow(id)
+	}
+	return rows
+}
+
+// holderPod builds a pod that mounts the Project PVC. readOnly mirrors how the volume is mounted
+// (agent sandbox = RW, reader pod = RO); phase drives the terminal/non-terminal branch.
+func holderPod(name, pvc string, readOnly bool, phase corev1.PodPhase) *corev1.Pod {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "squad-sandbox"},
+		Spec: corev1.PodSpec{Volumes: []corev1.Volume{{
+			Name: "workspace",
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: pvc,
+					ReadOnly:  readOnly,
+				},
+			},
+		}}},
+	}
+	pod.Status.Phase = phase
+	return pod
+}
+
+// zombieRuns builds n Run CRs for project "demo" stuck in Running/Claiming phase with no backing
+// pod — the exact k8squad-test bmad-demo-project shape (ISI-5437: 24 Running + 10 Claiming).
+func zombieRuns(n int) []client.Object {
+	runs := make([]client.Object, 0, n)
+	for i := 0; i < n; i++ {
+		run := &ksquadv1.Run{
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("zombie-%d", i), Namespace: "squad-sandbox"},
+			Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "demo"}},
+		}
+		if i%2 == 0 {
+			run.Status.Phase = ksquadv1.RunPhaseRunning
+		} else {
+			run.Status.Phase = ksquadv1.RunPhaseClaiming
+		}
+		runs = append(runs, run)
+	}
+	return runs
+}
+
+// errPodReader is a corev1-capable reader whose List always errors — drives the fail-safe branch.
+type errPodReader struct{ err error }
+
+func (e errPodReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	return e.err
+}
+
+func (e errPodReader) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return e.err
+}
+
 func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -54,9 +123,10 @@ func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 	}
 	defer db.Close()
 
+	// No live claim (no claiming teams) ⇒ PVC free.
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		WillReturnRows(claimTeamRows())
 	// Pin the browse-target SEMANTICS, not just the table (ISI-4693 review F3): a matcher on the
 	// table alone survives mutating event_type/to_state/ORDER BY. These fragments assert the query
 	// selects the project's LATEST SUCCEEDED terminal run, deterministically.
@@ -64,7 +134,8 @@ func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -96,6 +167,8 @@ func TestCoordReaderSpecResolver_HappyPath(t *testing.T) {
 	}
 }
 
+// Busy requires a LIVE pod physically mounting the RWO PVC read-write in the claiming team's
+// sandbox namespace (ISI-5437). A live RW holder ⇒ ErrWorkspaceBusy, no browse-target query.
 func TestCoordReaderSpecResolver_Busy(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -103,18 +176,14 @@ func TestCoordReaderSpecResolver_Busy(t *testing.T) {
 	}
 	defer db.Close()
 
-	// A live claim on any of the project's work items ⇒ AC7 busy, no artifact query follows.
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+		WillReturnRows(claimTeamRows(rsTeamUID))
 
-	// D3: the Run CR for the project is in Running phase → PVC physically held.
-	run := &ksquadv1.Run{
-		ObjectMeta: metav1.ObjectMeta{Name: "run-a", Namespace: "squad-sandbox"},
-		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "demo"}},
-	}
-	run.Status.Phase = ksquadv1.RunPhaseRunning
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").WithObjects(run).Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").
+		WithObjects(holderPod("sandbox-live", workspace.ProjectPVCName("demo"), false, corev1.PodRunning)).
+		Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -127,10 +196,166 @@ func TestCoordReaderSpecResolver_Busy(t *testing.T) {
 	}
 }
 
+// TestCoordReaderSpecResolver_BusyZombieRunsFreePVC is the ISI-5437 regression guard: the exact
+// k8squad-test shape — 34 zombie Run CRs (Running/Claiming, no backing pod) behind live coord
+// claims, and the PVC physically free. The busy decision must key on the PHYSICAL pod scan, not
+// Run CR phase, so the reader spec resolves instead of wedging on workspace_busy forever.
+func TestCoordReaderSpecResolver_BusyZombieRunsFreePVC(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	// Live claims (zombie runs) held by the team — Phase 1 reports the team.
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows(rsTeamUID))
+	// PVC is physically free ⇒ not busy ⇒ the browse target resolves.
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+	fakeReader := readerspecReader(t, "squad-sandbox").
+		WithObjects(zombieRuns(34)...). // 17 Running + 17 Claiming zombies, zero pods
+		Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	spec, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if err != nil {
+		t.Fatalf("zombie runs + free PVC must resolve, got err: %v", err)
+	}
+	if spec.RunID != rsRunID {
+		t.Errorf("RunID = %q, want %q", spec.RunID, rsRunID)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
+// A live reader pod's READ-ONLY mount must not read as busy: the busy gate launches those reader
+// pods itself, so counting RO mounts would permanently self-inflict workspace_busy.
+func TestCoordReaderSpecResolver_BusyReaderPodROMountDoesNotHold(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows(rsTeamUID))
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+	fakeReader := readerspecReader(t, "squad-sandbox").
+		WithObjects(append(zombieRuns(1),
+			holderPod("reader-pod", workspace.ProjectPVCName("demo"), true, corev1.PodRunning), // RO co-mount
+		)...).
+		Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo"); err != nil {
+		t.Fatalf("live RO reader mount must not read busy, got err: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
+// A pod that reached a terminal phase has released its mounts — even with the volume still in
+// its spec it must not read busy.
+func TestCoordReaderSpecResolver_BusyTerminalPodDoesNotHold(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows(rsTeamUID))
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+	fakeReader := readerspecReader(t, "squad-sandbox").
+		WithObjects(holderPod("sandbox-done", workspace.ProjectPVCName("demo"), false, corev1.PodSucceeded)).
+		Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	if _, err := r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo"); err != nil {
+		t.Fatalf("terminal pod holding a stale volume spec must not read busy, got err: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
+// Fail-safe: if the pod scan is unreachable, busy is conserved (true) — never launch a reader
+// that could wedge Pending on an RWO Multi-Attach.
+func TestCoordReaderSpecResolver_BusyPodListErrorFailsSafe(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows(rsTeamUID))
+
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, errPodReader{err: errors.New("pod informer down")})
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if !errors.Is(err, ErrWorkspaceBusy) {
+		t.Fatalf("err = %v, want ErrWorkspaceBusy (fail-safe)", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
+// Fail-safe: a live claim whose team cannot be resolved to a sandbox namespace cannot be
+// physically disproven — busy is conserved.
+func TestCoordReaderSpecResolver_BusyUnresolvableTeamFailsSafe(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows(rsGhostUID)) // no Team CR with this UID
+
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if !errors.Is(err, ErrWorkspaceBusy) {
+		t.Fatalf("err = %v, want ErrWorkspaceBusy (fail-safe)", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
+	}
+}
+
 // TestCoordReaderSpecResolver_BusyStaleClaimTerminalRun verifies ADR-0025 D3: a live coord.claim
-// row with an unexpired lease must NOT block the explorer when the corresponding Run CR has
-// already reached a terminal phase (Succeeded). The PVC is physically free; the stale claim
-// row must not cause a false-positive busy.
+// row with an unexpired lease must NOT block the explorer when nothing physically holds the PVC
+// (here: the corresponding Run CR already reached a terminal phase and no pod mounts the claim).
 func TestCoordReaderSpecResolver_BusyStaleClaimTerminalRun(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -141,19 +366,19 @@ func TestCoordReaderSpecResolver_BusyStaleClaimTerminalRun(t *testing.T) {
 	// DB reports a live claim (stale — run completed but claim not yet cleared).
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
-	// D3: the Run CR is Succeeded → PVC released. The browse target exists.
+		WillReturnRows(claimTeamRows(rsTeamUID))
+	// Run CR is Succeeded and no pod mounts the PVC → physically free. The browse target exists.
 	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
-	// Run CR is in terminal Succeeded phase — the stale DB claim must not block.
 	run := &ksquadv1.Run{
 		ObjectMeta: metav1.ObjectMeta{Name: "run-done", Namespace: "squad-sandbox"},
 		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "demo"}},
 	}
 	run.Status.Phase = ksquadv1.RunPhaseSucceeded
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").WithObjects(run).Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").WithObjects(run).Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -178,13 +403,14 @@ func TestCoordReaderSpecResolver_NoBrowseTarget(t *testing.T) {
 
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		WillReturnRows(claimTeamRows())
 	// No completed (succeeded) Run yet ⇒ nothing to browse.
 	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}))
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -210,13 +436,14 @@ func TestCoordReaderSpecResolver_CompletedRunNoSnapshot(t *testing.T) {
 
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		WillReturnRows(claimTeamRows())
 	// Completed Run, LEFT JOIN yields NULL commit (no build-snapshot artifact captured).
 	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, nil, rsTeamUID))
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -263,12 +490,13 @@ func TestCoordReaderSpecResolver_QueryGuardsPinned(t *testing.T) {
 			defer db.Close()
 			mock.ExpectQuery("FROM coord.claim").
 				WithArgs(rsProjUID).
-				WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+				WillReturnRows(claimTeamRows())
 			mock.ExpectQuery(regexp.QuoteMeta(frag)).
 				WithArgs(rsProjUID).
 				WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
-			r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+			fakeReader := readerspecReader(t, "squad-sandbox").Build()
+			r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 			if err != nil {
 				t.Fatalf("construct: %v", err)
 			}
@@ -291,13 +519,14 @@ func TestCoordReaderSpecResolver_TeamNamespacePending(t *testing.T) {
 
 	mock.ExpectQuery("FROM coord.claim").
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		WillReturnRows(claimTeamRows())
 	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
 
 	// Team reconciler has not stamped status.namespace yet ⇒ the claim cannot exist anywhere.
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "").Build())
+	fakeReader := readerspecReader(t, "").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -314,14 +543,18 @@ func TestCoordReaderSpecResolver_FailClosed(t *testing.T) {
 	}
 	defer db.Close()
 
-	if _, err := NewCoordReaderSpecResolver(nil, readerspecReader(t, "squad-sandbox").Build()); err == nil {
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	if _, err := NewCoordReaderSpecResolver(nil, fakeReader, fakeReader); err == nil {
 		t.Error("nil db must fail closed")
 	}
-	if _, err := NewCoordReaderSpecResolver(db, nil); err == nil {
+	if _, err := NewCoordReaderSpecResolver(db, nil, fakeReader); err == nil {
 		t.Error("nil reader must fail closed")
 	}
+	if _, err := NewCoordReaderSpecResolver(db, fakeReader, nil); err == nil {
+		t.Error("nil pod reader must fail closed")
+	}
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}
@@ -350,12 +583,13 @@ func TestCoordReaderSpecResolver_BusyQueryHonoursLeaseExpiry(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("c.lease_expires_at IS NULL OR c.lease_expires_at > now()")).
 		WithArgs(rsProjUID).
-		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+		WillReturnRows(claimTeamRows()) // expired lease ⇒ no claiming team ⇒ free
 	mock.ExpectQuery("FROM coord.audit_log").
 		WithArgs(rsProjUID).
 		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}))
 
-	r, err := NewCoordReaderSpecResolver(db, readerspecReader(t, "squad-sandbox").Build())
+	fakeReader := readerspecReader(t, "squad-sandbox").Build()
+	r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
 	if err != nil {
 		t.Fatalf("construct: %v", err)
 	}

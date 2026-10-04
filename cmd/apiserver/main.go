@@ -269,7 +269,7 @@ func main() {
 	if cfg.BuildReaderPodEnabled && dashboardReader != nil {
 		if rpClient, rerr := apiserver.NewReaderPodClient(); rerr != nil {
 			log.Printf("ksquad-apiserver: reader-pod client unavailable — project file-explorer keeps the documented 501: %v", rerr)
-		} else if resolver, serr := apiserver.NewCoordReaderSpecResolver(db, dashboardReader); serr != nil {
+		} else if resolver, serr := apiserver.NewCoordReaderSpecResolver(db, dashboardReader, rpClient); serr != nil {
 			log.Printf("ksquad-apiserver: reader-spec resolver unavailable — project file-explorer keeps the documented 501: %v", serr)
 		} else {
 			rpCfg := cfg.ReaderPodConfig()
