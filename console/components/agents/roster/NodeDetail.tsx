@@ -26,18 +26,38 @@ import {
   type RosterSelection,
   type RosterSkill,
   type RosterTeam,
+  teamHierarchy,
+  teamSkillSummary,
   teamUidForNamespace,
 } from "@/lib/agents/roster";
 import { AgentModelPanel, RoleModelPanel } from "./ModelPanel";
 import { AgentSkillsPanel, RoleSkillsPanel } from "./SkillsPanel";
 
 type NodeTab = "overview" | "model" | "skills" | "advanced";
-const TABS: ReadonlyArray<{ key: NodeTab; label: string }> = [
-  { key: "overview", label: "Overview" },
-  { key: "model", label: "Model" },
-  { key: "skills", label: "Skills" },
-  { key: "advanced", label: "Advanced" },
-];
+const TAB_LABELS: Record<NodeTab, string> = {
+  overview: "Overview",
+  model: "Model",
+  skills: "Skills",
+  advanced: "Advanced",
+};
+
+// ISI-5439(2,3c): the tab strip is context-aware per node kind, not a fixed four-tab set reused
+// everywhere. The rule: a tab appears only when it has meaning for that node.
+//   • Model   — only an Agent or Role carries an effective-model override to read/edit here. A
+//               Team, a Skill and the Org-default have no per-node model in this pane.
+//   • Skills  — the inline skill-grant editor exists only for an Agent (granted skills) and a Role
+//               (default skills). A Team's skills are a read-only rollup shown on Overview; a Skill
+//               has no sub-skills.
+//   • Advanced — identity/scheduling fields exist for an Agent or Role; nothing for the others.
+// So Agents/Roles keep the full strip; Teams, Skills and the Org-default collapse to Overview only
+// (the Team's diagram + skills rollup live on its Overview). A single-tab node hides the strip.
+const TABS_FOR_KIND: Record<string, ReadonlyArray<NodeTab>> = {
+  agent: ["overview", "model", "skills", "advanced"],
+  role: ["overview", "model", "skills", "advanced"],
+  team: ["overview"],
+  skill: ["overview"],
+  orgDefault: ["overview"],
+};
 
 function TypeBadge({ kind }: { kind: string }) {
   return <span className={`roster-detail__badge roster-detail__badge--${kind}`}>{kind}</span>;
@@ -98,7 +118,13 @@ function DetailShell({
   tabContent?: Partial<Record<NodeTab, ReactNode>>;
   children: ReactNode;
 }) {
+  // The visible tabs are derived from the node kind (ISI-5439): an irrelevant tab is never rendered
+  // nor selectable, so there is no Model tab on a Skill or Team. Agents/Roles get the full strip.
+  const tabs = TABS_FOR_KIND[kind] ?? ["overview"];
   const [tab, setTab] = useState<NodeTab>("overview");
+  // Guard against a stale selection if the active tab isn't offered for this kind (kind changes as
+  // the shell is reused across selections): fall back to Overview, which every kind always has.
+  const active = tabs.includes(tab) ? tab : "overview";
   return (
     <section className="roster-detail">
       <header className="roster-detail__head">
@@ -110,22 +136,24 @@ function DetailShell({
         </div>
         <div className="roster-detail__actions">{actions}</div>
       </header>
-      <div className="roster-detail__tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={`roster-detail__tab${tab === t.key ? " is-active" : ""}`}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {tabs.length > 1 ? (
+        <div className="roster-detail__tabs" role="tablist">
+          {tabs.map((key) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={active === key}
+              className={`roster-detail__tab${active === key ? " is-active" : ""}`}
+              onClick={() => setTab(key)}
+            >
+              {TAB_LABELS[key]}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="roster-detail__body">
-        {tab === "overview" ? children : (tabContent[tab] ?? <TabFallback tab={tab} />)}
+        {active === "overview" ? children : (tabContent[active] ?? <TabFallback tab={active} />)}
       </div>
     </section>
   );
@@ -238,20 +266,112 @@ function SkillOverview({ skill }: { skill: RosterSkill }) {
   );
 }
 
-function TeamOverview({ team }: { team: RosterTeam }) {
+/**
+ * TeamHierarchyDiagram — a lightweight node/edge tree of the team's reporting structure
+ * (ISI-5439(3a)): coordinator root(s) at the top, member agents as edges beneath. No graph library —
+ * a nested list painted with CSS connectors keeps it theme-invariant and accessible (it reads as a
+ * real list to a screen reader). When a team has no flagged coordinator the members hang directly
+ * off the team root so the structure is still legible.
+ */
+function TeamHierarchyDiagram({ team }: { team: RosterTeam }) {
+  const { coordinators, members } = teamHierarchy(team);
+  if (!team.agents.length) {
+    return <p className="muted">No agents on this team yet.</p>;
+  }
+  const DiagramNode = ({ label, role, coord }: { label: string; role?: string; coord?: boolean }) => (
+    <span className={`roster-diagram__node${coord ? " roster-diagram__node--coord" : ""}`}>
+      <span className="roster-diagram__node-name">{label}</span>
+      {role ? <span className="roster-diagram__node-role">·{role}</span> : null}
+      {coord ? <span className="roster-diagram__node-tag">coordinator</span> : null}
+    </span>
+  );
+  // A static diagram, not an interactive tree widget — a labelled group wrapping a semantic nested
+  // list reads correctly to a screen reader without implying selectable tree items.
   return (
-    <div className="card roster-detail__card">
-      <h3 className="roster-detail__card-head">Team</h3>
-      <dl className="roster-detail__dl">
-        <dt>Agents</dt>
-        <dd>{team.agentCount}</dd>
-        <dt>Projects</dt>
-        <dd>{team.projectCount}</dd>
-        <dt>Namespace</dt>
-        <dd>
-          <code>{team.namespace}</code>
-        </dd>
-      </dl>
+    <div className="roster-diagram" role="group" aria-label={`${team.name} reporting structure`}>
+      <div className="roster-diagram__root">
+        <DiagramNode label={team.name} />
+      </div>
+      {coordinators.length ? (
+        <ul className="roster-diagram__level">
+          {coordinators.map((c) => (
+            <li key={c.id} className="roster-diagram__branch">
+              <DiagramNode label={c.name} role={c.role} coord />
+              {members.length ? (
+                <ul className="roster-diagram__level">
+                  {members.map((m) => (
+                    <li key={m.id}>
+                      <DiagramNode label={m.name} role={m.role} />
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        // No coordinator flagged — members hang off the team root directly (flat structure).
+        <ul className="roster-diagram__level">
+          {members.map((m) => (
+            <li key={m.id}>
+              <DiagramNode label={m.name} role={m.role} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function TeamSkillsSummary({ roster, team }: { roster: Roster; team: RosterTeam }) {
+  const rollup = teamSkillSummary(roster, team);
+  if (!rollup.length) {
+    return <p className="muted">No default skills are declared by this team&rsquo;s roles.</p>;
+  }
+  return (
+    <ul className="roster-detail__skill-rollup">
+      {rollup.map((r) => (
+        <li key={r.skill} className="roster-detail__skill-rollup-row">
+          <span className="chip">{r.skill}</span>
+          {r.roles.length ? (
+            <span className="muted roster-detail__skill-rollup-by">
+              via {r.roles.join(", ")}
+            </span>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function TeamOverview({ roster, team }: { roster: Roster; team: RosterTeam }) {
+  return (
+    <div className="roster-detail__grid">
+      <div className="card roster-detail__card">
+        <h3 className="roster-detail__card-head">Team</h3>
+        <dl className="roster-detail__dl">
+          <dt>Agents</dt>
+          <dd>{team.agentCount}</dd>
+          <dt>Projects</dt>
+          <dd>{team.projectCount}</dd>
+          <dt>Namespace</dt>
+          <dd>
+            <code>{team.namespace}</code>
+          </dd>
+        </dl>
+      </div>
+      <div className="card roster-detail__card">
+        <h3 className="roster-detail__card-head">Reporting structure</h3>
+        <TeamHierarchyDiagram team={team} />
+      </div>
+      <div className="card roster-detail__card">
+        <h3 className="roster-detail__card-head">Skills loaded on the team</h3>
+        <TeamSkillsSummary roster={roster} team={team} />
+        <p className="muted roster-detail__note">
+          The union of default skills across this team&rsquo;s roles, attributed to the role that
+          loads each one.
+        </p>
+      </div>
     </div>
   );
 }
@@ -376,7 +496,7 @@ export function NodeDetail({
           kind="team"
           actions={<EditInCompose kind="teams" name={r.node.name} />}
         >
-          <TeamOverview team={r.node} />
+          <TeamOverview roster={roster} team={r.node} />
         </DetailShell>
       );
     case "role": {

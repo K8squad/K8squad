@@ -2,8 +2,11 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildRoster,
+  dedupeByName,
   filterRoster,
   isSelected,
+  teamHierarchy,
+  teamSkillSummary,
   teamUidForNamespace,
   type AgentWire,
   type RoleWire,
@@ -52,6 +55,84 @@ describe("buildRoster", () => {
     expect(r.roles.map((x) => x.name)).toEqual(["Backend Engineer", "Product Manager"]);
     expect(r.skills.map((x) => x.name)).toEqual(["git", "kubectl"]);
     expect(r.orgDefault).toEqual({ kind: "orgDefault", name: "Default model" });
+  });
+});
+
+// ISI-5439(1): the fleet role/skill lists can carry the same library object more than once; the
+// rail renders one row per logical object (keyed by name, its UI identity). buildRoster dedupes.
+describe("dedupeByName / buildRoster role dedupe", () => {
+  it("keeps the first occurrence of each name, preserving order", () => {
+    const dups = [
+      { name: "Backend Engineer", uid: "r1", namespace: "ns-plat", defaultSkills: [] },
+      { name: "Backend Engineer", uid: "r1b", namespace: "ns-growth", defaultSkills: [] },
+      { name: "Product Manager", uid: "r2", namespace: "ns-plat", defaultSkills: [] },
+    ];
+    expect(dedupeByName(dups).map((d) => d.uid)).toEqual(["r1", "r2"]);
+  });
+
+  it("collapses duplicate roles/skills so each name appears exactly once in the roster", () => {
+    const dupRoles: RoleWire[] = [
+      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git"] },
+      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1-again", defaultSkills: ["git"] },
+      { name: "Product Manager", namespace: "ns-plat", uid: "r2", defaultSkills: [] },
+    ];
+    const dupSkills: SkillWire[] = [
+      { name: "git", namespace: "ns-plat", uid: "s1" },
+      { name: "git", namespace: "ns-plat", uid: "s1-again" },
+      { name: "kubectl", namespace: "ns-plat", uid: "s2" },
+    ];
+    const r = buildRoster(teams, agents, dupRoles, dupSkills);
+    expect(r.roles.map((x) => x.name)).toEqual(["Backend Engineer", "Product Manager"]);
+    expect(r.skills.map((x) => x.name)).toEqual(["git", "kubectl"]);
+  });
+});
+
+// ISI-5439(3): the Team detail draws a reporting diagram (coordinator → members) and a skills
+// rollup (union of the team's roles' default skills, attributed to the role that loads each).
+describe("teamHierarchy", () => {
+  const r = buildRoster(teams, agents, roles, skills);
+  const plat = r.teams.find((t) => t.uid === "t-plat")!;
+
+  it("splits a team's agents into coordinator root(s) and members", () => {
+    const h = teamHierarchy(plat);
+    expect(h.coordinators.map((a) => a.id)).toEqual(["a2"]); // agent-9 is coordinator:true
+    expect(h.members.map((a) => a.id)).toEqual(["a1"]);
+  });
+
+  it("yields empty coordinators for a team with none flagged", () => {
+    const flat = buildRoster(
+      teams,
+      [{ id: "x1", name: "solo", namespace: "ns-plat", skillCount: 0 }],
+      [],
+      [],
+    ).teams.find((t) => t.uid === "t-plat")!;
+    const h = teamHierarchy(flat);
+    expect(h.coordinators).toEqual([]);
+    expect(h.members.map((a) => a.id)).toEqual(["x1"]);
+  });
+});
+
+describe("teamSkillSummary", () => {
+  it("rolls up team roles' default skills, deduped and attributed to the role", () => {
+    const rolesWithSkills: RoleWire[] = [
+      { name: "Backend Engineer", namespace: "ns-plat", uid: "r1", defaultSkills: ["git", "kubectl"] },
+      { name: "SRE", namespace: "ns-plat", uid: "r3", defaultSkills: ["kubectl"] },
+      // A role in a DIFFERENT namespace must not leak into this team's rollup.
+      { name: "Growth PM", namespace: "ns-growth", uid: "r4", defaultSkills: ["ga"] },
+    ];
+    const r = buildRoster(teams, agents, rolesWithSkills, skills);
+    const plat = r.teams.find((t) => t.uid === "t-plat")!;
+    const rollup = teamSkillSummary(r, plat);
+    expect(rollup).toEqual([
+      { skill: "git", roles: ["Backend Engineer"] },
+      { skill: "kubectl", roles: ["Backend Engineer", "SRE"] },
+    ]);
+  });
+
+  it("is empty when the team's roles declare no default skills", () => {
+    const r = buildRoster(teams, agents, roles, skills);
+    const growth = r.teams.find((t) => t.uid === "t-growth")!;
+    expect(teamSkillSummary(r, growth)).toEqual([]);
   });
 });
 
