@@ -41,9 +41,12 @@ func (f *fakeRenewer) Renew(_ context.Context, itemID, principal, runID string, 
 	return f.ret
 }
 
-const hbDueQuery = `SELECT work_item_id::text, NULLIF(run_id::text,''), holder_principal, fence_token, reconcile_step
+const hbDueQuery = `SELECT work_item_id::text, NULLIF(run_id::text,''), holder_principal, fence_token, reconcile_step, acquired_at
 		  FROM coord.claim
 		 WHERE holder_principal IS NOT NULL`
+
+// hbCols is the due-query column set (ISI-5438 added acquired_at).
+var hbCols = []string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step", "acquired_at"}
 
 // An in-flight held claim gets its lease renewed with the row's exact
 // (item, principal, run, fence) tuple.
@@ -54,8 +57,8 @@ func TestHeartbeatSweepRenewsInFlight(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	rn := &fakeRenewer{ret: true}
@@ -80,8 +83,8 @@ func TestHeartbeatSweepReleasesTerminalSucceeded(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "succeeded")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "succeeded", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	mock.ExpectBegin()
@@ -117,8 +120,8 @@ func TestHeartbeatSweepReleasesTerminalFailedReturnsLane(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "failed")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "failed", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	mock.ExpectBegin()
@@ -151,8 +154,8 @@ func TestHeartbeatSweepReleasesTerminalCancelledLandsCancelled(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "cancelled")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(3), "cancelled", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	mock.ExpectBegin()
@@ -184,8 +187,8 @@ func TestHeartbeatSweepContainsRenewPanic(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(1), "dispatching")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(1), "dispatching", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	var logs []string
@@ -275,8 +278,8 @@ func TestHeartbeatSweepVerifiesThenRenewsLiveRun(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	rn := &fakeRenewer{ret: true}
@@ -301,8 +304,8 @@ func TestHeartbeatSweepReleasesOrphanClaim(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(9), "dispatching")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(9), "dispatching", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	mock.ExpectBegin()
@@ -340,8 +343,8 @@ func TestHeartbeatSweepVerificationErrorSkipsRenewal(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	rn := &fakeRenewer{ret: true}
@@ -365,8 +368,8 @@ func TestHeartbeatSweepNilRunsBlindRenews(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	rows := sqlmock.NewRows([]string{"work_item_id", "run_id", "holder_principal", "fence_token", "reconcile_step"}).
-		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running")
+	rows := sqlmock.NewRows(hbCols).
+		AddRow("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222", OperatorPrincipal, int64(7), "running", nil)
 	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
 
 	rn := &fakeRenewer{ret: true}
@@ -375,6 +378,241 @@ func TestHeartbeatSweepNilRunsBlindRenews(t *testing.T) {
 
 	if len(rn.calls) != 1 {
 		t.Fatalf("nil verifier must blind-renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// ---- ISI-5438: zombie-run gate (Run CR present but sandbox pod gone → release) ----
+
+const (
+	zItem = "11111111-1111-1111-1111-111111111111"
+	zRun  = "22222222-2222-2222-2222-222222222222"
+)
+
+// fakeLive fakes the runLivenessChecker seam.
+type fakeLive struct {
+	live map[string]bool
+	err  error
+}
+
+func (f *fakeLive) HasLiveSandbox(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.live[runID], nil
+}
+
+// base + helpers: a fixed clock so the stall grace is deterministic.
+var zNow = time.Date(2026, 10, 4, 15, 0, 0, 0, time.UTC)
+
+func zSweeper(rn *fakeRenewer, live *fakeLive) *HeartbeatSweeper {
+	return &HeartbeatSweeper{
+		Claimer: rn,
+		Runs:    &fakeRuns{live: map[string]bool{zRun: true}}, // CR exists
+		Live:    live,
+		Now:     func() time.Time { return zNow },
+	}
+}
+
+// A Run CR that still exists but whose sandbox pod is GONE, held past the stall
+// grace, is NOT renewed: the zombie-release transaction clears custody, forces
+// step=failed, audits claim_released with the zombie verdict, and returns the
+// lane to todo.
+func TestHeartbeatSweepReleasesZombieNoSandbox(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute) // older than the 10m grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(9), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WithArgs(zItem, zRun).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WithArgs(zItem, zRun, OperatorPrincipal, int64(9), "zombie_no_sandbox").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs(zItem, "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}}) // no live pod
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 0 {
+		t.Fatalf("a zombie claim must never be renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A Run with a live sandbox pod is renewed as normal (not a zombie).
+func TestHeartbeatSweepRenewsRunWithLiveSandbox(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{zRun: true}})
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a run with a live pod must be renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A pod-less run still inside the stall grace (just claimed, pod booting) is
+// RENEWED, never reaped — the boot window is protected.
+func TestHeartbeatSweepRenewsPodlessWithinGrace(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-1 * time.Minute) // well inside the 10m grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}}) // no pod yet
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a booting run inside the grace must be renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A PAUSED run with no pod is never a zombie: park() keeps/forgoes its pod by
+// design and the wait is intentional. It is renewed, not reaped.
+func TestHeartbeatSweepNeverReapsPausedRun(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-2 * time.Hour) // long past the grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "paused(rate_limited)", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a paused run must be renewed, never zombie-reaped; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A sandbox-liveness error fails SAFE: renew, never release on a maybe.
+func TestHeartbeatSweepLivenessErrorRenews(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{err: fmt.Errorf("apiserver unavailable")})
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("a liveness error must fall through to renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// A row with no acquired_at anchor is never flagged (stall check fails closed):
+// the pod-less run is renewed, not reaped.
+func TestHeartbeatSweepNoAcquiredAtNeverZombie(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "running", nil) // NULL acquired_at
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("no acquired_at anchor must fail closed to renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// Nil Live keeps the pre-ISI-5438 behavior: a pod-less, long-held in-flight run
+// is still blind-renewed (no zombie gate wired).
+func TestHeartbeatSweepNilLiveNoZombieGate(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-2 * time.Hour)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := &HeartbeatSweeper{DB: db, Claimer: rn,
+		Runs: &fakeRuns{live: map[string]bool{zRun: true}},
+		Now:  func() time.Time { return zNow }} // Live nil
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("nil Live must blind-renew; calls = %v", rn.calls)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
