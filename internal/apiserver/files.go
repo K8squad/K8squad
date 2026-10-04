@@ -221,8 +221,9 @@ func writeRetryableDegraded(w http.ResponseWriter) {
 // ReaderPreWarmer is an optional capability of WorkspaceReader: it starts a background reader-pod
 // launch for a project without blocking (ADR-0025 D1/S2a). *ReaderPodWorkspaceReader implements it.
 // When the WorkspaceReader does not implement this interface, pre-warm requests are silently no-ops.
+// ISI-5431: the request ctx is passed so the launch can capture the authenticated author.
 type ReaderPreWarmer interface {
-	PreWarm(projectID string)
+	PreWarm(ctx context.Context, projectID string)
 }
 
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
@@ -487,7 +488,7 @@ func (s *Server) projectFilesWarm(reader WorkspaceReader) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		projectID := decodePathVar(mux.Vars(r)["projectId"])
 		if pw, ok := reader.(ReaderPreWarmer); ok {
-			pw.PreWarm(projectID)
+			pw.PreWarm(r.Context(), projectID)
 		}
 		writePreparing(w)
 	}
