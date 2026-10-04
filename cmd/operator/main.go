@@ -799,6 +799,11 @@ func main() {
 			// The steady-state backstop (ADR-0020 §2.3): each Tick sweeps
 			// run-owned pods that settled AFTER AdoptOrReap's start pass, or
 			// whose OnDone in-memory Release failed and left the Secret.
+			// ISI-5438: the terminal-run reaper is the teardown reapIfSettled
+			// cannot do — a Cancelled/Failed run never writes an a2a settled_at,
+			// so its sandbox pod leaks and pins the project RWO PVC (the live
+			// 2d5h leak). UID-exact Run-CR read via the uncached API reader.
+			terminalReapOracle := &rundrive.LiveRuns{Reader: mgr.GetAPIReader()}
 			warmController.SetSettledReaper(func(ctx context.Context) {
 				sr, fo := reaperDeps()
 				rep, err := kubepool.SweepSettledRunOwned(ctx, mgr.GetClient(), sr, fo, warmKey)
@@ -807,6 +812,13 @@ func main() {
 				}
 				if rep.Reaped > 0 {
 					ctrl.Log.Info("warm-pool settled-follow reaper backstop reclaimed leaked run-owned sandboxes", "reaped", rep.Reaped)
+				}
+				trep, terr := kubepool.SweepTerminalRunOwned(ctx, mgr.GetClient(), terminalReapOracle)
+				if terr != nil {
+					ctrl.Log.Error(terr, "warm-pool terminal-run reaper backstop had per-pod failures")
+				}
+				if trep.Reaped > 0 {
+					ctrl.Log.Info("warm-pool terminal-run reaper reclaimed leaked sandboxes of terminal/gone runs", "reaped", trep.Reaped)
 				}
 			})
 			// ISI-4291: restart reconciliation BEFORE the first tick —
@@ -835,6 +847,14 @@ func main() {
 				}
 				ctrl.Log.Info("warm-pool restart reconciliation done",
 					"adopted", report.Adopted, "reaped", report.Reaped, "leftRunOwned", report.LeftRunOwned)
+				// ISI-5438: on the fresh leader's first pass, also GC any sandbox
+				// pod whose owning Run already went terminal/gone (leaked across
+				// the restart that killed the in-memory Pool.Release).
+				if trep, terr := kubepool.SweepTerminalRunOwned(ctx, mgr.GetClient(), terminalReapOracle); terr != nil {
+					ctrl.Log.Error(terr, "warm-pool terminal-run reaper start pass had per-pod failures")
+				} else if trep.Reaped > 0 {
+					ctrl.Log.Info("warm-pool terminal-run reaper start pass reclaimed leaked sandboxes", "reaped", trep.Reaped)
+				}
 				return warmController.Run(ctx, warmTick)
 			})); err != nil {
 				ctrl.Log.Error(err, "unable to register warm-pool controller")
@@ -1161,11 +1181,17 @@ func main() {
 		// is gone (UID-exact via the uncached API reader) and releases it as
 		// an orphan instead — a deleted Run can no longer blind-renew a
 		// zombie claim that keeps the workspace permanently busy.
+		liveRuns := &rundrive.LiveRuns{Reader: mgr.GetAPIReader()}
 		if err := mgr.Add(&rundrive.HeartbeatSweeper{
 			DB:      db,
 			Claimer: claimer,
-			Runs:    &rundrive.LiveRuns{Reader: mgr.GetAPIReader()},
-			Log:     func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+			Runs:    liveRuns,
+			// ISI-5438: stop renewing — and release as failed — the lease of a
+			// Run wedged non-terminal with no live sandbox pod past the stall
+			// grace (the 34 pod-less Claiming/Running zombies). Same LiveRuns
+			// reader; the gate is pod-liveness, not just Run-CR existence.
+			Live: liveRuns,
+			Log:  func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)

@@ -106,6 +106,18 @@ type FollowOracle interface {
 	IsFollowing(runID string) bool
 }
 
+// RunPhaseOracle reports whether the Run owning a sandbox pod has reached a
+// terminal phase (Succeeded/Failed/Cancelled) or no longer exists (ISI-5438).
+// A sandbox whose Run is terminal is LEAKED: reapIfSettled misses it because a
+// Cancelled run never writes an a2a settled_at, so the in-memory Pool.Release is
+// the only teardown and it no-ops after an operator restart — the live incident
+// where `sandbox-a16f11a0…` outlived its Cancelled Run for 2d5h and pinned the
+// project RWO PVC. rundrive.LiveRuns satisfies it (UID-exact Run CR read). Kept
+// as a local interface so warmpool stays free of the api/coord imports.
+type RunPhaseOracle interface {
+	TerminalOrGone(ctx context.Context, runID string) (bool, error)
+}
+
 // runIDFromPod recovers the Run id AnnRunID stamped on a run-owned pod at Bind.
 // Empty when absent — a pre-ADR-0020 pod, or a bound pod whose stamp write
 // raced/failed. An empty run id fails the reap decision CLOSED (kept, never
@@ -332,6 +344,60 @@ func SweepSettledRunOwned(ctx context.Context, c client.Client, settled Settleme
 		} else {
 			report.LeftRunOwned++
 		}
+	}
+	return report, errors.Join(errs...)
+}
+
+// SweepTerminalRunOwned garbage-collects sandbox pods whose owning Run has gone
+// terminal or vanished (ISI-5438). It is the teardown the settlement reaper
+// cannot do: a Cancelled/Failed run never writes an a2a settled_at, so
+// reapIfSettled keeps its pod forever, and the in-memory Pool.Release that would
+// have torn it down no-ops after an operator restart — leaving the pod to pin
+// the project's RWO workspace PVC indefinitely (the live 2d5h leak).
+//
+// Selection is by the AnnRunID stamp alone: Boot stamps only the pool-key
+// dimensions on a warm pod, and the Bind-path credential writer stamps AnnRunID
+// the instant a pod becomes run-owned — so a non-empty AnnRunID is exactly the
+// run-owned set, and warm/unbound pods (no stamp) are never touched. For each,
+// the oracle decides terminal-or-gone; only then is the pod reaped (foreground
+// delete, which drops its task-io Secret too). The oracle fails CLOSED — any
+// error leaves the pod and is collected, never reaped on a maybe. Per-pod
+// failures do not abort the pass. Safe to call every Tick alongside
+// SweepSettledRunOwned; a nil oracle makes it inert.
+func SweepTerminalRunOwned(ctx context.Context, c client.Client, oracle RunPhaseOracle) (AdoptReport, error) {
+	if oracle == nil {
+		return AdoptReport{}, nil // reaper not wired
+	}
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.MatchingLabels{SandboxAppLabel: SandboxAppValue}); err != nil {
+		return AdoptReport{}, fmt.Errorf("warmpool.SweepTerminalRunOwned: list sandbox pods: %w", err)
+	}
+
+	var report AdoptReport
+	var errs []error
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if pod.DeletionTimestamp != nil {
+			continue // already terminating
+		}
+		runID := runIDFromPod(pod)
+		if runID == "" {
+			continue // warm/unbound (no AnnRunID) — not run-owned, not our concern
+		}
+		done, err := oracle.TerminalOrGone(ctx, runID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("warmpool.SweepTerminalRunOwned: run phase for %s (pod %s/%s): %w", runID, pod.Namespace, pod.Name, err))
+			continue // fail closed: keep the pod, never reap on a maybe
+		}
+		if !done {
+			report.LeftRunOwned++
+			continue // Run still live — run-drive owns its teardown
+		}
+		if err := reapPod(ctx, c, pod); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		report.Reaped++
 	}
 	return report, errors.Join(errs...)
 }
