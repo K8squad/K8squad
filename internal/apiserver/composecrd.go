@@ -750,6 +750,16 @@ type applyPlan struct {
 	// full-spec-replace), so POST creates and the fixed-identity ModelConfig upsert
 	// are untouched.
 	editFields map[string]json.RawMessage
+	// targetTeamUID is the admin-only act-as-team override (ISI-5419): the `?team=`
+	// selector the roster inline-edit surface already carries on its reads (the
+	// node-derived team), threaded onto the WRITE so a fleet admin's save lands in
+	// the squad whose node they edited — not the admin's own namespace. It is
+	// resolved by Team UID exactly like FleetListReader.detailNamespace
+	// (fleetlist.go), so a rename can never widen scope and a name collision can
+	// never cross tenancy. Honored in apply() ONLY for admins and ONLY in the
+	// team-scoped default branch (never Team — the tenancy root — nor a fixedNamespace
+	// singleton). Empty, or set by a non-admin, ⇒ the caller's own team namespace.
+	targetTeamUID string
 }
 
 // applyOutcome is the result of applying one plan against the cluster. Exactly
@@ -798,7 +808,16 @@ func (s *ComposeService) apply(ctx context.Context, author discussion.AuthorCont
 	case plan.kind == "Team":
 		ns = s.systemNS
 	default:
-		resolved, err := s.teamNamespace(ctx, author.TeamID.String())
+		// Act-as-team (ISI-5419): a fleet admin editing a node in another squad
+		// targets THAT squad's namespace (resolved by the `?team=` UID), not the
+		// admin's own — the write mirrors the read (detailNamespace). The override
+		// is admin-gated and UID-resolved, so a non-admin's `?team=` is ignored
+		// (their own team) and no selector can ever widen scope or cross tenancy.
+		teamUID := author.TeamID.String()
+		if author.IsAdmin && plan.targetTeamUID != "" {
+			teamUID = plan.targetTeamUID
+		}
+		resolved, err := s.teamNamespace(ctx, teamUID)
 		if errors.Is(err, ErrTeamNamespaceUnresolved) {
 			return applyOutcome{status: http.StatusNotFound, msg: "no team namespace for this caller"}
 		}
@@ -1394,6 +1413,11 @@ func (s *ComposeService) applyEdit(w http.ResponseWriter, r *http.Request, creat
 		}
 		plan.editFields = sent
 	}
+	// Act-as-team selector (ISI-5419): the `?team=` the roster surface carries on
+	// its reads, forwarded by the BFF on the write. apply() honors it ONLY for an
+	// admin and resolves it by Team UID, so threading it unconditionally here is
+	// safe — a non-admin's selector is ignored downstream.
+	plan.targetTeamUID = r.URL.Query().Get("team")
 	s.run(w, r, create, plan)
 }
 

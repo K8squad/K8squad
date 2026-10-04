@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   agentModelPut,
   agentSkillsPut,
   partitionAgentSkills,
+  putCompose,
   roleModelPut,
   roleSkillsPut,
   type AgentDetailWire,
@@ -132,5 +133,39 @@ describe("partitionAgentSkills", () => {
     );
     expect(fromRole).toEqual(["tdd"]);
     expect(addedToAgent).toEqual([]);
+  });
+});
+
+// ISI-5419 — the inline-edit WRITE must forward the node-derived `?team=` act-as-team
+// selector (mirroring the read), so a fleet admin's save lands in the squad whose node
+// they edited. The apiserver honors it admin-only; the client's job is only to carry it.
+describe("putCompose ?team= forwarding", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("appends the team selector to the compose URL when a team is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await putCompose("roles", "engineer", { name: "engineer" }, "globex");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toBe("/api/compose/roles/engineer?team=globex");
+  });
+
+  it("percent-encodes the team selector", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await putCompose("agents", "agent-7", { name: "agent-7" }, "team a/b");
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toBe("/api/compose/agents/agent-7?team=team%20a%2Fb");
+  });
+
+  it("omits the query entirely when no team is given (tenant self-scope)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await putCompose("agents", "agent-7", { name: "agent-7" });
+    const url = fetchMock.mock.calls[0][0] as string;
+    expect(url).toBe("/api/compose/agents/agent-7");
   });
 });
