@@ -245,7 +245,10 @@ func (s *RepoAuthTestService) handleRepoAuthTest(w http.ResponseWriter, r *http.
 		// req.TeamID cannot widen a bound caller's scope.
 		team, err = s.resolveFleetTeam(r.Context(), req.TeamID)
 		if err == nil {
-			ns = team.Status.Namespace
+			// HOME ns (Team CR metadata): the probe reads exactly what the
+			// write wrote — SecretWriteService resolves the same way
+			// post-ISI-5415.
+			ns = team.Namespace
 		}
 	}
 	if errors.Is(err, ErrSelectTeam) {
@@ -363,6 +366,12 @@ func (s *RepoAuthTestService) cacheResult(ctx context.Context, team *ksquadv1.Te
 // namespace — one cluster-wide list serves both (the §12.1 resolution
 // secretwrite.go performs, plus the in-memory object the annotation write
 // needs, so the probe never lists twice).
+// resolveTeam resolves the caller's Team UID to the Team and its HOME namespace
+// (the Team CR's metadata namespace — where the credential Secret was written,
+// ISI-5415). Same discipline as secretwrite.teamNamespace: unknown UID or a
+// Team with no resolvable home namespace is ErrTeamNamespaceUnresolved (404),
+// never a shared fallback. Status.Namespace gates "a provisioned squad" only;
+// the read target is the home ns.
 func (s *RepoAuthTestService) resolveTeam(ctx context.Context, teamUID string) (*ksquadv1.Team, string, error) {
 	if teamUID == "" {
 		return nil, "", ErrTeamNamespaceUnresolved
@@ -372,8 +381,13 @@ func (s *RepoAuthTestService) resolveTeam(ctx context.Context, teamUID string) (
 		return nil, "", err
 	}
 	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID && teams.Items[i].Status.Namespace != "" {
-			return &teams.Items[i], teams.Items[i].Status.Namespace, nil
+		if string(teams.Items[i].UID) == teamUID {
+			// A Team CR cannot exist outside its (existing) home namespace, so
+			// an empty metadata namespace is impossible in a real cluster; the
+			// guard keeps a mis-seeded fake/dev host fail-closed.
+			if ns := teams.Items[i].Namespace; ns != "" {
+				return &teams.Items[i], ns, nil
+			}
 		}
 	}
 	return nil, "", ErrTeamNamespaceUnresolved

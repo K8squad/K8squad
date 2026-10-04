@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,10 +27,18 @@ import (
 // ── test harness ────────────────────────────────────────────────────────────
 
 const (
-	teamNS   = "team-acme" // the caller's resolved Team namespace
+	teamNS   = "team-acme"  // the caller's Team HOME namespace (CR metadata)
 	teamUID  = "11111111-1111-1111-1111-111111111111"
-	otherNS  = "team-globex" // a foreign tenant's namespace
+	otherNS  = "team-globex" // a foreign tenant's HOME namespace
 	otherUID = "22222222-2222-2222-2222-222222222222"
+	// execTeamNS / execOtherNS are the Teams' EXECUTION namespaces
+	// (Status.Namespace, where Run CRs live — ISI-4128). Deliberately distinct
+	// from the home namespaces: a compose write that resolved the target from
+	// Status.Namespace landed config CRDs here, forking them from every read
+	// (ISI-5415). The fixture models the split so any such regression fails
+	// every assertion that expects writes in teamNS/otherNS.
+	execTeamNS = "exec-team-acme"
+	execOtherNS = "exec-team-globex"
 )
 
 // newComposeFixture builds a ComposeService over a fake client seeded with two
@@ -43,12 +52,12 @@ func newComposeFixture(t *testing.T, roles map[string]map[string]string, seed ..
 	}
 	objs := []client.Object{
 		&ksquadv1.Team{
-			ObjectMeta: metav1.ObjectMeta{Name: "acme", UID: teamUID},
-			Status:     ksquadv1.TeamStatus{Namespace: teamNS},
+			ObjectMeta: metav1.ObjectMeta{Name: "acme", UID: teamUID, Namespace: teamNS},
+			Status:     ksquadv1.TeamStatus{Namespace: execTeamNS},
 		},
 		&ksquadv1.Team{
-			ObjectMeta: metav1.ObjectMeta{Name: "globex", UID: otherUID},
-			Status:     ksquadv1.TeamStatus{Namespace: otherNS},
+			ObjectMeta: metav1.ObjectMeta{Name: "globex", UID: otherUID, Namespace: otherNS},
+			Status:     ksquadv1.TeamStatus{Namespace: execOtherNS},
 		},
 	}
 	objs = append(objs, seed...)
@@ -447,6 +456,41 @@ func TestComposeAgentContributorAllowed(t *testing.T) {
 	}
 	if got.Spec.Model != "claude-opus-4-8" {
 		t.Fatalf("agent spec not carried: %+v", got.Spec)
+	}
+}
+
+// ── compose writes land in the HOME namespace, never the EXEC ns (ISI-5415) ──
+//
+// The read models (projectresolve.go resolveTeamNamespace, org.go teamIdentity,
+// the ISI-4820 run-intake composition resolution) all resolve a Team's config
+// CRDs from Team.Namespace — the home ns. teamNamespace() here resolves the
+// same way; resolving from Status.Namespace (the exec ns where Run CRs live)
+// forked the data: the upsert Get missed the live home-ns object and minted a
+// duplicate in the exec ns no read ever saw.
+func TestComposeWriteTargetsHomeNotExecNamespace(t *testing.T) {
+	svc, _ := newComposeFixture(t, grant("bob", "widget", auth.ProjectRoleContributor))
+	req := agentRequest{
+		Project: "widget", Name: "backend-dev", Model: "claude-opus-4-8",
+	}
+	req.RuntimeRef = objectRefWire{Name: "claude-code"}
+	req.RoleRef = objectRefWire{Name: "engineer"}
+	req.CredentialSecretRef = secretRefWire{Name: "bob-claude"}
+	w := do(svc.handleAgent(true), http.MethodPost, "/api/agents",
+		caller("bob", teamUID, false), req, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("compose want 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var res composeResult
+	mustJSON(t, w, &res)
+	if res.Namespace != teamNS {
+		t.Fatalf("apply must report the HOME ns %q, got %q", teamNS, res.Namespace)
+	}
+	var got ksquadv1.Agent
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: teamNS, Name: "backend-dev"}, &got); err != nil {
+		t.Fatalf("agent must exist in the home ns %s: %v", teamNS, err)
+	}
+	if err := svc.applier.Get(context.Background(), client.ObjectKey{Namespace: execTeamNS, Name: "backend-dev"}, &got); !apierrors.IsNotFound(err) {
+		t.Fatalf("agent must NOT be written to the exec ns %s (Status.Namespace): %v", execTeamNS, err)
 	}
 }
 

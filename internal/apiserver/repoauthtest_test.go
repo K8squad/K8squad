@@ -92,7 +92,7 @@ func postRepoAuthTest(t *testing.T, h http.Handler, body string, withAuth bool) 
 func repoTestTeamAndSecret(t *testing.T) (*ksquadv1.Team, *corev1.Secret, uuid.UUID) {
 	t.Helper()
 	teamID := uuid.MustParse("11111111-2222-3333-4444-555555555555")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "alpha-repo-pat", Namespace: "ksquad-team-alpha"},
 		Data:       map[string][]byte{"token": []byte(repoPatCanary)},
@@ -131,7 +131,7 @@ func TestRepoAuthTestHappyPath(t *testing.T) {
 	}
 
 	var got ksquadv1.Team
-	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &got); err != nil {
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &got); err != nil {
 		t.Fatalf("team read: %v", err)
 	}
 	if recorded, passed := RepoTestConnectionFlag(&got); !recorded || !passed {
@@ -178,7 +178,7 @@ func TestRepoAuthTestEmptyKeyIsAFailedTest(t *testing.T) {
 	}
 
 	var got ksquadv1.Team
-	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &got); err != nil {
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &got); err != nil {
 		t.Fatalf("team read: %v", err)
 	}
 	if recorded, passed := RepoTestConnectionFlag(&got); !recorded || passed {
@@ -211,7 +211,7 @@ func TestRepoAuthTestProvider401(t *testing.T) {
 	}
 
 	var got ksquadv1.Team
-	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "teams", Name: "alpha"}, &got); err != nil {
+	if err := c.Get(t.Context(), client.ObjectKey{Namespace: "ksquad-team-alpha", Name: "alpha"}, &got); err != nil {
 		t.Fatalf("team read: %v", err)
 	}
 	if recorded, passed := RepoTestConnectionFlag(&got); !recorded || passed {
@@ -271,7 +271,7 @@ func TestRepoAuthTestTeamScope(t *testing.T) {
 	}
 	// Caller's Team resolves to ksquad-team-alpha; the same-named Secret lives
 	// only in ksquad-team-other ⇒ NotFound for this caller.
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	svc, prober, _ := newRepoAuthTester(t, tm, foreign)
 	h := testRepoAuthServer(t, teamID, svc)
 
@@ -303,7 +303,7 @@ func TestRepoAuthTestFleetAdminTeamHint(t *testing.T) {
 	// A SECOND reconciled team makes the fleet-admin path ambiguous without a
 	// hint — the multi-squad install where bmad-demo-project looked fine but
 	// sympozium 404'd (ISI-4917).
-	beta := teamWithStatus("teams", "beta", "88888888-8888-8888-8888-888888888888", "ksquad-team-beta")
+	beta := teamWithStatus("ksquad-team-beta", "beta", "88888888-8888-8888-8888-888888888888", "exec-ksquad-team-beta")
 	svc, prober, _ := newRepoAuthTester(t, tm, sec, beta)
 
 	const adminToken = "admin-token"

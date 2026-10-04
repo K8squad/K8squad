@@ -488,10 +488,20 @@ func writeTierGranted(role string) bool {
 // a caller with no Team scope has nowhere to apply.
 var ErrTeamNamespaceUnresolved = errors.New("apiserver: caller team namespace unresolved")
 
-// teamNamespace resolves the caller's Team UID to its reconciled namespace (the
-// §12.1 tenancy root), the SAME resolution the dashboard read model uses. An
-// unknown UID, or a Team whose namespace the reconciler has not yet stamped, is
-// ErrTeamNamespaceUnresolved (404) — never a fallback to a shared namespace.
+// teamNamespace resolves the caller's Team UID to its HOME namespace (the Team
+// CR's own metadata namespace — where the config CRDs this surface authors
+// live), the SAME resolution the dashboard/settings read models use
+// (resolveTeamNamespace, projectresolve.go) and the run intake's composition
+// resolution honors (ISI-4820: composition CRs are authored in Team.Namespace).
+// An unknown UID is ErrTeamNamespaceUnresolved (404) — never a fallback to a
+// shared namespace.
+//
+// Status.Namespace is deliberately NOT the answer (ISI-5415): it is the EXEC
+// namespace the operator provisions for Run CRs (the split-namespace layout,
+// ISI-4128), not where Projects/Agents/Roles/Skills are read from. Returning it
+// here forked the data — a compose write landed the CR in the exec ns while
+// every read resolved it in the home ns, so the upsert Get missed the live
+// object and minted a duplicate instead of an edit.
 func (s *ComposeService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
 	if teamUID == "" {
 		return "", ErrTeamNamespaceUnresolved
@@ -501,8 +511,14 @@ func (s *ComposeService) teamNamespace(ctx context.Context, teamUID string) (str
 		return "", err
 	}
 	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID && teams.Items[i].Status.Namespace != "" {
-			return teams.Items[i].Status.Namespace, nil
+		if string(teams.Items[i].UID) == teamUID {
+			// A Team CR cannot exist outside its (existing) home namespace, so
+			// an empty metadata namespace is impossible in a real cluster; the
+			// guard keeps a mis-seeded fake/dev host from writing a
+			// namespace-less CR.
+			if ns := teams.Items[i].Namespace; ns != "" {
+				return ns, nil
+			}
 		}
 	}
 	return "", ErrTeamNamespaceUnresolved

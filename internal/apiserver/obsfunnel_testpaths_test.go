@@ -102,7 +102,7 @@ func TestNFR2CredentialTestSecretNeverInTelemetry(t *testing.T) {
 	// Secret was resolved), so if any funnel span attribute or log line echoed
 	// the material this sweep would catch it.
 	teamID := uuid.MustParse("21111111-2222-3333-4444-555555555555")
-	tm := teamWithStatus("teams", "alpha", teamID.String(), "ksquad-team-alpha")
+	tm := teamWithStatus("ksquad-team-alpha", "alpha", teamID.String(), "exec-ksquad-team-alpha")
 	cred := managedCredential("ksquad-team-alpha", "alice-anthropic", "apiKey", secretValueCanary)
 	svc, _, _ := newCredentialTester(t, tm, cred)
 	h := testCredentialTestServer(t, teamID, svc)

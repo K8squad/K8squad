@@ -54,10 +54,11 @@ import (
 //     pointing at /api/credentials/connect (ISI-2899), never a fabricated
 //     write.
 //
-// Team scoping is the §12.1 tenancy root: the Secret lands in the namespace
-// the caller's Team UID reconciles into (the SAME resolution the 8.5 compose
-// write surface uses). A caller whose Team resolves to no namespace gets 404 —
-// existence-hiding, never a fallback to a shared namespace.
+// Team scoping is the §12.1 tenancy root: the Secret lands in the caller's
+// Team HOME namespace — the Team CR's metadata namespace, the SAME resolution
+// the compose write surface (ISI-5415) and every credential read model use.
+// A caller whose Team resolves to no namespace gets 404 — existence-hiding,
+// never a fallback to a shared namespace.
 
 // credentialMaxValueBytes bounds the credential material itself (the route's
 // maxBytesBody bounds the whole body; this is the payload-floor check). A
@@ -277,10 +278,21 @@ func dns1123Name(name string) string {
 	return ""
 }
 
-// teamNamespace resolves the caller's Team UID to its reconciled namespace —
-// the SAME §12.1 resolution the 8.5 compose write surface uses. An unknown
-// UID, or a Team whose namespace the reconciler has not yet stamped, is
+// teamNamespace resolves the caller's Team UID to its HOME namespace (the Team
+// CR's own metadata namespace) — the SAME resolution the credential READ model
+// uses (credentials.go ClientCredentialReader.teamNamespace) and the 8.5
+// compose write surface uses post-ISI-5415. The Secret must land where its
+// readers look: the console credential list, the test-connection probe
+// (credentialtest.go), and the Agent admission webhook GuardAgentSecret, which
+// checks the Secret in the Agent's OWN namespace — home ns since ISI-5415
+// moved compose writes there. An unknown UID is
 // ErrTeamNamespaceUnresolved (404) — never a fallback to a shared namespace.
+//
+// Status.Namespace (the EXEC ns the operator provisions for Run CRs,
+// ISI-4128) is deliberately NOT the answer: writing the Secret there forked it
+// from every read, and once compose moved Agents to the home ns it made
+// GuardAgentSecret reject agent creates whose mandatory Secret sat in the exec
+// ns (ISI-5415 companion fix).
 func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
 	if teamUID == "" {
 		return "", ErrTeamNamespaceUnresolved
@@ -290,8 +302,14 @@ func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) 
 		return "", err
 	}
 	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID && teams.Items[i].Status.Namespace != "" {
-			return teams.Items[i].Status.Namespace, nil
+		if string(teams.Items[i].UID) == teamUID {
+			// A Team CR cannot exist outside its (existing) home namespace,
+			// so an empty metadata namespace is impossible in a real cluster;
+			// the guard keeps a mis-seeded fake/dev host from writing a
+			// namespace-less Secret.
+			if ns := teams.Items[i].Namespace; ns != "" {
+				return ns, nil
+			}
 		}
 	}
 	return "", ErrTeamNamespaceUnresolved
@@ -302,7 +320,9 @@ func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) 
 // unresolvable AND the caller is an admin, so it never widens a bound caller's
 // scope. Selection follows fleetAdminTeam (explicit teamId, or the single team by
 // default, or ErrSelectTeam when the admin must choose); the Secret lands in the
-// target team's reconciled status.namespace, the same tenancy root a bound write uses.
+// target team's HOME namespace (the CR metadata ns), the same tenancy root a
+// bound write uses post-ISI-5415. Status.Namespace stays only as fleetAdminTeam's
+// gating signal for "a real, provisioned squad" — never the write target.
 func (s *SecretWriteService) fleetTeamNamespace(ctx context.Context, requestedTeamID string) (string, error) {
 	var teams ksquadv1.TeamList
 	if err := s.client.List(ctx, &teams); err != nil {
@@ -312,5 +332,10 @@ func (s *SecretWriteService) fleetTeamNamespace(ctx context.Context, requestedTe
 	if err != nil {
 		return "", err
 	}
-	return team.Status.Namespace, nil
+	// HOME ns, same as the bound-caller path above (ISI-5415 companion fix);
+	// the empty guard is the same fail-closed posture.
+	if ns := team.Namespace; ns != "" {
+		return ns, nil
+	}
+	return "", ErrTeamNamespaceUnresolved
 }
