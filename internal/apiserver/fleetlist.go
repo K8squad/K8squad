@@ -415,23 +415,17 @@ func (r *ClientFleetListReader) scope(ctx context.Context, teamUID string, admin
 	return []client.ListOption{client.InNamespace(ns)}, nil
 }
 
-// teamNamespace resolves the caller's Team object UID to its namespace (the §12.1
-// tenancy root). Resolving by UID (not name) means a rename can never widen the
-// scope and a name collision across namespaces can never cross tenancy.
+// teamNamespace resolves the caller's Team object UID to its HOME namespace
+// (the §12.1 tenancy root) through the ONE shared resolver (teamhomens.go,
+// ISI-5422), mapped onto this read model's ErrTeamNotFound vocabulary.
+// Resolving by UID (not name) means a rename can never widen the scope and a
+// name collision across namespaces can never cross tenancy.
 func (r *ClientFleetListReader) teamNamespace(ctx context.Context, teamUID string) (string, error) {
-	if teamUID == "" {
-		return "", ErrTeamNotFound
+	ns, err := resolveTeamHomeNamespace(ctx, r.reader, teamUID)
+	if err != nil {
+		return "", errTeamNotFoundFrom(err)
 	}
-	var teams ksquadv1.TeamList
-	if err := r.reader.List(ctx, &teams); err != nil {
-		return "", err
-	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			return teams.Items[i].Namespace, nil
-		}
-	}
-	return "", ErrTeamNotFound
+	return ns, nil
 }
 
 // nsTeamRef is the owning-Team identity stamped onto a namespaced resource row.

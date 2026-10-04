@@ -278,15 +278,16 @@ func dns1123Name(name string) string {
 	return ""
 }
 
-// teamNamespace resolves the caller's Team UID to its HOME namespace (the Team
-// CR's own metadata namespace) — the SAME resolution the credential READ model
-// uses (credentials.go ClientCredentialReader.teamNamespace) and the 8.5
-// compose write surface uses post-ISI-5415. The Secret must land where its
-// readers look: the console credential list, the test-connection probe
-// (credentialtest.go), and the Agent admission webhook GuardAgentSecret, which
-// checks the Secret in the Agent's OWN namespace — home ns since ISI-5415
-// moved compose writes there. An unknown UID is
-// ErrTeamNamespaceUnresolved (404) — never a fallback to a shared namespace.
+// teamNamespace resolves the caller's Team UID to its HOME namespace through
+// the ONE shared resolver (teamhomens.go, ISI-5422) — the SAME resolution the
+// credential READ model uses (credentials.go
+// ClientCredentialReader.teamNamespace) and the 8.5 compose write surface
+// uses. The Secret must land where its readers look: the console credential
+// list, the test-connection probe (credentialtest.go), and the Agent admission
+// webhook GuardAgentSecret, which checks the Secret in the Agent's OWN
+// namespace — home ns since ISI-5415 moved compose writes there. An unknown
+// UID or empty home ns is ErrTeamNamespaceUnresolved (404) — never a fallback
+// to a shared namespace.
 //
 // Status.Namespace (the EXEC ns the operator provisions for Run CRs,
 // ISI-4128) is deliberately NOT the answer: writing the Secret there forked it
@@ -294,25 +295,7 @@ func dns1123Name(name string) string {
 // GuardAgentSecret reject agent creates whose mandatory Secret sat in the exec
 // ns (ISI-5415 companion fix).
 func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) (string, error) {
-	if teamUID == "" {
-		return "", ErrTeamNamespaceUnresolved
-	}
-	var teams ksquadv1.TeamList
-	if err := s.client.List(ctx, &teams); err != nil {
-		return "", err
-	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			// A Team CR cannot exist outside its (existing) home namespace,
-			// so an empty metadata namespace is impossible in a real cluster;
-			// the guard keeps a mis-seeded fake/dev host from writing a
-			// namespace-less Secret.
-			if ns := teams.Items[i].Namespace; ns != "" {
-				return ns, nil
-			}
-		}
-	}
-	return "", ErrTeamNamespaceUnresolved
+	return resolveTeamHomeNamespace(ctx, s.client, teamUID)
 }
 
 // fleetTeamNamespace resolves the squad namespace a fleet-wide admin's credential
@@ -320,8 +303,8 @@ func (s *SecretWriteService) teamNamespace(ctx context.Context, teamUID string) 
 // unresolvable AND the caller is an admin, so it never widens a bound caller's
 // scope. Selection follows fleetAdminTeam (explicit teamId, or the single team by
 // default, or ErrSelectTeam when the admin must choose); the Secret lands in the
-// target team's HOME namespace (the CR metadata ns), the same tenancy root a
-// bound write uses post-ISI-5415. Status.Namespace stays only as fleetAdminTeam's
+// target team's HOME namespace (teamHomeNamespace, the same fail-closed
+// extraction a bound write uses). Status.Namespace stays only as fleetAdminTeam's
 // gating signal for "a real, provisioned squad" — never the write target.
 func (s *SecretWriteService) fleetTeamNamespace(ctx context.Context, requestedTeamID string) (string, error) {
 	var teams ksquadv1.TeamList
@@ -332,10 +315,5 @@ func (s *SecretWriteService) fleetTeamNamespace(ctx context.Context, requestedTe
 	if err != nil {
 		return "", err
 	}
-	// HOME ns, same as the bound-caller path above (ISI-5415 companion fix);
-	// the empty guard is the same fail-closed posture.
-	if ns := team.Namespace; ns != "" {
-		return ns, nil
-	}
-	return "", ErrTeamNamespaceUnresolved
+	return teamHomeNamespace(team)
 }

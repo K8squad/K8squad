@@ -362,35 +362,26 @@ func (s *RepoAuthTestService) cacheResult(ctx context.Context, team *ksquadv1.Te
 	}
 }
 
-// resolveTeam resolves the caller's Team UID to the Team object AND its squad
-// namespace — one cluster-wide list serves both (the §12.1 resolution
-// secretwrite.go performs, plus the in-memory object the annotation write
-// needs, so the probe never lists twice).
-// resolveTeam resolves the caller's Team UID to the Team and its HOME namespace
-// (the Team CR's metadata namespace — where the credential Secret was written,
-// ISI-5415). Same discipline as secretwrite.teamNamespace: unknown UID or a
-// Team with no resolvable home namespace is ErrTeamNamespaceUnresolved (404),
-// never a shared fallback. Status.Namespace gates "a provisioned squad" only;
-// the read target is the home ns.
+// resolveTeam resolves the caller's Team UID to the Team and its HOME
+// namespace through the ONE shared core (matchTeamByUID + teamHomeNamespace,
+// teamhomens.go, ISI-5422) — one cluster-wide list serves both the §12.1
+// namespace resolution secretwrite.go performs and the in-memory CR the
+// annotation write (cacheResult) needs, so the probe never lists twice. The
+// home ns is where the credential Secret was written (ISI-5415); an unknown
+// UID or a Team with no resolvable home namespace is
+// ErrTeamNamespaceUnresolved (404), never a shared fallback.
+// Status.Namespace gates "a provisioned squad" elsewhere (fleetAdminTeam) —
+// never this read target.
 func (s *RepoAuthTestService) resolveTeam(ctx context.Context, teamUID string) (*ksquadv1.Team, string, error) {
-	if teamUID == "" {
-		return nil, "", ErrTeamNamespaceUnresolved
-	}
-	var teams ksquadv1.TeamList
-	if err := s.client.List(ctx, &teams); err != nil {
+	team, err := matchTeamByUID(ctx, s.client, teamUID)
+	if err != nil {
 		return nil, "", err
 	}
-	for i := range teams.Items {
-		if string(teams.Items[i].UID) == teamUID {
-			// A Team CR cannot exist outside its (existing) home namespace, so
-			// an empty metadata namespace is impossible in a real cluster; the
-			// guard keeps a mis-seeded fake/dev host fail-closed.
-			if ns := teams.Items[i].Namespace; ns != "" {
-				return &teams.Items[i], ns, nil
-			}
-		}
+	ns, err := teamHomeNamespace(team)
+	if err != nil {
+		return nil, "", err
 	}
-	return nil, "", ErrTeamNamespaceUnresolved
+	return team, ns, nil
 }
 
 // resolveFleetTeam picks the Team a fleet-wide admin's probe targets once the
