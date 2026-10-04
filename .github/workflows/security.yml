@@ -215,20 +215,58 @@ jobs:
             attempt=$((attempt + 1))
           done
           cat audit-err.txt
+          # ISI-5426: evaluate per-ADVISORY against an expiry-dated allowlist
+          # (console/.npm-audit-allowlist.json), mirroring .trivyignore. A
+          # high/critical advisory gates UNLESS it carries an unexpired allowlist
+          # entry; an expired entry, a non-allowlisted advisory, or a missing
+          # allowlist file all FAIL loud (teeth: a green run means clean, not 'ran').
           node -e "
+            const fs = require('fs');
             const r = require('./audit-result.json');
             if (!r.metadata || !r.metadata.vulnerabilities) {
               console.error('::error::npm audit endpoint unreachable after 3 attempts (npmjs.org outage, not a finding). Re-run this workflow once the registry recovers.');
               process.exit(1);
             }
-            const v = r.metadata.vulnerabilities;
-            console.log('vulnerabilities:', JSON.stringify(v));
-            const bad = (v.high || 0) + (v.critical || 0);
-            if (bad > 0) {
-              console.error('::error::' + bad + ' high/critical advisories — run npm audit locally for details.');
+            console.log('vulnerabilities (npm metadata):', JSON.stringify(r.metadata.vulnerabilities));
+            let allow = {};
+            try {
+              const a = JSON.parse(fs.readFileSync('./.npm-audit-allowlist.json', 'utf8'));
+              allow = (a && a.advisories) || {};
+            } catch (e) {
+              console.error('::error::npm-audit allowlist console/.npm-audit-allowlist.json missing or unparseable: ' + e.message);
               process.exit(1);
             }
-            console.log('npm audit: no high/critical advisories.');
+            const today = new Date();
+            today.setUTCHours(0, 0, 0, 0);
+            const adv = new Map();
+            for (const name of Object.keys(r.vulnerabilities || {})) {
+              for (const via of (r.vulnerabilities[name].via || [])) {
+                if (typeof via !== 'object' || !via.url) continue;
+                const sev = via.severity || r.vulnerabilities[name].severity;
+                if (sev !== 'high' && sev !== 'critical') continue;
+                const m = String(via.url).match(/GHSA-[0-9a-z-]+/i);
+                const key = m ? m[0] : String(via.url);
+                if (!adv.has(key)) adv.set(key, { sev: sev, title: via.title || via.name || key });
+              }
+            }
+            const gating = [], expired = [], matched = new Set();
+            for (const [key, info] of adv) {
+              const entry = allow[key];
+              if (!entry) { gating.push(key + ' (' + info.sev + ') ' + info.title); continue; }
+              matched.add(key);
+              const exp = new Date(entry.expires + 'T00:00:00Z');
+              if (isNaN(exp.getTime())) { expired.push(key + ' has an invalid expires date: ' + entry.expires); continue; }
+              if (exp < today) { expired.push(key + ' allowlist entry expired on ' + entry.expires + ' — renew or remove it'); continue; }
+              console.log('npm audit: muted ' + key + ' (' + info.sev + ') until ' + entry.expires);
+            }
+            for (const key of Object.keys(allow)) {
+              if (!matched.has(key)) console.log('::warning::npm-audit allowlist entry ' + key + ' matched no current advisory — upstream may be fixed; remove the stale suppression.');
+            }
+            let failed = false;
+            if (expired.length) { for (const e of expired) console.error('::error::' + e); failed = true; }
+            if (gating.length) { console.error('::error::' + gating.length + ' non-allowlisted high/critical advisor(ies): ' + gating.join('; ') + ' — fix, or add an expiry-dated entry to console/.npm-audit-allowlist.json'); failed = true; }
+            if (failed) process.exit(1);
+            console.log('npm audit: no gating high/critical advisories (allowlisted suppressions within expiry).');
           "
 
   trivy-fs:
