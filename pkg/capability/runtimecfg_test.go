@@ -109,6 +109,63 @@ func TestRenderOpenCodeNativeToolScope(t *testing.T) {
 	assert.Equal(t, []string{"create_pull_request", "list_issues"}, ep.Tools.Enable)
 }
 
+// TestRenderOpenCodeConfigBYOModelEntry (ISI-5471): the BYO provider block
+// carries options.apiKey as an env reference (so a key-validating endpoint
+// authenticates — @ai-sdk/openai-compatible under a custom provider id does not
+// fall back to OPENAI_API_KEY) and the model entry advertises tool_call + limit
+// + temperature so the build agent runs the tool-call loop. The literal token
+// still never lands in the file.
+func TestRenderOpenCodeConfigBYOModelEntry(t *testing.T) {
+	raw, err := RenderOpenCodeConfig(nil, "https://api.deepseek.com/v1", "deepseek-chat")
+	require.NoError(t, err)
+
+	var doc struct {
+		Provider map[string]struct {
+			NPM     string `json:"npm"`
+			Options struct {
+				BaseURL string `json:"baseURL"`
+				APIKey  string `json:"apiKey"`
+			} `json:"options"`
+			Models map[string]struct {
+				Name     string `json:"name"`
+				ToolCall bool   `json:"tool_call"`
+				Limit    *struct {
+					Context int `json:"context"`
+					Output  int `json:"output"`
+				} `json:"limit"`
+				Temperature *float64 `json:"temperature"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	byo, ok := doc.Provider[OpenCodeBYOProviderID]
+	require.True(t, ok, "provider.%s present", OpenCodeBYOProviderID)
+	assert.Equal(t, "@ai-sdk/openai-compatible", byo.NPM)
+	assert.Equal(t, "https://api.deepseek.com/v1", byo.Options.BaseURL)
+	assert.Equal(t, "{env:OPENAI_API_KEY}", byo.Options.APIKey)
+
+	entry, ok := byo.Models["deepseek-chat"]
+	require.True(t, ok, "model entry present")
+	assert.True(t, entry.ToolCall, "model marked tool-capable")
+	require.NotNil(t, entry.Limit, "limit emitted")
+	assert.Equal(t, 65536, entry.Limit.Context)
+	assert.Equal(t, 8192, entry.Limit.Output)
+	require.NotNil(t, entry.Temperature, "temperature emitted")
+
+	// The env reference is not a literal credential.
+	assert.NotContains(t, string(raw), "sk-", "no literal token in config")
+}
+
+// TestRenderOpenCodeConfigNoModelOmitsProvider: with no BYO endpoint the
+// provider block (and its apiKey/tool_call keys) is omitted entirely.
+func TestRenderOpenCodeConfigNoModelOmitsProvider(t *testing.T) {
+	raw, err := RenderOpenCode(scopedEndpoints())
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "provider", "no provider block without a BYO endpoint")
+	assert.NotContains(t, string(raw), "tool_call")
+}
+
 func TestRenderOpenClawServersSection(t *testing.T) {
 	raw, err := RenderOpenClaw(scopedEndpoints())
 	require.NoError(t, err)

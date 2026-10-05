@@ -119,16 +119,64 @@ type opencodeToolScope struct {
 
 // opencodeModelEntry declares one servable model under a custom provider
 // entry (opencode resolves `--model <provider>/<id>` against this map).
+//
+// ToolCall advertises the model as tool-capable so opencode wires up the
+// tool-call loop for it (ISI-5471). A BYO OpenAI-compatible endpoint carries
+// no model-capability catalog the way the first-party providers do, so without
+// an explicit tool_call opencode cannot assume the model will honor tool
+// definitions — the build agent would run text-only. Limit carries the model's
+// context/output token ceilings so opencode manages truncation instead of
+// guessing, and Temperature pins sampling (DeepSeek's wire default is 1.0,
+// higher than wanted for agentic coding). These mirror the model entry in
+// Henrik's working opencode.json (approved on ISI-5310).
 type opencodeModelEntry struct {
 	Name string `json:"name"`
+	// ToolCall marks the model tool-capable; omitted (false) for the empty
+	// zero value so a plain entry stays minimal.
+	ToolCall bool `json:"tool_call,omitempty"`
+	// Limit is the model's context/output token budget; nil omits the key.
+	Limit *opencodeModelLimit `json:"limit,omitempty"`
+	// Temperature pins sampling; nil omits the key (so the provider default
+	// stands). A pointer distinguishes "unset" from a deliberate 0.0.
+	Temperature *float64 `json:"temperature,omitempty"`
 }
+
+// opencodeModelLimit is the context/output token budget opencode reads to
+// manage prompt truncation for a model entry.
+type opencodeModelLimit struct {
+	Context int `json:"context"`
+	Output  int `json:"output"`
+}
+
+// BYO model-entry defaults for the opencode provider block (ISI-5471). They
+// match the DeepSeek-chat endpoint the squads use today; a later change can
+// plumb per-model values through a2a.ModelRoute if a second BYO model needs
+// different ceilings.
+const (
+	opencodeBYOContextLimit = 65536
+	opencodeBYOOutputLimit  = 8192
+)
+
+// opencodeBYOTemperature is the sampling temperature pinned on the BYO model
+// entry — a balanced default for agentic coding, below DeepSeek's wire default
+// of 1.0.
+var opencodeBYOTemperature = 0.3
 
 // opencodeBYOProvider is one custom provider entry in opencode.json's
 // "provider" section — the BYO OpenAI-compatible endpoint (story 5.7, ISI-4188
 // gap 2). npm names the AI SDK package opencode loads; options.baseURL points
-// it at the endpoint. The token is NOT rendered here — it rides
-// OPENAI_API_KEY in the process env (modelRouteEnv), preserving the
-// "no literal credential in a persisted config" discipline (ADR-045 D5).
+// it at the endpoint.
+//
+// options.apiKey is rendered as the opencode variable reference
+// "{env:OPENAI_API_KEY}", NOT the literal token (ISI-5471). The literal
+// credential still never lands in the persisted config (ADR-045 D5) — opencode
+// substitutes the env value at config load. This reference is load-bearing:
+// @ai-sdk/openai-compatible under a CUSTOM provider id does not fall back to
+// OPENAI_API_KEY the way the first-party "openai" provider does, so without it
+// opencode sends no Authorization header and a key-validating endpoint rejects
+// the call (deepseek → "Authentication Fails"). A no-auth endpoint (the CI
+// Ollama host) ignores the header, which is why this gap stayed masked until a
+// real provider was wired in (ISI-5471 live run on k8squad-test).
 type opencodeBYOProvider struct {
 	NPM     string                        `json:"npm"`
 	Options opencodeBYOProviderOptions    `json:"options"`
@@ -137,7 +185,14 @@ type opencodeBYOProvider struct {
 
 type opencodeBYOProviderOptions struct {
 	BaseURL string `json:"baseURL"`
+	// APIKey is an opencode "{env:VAR}" reference (never a literal token).
+	APIKey string `json:"apiKey,omitempty"`
 }
+
+// opencodeAPIKeyEnvRef is the opencode variable reference rendered into the BYO
+// provider's options.apiKey — it resolves to the OPENAI_API_KEY the shim
+// injects (pkg/credinject), keeping the literal token out of the config file.
+const opencodeAPIKeyEnvRef = "{env:OPENAI_API_KEY}"
 
 // OpenCodeBYOProviderID is the fixed provider id the shim renders for a BYO
 // model endpoint — referenced as the `--model <id>/<model>` prefix (mirrors
@@ -173,7 +228,13 @@ func RenderOpenCode(endpoints []Endpoint) ([]byte, error) {
 // experiment on k8squad-test produced ProviderModelNotFoundError with env
 // only); the config-file provider is the verified-working shape. This is a
 // safe superset of the env — whichever the pinned CLI honors, the Run reaches
-// the operator's endpoint. The endpoint token never renders here (ADR-045 D5).
+// the operator's endpoint.
+//
+// The model entry carries tool_call + limit + temperature so the build agent is
+// treated as tool-capable with explicit ceilings (ISI-5471), and options.apiKey
+// rides as a "{env:OPENAI_API_KEY}" reference so a key-validating endpoint
+// authenticates. The literal token never renders here (ADR-045 D5) — only the
+// env reference does.
 func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) ([]byte, error) {
 	doc := opencodeConfigDoc{
 		MCP:        map[string]opencodeMCPEntry{},
@@ -183,11 +244,20 @@ func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) (
 		if modelID == "" {
 			return nil, fmt.Errorf("opencode renderer: BYO endpoint %q needs a non-empty model id", modelEndpoint)
 		}
+		temperature := opencodeBYOTemperature
 		doc.Provider = map[string]opencodeBYOProvider{
 			OpenCodeBYOProviderID: {
 				NPM:     "@ai-sdk/openai-compatible",
-				Options: opencodeBYOProviderOptions{BaseURL: modelEndpoint},
-				Models:  map[string]opencodeModelEntry{modelID: {Name: modelID}},
+				Options: opencodeBYOProviderOptions{BaseURL: modelEndpoint, APIKey: opencodeAPIKeyEnvRef},
+				Models: map[string]opencodeModelEntry{modelID: {
+					Name:     modelID,
+					ToolCall: true,
+					Limit: &opencodeModelLimit{
+						Context: opencodeBYOContextLimit,
+						Output:  opencodeBYOOutputLimit,
+					},
+					Temperature: &temperature,
+				}},
 			},
 		}
 	}
