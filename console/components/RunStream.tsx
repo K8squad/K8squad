@@ -7,6 +7,8 @@
 // transition control rides the feed (AC6). Kill Run (FR-F4) is a separate control-plane action
 // owned by story 3.3/8.4, deliberately NOT a stream verb, so it is absent here.
 
+import { useEffect, useRef } from "react";
+
 import { useRunStream, type RunEventKind } from "@/lib/useRunStream";
 
 const KIND_LABEL: Record<RunEventKind, string> = {
@@ -20,8 +22,36 @@ const KIND_LABEL: Record<RunEventKind, string> = {
   THINKING: "thinking",
 };
 
-export function RunStream({ runId }: { runId: string }) {
+export function RunStream({
+  runId,
+  onMilestone,
+}: {
+  runId: string;
+  /**
+   * Fired once per newly-arrived lifecycle milestone (assigned/scheduled/
+   * sandbox_bound/started/ended). RunDetail uses this to refetch its otherwise
+   * fetch-once snapshot so the phase chip, lifecycle rail and token/tool summary
+   * stop going stale — G1 (ISI-5457). Rides THIS component's single EventSource;
+   * no second stream is opened. Deduped on the outbox event id (the SSE `id:`
+   * line) so a reconnect replay re-delivering earlier milestones cannot
+   * re-trigger a refetch — the same guard the ticket surface uses.
+   */
+  onMilestone?: () => void;
+}) {
   const { events, status } = useRunStream(runId);
+
+  const seen = useRef<Set<string>>(new Set());
+  const onMilestoneRef = useRef(onMilestone);
+  onMilestoneRef.current = onMilestone;
+  useEffect(() => {
+    for (const e of events) {
+      if (e.kind !== "LIFECYCLE") continue;
+      const key = e.id || `${e.summary ?? ""}@${e.ts}`;
+      if (seen.current.has(key)) continue;
+      seen.current.add(key);
+      onMilestoneRef.current?.();
+    }
+  }, [events]);
 
   return (
     <section
