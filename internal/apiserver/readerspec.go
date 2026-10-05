@@ -38,9 +38,12 @@ package apiserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -159,6 +162,80 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 		return readerpod.Spec{}, fmt.Errorf("readerspec: coord record for project %s yields invalid spec: %w", name, err)
 	}
 	return spec, nil
+}
+
+// ResolveGeneration computes the opaque coherence token (ADR-0025 D5a) the file-explorer routes
+// stamp onto every SERVED listing/content/stat. It is a stable hash of the two signals that must
+// invalidate client-cached bytes — the browse-target Run UID and the busy-bool — and NOTHING else,
+// so the console can key a durable per-session cache on it (ISI-5481 / child B) and hard-invalidate
+// exactly on a busy↔idle flip or a new succeeded browse-target.
+//
+// It is additive to ResolveReaderSpec and deliberately does NOT reuse it: ResolveReaderSpec returns
+// ErrWorkspaceBusy at the busy gate BEFORE a browse-target is ever resolved, and the route builds the
+// busy / no-browse-target listings itself — so the token has to be derivable WITHOUT a full Spec, on
+// exactly those degraded branches (review C1). ResolveGeneration walks the same tenancy spine + busy
+// check + browse-target lookup but returns only the token:
+//
+//	busy                → genToken("", true)          — one busy-epoch token, distinct from every idle token
+//	idle, no target yet → genToken("", false)         — idle-but-empty; stable until a Run succeeds
+//	idle, has target    → genToken(runUID, false)     — changes when the succeeded browse-target changes
+//
+// ponytail ceiling: this is a PROJECT-COARSE generation (one token per workspace, not per-path), per
+// ADR-0025 D5a — a single flip invalidates all cached paths for the project. Acceptable for v1.
+//
+// Coherence note (review C2): a FAILED/CANCELLED run flips busy→idle WITHOUT advancing the succeeded
+// browse-target, so generation returns to the IDENTICAL idle token even though the live tree may have
+// changed. That edge is NOT guarded by generation — it is covered by the client's mandatory
+// revalidate-on-cache-hit (D5a §3). generation only guards against mixing epochs; never add a
+// "skip revalidate when generation is unchanged" shortcut, or stale bytes survive a failed-run cycle.
+func (r *CoordReaderSpecResolver) ResolveGeneration(ctx context.Context, projectID string) (string, error) {
+	if projectID == "" {
+		return "", ErrProjectNotFound
+	}
+	author, ok := discussion.AuthFromContext(ctx)
+	if !ok {
+		return "", errors.New("readerspec.ResolveGeneration: no author context (fail closed)")
+	}
+	var name, uid string
+	var err error
+	if author.IsAdmin {
+		_, name, uid, err = resolveProjectFleetWideWithUID(ctx, r.reader, projectID)
+	} else {
+		_, name, uid, err = resolveProjectInTeamWithUID(ctx, r.reader, author.TeamID.String(), projectID)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	busy, err := r.projectBusy(ctx, uid, name)
+	if err != nil {
+		return "", err
+	}
+	if busy {
+		// The browse-target is deliberately NOT resolved while busy: the busy epoch is a single token
+		// so any busy response (snapshot or honest-empty) shares one generation, and the flip back to
+		// idle always changes it.
+		return genToken("", true), nil
+	}
+
+	target, err := r.latestBrowseTarget(ctx, uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return genToken("", false), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return genToken(target.runID, false), nil
+}
+
+// genToken is the opaque generation hash over (browse-target Run UID, busy-bool). The value is
+// contractually opaque — clients compare it for equality and never parse it — so a short hex prefix
+// of a SHA-256 is enough: stable for identical inputs, collision-free across run UIDs in practice,
+// and compact on the wire. The NUL separator keeps ("a", false) distinct from ("", ...) style
+// concatenation ambiguities.
+func genToken(runUID string, busy bool) string {
+	sum := sha256.Sum256([]byte(runUID + "\x00" + strconv.FormatBool(busy)))
+	return hex.EncodeToString(sum[:8])
 }
 
 // projectBusy reports whether the Project's workspace PVC is physically held by a live agent pod.

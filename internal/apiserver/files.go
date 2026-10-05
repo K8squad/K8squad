@@ -98,6 +98,17 @@ type DirListing struct {
 	// bytes are actually being served, "no_browse_target" for the honest
 	// no-completed-run empty state. Empty when the listing is live.
 	Reason string `json:"reason,omitempty"`
+	// Generation is the opaque coherence token (ADR-0025 D5a): a stable hash of the
+	// browse-target Run UID + busy-bool, stamped on every SERVED response so the console
+	// can key a durable per-session cache on it and hard-invalidate on a busy↔idle flip
+	// or a new succeeded browse-target (ISI-5481 child B). Opaque to the client. Absent
+	// only when the wired reader predates generation support.
+	Generation string `json:"generation,omitempty"`
+	// SnapshotTakenAt is the RFC3339 instant the served snapshot was captured (ADR-0025
+	// §7.2), set only on the busy last-committed-snapshot path by the snapshot source.
+	// Absent (omitempty) on the live reader and when no snapshot timestamp is available —
+	// the client falls back to fetch time and never fabricates one (project-files.ts).
+	SnapshotTakenAt string `json:"snapshotTakenAt,omitempty"`
 }
 
 // Degraded-state reasons surfaced on DirListing / FileContent / FileStat (ISI-5140).
@@ -125,6 +136,10 @@ type FileContent struct {
 	Degraded bool `json:"degraded,omitempty"`
 	// Reason labels the degraded shape (ISI-5140); see DirListing.Reason.
 	Reason string `json:"reason,omitempty"`
+	// Generation mirrors DirListing.Generation (ADR-0025 D5a coherence token).
+	Generation string `json:"generation,omitempty"`
+	// SnapshotTakenAt mirrors DirListing.SnapshotTakenAt.
+	SnapshotTakenAt string `json:"snapshotTakenAt,omitempty"`
 }
 
 // FileStat is the response body for StatFile (ISI-4649).
@@ -141,6 +156,10 @@ type FileStat struct {
 	Degraded bool `json:"degraded,omitempty"`
 	// Reason labels the degraded shape (ISI-5140); see DirListing.Reason.
 	Reason string `json:"reason,omitempty"`
+	// Generation mirrors DirListing.Generation (ADR-0025 D5a coherence token).
+	Generation string `json:"generation,omitempty"`
+	// SnapshotTakenAt mirrors DirListing.SnapshotTakenAt.
+	SnapshotTakenAt string `json:"snapshotTakenAt,omitempty"`
 }
 
 // GitChange describes the most recent commit that touched a path.
@@ -226,6 +245,32 @@ type ReaderPreWarmer interface {
 	PreWarm(ctx context.Context, projectID string)
 }
 
+// GenerationResolver is an optional capability of WorkspaceReader (ADR-0025 D5a): it returns the
+// project's opaque coherence token for the file-explorer routes to stamp on degraded (busy /
+// no_browse_target) responses, where the live reader never ran and so cannot carry the token itself
+// (review C1). *ReaderPodWorkspaceReader implements it by delegating to its CoordReaderSpecResolver.
+// When the wired reader does not implement it (older wiring / test stub), generation is simply
+// omitted — the client falls back to its uncached cold path, never serving stale bytes.
+type GenerationResolver interface {
+	ResolveGeneration(ctx context.Context, projectID string) (string, error)
+}
+
+// resolveGeneration returns the project's coherence token, or "" when the reader does not support
+// generation or the resolve fails. It is strictly best-effort: an absent token only disables client
+// caching for this one response (the client treats a missing generation as "do not cache"), so a
+// failed resolve must never turn a servable degraded listing into an error.
+func resolveGeneration(ctx context.Context, reader WorkspaceReader, projectID string) string {
+	gr, ok := reader.(GenerationResolver)
+	if !ok {
+		return ""
+	}
+	gen, err := gr.ResolveGeneration(ctx, projectID)
+	if err != nil {
+		return ""
+	}
+	return gen
+}
+
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
 // the workspace jail (equivalent to the pod-internal jail in S4a, AC3). It returns
 // the cleaned relative path, or an error if the path escapes.
@@ -299,11 +344,15 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 					listing.Degraded = true
 					listing.Reason = reasonWorkspaceBusy
 				}
+				// ADR-0025 D5a (review C1): the live reader never produced this listing, so stamp the
+				// coherence token here — a busy-epoch generation the client hard-invalidates against.
+				listing.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Nothing-to-browse-yet is an honest empty state, NOT a snapshot:
 				// degraded=false + reason so S4c renders "no completed run yet"
 				// without the busy banner (ISI-5140).
 				listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
+				listing.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
 				writeRetryableDegraded(w)
@@ -378,9 +427,11 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 					fc.Degraded = true
 					fc.Reason = reasonWorkspaceBusy
 				}
+				fc.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				fc = &FileContent{Data: []byte{}, ContentType: "text", Reason: reasonNoBrowseTarget}
+				fc.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
 				writeRetryableDegraded(w)
@@ -396,22 +447,26 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		resp := struct {
-			Size        int64  `json:"size"`
-			ContentType string `json:"contentType"`
-			Offset      int64  `json:"offset"`
-			Length      int64  `json:"length"`
-			Degraded    bool   `json:"degraded,omitempty"`
-			Reason      string `json:"reason,omitempty"`
+			Size            int64  `json:"size"`
+			ContentType     string `json:"contentType"`
+			Offset          int64  `json:"offset"`
+			Length          int64  `json:"length"`
+			Degraded        bool   `json:"degraded,omitempty"`
+			Reason          string `json:"reason,omitempty"`
+			Generation      string `json:"generation,omitempty"`
+			SnapshotTakenAt string `json:"snapshotTakenAt,omitempty"`
 			// Data is base64-encoded by encoding/json for []byte fields.
 			Data []byte `json:"data"`
 		}{
-			Size:        fc.Size,
-			ContentType: fc.ContentType,
-			Offset:      fc.Offset,
-			Length:      fc.Length,
-			Degraded:    fc.Degraded,
-			Reason:      fc.Reason,
-			Data:        fc.Data,
+			Size:            fc.Size,
+			ContentType:     fc.ContentType,
+			Offset:          fc.Offset,
+			Length:          fc.Length,
+			Degraded:        fc.Degraded,
+			Reason:          fc.Reason,
+			Generation:      fc.Generation,
+			SnapshotTakenAt: fc.SnapshotTakenAt,
+			Data:            fc.Data,
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	}
@@ -464,9 +519,11 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 					st.Degraded = true
 					st.Reason = reasonWorkspaceBusy
 				}
+				st.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				st = &FileStat{Name: path.Base(cleanPath), Type: "file", Reason: reasonNoBrowseTarget}
+				st.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
 				writeRetryableDegraded(w)
@@ -550,6 +607,11 @@ type streamEntry struct {
 	// Preamble fields (first line only, entry fields empty).
 	Degraded bool   `json:"degraded,omitempty"`
 	Reason   string `json:"reason,omitempty"`
+	// Generation + SnapshotTakenAt ride the preamble (ADR-0025 D5a): the stream carries
+	// the coherence token once, up front, so the console keys its cache the same way it
+	// does for the paged /files route.
+	Generation      string `json:"generation,omitempty"`
+	SnapshotTakenAt string `json:"snapshotTakenAt,omitempty"`
 	// Done is true on the final line.
 	Done bool `json:"done,omitempty"`
 }
@@ -650,7 +712,19 @@ func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotRea
 			// Write a preamble line on the first response to convey degraded state before entries.
 			if firstPage {
 				w.WriteHeader(http.StatusOK)
-				preamble := streamEntry{Degraded: degraded, Reason: degradedReason}
+				// Prefer the token the live reader already stamped on the OK-path listing; on the
+				// degraded branches (busy / no_browse_target) the listing was built here, so resolve
+				// it directly (review C1). Computed once, up front — never per page.
+				gen := listing.Generation
+				if gen == "" {
+					gen = resolveGeneration(r.Context(), reader, projectID)
+				}
+				preamble := streamEntry{
+					Degraded:        degraded,
+					Reason:          degradedReason,
+					Generation:      gen,
+					SnapshotTakenAt: listing.SnapshotTakenAt,
+				}
 				if !writeLine(preamble) {
 					return
 				}

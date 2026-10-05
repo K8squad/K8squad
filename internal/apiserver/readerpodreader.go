@@ -75,6 +75,14 @@ type readerSession struct {
 	client     readClient
 	lastAccess time.Time
 
+	// browseRunID is the succeeded browse-target Run UID the reader pod was launched for (spec.RunID).
+	// A live session only exists for a NON-busy project (a busy project fails launch with
+	// ErrWorkspaceBusy), so the coherence token for every read this session serves is exactly
+	// genToken(browseRunID, false) — computed with no extra round-trip and coherent with the served
+	// bytes (ADR-0025 D5a). The degraded branches (busy / no_browse_target) have no session and resolve
+	// the token via the resolver instead (files.go).
+	browseRunID string
+
 	// listCacheMu guards listCache. The cache is per-session so it is naturally invalidated when the
 	// pod is torn down and a fresh session is created (ADR-0025 D5).
 	listCacheMu sync.Mutex
@@ -96,15 +104,15 @@ type ReaderPodWorkspaceReader struct {
 	idle time.Duration
 	now  func() time.Time
 
-	mu         sync.Mutex
-	sessions   map[string]*readerSession
+	mu       sync.Mutex
+	sessions map[string]*readerSession
 	// preparing tracks projects whose reader pod is launching in the background (ADR-0025 D1/S2a).
 	// Entries are added at launch start and removed when the launch completes (success or failure).
-	preparing  map[string]struct{}
+	preparing map[string]struct{}
 	// lastErr stores the terminal error from the most recent failed background launch for a project.
 	// session() surfaces it on the next call and then clears it, so callers polling after a 202
 	// eventually see the real error (ErrWorkspaceBusy, ErrNoBrowseTarget, …) rather than looping.
-	lastErr    map[string]error
+	lastErr map[string]error
 }
 
 // NewReaderPodWorkspaceReader builds the S4b-wire WorkspaceReader. idle is the no-read window after
@@ -163,7 +171,7 @@ func (r *ReaderPodWorkspaceReader) ListDir(ctx context.Context, projectID, dirPa
 	for _, e := range wire.Entries {
 		entries = append(entries, DirEntry{Name: e.Name, Type: e.Type, Size: e.Size})
 	}
-	result := &DirListing{Entries: entries, NextPage: wire.NextPage}
+	result := &DirListing{Entries: entries, NextPage: wire.NextPage, Generation: genToken(sess.browseRunID, false)}
 
 	sess.listCacheMu.Lock()
 	sess.listCache[cacheKey] = &listCacheEntry{result: result, expires: r.now().Add(listCacheTTL)}
@@ -189,6 +197,7 @@ func (r *ReaderPodWorkspaceReader) ReadFile(ctx context.Context, projectID, file
 		ContentType: wire.ContentType,
 		Offset:      wire.Offset,
 		Length:      wire.Length,
+		Generation:  genToken(sess.browseRunID, false),
 	}, nil
 }
 
@@ -205,10 +214,11 @@ func (r *ReaderPodWorkspaceReader) StatFile(ctx context.Context, projectID, file
 		return nil, mapReadErr(err)
 	}
 	st := &FileStat{
-		Name:    wire.Name,
-		Type:    wire.Type,
-		Size:    wire.Size,
-		ModTime: wire.ModTime,
+		Name:       wire.Name,
+		Type:       wire.Type,
+		Size:       wire.Size,
+		ModTime:    wire.ModTime,
+		Generation: genToken(sess.browseRunID, false),
 	}
 	if wire.Git != nil {
 		st.Git = &GitChange{
@@ -219,6 +229,19 @@ func (r *ReaderPodWorkspaceReader) StatFile(ctx context.Context, projectID, file
 		}
 	}
 	return st, nil
+}
+
+// ResolveGeneration satisfies GenerationResolver (ADR-0025 D5a): it delegates to the wrapped
+// ReaderSpecResolver when that resolver computes coherence tokens (CoordReaderSpecResolver does).
+// The files routes call it on the DEGRADED branches (busy / no_browse_target), where no reader
+// session exists to carry the token on the OK path. A resolver that does not implement it (test
+// stub) yields an empty token, which disables client caching for that response — never an error.
+func (r *ReaderPodWorkspaceReader) ResolveGeneration(ctx context.Context, projectID string) (string, error) {
+	gr, ok := r.resolver.(GenerationResolver)
+	if !ok {
+		return "", nil
+	}
+	return gr.ResolveGeneration(ctx, projectID)
 }
 
 // ErrReaderPreparing is returned by session() when the reader pod for a project is launching in the
@@ -337,7 +360,7 @@ func (r *ReaderPodWorkspaceReader) launchBackground(projectID string, author dis
 	r.mu.Lock()
 	delete(r.preparing, projectID)
 	if err == nil {
-		r.sessions[projectID] = &readerSession{handle: handle, client: client, lastAccess: r.now()}
+		r.sessions[projectID] = &readerSession{handle: handle, client: client, lastAccess: r.now(), browseRunID: spec.RunID}
 	} else {
 		// Store terminal error so the next session() call surfaces it instead of looping on
 		// ErrReaderPreparing. The error is consumed once (cleared on read) so the caller after
