@@ -3669,12 +3669,20 @@ a:hover {
   font-size: 0.72rem;
 }
 
-/* Degrade, don't blank: last-good data stays visible but ghosted behind the
- * error banner on a transient failure. */
-.github-status__panels--ghost {
-  opacity: 0.45;
-  filter: grayscale(0.35);
-  pointer-events: none;
+/* Degrade, don't blank: last-good data stays visible but visually stale behind
+ * the error banner on a transient failure.
+ *
+ * ISI-5474: this is a VISUAL-ONLY stale treatment — it must NOT set
+ * `pointer-events: none` and the wrapper must NOT be `aria-hidden`. The Issues
+ * Kanban inside hosts the Epic-3 local assign-&-dispatch control, which runs a
+ * Paperclip-side dispatch against the last-good snapshot and never touches
+ * GitHub, so it stays clickable through a transient sync degrade. A mild dim is
+ * enough to read as "stale" without looking disabled; GitHub-sourced live-write
+ * panels (PR management) carry their own heavier, non-interactive
+ * `.gh-screen--ghost` treatment on top of this. */
+.github-status__panels--stale {
+  opacity: 0.85;
+  filter: grayscale(0.25);
 }
 
 /* ============================================================================
