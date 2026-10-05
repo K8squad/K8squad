@@ -366,6 +366,17 @@ func (r *Reconciler) provision(ctx context.Context, teamObj *api.Team, nsName st
 	if byo := byoModelEgressNetworkPolicy(nsName, teamObj, r.byoModelTargets(ctx, teamObj)); byo != nil {
 		objects = append(objects, byo)
 	}
+	// ISI-5473: egress-proxy companion — a team whose Projects reference an
+	// EgressPolicy with spec.proxy set routes its FQDN model traffic (e.g.
+	// api.deepseek.com behind CloudFront — rotating IPs core NetworkPolicy
+	// cannot match) through a per-squad forward proxy instead of a direct
+	// allowlist. Opens egress to the proxy addr:port ONLY; the proxy — not this
+	// policy — decides the reachable upstreams. No referenced proxy ⇒ no policy.
+	// Best-effort resolution via Project.spec.egressPolicyRef (see
+	// egressProxyTargets), mirroring the byo-model companion above.
+	if proxy := egressProxyNetworkPolicy(nsName, teamObj, r.egressProxyTargets(ctx, teamObj)); proxy != nil {
+		objects = append(objects, proxy)
+	}
 	for _, obj := range objects {
 		if err := ensureOwned(ctx, r.Client, obj, ns.UID); err != nil {
 			return fmt.Errorf("ensure %T %s/%s: %w", obj, obj.GetNamespace(), obj.GetName(), err)
@@ -1027,6 +1038,158 @@ func byoModelEgressNetworkPolicy(ns string, teamObj *api.Team, targets []byoTarg
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: ns,
 			Name:      "ksquad-allow-byo-model",
+			Labels:    managedLabels(teamObj),
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress:      rules,
+		},
+	}
+}
+
+// proxyTarget is one resolved EgressPolicy.spec.proxy destination (ISI-5473):
+// the per-squad forward proxy a Run's HTTPS model traffic routes through when
+// the model endpoint is an FQDN (api.deepseek.com) that core NetworkPolicy
+// cannot match. CIDR is an IP/32 (or the author-supplied CIDR); the materialized
+// rule opens egress to this addr:port ONLY — the proxy, not the policy, decides
+// which upstreams are reachable (EgressProxy doc, arch §9.2/AD-7).
+type proxyTarget struct {
+	CIDR     string
+	Port     intstr.IntOrString
+	Protocol corev1.Protocol
+}
+
+// egressProxyTargets resolves the DISTINCT egress proxies the team's Projects
+// route through (ISI-5473). Each Team.spec.projects ref → Project.spec.egressPolicyRef
+// → EgressPolicy.spec.proxy → a proxy addr:port target. Resolution is best-effort,
+// mirroring byoModelTargets: a Project that is missing, carries no egressPolicyRef,
+// whose EgressPolicy is unresolved, or whose EgressPolicy sets no proxy is LOGGED
+// (v1) and skipped rather than wedging the whole namespace provision — a transient
+// miss self-heals on the next reconcile (the NetworkPolicy Watch requeues). A
+// policy that sets only a direct allowlist (spec.allow, no spec.proxy) contributes
+// no target here: the allow path is the byo-model companion's concern, not this one.
+// Results are sorted so the rendered policy is invariant to project/policy ordering
+// (idempotent).
+func (r *Reconciler) egressProxyTargets(ctx context.Context, teamObj *api.Team) []proxyTarget {
+	log := log.FromContext(ctx)
+	seen := map[string]bool{}
+	var targets []proxyTarget
+	for _, ref := range teamObj.Spec.Projects {
+		projNS := ref.Namespace
+		if projNS == "" {
+			projNS = teamObj.Namespace
+		}
+		var proj api.Project
+		if err := r.Get(ctx, types.NamespacedName{Name: ref.Name, Namespace: projNS}, &proj); err != nil {
+			log.V(1).Info("egress-proxy: skip project (get failed)", "project", ref.Name, "namespace", projNS, "err", err)
+			continue
+		}
+		if proj.Spec.EgressPolicyRef == nil {
+			continue // no egress policy referenced ⇒ nothing to route through a proxy
+		}
+		epRef := proj.Spec.EgressPolicyRef
+		epNS := epRef.Namespace
+		if epNS == "" {
+			epNS = projNS
+		}
+		var ep api.EgressPolicy
+		if err := r.Get(ctx, types.NamespacedName{Name: epRef.Name, Namespace: epNS}, &ep); err != nil {
+			log.V(1).Info("egress-proxy: skip project (egressPolicy unresolved)", "project", ref.Name, "egressPolicy", epRef.Name, "err", err)
+			continue
+		}
+		if ep.Spec.Proxy == nil {
+			continue // direct-allowlist policy, no proxy path (out of ISI-5473 scope)
+		}
+		t := proxyTargetFromSpec(ep.Spec.Proxy)
+		if t == nil {
+			log.V(1).Info("egress-proxy: skip egressPolicy (proxy address not an IP/CIDR; NetworkPolicy cannot match a DNS name)", "egressPolicy", epRef.Name, "address", ep.Spec.Proxy.Address)
+			continue
+		}
+		key := fmt.Sprintf("%s|%s|%s", t.CIDR, t.Port.String(), t.Protocol)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		targets = append(targets, *t)
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].CIDR != targets[j].CIDR {
+			return targets[i].CIDR < targets[j].CIDR
+		}
+		if targets[i].Port.String() != targets[j].Port.String() {
+			return targets[i].Port.String() < targets[j].Port.String()
+		}
+		return targets[i].Protocol < targets[j].Protocol
+	})
+	return targets
+}
+
+// proxyTargetFromSpec normalizes an EgressProxy into a proxyTarget. Address is an
+// IP (→ /32 for IPv4, /128 for IPv6) or a CIDR (used verbatim); an FQDN or
+// otherwise unparseable address returns nil — the EgressProxy API contract
+// requires an IP/CIDR (a Service clusterIP resolved at author time) because
+// core NetworkPolicy is L3/L4 and cannot match a DNS name. Port is the proxy
+// port (number or IANA name); Protocol defaults to TCP.
+func proxyTargetFromSpec(p *api.EgressProxy) *proxyTarget {
+	addr := strings.TrimSpace(p.Address)
+	if addr == "" {
+		return nil
+	}
+	var cidr string
+	if strings.Contains(addr, "/") {
+		if _, _, err := net.ParseCIDR(addr); err != nil {
+			return nil
+		}
+		cidr = addr
+	} else {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return nil
+		}
+		if ip.To4() != nil {
+			cidr = addr + "/32"
+		} else {
+			cidr = addr + "/128"
+		}
+	}
+	port := strings.TrimSpace(p.Port)
+	if port == "" {
+		return nil
+	}
+	proto := corev1.ProtocolTCP
+	if p.Protocol != "" {
+		proto = corev1.Protocol(p.Protocol)
+	}
+	return &proxyTarget{CIDR: cidr, Port: intstr.Parse(port), Protocol: proto}
+}
+
+// egressProxyNetworkPolicy re-opens egress from every sandbox pod to the per-squad
+// egress proxy (ISI-5473). When a Project the team works references an EgressPolicy
+// with spec.proxy set, the squad's FQDN model traffic (e.g. api.deepseek.com behind
+// CloudFront — rotating IPs that core NetworkPolicy cannot match) must instead reach
+// a forward proxy at a fixed addr:port; the proxy follows DNS where the sandbox
+// cannot. Opens egress to the proxy addr:port ONLY — the proxy, not this policy,
+// decides the reachable upstreams (EgressProxy doc, §9.2/AD-7). One rule per distinct
+// proxy; mirrors byoModelEgressNetworkPolicy. Returns nil when no referenced policy
+// sets a proxy.
+func egressProxyNetworkPolicy(ns string, teamObj *api.Team, targets []proxyTarget) *networkingv1.NetworkPolicy {
+	if len(targets) == 0 {
+		return nil
+	}
+	rules := make([]networkingv1.NetworkPolicyEgressRule, 0, len(targets))
+	for _, t := range targets {
+		proto := t.Protocol
+		port := t.Port
+		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
+			To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: t.CIDR}}},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &proto, Port: &port}},
+		})
+	}
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      "ksquad-allow-egress-proxy",
 			Labels:    managedLabels(teamObj),
 		},
 		Spec: networkingv1.NetworkPolicySpec{

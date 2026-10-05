@@ -1126,3 +1126,172 @@ func TestByoEgressTargetFromURL(t *testing.T) {
 		}
 	}
 }
+
+// --- ISI-5473: EgressPolicy.spec.proxy path -------------------------------
+
+func teamWithProjects(name, uid string, projects ...string) *api.Team {
+	tm := newTeam(name, uid)
+	for _, p := range projects {
+		tm.Spec.Projects = append(tm.Spec.Projects, api.ObjectRef{Name: p})
+	}
+	return tm
+}
+
+func projectWithEgress(name, egressPolicyName string) *api.Project {
+	proj := &api.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+	}
+	if egressPolicyName != "" {
+		proj.Spec.EgressPolicyRef = &api.ObjectRef{Name: egressPolicyName}
+	}
+	return proj
+}
+
+func egressProxyPolicy(name, addr, port string) *api.EgressPolicy {
+	return &api.EgressPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: api.EgressPolicySpec{
+			Proxy: &api.EgressProxy{Address: addr, Port: port},
+		},
+	}
+}
+
+// TestEgressProxyPolicy (ISI-5473): a team whose Project references an
+// EgressPolicy with spec.proxy set gains the ksquad-allow-egress-proxy companion
+// — port-scoped TCP egress to the proxy addr:port only — so the squad's FQDN model
+// traffic (api.deepseek.com behind CloudFront) routes through the forward proxy
+// instead of hitting default-deny. Self-heals on delete; absent for a team with no
+// proxied Project.
+func TestEgressProxyPolicy(t *testing.T) {
+	r, c := newReconciler(t,
+		teamWithProjects("alpha", "uid-alpha", "proj-a"),
+		projectWithEgress("proj-a", "corp-egress"),
+		egressProxyPolicy("corp-egress", "10.0.0.5", "3128"),
+	)
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var pol networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-egress-proxy", Namespace: team.Status.Namespace}, &pol); err != nil {
+		t.Fatalf("get allow-egress-proxy NetworkPolicy: %v", err)
+	}
+	if len(pol.Spec.PolicyTypes) != 1 || pol.Spec.PolicyTypes[0] != networkingv1.PolicyTypeEgress {
+		t.Errorf("policyTypes = %v, want [Egress]", pol.Spec.PolicyTypes)
+	}
+	if len(pol.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1", len(pol.Spec.Egress))
+	}
+	rule := pol.Spec.Egress[0]
+	if len(rule.To) != 1 || rule.To[0].IPBlock == nil {
+		t.Fatalf("proxy peer = %+v, want an ipBlock", rule.To)
+	}
+	if got := rule.To[0].IPBlock.CIDR; got != "10.0.0.5/32" {
+		t.Errorf("proxy CIDR = %q, want 10.0.0.5/32", got)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 3128 {
+		t.Errorf("proxy ports = %+v, want TCP 3128 only", rule.Ports)
+	}
+	if rule.Ports[0].Protocol == nil || *rule.Ports[0].Protocol != corev1.ProtocolTCP {
+		t.Errorf("proxy protocol = %v, want TCP", rule.Ports[0].Protocol)
+	}
+
+	// Self-heal: delete the policy; the next reconcile recreates it.
+	if err := c.Delete(context.Background(), &pol); err != nil {
+		t.Fatalf("delete proxy policy: %v", err)
+	}
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile (self-heal): %v", err)
+	}
+	var healed networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-egress-proxy", Namespace: team.Status.Namespace}, &healed); err != nil {
+		t.Fatalf("allow-egress-proxy not self-healed: %v", err)
+	}
+
+	// A team with a Project but no proxied EgressPolicy → no companion.
+	r2, c2 := newReconciler(t,
+		teamWithProjects("beta", "uid-beta", "proj-b"),
+		projectWithEgress("proj-b", ""), // no egressPolicyRef
+	)
+	if err := reconcileTeam(t, r2, "beta"); err != nil {
+		t.Fatalf("reconcile beta: %v", err)
+	}
+	var teamB api.Team
+	_ = c2.Get(context.Background(), types.NamespacedName{Name: "beta", Namespace: "default"}, &teamB)
+	var absent networkingv1.NetworkPolicy
+	if err := c2.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-egress-proxy", Namespace: teamB.Status.Namespace}, &absent); err == nil {
+		t.Error("allow-egress-proxy policy rendered for a team with no proxied Project")
+	}
+}
+
+// TestEgressProxyDedup (ISI-5473): two Projects whose EgressPolicies point at the
+// same proxy addr:port collapse to a single egress rule; a Project whose
+// EgressPolicy is dangling is skipped best-effort rather than wedging the provision.
+func TestEgressProxyDedup(t *testing.T) {
+	r, c := newReconciler(t,
+		teamWithProjects("alpha", "uid-alpha", "proj-a", "proj-b", "proj-ghost"),
+		projectWithEgress("proj-a", "corp-egress-1"),
+		projectWithEgress("proj-b", "corp-egress-2"),
+		projectWithEgress("proj-ghost", "missing-egress"), // dangling → skipped
+		egressProxyPolicy("corp-egress-1", "10.0.0.5", "3128"),
+		egressProxyPolicy("corp-egress-2", "10.0.0.5", "3128"), // same proxy → dedup
+	)
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+	var pol networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-egress-proxy", Namespace: team.Status.Namespace}, &pol); err != nil {
+		t.Fatalf("get allow-egress-proxy NetworkPolicy: %v", err)
+	}
+	if len(pol.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1 (deduped)", len(pol.Spec.Egress))
+	}
+}
+
+// TestProxyTargetFromSpec (ISI-5473): address normalization — IPv4 → /32, IPv6 →
+// /128, an explicit CIDR verbatim, a named port preserved, and an FQDN/empty
+// address → nil (core NetworkPolicy cannot match a DNS name).
+func TestProxyTargetFromSpec(t *testing.T) {
+	cases := []struct {
+		name     string
+		addr     string
+		port     string
+		proto    string
+		wantNil  bool
+		wantCIDR string
+		wantPort string
+	}{
+		{name: "ipv4", addr: "10.0.0.5", port: "3128", wantCIDR: "10.0.0.5/32", wantPort: "3128"},
+		{name: "ipv6", addr: "fd00::5", port: "3128", wantCIDR: "fd00::5/128", wantPort: "3128"},
+		{name: "cidr-verbatim", addr: "10.0.0.0/24", port: "8080", wantCIDR: "10.0.0.0/24", wantPort: "8080"},
+		{name: "named-port", addr: "10.0.0.5", port: "http-alt", wantCIDR: "10.0.0.5/32", wantPort: "http-alt"},
+		{name: "fqdn-rejected", addr: "proxy.corp.example.com", port: "3128", wantNil: true},
+		{name: "empty-addr", addr: "", port: "3128", wantNil: true},
+		{name: "empty-port", addr: "10.0.0.5", port: "", wantNil: true},
+		{name: "bad-cidr", addr: "10.0.0.0/99", port: "3128", wantNil: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := proxyTargetFromSpec(&api.EgressProxy{Address: tc.addr, Port: tc.port, Protocol: tc.proto})
+			if tc.wantNil {
+				if got != nil {
+					t.Errorf("proxyTargetFromSpec(%q) = %+v, want nil", tc.addr, got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("proxyTargetFromSpec(%q) = nil, want CIDR=%q port=%q", tc.addr, tc.wantCIDR, tc.wantPort)
+			}
+			if got.CIDR != tc.wantCIDR || got.Port.String() != tc.wantPort {
+				t.Errorf("proxyTargetFromSpec(%q) = {CIDR:%q Port:%q}, want {CIDR:%q Port:%q}", tc.addr, got.CIDR, got.Port.String(), tc.wantCIDR, tc.wantPort)
+			}
+			if got.Protocol != corev1.ProtocolTCP {
+				t.Errorf("default protocol = %v, want TCP", got.Protocol)
+			}
+		})
+	}
+}
