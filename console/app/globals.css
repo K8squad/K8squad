@@ -3362,6 +3362,14 @@ a:hover {
   border-color: color-mix(in srgb, var(--status-blocked) 55%, transparent);
   background: color-mix(in srgb, var(--status-blocked) 12%, transparent);
 }
+/* ISI-5483: the durable "mirror on disk" chip reads as a secondary freshness
+   signal next to the live chip — same tone, dashed border + transparent fill so
+   it's visually subordinate to the live condition it complements. */
+.github-chip--durable {
+  background: transparent;
+  border-style: dashed;
+  font-weight: 400;
+}
 
 /* Refresh is an understated escape hatch (the AC is auto-refresh). */
 .github-refresh {

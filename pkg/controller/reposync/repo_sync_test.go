@@ -257,6 +257,15 @@ func TestReconcileLevelTriggeredIdempotent(t *testing.T) {
 	if a.LastMirrorAt.IsZero() {
 		t.Fatal("repo anchor LastMirrorAt not stamped")
 	}
+	// ISI-5483: the success anchor also stamps the durable staleness metadata —
+	// RepoHealthHealthy (this pass completed) and the effective poll interval as
+	// the expected refresh cadence (the TTL a reader derives staleness from).
+	if a.SyncHealth != scm.RepoHealthHealthy {
+		t.Fatalf("repo anchor SyncHealth = %q, want %q", a.SyncHealth, scm.RepoHealthHealthy)
+	}
+	if a.TTLSeconds <= 0 {
+		t.Fatalf("repo anchor TTLSeconds = %d, want the effective poll interval (> 0)", a.TTLSeconds)
+	}
 }
 
 // AC3: the requeue cadence tracks the spec values — two Projects with
