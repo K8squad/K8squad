@@ -8,7 +8,7 @@
 // existing globals.css token (run-detail.css). Data still rides the shared
 // EventSource (RunStream) and Kill Run stays a control-plane POST (KillRun).
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ArtifactBrowser } from "@/components/ArtifactBrowser";
 import { KillRun } from "@/components/KillRun";
@@ -452,6 +452,7 @@ export function RunDetail({ runId }: { runId: string }) {
   const [scope, setScope] = useState<RunScope>("this");
   const [view, setView] = useState<RunView>("execution");
 
+  // Initial load (and a hard reload when the runId changes): show the spinner.
   useEffect(() => {
     const ac = new AbortController();
     setState({ kind: "loading" });
@@ -459,6 +460,19 @@ export function RunDetail({ runId }: { runId: string }) {
       if (!ac.signal.aborted && s.kind !== "loading") setState(s);
     });
     return () => ac.abort();
+  }, [runId]);
+
+  // G1 (ISI-5457): the snapshot above is fetched exactly once per runId, so the
+  // phase chip, lifecycle rail and token/tool summary stay stale — a finished run
+  // shows "Running" until a manual reload. Refetch IN PLACE (no spinner flash) on
+  // each lifecycle milestone the live RunStream reports, mirroring the ticket
+  // surface's refetch-on-ended (useTicketRunStream). Only a successful `ready`
+  // result replaces state, so a transient fetch error can't blank a live run.
+  const refreshInPlace = useCallback(() => {
+    const ac = new AbortController();
+    fetchRunDetail(runId, ac.signal).then((s) => {
+      if (!ac.signal.aborted && s.kind === "ready") setState(s);
+    });
   }, [runId]);
 
   const detail: RunDetailResponseWire | null = state.kind === "ready" ? state.detail : null;
@@ -666,7 +680,7 @@ export function RunDetail({ runId }: { runId: string }) {
       </div>
 
       <div className="card">
-        <RunStream runId={runId} />
+        <RunStream runId={runId} onMilestone={refreshInPlace} />
       </div>
     </div>
   );
