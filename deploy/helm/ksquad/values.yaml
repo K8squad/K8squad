@@ -67,6 +67,29 @@ operator:
   sandbox:
     cpuRequest: ""
     memoryRequest: ""
+    # ISI-5477 (ISI-5473 gap #3): per-squad egress forward proxy for the
+    # sandbox agent's EXTERNAL model traffic. Rendered as the NAMESPACED
+    # KSQUAD_SANDBOX_{HTTPS,HTTP,NO}_PROXY env on the operator; the shim reads
+    # them and stamps the conventional HTTPS_PROXY/HTTP_PROXY/NO_PROXY (both
+    # cases) onto the agent child ONLY — covering BOTH the operator-spawned
+    # `shim run` and in-sandbox supervisor topologies without proxying the
+    # operator/supervisor's own in-cluster egress. opencode (bun fetch), codex,
+    # and shell tools honor these natively (verified on opencode v1.18.27), so
+    # no in-process dispatcher is needed. Proxy endpoints are NOT secrets.
+    # Empty httpsProxy/httpProxy = no proxy routing (direct egress).
+    proxy:
+      # The forward proxy the per-squad egress NetworkPolicy opens to (PR #780),
+      # e.g. "http://ksquad-egress.k8squad-system.svc:8888".
+      httpsProxy: ""
+      httpProxy: ""
+      # REQUIRED whenever httpsProxy/httpProxy is set (the chart fails the
+      # render otherwise): a comma-separated NO_PROXY that keeps in-cluster and
+      # LAN traffic DIRECT so ONLY the external model FQDN egresses via the
+      # proxy. Must cover the ksquad-system services, cluster DNS, the OTLP
+      # gateway, localhost, and every LAN BYO endpoint (e.g. the shared Ollama
+      # host 10.0.0.185). Example:
+      #   "localhost,127.0.0.1,.svc,.svc.cluster.local,.cluster.local,10.0.0.185"
+      noProxy: ""
   # Warm-pool capacity governance (ISI-4315). A pinned warm target
   # (KSQUAD_WARM_POOL_TARGET=5 × 500m requests ≈ 62% of a 2×4-core worker
   # pair) saturated k8squad-test at ~97% CPU requests and starved project

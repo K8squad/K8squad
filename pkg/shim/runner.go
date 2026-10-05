@@ -280,6 +280,23 @@ func (r osRunner) Run(ctx context.Context, spec runtimes.ExecSpec, emit func(Pro
 	// Start from the ambient environment (the reconciler-injected secret env,
 	// PATH, etc.) and layer the runtime's mapped env on top.
 	cmd.Env = append(os.Environ(), spec.Env...)
+	// ISI-5477: route the agent child's EXTERNAL model traffic through the
+	// per-squad egress forward proxy (ISI-5473 gap #3; operator PR #780 opens
+	// egress to it). This is the universal choke point: the SAME `shim run`/
+	// `shim supervisor` process launches the runtime in BOTH topologies
+	// (operator-spawned v1 §10.1 and in-sandbox supervisor), so injecting here
+	// covers both without each runtime adapter re-implementing it. We read a
+	// NAMESPACED source (KSQUAD_SANDBOX_{HTTPS,HTTP,NO}_PROXY) from the shim's
+	// OWN env and stamp the CONVENTIONAL HTTPS_PROXY/HTTP_PROXY/NO_PROXY (both
+	// cases) onto the child ONLY — never onto the shim/operator itself, so the
+	// operator's kube/DB/NATS clients (topology 1 runs the agent inside the
+	// operator pod) stay direct. Empirically verified on opencode v1.18.27
+	// (bun-compiled): the @ai-sdk/openai-compatible model POST tunnels through
+	// the proxy when HTTPS_PROXY is set, and a NO_PROXY host goes direct — bun's
+	// fetch honors these natively, so no in-process undici ProxyAgent is needed.
+	// Proxy vars are NOT secrets (ADR-0007 minimal-env invariant holds). Child
+	// vars win over any inherited duplicate (exec: last assignment wins).
+	cmd.Env = append(cmd.Env, agentProxyEnv(os.Getenv)...)
 	// ISI-4188 gap 5: an adapter-set Stdin is the prompt channel for CLIs that
 	// read their message from stdin (opencode `run`). The reader is handed to
 	// the process before Start; exec closes it when the buffer drains.
@@ -552,4 +569,42 @@ func materializeWorkDirFiles(workDir string, files []runtimes.WorkDirFile) error
 		}
 	}
 	return nil
+}
+
+// agentProxyEnv renders the agent child's forward-proxy env (ISI-5477) as
+// KEY=VALUE strings for exec. It reads the NAMESPACED operator/shim config
+// KSQUAD_SANDBOX_{HTTPS,HTTP,NO}_PROXY (stamped on the shim's own pod — the
+// sandbox pod in the in-sandbox topology, the operator pod in the
+// operator-spawned topology) and returns the CONVENTIONAL HTTPS_PROXY/
+// HTTP_PROXY/NO_PROXY under BOTH the upper- and lower-case names so every
+// in-child client picks it up: bun's fetch (opencode's @ai-sdk/openai-
+// compatible model calls), the codex rust runtime, and shell tools
+// (curl/git) all read one case or the other. The namespaced indirection is
+// deliberate — the conventional names are never set on the shim/operator
+// process itself, so only the agent child is proxied and the operator's own
+// kube/DB/NATS egress stays direct. A blank/unset source var contributes
+// nothing; all three unset yields nil => the pre-ISI-5477 direct-egress
+// posture. NO_PROXY MUST carry in-cluster targets (apiserver/shim/memory in
+// ksquad-system, OTLP gateway, cluster DNS) AND any LAN BYO endpoint (e.g.
+// Ollama 10.0.0.185) so ONLY the external model FQDN egresses via the proxy;
+// that contract is owned by the operator config (Helm) that sets the source.
+func agentProxyEnv(getenv func(string) string) []string {
+	var env []string
+	for _, m := range []struct {
+		src   string
+		names []string
+	}{
+		{"KSQUAD_SANDBOX_HTTPS_PROXY", []string{"HTTPS_PROXY", "https_proxy"}},
+		{"KSQUAD_SANDBOX_HTTP_PROXY", []string{"HTTP_PROXY", "http_proxy"}},
+		{"KSQUAD_SANDBOX_NO_PROXY", []string{"NO_PROXY", "no_proxy"}},
+	} {
+		v := strings.TrimSpace(getenv(m.src))
+		if v == "" {
+			continue
+		}
+		for _, name := range m.names {
+			env = append(env, name+"="+v)
+		}
+	}
+	return env
 }
