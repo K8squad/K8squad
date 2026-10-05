@@ -600,3 +600,134 @@ func TestCoordReaderSpecResolver_BusyQueryHonoursLeaseExpiry(t *testing.T) {
 		t.Errorf("sql: %v", err)
 	}
 }
+
+// TestCoordReaderSpecResolver_Generation pins the ADR-0025 D5a coherence contract for the
+// generation token (ISI-5484 acceptance). generation MUST:
+//
+//	(a) be stable across repeated resolves of an unchanged idle project,
+//	(b) change on a busy↔idle flip,
+//	(c) change when the succeeded browse-target Run UID changes, AND
+//	(d) return to the IDENTICAL idle token after a FAILED/CANCELLED run flips busy→idle without
+//	    advancing the succeeded browse-target (review C2) — which documents that coherence across
+//	    that edge rests on the client's mandatory revalidate-on-hit, NOT on generation, and guards
+//	    against a regressive "force-invalidate on every busy→idle" that would break (a).
+func TestCoordReaderSpecResolver_Generation(t *testing.T) {
+	ctx := discussion.WithAuth(context.Background(), readerspecAuth())
+	const (
+		runA = "33333333-3333-3333-3333-333333333333"
+		runB = "44444444-4444-4444-4444-444444444444"
+	)
+
+	// idleGen resolves generation for an idle project whose latest succeeded browse-target is runID.
+	idleGen := func(t *testing.T, runID string) string {
+		t.Helper()
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("sqlmock: %v", err)
+		}
+		defer db.Close()
+		// No claiming teams ⇒ not busy ⇒ the browse-target query runs.
+		mock.ExpectQuery("FROM coord.claim").
+			WithArgs(rsProjUID).
+			WillReturnRows(claimTeamRows())
+		mock.ExpectQuery(regexp.QuoteMeta("al.event_type = 'run_terminal'")).
+			WithArgs(rsProjUID).
+			WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(runID, rsCommitSHA, rsTeamUID))
+		fakeReader := readerspecReader(t, "squad-sandbox").Build()
+		r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+		if err != nil {
+			t.Fatalf("construct: %v", err)
+		}
+		gen, err := r.ResolveGeneration(ctx, "demo")
+		if err != nil {
+			t.Fatalf("resolve generation (idle %s): %v", runID, err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("sql: %v", err)
+		}
+		return gen
+	}
+
+	// busyGen resolves generation while a live pod physically holds the RWO PVC (busy epoch). The
+	// browse-target query MUST NOT run — the busy token is returned at the busy gate.
+	busyGen := func(t *testing.T) string {
+		t.Helper()
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("sqlmock: %v", err)
+		}
+		defer db.Close()
+		mock.ExpectQuery("FROM coord.claim").
+			WithArgs(rsProjUID).
+			WillReturnRows(claimTeamRows(rsTeamUID))
+		fakeReader := readerspecReader(t, "squad-sandbox").
+			WithObjects(holderPod("sandbox-live", workspace.ProjectPVCName("demo"), false, corev1.PodRunning)).
+			Build()
+		r, err := NewCoordReaderSpecResolver(db, fakeReader, fakeReader)
+		if err != nil {
+			t.Fatalf("construct: %v", err)
+		}
+		gen, err := r.ResolveGeneration(ctx, "demo")
+		if err != nil {
+			t.Fatalf("resolve generation (busy): %v", err)
+		}
+		// ExpectationsWereMet also asserts the browse-target query was NOT issued on the busy path.
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Errorf("sql: %v", err)
+		}
+		return gen
+	}
+
+	// (a) stable across repeated idle resolves of an unchanged project.
+	first := idleGen(t, runA)
+	if first == "" {
+		t.Fatal("idle generation must be non-empty")
+	}
+	if again := idleGen(t, runA); again != first {
+		t.Errorf("generation not stable across identical idle resolves: %q vs %q", first, again)
+	}
+
+	// (b) changes on an idle→busy flip.
+	busy := busyGen(t)
+	if busy == "" {
+		t.Fatal("busy generation must be non-empty")
+	}
+	if busy == first {
+		t.Errorf("generation must change on an idle→busy flip, got identical token %q", busy)
+	}
+
+	// (c) changes when the succeeded browse-target Run UID changes.
+	if genB := idleGen(t, runB); genB == first {
+		t.Errorf("generation must change when the browse-target Run UID changes (%s→%s), got identical token %q", runA, runB, genB)
+	}
+
+	// (d) C2: a failed run flips busy→idle without advancing the succeeded browse-target, so the
+	// idle token returns to its ORIGINAL value — the same project, same latest succeeded run.
+	if afterFailed := idleGen(t, runA); afterFailed != first {
+		t.Errorf("after a failed-run busy→idle cycle (same succeeded target), generation must return to the original idle token: got %q, want %q", afterFailed, first)
+	}
+}
+
+// TestGenToken_OpaqueAndDistinct pins the token primitive directly: deterministic for identical
+// inputs, and distinct across the three coherence-relevant states (busy, idle-empty, idle-with-target).
+func TestGenToken_OpaqueAndDistinct(t *testing.T) {
+	idleA := genToken("run-a", false)
+	idleB := genToken("run-b", false)
+	idleEmpty := genToken("", false)
+	busy := genToken("", true)
+
+	if idleA != genToken("run-a", false) {
+		t.Error("genToken must be deterministic for identical inputs")
+	}
+	distinct := map[string]string{"idleA": idleA, "idleB": idleB, "idleEmpty": idleEmpty, "busy": busy}
+	seen := map[string]string{}
+	for name, tok := range distinct {
+		if tok == "" {
+			t.Errorf("%s token is empty", name)
+		}
+		if other, dup := seen[tok]; dup {
+			t.Errorf("token collision: %s and %s both hash to %q", name, other, tok)
+		}
+		seen[tok] = name
+	}
+}
