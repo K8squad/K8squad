@@ -20,6 +20,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -36,6 +37,33 @@ const (
 	// TrustUntrustedExternal is the only trust level the inbound mirror
 	// writes. Mirror rows are never trusted control input.
 	TrustUntrustedExternal = "untrusted-external"
+)
+
+// Durable mirror health classes stamped on the scm.repo anchor
+// (db/migrations/0030_scm_repo_staleness.sql CHECK). The success anchor writes
+// RepoHealthHealthy today — UpsertRepo runs only after a completed pass; the
+// remaining values are reserved for a later failure-path / bridge-import stamp
+// and the honest pre-sync default, so a reader must treat the set as open.
+// Staleness ('stale') is DERIVED by a reader comparing the anchor's age against
+// its TTL, not stamped by the success path.
+const (
+	// RepoHealthHealthy marks a repo whose last mirror pass completed. The
+	// reposync success anchor stamps this; a reader downgrades it to STALE
+	// when the anchor's age exceeds its TTL.
+	RepoHealthHealthy = "healthy"
+	// RepoHealthDegraded is reserved for a partial pass (e.g. mirror applied
+	// but a downstream relay failed) — not written by the success anchor yet.
+	RepoHealthDegraded = "degraded"
+	// RepoHealthStale is the DERIVED class a reader surfaces when a healthy
+	// anchor's age exceeds its TTL. Reserved as a stored value too for a
+	// future reconciler that stamps staleness durably.
+	RepoHealthStale = "stale"
+	// RepoHealthError is reserved for a failure-path stamp (provider/mirror
+	// write error) — not written by the success anchor yet.
+	RepoHealthError = "error"
+	// RepoHealthUnknown is the honest pre-sync default: a scm.repo row that
+	// predates the staleness columns or has never completed a pass.
+	RepoHealthUnknown = "unknown"
 )
 
 // DefaultBotActor is the default echo-suppression identity: records authored
@@ -125,8 +153,28 @@ type MirrorStore interface {
 	// UpsertRepo anchors the (Project, upstream repository) pair in
 	// scm.repo after a completed mirror pass (db/migrations/0008: "the
 	// reconciler upserts it as the anchor for mirror liveness") — one row
-	// per mirrored repo with the pass's freshness observation.
-	UpsertRepo(ctx context.Context, projectNamespace, projectName, provider, repoURL string, mirroredAt time.Time) error
+	// per mirrored repo with the pass's freshness observation. health is the
+	// durable sync-health class stamped on the anchor (RepoHealth*; the
+	// success path stamps RepoHealthHealthy) and ttlSeconds is the expected
+	// refresh cadence a reader uses to DERIVE staleness from the anchor's age
+	// (db/migrations/0030). ttlSeconds <= 0 means "no cadence" — never stale.
+	UpsertRepo(ctx context.Context, projectNamespace, projectName, provider, repoURL string, mirroredAt time.Time, health string, ttlSeconds int32) error
+}
+
+// RepoHealthReader is the durable read side of the scm.repo anchor (ISI-5483):
+// it returns the last-known freshness + health for one Project's mirrored repo
+// straight from the DURABLE row the reposync success anchor stamps — no GitHub
+// call, no credential, and crucially NO dependency on the live Project CR
+// status. It is a separate seam from MirrorReader for the same
+// one-writer/many-readers reason the mirror splits MirrorStore from
+// MirrorReader: the GitHub-status tab reads it to render "synced N ago / health"
+// uniformly even when the operator is down or the CR has aged out of the cache.
+type RepoHealthReader interface {
+	// RepoAnchor returns the most-recently-synced scm.repo anchor for the
+	// Project (found=false when the Project has never anchored a repo). A
+	// Project links one repo today (Project.Spec.Repo.URL); the newest anchor
+	// by last_mirror_update is returned so a repo URL change reads the live one.
+	RepoAnchor(ctx context.Context, projectNamespace, projectName string) (RepoAnchor, bool, error)
 }
 
 // MirrorReader is the read side of the mirror (ISI-3956 S5b): a filtered
@@ -217,6 +265,16 @@ type RepoAnchor struct {
 	Provider     string
 	URL          string
 	LastMirrorAt time.Time
+	// SyncHealth is the durable last-known health class (RepoHealth*): the
+	// value the reconciler stamped on the last completed pass (RepoHealthHealthy
+	// today), or RepoHealthUnknown for a row that has never completed one. A
+	// reader DERIVES RepoHealthStale from LastMirrorAt + TTLSeconds; it is not
+	// stamped by the success path.
+	SyncHealth string
+	// TTLSeconds is the expected refresh cadence in seconds (the Project's
+	// effective poll interval). A reader marks the anchor stale when its age
+	// exceeds this TTL; 0 means "no cadence" (never stale).
+	TTLSeconds int32
 }
 
 // NewInMemoryMirrorStore returns an empty in-memory mirror.
@@ -255,15 +313,45 @@ func (s *InMemoryMirrorStore) ApplySnapshot(_ context.Context, ns, name string, 
 }
 
 // UpsertRepo records the repo anchor in memory — idempotent keyed by
-// (namespace, name, url), same convergence shape as the SQL store.
-func (s *InMemoryMirrorStore) UpsertRepo(_ context.Context, ns, name, provider, repoURL string, mirroredAt time.Time) error {
+// (namespace, name, url), same convergence shape as the SQL store. health and
+// ttlSeconds are the durable staleness metadata (ISI-5483); health defaults to
+// RepoHealthUnknown when the caller leaves it empty, mirroring the schema
+// default.
+func (s *InMemoryMirrorStore) UpsertRepo(_ context.Context, ns, name, provider, repoURL string, mirroredAt time.Time, health string, ttlSeconds int32) error {
+	if health == "" {
+		health = RepoHealthUnknown
+	}
+	if ttlSeconds < 0 {
+		ttlSeconds = 0
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := fmt.Sprintf("%s/%s|%s", ns, name, repoURL)
 	s.repos[key] = RepoAnchor{
-		Namespace: ns, Name: name, Provider: provider, URL: repoURL, LastMirrorAt: mirroredAt,
+		Namespace: ns, Name: name, Provider: provider, URL: repoURL,
+		LastMirrorAt: mirroredAt, SyncHealth: health, TTLSeconds: ttlSeconds,
 	}
 	return nil
+}
+
+// RepoAnchor returns the newest-synced in-memory anchor for the Project (found
+// false when none) — the test double for the RepoHealthReader seam, same
+// contract as the SQL reader.
+func (s *InMemoryMirrorStore) RepoAnchor(_ context.Context, ns, name string) (RepoAnchor, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var best RepoAnchor
+	found := false
+	for _, a := range s.repos {
+		if a.Namespace != ns || a.Name != name {
+			continue
+		}
+		if !found || a.LastMirrorAt.After(best.LastMirrorAt) {
+			best = a
+			found = true
+		}
+	}
+	return best, found, nil
 }
 
 // RepoAnchors returns a deterministic (sorted) copy of the anchored repos —
@@ -452,24 +540,79 @@ func (s *SQLMirrorStore) ApplySnapshot(ctx context.Context, ns, name string, row
 // (project_name, project_namespace, url); a re-anchored repo refreshes the
 // provider and the pass's freshness observation instead of duplicating.
 const upsertRepoSQL = `
-INSERT INTO scm.repo (project_namespace, project_name, url, provider, mirror_enabled, last_mirror_update)
-VALUES ($1, $2, $3, $4, true, $5)
+INSERT INTO scm.repo (project_namespace, project_name, url, provider, mirror_enabled, last_mirror_update, sync_health, ttl_seconds)
+VALUES ($1, $2, $3, $4, true, $5, $6, $7)
 ON CONFLICT (project_name, project_namespace, url) DO UPDATE SET
     provider          = EXCLUDED.provider,
     mirror_enabled    = true,
     last_mirror_update = EXCLUDED.last_mirror_update,
+    sync_health       = EXCLUDED.sync_health,
+    ttl_seconds       = EXCLUDED.ttl_seconds,
     updated_at        = now()`
 
 // UpsertRepo implements the MirrorStore repo-anchor seam over the shared
 // coordination Postgres. It is a single-row statement outside the snapshot
 // transaction on purpose: the anchor marks THAT a pass completed, so it must
 // not roll back with a later chunk failure, and a crash between snapshot and
-// anchor simply re-anchors on the next level-triggered pass.
-func (s *SQLMirrorStore) UpsertRepo(ctx context.Context, ns, name, provider, repoURL string, mirroredAt time.Time) error {
-	if _, err := s.db.ExecContext(ctx, upsertRepoSQL, ns, name, repoURL, provider, mirroredAt); err != nil {
+// anchor simply re-anchors on the next level-triggered pass. health/ttlSeconds
+// are the durable staleness metadata (ISI-5483); an empty health defaults to
+// RepoHealthUnknown and a negative TTL is clamped to 0, so the row always
+// satisfies the 0030 CHECK constraints.
+func (s *SQLMirrorStore) UpsertRepo(ctx context.Context, ns, name, provider, repoURL string, mirroredAt time.Time, health string, ttlSeconds int32) error {
+	if health == "" {
+		health = RepoHealthUnknown
+	}
+	if ttlSeconds < 0 {
+		ttlSeconds = 0
+	}
+	if _, err := s.db.ExecContext(ctx, upsertRepoSQL, ns, name, repoURL, provider, mirroredAt, health, ttlSeconds); err != nil {
 		return fmt.Errorf("upsert scm.repo anchor %s/%s %s: %w", ns, name, repoURL, err)
 	}
 	return nil
+}
+
+// repoAnchorSQL reads the newest-synced scm.repo anchor for one Project
+// (ISI-5483 durable staleness read). Ordered by last_mirror_update DESC so a
+// repo-URL change surfaces the live anchor; NULLS LAST keeps a never-synced row
+// behind any synced one. COALESCE guards a NULL last_mirror_update (anchored but
+// never stamped a freshness) into the zero time the reader treats as "unknown".
+const repoAnchorSQL = `
+SELECT url, provider, COALESCE(last_mirror_update, 'epoch'::timestamptz), sync_health, ttl_seconds
+  FROM scm.repo
+ WHERE project_namespace = $1 AND project_name = $2
+ ORDER BY last_mirror_update DESC NULLS LAST
+ LIMIT 1`
+
+// RepoAnchor implements RepoHealthReader over scm.repo. Pure read — no GitHub
+// call, no credential, no CR dependency. found is false when the Project has
+// never anchored a repo (sql.ErrNoRows), so the caller surfaces an honest "no
+// durable freshness" rather than a fabricated one.
+func (s *SQLMirrorStore) RepoAnchor(ctx context.Context, ns, name string) (RepoAnchor, bool, error) {
+	var (
+		a          RepoAnchor
+		lastMirror time.Time
+	)
+	err := s.db.QueryRowContext(ctx, repoAnchorSQL, ns, name).
+		Scan(&a.URL, &a.Provider, &lastMirror, &a.SyncHealth, &a.TTLSeconds)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RepoAnchor{}, false, nil
+	}
+	if err != nil {
+		return RepoAnchor{}, false, fmt.Errorf("read scm.repo anchor %s/%s: %w", ns, name, err)
+	}
+	a.Namespace = ns
+	a.Name = name
+	// 'epoch' (COALESCE guard for a NULL last_mirror_update) reads back as the
+	// Unix epoch; normalize it to the Go zero time so the reader's "never
+	// synced" check (IsZero) is honoured identically to the in-memory double.
+	if lastMirror.Unix() == 0 {
+		lastMirror = time.Time{}
+	}
+	a.LastMirrorAt = lastMirror
+	if a.SyncHealth == "" {
+		a.SyncHealth = RepoHealthUnknown
+	}
+	return a, true, nil
 }
 
 // listRecordsSQL is the read side of the mirror (ISI-3956 S5b): a filtered

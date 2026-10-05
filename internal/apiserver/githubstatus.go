@@ -92,6 +92,24 @@ type GithubSync struct {
 	Reason     string `json:"reason"`
 	Trigger    string `json:"trigger,omitempty"`
 	AgeSeconds *int64 `json:"ageSeconds,omitempty"`
+
+	// Durable staleness fields (ISI-5483) read from the scm.repo mirror anchor —
+	// NOT the live Project CR condition. They let the tab render "synced N ago /
+	// health" even when the operator is down, restarting, or the CR has aged out
+	// of the informer cache (the live Reason/AgeSeconds above would then be
+	// SyncNotConfigured / nil). Absent (omitempty) when no durable anchor exists
+	// or no RepoHealthReader is wired — never fabricated.
+	//
+	//   - Health            — the durable sync-health class (scm.RepoHealth*):
+	//     the last-known value the reconciler stamped ("healthy"), DERIVED to
+	//     "stale" by this read model when DurableAgeSeconds exceeds DurableTTLSeconds.
+	//   - DurableAgeSeconds  — now − the anchor's last_mirror_update (the durable
+	//     freshness SLI). Nil when the anchor has never stamped a freshness.
+	//   - DurableTTLSeconds  — the expected refresh cadence the staleness derivation
+	//     uses; 0/absent means "no cadence" (never derive stale).
+	Health            string `json:"health,omitempty"`
+	DurableAgeSeconds *int64 `json:"durableAgeSeconds,omitempty"`
+	DurableTTLSeconds *int32 `json:"durableTtlSeconds,omitempty"`
 }
 
 // Sync reason taxonomy mirrored onto the wire (values match reposync's
@@ -202,6 +220,12 @@ type GithubFreshness struct {
 	LastMirrorTime    *time.Time `json:"lastMirrorTime,omitempty"`
 	LastWebhookTime   *time.Time `json:"lastWebhookTime,omitempty"`
 	MirrorRecordCount int64      `json:"mirrorRecordCount"`
+	// DurableLastSyncedAt is the scm.repo anchor's last_mirror_update (ISI-5483):
+	// the last successful mirror pass recorded on DISK, independent of the live
+	// CR status. It equals LastMirrorTime while the operator is healthy and the
+	// CR is cached; it is the ONLY freshness the tab can show when the CR is not
+	// (the LastMirrorTime above is then nil). Absent when no durable anchor exists.
+	DurableLastSyncedAt *time.Time `json:"durableLastSyncedAt,omitempty"`
 }
 
 // ============================================================================
@@ -227,6 +251,11 @@ type GithubStatusService struct {
 	// so a deployment without the sync-history store degrades cleanly. Read-only;
 	// it creates nothing and never crosses the custody wall.
 	history scm.SyncHistoryReader
+	// repoHealth is the OPTIONAL durable read seam over scm.repo (ISI-5483).
+	// Nil ⇒ the payload carries no durable staleness fields (the honest default),
+	// so a deployment without it degrades cleanly to CR-only freshness. Read-only;
+	// it creates nothing and never crosses the custody wall.
+	repoHealth scm.RepoHealthReader
 	// now sources the wall clock used to compute mirror age; overridable in
 	// tests. Defaulted to time.Now by the constructor.
 	now func() time.Time
@@ -251,9 +280,10 @@ type ReviewItemFinder interface {
 // and the route answers the documented 501 (AC5) rather than constructing a
 // half-wired service. reviews is optional (nil ⇒ PR cards never carry a review
 // block; every other panel is unaffected). history is optional (nil ⇒ no
-// syncHistory is surfaced, ISI-5309).
-func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder, history scm.SyncHistoryReader) *GithubStatusService {
-	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, history: history, now: time.Now}
+// syncHistory is surfaced, ISI-5309). repoHealth is optional (nil ⇒ no durable
+// staleness fields are surfaced, ISI-5483).
+func NewGithubStatusService(reader client.Reader, mirror scm.MirrorReader, reviews ReviewItemFinder, history scm.SyncHistoryReader, repoHealth scm.RepoHealthReader) *GithubStatusService {
+	return &GithubStatusService{reader: reader, mirror: mirror, reviews: reviews, history: history, repoHealth: repoHealth, now: time.Now}
 }
 
 // GithubStatus composes the payload for one Project. Resolution and every read
@@ -340,6 +370,12 @@ func (s *GithubStatusService) GithubStatus(ctx context.Context, auth discussion.
 	// mirror panels above are the primary surface.
 	s.attachSyncHistory(ctx, &out, ns, name)
 
+	// ISI-5483: attach the DURABLE staleness fields from the scm.repo anchor,
+	// independent of the CR read above. Runs unconditionally (like
+	// attachSyncHistory) so the tab shows "synced N ago / health" from disk even
+	// when the CR branch fell to not-configured (operator down / CR aged out).
+	s.attachDurableHealth(ctx, &out, ns, name)
+
 	// GH-4: enrich the inbound server span with the domain identity + the
 	// freshness SLI, so a GitHub-tab read is queryable by project/repo and the
 	// mirror.age_seconds freshness (now - lastSuccess) the ISI-4229 SLO scores.
@@ -420,6 +456,54 @@ func (s *GithubStatusService) attachSyncHistory(ctx context.Context, out *Github
 		})
 	}
 	out.SyncHistory = entries
+}
+
+// attachDurableHealth reads the durable scm.repo anchor for the resolved Project
+// and projects its freshness + health onto the wire, DERIVING staleness from the
+// anchor's age vs its TTL (ISI-5483). It is the one surface that does not depend
+// on the live Project CR status: the reposync success anchor stamps
+// last_mirror_update + sync_health + ttl_seconds on disk, so the tab can render
+// "synced N ago / health" even when the operator is down or the CR has aged out
+// of the informer cache. Best-effort: a nil seam, a read error, or a Project
+// that has never anchored leaves the durable fields absent (the honest default)
+// rather than failing the whole status read.
+func (s *GithubStatusService) attachDurableHealth(ctx context.Context, out *GithubStatus, ns, name string) {
+	if s.repoHealth == nil {
+		return
+	}
+	anchor, found, err := s.repoHealth.RepoAnchor(ctx, ns, name)
+	if err != nil || !found {
+		return
+	}
+
+	out.Sync.Health = anchor.SyncHealth
+
+	if anchor.TTLSeconds > 0 {
+		ttl := anchor.TTLSeconds
+		out.Sync.DurableTTLSeconds = &ttl
+	}
+
+	// No durable freshness stamped yet (anchored but never completed a pass):
+	// surface the stored health but no age — never a fabricated timestamp.
+	if anchor.LastMirrorAt.IsZero() {
+		return
+	}
+	t := anchor.LastMirrorAt
+	out.Freshness.DurableLastSyncedAt = &t
+
+	age := int64(s.now().Sub(anchor.LastMirrorAt).Seconds())
+	if age < 0 {
+		age = 0
+	}
+	out.Sync.DurableAgeSeconds = &age
+
+	// DERIVED staleness: a healthy anchor whose age has outrun its refresh
+	// cadence is surfaced as stale, so a wedged/stopped sync loop shows amber on
+	// the durable surface without the reconciler having to stamp it. A zero TTL
+	// ("no cadence") never derives stale.
+	if anchor.SyncHealth == scm.RepoHealthHealthy && anchor.TTLSeconds > 0 && age > int64(anchor.TTLSeconds) {
+		out.Sync.Health = scm.RepoHealthStale
+	}
 }
 
 // syncSummary derives the wire sync-state from the resolved Project.status. The

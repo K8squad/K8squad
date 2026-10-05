@@ -453,4 +453,60 @@ describe("GitHubStatusTab", () => {
     await waitFor(() => expect(select.disabled).toBe(false));
     expect(screen.getByTestId("gh-issue-assign-submit")).toBeTruthy();
   });
+
+  // ISI-5483: the durable scm.repo staleness chip renders cache age/health from
+  // the mirror on disk, alongside the live freshness chip.
+  it("renders the durable mirror health chip when the anchor is present", async () => {
+    stub(200, {
+      ...projection,
+      freshness: {
+        ...projection.freshness,
+        durableLastSyncedAt: new Date(Date.now() - 120_000).toISOString(),
+      },
+      sync: {
+        reason: "Synced",
+        trigger: "webhook",
+        ageSeconds: 120,
+        health: "healthy",
+        durableAgeSeconds: 120,
+        durableTtlSeconds: 300,
+      },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+
+    const durable = await screen.findByTestId("github-durable-health");
+    expect(durable.getAttribute("data-health")).toBe("healthy");
+    expect(durable.textContent).toContain("Mirror on disk");
+    expect(durable.textContent).toContain("refresh every");
+  });
+
+  // A derived-stale durable anchor shows the amber tone even while the live
+  // condition is still "Synced" — the durable surface is independent.
+  it("shows the durable chip as stale when the apiserver derived staleness", async () => {
+    stub(200, {
+      ...projection,
+      sync: {
+        reason: "Synced",
+        trigger: "poll",
+        ageSeconds: 120,
+        health: "stale",
+        durableAgeSeconds: 900,
+        durableTtlSeconds: 300,
+      },
+    });
+    render(<GitHubStatusTab projectId="web" />);
+
+    const durable = await screen.findByTestId("github-durable-health");
+    expect(durable.getAttribute("data-health")).toBe("stale");
+    expect(durable.getAttribute("data-tone")).toBe("paused");
+  });
+
+  // No durable anchor (health absent) ⇒ no durable chip (honest absence).
+  it("omits the durable chip when no anchor health is present", async () => {
+    stub(200, projection);
+    render(<GitHubStatusTab projectId="web" />);
+
+    await waitFor(() => expect(screen.getByTestId("github-status")).toBeTruthy());
+    expect(screen.queryByTestId("github-durable-health")).toBeNull();
+  });
 });

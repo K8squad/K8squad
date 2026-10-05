@@ -53,7 +53,7 @@ func testGithubStatusServerAs(t *testing.T, teamID uuid.UUID, admin discussion.A
 	srv := NewServer(Options{
 		Authenticator: NewCookieAuthenticator(resolver),
 		Discussion:    discussion.NewHandler(nil),
-		GithubStatus:  NewGithubStatusService(reader, mirror, f, nil),
+		GithubStatus:  NewGithubStatusService(reader, mirror, f, nil, nil),
 	})
 	return srv.Handler()
 }
@@ -160,7 +160,7 @@ func TestGithubStatus_SyncHistorySurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	svc := NewGithubStatusService(reader, mirror, nil, hist)
+	svc := NewGithubStatusService(reader, mirror, nil, hist, nil)
 	out, err := svc.GithubStatus(context.Background(), admin, "squad-a/web")
 	if err != nil {
 		t.Fatalf("GithubStatus: %v", err)
@@ -177,13 +177,80 @@ func TestGithubStatus_SyncHistorySurfaced(t *testing.T) {
 	}
 
 	// Nil history reader ⇒ syncHistory absent (honest default, omitempty on wire).
-	svcNoHist := NewGithubStatusService(reader, mirror, nil, nil)
+	svcNoHist := NewGithubStatusService(reader, mirror, nil, nil, nil)
 	outNoHist, err := svcNoHist.GithubStatus(context.Background(), admin, "squad-a/web")
 	if err != nil {
 		t.Fatalf("GithubStatus (no history): %v", err)
 	}
 	if outNoHist.SyncHistory != nil {
 		t.Fatalf("syncHistory should be nil with no reader, got %+v", outNoHist.SyncHistory)
+	}
+}
+
+// TestGithubStatus_DurableHealthSurfaced pins ISI-5483: when a RepoHealthReader
+// is wired, the read model surfaces durable cache age/health from the scm.repo
+// anchor — independent of the live CR status — and DERIVES staleness from the
+// anchor's age vs its TTL. A nil reader leaves the durable fields absent.
+func TestGithubStatus_DurableHealthSurfaced(t *testing.T) {
+	admin := discussion.AuthorContext{Principal: "user:root", TeamID: uuid.Nil, IsAdmin: true}
+	reader := newDashboardClient(t,
+		team("squad-a", "alpha", "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+		project("squad-a", "web", "https://github.com/acme/web"),
+	)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+
+	// (1) Fresh healthy anchor: synced 60s ago, TTL 300 ⇒ health stays healthy,
+	// durable age + ttl + last-synced surfaced.
+	fresh := scm.NewInMemoryMirrorStore()
+	if err := fresh.UpsertRepo(ctx, "squad-a", "web", "github", "https://github.com/acme/web",
+		now.Add(-60*time.Second), scm.RepoHealthHealthy, 300); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewGithubStatusService(reader, fresh, nil, nil, fresh)
+	svc.now = func() time.Time { return now }
+	out, err := svc.GithubStatus(ctx, admin, "squad-a/web")
+	if err != nil {
+		t.Fatalf("GithubStatus (fresh): %v", err)
+	}
+	if out.Sync.Health != scm.RepoHealthHealthy {
+		t.Fatalf("fresh health = %q, want %q", out.Sync.Health, scm.RepoHealthHealthy)
+	}
+	if out.Sync.DurableAgeSeconds == nil || *out.Sync.DurableAgeSeconds != 60 {
+		t.Fatalf("fresh durableAgeSeconds = %v, want 60", out.Sync.DurableAgeSeconds)
+	}
+	if out.Sync.DurableTTLSeconds == nil || *out.Sync.DurableTTLSeconds != 300 {
+		t.Fatalf("fresh durableTtlSeconds = %v, want 300", out.Sync.DurableTTLSeconds)
+	}
+	if out.Freshness.DurableLastSyncedAt == nil || !out.Freshness.DurableLastSyncedAt.Equal(now.Add(-60*time.Second)) {
+		t.Fatalf("fresh durableLastSyncedAt = %v, want %v", out.Freshness.DurableLastSyncedAt, now.Add(-60*time.Second))
+	}
+
+	// (2) Stale anchor: last synced 10 min ago with a 300s TTL ⇒ the read model
+	// DERIVES stale even though the stored health is healthy.
+	stale := scm.NewInMemoryMirrorStore()
+	if err := stale.UpsertRepo(ctx, "squad-a", "web", "github", "https://github.com/acme/web",
+		now.Add(-600*time.Second), scm.RepoHealthHealthy, 300); err != nil {
+		t.Fatal(err)
+	}
+	svcStale := NewGithubStatusService(reader, stale, nil, nil, stale)
+	svcStale.now = func() time.Time { return now }
+	outStale, err := svcStale.GithubStatus(ctx, admin, "squad-a/web")
+	if err != nil {
+		t.Fatalf("GithubStatus (stale): %v", err)
+	}
+	if outStale.Sync.Health != scm.RepoHealthStale {
+		t.Fatalf("stale health = %q, want %q (derived)", outStale.Sync.Health, scm.RepoHealthStale)
+	}
+
+	// (3) Nil RepoHealthReader ⇒ durable fields absent (honest default, omitempty).
+	svcNone := NewGithubStatusService(reader, scm.NewInMemoryMirrorStore(), nil, nil, nil)
+	outNone, err := svcNone.GithubStatus(ctx, admin, "squad-a/web")
+	if err != nil {
+		t.Fatalf("GithubStatus (no repoHealth): %v", err)
+	}
+	if outNone.Sync.Health != "" || outNone.Sync.DurableAgeSeconds != nil || outNone.Freshness.DurableLastSyncedAt != nil {
+		t.Fatalf("durable fields should be absent with no reader, got %+v / %+v", outNone.Sync, outNone.Freshness)
 	}
 }
 

@@ -340,8 +340,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	// Anchor the (Project, repo) pair in scm.repo (0008 schema contract):
 	// one row per mirrored repo carrying the pass's freshness. Outside the
 	// snapshot tx — see SQLMirrorStore.UpsertRepo — and a failure here
-	// surfaces as a failed reconcile so the next pass re-anchors.
-	if err := r.Store.UpsertRepo(ctx, project.Namespace, project.Name, sync.Provider, project.Spec.Repo.URL, time.Now()); err != nil {
+	// surfaces as a failed reconcile so the next pass re-anchors. ISI-5483:
+	// stamp the durable staleness metadata too — RepoHealthHealthy (this pass
+	// completed) and the Project's effective poll interval as the expected
+	// refresh cadence (the TTL a reader derives staleness from). This is what
+	// lets the GitHub-status tab render age/health from the DURABLE mirror,
+	// not only the live SyncReady condition.
+	if err := r.Store.UpsertRepo(ctx, project.Namespace, project.Name, sync.Provider, project.Spec.Repo.URL, time.Now(), scm.RepoHealthHealthy, r.pollInterval(sync)); err != nil {
 		logger.Error(err, "repo-sync: scm.repo anchor upsert failed", "project", req.NamespacedName)
 		reason = reasonMirrorFail
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonMirrorFail, err.Error())})

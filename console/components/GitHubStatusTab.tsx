@@ -25,6 +25,7 @@ import { ReleasesBranchesScreen } from "@/components/github/ReleasesBranchesScre
 import {
   ageLabel,
   chipState,
+  durableHealthLabel,
   fetchGithubStatus,
   triggerGithubSync,
   SyncReason,
@@ -123,6 +124,12 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
   const data = state.data;
   const sync: GithubSync = data.sync ?? { reason: SyncReason.NotConfigured };
   const chip = chipState(sync);
+  // ISI-5483: the durable scm.repo staleness line — "Mirror on disk: healthy ·
+  // synced N ago · refresh every M". Rendered from the durable anchor the
+  // operator persists, so cache age/health is visible even when the live
+  // condition above is SyncNotConfigured (operator down / CR aged out). Null
+  // when no durable anchor exists.
+  const durable = durableHealthLabel(sync, data.freshness, Date.now());
   const card = stateCardFor(sync);
   const empty =
     data.pullRequests.length === 0 &&
@@ -179,6 +186,18 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
             {/* Kept lowercase-"synced …ago" phrase inside so existing honest-
                freshness assertions and screen-readers still parse the recency. */}
             <span data-testid="github-freshness">{chip.text}</span>
+          </span>
+        )}
+        {durable && (
+          <span
+            className={`github-chip github-chip--${durable.tone} github-chip--durable`}
+            data-testid="github-durable-health"
+            data-tone={durable.tone}
+            data-health={sync.health}
+            title="Cache age/health from the durable mirror on disk (survives operator restarts)"
+          >
+            <span className="github-chip__dot" aria-hidden="true" />
+            <span>{durable.text}</span>
           </span>
         )}
         {/* Refresh is an escape hatch only — the AC is that refresh is automatic

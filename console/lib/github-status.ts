@@ -98,6 +98,10 @@ export type GithubFreshness = {
   lastMirrorTime?: string;
   lastWebhookTime?: string;
   mirrorRecordCount: number;
+  /** DurableLastSyncedAt (ISI-5483) — the scm.repo anchor's last successful
+   * mirror pass recorded on DISK, independent of the live CR status. Present
+   * even when lastMirrorTime is absent (operator down / CR aged out). */
+  durableLastSyncedAt?: string;
 };
 
 /** GithubSync mirrors internal/apiserver/githubstatus.go GithubSync (ISI-4398 /
@@ -109,7 +113,65 @@ export type GithubSync = {
   reason: string;
   trigger?: string;
   ageSeconds?: number;
+  /** Durable staleness fields (ISI-5483) read from the scm.repo mirror anchor,
+   * NOT the live CR condition — they render cache age/health even when the
+   * operator is down or the CR has aged out of the informer cache. `health` is
+   * the durable class (RepoHealth), already DERIVED to "stale" by the apiserver
+   * when the durable age outran the TTL. Absent when no durable anchor exists. */
+  health?: string;
+  durableAgeSeconds?: number;
+  durableTtlSeconds?: number;
 };
+
+/** The durable scm.repo sync-health classes (pkg/scm RepoHealth*, surfaced 1:1
+ * on the wire via GithubSync.health). "stale" is derived by the apiserver from
+ * the anchor's age vs its TTL; the others are stamped by the reconciler. */
+export const RepoHealth = {
+  Healthy: "healthy",
+  Degraded: "degraded",
+  Stale: "stale",
+  Error: "error",
+  Unknown: "unknown",
+} as const;
+
+/** durableHealthLabel renders the DURABLE mirror staleness line (ISI-5483) from
+ * the scm.repo anchor — the one freshness surface that survives the operator
+ * being down. Returns null when no durable anchor exists (nothing to show).
+ * Example: "Mirror on disk: healthy · synced 2 min ago · refresh every 5 min". */
+export function durableHealthLabel(
+  sync: GithubSync | undefined,
+  freshness: GithubFreshness | undefined,
+  now: number,
+): { tone: ChipTone; text: string } | null {
+  const health = sync?.health;
+  if (!health) return null;
+
+  // "synced N ago" from the durable age (preferred) or the durable timestamp.
+  let ago = "";
+  if (sync?.durableAgeSeconds !== undefined) {
+    ago = `synced ${ageLabel(sync.durableAgeSeconds)}`;
+  } else if (freshness?.durableLastSyncedAt) {
+    ago = syncedAgo(freshness.durableLastSyncedAt, now);
+  }
+
+  // "refresh every N" from the TTL — drop the " ago" suffix ageLabel adds.
+  const cadence =
+    sync?.durableTtlSeconds && sync.durableTtlSeconds > 0
+      ? ` · refresh every ${ageLabel(sync.durableTtlSeconds).replace(/ ago$/, "")}`
+      : "";
+
+  const tone: ChipTone =
+    health === RepoHealth.Stale || health === RepoHealth.Degraded
+      ? "paused"
+      : health === RepoHealth.Error
+        ? "blocked"
+        : health === RepoHealth.Healthy
+          ? "running"
+          : "neutral";
+
+  const label = health.charAt(0).toUpperCase() + health.slice(1);
+  return { tone, text: `Mirror on disk: ${label}${ago ? ` · ${ago}` : ""}${cadence}` };
+}
 
 /** The reposync SyncReady reason taxonomy (repo_sync.go:70-76), surfaced 1:1 on
  * the wire. The tab keys its state cards + chip tone on these. */

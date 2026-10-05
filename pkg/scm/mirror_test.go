@@ -267,14 +267,14 @@ func TestInMemoryMirrorStoreUpsertRepo(t *testing.T) {
 	ctx := context.Background()
 
 	first := time.Now()
-	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", first); err != nil {
+	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", first, RepoHealthHealthy, 300); err != nil {
 		t.Fatal(err)
 	}
 	later := first.Add(5 * time.Minute)
-	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", later); err != nil {
+	if err := store.UpsertRepo(ctx, "ns", "proj", "github", "github.com/acme/app", later, RepoHealthHealthy, 120); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertRepo(ctx, "ns2", "proj2", "gitlab", "gitlab.com/acme/other", later); err != nil {
+	if err := store.UpsertRepo(ctx, "ns2", "proj2", "gitlab", "gitlab.com/acme/other", later, RepoHealthHealthy, 300); err != nil {
 		t.Fatal(err)
 	}
 
@@ -288,6 +288,36 @@ func TestInMemoryMirrorStoreUpsertRepo(t *testing.T) {
 	}
 	if !app.LastMirrorAt.Equal(later) {
 		t.Fatalf("re-anchor did not refresh freshness: %+v", app)
+	}
+	// ISI-5483: the re-anchor refreshes the durable staleness metadata too —
+	// the later pass's TTL (120) overwrites the first pass's (300).
+	if app.SyncHealth != RepoHealthHealthy || app.TTLSeconds != 120 {
+		t.Fatalf("re-anchor did not refresh staleness metadata: %+v", app)
+	}
+
+	// The RepoHealthReader seam returns the newest-synced anchor for a Project.
+	got, found, err := store.RepoAnchor(ctx, "ns", "proj")
+	if err != nil || !found {
+		t.Fatalf("RepoAnchor(ns/proj): found=%v err=%v", found, err)
+	}
+	if !got.LastMirrorAt.Equal(later) || got.SyncHealth != RepoHealthHealthy || got.TTLSeconds != 120 {
+		t.Fatalf("RepoAnchor returned wrong anchor: %+v", got)
+	}
+	// A Project that never anchored reads back found=false (honest absence).
+	if _, found, err := store.RepoAnchor(ctx, "ns", "absent"); err != nil || found {
+		t.Fatalf("RepoAnchor(ns/absent): expected found=false, got found=%v err=%v", found, err)
+	}
+
+	// An empty health defaults to RepoHealthUnknown, mirroring the schema default.
+	if err := store.UpsertRepo(ctx, "ns3", "proj3", "github", "github.com/acme/third", first, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	third, _, err := store.RepoAnchor(ctx, "ns3", "proj3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.SyncHealth != RepoHealthUnknown {
+		t.Fatalf("empty health should default to %q, got %q", RepoHealthUnknown, third.SyncHealth)
 	}
 }
 
