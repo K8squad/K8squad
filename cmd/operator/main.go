@@ -644,6 +644,27 @@ func main() {
 				corev1.EnvVar{Name: "KSQUAD_RUNTIME_WARM_TIMEOUT", Value: v},
 			)
 		}
+		// ISI-5477: propagate the sandbox forward-proxy config to warm/Run
+		// sandbox pods so the pod-side supervisor injects the conventional
+		// HTTPS_PROXY/NO_PROXY onto the agent child (pkg/shim.agentProxyEnv).
+		// We pass through the NAMESPACED KSQUAD_SANDBOX_*_PROXY values, NOT the
+		// conventional names — stamping HTTPS_PROXY directly on the pod would
+		// also proxy the supervisor's own in-cluster egress. The same env also
+		// rides THIS operator pod (Helm operator.yaml), so the operator-spawned
+		// `shim run` topology is covered by the same getenv the shim reads;
+		// this block extends that to the in-sandbox topology. Values only —
+		// proxy endpoints are not secrets (minimal-env invariant holds).
+		for _, name := range []string{
+			"KSQUAD_SANDBOX_HTTPS_PROXY",
+			"KSQUAD_SANDBOX_HTTP_PROXY",
+			"KSQUAD_SANDBOX_NO_PROXY",
+		} {
+			if v := os.Getenv(name); v != "" {
+				kubeProvisioner = kubeProvisioner.WithPodEnv(
+					corev1.EnvVar{Name: name, Value: v},
+				)
+			}
+		}
 		pool := kubepool.NewPool(kubeProvisioner) // real kube provisioner enables actual agent work
 		// M1.2: the pod watch that reports sandbox pod readiness into the pool
 		// (the Provisioner contract's NotifyReady caller — without it warm

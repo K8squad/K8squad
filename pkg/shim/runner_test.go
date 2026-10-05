@@ -524,3 +524,134 @@ func TestNewOSRunnerWarmTimeoutEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentProxyEnv verifies the ISI-5477 forward-proxy injection: the shim
+// translates the NAMESPACED KSQUAD_SANDBOX_*_PROXY config into the
+// conventional HTTPS_PROXY/HTTP_PROXY/NO_PROXY names (both cases) for the
+// agent child, and contributes nothing when the source is unset — the
+// pre-ISI-5477 direct-egress posture.
+func TestAgentProxyEnv(t *testing.T) {
+	t.Run("all unset yields nil", func(t *testing.T) {
+		get := func(string) string { return "" }
+		if got := agentProxyEnv(get); got != nil {
+			t.Fatalf("unset source: want nil, got %v", got)
+		}
+	})
+
+	t.Run("blank source contributes nothing", func(t *testing.T) {
+		get := map[string]string{
+			"KSQUAD_SANDBOX_HTTPS_PROXY": "   ",
+			"KSQUAD_SANDBOX_NO_PROXY":    "",
+		}
+		if got := agentProxyEnv(func(k string) string { return get[k] }); got != nil {
+			t.Fatalf("blank source: want nil, got %v", got)
+		}
+	})
+
+	t.Run("renders both cases for each set var", func(t *testing.T) {
+		src := map[string]string{
+			"KSQUAD_SANDBOX_HTTPS_PROXY": "http://egress.k8squad-system.svc:8888",
+			"KSQUAD_SANDBOX_HTTP_PROXY":  "http://egress.k8squad-system.svc:8888",
+			"KSQUAD_SANDBOX_NO_PROXY":    "localhost,.svc,10.0.0.185",
+		}
+		got := agentProxyEnv(func(k string) string { return src[k] })
+		want := map[string]string{
+			"HTTPS_PROXY": "http://egress.k8squad-system.svc:8888",
+			"https_proxy": "http://egress.k8squad-system.svc:8888",
+			"HTTP_PROXY":  "http://egress.k8squad-system.svc:8888",
+			"http_proxy":  "http://egress.k8squad-system.svc:8888",
+			"NO_PROXY":    "localhost,.svc,10.0.0.185",
+			"no_proxy":    "localhost,.svc,10.0.0.185",
+		}
+		gotMap := map[string]string{}
+		for _, kv := range got {
+			parts := strings.SplitN(kv, "=", 2)
+			if len(parts) != 2 {
+				t.Fatalf("malformed env entry %q", kv)
+			}
+			gotMap[parts[0]] = parts[1]
+		}
+		if len(gotMap) != len(want) {
+			t.Fatalf("env count = %d (%v), want %d", len(gotMap), got, len(want))
+		}
+		for k, v := range want {
+			if gotMap[k] != v {
+				t.Fatalf("%s = %q, want %q", k, gotMap[k], v)
+			}
+		}
+	})
+
+	t.Run("trims surrounding whitespace", func(t *testing.T) {
+		src := map[string]string{"KSQUAD_SANDBOX_HTTPS_PROXY": "  http://p:8888  "}
+		got := agentProxyEnv(func(k string) string { return src[k] })
+		for _, kv := range got {
+			if !strings.HasSuffix(kv, "=http://p:8888") {
+				t.Fatalf("expected trimmed value, got %q", kv)
+			}
+		}
+	})
+}
+
+// TestOSRunnerInjectsProxyEnvIntoChild is the ISI-5477 end-to-end proof for
+// the runner path (not just agentProxyEnv in isolation): with the NAMESPACED
+// KSQUAD_SANDBOX_*_PROXY set on the shim's own env, the launched agent child
+// must see the CONVENTIONAL HTTPS_PROXY/HTTP_PROXY/NO_PROXY (both cases) that
+// bun's fetch / curl / git honor — the whole mechanism that routes external
+// model traffic through the per-squad egress proxy.
+func TestOSRunnerInjectsProxyEnvIntoChild(t *testing.T) {
+	t.Setenv("KSQUAD_SANDBOX_HTTPS_PROXY", "http://egress.k8squad-system.svc:8888")
+	t.Setenv("KSQUAD_SANDBOX_HTTP_PROXY", "http://egress.k8squad-system.svc:8888")
+	t.Setenv("KSQUAD_SANDBOX_NO_PROXY", "localhost,.svc,10.0.0.185")
+	script := writeScript(t, `printf 'HTTPS=%s https=%s HTTP=%s NO=%s no=%s\n' \
+  "$HTTPS_PROXY" "$https_proxy" "$HTTP_PROXY" "$NO_PROXY" "$no_proxy"`)
+
+	var mu sync.Mutex
+	var lines []string
+	outcome, err := osRunner{}.Run(context.Background(),
+		runtimes.ExecSpec{Path: script}, func(p Progress) {
+			if p.Message != nil {
+				mu.Lock()
+				lines = append(lines, p.Message.Text)
+				mu.Unlock()
+			}
+		})
+	if err != nil || outcome.State != a2a.TaskCompleted {
+		t.Fatalf("run: outcome=%+v err=%v", outcome, err)
+	}
+	got := strings.Join(lines, "\n")
+	want := "HTTPS=http://egress.k8squad-system.svc:8888 " +
+		"https=http://egress.k8squad-system.svc:8888 " +
+		"HTTP=http://egress.k8squad-system.svc:8888 " +
+		"NO=localhost,.svc,10.0.0.185 no=localhost,.svc,10.0.0.185"
+	if !strings.Contains(got, want) {
+		t.Fatalf("child env missing injected proxy vars.\n got: %q\nwant substring: %q", got, want)
+	}
+}
+
+// TestOSRunnerNoProxyEnvWhenUnset guards the default: with no KSQUAD_SANDBOX_*
+// proxy config, the child inherits NO conventional proxy var from this seam
+// (the pre-ISI-5477 direct-egress posture).
+func TestOSRunnerNoProxyEnvWhenUnset(t *testing.T) {
+	// No namespaced source AND no ambient conventional value: the seam must
+	// not synthesize one, and must not pass a CI-ambient HTTPS_PROXY through.
+	t.Setenv("KSQUAD_SANDBOX_HTTPS_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("https_proxy", "")
+	script := writeScript(t, `printf 'HTTPS=[%s]\n' "$HTTPS_PROXY"`)
+	var mu sync.Mutex
+	var lines []string
+	outcome, err := osRunner{}.Run(context.Background(),
+		runtimes.ExecSpec{Path: script}, func(p Progress) {
+			if p.Message != nil {
+				mu.Lock()
+				lines = append(lines, p.Message.Text)
+				mu.Unlock()
+			}
+		})
+	if err != nil || outcome.State != a2a.TaskCompleted {
+		t.Fatalf("run: outcome=%+v err=%v", outcome, err)
+	}
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "HTTPS=[]") {
+		t.Fatalf("unset proxy must leave child HTTPS_PROXY empty; got %q", got)
+	}
+}

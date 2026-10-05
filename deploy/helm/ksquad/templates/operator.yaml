@@ -99,6 +99,38 @@ spec:
             - name: KSQUAD_SANDBOX_MEMORY_REQUEST
               value: {{ . | quote }}
             {{- end }}
+            {{- /* ISI-5477 (ISI-5473 gap #3): route the sandbox agent's
+                   EXTERNAL model (HTTPS) traffic through the per-squad egress
+                   forward proxy (operator PR #780 opens egress to it). These
+                   NAMESPACED vars ride BOTH this operator pod (covering the
+                   operator-spawned `shim run` topology — the shim reads them
+                   and stamps the conventional HTTPS_PROXY/NO_PROXY onto the
+                   agent child ONLY) AND, via the operator's WithPodEnv
+                   propagation, every sandbox pod (covering the in-sandbox
+                   supervisor topology). The conventional names are NEVER set
+                   on the operator/supervisor itself, so their own in-cluster
+                   egress stays direct. Proxy endpoints are NOT secrets.
+                   httpsProxy set but noProxy empty is a FATAL misconfig:
+                   NO_PROXY must keep in-cluster + LAN BYO traffic direct, or
+                   the proxy swallows apiserver/shim/memory/OTLP/DNS egress.
+                   Empty = omitted (direct egress, the pre-ISI-5477 posture). */}}
+            {{- with .Values.operator.sandbox.proxy }}
+            {{- if and .httpsProxy (not .noProxy) }}
+            {{- fail "operator.sandbox.proxy.httpsProxy is set but noProxy is empty: NO_PROXY MUST list in-cluster targets (.svc / cluster DNS / OTLP gateway) and any LAN BYO endpoint (e.g. Ollama 10.0.0.185), or in-cluster egress breaks (ISI-5477)" }}
+            {{- end }}
+            {{- with .httpsProxy }}
+            - name: KSQUAD_SANDBOX_HTTPS_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .httpProxy }}
+            - name: KSQUAD_SANDBOX_HTTP_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .noProxy }}
+            - name: KSQUAD_SANDBOX_NO_PROXY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- /* ISI-4315: purpose-keyed sandbox priority + warm-pool
                    capacity governance. Empty priority class names disable
                    stamping (pre-ISI-4315 behavior); the numeric knobs are
