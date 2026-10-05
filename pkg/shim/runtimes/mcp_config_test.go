@@ -164,8 +164,19 @@ func TestOpenCodeBYOEndpointRendersProviderBlock(t *testing.T) {
 	assert.Equal(t, "@ai-sdk/openai-compatible", byo["npm"])
 	opts := byo["options"].(map[string]any)
 	assert.Equal(t, "http://10.0.0.185:11434/v1", opts["baseURL"])
+	// apiKey rides as an env reference so a key-validating endpoint
+	// authenticates, without the literal token landing in the file (ISI-5471).
+	assert.Equal(t, "{env:OPENAI_API_KEY}", opts["apiKey"])
 	models := byo["models"].(map[string]any)
 	assert.Contains(t, models, "qwen3.8:latest")
+	// The model entry advertises tool-capability + explicit ceilings so the
+	// build agent runs the tool-call loop (ISI-5471).
+	entry := models["qwen3.8:latest"].(map[string]any)
+	assert.Equal(t, true, entry["tool_call"])
+	limit := entry["limit"].(map[string]any)
+	assert.EqualValues(t, 65536, limit["context"])
+	assert.EqualValues(t, 8192, limit["output"])
+	assert.Contains(t, entry, "temperature")
 
 	// MCP section merges into the same document.
 	mcp, ok := doc["mcp"].(map[string]any)
