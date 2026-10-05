@@ -77,6 +77,18 @@ func TestRenderInitContainersOrderAndContract(t *testing.T) {
 		require.NotNil(t, c.SecurityContext)
 		assert.False(t, *c.SecurityContext.AllowPrivilegeEscalation)
 		assert.True(t, *c.SecurityContext.ReadOnlyRootFilesystem)
+		// ISI-5493: restricted PSA requires runAsNonRoot + seccompProfile on
+		// every container; the staging inits also pin a non-root UID so the
+		// root-default toolchain images can actually start under runAsNonRoot.
+		require.NotNil(t, c.SecurityContext.RunAsNonRoot)
+		assert.True(t, *c.SecurityContext.RunAsNonRoot)
+		require.NotNil(t, c.SecurityContext.SeccompProfile)
+		assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, c.SecurityContext.SeccompProfile.Type)
+		require.NotNil(t, c.SecurityContext.RunAsUser)
+		assert.Equal(t, StagingRunAsUser, *c.SecurityContext.RunAsUser)
+		assert.NotZero(t, *c.SecurityContext.RunAsUser)
+		require.NotNil(t, c.SecurityContext.Capabilities)
+		assert.Equal(t, []corev1.Capability{"ALL"}, c.SecurityContext.Capabilities.Drop)
 	}
 }
 
@@ -123,6 +135,12 @@ func TestAssemblePodMCPSidecarAndCredentials(t *testing.T) {
 	assert.Equal(t, corev1.ContainerRestartPolicyAlways, *sidecar.RestartPolicy)
 	require.NotNil(t, sidecar.SecurityContext)
 	assert.False(t, *sidecar.SecurityContext.AllowPrivilegeEscalation)
+	// ISI-5493: sidecars are added containers too — they must carry the
+	// restricted-PSA fields or the pod is rejected at admission.
+	require.NotNil(t, sidecar.SecurityContext.RunAsNonRoot)
+	assert.True(t, *sidecar.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, sidecar.SecurityContext.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, sidecar.SecurityContext.SeccompProfile.Type)
 
 	// stdio-with-image credential rides the SIDECAR as a SecretKeyRef.
 	cred := envValueFrom(t, sidecar.Env, "KSQUAD_MCP_GH_STDIO_TOKEN")

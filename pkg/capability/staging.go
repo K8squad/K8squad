@@ -187,7 +187,7 @@ func RenderInitContainers(resolved []toolchain.Resolved) []corev1.Container {
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: ToolVolumeName, MountPath: ToolMountPath},
 			},
-			SecurityContext: hardenedContainerSecurity(),
+			SecurityContext: stagingContainerSecurity(),
 		})
 	}
 	return inits
@@ -206,14 +206,42 @@ func ToolPathEnv() corev1.EnvVar {
 	return corev1.EnvVar{Name: "PATH", Value: ToolPathValue}
 }
 
+// StagingRunAsUser is the non-root UID the tool-staging init containers run
+// as (ISI-5493). The curated toolchain images (git, gh, kubectl, …) are
+// root-default alpine with no USER directive, so `runAsNonRoot: true` alone
+// would make the kubelet refuse to start them ("container has runAsNonRoot
+// and image will run as root"). A numeric UID need not exist in the image's
+// /etc/passwd for `cp` to run, and the shared /tools emptyDir is world-
+// writable (no fsGroup), so UID 1000 can stage onto it. 1000 matches the warm
+// pool's pod-level RunAsUser (pkg/warmpool), keeping the whole sandbox on one
+// non-root identity.
+const StagingRunAsUser int64 = 1000
+
 // hardenedContainerSecurity is the ADR-045 posture every ADDED container
-// (init, sidecar) carries, matching the agent container's discipline.
+// (init, sidecar) carries, matching the agent container's discipline. The
+// runAsNonRoot + seccompProfile fields are mandatory for the `restricted`
+// PodSecurity standard squad namespaces enforce (ISI-5493): without them a
+// pod carrying these containers is rejected at admission ("pod or containers
+// must set securityContext.runAsNonRoot=true / seccompProfile.type"), which
+// is why capability/repo-backed runs sat Pending and never bound.
 func hardenedContainerSecurity() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
 		ReadOnlyRootFilesystem:   ptr.To(true),
+		RunAsNonRoot:             ptr.To(true),
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
+}
+
+// stagingContainerSecurity is the staging init container's posture: the
+// shared hardened shape plus an explicit non-root UID. The tool-staging
+// images are root-default (see StagingRunAsUser), so the UID override is what
+// lets `runAsNonRoot: true` admit AND the kubelet actually start the `cp`.
+func stagingContainerSecurity() *corev1.SecurityContext {
+	sc := hardenedContainerSecurity()
+	sc.RunAsUser = ptr.To(StagingRunAsUser)
+	return sc
 }
 
 // renderMCPSidecar renders the native sidecar for a stdio MCPServer with

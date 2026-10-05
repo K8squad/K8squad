@@ -531,6 +531,42 @@ func TestKubeProvisionerStagesToolchainInitPacks(t *testing.T) {
 		if ic.Image != img {
 			t.Errorf("init %q image = %q, want %q", ic.Name, ic.Image, img)
 		}
+		// ISI-5493: staging init containers must satisfy the restricted
+		// PodSecurity standard squad namespaces enforce, or the API server
+		// rejects the pod and the run never binds a sandbox.
+		sc := ic.SecurityContext
+		if sc == nil {
+			t.Errorf("init %q has no securityContext", ic.Name)
+			continue
+		}
+		if sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
+			t.Errorf("init %q runAsNonRoot = %v, want true", ic.Name, sc.RunAsNonRoot)
+		}
+		if sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("init %q seccompProfile = %+v, want RuntimeDefault", ic.Name, sc.SeccompProfile)
+		}
+		if sc.RunAsUser == nil || *sc.RunAsUser == 0 {
+			t.Errorf("init %q runAsUser = %v, want a non-root UID", ic.Name, sc.RunAsUser)
+		}
+		if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+			t.Errorf("init %q allowPrivilegeEscalation = %v, want false", ic.Name, sc.AllowPrivilegeEscalation)
+		}
+		if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || sc.Capabilities.Drop[0] != "ALL" {
+			t.Errorf("init %q capabilities.drop = %+v, want [ALL]", ic.Name, sc.Capabilities)
+		}
+	}
+
+	// ISI-5493: the pod-level posture carries runAsNonRoot + seccompProfile
+	// (not just a non-root UID) so the whole pod is uniformly restricted.
+	if psc := pod.Spec.SecurityContext; psc == nil {
+		t.Errorf("pod has no securityContext")
+	} else {
+		if psc.RunAsNonRoot == nil || !*psc.RunAsNonRoot {
+			t.Errorf("pod runAsNonRoot = %v, want true", psc.RunAsNonRoot)
+		}
+		if psc.SeccompProfile == nil || psc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("pod seccompProfile = %+v, want RuntimeDefault", psc.SeccompProfile)
+		}
 	}
 
 	// The shared tool volume is present.
