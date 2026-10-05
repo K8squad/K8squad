@@ -19,6 +19,7 @@ package scm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -812,6 +813,105 @@ func TestRateLimitedErrorQuantizesDuration(t *testing.T) {
 	}
 	if strings.Contains(msg, "925505064") {
 		t.Fatalf("nanosecond fraction leaked into message: %q", msg)
+	}
+}
+
+// ISI-5475: go-github's CheckResponse classifies a 403 as a rate limit only
+// when X-RateLimit-Remaining==0 (primary) or the documentation_url carries the
+// exact #abuse-rate-limits / secondary-rate-limits suffix (abuse). GitHub's
+// secondary limiter also fires as a bare 429, or as a 403 whose body names the
+// secondary limit while primary headroom is still > 0 (the shared-PAT case).
+// Those arrive as a plain *github.ErrorResponse; wrapRateLimit must still turn
+// them into a RateLimitedError honouring Retry-After so the reconciler defers
+// for the server-indicated window instead of drawing the ~25m generic backoff.
+func TestWrapRateLimitDetectsSecondaryLimit(t *testing.T) {
+	errResp := func(status int, headers map[string]string, message, docURL string) *github.ErrorResponse {
+		h := http.Header{}
+		for k, v := range headers {
+			h.Set(k, v)
+		}
+		return &github.ErrorResponse{
+			Response:         &http.Response{StatusCode: status, Header: h},
+			Message:          message,
+			DocumentationURL: docURL,
+		}
+	}
+	futureReset := fmt.Sprintf("%d", time.Now().Add(90*time.Second).Unix())
+
+	cases := []struct {
+		name      string
+		err       error
+		wantRL    bool
+		wantDelay time.Duration // only checked when exact (header-driven)
+		exact     bool
+	}{
+		{
+			name:      "429 with Retry-After",
+			err:       errResp(http.StatusTooManyRequests, map[string]string{"Retry-After": "30"}, "You have exceeded a secondary rate limit", ""),
+			wantRL:    true,
+			wantDelay: 30 * time.Second,
+			exact:     true,
+		},
+		{
+			name:      "403 secondary while primary headroom remains, Retry-After wins",
+			err:       errResp(http.StatusForbidden, map[string]string{"Retry-After": "45", "X-RateLimit-Remaining": "4999"}, "You have exceeded a secondary rate limit", ""),
+			wantRL:    true,
+			wantDelay: 45 * time.Second,
+			exact:     true,
+		},
+		{
+			name:   "403 secondary body, no Retry-After, falls back to reset",
+			err:    errResp(http.StatusForbidden, map[string]string{"X-RateLimit-Reset": futureReset}, "You have exceeded a secondary rate limit for this PAT", ""),
+			wantRL: true,
+		},
+		{
+			name:   "403 secondary body, no usable headers, default backoff",
+			err:    errResp(http.StatusForbidden, nil, "You have exceeded a secondary rate limit", ""),
+			wantRL: true,
+		},
+		{
+			name:      "429 no headers, default backoff",
+			err:       errResp(http.StatusTooManyRequests, nil, "Too Many Requests", ""),
+			wantRL:    true,
+			wantDelay: secondaryRateLimitDefaultBackoff,
+			exact:     true,
+		},
+		{
+			name:   "plain 403 permissions is NOT a rate limit",
+			err:    errResp(http.StatusForbidden, nil, "Resource not accessible by integration", ""),
+			wantRL: false,
+		},
+		{
+			name:   "404 passes through untouched",
+			err:    errResp(http.StatusNotFound, nil, "Not Found", ""),
+			wantRL: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := wrapRateLimit(tc.err)
+			var rl *RateLimitedError
+			isRL := errors.As(got, &rl)
+			if isRL != tc.wantRL {
+				t.Fatalf("wrapRateLimit RateLimitedError=%v, want %v (got %T: %v)", isRL, tc.wantRL, got, got)
+			}
+			if !tc.wantRL {
+				if got != tc.err {
+					t.Fatalf("non-rate-limit error must pass through unchanged, got %v", got)
+				}
+				return
+			}
+			if rl.RetryAfter < time.Second {
+				t.Fatalf("RetryAfter must floor at 1s, got %v", rl.RetryAfter)
+			}
+			if tc.exact && rl.RetryAfter != tc.wantDelay {
+				t.Fatalf("RetryAfter = %v, want %v", rl.RetryAfter, tc.wantDelay)
+			}
+			if !errors.Is(got, tc.err) {
+				t.Fatalf("RateLimitedError must wrap the original cause for %T", tc.err)
+			}
+		})
 	}
 }
 

@@ -111,7 +111,95 @@ func wrapRateLimit(err error) error {
 		}
 		return &RateLimitedError{RetryAfter: retryAfter, cause: err}
 	}
+	// go-github's CheckResponse only classifies a 403 as a RateLimitError when
+	// X-RateLimit-Remaining is exactly 0, and as an AbuseRateLimitError when the
+	// response documentation_url carries the #abuse-rate-limits /
+	// secondary-rate-limits suffix. GitHub's secondary (abuse) limiter also fires
+	// in shapes that match NEITHER branch and so fall through to a plain
+	// *github.ErrorResponse — which the reconciler would surface as a generic
+	// ProviderError and draw controller-runtime's fixed exponential backoff
+	// against, instead of honouring GitHub's own Retry-After (ISI-5475, observed
+	// live on a shared PAT whose primary core budget still read 5000/5000 while
+	// the secondary limiter tripped). The uncaught shapes:
+	//   - a bare 429 Too Many Requests (CheckResponse special-cases only 403);
+	//   - a 403 whose body says "secondary rate limit" but whose documentation_url
+	//     lacks the exact suffix, or is absent (undocumented/inconsistent bodies);
+	//   - either of the above while primary headroom is still > 0.
+	// Detect those here and honour the server-indicated cool-down.
+	var errResp *github.ErrorResponse
+	if errors.As(err, &errResp) {
+		if delay, ok := secondaryRateLimitBackoff(errResp); ok {
+			return &RateLimitedError{RetryAfter: delay, cause: err}
+		}
+	}
 	return err
+}
+
+// secondaryRateLimitDefaultBackoff is the cool-down used for a detected
+// secondary rate limit that carries no Retry-After and no usable reset header.
+// GitHub's secondary limiter typically clears within a minute; a conservative
+// default avoids both a hot re-poll and the ~25m fixed backoff the generic
+// ProviderError path used to draw (ISI-5475).
+const secondaryRateLimitDefaultBackoff = 60 * time.Second
+
+// secondaryRateLimitBackoff detects a GitHub secondary/abuse rate limit that
+// go-github's CheckResponse did NOT already classify (see wrapRateLimit), and
+// returns the cool-down to honour. It is deliberately conservative on a 403: a
+// plain permissions 403 carries none of the rate-limit signals and must NOT be
+// deferred as though it would self-heal, so a 403 qualifies only when it carries
+// a Retry-After, a secondary-rate-limit body, or exhausted headroom. A 429 is
+// always a limit. The cool-down is the Retry-After header when present
+// (authoritative), else the time until X-RateLimit-Reset, else the default.
+func secondaryRateLimitBackoff(errResp *github.ErrorResponse) (time.Duration, bool) {
+	resp := errResp.Response
+	if resp == nil {
+		return 0, false
+	}
+	switch resp.StatusCode {
+	case http.StatusTooManyRequests:
+		return rateLimitRetryAfter(resp), true
+	case http.StatusForbidden:
+		hasRetryAfter := resp.Header.Get("Retry-After") != ""
+		exhausted := resp.Header.Get("X-RateLimit-Remaining") == "0"
+		isSecondary := mentionsSecondaryRateLimit(errResp.Message) ||
+			mentionsSecondaryRateLimit(errResp.DocumentationURL)
+		if hasRetryAfter || exhausted || isSecondary {
+			return rateLimitRetryAfter(resp), true
+		}
+	}
+	return 0, false
+}
+
+// rateLimitRetryAfter reads the server-indicated cool-down from a rate-limited
+// response: the Retry-After header (GitHub sends a delta in seconds) wins, then
+// the time until X-RateLimit-Reset (unix epoch seconds), then the conservative
+// default. It never returns less than one second so the requeue cannot hot-loop.
+func rateLimitRetryAfter(resp *http.Response) time.Duration {
+	if v := resp.Header.Get("Retry-After"); v != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+	}
+	if v := resp.Header.Get("X-RateLimit-Reset"); v != "" {
+		if epoch, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+			if d := time.Until(time.Unix(epoch, 0)); d > time.Second {
+				return d
+			}
+		}
+	}
+	return secondaryRateLimitDefaultBackoff
+}
+
+// mentionsSecondaryRateLimit reports whether a GitHub error message or
+// documentation_url names the secondary/abuse limiter. GitHub's secondary-limit
+// bodies are undocumented and inconsistent (go-github issues #540/#1136), so we
+// match the stable phrases rather than an exact URL suffix.
+func mentionsSecondaryRateLimit(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "secondary rate limit") ||
+		strings.Contains(s, "secondary-rate-limits") ||
+		strings.Contains(s, "abuse-rate-limits") ||
+		strings.Contains(s, "abuse detection")
 }
 
 // GitHubProvider implements SourceProvider for GitHub.
