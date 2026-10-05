@@ -133,9 +133,21 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
     data.branches.length === 0;
 
   // Degrade, don't blank (DESIGN-SPEC §3): on a credential/provider/stale error
-  // we keep the last-good mirror data visible but ghosted, alongside the banner
-  // card that says WHY it's stale — the tab is never blank on a transient error.
-  const ghost = card?.ghost === true && !empty;
+  // we keep the last-good mirror data visible but visually stale, alongside the
+  // banner card that says WHY it's stale — the tab is never blank on a transient
+  // error.
+  //
+  // ISI-5474: "visually stale" is NOT the same as "non-interactive". The panels
+  // wrapper only dims the last-good data; it must NOT aria-hide or kill pointer
+  // events on the whole block, because the Issues Kanban hosts the Epic-3 local
+  // assign-&-dispatch control. `assignAndDispatch` is a Paperclip-side dispatch
+  // against the last-good mirror snapshot — it never writes GitHub assignees and
+  // has zero dependency on GitHub being reachable, so a transient GitHub sync
+  // degrade must never make it un-clickable. GitHub-sourced live-write panels
+  // (e.g. PR management) still self-ghost — aria-hidden + pointer-events:none via
+  // their own `gh-screen--ghost` — so their live-write actions stay disabled even
+  // on CredentialMissing.
+  const stale = card?.ghost === true && !empty;
 
   return (
     <section className="github-status" data-testid="github-status">
@@ -248,7 +260,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
           aria-labelledby="github-tab-releases"
           className="github-view"
         >
-          <ReleasesBranchesScreen data={data} ghost={ghost} />
+          <ReleasesBranchesScreen data={data} ghost={stale} />
         </div>
       ) : (
         <div
@@ -269,12 +281,12 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
             )
           ) : (
             <div
-              className={`github-status__panels${ghost ? " github-status__panels--ghost" : ""}`}
+              className={`github-status__panels${stale ? " github-status__panels--stale" : ""}`}
               data-testid="github-panels"
-              data-ghost={ghost ? "true" : "false"}
-              aria-hidden={ghost ? "true" : undefined}
+              data-ghost={stale ? "true" : "false"}
+              data-stale={stale ? "true" : "false"}
             >
-              <PullRequestManagement data={data} projectId={projectId} ghost={ghost} />
+              <PullRequestManagement data={data} projectId={projectId} ghost={stale} />
               <GitHubIssuesKanban issues={data.issues} projectId={projectId} />
               <CiCdPipelineStatus data={data} />
               <ReleasePanel releases={data.releases} />

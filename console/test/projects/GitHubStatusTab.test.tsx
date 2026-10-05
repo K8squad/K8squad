@@ -400,4 +400,57 @@ describe("GitHubStatusTab", () => {
     expect(screen.getByTestId("gh-releases-empty")).toBeTruthy();
     expect(screen.getByTestId("gh-branches-empty")).toBeTruthy();
   });
+
+  // ISI-5474: a transient GitHub sync degrade (ProviderError) must dim the
+  // last-good data but must NOT aria-hide or kill pointer events on the whole
+  // panels block — the Issues Kanban hosts the Epic-3 local assign-&-dispatch
+  // control, which runs a Paperclip-side dispatch against the last-good snapshot
+  // and never touches GitHub. Gating it behind an upstream rate-limit is the bug.
+  it("keeps the local issue-assign/dispatch control interactive (not aria-hidden) during a transient ProviderError degrade", async () => {
+    // Router stub: the status fetch returns the last-good projection; the popup's
+    // roster fetch (GET /api/squad/agents) returns real agents so the control is
+    // fully enabled, proving genuine interactivity — not just presence in the DOM.
+    const spy = vi.fn((url: string) => {
+      const u = String(url);
+      const body = u.includes("/api/squad/agents")
+        ? { agents: [{ id: "uid-alice", name: "alice" }] }
+        : { ...projection, sync: { reason: "ProviderError", trigger: "poll", ageSeconds: 840 } };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+        text: () => Promise.resolve(JSON.stringify(body)),
+      } as Response);
+    });
+    vi.stubGlobal("fetch", spy);
+
+    render(<GitHubStatusTab projectId="web" />);
+    await waitFor(() => expect(screen.getByTestId("github-panels")).toBeTruthy());
+
+    // Degrade, don't blank: the block is marked stale (dimmed) …
+    const panels = screen.getByTestId("github-panels");
+    expect(panels.getAttribute("data-stale")).toBe("true");
+    // … but the specific bug — aria-hidden on the whole panels block — is gone, so
+    // the assign control stays in the a11y tree and keeps pointer events.
+    expect(panels.getAttribute("aria-hidden")).toBeNull();
+    expect(panels.className).not.toContain("github-status__panels--ghost");
+
+    // Open the issue card popup and reach the Epic-3 assign slot.
+    const board = screen.getByTestId("gh-issues-kanban");
+    const card = within(board)
+      .getAllByTestId("gh-issue-card")
+      .find((c) => c.textContent?.includes("#3"))!;
+    fireEvent.click(card);
+
+    const slot = screen.getByTestId("gh-issue-assign-slot");
+    // No ancestor hides the assign slot from assistive tech / pointer events.
+    for (let node: HTMLElement | null = slot; node; node = node.parentElement) {
+      expect(node.getAttribute("aria-hidden")).not.toBe("true");
+    }
+
+    // The control is genuinely usable: once the roster loads the select enables.
+    const select = screen.getByTestId("gh-issue-assign-select") as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
+    expect(screen.getByTestId("gh-issue-assign-submit")).toBeTruthy();
+  });
 });
