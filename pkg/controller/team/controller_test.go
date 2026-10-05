@@ -1156,6 +1156,27 @@ func egressProxyPolicy(name, addr, port string) *api.EgressPolicy {
 	}
 }
 
+// egressProxySelectorPolicy builds an EgressPolicy whose proxy is declared by
+// namespace+pod selector (ISI-5492, the Cilium-safe shape). Address is still
+// supplied (the API requires it) but is ignored in favor of the selectors.
+func egressProxySelectorPolicy(name, addr, port, proxyNS, proxyLabelKey, proxyLabelVal string) *api.EgressPolicy {
+	return &api.EgressPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: api.EgressPolicySpec{
+			Proxy: &api.EgressProxy{
+				Address: addr,
+				Port:    port,
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": proxyNS},
+				},
+				PodSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{proxyLabelKey: proxyLabelVal},
+				},
+			},
+		},
+	}
+}
+
 // TestEgressProxyPolicy (ISI-5473): a team whose Project references an
 // EgressPolicy with spec.proxy set gains the ksquad-allow-egress-proxy companion
 // — port-scoped TCP egress to the proxy addr:port only — so the squad's FQDN model
@@ -1252,6 +1273,51 @@ func TestEgressProxyDedup(t *testing.T) {
 	}
 }
 
+// TestEgressProxySelectorPeer (ISI-5492): when the EgressPolicy declares the
+// proxy by namespace+pod selector, the materialized ksquad-allow-egress-proxy
+// rule targets the proxy pods with a selector peer — NOT a clusterIP/32 ipBlock,
+// which is a silent no-op under Cilium socket-LB (the clusterIP is rewritten to a
+// backend pod IP before egress policy eval, ISI-5490/ISI-5492). This is the path
+// that lets the operator own the netpol on Cilium clusters.
+func TestEgressProxySelectorPeer(t *testing.T) {
+	r, c := newReconciler(t,
+		teamWithProjects("alpha", "uid-alpha", "proj-a"),
+		projectWithEgress("proj-a", "corp-egress"),
+		// Address is the clusterIP (ignored); selectors target the proxy pods.
+		egressProxySelectorPolicy("corp-egress", "10.0.0.5", "3128", "ksquad-egress", "app", "egress-proxy"),
+	)
+	if err := reconcileTeam(t, r, "alpha"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	var team api.Team
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "alpha", Namespace: "default"}, &team)
+
+	var pol networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "ksquad-allow-egress-proxy", Namespace: team.Status.Namespace}, &pol); err != nil {
+		t.Fatalf("get allow-egress-proxy NetworkPolicy: %v", err)
+	}
+	if len(pol.Spec.Egress) != 1 {
+		t.Fatalf("egress rules = %d, want 1", len(pol.Spec.Egress))
+	}
+	rule := pol.Spec.Egress[0]
+	if len(rule.To) != 1 {
+		t.Fatalf("peers = %d, want 1", len(rule.To))
+	}
+	peer := rule.To[0]
+	if peer.IPBlock != nil {
+		t.Errorf("peer has an ipBlock %q — want a selector peer (a clusterIP/32 ipBlock is a Cilium no-op)", peer.IPBlock.CIDR)
+	}
+	if peer.NamespaceSelector == nil || peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "ksquad-egress" {
+		t.Errorf("namespaceSelector = %+v, want metadata.name=ksquad-egress", peer.NamespaceSelector)
+	}
+	if peer.PodSelector == nil || peer.PodSelector.MatchLabels["app"] != "egress-proxy" {
+		t.Errorf("podSelector = %+v, want app=egress-proxy", peer.PodSelector)
+	}
+	if len(rule.Ports) != 1 || rule.Ports[0].Port == nil || rule.Ports[0].Port.IntValue() != 3128 {
+		t.Errorf("proxy ports = %+v, want 3128", rule.Ports)
+	}
+}
+
 // TestProxyTargetFromSpec (ISI-5473): address normalization — IPv4 → /32, IPv6 →
 // /128, an explicit CIDR verbatim, a named port preserved, and an FQDN/empty
 // address → nil (core NetworkPolicy cannot match a DNS name).
@@ -1294,4 +1360,40 @@ func TestProxyTargetFromSpec(t *testing.T) {
 			}
 		})
 	}
+
+	// ISI-5492: selectors take precedence over Address — the result is a
+	// selector target (no CIDR), even when Address is an FQDN that the ipBlock
+	// path would reject. This is how an author opts the proxy rule onto the
+	// Cilium-safe selector peer.
+	t.Run("selector-wins-over-fqdn-address", func(t *testing.T) {
+		got := proxyTargetFromSpec(&api.EgressProxy{
+			Address:           "egress-proxy.ksquad-egress.svc.cluster.local",
+			Port:              "3128",
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "ksquad-egress"}},
+			PodSelector:       &metav1.LabelSelector{MatchLabels: map[string]string{"app": "egress-proxy"}},
+		})
+		if got == nil {
+			t.Fatal("proxyTargetFromSpec with selectors = nil, want a selector target")
+		}
+		if got.CIDR != "" {
+			t.Errorf("CIDR = %q, want empty (selector peer carries no ipBlock)", got.CIDR)
+		}
+		if got.NamespaceSelector == nil || got.PodSelector == nil {
+			t.Errorf("selectors dropped: ns=%+v pod=%+v", got.NamespaceSelector, got.PodSelector)
+		}
+		if got.Port.String() != "3128" {
+			t.Errorf("port = %q, want 3128", got.Port.String())
+		}
+	})
+
+	// A port is still mandatory on the selector path.
+	t.Run("selector-without-port-rejected", func(t *testing.T) {
+		got := proxyTargetFromSpec(&api.EgressProxy{
+			Address:     "10.0.0.5",
+			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "egress-proxy"}},
+		})
+		if got != nil {
+			t.Errorf("proxyTargetFromSpec(selector, no port) = %+v, want nil", got)
+		}
+	})
 }

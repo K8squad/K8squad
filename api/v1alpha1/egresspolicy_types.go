@@ -103,7 +103,8 @@ type EgressProxy struct {
 	// spec.clusterIP). FQDN proxies are not expressible here by design:
 	// NetworkPolicy is L3/L4; resolve the proxy Service's IP at install
 	// time (a Headless/ExternalName indirection would silently widen the
-	// rule set).
+	// rule set). Ignored when PodSelector/NamespaceSelector are set (the
+	// selector peer, below, is preferred).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	Address string `json:"address"`
@@ -117,6 +118,29 @@ type EgressProxy struct {
 	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
 	// +optional
 	Protocol string `json:"protocol,omitempty"`
+
+	// PodSelector, when set, makes the materialized NetworkPolicy target the
+	// proxy pods by label selector instead of the Address ipBlock — and takes
+	// precedence over Address. REQUIRED on Cilium clusters: under Cilium
+	// socket-LB a Service clusterIP is translated to a backend pod IP *before*
+	// egress policy evaluation, so a clusterIP/32 ipBlock egress rule never
+	// matches and is a silent no-op (verified ISI-5476/ISI-5479, tracked
+	// ISI-5490/ISI-5492). A podSelector matches the pod IP the sandbox traffic
+	// actually egresses to, so the operator can own the netpol on Cilium.
+	// Combine with NamespaceSelector (NetworkPolicy AND semantics) to scope the
+	// match to the proxy's namespace — a podSelector alone matches only pods in
+	// this policy's own namespace, which is almost never where the proxy runs.
+	// +optional
+	PodSelector *metav1.LabelSelector `json:"podSelector,omitempty"`
+
+	// NamespaceSelector scopes the selector peer to the namespace(s) the proxy
+	// pods run in (e.g. {matchLabels: {kubernetes.io/metadata.name:
+	// ksquad-egress}}). Set it alongside PodSelector; a NamespaceSelector with
+	// no PodSelector opens egress to *every* pod in the matched namespaces.
+	// Like PodSelector, setting it switches the rule from an ipBlock to a
+	// selector peer (Address ignored).
+	// +optional
+	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
 }
 
 // EgressPolicyStatus defines the observed state of EgressPolicy.

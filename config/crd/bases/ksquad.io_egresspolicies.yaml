@@ -180,9 +180,119 @@ spec:
                       spec.clusterIP). FQDN proxies are not expressible here by design:
                       NetworkPolicy is L3/L4; resolve the proxy Service's IP at install
                       time (a Headless/ExternalName indirection would silently widen the
-                      rule set).
+                      rule set). Ignored when PodSelector/NamespaceSelector are set (the
+                      selector peer, below, is preferred).
                     minLength: 1
                     type: string
+                  namespaceSelector:
+                    description: |-
+                      NamespaceSelector scopes the selector peer to the namespace(s) the proxy
+                      pods run in (e.g. {matchLabels: {kubernetes.io/metadata.name:
+                      ksquad-egress}}). Set it alongside PodSelector; a NamespaceSelector with
+                      no PodSelector opens egress to *every* pod in the matched namespaces.
+                      Like PodSelector, setting it switches the rule from an ipBlock to a
+                      selector peer (Address ignored).
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                  podSelector:
+                    description: |-
+                      PodSelector, when set, makes the materialized NetworkPolicy target the
+                      proxy pods by label selector instead of the Address ipBlock — and takes
+                      precedence over Address. REQUIRED on Cilium clusters: under Cilium
+                      socket-LB a Service clusterIP is translated to a backend pod IP *before*
+                      egress policy evaluation, so a clusterIP/32 ipBlock egress rule never
+                      matches and is a silent no-op (verified ISI-5476/ISI-5479, tracked
+                      ISI-5490/ISI-5492). A podSelector matches the pod IP the sandbox traffic
+                      actually egresses to, so the operator can own the netpol on Cilium.
+                      Combine with NamespaceSelector (NetworkPolicy AND semantics) to scope the
+                      match to the proxy's namespace — a podSelector alone matches only pods in
+                      this policy's own namespace, which is almost never where the proxy runs.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
                   port:
                     description: Port is the proxy port (number or IANA name).
                     minLength: 1
