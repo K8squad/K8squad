@@ -29,19 +29,31 @@ import (
 	"github.com/K8squad/K8squad/pkg/toolchain"
 )
 
-// The tool-staging contract (ADR-044 step 6, spike C image strategy):
+// The tool-staging contract (ADR-044 step 6, spike C image strategy;
+// revised for ISI-5495):
 //
-//   - every toolchain image exposes its provides[] binaries under
-//     /toolchain/bin/ and contains a `cp` (busybox-level is enough — the
-//     curated catalog images are built to this contract);
+//   - every toolchain image puts its provides[] binaries on the image's
+//     own PATH (the curated catalog images install to /usr/local/bin or
+//     /usr/bin and set the tool as ENTRYPOINT — they do NOT populate a
+//     /toolchain/bin dir) and contains a POSIX `sh` + `cp`;
 //   - Run assembly stages ONE init container per resolved toolchain, in
-//     resolver order (sorted by name), copying /toolchain/bin/ onto a
-//     pod-local shared emptyDir mounted at /tools;
+//     resolver order (sorted by name). Each init resolves its declared
+//     provides[] via `command -v` and copies the real binaries onto a
+//     pod-local shared emptyDir mounted at /tools (fail-closed: a provided
+//     binary missing from the image PATH aborts staging);
 //   - the runtime (agent) container mounts /tools READ-ONLY and gets
 //     PATH=/tools/bin:<default path> prepended — kubectl lands on PATH
 //     before the runtime starts (sequential init containers, NFR);
 //   - emptyDir, not PVC: staging is pod-local and immutable-in-practice
 //     (ADR-044 consequences); digest-pinned images make it reproducible.
+//
+// ISI-5495: the original contract staged `cp -a /toolchain/bin/.`, but no
+// catalog toolchain image ever exposed /toolchain/bin — they install to the
+// standard on-PATH locations. The contract and the image layout had drifted,
+// so cold-boot staging crashlooped ("cp: can't stat '/toolchain/bin/.'").
+// Copying resolver-declared provides[] from their real on-PATH location is
+// operator-side only (no image rebuild) and honors what the images actually
+// ship.
 const (
 	// ToolVolumeName is the shared tool staging volume (emptyDir).
 	ToolVolumeName = "ksquad-tools"
@@ -51,10 +63,6 @@ const (
 
 	// ToolBinSubdir is the bin directory inside the tool volume.
 	ToolBinSubdir = "bin"
-
-	// StagingSourceDir is the in-image binary directory the staging
-	// contract requires toolchain images to expose.
-	StagingSourceDir = "/toolchain/bin"
 
 	// ToolPathValue is the PATH the agent container runs with: staged
 	// tools first, then the standard locations. Deterministic (env var
@@ -179,11 +187,9 @@ func RenderInitContainers(resolved []toolchain.Resolved) []corev1.Container {
 	inits := make([]corev1.Container, 0, len(ordered))
 	for _, res := range ordered {
 		inits = append(inits, corev1.Container{
-			Name:  "stage-" + res.Name,
-			Image: res.Image,
-			Command: []string{
-				"cp", "-a", StagingSourceDir + "/.", ToolMountPath + "/" + ToolBinSubdir + "/",
-			},
+			Name:    "stage-" + res.Name,
+			Image:   res.Image,
+			Command: stagingCommand(res.Provides),
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: ToolVolumeName, MountPath: ToolMountPath},
 			},
@@ -191,6 +197,29 @@ func RenderInitContainers(resolved []toolchain.Resolved) []corev1.Container {
 		})
 	}
 	return inits
+}
+
+// stagingScript resolves each declared provides[] binary from the image's
+// own PATH (via `command -v`) and copies the real file onto the shared
+// /tools/bin volume (ISI-5495). It is fail-closed: `set -e` plus an explicit
+// error on an unresolvable binary means a drifted/missing tool aborts staging
+// (the init container CrashLoops loudly) rather than letting the agent come up
+// with a silently empty /tools/bin. The binary names are passed as positional
+// arguments (`"$@"`), never interpolated into the script body, so no catalog
+// value can break out of the loop.
+const stagingScript = `set -e
+mkdir -p /tools/bin
+for b in "$@"; do
+  src="$(command -v "$b")" || { echo "tool-staging: '$b' not found on image PATH" >&2; exit 1; }
+  cp -L "$src" /tools/bin/
+done`
+
+// stagingCommand builds the init-container command that stages the given
+// declared binaries. The leading "sh" after the script is $0; provides become
+// $1..$N consumed by the `for ... "$@"` loop.
+func stagingCommand(provides []string) []string {
+	cmd := []string{"sh", "-c", stagingScript, "sh"}
+	return append(cmd, provides...)
 }
 
 // ToolVolumeMounts returns the agent container's read-only tool mounts.
