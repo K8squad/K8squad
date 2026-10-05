@@ -145,7 +145,7 @@ func TestGovernorPacesRequests(t *testing.T) {
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
-		drainClose(resp.Body)
+		resp.Body.Close() // handler writes no body; closing frees the conn
 	}
 	if elapsed, want := time.Since(start), time.Duration(n-1)*interval; elapsed < want {
 		t.Fatalf("elapsed %v < %v — governor is not pacing the PAT", elapsed, want)
@@ -162,7 +162,9 @@ func TestGovernorHonoursContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.invalid/", nil)
-	if _, err := tr.RoundTrip(req); err == nil {
+	resp, err := tr.RoundTrip(req)
+	if err == nil {
+		resp.Body.Close()
 		t.Fatal("expected a context error from the governor wait, got nil")
 	}
 }
