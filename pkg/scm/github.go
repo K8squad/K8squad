@@ -152,7 +152,11 @@ type rateTrackingTransport struct {
 
 func (t *rateTrackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.base.RoundTrip(req)
-	if resp != nil {
+	// A response served from the ETag cache (ISI-5480) carries a STALE rate
+	// header captured when the body was first fetched; feeding it to the GH-3
+	// gauge would report phantom headroom drops on a 304. Skip cached responses
+	// so the gauge only ever reflects a real round trip.
+	if resp != nil && resp.Header.Get(fromCacheHeader) == "" {
 		if v := resp.Header.Get("X-RateLimit-Remaining"); v != "" {
 			if n, perr := strconv.ParseInt(v, 10, 64); perr == nil {
 				t.remaining.Store(n)
@@ -198,11 +202,21 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 	p := &GitHubProvider{creds: creds}
 	p.lastRate.Store(-1) // -1 = no response observed yet (LastRateRemaining ok=false)
 
-	transport := http.DefaultTransport
+	// Innermost real transport: the per-PAT governor + ETag conditional-request
+	// cache (ISI-5480). It sits BELOW oauth2 so it adds If-None-Match to the
+	// already-signed request and makes the actual network call, and its state is
+	// resolved from the process-global registry keyed by a PAT fingerprint —
+	// the reconciler builds a fresh provider per pass, so per-instance state
+	// would reset every reconcile and share nothing across projects on the PAT.
+	base := http.RoundTripper(&govEtagTransport{
+		base:  http.DefaultTransport,
+		state: sharedPATRegistry.stateFor(creds.Token),
+	})
+	transport := base
 	if creds.Token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
 		transport = &oauth2.Transport{
-			Base:   http.DefaultTransport,
+			Base:   base,
 			Source: ts,
 		}
 	}
