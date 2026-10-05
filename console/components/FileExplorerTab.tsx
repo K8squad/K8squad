@@ -41,10 +41,15 @@ import {
   codeLanguage,
   imageDataUrl,
   retryDelayMs,
+  getCachedListing,
+  cacheListing,
+  revalidateListing,
+  applyRevalidation,
   FILE_REASON_NO_BROWSE_TARGET,
   FILE_REASON_WORKSPACE_BUSY,
   RETRY_MAX_ATTEMPTS,
   type FileEntry,
+  type FileListing,
   type FileContent,
   type FileStat,
   type FilesState,
@@ -61,7 +66,40 @@ hljs.registerLanguage("yaml", hlYaml);
 
 /** Per-directory lazy-load state, keyed by the directory's workspace-relative
  * path ("" = root). A directory is fetched the first time it is expanded. */
-type DirState = FilesState<{ entries: FileEntry[]; degraded?: boolean; reason?: string; snapshotTakenAt?: string }>;
+type DirData = {
+  entries: FileEntry[];
+  degraded?: boolean;
+  reason?: string;
+  snapshotTakenAt?: string;
+  // ADR-0025 D5a (ISI-5485): the coherence generation stamp + the cache-first
+  // client stamps. `generation` drives the background-revalidate coherence
+  // guard; `fromCache` tells the header to show the syncing…→updated/stale
+  // affordance for a cache-first paint.
+  generation?: string;
+  fromCache?: boolean;
+  cachedAt?: number;
+};
+type DirState = FilesState<DirData>;
+
+/** Project the full FileListing down to the component's DirData (carrying the
+ * D5a generation + cache stamps through). */
+function toDirData(listing: FileListing): DirData {
+  return {
+    entries: listing.entries ?? [],
+    degraded: listing.degraded,
+    reason: listing.reason,
+    snapshotTakenAt: listing.snapshotTakenAt,
+    generation: listing.generation,
+    fromCache: listing.fromCache,
+    cachedAt: listing.cachedAt,
+  };
+}
+
+// ADR-0025 D5a background-sync affordance (ISI-5485): a subtle header chip, never
+// a spinner takeover. `syncing` while a cache-first revalidate is in flight,
+// `updated` once fresh bytes reconcile, `stale` when a revalidate failed and the
+// cached tree stands (degraded, not blank).
+type SyncState = "syncing" | "updated" | "stale" | null;
 
 // ISI-4705: the largest byte window the rich renderers (highlight.js code view,
 // ReactMarkdown) will process on the main thread. A capped read is up to 1 MiB
@@ -245,6 +283,49 @@ function FreshnessPill({
   );
 }
 
+/** ADR-0025 D5a (ISI-5485) — the background-sync chip for a cache-first paint.
+ * A subtle header affordance, never a spinner takeover: `syncing` while the
+ * revalidate is in flight, `updated` once fresh bytes reconciled in place,
+ * `stale` when the revalidate failed and the cached tree stands (degraded, not
+ * blank). Copy follows ISI-5339 §3 ("trust signal, never an alarm"). */
+function SyncChip({ state }: { state: Exclude<SyncState, null> }) {
+  if (state === "syncing") {
+    return (
+      <span
+        className="file-explorer__sync file-explorer__sync--syncing"
+        data-testid="files-sync-syncing"
+        role="status"
+        title="Refreshing from the live workspace…"
+      >
+        <span className="file-explorer__sync-dot" aria-hidden="true" />
+        Syncing…
+      </span>
+    );
+  }
+  if (state === "updated") {
+    return (
+      <span
+        className="file-explorer__sync file-explorer__sync--updated"
+        data-testid="files-sync-updated"
+        role="status"
+        title="Reconciled with the live workspace"
+      >
+        Up to date
+      </span>
+    );
+  }
+  return (
+    <span
+      className="file-explorer__sync file-explorer__sync--stale"
+      data-testid="files-sync-stale"
+      role="status"
+      title="Couldn't reach the workspace — showing the last loaded view"
+    >
+      Showing cached
+    </span>
+  );
+}
+
 /** Frame 01 — skeleton tree rows (muted rounded bars) while a listing is in
  * flight. `aria-hidden` bars; the surrounding region carries the single
  * aria-busy "Loading files…" label (spec §6). */
@@ -422,6 +503,11 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // When the current root listing landed — drives the Live freshness label.
   const [rootFetchedAt, setRootFetchedAt] = useState<number | null>(null);
+  // ADR-0025 D5a (ISI-5485): the background-sync affordance for a cache-first
+  // paint — null on a cold/fresh fetch, "syncing" while a revalidate is in
+  // flight, "updated" once fresh bytes reconcile, "stale" when a revalidate
+  // failed and the cached tree stands.
+  const [syncState, setSyncState] = useState<SyncState>(null);
   // S6 reconciliation (ISI-5355): per-directory back-off timers so a lazy
   // expand that hits a cold reader follows the same bounded ladder as the
   // root — no row spins forever, and every pending row reaches loaded /
@@ -458,16 +544,40 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
     setRootTick((t) => t + 1);
   }, []);
 
+  // L1 / C3: drop the expanded child-state (open carets + loaded listings) of
+  // every removed path AND anything nested under it. Used when a background
+  // revalidate reconciles away a directory (L1) or replaces the whole tree
+  // across a generation change (C3) — stale subtree bytes never survive.
+  const pruneSubtrees = useCallback((removed: string[]) => {
+    if (removed.length === 0) return;
+    const isGone = (p: string) =>
+      removed.some((r) => p === r || p.startsWith(`${r}/`));
+    setDirs((cur) => {
+      const next: Record<string, DirState> = {};
+      for (const [k, v] of Object.entries(cur)) if (!isGone(k)) next[k] = v;
+      return next;
+    });
+    setOpen((cur) => {
+      const next = new Set<string>();
+      for (const p of cur) if (!isGone(p)) next.add(p);
+      return next;
+    });
+  }, []);
+
   const loadDir = useCallback(
     async (path: string, signal?: AbortSignal): Promise<DirState> => {
       const state = await listProjectFiles(projectId, path, signal);
       if (state.kind !== "ready") return state;
+      // D5a write-through (ISI-5485): a fresh cacheable listing (not degraded,
+      // carries a generation) seeds the durable session cache so a later revisit
+      // renders cache-first. cacheListing itself no-ops on degraded/busy (M1).
+      cacheListing(projectId, path, state.data);
       return {
         kind: "ready",
         // ISI-5140: preserve `reason` — the render logic (busyDegraded / noTarget)
         // keys the workspace-busy banner on reason==="workspace_busy"; dropping it
         // here left busyDegraded permanently false, so the banner never rendered.
-        data: { entries: state.data.entries ?? [], degraded: state.data.degraded, reason: state.data.reason, snapshotTakenAt: state.data.snapshotTakenAt },
+        data: toDirData(state.data),
       };
     },
     [projectId],
@@ -480,11 +590,57 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   useEffect(() => {
     let alive = true;
     const ac = new AbortController();
+
+    // ADR-0025 D5a cache-first (ISI-5485): a path opened earlier THIS session
+    // renders SYNCHRONOUSLY from the durable cache with no blocking spinner,
+    // then a non-blocking background revalidate reconciles the bytes. A cache
+    // MISS falls straight through to the cold path below (progressive 202 /
+    // retry state machine), unchanged.
+    const cached = getCachedListing(projectId, "");
+    if (cached) {
+      setRoot({ kind: "ready", data: toDirData(cached) });
+      setRootFetchedAt(cached.cachedAt ?? Date.now());
+      setSyncState("syncing");
+      void (async () => {
+        const fresh = await revalidateListing(projectId, "", ac.signal);
+        if (!alive) return;
+        const outcome = applyRevalidation(projectId, "", cached, fresh);
+        if (!alive) return;
+        if (outcome.kind === "stale") {
+          // AC3: a failed/degraded revalidate LEAVES the cached tree — stale,
+          // not blank. The cache is already untouched inside applyRevalidation.
+          setSyncState("stale");
+          return;
+        }
+        if (outcome.kind === "replaced") {
+          // C3: generation changed → the rendered epoch is gone. Replace the
+          // whole tree under the new generation and drop the stale subtree so
+          // no busy→idle release leaves stale bytes alive.
+          setDirs({});
+          setOpen(new Set());
+          setRoot({ kind: "ready", data: toDirData(outcome.listing) });
+          setRootFetchedAt(Date.now());
+          setSyncState("updated");
+          return;
+        }
+        // Same generation → reconcile in place (L1) and prune any removed subtree.
+        pruneSubtrees(outcome.reconcile.removed);
+        setRoot({ kind: "ready", data: toDirData(outcome.listing) });
+        setRootFetchedAt(Date.now());
+        setSyncState("updated");
+      })();
+      return () => {
+        alive = false;
+        ac.abort();
+      };
+    }
+
     // Only the root state cycles here — the expanded tree, selection, and
     // dirTimers are owned by the [projectId] effect above so a manual retry
     // preserves tree position (ISI-5339 §4).
     setRoot({ kind: "loading" });
     setRootFetchedAt(null);
+    setSyncState(null);
 
     async function fetchRoot(attempt: number, isRetry = false) {
       try {
@@ -499,10 +655,8 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
           : await (async (): Promise<DirState> => {
               const raw = await listProjectFilesAttempt(projectId, "", attempt, ac.signal);
               if (raw.kind !== "ready") return raw;
-                return {
-                  kind: "ready",
-                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason, snapshotTakenAt: raw.data.snapshotTakenAt },
-                };
+                cacheListing(projectId, "", raw.data);
+                return { kind: "ready", data: toDirData(raw.data) };
             })();
         if (!alive) return;
         if (s.kind === "retrying" || s.kind === "preparing") {
@@ -529,7 +683,7 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
         retryTimer.current = null;
       }
     };
-  }, [loadDir, projectId, rootTick]);
+  }, [loadDir, projectId, rootTick, pruneSubtrees]);
 
   // S6 reconciliation (ISI-5355): a lazy expand pays the same reader warm-up the
   // root can — a typed 503/202 on expand is a TRANSIENT state, so the row
@@ -547,10 +701,8 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
             : await (async (): Promise<DirState> => {
                 const raw = await listProjectFilesAttempt(projectId, path, attempt);
                 if (raw.kind !== "ready") return raw;
-                return {
-                  kind: "ready",
-                  data: { entries: raw.data.entries ?? [], degraded: raw.data.degraded, reason: raw.data.reason, snapshotTakenAt: raw.data.snapshotTakenAt },
-                };
+                cacheListing(projectId, path, raw.data);
+                return { kind: "ready", data: toDirData(raw.data) };
               })();
         } catch {
           s = { kind: "error", status: 0 };
@@ -717,7 +869,7 @@ function FileExplorerTabInner({ projectId }: { projectId: string }) {
   return (
     <section data-testid="file-explorer">
       <header className="file-explorer__header">
-        <h1>File Explorer {pill}</h1>
+        <h1>File Explorer {pill} {syncState && <SyncChip state={syncState} />}</h1>
         <p className="muted">Read-only view of this project&apos;s workspace files.</p>
       </header>
 

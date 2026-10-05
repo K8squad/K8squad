@@ -349,6 +349,40 @@
   100% { transform: scale(1.4); opacity: 0; }
 }
 
+/* ADR-0025 D5a (ISI-5485) — the background-sync chip for a cache-first paint.
+   A subtle, low-chrome header affordance (NOT a pill, NOT a spinner takeover):
+   small, muted, inline next to the freshness pill. */
+.file-explorer__sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: var(--radius-chip, 6px);
+  white-space: nowrap;
+  cursor: default;
+  color: var(--text-muted, #8aa0c6);
+  border: 1px solid transparent;
+}
+
+.file-explorer__sync--stale {
+  color: var(--status-paused, #fbbf24);
+}
+
+.file-explorer__sync-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: file-explorer-sync-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes file-explorer-sync-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* Frame 01 — skeleton rows: muted rounded bars, gently shimmering. */
 .file-explorer__skeleton {
   height: 12px;
@@ -521,6 +555,7 @@
 @media (prefers-reduced-motion: reduce) {
   .file-explorer__spin,
   .file-explorer__skeleton,
+  .file-explorer__sync-dot,
   .file-explorer__pill-dot::after {
     animation: none;
   }
