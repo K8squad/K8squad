@@ -40,6 +40,28 @@ export interface TicketDecisionsProps {
   client?: DiscussionClient;
 }
 
+/**
+ * Map an answer/reject failure to a human-readable, non-leaking note. `DiscussionApiError`
+ * carries the HTTP status; a denied/missing read already collapses to 404 at the client, so
+ * these messages never reveal a foreign room — they only tell the human why their click didn't
+ * take and what to do next.
+ */
+function decisionErrorMessage(e: unknown): string {
+  const status = (e as { status?: number } | null)?.status;
+  switch (status) {
+    case 409:
+      return "This decision was already answered. Refresh to see the latest.";
+    case 400:
+      return "That answer wasn't accepted — check your selection and try again.";
+    case 401:
+    case 403:
+    case 404:
+      return "You can no longer act on this decision.";
+    default:
+      return "Something went wrong submitting your answer. Please try again.";
+  }
+}
+
 export function TicketDecisions({
   projectId,
   threadId,
@@ -49,6 +71,7 @@ export function TicketDecisions({
   const [api] = useState<DiscussionClient>(() => client ?? createDiscussionClient());
   const [decisions, setDecisions] = useState<Record<string, DecisionRequest>>({});
   const [busyMessageId, setBusyMessageId] = useState<string | undefined>();
+  const [errorByMessageId, setErrorByMessageId] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!threadId) {
@@ -74,12 +97,22 @@ export function TicketDecisions({
     };
   }, [api, projectId, threadId]);
 
+  const clearError = useCallback((messageId: string) => {
+    setErrorByMessageId((cur) => {
+      if (!(messageId in cur)) return cur;
+      const next = { ...cur };
+      delete next[messageId];
+      return next;
+    });
+  }, []);
+
   // Human answer (ADR-0026 §4.4): the apiserver derives the mode from the stored card,
   // validates the selection, records the post-back, and re-dispatches the raising agent.
   // Advance the card to its returned phase so it renders read-only without a reload.
   const answerDecision = useCallback(
     async (messageId: string, answer: DecisionAnswerInput) => {
       setBusyMessageId(messageId);
+      clearError(messageId);
       try {
         const res = await api.answerDecisionRequest(projectId, messageId, answer);
         setDecisions((cur) => {
@@ -88,11 +121,15 @@ export function TicketDecisions({
           return { ...cur, [messageId]: { ...existing, phase: res.status } };
         });
         onDecided?.();
+      } catch (e) {
+        // A 4xx/409 must surface, never leave a silently stuck card: keep the card `open`
+        // (no phase advance, no onDecided) and show why the answer didn't land.
+        setErrorByMessageId((cur) => ({ ...cur, [messageId]: decisionErrorMessage(e) }));
       } finally {
         setBusyMessageId(undefined);
       }
     },
-    [api, projectId, onDecided],
+    [api, projectId, onDecided, clearError],
   );
 
   // Human reject (ADR-0026 §4.4): records the rejection + reason and re-dispatches the
@@ -100,6 +137,7 @@ export function TicketDecisions({
   const rejectDecision = useCallback(
     async (messageId: string, reason?: string) => {
       setBusyMessageId(messageId);
+      clearError(messageId);
       try {
         const res = await api.rejectDecisionRequest(projectId, messageId, reason);
         setDecisions((cur) => {
@@ -108,11 +146,13 @@ export function TicketDecisions({
           return { ...cur, [messageId]: { ...existing, phase: res.status } };
         });
         onDecided?.();
+      } catch (e) {
+        setErrorByMessageId((cur) => ({ ...cur, [messageId]: decisionErrorMessage(e) }));
       } finally {
         setBusyMessageId(undefined);
       }
     },
-    [api, projectId, onDecided],
+    [api, projectId, onDecided, clearError],
   );
 
   const cards = Object.values(decisions);
@@ -136,6 +176,15 @@ export function TicketDecisions({
               onReject={rejectDecision}
               busy={busyMessageId === d.Message.id}
             />
+            {errorByMessageId[d.Message.id] ? (
+              <p
+                className="ksq-decision__error"
+                role="alert"
+                data-testid="decision-error"
+              >
+                {errorByMessageId[d.Message.id]}
+              </p>
+            ) : null}
           </li>
         ))}
       </ul>

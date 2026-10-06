@@ -113,6 +113,31 @@ describe("TicketDecisions — decision_request cards on the ticket surface (ISI-
     expect(onDecided).toHaveBeenCalledTimes(1);
   });
 
+  it("surfaces an error and keeps the card open when the answer fails (no silent stuck card)", async () => {
+    const err = Object.assign(new Error("conflict"), { status: 409 });
+    const client = stubClient({
+      answerDecisionRequest: vi.fn(async () => {
+        throw err;
+      }),
+    });
+    const onDecided = vi.fn();
+    render(
+      <TicketDecisions projectId="ns/demo" threadId="thr-1" onDecided={onDecided} client={client} />,
+    );
+    await waitFor(() => expect(screen.getByTestId("decision-submit")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("decision-submit"));
+
+    // The failure is shown…
+    const note = await screen.findByTestId("decision-error");
+    expect(note.textContent).toMatch(/already answered/i);
+    // …the card stays answerable (not advanced to a decided read-only state)…
+    expect(screen.getByTestId("decision-submit")).toBeTruthy();
+    expect(screen.queryByTestId("decision-decided")).toBeNull();
+    // …and the ticket is NOT re-synced on a failed decision.
+    expect(onDecided).not.toHaveBeenCalled();
+  });
+
   it("renders nothing when a thread is linked but carries no cards (anti-nag)", async () => {
     const client = stubClient({ listDecisionRequests: vi.fn(async () => []) });
     const { container } = render(

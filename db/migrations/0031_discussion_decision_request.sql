@@ -49,6 +49,8 @@ ALTER TABLE discussion.message
 --    (a project-wide ask bound to no ticket): such a card simply has no continuation target.
 CREATE TABLE discussion.decision_request (
     message_id        uuid        PRIMARY KEY REFERENCES discussion.message(id),
+    team_id           uuid        NOT NULL,   -- the owning thread's team, denormalized ONLY to scope
+                                              -- the idempotency UNIQUE to the tenant (see below)
     phase             text        NOT NULL DEFAULT 'open'
         CHECK (phase IN ('open', 'answered', 'rejected', 'expired', 'superseded')),
     idempotency_key   text        NOT NULL,
@@ -64,9 +66,14 @@ CREATE TABLE discussion.decision_request (
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
 
--- One card per logical ask: an agent retry re-posting the same idempotency_key returns the existing
--- row instead of a second card (ADR-0026 §4.2 idempotent create).
-CREATE UNIQUE INDEX idx_decision_request_idempotency ON discussion.decision_request (idempotency_key);
+-- One card per logical ask, SCOPED TO THE TENANT: an agent retry re-posting the same idempotency_key
+-- returns the existing row instead of a second card (ADR-0026 §4.2 idempotent create). The uniqueness
+-- is (team_id, idempotency_key), NOT idempotency_key alone: a GLOBAL unique would let one team's key
+-- block another team's create (the insert conflicts, but the tenancy-scoped idempotent re-read cannot
+-- see the other team's row → a spurious 404/create-block across tenants). Scoping to team_id matches
+-- the re-read's tenancy predicate so the conflict path always resolves to the caller's own card.
+CREATE UNIQUE INDEX idx_decision_request_idempotency
+    ON discussion.decision_request (team_id, idempotency_key);
 
 -- Answer/reject CAS scans and the Inbox "open decision_requests" arm (ADR-0026 §3.2) both live in
 -- phase='open'; decided lookups ride the PK.

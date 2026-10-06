@@ -164,7 +164,7 @@ func decisionRejectHandler(f decisionFanout) http.HandlerFunc {
 		if mapDecisionErr(w, err) {
 			return
 		}
-		if !dr.Payload.AllowReject {
+		if !dr.Payload.RejectAllowed() {
 			writeJSONError(w, http.StatusBadRequest, "this decision_request does not allow rejection")
 			return
 		}

@@ -74,8 +74,13 @@ type DecisionRequestPayload struct {
 	MinSelected              int              `json:"minSelected,omitempty"`
 	MaxSelected              int              `json:"maxSelected,omitempty"`
 	DefaultSelectedOptionIDs []string         `json:"defaultSelectedOptionIds,omitempty"`
-	AllowReject              bool             `json:"allowReject,omitempty"`
-	RejectRequiresReason     bool             `json:"rejectRequiresReason,omitempty"`
+	// AllowReject is a TRISTATE so the backend default matches the FE (ADR-0026 §4.4): nil (the
+	// omitempty wire default) and true both PERMIT rejection — reject is a first-class human escape,
+	// available unless an agent explicitly opts out with `false`. A plain bool defaulted to false,
+	// which silently 400'd the Reject button the card always shows (M1). approve mode always permits
+	// rejection regardless (it is an accept/reject by construction); see RejectAllowed.
+	AllowReject          *bool `json:"allowReject,omitempty"`
+	RejectRequiresReason bool  `json:"rejectRequiresReason,omitempty"`
 }
 
 // DecisionTarget binds a card to what it decides on (ADR-0026 §4.1). A moving revisionId is what the
@@ -141,6 +146,17 @@ func (p DecisionRequestPayload) Validate() error {
 		return fmt.Errorf("%w: unknown decision mode %q", ErrInvalidDecisionPayload, p.Mode)
 	}
 	return nil
+}
+
+// RejectAllowed reports whether a human may reject this card (ADR-0026 §4.4). It is the single
+// source of truth the answer/reject handler shares with the FE's `allowReject !== false` default:
+// approve is always accept/reject, and every other mode permits rejection unless the author opted
+// out with an explicit `allowReject: false`.
+func (p DecisionRequestPayload) RejectAllowed() bool {
+	if p.Mode == DecisionModeApprove {
+		return true
+	}
+	return p.AllowReject == nil || *p.AllowReject
 }
 
 // ============================================================================
@@ -245,16 +261,16 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 	// tx back (discarding the just-inserted message) and return the existing card.
 	tag, err := tx.ExecContext(ctx, `
 		INSERT INTO discussion.decision_request
-		    (message_id, phase, idempotency_key, work_item_id, target, bound_revision_id, continuation)
-		VALUES ($1, 'open', $2, $3, $4, $5, $6)
-		ON CONFLICT (idempotency_key) DO NOTHING`,
-		m.ID, idempotencyKey, workItem, nullJSON(targetJSON), boundRev, DefaultContinuation)
+		    (message_id, team_id, phase, idempotency_key, work_item_id, target, bound_revision_id, continuation)
+		VALUES ($1, $2, 'open', $3, $4, $5, $6, $7)
+		ON CONFLICT (team_id, idempotency_key) DO NOTHING`,
+		m.ID, teamID, idempotencyKey, workItem, nullJSON(targetJSON), boundRev, DefaultContinuation)
 	if err != nil {
 		return nil, fmt.Errorf("post decision_request lifecycle: %w", err)
 	}
 	if n, _ := tag.RowsAffected(); n == 0 {
 		_ = tx.Rollback()
-		existing, gerr := s.getDecisionRequestByIdempotencyKey(ctx, projectID, teamID, idempotencyKey)
+		existing, gerr := s.getDecisionRequestByIdempotencyKey(ctx, teamID, idempotencyKey)
 		if gerr != nil {
 			return nil, gerr
 		}
@@ -262,6 +278,14 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+
+	// Anti-nag supersede (ADR-0026 §4.2 / M3): a fresh ask that binds the SAME target with a NEWER
+	// revision makes any prior open card on that target stale — auto-supersede it so a bypassed
+	// decision never re-spins. Best-effort and post-commit: the new card is already durable, so a
+	// sweep failure must never fail the create (and the store carries no logger to surface it).
+	if target != nil && target.Ref != "" && target.RevisionID != "" {
+		_, _ = s.SupersedeStaleDecisionRequests(ctx, projectID, teamID, threadID, target.Ref, target.RevisionID, m.ID)
 	}
 	return &m, nil
 }
@@ -347,11 +371,14 @@ func (s *Store) GetDecisionRequest(ctx context.Context, projectID string, teamID
 	return d, err
 }
 
-// getDecisionRequestByIdempotencyKey resolves the existing card on the idempotent-create path.
-func (s *Store) getDecisionRequestByIdempotencyKey(ctx context.Context, projectID string, teamID uuid.UUID, idempotencyKey string) (*DecisionRequest, error) {
+// getDecisionRequestByIdempotencyKey resolves the existing card on the idempotent-create path. It is
+// scoped by EXACTLY the conflict key (team_id, idempotency_key) — the same scope as the UNIQUE index —
+// so whenever the ON CONFLICT path fires, this read is guaranteed to find the caller's own conflicting
+// row (M5: a project_id predicate here could miss a same-team row in another project and spuriously 404).
+func (s *Store) getDecisionRequestByIdempotencyKey(ctx context.Context, teamID uuid.UUID, idempotencyKey string) (*DecisionRequest, error) {
 	row := s.db.QueryRowContext(ctx, decisionSelect+`
-		WHERE d.idempotency_key = $1 AND t.project_id = $2 AND t.team_id = $3 AND m.invalidated_at IS NULL`,
-		idempotencyKey, projectID, teamID)
+		WHERE d.idempotency_key = $1 AND t.team_id = $2 AND m.invalidated_at IS NULL`,
+		idempotencyKey, teamID)
 	d, err := scanDecisionRequest(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrDecisionRequestNotFound
@@ -574,26 +601,61 @@ func (s *Store) ExpireDecisionRequest(ctx context.Context, projectID string, tea
 	return nil
 }
 
-// SupersedeStaleDecisionRequests auto-expires every OPEN card in a thread whose bound revision no
-// longer matches `currentRevisionID` — the revision-moved supersede sweep (ADR-0026 §4.2/§5). Cards
-// with no bound revision are left alone (they have nothing to go stale against). Returns the count
-// superseded. Best-effort: called from the answer/revision seam, never blocks the human path.
-func (s *Store) SupersedeStaleDecisionRequests(ctx context.Context, projectID string, teamID uuid.UUID, currentRevisionID string) (int64, error) {
-	if currentRevisionID == "" {
+// SupersedeStaleDecisionRequests auto-supersedes every OTHER open card in `threadID` that binds the
+// SAME target.ref but a DIFFERENT bound revision than `currentRevisionID` — the revision-moved
+// supersede sweep (ADR-0026 §4.2/§5). It is the anti-nag invariant: once a newer ask on a target
+// lands, the prior question on that target is stale and must auto-resolve rather than re-spin.
+//
+// Scoped to one thread + target ref (NOT team-wide): two different targets legitimately carry two
+// different revisions and must not supersede each other. `exceptMessageID` is the just-posted card
+// that drives the sweep (it must not supersede itself). Returns the count superseded. Best-effort —
+// the caller (PostDecisionRequest) runs it post-commit and ignores the error.
+//
+// Each stale card is retired through ExpireDecisionRequest (the single-card CAS primitive) so the
+// transition goes through exactly one audited code path; a card that raced to decided in between is
+// skipped, not failed.
+func (s *Store) SupersedeStaleDecisionRequests(ctx context.Context, projectID string, teamID, threadID uuid.UUID, targetRef, currentRevisionID string, exceptMessageID uuid.UUID) (int64, error) {
+	if targetRef == "" || currentRevisionID == "" {
 		return 0, nil
 	}
-	tag, err := s.db.ExecContext(ctx, `
-		UPDATE discussion.decision_request d
-		   SET phase = 'superseded', updated_at = now()
-		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
-		WHERE d.message_id = m.id AND t.project_id = $1 AND t.team_id = $2
-		  AND d.phase = 'open' AND m.invalidated_at IS NULL
-		  AND d.bound_revision_id IS NOT NULL AND d.bound_revision_id <> $3`,
-		projectID, teamID, currentRevisionID)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT d.message_id
+		  FROM discussion.decision_request d
+		  JOIN discussion.message m ON m.id = d.message_id
+		  JOIN discussion.thread t  ON t.id = m.thread_id
+		 WHERE t.project_id = $1 AND t.team_id = $2 AND m.thread_id = $3
+		   AND d.phase = 'open' AND m.invalidated_at IS NULL
+		   AND d.message_id <> $4
+		   AND d.target->>'ref' = $5
+		   AND COALESCE(d.bound_revision_id, '') <> $6`,
+		projectID, teamID, threadID, exceptMessageID, targetRef, currentRevisionID)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := tag.RowsAffected()
+	var stale []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			rows.Close()
+			return 0, scanErr
+		}
+		stale = append(stale, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var n int64
+	for _, id := range stale {
+		if expErr := s.ExpireDecisionRequest(ctx, projectID, teamID, id, DecisionPhaseSuperseded); expErr != nil {
+			if errors.Is(expErr, ErrDecisionRequestNotOpen) {
+				continue // raced to answered/rejected/already-superseded — not stale anymore, skip
+			}
+			return n, expErr
+		}
+		n++
+	}
 	return n, nil
 }
 

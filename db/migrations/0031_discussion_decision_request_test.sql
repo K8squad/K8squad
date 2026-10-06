@@ -33,9 +33,9 @@ END $$;
 DO $$
 DECLARE p text; c text; w uuid;
 BEGIN
-    INSERT INTO discussion.decision_request (message_id, idempotency_key, work_item_id, bound_revision_id)
-    VALUES ('00000000-0000-0000-0000-0000000d0002', 'decision:t1:http-client:r1',
-            '00000000-0000-0000-0000-0000000d00f1', 'rev-1');
+    INSERT INTO discussion.decision_request (message_id, team_id, idempotency_key, work_item_id, bound_revision_id)
+    VALUES ('00000000-0000-0000-0000-0000000d0002', '00000000-0000-0000-0000-0000000d00aa',
+            'decision:t1:http-client:r1', '00000000-0000-0000-0000-0000000d00f1', 'rev-1');
     SELECT phase, continuation, work_item_id INTO p, c, w
       FROM discussion.decision_request WHERE message_id = '00000000-0000-0000-0000-0000000d0002';
     ASSERT p = 'open', format('expected default phase open, found %s', p);
@@ -56,7 +56,8 @@ BEGIN
     ASSERT ok, 'discussion.decision_request.phase accepted a value outside the allowed set';
 END $$;
 
--- (4) idempotency_key is UNIQUE: a second card with the same key is refused (idempotent-create guard).
+-- (4) (team_id, idempotency_key) is UNIQUE: a second card with the same key IN THE SAME TEAM is
+--     refused (idempotent-create guard).
 DO $$
 DECLARE ok boolean := false;
 BEGIN
@@ -65,12 +66,31 @@ BEGIN
     VALUES ('00000000-0000-0000-0000-0000000d0003', '00000000-0000-0000-0000-0000000d0001',
             'winston', 'dup', 'party', 'decision_request', '{"version":1,"mode":"approve","title":"dup"}');
     BEGIN
-        INSERT INTO discussion.decision_request (message_id, idempotency_key)
-        VALUES ('00000000-0000-0000-0000-0000000d0003', 'decision:t1:http-client:r1');
+        INSERT INTO discussion.decision_request (message_id, team_id, idempotency_key)
+        VALUES ('00000000-0000-0000-0000-0000000d0003', '00000000-0000-0000-0000-0000000d00aa',
+                'decision:t1:http-client:r1');
     EXCEPTION WHEN unique_violation THEN
         ok := true;
     END;
-    ASSERT ok, 'discussion.decision_request accepted a duplicate idempotency_key';
+    ASSERT ok, 'discussion.decision_request accepted a duplicate (team_id, idempotency_key)';
+END $$;
+
+-- (4b) The SAME idempotency_key in a DIFFERENT team is ALLOWED (M5: uniqueness is tenant-scoped, not
+--      global — a global unique would let one team's key block another team's create).
+DO $$
+DECLARE n int;
+BEGIN
+    INSERT INTO discussion.thread (id, project_id, team_id, title, created_by)
+    VALUES ('00000000-0000-0000-0000-0000000d0010', 'team-b/proj-x',
+            '00000000-0000-0000-0000-0000000d00bb', 'team B room', 'tester');
+    INSERT INTO discussion.message (id, thread_id, author_principal, body, audience, kind, payload)
+    VALUES ('00000000-0000-0000-0000-0000000d0011', '00000000-0000-0000-0000-0000000d0010',
+            'winston', 'B asks', 'party', 'decision_request', '{"version":1,"mode":"approve","title":"B"}');
+    INSERT INTO discussion.decision_request (message_id, team_id, idempotency_key)
+    VALUES ('00000000-0000-0000-0000-0000000d0011', '00000000-0000-0000-0000-0000000d00bb',
+            'decision:t1:http-client:r1');  -- same key as team A, different team
+    SELECT count(*) INTO n FROM discussion.decision_request WHERE idempotency_key = 'decision:t1:http-client:r1';
+    ASSERT n = 2, format('expected 2 cards sharing a key across 2 teams, found %s', n);
 END $$;
 
 -- (5) The open→answered transition round-trips the stamp + typed answer.

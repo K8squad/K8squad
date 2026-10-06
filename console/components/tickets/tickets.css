@@ -2209,6 +2209,17 @@
   gap: 10px;
 }
 
+/* An answer/reject failure note under its card (never a silent stuck card). */
+.ksq-decision__error {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  font-size: 0.85em;
+  color: var(--status-failed, #d64);
+  border: 1px solid color-mix(in srgb, var(--status-failed, #d64) 45%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--status-failed, #d64) 8%, var(--surface));
+}
+
 /* The card body: a solid accent-tinted frame (vs. the proposal's dashed border),
  * re-hued by mode via [data-hue]. */
 .ksq-decision {
