@@ -35,8 +35,11 @@ type ReviewItem struct {
 }
 
 // reviewItemLimit bounds the per-arm fan-out exactly as ListWorkItems bounds a project's card list
-// (ADR-0026 §9: a fleet admin's read spans every team's in_review set; cap it, and the handler logs
-// when a cap truncates so coverage is never silently bounded).
+// (ADR-0026 §9: a fleet admin's read spans every team's in_review set, so cap it).
+// ponytail: truncation at the cap is NOT signalled to the caller — 500 simultaneously-open
+// in_review items (fleet-wide) is far past any real "needs human decision" inbox, so the newest
+// 500 is the whole set in practice. Upgrade path if that ceiling is ever hit: fetch LIMIT+1 and
+// surface a `truncated` flag in the response so the handler can log/paginate.
 const reviewItemLimit = 500
 
 // ListReviewItems returns every `in_review` board work item across all Projects the caller may see,

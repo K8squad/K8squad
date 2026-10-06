@@ -7,12 +7,13 @@
 // Mocks: ux/isi-5531-inbox/02-inbox-list. Decision chip hues: review→violet, proposal→green,
 // choose_one/choose_many→blue, free_form→amber.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   decisionChipHue,
   fetchInbox,
   inboxItemHref,
+  inboxMarkSeen,
   type InboxItem,
   type InboxResponse,
 } from "@/lib/inbox/api";
@@ -70,13 +71,27 @@ function InboxRow({ item }: { item: InboxItem }) {
 export function InboxList() {
   const [data, setData] = useState<InboxResponse | null>(null);
   const [error, setError] = useState(false);
+  // Mark-seen fires ONCE per mount (ADR-0026 §6): opening the Inbox clears the unread dots + nav
+  // badge for whatever is unread at that moment. Deliberately not per-poll — a new run that
+  // re-surfaces an item as unread while the page is open stays unread until the next visit, so the
+  // "needs me again" signal survives. `markedSeen` guards against the 5s poll re-firing it.
+  const markedSeen = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     const poll = () => {
       if (document.hidden) return;
       fetchInbox()
-        .then((d) => { if (!cancelled) { setData(d); setError(false); } })
+        .then((d) => {
+          if (cancelled) return;
+          setData(d);
+          setError(false);
+          if (!markedSeen.current) {
+            markedSeen.current = true;
+            const unreadKeys = d.items.filter((i) => i.unread).map((i) => i.key);
+            void inboxMarkSeen(unreadKeys);
+          }
+        })
         .catch(() => { if (!cancelled) setError(true); });
     };
     poll();

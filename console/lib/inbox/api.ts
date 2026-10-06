@@ -39,6 +39,25 @@ export async function fetchInbox(signal?: AbortSignal): Promise<InboxResponse> {
   return res.json() as Promise<InboxResponse>;
 }
 
+/**
+ * Mark the given inbox item keys as seen (ADR-0026 §6) via the Next BFF proxy, so their unread
+ * dots and the nav badge clear. Fire-and-forget: best-effort, swallows errors (a failed mark-seen
+ * just leaves the items unread — the GET will re-derive truth on the next poll). No-op for [].
+ */
+export async function inboxMarkSeen(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  try {
+    await fetch("/api/inbox/seen", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ keys }),
+      cache: "no-store",
+    });
+  } catch {
+    // best-effort; unread simply persists until the next view
+  }
+}
+
 /** Build the click-through href for an inbox item. */
 export function inboxItemHref(item: InboxItem): string {
   if (item.ticketId && item.projectId) {

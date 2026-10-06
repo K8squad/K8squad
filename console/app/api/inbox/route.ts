@@ -4,7 +4,7 @@
 // server-side from the ksquad_session cookie (§13 BFF choke point) so tenancy is transparent:
 // this route forwards the session identity and surfaces the apiserver response verbatim.
 //
-// POST /api/inbox/seen for mark-read is a sibling route (see ./seen/route.ts).
+// POST /api/inbox/seen for mark-read is the sibling route in ./seen/route.ts.
 
 import type { NextRequest } from "next/server";
 import { proxyJson } from "@/lib/bff";

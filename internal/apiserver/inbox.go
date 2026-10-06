@@ -14,7 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -122,16 +122,17 @@ func (s *Server) squadInbox(
 			}
 		}
 
-		// --- Postgres arms (best-effort: one arm failure contributes zero rows) ---
+		// --- Postgres arms (best-effort: one arm failure logs + contributes zero rows, so the
+		// other arm's rows still render — the same degrade-don't-fail posture squad-overview uses) ---
 		reviewItems, err := reviews.ListReviewItems(r.Context(), teamID)
 		if err != nil {
-			_ = fmt.Errorf("inbox: ListReviewItems: %w", err)
+			log.Printf("apiserver: inbox: ListReviewItems: %v", err)
 			reviewItems = nil
 		}
 
 		proposalItems, err := proposals.ListOpenProposalsForTeam(r.Context(), teamID)
 		if err != nil {
-			_ = fmt.Errorf("inbox: ListOpenProposalsForTeam: %w", err)
+			log.Printf("apiserver: inbox: ListOpenProposalsForTeam: %v", err)
 			proposalItems = nil
 		}
 
@@ -145,7 +146,11 @@ func (s *Server) squadInbox(
 			for _, ps := range proposalItems {
 				keys = append(keys, "proposal:"+ps.MessageID)
 			}
-			seenKeys, _ = markers.Seen(r.Context(), auth.Principal, keys) // ignore error; degrade to unread
+			var mErr error
+			seenKeys, mErr = markers.Seen(r.Context(), auth.Principal, keys)
+			if mErr != nil {
+				log.Printf("apiserver: inbox: read-marker Seen: %v", mErr) // degrade to all-unread
+			}
 		}
 
 		// --- Join + assemble rows ---
