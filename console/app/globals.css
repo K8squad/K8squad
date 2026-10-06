@@ -228,6 +228,7 @@ body {
   outline-offset: 1px;
 }
 .rail__icon {
+  position: relative; /* positioning context for the live-run corner dot (ISI-5526) */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -351,6 +352,10 @@ body {
     transition: none;
   }
   .rail__spinner {
+    animation: none;
+  }
+  /* The live dot stays — it just stops pulsing (ISI-5526). */
+  .rail__livedot::after {
     animation: none;
   }
 }
@@ -720,10 +725,14 @@ body {
   }
 
   /* Collapsed icon rail: hide labels, sub-nav, section headers and the project selector; centre
-   * each link on its icon. */
+   * each link on its icon. The live-run "N live" pill is an expanded-only affordance — in the icon
+   * rail only the corner .rail__livedot survives (ISI-5526). (Discussion leaves live inside
+   * .rail__sub, so they fold away with it here; the dot grammar is defined for any icon-only
+   * presentation of a live room entry.) */
   .rail__label,
   .rail__sub,
   .rail__section,
+  .rail__livebadge,
   .rail .projselect {
     display: none;
   }
@@ -3280,6 +3289,57 @@ a:hover {
   font-size: 11px;
   font-weight: 600;
   line-height: 1.4;
+}
+
+/* Live-run presence on a discussion-room nav leaf (ISI-5526, parent ISI-5520). Reuses the shipped
+   live idiom — an 8px pulse dot + an "N live" pill in the accent hue — with zero new colour or
+   motion tokens (the dot's pulse mirrors .rail__spinner's accent + the reduced-motion gate below).
+   Two coordinated parts:
+     • .rail__livedot — pinned to the leaf icon's corner; this is the COLLAPSED-rail cue (the only
+       part that survives when the icon rail hides labels + the "N live" pill).
+     • .rail__livebadge — the "N live" pill, shown beside the label in the EXPANDED rail.
+   Idle renders neither (the leaf is unchanged). */
+.rail__livedot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  /* a thin ring so the dot reads over the glyph in either theme */
+  box-shadow: 0 0 0 2px var(--surface);
+}
+.rail__livedot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: rail-live-pulse 1.6s ease-out infinite;
+}
+.rail__livebadge {
+  margin-left: auto;
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+@keyframes rail-live-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
 }
 .setupchip {
   display: flex;

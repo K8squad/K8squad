@@ -33,10 +33,18 @@ import { usePathname } from "next/navigation";
 import { NavIcon } from "@/components/nav/NavIcon";
 import { projectSubnav } from "@/lib/nav";
 import type { ProjectOption } from "@/components/nav/ProjectSelector";
+import type { SquadOverviewData } from "@/components/SquadOverview";
+import { liveRunCountByProject } from "@/lib/overview/liveRuns";
 
 type ListState = "unopened" | "loading" | "ok" | "empty" | "error";
 
 const PROJECTS_EXPAND_KEY = "ksquad.nav.projects.expanded";
+
+// Live-run presence refresh cadence (ISI-5526). We reuse the ONE live-runs source this console
+// has — GET /api/squad/overview — and poll it only while the Projects tree is expanded (lazy, like
+// the project list). No new endpoint, no new schema; 4s is a fine presence cue (the task-list pill
+// polls at 3s upstream). A failed read is cosmetic: the badge simply stays/returns to idle.
+const OVERVIEW_POLL_MS = 4000;
 
 export interface ProjectsNavTreeProps {
   /** True when the Projects node is the active nav (pathname → /projects); the URL still owns active. */
@@ -45,11 +53,19 @@ export interface ProjectsNavTreeProps {
   pathname?: string;
   /** Loader for the project list (BFF GET /api/projects). Injectable for tests. */
   loadProjects?: () => Promise<Response>;
+  /** Loader for the live-runs signal (BFF GET /api/squad/overview). Injectable for tests. */
+  loadOverview?: () => Promise<Response>;
   /** Start with Projects expanded (tests / deterministic SSR); overrides the persisted value. */
   defaultExpanded?: boolean;
 }
 
 const defaultLoadProjects = () => fetch("/api/projects", { cache: "no-store" });
+
+const defaultLoadOverview = () =>
+  fetch("/api/squad/overview", {
+    headers: { accept: "application/json" },
+    cache: "no-store",
+  });
 
 /** The active `{ projectId, section }` embedded in a /projects/{id}/{section} route. Pure, URL-only. */
 function activeProjectRoute(pathname: string): { projectId: string | null; section: string | null } {
@@ -64,6 +80,7 @@ export function ProjectsNavTree({
   active = false,
   pathname: pathnameProp,
   loadProjects = defaultLoadProjects,
+  loadOverview = defaultLoadOverview,
   defaultExpanded,
 }: ProjectsNavTreeProps) {
   const routerPath = usePathname();
@@ -79,6 +96,9 @@ export function ProjectsNavTree({
   );
   // Bumped to force a refetch on the retry affordance.
   const [nonce, setNonce] = useState(0);
+  // Per-project live-run counts (keyed by project CR name === ProjectOption.id), derived from the
+  // squad/overview feed. Drives the discussion-room live badge (ISI-5526); empty = all idle.
+  const [liveByProject, setLiveByProject] = useState<Record<string, number>>({});
 
   // Restore the persisted top-level expansion once, after mount (SSR-safe: the server renders from
   // the pathname alone). An explicit defaultExpanded or an active project both win over the store.
@@ -133,6 +153,37 @@ export function ProjectsNavTree({
     // nonce drives retry; listState intentionally excluded to avoid a refetch loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, nonce, loadProjects]);
+
+  // Live-run presence (ISI-5526): while the tree is expanded, poll the squad/overview feed and
+  // fold it into a per-project live-run count. Reuse-only — same endpoint the Overview surfaces
+  // read, no new backend. A failed/absent read is cosmetic: counts reset to idle, the tree is
+  // untouched. Stops polling (and clears counts) the moment the tree collapses.
+  useEffect(() => {
+    if (!expanded) {
+      setLiveByProject({});
+      return;
+    }
+    let alive = true;
+    const refresh = () => {
+      // Promise.resolve wrapper so a synchronous throw from the loader (e.g. no fetch in a test
+      // env) is caught too — the badge is cosmetic and must never surface an error.
+      Promise.resolve()
+        .then(() => loadOverview())
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body: SquadOverviewData | null) => {
+          if (alive) setLiveByProject(liveRunCountByProject(body));
+        })
+        .catch(() => {
+          // Cosmetic signal — swallow and leave the last good counts in place.
+        });
+    };
+    refresh();
+    const timer = setInterval(refresh, OVERVIEW_POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [expanded, loadOverview]);
 
   const toggleProjects = useCallback(() => {
     setExpanded((v) => {
@@ -247,6 +298,10 @@ export function ProjectsNavTree({
                     >
                       {projectSubnav(project.id).map((s) => {
                         const sectionActive = projectOnPath && activeSection === s.id;
+                        // The discussion-room entry carries a live-run presence badge (ISI-5526):
+                        // per-project live runs from the overview feed. Other sections never do.
+                        const liveCount =
+                          s.id === "discussion" ? liveByProject[project.id] ?? 0 : 0;
                         return (
                           <Link
                             key={s.id}
@@ -254,11 +309,35 @@ export function ProjectsNavTree({
                             className="rail__link rail__link--leaf"
                             data-active={sectionActive || undefined}
                             aria-current={sectionActive ? "page" : undefined}
+                            // When live, the room's accessible name folds in the count so AT reads
+                            // "<project> Discussion, N live" (spec aria pattern); the visible pill
+                            // is aria-hidden to avoid a double announcement. Idle → no override.
+                            aria-label={
+                              liveCount > 0
+                                ? `${project.name} ${s.label}, ${liveCount} live`
+                                : undefined
+                            }
                           >
                             <span className="rail__icon">
                               <NavIcon id={s.id} size={16} />
+                              {liveCount > 0 && (
+                                <span
+                                  className="rail__livedot"
+                                  data-testid={`nav-live-dot-${project.name}`}
+                                  aria-hidden="true"
+                                />
+                              )}
                             </span>
                             <span className="rail__label">{s.label}</span>
+                            {liveCount > 0 && (
+                              <span
+                                className="rail__livebadge"
+                                data-testid={`nav-live-badge-${project.name}`}
+                                aria-hidden="true"
+                              >
+                                {liveCount} live
+                              </span>
+                            )}
                           </Link>
                         );
                       })}

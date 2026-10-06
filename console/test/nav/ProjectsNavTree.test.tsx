@@ -117,3 +117,84 @@ describe("<ProjectsNavTree> — ISI-4090", () => {
     expect(loadProjects).toHaveBeenCalledTimes(2);
   });
 });
+
+// ── Live-run presence badge on the discussion-room entry (ISI-5526 / parent ISI-5520) ──────────
+// The signal is GET /api/squad/overview (the ONLY live-runs source); a run is live when it is
+// running OR queued. Count is per-project, rendered on that project's Discussion leaf: an always-on
+// corner pulse dot (the collapsed-rail cue) + an "N live" pill (the expanded-rail cue). Idle → nil.
+
+describe("<ProjectsNavTree> live-run badge — ISI-5526", () => {
+  // namespace/name composites match the /api/projects id the nav keys on (squad-a/alpha, squad-b/beta).
+  const overview = {
+    projects: [
+      {
+        name: "alpha",
+        namespace: "squad-a",
+        phaseCounts: {},
+        runs: [
+          { name: "r1", phase: "Running" },
+          { name: "r2", phase: "Queued" }, // queued counts as live
+          { name: "r3", phase: "Succeeded" }, // terminal → not live
+        ],
+      },
+      {
+        name: "beta",
+        namespace: "squad-b",
+        phaseCounts: {},
+        runs: [{ name: "r4", phase: "Failed" }], // all terminal → idle
+      },
+    ],
+  };
+
+  async function renderExpandedProjectSections(loadOverview: () => Promise<Response>) {
+    render(
+      <ProjectsNavTree
+        defaultExpanded
+        loadProjects={async () => jsonResponse(200, { projects: twoProjects })}
+        loadOverview={loadOverview}
+      />,
+    );
+    await waitFor(() => screen.getByTestId("project-toggle-alpha"));
+    fireEvent.click(screen.getByTestId("project-toggle-alpha"));
+    return screen.getByRole("group", { name: "alpha sections" });
+  }
+
+  it("renders the pulse dot + 'N live' pill on a room with live runs, counting queued", async () => {
+    const sections = await renderExpandedProjectSections(async () => jsonResponse(200, overview));
+    // Count folds running + queued (2), excludes the succeeded run.
+    const pill = await within(sections).findByTestId("nav-live-badge-alpha");
+    expect(pill).toHaveTextContent("2 live");
+    // The corner dot — the collapsed-rail cue — renders alongside the expanded pill.
+    expect(within(sections).getByTestId("nav-live-dot-alpha")).toBeInTheDocument();
+  });
+
+  it("folds the count into the Discussion link's accessible name ('<room>, N live')", async () => {
+    const sections = await renderExpandedProjectSections(async () => jsonResponse(200, overview));
+    await within(sections).findByTestId("nav-live-badge-alpha");
+    expect(
+      within(sections).getByRole("link", { name: "alpha Discussion, 2 live" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders nothing on an idle room, and never on non-discussion sections", async () => {
+    const sections = await renderExpandedProjectSections(async () => jsonResponse(200, overview));
+    await within(sections).findByTestId("nav-live-badge-alpha");
+    // beta has only a terminal run → no badge anywhere for it.
+    expect(within(sections).queryByTestId("nav-live-badge-beta")).toBeNull();
+    expect(within(sections).queryByTestId("nav-live-dot-beta")).toBeNull();
+    // Even alpha's live count lands ONLY on Discussion, not Runs/Issues/etc.
+    const discussion = within(sections).getByRole("link", { name: /^alpha Discussion/ });
+    expect(within(discussion).getByTestId("nav-live-dot-alpha")).toBeInTheDocument();
+    for (const name of ["Overview", "Issues", "Runs", "File Explorer", "GitHub"]) {
+      const link = within(sections).getByRole("link", { name });
+      expect(within(link).queryByTestId("nav-live-dot-alpha")).toBeNull();
+    }
+  });
+
+  it("stays idle (no badge) when the overview read fails — cosmetic only", async () => {
+    const sections = await renderExpandedProjectSections(async () => jsonResponse(500, {}));
+    // Give the swallowed rejection a tick; the Discussion leaf must render unbadged.
+    await within(sections).findByRole("link", { name: "Discussion" });
+    expect(within(sections).queryByTestId("nav-live-badge-alpha")).toBeNull();
+  });
+});
