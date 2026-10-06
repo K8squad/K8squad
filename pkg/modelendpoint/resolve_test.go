@@ -265,3 +265,149 @@ func TestResolveFallbackFailClosed(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "ghost"), "names the Secret that failed")
 }
+
+// TestResolveCredentialSecretRefPrecedence is the ISI-5519 fix (parent
+// ISI-5515, ADR-045 endpoint-URL vs credential split): when an Agent sets
+// modelEndpointRef to a URL-only Secret AND credentialSecretRef to the Secret
+// holding the real provider token, the resolver reads the token from the
+// CREDENTIAL Secret — not the (empty) endpoint Secret — so OPENAI_API_KEY
+// carries the sk- key end-to-end instead of defaulting to the literal "ollama"
+// (the bmad deepseek 401 root cause). It also pins the backward-compat and
+// local/no-auth paths so no existing single-Secret BYO agent regresses.
+func TestResolveCredentialSecretRefPrecedence(t *testing.T) {
+	ctx := context.Background()
+
+	// AC1: URL-only endpoint Secret + credential Secret holding the real token
+	// under apiToken → the credential token wins end-to-end.
+	t.Run("credential Secret token overrides empty endpoint Secret (AC1)", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("deepseek-endpoint", map[string][]byte{
+				"endpointURL": []byte("https://api.deepseek.com/v1"),
+			}),
+			endpointSecret("deepseek-credentials", map[string][]byte{
+				"apiToken": []byte("sk-realdeepseekkey"),
+			}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.Model = "deepseek-chat"
+			s.ModelEndpointRef = &api.SecretRef{Name: "deepseek-endpoint"}
+			s.CredentialSecretRef = api.SecretRef{Name: "deepseek-credentials"}
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.deepseek.com/v1", ep.BaseURL)
+		assert.Equal(t, "sk-realdeepseekkey", ep.Token, "token resolves from credentialSecretRef, not the endpoint Secret")
+		assert.Equal(t, "deepseek-endpoint", ep.SecretName, "provenance stays the ENDPOINT Secret")
+		assert.NotContains(t, ep.String(), "sk-realdeepseekkey", "String must never render the token")
+	})
+
+	// The `token` alias is honored on the credential Secret exactly as it is on
+	// the endpoint Secret (the deepseek-credentials Secret in the field stored
+	// the sk- key under `token`).
+	t.Run("credential Secret honors the token alias", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("ep", map[string][]byte{"endpointURL": []byte("https://api.deepseek.com/v1")}),
+			endpointSecret("cred", map[string][]byte{"token": []byte("sk-viaalias")}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "ep"}
+			s.CredentialSecretRef = api.SecretRef{Name: "cred"}
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err)
+		assert.Equal(t, "sk-viaalias", ep.Token)
+	})
+
+	// An explicit credentialSecretRef.Key names the token key directly.
+	t.Run("credential Secret honors an explicit ref.Key", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("ep", map[string][]byte{"endpointURL": []byte("https://api.deepseek.com/v1")}),
+			endpointSecret("cred", map[string][]byte{"providerKey": []byte("sk-customkey")}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "ep"}
+			s.CredentialSecretRef = api.SecretRef{Name: "cred", Key: "providerKey"}
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err)
+		assert.Equal(t, "sk-customkey", ep.Token)
+	})
+
+	// AC2 backward compat: token in the endpoint Secret only, and the
+	// credential Secret carries no model token (its key is credinject's
+	// apiKey/claude contract, not apiToken/token) → the endpoint token is kept.
+	t.Run("endpoint Secret token kept when credential Secret has no model token (AC2)", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("single-ep", map[string][]byte{
+				"endpointURL": []byte("http://ollama.svc:11434/v1"),
+				"apiToken":    []byte("endpoint-token"),
+			}),
+			endpointSecret("amelia-claude-token", map[string][]byte{
+				"apiKey": []byte("sk-ant-irrelevant"),
+			}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "single-ep"}
+			// CredentialSecretRef defaults to amelia-claude-token (byoAgent).
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err)
+		assert.Equal(t, "endpoint-token", ep.Token, "no apiToken/token in the credential Secret ⇒ endpoint token kept")
+	})
+
+	// A dangling credentialSecretRef must not fail-closed: the endpoint token
+	// (here empty) is preserved, so an endpoint whose own Secret authenticates
+	// keeps working and a no-auth one still falls through to the shim default.
+	t.Run("unreadable credential Secret preserves endpoint behavior", func(t *testing.T) {
+		r := newResolver(t, endpointSecret("ep", map[string][]byte{
+			"endpointURL": []byte("http://ollama.svc:11434/v1"),
+			"apiToken":    []byte("endpoint-token"),
+		}))
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "ep"}
+			s.CredentialSecretRef = api.SecretRef{Name: "missing-cred"}
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err, "a dangling credential Secret is not fail-closed (endpoint already authenticates)")
+		assert.Equal(t, "endpoint-token", ep.Token)
+	})
+
+	// AC3: a local/no-auth endpoint with neither an endpoint token nor a
+	// credential token resolves to an EMPTY token — the shim's "ollama"
+	// default is untouched for genuinely local endpoints.
+	t.Run("local no-auth endpoint still yields empty token for the ollama fallback (AC3)", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("local-ollama", map[string][]byte{
+				"endpointURL": []byte("http://10.0.0.185:11434/v1"),
+			}),
+			endpointSecret("amelia-claude-token", map[string][]byte{
+				"apiKey": []byte("sk-ant-irrelevant"),
+			}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "local-ollama"}
+		})
+		ep, err := r.Resolve(ctx, a)
+		require.NoError(t, err)
+		assert.Empty(t, ep.Token, "no token anywhere ⇒ empty, so the shim defaults to ollama")
+	})
+
+	// The credential token also rides the fallback endpoint (same tier
+	// credential, ADR-045) when the fallback carries its own BYO endpoint.
+	t.Run("fallback endpoint inherits the credential token", func(t *testing.T) {
+		r := newResolver(t,
+			endpointSecret("primary-ep", map[string][]byte{"endpointURL": []byte("https://api.deepseek.com/v1")}),
+			endpointSecret("fallback-ep", map[string][]byte{"endpointURL": []byte("https://api.deepseek.com/v1")}),
+			endpointSecret("deepseek-credentials", map[string][]byte{"apiToken": []byte("sk-shared")}),
+		)
+		a := byoAgent(func(s *api.AgentSpec) {
+			s.ModelEndpointRef = &api.SecretRef{Name: "primary-ep"}
+			s.CredentialSecretRef = api.SecretRef{Name: "deepseek-credentials"}
+			s.FallbackModel = &api.FallbackModel{Model: "deepseek-reasoner", ModelEndpointRef: &api.SecretRef{Name: "fallback-ep"}}
+		})
+		ep, ok, err := r.ResolveFallback(ctx, a)
+		require.NoError(t, err)
+		require.True(t, ok)
+		assert.Equal(t, "sk-shared", ep.Token, "fallback BYO endpoint authenticates with the agent's credential token")
+	})
+}
