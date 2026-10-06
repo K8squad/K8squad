@@ -37,6 +37,7 @@ describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725), conso
   it("has the consolidated top-level rail order, with SETTINGS as a section (not a link)", () => {
     expect(ids("user")).toEqual([
       "overview",
+      "inbox",
       "compose",
       "agents-team",
       "projects",
