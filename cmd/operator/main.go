@@ -952,6 +952,20 @@ func main() {
 		}
 		endpointGate := rundrive.NewEndpointGate(endpointGateSlots)
 
+		// ISI-5524: operator-side bound on the POST-to-supervisor response-header
+		// wait. Zero leaves the dispatcher on its default; a parse error logs and
+		// falls back to the default rather than wedging on an unbounded wait.
+		var dispatchHeaderTimeout time.Duration
+		if v := os.Getenv("KSQUAD_SANDBOX_DISPATCH_HEADER_TIMEOUT"); v != "" {
+			if d, derr := time.ParseDuration(v); derr != nil {
+				ctrl.Log.Error(derr, "invalid KSQUAD_SANDBOX_DISPATCH_HEADER_TIMEOUT; using dispatcher default", "value", v)
+			} else if d <= 0 {
+				ctrl.Log.Info("KSQUAD_SANDBOX_DISPATCH_HEADER_TIMEOUT must be positive; using dispatcher default", "value", v)
+			} else {
+				dispatchHeaderTimeout = d
+			}
+		}
+
 		var a2aErr error
 		a2aDispatcher, a2aErr = rundrive.NewOperatorDispatcher(rundrive.OperatorDispatchConfig{
 			DB:     db,
@@ -977,6 +991,11 @@ func main() {
 			TaskIOMinter:      taskIOMinter,
 			TaskIOCoordURL:    taskIOCoordURL,
 			EndpointGate:      endpointGate,
+			// ISI-5524: bound the sandbox-supervisor response-header wait so a
+			// Run over a slow/unreachable model endpoint frees its reconcile
+			// worker promptly instead of blocking it for minutes. Zero defers to
+			// rundrive.defaultDispatchHeaderTimeout.
+			DispatchHeaderTimeout: dispatchHeaderTimeout,
 			// ISI-4238: project the run's LLM observability facts (usage
 			// events → llmInteractions/totalTokenUsage; status events →
 			// traceID) onto Run.Status as the innermost TelemetrySink leg,
@@ -1152,6 +1171,20 @@ func main() {
 			runner)
 		driver.Sandbox = pool  // dead-run sandbox teardown on the retry path (§9.3)
 		driver.Health = health // ISI-4384: per-controller reconcile latency/error metrics
+		// ISI-5524: run-drive MaxConcurrentReconciles. More than one worker so a
+		// Run whose dispatch blocks (a team with a slow/unreachable model
+		// endpoint) cannot monopolise the sole reconcile worker and starve every
+		// other team's Run. Zero/invalid defers to rundrive.DefaultWorkers.
+		if v := os.Getenv("KSQUAD_RUN_DRIVE_WORKERS"); v != "" {
+			switch n, nerr := strconv.Atoi(v); {
+			case nerr != nil:
+				ctrl.Log.Error(nerr, "invalid KSQUAD_RUN_DRIVE_WORKERS; using default", "value", v)
+			case n < 1:
+				ctrl.Log.Info("KSQUAD_RUN_DRIVE_WORKERS must be >= 1; using default", "value", v)
+			default:
+				driver.Workers = n
+			}
+		}
 		// ISI-5037: the driver releases BYO endpoint permits defensively on the
 		// terminal fail/cancel paths (runs that never reach a clean OnDone) and
 		// surfaces the endpoint-slot wait on the Run CR while a run queues.

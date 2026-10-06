@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -132,6 +133,46 @@ type OperatorDispatchConfig struct {
 	// Empty disables task-io injection — both the minter and the URL are
 	// needed together for the seam to be usable.
 	TaskIOCoordURL string
+	// DispatchHeaderTimeout bounds how long the operator's POST to the sandbox
+	// supervisor (:8080 /task) waits for the supervisor's RESPONSE HEADERS
+	// before giving up (ISI-5524). The supervisor writes its 200 only AFTER it
+	// has built the runtime engine and accepted the task (submitted it to the
+	// runtime) — a step that synchronously stalls when the Run's model endpoint
+	// is slow or unreachable, leaving the POST (and, with it, the reconcile
+	// worker) blocked for minutes. The timeout turns that stall into a prompt
+	// error the drive loop requeues with backoff, freeing the worker; the
+	// server-side run keeps running on its own background context, so a re-drive
+	// reattaches idempotently (a2a_task_id dedup). It bounds ONLY the header
+	// read — once headers arrive the event-stream body is read unbounded, so a
+	// long-running agent turn is never truncated. Zero defaults to
+	// defaultDispatchHeaderTimeout; env-tunable via
+	// KSQUAD_SANDBOX_DISPATCH_HEADER_TIMEOUT.
+	DispatchHeaderTimeout time.Duration
+}
+
+// defaultDispatchHeaderTimeout bounds the supervisor response-header wait when
+// the config leaves it unset (ISI-5524). Generous enough that a healthy cold
+// runtime build + task accept never trips it, yet well under the ~3m blocking
+// window the single-worker head-of-line defect produced.
+const defaultDispatchHeaderTimeout = 90 * time.Second
+
+// newDispatchHTTPClient builds the operator's POST-to-supervisor client with a
+// bounded response-HEADER wait (ISI-5524). ResponseHeaderTimeout caps ONLY the
+// wait for the supervisor's 200 — the step that stalls when a Run's model
+// endpoint is unreachable (the supervisor flushes headers only after it has
+// built the runtime engine and accepted the task). Once headers arrive the
+// NDJSON event body streams unbounded, so a long agent turn is never truncated.
+// A non-positive timeout defers to defaultDispatchHeaderTimeout.
+func newDispatchHTTPClient(headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		headerTimeout = defaultDispatchHeaderTimeout
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			ResponseHeaderTimeout: headerTimeout,
+		},
+	}
 }
 
 // ContextAssemblers builds a per-namespace §8.5 context assembler over the
@@ -171,6 +212,9 @@ func NewOperatorDispatcher(cfg OperatorDispatchConfig) (*a2a.Dispatcher, error) 
 	if d.now == nil {
 		d.now = time.Now
 	}
+	// ISI-5524: the sandbox-topology POST client bounds the supervisor
+	// response-HEADER wait only, never the streamed event body.
+	d.httpClient = newDispatchHTTPClient(cfg.DispatchHeaderTimeout)
 	return &a2a.Dispatcher{
 		Client:  a2a.New(sandboxTransport{d}),
 		Builder: d.buildTask,
@@ -188,6 +232,10 @@ type operatorDispatch struct {
 	// now is the clock supervisorURL reads to age the bound sandbox pod against
 	// podIPReadyDeadline (nil = time.Now; the seam tests pin it).
 	now func() time.Time
+	// httpClient POSTs tasks to the sandbox supervisor with a bounded
+	// response-header wait (ISI-5524). Nil falls back to the a2a transport's
+	// own default (no header bound) — the ledger-only / unconstructed path.
+	httpClient *http.Client
 }
 
 // errSandboxPending marks the benign bind/readiness race: the sandbox pod is
@@ -485,6 +533,9 @@ func (st sandboxTransport) Submit(ctx context.Context, t wire.Task) (a2a.Session
 	if url != "" {
 		ht := &a2a.HTTPTransport{
 			URL: func(context.Context, wire.Task) (string, error) { return url, nil },
+			// ISI-5524: bound the supervisor response-header wait so a Run over a
+			// stalled model endpoint cannot hold the reconcile worker for minutes.
+			Client: st.d.httpClient,
 		}
 		return ht.Submit(ctx, t)
 	}

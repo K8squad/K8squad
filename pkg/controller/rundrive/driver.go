@@ -65,6 +65,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -84,6 +85,20 @@ const workItemField = ".spec.workItemRef"
 const (
 	// DefaultMaxPasses bounds one machine drive (see reconcile.Options.MaxPasses).
 	DefaultMaxPasses = 64
+	// DefaultWorkers is the run-drive controller's MaxConcurrentReconciles
+	// (ISI-5524). The drive loop defaulted to controller-runtime's implicit 1,
+	// so a single Run whose dispatch synchronously blocked (a team whose model
+	// endpoint is slow/unreachable held the POST to the sandbox supervisor for
+	// up to the header-read bound) monopolised the ONLY worker and starved every
+	// other team's Run of reconciles — one wedged team wedged all teams. The
+	// loop is level-triggered and the workqueue dedups by object key, so a Run is
+	// never reconciled by two workers at once; distinct Runs reconciling in
+	// parallel is safe by the §6.2 fence/claim design (and per-BYO-endpoint
+	// fairness is the EndpointGate's job). A small pool means N simultaneously
+	// wedged teams can still consume N workers, so this is the fairness floor
+	// that pairs with the dispatch header-read bound, not a full replacement for
+	// it. Env-tunable via KSQUAD_RUN_DRIVE_WORKERS.
+	DefaultWorkers = 4
 	// continueDelay requeues a non-terminal, non-progressing drive (contention
 	// or spin-guard exhaustion) — a short step, not a poll.
 	continueDelay = 2 * time.Second
@@ -250,6 +265,10 @@ type Driver struct {
 	Now         func() time.Time
 	Rand        func() float64
 	MaxPasses   int
+	// Workers is the controller's MaxConcurrentReconciles (ISI-5524). Zero or
+	// negative defaults to DefaultWorkers; a single blocking dispatch can then
+	// not starve all teams. See DefaultWorkers.
+	Workers int
 
 	// Health, when set, records this controller's reconcile latency + error
 	// count onto the operator's OTel meter (ISI-4384/WS-E). Nil is a no-op.
@@ -949,6 +968,13 @@ func (r *Driver) maxPasses() int {
 	return DefaultMaxPasses
 }
 
+func (r *Driver) workers() int {
+	if r.Workers > 0 {
+		return r.Workers
+	}
+	return DefaultWorkers
+}
+
 func isPaused(s reconcile.Step) bool {
 	return s == reconcile.StepPaused || s == reconcile.StepPausedRateLimited
 }
@@ -973,5 +999,12 @@ func (r *Driver) SetupWithManager(mgr ctrl.Manager) error {
 		For(&api.Run{}).
 		WatchesRawSource(source.Channel(r.resumeCh, &handler.EnqueueRequestForObject{})).
 		Named("run-drive").
+		// ISI-5524: more than one worker so a Run whose dispatch blocks (a team
+		// with a slow/unreachable model endpoint) cannot monopolise the sole
+		// reconcile worker and starve every other team's Run. Safe because the
+		// workqueue serialises per object key — a single Run never reconciles
+		// concurrently — and the §6.2 claim/fence design already assumes many
+		// Runs advancing in parallel.
+		WithOptions(controller.Options{MaxConcurrentReconciles: r.workers()}).
 		Complete(cphealth.WrapReconciler(r.Health, "run-drive", r))
 }
