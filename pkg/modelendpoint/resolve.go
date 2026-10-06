@@ -236,7 +236,13 @@ type tierInput struct {
 	model       string
 	fallback    *api.FallbackModel
 	endpointRef *api.SecretRef
-	namespace   string
+	// credentialRef optionally names a SEPARATE BYO credential Secret whose
+	// token overrides the endpoint Secret's apiToken (ADR-045 endpoint-URL vs
+	// credential split, ISI-5519). Only the agent tier carries one today
+	// (Agent.spec.credentialSecretRef); nil for the role/default tiers, which
+	// keep the endpoint-Secret token behavior unchanged.
+	credentialRef *api.SecretRef
+	namespace     string
 }
 
 // resolvePrimary turns a tier's model+endpointRef into its primary Endpoint. No
@@ -246,7 +252,11 @@ func (r *Resolver) resolvePrimary(ctx context.Context, t tierInput) (Endpoint, e
 	if t.endpointRef == nil {
 		return Endpoint{Model: t.model}, nil
 	}
-	return r.ResolveRef(ctx, t.namespace, t.endpointRef, t.model)
+	ep, err := r.ResolveRef(ctx, t.namespace, t.endpointRef, t.model)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	return r.applyCredentialToken(ctx, t.namespace, t.credentialRef, ep), nil
 }
 
 // resolveFallback turns a tier's fallback into an Endpoint. The fallback carries
@@ -269,18 +279,32 @@ func (r *Resolver) resolveFallback(ctx context.Context, t tierInput) (endpoint E
 	if err != nil {
 		return Endpoint{}, true, err
 	}
-	return ep, true, nil
+	// The fallback rides the SAME tier's credential (ADR-045): a BYO fallback
+	// endpoint authenticates with the agent's credentialSecretRef token, just
+	// like the primary, unless the fallback's own endpoint Secret carries one.
+	return r.applyCredentialToken(ctx, t.namespace, t.credentialRef, ep), true, nil
 }
 
 // agentTier is the agent-tier resolution inputs (highest tier).
 func agentTier(agent *api.Agent) tierInput {
 	return tierInput{
-		tier:        TierAgent,
-		model:       agent.Spec.Model,
-		fallback:    agent.Spec.FallbackModel,
-		endpointRef: agent.Spec.ModelEndpointRef,
-		namespace:   agent.Namespace,
+		tier:          TierAgent,
+		model:         agent.Spec.Model,
+		fallback:      agent.Spec.FallbackModel,
+		endpointRef:   agent.Spec.ModelEndpointRef,
+		credentialRef: credentialRefOf(agent),
+		namespace:     agent.Namespace,
 	}
+}
+
+// credentialRefOf returns the Agent's BYO credential Secret ref when one is set
+// (ADR-045), or nil when the field names no Secret. Agent.spec.credentialSecretRef
+// is a non-pointer required field, so an empty Name is the "unset" sentinel.
+func credentialRefOf(agent *api.Agent) *api.SecretRef {
+	if agent == nil || agent.Spec.CredentialSecretRef.Name == "" {
+		return nil
+	}
+	return &agent.Spec.CredentialSecretRef
 }
 
 // Resolve returns the Agent's primary model endpoint (agent tier only — the
@@ -439,6 +463,52 @@ func (r *Resolver) ResolveRef(ctx context.Context, namespace string, ref *api.Se
 		Token:      secretKey(&secret, KeyAPIToken, aliasToken),
 		SecretName: ref.Name,
 	}, nil
+}
+
+// applyCredentialToken honors the ADR-045 split of endpoint-URL vs credential
+// (ISI-5519). When the tier carries a credentialSecretRef, the token is
+// resolved from THAT Secret and overrides the endpoint Secret's apiToken. This
+// is the fix for BYO agents (e.g. bmad deepseek) that set modelEndpointRef to a
+// URL-only Secret AND credentialSecretRef to the Secret holding the real sk-
+// key: before this, the endpoint Secret's (empty) apiToken was used and the
+// shim defaulted OPENAI_API_KEY to the literal "ollama" → provider 401.
+//
+// Precedence (per ISI-5515 Option 1): a non-empty token in the credential
+// Secret wins; otherwise the endpoint Secret's apiToken/token is kept for
+// backward compat (existing single-Secret BYO setups). The credential Secret
+// key is credentialRef.Key when set, else the same apiToken/token contract as
+// the endpoint Secret. We ONLY override when a credential Secret exists and
+// actually carries a token — a missing ref, an unreadable Secret, or a
+// credential Secret without a token key all preserve the pre-existing
+// behavior, so a local/no-auth endpoint still gets the empty-token ("ollama")
+// fallback and no working agent regresses.
+func (r *Resolver) applyCredentialToken(ctx context.Context, namespace string, credentialRef *api.SecretRef, ep Endpoint) Endpoint {
+	if credentialRef == nil || credentialRef.Name == "" {
+		return ep
+	}
+	var secret corev1.Secret
+	key := client.ObjectKey{Namespace: namespace, Name: credentialRef.Name}
+	if err := r.secretReader().Get(ctx, key, &secret); err != nil {
+		// Credential Secret unavailable: keep the endpoint-Secret token (which
+		// is exactly the pre-ISI-5519 behavior). The credential Secret is a
+		// required, admission-validated field, so a read miss here is a rare
+		// transient/scope issue — failing closed would regress every BYO agent
+		// whose endpoint already authenticates via its endpoint Secret.
+		return ep
+	}
+	var tok string
+	if credentialRef.Key != "" {
+		if v, ok := secret.Data[credentialRef.Key]; ok {
+			tok = strings.TrimSpace(string(v))
+		}
+	} else {
+		tok = secretKey(&secret, KeyAPIToken, aliasToken)
+	}
+	if tok == "" {
+		return ep
+	}
+	ep.Token = tok
+	return ep
 }
 
 // secretKey returns the Secret data at key, falling back to alias when the
