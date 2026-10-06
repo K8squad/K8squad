@@ -67,6 +67,11 @@ type RunStatus struct {
 	Phase           string     `json:"phase"`
 	ClaimedAt       *time.Time `json:"claimedAt,omitempty"`
 	ReasonCancelled string     `json:"reasonCancelled,omitempty"`
+	// Agents are the dispatched Agent names (run.Spec.Agents, the same attribution
+	// org.go/indexRunsByAgent uses). Surfaced so a per-agent consumer — the discussion-room
+	// roster live-run flip (ISI-5527) — can join a live run back to the agent it belongs to
+	// without a second read; omitted (nil) for an unassigned run the reconciler fans to the Team.
+	Agents []string `json:"agents,omitempty"`
 }
 
 // ErrTeamNotFound is returned by a SquadOverviewReader when no Team resolves to the caller's Team
@@ -443,6 +448,15 @@ func projectRunStatus(run *ksquadv1.Run) RunStatus {
 		Name:     run.Name,
 		WorkItem: run.Spec.WorkItemRef,
 		Phase:    phase,
+	}
+	// Attribute the run to its dispatched Agent(s) (ISI-5527) — the same run.Spec.Agents the org
+	// projection folds into per-agent status. Left nil for an agent-less run (reconciler fans it to
+	// the Team) so the roster never mis-attributes a broadcast run to one agent.
+	if len(run.Spec.Agents) > 0 {
+		rs.Agents = make([]string, 0, len(run.Spec.Agents))
+		for _, ref := range run.Spec.Agents {
+			rs.Agents = append(rs.Agents, ref.Name)
+		}
 	}
 	if run.Status.ClaimedAt != nil {
 		t := run.Status.ClaimedAt.Time

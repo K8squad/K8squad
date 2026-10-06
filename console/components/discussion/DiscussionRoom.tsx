@@ -36,6 +36,7 @@ import { DiscussionApiError } from "@/lib/discussion/api";
 import { MessageItem } from "./MessageItem";
 import { Composer } from "./Composer";
 import { Roster, type RosterAgent } from "./Roster";
+import type { AgentRunPresence } from "@/lib/overview/liveRuns";
 import "./discussion.css";
 
 // How long a dispatched agent may stay silent before the room shows "could not
@@ -69,6 +70,12 @@ export interface DiscussionRoomProps {
   loadRoster?: () => Promise<RosterAgent[]>;
   /** Mention search backing the composer's `@` popover (ISI-4926 endpoint). */
   searchMentions?: (q: string) => Promise<MentionSuggestion[]>;
+  /**
+   * Per-agent live-run presence (ISI-5527, keyed by roster agent id), derived by
+   * RoomClient from the polling squad/overview feed. Drives the roster's idle ⇄
+   * queued ⇄ running flip. Optional — absent degrades the roster to plain presence.
+   */
+  liveRuns?: Record<string, AgentRunPresence>;
 }
 
 type LoadState = "loading" | "ready" | "not-found" | "error";
@@ -80,6 +87,7 @@ export function DiscussionRoom({
   subscribe,
   loadRoster,
   searchMentions,
+  liveRuns,
 }: DiscussionRoomProps) {
   const [state, setState] = useState<LoadState>("loading");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -308,7 +316,7 @@ export function DiscussionRoom({
           searchMentions={searchMentions}
         />
       </div>
-      <Roster agents={rosterAgents} />
+      <Roster agents={rosterAgents} liveRuns={liveRuns} />
     </section>
   );
 }

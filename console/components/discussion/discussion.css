@@ -81,6 +81,14 @@
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  /* A transparent ring/padding on every row so a live row's tint+ring (ISI-5527)
+     drops in without shifting the idle rows beside it. */
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
 }
 .ksq-roster__dot {
   width: 8px;
@@ -118,6 +126,53 @@
   margin: 10px 0 0;
   font-size: 11px;
   opacity: 0.6;
+}
+
+/* Live-run flip (ISI-5527, parent ISI-5520): the shipped live-run idiom — the blue
+   (`--accent`) pulse dot + chip — reused verbatim, zero new colour/motion tokens.
+   running = tint + ring; queued = subtler tint, static dot; idle = the plain row. */
+.ksq-roster__agent--running {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.ksq-roster__agent--queued {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+.ksq-roster__livedot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+}
+/* Reuse the shipped working-dot pulse (no new motion token) while actively running;
+   a queued run holds a static dot — honest "waiting, not yet working". */
+.ksq-roster__livedot--running {
+  animation: ksq-working-pulse 1.2s ease-in-out infinite;
+}
+.ksq-roster__chip {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  padding: 0.05rem 0.4rem;
+  border-radius: 6px;
+  text-transform: capitalize;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+/* A queued chip reads a touch quieter than running — same hue, lower emphasis. */
+.ksq-roster__chip--queued {
+  opacity: 0.85;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ksq-roster__livedot--running {
+    animation: none;
+    opacity: 0.8;
+  }
+  .ksq-roster__agent {
+    transition: none;
+  }
 }
 
 .ksq-thread {
