@@ -1,0 +1,66 @@
+-- 0031_discussion_decision_request.sql — ISI-5536 (ISI-5531 E2): the decision_request interaction.
+--
+-- ADR-0026 §4 (feature ISI-5531). A decision_request is the net-new "an agent suggests structured
+-- options a human answers" surface. It copies the proposal pattern (0025) wholesale: an inert,
+-- append-only discussion.message carries the question; a lifecycle SIDE TABLE carries the mutable
+-- decision state the append-only message row cannot. Two additive changes:
+--
+--   1. `kind='decision_request'` joins the allowed message kinds (0025's CHECK is widened).
+--   2. discussion.decision_request — the decision-lifecycle side table for the state machine
+--      `open → answered | rejected | expired | superseded`.
+--
+-- FENCE CARVE-OUT (ADR-0019 / R13, deliberate — identical to 0025): discussion.message stays
+-- custody-free by construction (its 0004 append-only trigger permits only the invalidated_at
+-- soft-retract), so the decision lifecycle CANNOT live in the message row. This side table is a
+-- DECISION record, not a custody record: it has no claim/lease/fence_token/holder/assignee column,
+-- names no custodian, and cannot transfer custody. Answering a decision_request fans out ONLY
+-- through the existing human-gated dispatch seam (WorkItemDispatcher.RequestDispatch, ADR-0026 §5);
+-- custody of a work item still moves ONLY in the fenced coord claim tables. The column is named
+-- `phase` (not `state`) precisely so no custody token from the fence's forbidden list enters the
+-- discussion schema.
+--
+-- Forward-only, additive; applied once by the apiserver migration runner in filename order.
+
+-- 1. Widen the kind CHECK (0025) so a decision_request message is representable.
+ALTER TABLE discussion.message DROP CONSTRAINT kind_must_be_text_or_extension;
+ALTER TABLE discussion.message
+    ADD CONSTRAINT kind_must_be_text_or_extension CHECK (
+        kind = 'text' OR kind IN ('structured', 'task', 'decision', 'vote', 'proposal', 'decision_request')
+    );
+
+-- 2. Decision-lifecycle side table. One row per kind='decision_request' message, inserted at post
+--    time (phase='open') and advanced only by the answer/reject/expire shells. PK = the request
+--    message, so a message has at most one lifecycle. The join through message→thread→(project_id,
+--    team_id) is the tenancy predicate on every read/write of this table.
+--
+--    idempotency_key (ADR-0026 §4.1): "decision:{ticketId}:{slug}:{runId}" — the UNIQUE guarantees
+--    one card per logical ask, so an agent retry re-posting the same request returns the existing
+--    card (idempotent create) rather than minting a duplicate row.
+--
+--    bound_revision_id (ADR-0026 §4.2/§5): the target.revisionId the card is pinned to, lifted into
+--    its own column so the supersede CAS ("auto-expire when the bound revision moves") is a cheap
+--    indexed predicate, not a jsonb extraction. The full target{type,ref,revisionId} is kept in
+--    `target` jsonb for the card renderer.
+CREATE TABLE discussion.decision_request (
+    message_id        uuid        PRIMARY KEY REFERENCES discussion.message(id),
+    phase             text        NOT NULL DEFAULT 'open'
+        CHECK (phase IN ('open', 'answered', 'rejected', 'expired', 'superseded')),
+    idempotency_key   text        NOT NULL,
+    target            jsonb           NULL,   -- {type,ref,revisionId} the card binds to (ADR §4.1)
+    bound_revision_id text            NULL,   -- target.revisionId lifted out for the supersede CAS
+    continuation      text        NOT NULL DEFAULT 'resume_agent_on_answer',
+    answer            jsonb           NULL,   -- typed answer (ADR §4.3): selectedOptionIds/freeText/…
+    reject_reason     text            NULL,   -- required when rejectRequiresReason (handler-enforced)
+    answered_by       text            NULL,   -- principal of the answering/rejecting human (SERVER-STAMPED)
+    answered_at       timestamptz     NULL,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now()
+);
+
+-- One card per logical ask: an agent retry re-posting the same idempotency_key returns the existing
+-- row instead of a second card (ADR-0026 §4.2 idempotent create).
+CREATE UNIQUE INDEX idx_decision_request_idempotency ON discussion.decision_request (idempotency_key);
+
+-- Answer/reject CAS scans and the Inbox "open decision_requests" arm (ADR-0026 §3.2) both live in
+-- phase='open'; decided lookups ride the PK.
+CREATE INDEX idx_decision_request_open ON discussion.decision_request (phase) WHERE phase = 'open';
