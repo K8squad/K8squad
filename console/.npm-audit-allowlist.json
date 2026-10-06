@@ -24,10 +24,6 @@
     "GHSA-85c8-ppgw-ccpr": {
       "expires": "2026-11-15",
       "justification": "tinypool (second advisory) — dev-only via vitest worker pool (devDependency), not in the shipped console runtime. Fixed by the semver-major vitest@5 upgrade tracked separately. Remove once vitest@5 lands."
-    },
-    "GHSA-68fv-2mgg-jv7q": {
-      "expires": "2026-11-15",
-      "justification": "source-map-js ReDoS — dev/build-time only (sourcemap parsing in the toolchain), not executed in the shipped console runtime. A non-major fix exists; interim allowlist with a SHORT expiry pending a focused dependency bump + lockfile refresh (deliberately not bundled into this operator PR). Remove once source-map-js is bumped."
     }
   }
 }

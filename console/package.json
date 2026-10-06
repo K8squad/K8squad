@@ -47,7 +47,8 @@
     "js-yaml": "^4.3.2",
     "esbuild": "^0.25.0",
     "vite": "^6.4.3",
-    "launch-editor": "^2.14.1"
+    "launch-editor": "^2.14.1",
+    "source-map-js": "^1.2.2"
   },
   "engines": {
     "node": ">=20"
