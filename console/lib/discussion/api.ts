@@ -11,6 +11,8 @@
 
 import { encodeProjectId } from "@/lib/projectId";
 import type {
+  DecisionAnswerResponse,
+  DecisionRequest,
   MentionSuggestion,
   Message,
   Proposal,
@@ -144,6 +146,35 @@ export interface DiscussionClient {
     projectId: string,
     messageId: string,
   ): Promise<ProposalDismissResponse>;
+  /**
+   * List the thread's decision_request cards (all phases) joined with lifecycle
+   * state (ISI-5536 / ADR-0026 §4; the FE-4 render side). The transcript read
+   * stays phase-less; the console joins this onto the messages by id.
+   */
+  listDecisionRequests(
+    projectId: string,
+    threadId: string,
+  ): Promise<DecisionRequest[]>;
+  /**
+   * Human answer (ADR-0026 §4.4): submit the typed answer; the apiserver derives
+   * the mode from the stored card, validates the selection, records the post-back,
+   * and re-dispatches the raising agent. Human-only (an agent caller is 403).
+   */
+  answerDecisionRequest(
+    projectId: string,
+    messageId: string,
+    answer: { selectedOptionIds?: string[]; freeText?: string },
+  ): Promise<DecisionAnswerResponse>;
+  /**
+   * Human reject (ADR-0026 §4.4): records the rejection + reason and re-dispatches
+   * the raising agent. A reason is required when the card sets rejectRequiresReason
+   * (the apiserver returns 400 otherwise).
+   */
+  rejectDecisionRequest(
+    projectId: string,
+    messageId: string,
+    reason?: string,
+  ): Promise<DecisionAnswerResponse>;
 }
 
 /** The BFF base path for a Project's discussion room (the §7.5 prefix). */
@@ -313,6 +344,41 @@ export function createDiscussionClient(
         body: JSON.stringify({}),
       });
       return readJson<ProposalDismissResponse>(res);
+    },
+
+    async listDecisionRequests(projectId, threadId) {
+      // ISI-5536: durable decision-card state joined onto the phase-less transcript.
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/decision-requests`;
+      const res = await fetchImpl(url, { method: "GET" });
+      return readJson<DecisionRequest[]>(res);
+    },
+
+    async answerDecisionRequest(projectId, messageId, answer) {
+      // ADR-0026 §4.4: the wire body is { selectedOptionIds?, freeText? }; the
+      // apiserver derives the mode from the stored card and validates the selection.
+      const url = `${discussionBase(projectId)}/decision-requests/${encodeURIComponent(
+        messageId,
+      )}/answer`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(answer),
+      });
+      return readJson<DecisionAnswerResponse>(res);
+    },
+
+    async rejectDecisionRequest(projectId, messageId, reason) {
+      const url = `${discussionBase(projectId)}/decision-requests/${encodeURIComponent(
+        messageId,
+      )}/reject`;
+      const res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reason ? { reason } : {}),
+      });
+      return readJson<DecisionAnswerResponse>(res);
     },
   };
 }
