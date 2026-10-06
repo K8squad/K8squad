@@ -333,3 +333,68 @@ describe("KanbanBoard — phase columns, blocked overlay in-lane, RBAC drag gate
     expect(screen.queryByTestId("column-design")).toBeNull();
   });
 });
+
+describe("Live-run markers — list pill + kanban badge/ring + column chip (ISI-5528)", () => {
+  const noop = vi.fn(async () => {});
+
+  it("ListView marks only the live rows, with a decorative pill + sr-only title note", () => {
+    render(
+      <ListView
+        items={[item({ id: "live1", title: "Live one" }), item({ id: "idle1", title: "Idle one" })]}
+        tree={controller({})}
+        sort={SORT}
+        onSortChange={vi.fn()}
+        projectId="ns/demo"
+        liveIssueIds={new Set(["live1"])}
+      />,
+    );
+    const pill = screen.getByTestId("row-live-live1");
+    expect(pill).toHaveTextContent("Live");
+    expect(pill).toHaveAttribute("aria-hidden", "true"); // decorative — AT reads the title note
+    expect(screen.queryByTestId("row-live-idle1")).toBeNull();
+    // The visually-hidden "(live run)" rides the live row's title for assistive tech.
+    expect(screen.getByTestId("row-title-live1")).toHaveTextContent("(live run)");
+    expect(screen.getByTestId("row-title-idle1")).not.toHaveTextContent("(live run)");
+  });
+
+  it("KanbanBoard marks the live card (badge + --live ring class) and leaves idle cards plain", () => {
+    render(
+      <KanbanBoard
+        items={[
+          item({ id: "live1", title: "Live one", state: "todo" }),
+          item({ id: "idle1", title: "Idle one", state: "todo" }),
+        ]}
+        tree={controller({})}
+        role="viewer"
+        onTransition={noop}
+        projectId="ns/demo"
+        liveIssueIds={new Set(["live1"])}
+      />,
+    );
+    expect(screen.getByTestId("card-live-live1")).toBeInTheDocument();
+    expect(screen.queryByTestId("card-live-idle1")).toBeNull();
+    expect(screen.getByTestId("card-live1")).toHaveClass("ksq-kanban-card--live");
+    expect(screen.getByTestId("card-idle1")).not.toHaveClass("ksq-kanban-card--live");
+    expect(screen.getByTestId("card-title-live1")).toHaveTextContent("(live run)");
+  });
+
+  it("KanbanBoard shows a per-column 'N live' chip counting live issues in that lane", () => {
+    render(
+      <KanbanBoard
+        items={[
+          item({ id: "a", state: "todo" }),
+          item({ id: "b", state: "todo" }),
+          item({ id: "c", state: "design" }),
+        ]}
+        tree={controller({})}
+        role="viewer"
+        onTransition={noop}
+        projectId="ns/demo"
+        liveIssueIds={new Set(["a", "b"])}
+      />,
+    );
+    expect(screen.getByTestId("column-live-todo")).toHaveTextContent("2 live");
+    // A lane with no live issue renders no chip.
+    expect(screen.queryByTestId("column-live-design")).toBeNull();
+  });
+});

@@ -44,6 +44,7 @@ import {
   type WorkItemState,
 } from "@/lib/tickets/types";
 import { type PhaseStatus } from "@/lib/tickets/statusColor";
+import { useLiveIssueIds } from "@/lib/tickets/liveIssueIds";
 import {
   persistView,
   resolveInitialView,
@@ -235,6 +236,10 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
     window.history.replaceState(null, "", url); // shareable deep-link, no RSC refetch
   }
 
+  // Board-wide live-run markers (ISI-5528): one poll of the shared /api/squad/overview
+  // feed projected to the live-issue-id set, shared by both views so they never disagree.
+  const liveIssueIds = useLiveIssueIds(projectId);
+
   const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
   const priorities = useMemo(() => distinctValues(items, "priority"), [items]);
   const assignees = useMemo(() => distinctValues(items, "assignee"), [items]);
@@ -397,6 +402,7 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           role={role}
           onTransition={onTransition}
           projectId={projectId}
+          liveIssueIds={liveIssueIds}
         />
       ) : (
         <ListView
@@ -405,6 +411,7 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
           sort={sort}
           onSortChange={setSort}
           projectId={projectId}
+          liveIssueIds={liveIssueIds}
         />
       )}
 
