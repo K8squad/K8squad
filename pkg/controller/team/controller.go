@@ -1051,13 +1051,22 @@ func byoModelEgressNetworkPolicy(ns string, teamObj *api.Team, targets []byoTarg
 // proxyTarget is one resolved EgressPolicy.spec.proxy destination (ISI-5473):
 // the per-squad forward proxy a Run's HTTPS model traffic routes through when
 // the model endpoint is an FQDN (api.deepseek.com) that core NetworkPolicy
-// cannot match. CIDR is an IP/32 (or the author-supplied CIDR); the materialized
-// rule opens egress to this addr:port ONLY — the proxy, not the policy, decides
-// which upstreams are reachable (EgressProxy doc, arch §9.2/AD-7).
+// cannot match. The materialized rule opens egress to this proxy's port ONLY —
+// the proxy, not the policy, decides which upstreams are reachable (EgressProxy
+// doc, arch §9.2/AD-7).
+//
+// Exactly one peer shape is populated (ISI-5492):
+//   - PodSelector/NamespaceSelector set → a selector peer targeting the proxy
+//     pods. REQUIRED on Cilium, where a clusterIP/32 ipBlock is a silent no-op
+//     (socket-LB rewrites the clusterIP to a backend pod IP before egress eval).
+//   - otherwise CIDR (an IP/32 or author-supplied CIDR) → an ipBlock peer, the
+//     original behavior for non-Cilium clusters.
 type proxyTarget struct {
-	CIDR     string
-	Port     intstr.IntOrString
-	Protocol corev1.Protocol
+	CIDR              string
+	PodSelector       *metav1.LabelSelector
+	NamespaceSelector *metav1.LabelSelector
+	Port              intstr.IntOrString
+	Protocol          corev1.Protocol
 }
 
 // egressProxyTargets resolves the DISTINCT egress proxies the team's Projects
@@ -1106,7 +1115,7 @@ func (r *Reconciler) egressProxyTargets(ctx context.Context, teamObj *api.Team) 
 			log.V(1).Info("egress-proxy: skip egressPolicy (proxy address not an IP/CIDR; NetworkPolicy cannot match a DNS name)", "egressPolicy", epRef.Name, "address", ep.Spec.Proxy.Address)
 			continue
 		}
-		key := fmt.Sprintf("%s|%s|%s", t.CIDR, t.Port.String(), t.Protocol)
+		key := proxyTargetKey(t)
 		if seen[key] {
 			continue
 		}
@@ -1114,24 +1123,63 @@ func (r *Reconciler) egressProxyTargets(ctx context.Context, teamObj *api.Team) 
 		targets = append(targets, *t)
 	}
 	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].CIDR != targets[j].CIDR {
-			return targets[i].CIDR < targets[j].CIDR
-		}
-		if targets[i].Port.String() != targets[j].Port.String() {
-			return targets[i].Port.String() < targets[j].Port.String()
-		}
-		return targets[i].Protocol < targets[j].Protocol
+		return proxyTargetKey(&targets[i]) < proxyTargetKey(&targets[j])
 	})
 	return targets
 }
 
-// proxyTargetFromSpec normalizes an EgressProxy into a proxyTarget. Address is an
-// IP (→ /32 for IPv4, /128 for IPv6) or a CIDR (used verbatim); an FQDN or
-// otherwise unparseable address returns nil — the EgressProxy API contract
-// requires an IP/CIDR (a Service clusterIP resolved at author time) because
-// core NetworkPolicy is L3/L4 and cannot match a DNS name. Port is the proxy
-// port (number or IANA name); Protocol defaults to TCP.
+// proxyTargetKey is the stable identity of a proxyTarget — its peer shape
+// (CIDR or namespace/pod selector) plus port/protocol — used both to dedup
+// distinct proxies and to give the rendered policy a deterministic rule order
+// (idempotent). metav1.FormatLabelSelector yields a canonical, order-stable
+// string for a selector (and "<nil>" when absent), so two targets collapse iff
+// they open the same peer on the same port.
+func proxyTargetKey(t *proxyTarget) string {
+	return fmt.Sprintf("%s|%s|%s|%s|%s",
+		t.CIDR,
+		metav1.FormatLabelSelector(t.NamespaceSelector),
+		metav1.FormatLabelSelector(t.PodSelector),
+		t.Port.String(),
+		t.Protocol,
+	)
+}
+
+// proxyTargetFromSpec normalizes an EgressProxy into a proxyTarget, or nil to
+// skip materialization. Port is the proxy port (number or IANA name) and is
+// always required; Protocol defaults to TCP.
+//
+// Two peer shapes (ISI-5492):
+//
+//   - When PodSelector or NamespaceSelector is set, they take precedence and
+//     produce a selector peer; Address is not parsed (it may be the clusterIP
+//     or the proxy's FQDN — irrelevant to a selector). This is the Cilium-safe
+//     path: a clusterIP/32 ipBlock is a silent no-op under Cilium socket-LB
+//     (the clusterIP is rewritten to a backend pod IP before egress eval), so
+//     only a selector matching the proxy pods actually permits the traffic.
+//
+//   - With no selectors, Address must be an IP (→ /32 for IPv4, /128 for IPv6)
+//     or a CIDR (verbatim) → an ipBlock peer, the original non-Cilium behavior.
+//     An FQDN or otherwise unparseable address returns nil: core NetworkPolicy
+//     is L3/L4 and cannot match a DNS name, so the operator SKIPS materializing
+//     this rule — the live ISI-5490 workaround (DNS-name address, no selectors)
+//     stays on this path and leaves a hand-applied selector netpol intact.
 func proxyTargetFromSpec(p *api.EgressProxy) *proxyTarget {
+	port := strings.TrimSpace(p.Port)
+	if port == "" {
+		return nil
+	}
+	proto := corev1.ProtocolTCP
+	if p.Protocol != "" {
+		proto = corev1.Protocol(p.Protocol)
+	}
+	if p.PodSelector != nil || p.NamespaceSelector != nil {
+		return &proxyTarget{
+			PodSelector:       p.PodSelector,
+			NamespaceSelector: p.NamespaceSelector,
+			Port:              intstr.Parse(port),
+			Protocol:          proto,
+		}
+	}
 	addr := strings.TrimSpace(p.Address)
 	if addr == "" {
 		return nil
@@ -1153,14 +1201,6 @@ func proxyTargetFromSpec(p *api.EgressProxy) *proxyTarget {
 			cidr = addr + "/128"
 		}
 	}
-	port := strings.TrimSpace(p.Port)
-	if port == "" {
-		return nil
-	}
-	proto := corev1.ProtocolTCP
-	if p.Protocol != "" {
-		proto = corev1.Protocol(p.Protocol)
-	}
 	return &proxyTarget{CIDR: cidr, Port: intstr.Parse(port), Protocol: proto}
 }
 
@@ -1173,6 +1213,10 @@ func proxyTargetFromSpec(p *api.EgressProxy) *proxyTarget {
 // decides the reachable upstreams (EgressProxy doc, §9.2/AD-7). One rule per distinct
 // proxy; mirrors byoModelEgressNetworkPolicy. Returns nil when no referenced policy
 // sets a proxy.
+//
+// Each rule's peer is either a namespace/pod selector (ISI-5492, the Cilium-safe
+// shape — a clusterIP/32 ipBlock never matches under socket-LB) or an ipBlock
+// CIDR, as resolved by proxyTargetFromSpec.
 func egressProxyNetworkPolicy(ns string, teamObj *api.Team, targets []proxyTarget) *networkingv1.NetworkPolicy {
 	if len(targets) == 0 {
 		return nil
@@ -1181,8 +1225,17 @@ func egressProxyNetworkPolicy(ns string, teamObj *api.Team, targets []proxyTarge
 	for _, t := range targets {
 		proto := t.Protocol
 		port := t.Port
+		var peer networkingv1.NetworkPolicyPeer
+		if t.PodSelector != nil || t.NamespaceSelector != nil {
+			peer = networkingv1.NetworkPolicyPeer{
+				NamespaceSelector: t.NamespaceSelector,
+				PodSelector:       t.PodSelector,
+			}
+		} else {
+			peer = networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: t.CIDR}}
+		}
 		rules = append(rules, networkingv1.NetworkPolicyEgressRule{
-			To:    []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: t.CIDR}}},
+			To:    []networkingv1.NetworkPolicyPeer{peer},
 			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &proto, Port: &port}},
 		})
 	}
