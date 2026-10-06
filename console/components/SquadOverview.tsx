@@ -34,6 +34,10 @@ export interface ProjectOverview {
     workItem?: string;
     phase: string;
     claimedAt?: string | null;
+    /** Dispatched agent names (run.Spec.Agents; apiserver RunStatus.Agents, ISI-5527). Lets a
+     * per-agent consumer — the discussion-room roster live flip — join a live run to its agent.
+     * Absent/null on the wire for an unassigned (Team-fanned) run. */
+    agents?: string[] | null;
   }[] | null;
   phaseCounts: Record<string, number>;
 }

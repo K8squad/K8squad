@@ -60,6 +60,38 @@ func run(ns, name, projectName, workItem string, phase ksquadv1.RunPhase, claime
 	return r
 }
 
+// TestProjectRunStatusAgents — the Run's dispatched Agent(s) (run.Spec.Agents) surface on the
+// projection so a per-agent consumer (the ISI-5527 discussion-room roster live flip) can join a
+// live run to its agent. An agent-less (Team-fanned) run leaves Agents nil so the roster never
+// mis-attributes a broadcast run to one agent.
+func TestProjectRunStatusAgents(t *testing.T) {
+	withAgents := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "squad-a", Name: "run-a"},
+		Spec: ksquadv1.RunSpec{
+			ProjectRef:  ksquadv1.ObjectRef{Name: "web"},
+			WorkItemRef: "ISI-42",
+			Agents:      []ksquadv1.ObjectRef{{Name: "amelia"}, {Name: "winston"}},
+		},
+		Status: ksquadv1.RunStatus{Phase: ksquadv1.RunPhaseRunning},
+	}
+	rs := projectRunStatus(withAgents)
+	if len(rs.Agents) != 2 || rs.Agents[0] != "amelia" || rs.Agents[1] != "winston" {
+		t.Fatalf("Agents: got %+v, want [amelia winston]", rs.Agents)
+	}
+	if rs.WorkItem != "ISI-42" {
+		t.Fatalf("WorkItem: got %q", rs.WorkItem)
+	}
+
+	agentless := &ksquadv1.Run{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "squad-a", Name: "run-b"},
+		Spec:       ksquadv1.RunSpec{ProjectRef: ksquadv1.ObjectRef{Name: "web"}},
+		Status:     ksquadv1.RunStatus{Phase: ksquadv1.RunPhasePending},
+	}
+	if rs := projectRunStatus(agentless); rs.Agents != nil {
+		t.Fatalf("agent-less run must leave Agents nil, got %+v", rs.Agents)
+	}
+}
+
 func newReader(t *testing.T, objs ...client.Object) *ClientOverviewReader {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(overviewScheme(t)).WithObjects(objs...).Build()
