@@ -271,6 +271,73 @@ func resolveGeneration(ctx context.Context, reader WorkspaceReader, projectID st
 	return gen
 }
 
+// cachedListDir wraps reader.ListDir with the D5b tier-1 in-process listing cache (ISI-5499,
+// ADR-0025 §D5b): N concurrent viewers of the same project at the same generation share ONE PVC
+// walk instead of O(users) walks. It is a transparent drop-in — same signature and error
+// semantics as reader.ListDir — so the route's degraded-state switch is unchanged.
+//
+// Correctness rules, all enforced here (never in the LRU):
+//   - Only CLEAN live listings are cached: on any error (busy / no-browse-target / timeout /
+//     not-found) the result is returned uncached, so the route still degrades to the snapshot and
+//     stale bytes are never stored.
+//   - The key is the generation resolved up front (cheap coord lookup, NOT a PVC walk). A busy
+//     project resolves to a busy-epoch token but its ListDir returns ErrWorkspaceBusy, so it is
+//     never stored anyway; an empty generation (reader without GenerationResolver) disables the
+//     cache entirely — the exact pre-D5b behaviour, so older wiring and the test stub are unaffected.
+//   - Epoch-skew guard: if the reader stamps a generation on the result that differs from the one
+//     we keyed on (a busy↔idle flip raced between resolve and walk), the result is returned uncached
+//     rather than filed under the wrong epoch.
+//
+// single-flight collapses a concurrent burst of misses into one walk; the TTL LRU serves the
+// subsequent (non-concurrent) users within listingCacheTTL.
+//
+// cachedListDir resolves the generation itself (one cheap coord lookup) then delegates. Use it for
+// the single-page /files route; the multi-page /files/stream route resolves the generation ONCE up
+// front and calls cachedListDirAt per page so a wide directory does not pay a coord lookup per page.
+func (s *Server) cachedListDir(ctx context.Context, reader WorkspaceReader, projectID, dirPath string, page int) (*DirListing, error) {
+	gen := ""
+	if s != nil && s.listingCache != nil {
+		gen = resolveGeneration(ctx, reader, projectID)
+	}
+	return s.cachedListDirAt(ctx, reader, projectID, gen, dirPath, page)
+}
+
+// cachedListDirAt is the caching core, keyed on a caller-supplied generation. An empty generation
+// (reader without GenerationResolver, failed resolve, or a nil cache) disables caching and falls
+// through to reader.ListDir — the exact pre-D5b path, so older wiring and the test stub are unaffected.
+func (s *Server) cachedListDirAt(ctx context.Context, reader WorkspaceReader, projectID, gen, dirPath string, page int) (*DirListing, error) {
+	if s == nil || s.listingCache == nil || gen == "" {
+		return reader.ListDir(ctx, projectID, dirPath, page)
+	}
+
+	key := listingKey(projectID, gen, dirPath, page)
+	if listing, ok := s.listingCache.get(key); ok {
+		return listing, nil
+	}
+
+	v, err, _ := s.listingCache.group.Do(key, func() (any, error) {
+		// Re-check under the single-flight winner in case a sibling just filled the entry.
+		if listing, ok := s.listingCache.get(key); ok {
+			return listing, nil
+		}
+		listing, lErr := reader.ListDir(ctx, projectID, dirPath, page)
+		if lErr != nil {
+			return nil, lErr
+		}
+		// Cache only a clean live listing whose epoch matches the key (see rules above).
+		cacheable := !listing.Degraded && listing.Reason == "" &&
+			(listing.Generation == "" || listing.Generation == gen)
+		if cacheable {
+			s.listingCache.put(key, listing)
+		}
+		return listing, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.(*DirListing), nil
+}
+
 // workspaceJailPath canonicalises a client-supplied path and verifies it stays inside
 // the workspace jail (equivalent to the pod-internal jail in S4a, AC3). It returns
 // the cleaned relative path, or an error if the path escapes.
@@ -321,7 +388,7 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 
 		rctx, rcancel := withReaderTimeout(r.Context())
 		defer rcancel()
-		listing, err := reader.ListDir(rctx, projectID, cleanPath, page)
+		listing, err := s.cachedListDir(rctx, reader, projectID, cleanPath, page)
 		if err != nil {
 			switch {
 			case errors.Is(err, ErrProjectNotFound):
@@ -656,13 +723,22 @@ func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotRea
 		degraded := false
 		degradedReason := ""
 
-		// Iterate pages. For each page we call ListDir (which is cached for 300 ms on the
-		// reader, so re-expand clicks within the TTL cost nothing extra).
+		// D5b (ISI-5499): resolve the generation ONCE up front and key every page's cache lookup on
+		// it, so a wide multi-page directory pays a single coord lookup, not one per page. "" (reader
+		// without generation support / failed resolve) disables the D5b cache for this stream.
+		streamGen := ""
+		if s != nil && s.listingCache != nil {
+			streamGen = resolveGeneration(r.Context(), reader, projectID)
+		}
+
+		// Iterate pages. Each page hits the D5b in-process listing cache (ISI-5499) first — N
+		// concurrent viewers of the same project at the same generation share ONE PVC walk — falling
+		// back through the reader's own 300 ms per-session dedup on a miss.
 		page := 0
 		firstPage := true
 		for {
 			rctx, rcancel := withReaderTimeout(r.Context())
-			listing, listErr := reader.ListDir(rctx, projectID, cleanPath, page)
+			listing, listErr := s.cachedListDirAt(rctx, reader, projectID, streamGen, cleanPath, page)
 			rcancel()
 
 			if listErr != nil {
@@ -712,10 +788,13 @@ func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotRea
 			// Write a preamble line on the first response to convey degraded state before entries.
 			if firstPage {
 				w.WriteHeader(http.StatusOK)
-				// Prefer the token the live reader already stamped on the OK-path listing; on the
-				// degraded branches (busy / no_browse_target) the listing was built here, so resolve
-				// it directly (review C1). Computed once, up front — never per page.
+				// Prefer the token the live reader already stamped on the OK-path listing; otherwise
+				// reuse the token already resolved up front for the cache key (streamGen), and only
+				// resolve once more if even that was empty (review C1). Computed once, never per page.
 				gen := listing.Generation
+				if gen == "" {
+					gen = streamGen
+				}
 				if gen == "" {
 					gen = resolveGeneration(r.Context(), reader, projectID)
 				}
