@@ -27,6 +27,7 @@ import (
 	api "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
+	"github.com/K8squad/K8squad/pkg/modelendpoint"
 	"github.com/K8squad/K8squad/pkg/roleprompt"
 	"github.com/K8squad/K8squad/pkg/teamroster"
 )
@@ -84,7 +85,6 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 		return fmt.Errorf("read Project %s/%s for run %s/%s context assembly: %w", projNS, run.Spec.ProjectRef.Name, run.Namespace, run.Name, err)
 	}
 
-	window := contextsource.WindowForModel(agent.Spec.Model)
 	// M1.2 (ISI-4128): scoped memory recall keys on the team's Postgres uuid
 	// (coord.work_item.team_id is the Team CR uid) — the Team CR name is not a
 	// uuid and fails the scoped-recall query. Resolve the Team CR and pass
@@ -106,6 +106,21 @@ func (r *Reconciler) ensureContextSnapshot(ctx context.Context, run *api.Run, de
 	if err != nil {
 		return err
 	}
+
+	// ISI-5540: resolve the context window from the live effective endpoint. A
+	// BYO endpoint that DECLARES its context window (modelendpoint contextWindow
+	// Secret key) is authoritative — the hosted deepseek endpoint serves 128K,
+	// not the catalog's conservative 64K floor. No declaration → the
+	// family-catalog default (under-budget safe). Best-effort: an endpoint
+	// resolution glitch falls back to the agent-model family default rather than
+	// failing the snapshot (AC6 no-regression). This pins into the snapshot; a
+	// resume reuses the pinned window, never re-resolving.
+	window := contextsource.WindowForModel(agent.Spec.Model)
+	resolver := modelendpoint.Resolver{Reader: r.Client}
+	if ep, _, _, _, rerr := resolver.ResolveEffective(ctx, &agent, role); rerr == nil {
+		window = contextsource.WindowFor(ep.Model, ep.ContextWindow)
+	}
+
 	rolePromptNS := agent.Namespace
 	if role != nil {
 		rolePromptNS = role.Namespace

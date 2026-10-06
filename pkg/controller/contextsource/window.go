@@ -82,11 +82,15 @@ var modelWindows = []struct {
 	// DefaultContextWindow (8192) so the must-include tier (~10K tokens)
 	// overflowed and EVERY deepseek run failed closed at context assembly
 	// (ISI-5287: john on deepseek-flash). 65536 is DeepSeek's documented
-	// context window (64K) — a conservative, portable floor giving must-include
-	// ~6× headroom; the hosted API serves more for some variants, so this
-	// under-budgets by design (§8.5: under-budget is safe, over-budget silently
-	// breaks the runtime). Precise per-endpoint resolution is the follow-up
-	// flagged above, not this family-keyed catalog.
+	// context window (64K) — a conservative, portable FLOOR giving must-include
+	// ~6× headroom; the hosted API serves more for some variants (deepseek-chat
+	// / V3 serve 128K). This under-budgets by design (§8.5: under-budget is safe,
+	// over-budget silently breaks the runtime). The precise per-endpoint window
+	// is resolved by WindowFor (ISI-5540): a BYO endpoint that DECLARES its true
+	// window (modelendpoint contextWindow Secret key) earns it, while this entry
+	// stays the floor for an endpoint that declares none — which is why it must
+	// NOT be blanket-bumped to 128K (local Ollama deepseek-r1:70b may serve less,
+	// and over-budget silently breaks the runtime).
 	{"deepseek", 65536},
 }
 
@@ -111,4 +115,24 @@ func WindowForModel(model string) int64 {
 		return DefaultContextWindow
 	}
 	return best
+}
+
+// WindowFor resolves a model's context window PER-ENDPOINT (ISI-5540). When the
+// resolved ModelEndpoint DECLARES its own window (declared > 0 — the endpoint's
+// 7.5 contextWindow Secret key, surfaced as modelendpoint.Endpoint.ContextWindow),
+// that authoritative figure wins: the hosted DeepSeek API serves 128K for
+// deepseek-chat/V3, so a BYO deepseek endpoint declaring 131072 is budgeted the
+// full window instead of failing closed at the conservative 64K family floor.
+//
+// With NO declaration (declared <= 0) it falls back to the family-keyed catalog
+// (WindowForModel) — the conservative default that keeps under-budget safe for
+// an endpoint whose true window is unknown (e.g. a local Ollama deepseek-r1:70b
+// that may serve less). The declared window is trusted as-is: it is the
+// endpoint's own statement of what it serves, not a per-family guess, so an
+// over-declaration is the endpoint operator's to own — never a blanket bump here.
+func WindowFor(model string, declared int64) int64 {
+	if declared > 0 {
+		return declared
+	}
+	return WindowForModel(model)
 }

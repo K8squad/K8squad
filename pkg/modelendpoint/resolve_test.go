@@ -141,6 +141,43 @@ func TestResolveBYOEndpoint(t *testing.T) {
 	rc := ep.RuntimeConfig()
 	assert.Equal(t, RuntimeConfig{Model: "qwen3:14b", BaseURL: "http://ollama.svc:11434", Token: "sekrit"}, rc)
 	assert.NotContains(t, ep.String(), "sekrit", "String must never render the token")
+	assert.Zero(t, ep.ContextWindow, "no contextWindow key declared → 0 (caller falls back to the family default)")
+}
+
+// TestResolveContextWindow is the ISI-5540 per-endpoint window: a BYO endpoint
+// that declares its true context window surfaces it on Endpoint.ContextWindow
+// (so the pre-dispatch budget resolver uses 128K for a hosted deepseek instead
+// of the 64K family floor), while a missing / non-integer / non-positive value
+// is IGNORED — never a resolution error — so the caller falls back to the
+// conservative family default (under-budget safe).
+func TestResolveContextWindow(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  int64
+	}{
+		{"declared 128K", "131072", 131072},
+		{"declared 64K", "65536", 65536},
+		{"non-integer ignored", "lots", 0},
+		{"zero ignored", "0", 0},
+		{"negative ignored", "-5", 0},
+		{"whitespace-padded integer", " 131072 ", 131072},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newResolver(t, endpointSecret("deepseek-ep", map[string][]byte{
+				"endpointURL":   []byte("https://api.deepseek.com/v1"),
+				"contextWindow": []byte(tc.value),
+			}))
+			a := byoAgent(func(s *api.AgentSpec) {
+				s.Model = "deepseek-chat"
+				s.ModelEndpointRef = &api.SecretRef{Name: "deepseek-ep"}
+			})
+			ep, err := r.Resolve(context.Background(), a)
+			require.NoError(t, err, "a malformed contextWindow must never fail-close the endpoint")
+			assert.Equal(t, tc.want, ep.ContextWindow)
+		})
+	}
 }
 
 // TestResolveAcceptsURLAliasAndKeyOverride: the `url` alias satisfies the

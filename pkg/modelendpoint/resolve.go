@@ -45,6 +45,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -61,6 +62,17 @@ import (
 const (
 	KeyEndpointURL = "endpointURL"
 	KeyAPIToken    = "apiToken"
+
+	// KeyContextWindow optionally declares THIS endpoint's true context
+	// window in tokens (ISI-5540). It is how a BYO endpoint reports the
+	// window it actually serves — the hosted DeepSeek API serves 128K for
+	// deepseek-chat/V3, more than the family catalog's conservative 64K
+	// floor (pkg/controller/contextsource). Optional and advisory: a missing,
+	// non-integer, or non-positive value is IGNORED (never a resolution
+	// error), so the caller falls back to the family-catalog default —
+	// under-budget stays safe. Only the ENDPOINT's own declaration earns a
+	// larger budget; this is never a blanket per-family guess.
+	KeyContextWindow = "contextWindow"
 
 	aliasURL   = "url"
 	aliasToken = "token"
@@ -125,6 +137,14 @@ type Endpoint struct {
 	// (provenance — 5.11 attribution and 8.8 dashboard indicators key off
 	// it). Empty when no Secret was involved.
 	SecretName string
+
+	// ContextWindow is the endpoint's DECLARED context window in tokens
+	// (ISI-5540, the per-endpoint window resolution flagged as the follow-up
+	// in pkg/controller/contextsource). 0 means the endpoint declared none —
+	// the pre-dispatch budget resolver (contextsource.WindowFor) then falls
+	// back to the conservative family-catalog default, so under-budget stays
+	// safe. A provider-default endpoint (no Secret) always reports 0.
+	ContextWindow int64
 }
 
 // RuntimeConfig is the validated, runtime-facing injection payload: the
@@ -458,10 +478,11 @@ func (r *Resolver) ResolveRef(ctx context.Context, namespace string, ref *api.Se
 	}
 
 	return Endpoint{
-		Model:      model,
-		BaseURL:    strings.TrimRight(parsed.String(), "/"),
-		Token:      secretKey(&secret, KeyAPIToken, aliasToken),
-		SecretName: ref.Name,
+		Model:         model,
+		BaseURL:       strings.TrimRight(parsed.String(), "/"),
+		Token:         secretKey(&secret, KeyAPIToken, aliasToken),
+		SecretName:    ref.Name,
+		ContextWindow: parseContextWindow(secretKey(&secret, KeyContextWindow, "")),
 	}, nil
 }
 
@@ -509,6 +530,22 @@ func (r *Resolver) applyCredentialToken(ctx context.Context, namespace string, c
 	}
 	ep.Token = tok
 	return ep
+}
+
+// parseContextWindow turns the endpoint Secret's contextWindow value into a
+// token count, or 0 when it is absent, non-integer, or non-positive. It is
+// deliberately NON-fatal (ISI-5540): a malformed window must never fail-close a
+// BYO-endpoint Run — the caller just falls back to the family-catalog default
+// (under-budget safe), exactly as if the endpoint had declared nothing.
+func parseContextWindow(raw string) int64 {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // secretKey returns the Secret data at key, falling back to alias when the
