@@ -762,6 +762,13 @@ func main() {
 		GithubIssueMirror:   githubIssueMirror,
 		WorkItemReads:       workItemReads,
 		ProjectRefs:         projectRefs,
+		// ISI-5535 Inbox ("Needs Human Decision"): the coord in_review arm (reuses the board read store),
+		// the discussion open-proposals arm (reuses the discussion store), and the per-user read-marker
+		// store over coord.decision_read_marker (migration 0032). The handler also reuses Overview (run
+		// feed) + ProjectRefs above. A DB-less dev run leaves these nil → documented 501 (server.go).
+		InboxReviews:   workItemReads,
+		InboxProposals: discussionStore,
+		InboxMarkers:   apiserver.NewPostgresReadMarkerStore(db),
 		Search:              searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the

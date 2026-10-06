@@ -126,6 +126,9 @@ const PROJECT_SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
 export function navTree(): NavNode[] {
   return [
     { id: "overview", label: "Overview", href: "/overview", scope: "global" },
+    // Inbox (ISI-5535 / ISI-5531 E1): "Needs Human Decision" — the cross-project aggregate of
+    // open proposals + in_review work items. Placed 2nd after Overview (ADR-0026 §6, mock 01).
+    { id: "inbox", label: "Inbox", href: "/inbox", scope: "global" },
     {
       // Compose (story 8.5 / UX screen 04-compose-crd): the CRD authoring surface for
       // Team/Project/Agent/Role/Skill. Like Settings → OTel it is a write surface with NO
@@ -290,6 +293,7 @@ export type Crumb = { label: string; href: string | null };
 
 const SECTION_LABEL: Record<string, string> = {
   overview: "Overview",
+  inbox: "Inbox",
   "agents-team": "Agents & Team",
   agents: "Agents",
   compose: "Compose",

@@ -48,6 +48,7 @@ import {
 function activeIds(pathname: string): Set<string> {
   const ids = new Set<string>();
   if (pathname.startsWith("/overview")) ids.add("overview");
+  if (pathname.startsWith("/inbox")) ids.add("inbox");
   if (pathname.startsWith("/compose")) ids.add("compose");
   // ISI-5432: ONE unified node. `startsWith("/agents")` covers BOTH /agents-team and the
   // surviving /agents/{id} detail drill-in (and the legacy /teams path, which server-redirects
@@ -149,6 +150,8 @@ export function ConsoleShell({
   const [drawerOpen, setDrawerOpen] = useState(false);
   // E1-S3: the AD-2 onboarding projection drives the nav lock + "Finish setup" chip.
   const [progress, setProgress] = useState<OnboardingProgress | null>(null);
+  // ISI-5535 Inbox unread badge: count of unread items, polled at 5s (ISI-5528 cadence).
+  const [inboxUnread, setInboxUnread] = useState(0);
 
   // ISI-3871: the appbar's env chip reads `console · <host>` from the CURRENT origin at render
   // time (mock frame 01/06 literal is `console · 10.0.0.219`). SSR-safe: the first paint uses
@@ -189,15 +192,43 @@ export function ConsoleShell({
     };
   }, []);
 
+  // ISI-5535: poll GET /api/inbox (BFF proxy for /api/squad/inbox) at 5s to drive the unread
+  // badge on the Inbox nav node. Fail-open: a failed read leaves the count at its last known
+  // value (or 0 on first mount). Matches the ISI-5528 live-marker poll cadence.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      if (document.hidden) return; // skip when backgrounded
+      fetch("/api/inbox", { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (cancelled || !data?.items) return;
+          const unread = (data.items as { unread?: boolean }[]).filter((i) => i.unread).length;
+          setInboxUnread(unread);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   const ids = activeIds(pathname);
   // FR-1.4: until a Team exists (milestone ① is always the first incomplete one when it
   // doesn't, so nextMilestone === "team"), gate the non-setup surfaces with the soft lock.
   const teamExists = progress ? progress.nextMilestone !== "team" : true;
   const lockedTree = withOnboardingLock(tree, teamExists);
-  const nodes = visibleNav(lockedTree, access);
+  // ISI-5535: stamp the inbox badge (unread count) onto the inbox nav node.
+  const badgedTree = inboxUnread > 0
+    ? lockedTree.map((n) => n.id === "inbox" ? { ...n, badge: String(inboxUnread) } : n)
+    : lockedTree;
+  const nodes = visibleNav(badgedTree, access);
   const projectMatch = pathname.match(/^\/projects\/([^/]+)/);
   const activeProject = projectMatch ? decodeURIComponent(projectMatch[1]) : null;
-  const { bottom, drawer } = mobileNav(access, lockedTree);
+  const { bottom, drawer } = mobileNav(access, badgedTree);
 
   return (
     <div className="shell">

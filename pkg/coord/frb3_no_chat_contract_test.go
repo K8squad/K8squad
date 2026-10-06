@@ -454,6 +454,8 @@ var allowedSurface = map[string]string{
 	"WorkItemReadStore":                        "§13 board read store (card list + ticket thread) bound to the prod schema",
 	"NewWorkItemReadStore":                     "§13 constructor",
 	"WorkItemReadStore.ListWorkItems":          "§13 per-Project card list, Team-scoped (404 existence-hiding)",
+	"WorkItemReadStore.ListReviewItems":        "§13 cross-Project in_review card list, Team-scoped (admin→fleet) — the ADR-0026 §3.2 review arm of the Needs-Human-Decision read; custody-free board projection, read-only",
+	"ReviewItem":                               "§13 one in_review card projected cross-Project (id/projectUID/title/updatedAt/assignee) for the ADR-0026 §3.3 run-join; read-only",
 	"WorkItemReadStore.ReadWorkItemThread":     "§6.1/§6.5 one ticket's thread (comments/history/change refs), Team-scoped",
 	"WorkItemReadStore.ProjectStatusSnapshots": "§6.5 project status-history rollup: daily per-status snapshots reconstructed from state_transition audit rows, Team-scoped (ISI-4509 read-only)",
 	"WorkItemReadStore.FindWorkItemByLabel":    "§13 label-keyed existence read for create-if-absent idempotency (ISI-4757/ISI-4766), Team-scoped (404 existence-hiding), read-only",

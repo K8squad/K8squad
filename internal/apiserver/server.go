@@ -202,6 +202,16 @@ type Options struct {
 	// decoded and whole. Nil ⇒ handlers pass the raw path variable through
 	// (dev host shape; unit seams).
 	ProjectRefs ProjectRefResolver
+	// InboxReviews / InboxProposals / InboxMarkers are the ISI-5535 (E1 of ISI-5531, ADR-0026) read
+	// surface behind GET /api/squad/inbox — the "Needs Human Decision" aggregate. InboxReviews is the
+	// coord cross-project in_review arm; InboxProposals the discussion open-proposals arm; InboxMarkers
+	// the per-user read-marker store (coord.decision_read_marker). The handler also reuses Overview (the
+	// run-feed cache arm, for ordering + live markers) and ProjectRefs (review-item project resolution).
+	// Nil review/proposal arm ⇒ GET keeps the documented 501; nil InboxMarkers ⇒ POST .../seen keeps 501
+	// and the GET degrades to all-unread — exactly like the other read models on a DB-less dev run.
+	InboxReviews   ReviewItemReader
+	InboxProposals OpenProposalReader
+	InboxMarkers   ReadMarkerStore
 	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
 	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
 	// exactly like the other read models. RBAC scoping (admin fleet-wide vs Team-fenced) is
@@ -512,6 +522,29 @@ func (s *Server) routes(opts Options) {
 		} else {
 			squad.HandleFunc("", notImplemented("squad-overview read model", "ISI-2760: squad-overview read model (8.1)")).
 				Methods(http.MethodGet)
+		}
+
+		// ISI-5535 Inbox ("Needs Human Decision"): GET /api/squad/inbox unions the coord in_review arm +
+		// the discussion open-proposals arm, joined to the informer-cache run feed (opts.Overview) for
+		// ordering + live markers, and derives unread from the per-user read-marker store. It rides the
+		// SAME §13 BFF choke point as squad-overview (ADR-0026 §3.1). POST /api/squad/inbox/seen upserts
+		// read markers for the unread badge. A nil review/proposal arm keeps the documented 501 (DB-less
+		// dev run); a nil marker store leaves the GET all-unread and the seen POST at 501.
+		inbox := s.router.Path("/api/squad/inbox").Subrouter()
+		inbox.Use(authz)
+		if opts.InboxReviews != nil && opts.InboxProposals != nil {
+			inbox.HandleFunc("", s.squadInbox(opts.InboxReviews, opts.InboxProposals, opts.InboxMarkers, opts.Overview, opts.ProjectRefs)).Methods(http.MethodGet)
+		} else {
+			inbox.HandleFunc("", notImplemented("inbox read model", "ISI-5535: wire the coord review + discussion proposal arms to enable")).
+				Methods(http.MethodGet)
+		}
+		inboxSeen := s.router.Path("/api/squad/inbox/seen").Subrouter()
+		inboxSeen.Use(authz)
+		if opts.InboxMarkers != nil {
+			inboxSeen.HandleFunc("", s.squadInboxSeen(opts.InboxMarkers)).Methods(http.MethodPost)
+		} else {
+			inboxSeen.HandleFunc("", notImplemented("inbox read-marker store", "ISI-5535: wire the read-marker store (coord.decision_read_marker) to enable")).
+				Methods(http.MethodPost)
 		}
 
 		// Teams LIST read model (ISI-3953, gap G4 of ISI-3949): GET /api/teams

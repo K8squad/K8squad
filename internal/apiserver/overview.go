@@ -56,6 +56,10 @@ type ProjectOverview struct {
 	RepoURL     string         `json:"repoUrl,omitempty"`
 	Runs        []RunStatus    `json:"runs"`
 	PhaseCounts map[string]int `json:"phaseCounts"`
+	// UID is the K8s Project CR object UID. Not exposed in JSON (internal use only): the inbox
+	// handler uses it to build a UID→"namespace/name" index for cross-project item resolution
+	// (ISI-5535, ADR-0026 §3.3). json:"-" so the overview endpoint contract is unchanged.
+	UID string `json:"-"`
 }
 
 // RunStatus is one Run's live status as projected from Run.status (§6.4). Phase is coalesced to
@@ -202,6 +206,7 @@ func (r *ClientOverviewReader) Overview(ctx context.Context, teamUID string, adm
 		out.Projects = append(out.Projects, ProjectOverview{
 			Name:        p.Name,
 			Namespace:   p.Namespace,
+			UID:         string(p.UID),
 			RepoURL:     p.Spec.Repo.URL,
 			Runs:        rows,
 			PhaseCounts: counts,
@@ -288,6 +293,7 @@ func (r *ClientOverviewReader) fleetOverview(ctx context.Context) (SquadOverview
 		out.Projects = append(out.Projects, ProjectOverview{
 			Name:        p.Name,
 			Namespace:   p.Namespace,
+			UID:         string(p.UID),
 			RepoURL:     p.Spec.Repo.URL,
 			Runs:        rows,
 			PhaseCounts: counts,
