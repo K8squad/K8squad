@@ -41,6 +41,19 @@ export type FileListing = {
   // the wire today (spec §8 open point 1) — the freshness pill falls back to
   // the time the listing was fetched, never fabricating a timestamp.
   snapshotTakenAt?: string;
+  // ADR-0025 D5a coherence token (ISI-5484): an opaque hash of (browse-target
+  // Run UID, busy-bool) the apiserver stamps on every SERVED listing. The
+  // client keys its durable per-session cache on it and HARD-INVALIDATES the
+  // project's cached paths the instant it changes (busy↔idle flip or a new
+  // succeeded run). Absent (omitempty) on a reader/apiserver that predates the
+  // stamp → the entry is UNCACHEABLE (D5a M2), never keyed on "".
+  generation?: string;
+  // Client-stamped (never on the wire) when this listing was served SYNCHRONOUSLY
+  // from the durable session cache (D5a cache-first render): `fromCache` lets the
+  // component paint the tree with no blocking spinner and show the subtle
+  // syncing…→updated/stale affordance; `cachedAt` is the ms epoch it was cached.
+  fromCache?: boolean;
+  cachedAt?: number;
 };
 
 /** GET /api/projects/{id}/files/content?path=<file> response. `data` is base64
@@ -260,6 +273,207 @@ export function normalizeListing(dir: string, listing: WireFileListing): FileLis
     path: base ? `${base}/${e.name}` : e.name,
   }));
   return { ...listing, path: listing.path ?? dir, entries };
+}
+
+// ———————————————————————————————————————————————————————————————————————————
+// ADR-0025 D5a — client durable listing cache (ISI-5485, child B).
+//
+// The shipped D5 server cache (ISI-5348) is a 300 ms per-session dedup — it
+// CANNOT serve a cross-session revisit, and this client fetches `no-store`. So
+// the durable cache-first layer lives here: a console-session Map that lets a
+// revisited path render SYNCHRONOUSLY (no blocking spinner) while a non-blocking
+// background revalidate reconciles the bytes.
+//
+// Coherence is keyed on the server `generation` stamp (child A, ISI-5484):
+//   • cache ONLY `!degraded && !reason` listings that carry a non-empty
+//     generation (M1: never cache a busy/degraded empty tree; M2: an absent
+//     generation is UNCACHEABLE — never key on "", which would collide across
+//     epochs during the mixed-version child-A rollout);
+//   • a revalidation whose generation differs from the rendered entry's is NOT
+//     reconciled in place across epochs — the project's cached paths are
+//     HARD-INVALIDATED and the tree is REPLACED wholesale under the new
+//     generation (C3: converge to the new epoch, never strand stale G1 bytes);
+//   • a failed / degraded revalidate LEAVES the cache intact (AC3) — degraded,
+//     not blank.
+// ———————————————————————————————————————————————————————————————————————————
+
+/** One durable cache entry: the clean (wire-stamped, never client-stamped)
+ * listing plus the generation it was served under and the ms epoch it landed. */
+type ListingCacheEntry = {
+  generation: string;
+  listing: FileListing;
+  cachedAt: number;
+};
+
+// M3: an explicit LRU cap bounds cross-project growth — generation-invalidation
+// alone only prunes a project on its own busy↔idle flip, so a user browsing many
+// projects would otherwise grow the Map unbounded.
+const LISTING_CACHE_MAX = 256;
+
+// Map keyed by projectId path (NUL can't appear in either part), insertion
+// order === recency: a get() re-inserts to mark MRU; a set() over the cap evicts
+// the oldest. Module-scoped = one cache per console session (cleared on reload).
+const listingCache = new Map<string, ListingCacheEntry>();
+
+// M5: one in-flight revalidate per projectId path — the shipped 300 ms
+// server dedup only collapses sub-300 ms bursts; this collapses the rest.
+const inflightRevalidate = new Map<string, Promise<FileListing | null>>();
+
+function cacheKey(projectId: string, path: string): string {
+  return `${projectId} ${path}`;
+}
+
+/** Whether a listing may enter the durable cache (M1 + M2): never a degraded /
+ * busy / no_browse_target tree, and only when the server stamped a non-empty
+ * coherence generation. */
+export function isCacheableListing(listing: FileListing): boolean {
+  return !listing.degraded && !listing.reason && !!listing.generation;
+}
+
+/** Synchronous cache lookup for the cache-first render. Returns a client-stamped
+ * clone (`fromCache:true` + the stored `cachedAt`) so the tree paints with no
+ * blocking spinner, and touches LRU recency. `null` ⇒ cold path (unchanged). */
+export function getCachedListing(projectId: string, path: string): FileListing | null {
+  const key = cacheKey(projectId, path);
+  const hit = listingCache.get(key);
+  if (!hit) return null;
+  // Mark MRU: delete + re-insert moves it to the tail of the iteration order.
+  listingCache.delete(key);
+  listingCache.set(key, hit);
+  return { ...hit.listing, fromCache: true, cachedAt: hit.cachedAt };
+}
+
+/** Write-through a freshly-served listing. No-op (cache LEFT INTACT) when the
+ * listing is uncacheable — a degraded/busy revalidation must never evict the
+ * last good tree (AC3). Enforces the M3 LRU cap. */
+export function cacheListing(projectId: string, path: string, listing: FileListing): void {
+  if (!isCacheableListing(listing)) return;
+  const key = cacheKey(projectId, path);
+  // Strip any client stamps before storing so the cache holds only wire truth.
+  const { fromCache: _f, cachedAt: _c, ...clean } = listing;
+  listingCache.delete(key);
+  listingCache.set(key, { generation: listing.generation as string, listing: clean, cachedAt: Date.now() });
+  // Evict oldest (head of insertion order) until under the cap.
+  while (listingCache.size > LISTING_CACHE_MAX) {
+    const oldest = listingCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    listingCache.delete(oldest);
+  }
+}
+
+/** HARD-INVALIDATE every cached path for a project (C3: a generation change —
+ * busy↔idle flip or a new succeeded run — means every cached path under the old
+ * generation is now stale and must not survive). */
+export function invalidateProjectListings(projectId: string): void {
+  const prefix = `${projectId} `;
+  for (const key of [...listingCache.keys()]) {
+    if (key.startsWith(prefix)) listingCache.delete(key);
+  }
+}
+
+/** Revalidate-only fetcher (M4): network stays `no-store` and reuses the abort
+ * budget, but it NEVER escalates to the foreground preparing/retrying/terminal
+ * state machine — a 202/503/4xx/5xx/abort all resolve to `null` so the caller
+ * keeps the cached tree and shows the subtle stale affordance. Returns the fresh
+ * listing ONLY on a 200 that is itself cacheable (`!degraded && generation`);
+ * a 200-degraded (project went busy) also resolves `null` (keep cache, stale).
+ * M5: collapses to a single in-flight request per projectId path. */
+export function revalidateListing(
+  projectId: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<FileListing | null> {
+  const key = cacheKey(projectId, path);
+  const existing = inflightRevalidate.get(key);
+  if (existing) return existing;
+  const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  const run = (async (): Promise<FileListing | null> => {
+    try {
+      const res = await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
+        { cache: "no-store", signal },
+      );
+      if (!res.ok) return null; // 202 preparing / 503 / 4xx / 5xx → keep cache, stale.
+      const fresh = normalizeListing(path, (await res.json()) as WireFileListing);
+      return isCacheableListing(fresh) ? fresh : null; // 200-degraded → keep cache, stale.
+    } catch {
+      return null; // abort / network error → keep cache, stale.
+    } finally {
+      inflightRevalidate.delete(key);
+    }
+  })();
+  inflightRevalidate.set(key, run);
+  return run;
+}
+
+/** The in-place reconcile of a rendered listing against fresh bytes (L1): match
+ * rows by name+type, report what was added / removed / restated so the component
+ * can prune the open/dirs child-state of removed subtrees and keep surviving
+ * ones. `entries` is server-authoritative order + fresh stat. */
+export type ListingReconcile = {
+  entries: FileEntry[];
+  added: string[];
+  removed: string[];
+  restated: string[];
+};
+
+function rowKey(e: FileEntry): string {
+  return `${e.type} ${e.name}`;
+}
+
+export function reconcileListing(prev: FileEntry[], next: FileEntry[]): ListingReconcile {
+  const prevByKey = new Map(prev.map((e) => [rowKey(e), e] as const));
+  const nextByKey = new Map(next.map((e) => [rowKey(e), e] as const));
+  const added: string[] = [];
+  const restated: string[] = [];
+  for (const e of next) {
+    const was = prevByKey.get(rowKey(e));
+    if (!was) added.push(e.path);
+    else if (was.size !== e.size) restated.push(e.path);
+  }
+  const removed: string[] = [];
+  for (const e of prev) {
+    if (!nextByKey.has(rowKey(e))) removed.push(e.path);
+  }
+  return { entries: next, added, removed, restated };
+}
+
+/** The coherence verdict for a background revalidation (C3). Given the currently
+ * RENDERED listing and the `revalidateListing` result, decides whether to show
+ * the cache as stale, reconcile fresh same-generation bytes in place, or replace
+ * the whole subtree under a new generation. Owns the cache + invalidation writes
+ * so the component only applies the UI transition. */
+export type RevalidationOutcome =
+  | { kind: "stale" }
+  | { kind: "updated"; listing: FileListing; reconcile: ListingReconcile }
+  | { kind: "replaced"; listing: FileListing };
+
+export function applyRevalidation(
+  projectId: string,
+  path: string,
+  rendered: FileListing,
+  fresh: FileListing | null,
+): RevalidationOutcome {
+  // No fresh bytes (failed / degraded / aborted) → cache already untouched (AC3).
+  if (!fresh) return { kind: "stale" };
+  const renderedGen = rendered.generation;
+  // C3: generation changed → the rendered epoch is gone. Hard-invalidate the
+  // whole project's cache, cache the new entry, and REPLACE wholesale (never a
+  // per-row reconcile across epochs — that would leave stale G1 rows alive).
+  if (renderedGen && fresh.generation !== renderedGen) {
+    invalidateProjectListings(projectId);
+    cacheListing(projectId, path, fresh);
+    return { kind: "replaced", listing: fresh };
+  }
+  // Same generation → refresh the cache and reconcile the rows in place (L1).
+  cacheListing(projectId, path, fresh);
+  return { kind: "updated", listing: fresh, reconcile: reconcileListing(rendered.entries ?? [], fresh.entries ?? []) };
+}
+
+/** Test-only: drop all durable cache + in-flight state between cases. */
+export function __resetListingCache(): void {
+  listingCache.clear();
+  inflightRevalidate.clear();
 }
 
 /** Read a file's content through the BFF choke point. Read-only — there is no

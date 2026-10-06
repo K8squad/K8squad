@@ -6,7 +6,7 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor, fireEvent, within, act } from "@testing-library/react";
 import { FileExplorerTab, FileExplorerErrorBoundary } from "@/components/FileExplorerTab";
-import { normalizeListing, normalizeContent } from "@/lib/project-files";
+import { normalizeListing, normalizeContent, cacheListing, __resetListingCache } from "@/lib/project-files";
 import { reportClientError } from "@/lib/client-errors";
 import type {
   FileContent,
@@ -21,6 +21,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   vi.useRealTimers();
+  // ISI-5485: the D5a listing cache is module-scoped — reset it between cases so
+  // a seeded entry never leaks across tests.
+  __resetListingCache();
 });
 
 /** base64 of a UTF-8 string (jsdom has Buffer). */
@@ -847,5 +850,128 @@ describe("FileExplorerTab", () => {
     const dirGlyph = screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--dir");
     expect(dirGlyph).toBeTruthy();
     expect(screen.getByText("src").parentElement?.querySelector(".file-explorer__glyph--file")).toBeNull();
+  });
+});
+
+// ISI-5485 (ADR-0025 D5a, child B) — cache-first render + background revalidate
+// + in-place reconcile. A controllable fetch lets us assert the tree paints from
+// the durable session cache BEFORE the network resolves, then reconciles.
+describe("FileExplorerTab — D5a cache-first (ISI-5485)", () => {
+  /** A fetch whose root (`path=""`) listing resolves only when we call release(),
+   * so the cache-first paint can be asserted with the network still pending. */
+  function deferredRootFetch(resolveWith: () => Response) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const spy = vi.fn(async (url: string) => {
+      const u = new URL(url, "http://localhost");
+      const path = u.searchParams.get("path") ?? "";
+      if (u.pathname.endsWith("/files") && path === "") {
+        await gate;
+        return resolveWith();
+      }
+      return { ok: false, status: 404, json: () => Promise.resolve(null) } as Response;
+    });
+    vi.stubGlobal("fetch", spy as unknown as typeof fetch);
+    return { spy, release };
+  }
+  const resp = (body: unknown, status = 200): Response =>
+    ({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) }) as unknown as Response;
+
+  it("renders the tree synchronously from cache with no blocking spinner + a Syncing… chip (AC1)", async () => {
+    cacheListing("web", "", {
+      path: "",
+      generation: "g1",
+      entries: [
+        { name: "src", path: "src", type: "dir" },
+        { name: "README.md", path: "README.md", type: "file", size: 12 },
+      ],
+    });
+    // Network is held open → the only way the rows can appear is the cache.
+    deferredRootFetch(() => resp({ path: "", entries: [], generation: "g1" }));
+
+    render(<FileExplorerTab projectId="web" />);
+
+    await waitFor(() => expect(screen.getByText("README.md")).toBeTruthy());
+    expect(screen.getByText("src")).toBeTruthy();
+    // No full-tab loading skeleton took over, and the background-sync chip shows.
+    expect(screen.queryByTestId("files-loading")).toBeNull();
+    expect(screen.getByTestId("files-sync-syncing")).toBeTruthy();
+  });
+
+  it("reconciles fresh same-generation bytes in place and flips to Up to date (AC1)", async () => {
+    cacheListing("web", "", {
+      path: "",
+      generation: "g1",
+      entries: [
+        { name: "keep.ts", path: "keep.ts", type: "file", size: 1 },
+        { name: "gone.ts", path: "gone.ts", type: "file", size: 1 },
+      ],
+    });
+    const { release } = deferredRootFetch(() =>
+      resp({
+        path: "",
+        generation: "g1",
+        entries: [
+          { name: "keep.ts", type: "file", size: 2 },
+          { name: "new.ts", type: "file", size: 3 },
+        ],
+      }),
+    );
+
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByText("gone.ts")).toBeTruthy()); // cached first
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId("files-sync-updated")).toBeTruthy());
+    expect(screen.getByText("new.ts")).toBeTruthy();
+    expect(screen.queryByText("gone.ts")).toBeNull(); // removed in place
+    expect(screen.getByText("keep.ts")).toBeTruthy(); // survived (restated)
+  });
+
+  it("a generation change drops stale bytes and replaces the tree wholesale (AC2 / C3)", async () => {
+    cacheListing("web", "", {
+      path: "",
+      generation: "g1",
+      entries: [{ name: "old.ts", path: "old.ts", type: "file", size: 1 }],
+    });
+    const { release } = deferredRootFetch(() =>
+      resp({ path: "", generation: "g2", entries: [{ name: "fresh.ts", type: "file", size: 1 }] }),
+    );
+
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByText("old.ts")).toBeTruthy()); // stale G1 from cache
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByText("fresh.ts")).toBeTruthy());
+    expect(screen.queryByText("old.ts")).toBeNull(); // stale bytes never survive the epoch flip
+    expect(screen.getByTestId("files-sync-updated")).toBeTruthy();
+  });
+
+  it("a failed background revalidate keeps the cached tree and shows Showing cached (AC3)", async () => {
+    cacheListing("web", "", {
+      path: "",
+      generation: "g1",
+      entries: [{ name: "keep.ts", path: "keep.ts", type: "file", size: 1 }],
+    });
+    const { release } = deferredRootFetch(() => resp(null, 503));
+
+    render(<FileExplorerTab projectId="web" />);
+    await waitFor(() => expect(screen.getByText("keep.ts")).toBeTruthy());
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId("files-sync-stale")).toBeTruthy());
+    expect(screen.getByText("keep.ts")).toBeTruthy(); // degraded, not blank
   });
 });
