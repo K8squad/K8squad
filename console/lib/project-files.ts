@@ -13,6 +13,18 @@
 // answers 200 with degraded=true and the bytes it can serve from the git
 // snapshot. It is informational, never an error.
 
+// ISI-5500 [S5a-C-fu2]: the D5a stale-while-revalidate telemetry seams (the
+// signal source the ISI-5486 obs design handed to this file, omitted by PR#787).
+// Each emit is best-effort / try-catch-swallowed inside revalidate-telemetry.ts
+// and never throws into the render path.
+import {
+  emitServe,
+  emitRevalidate,
+  emitInvalidate,
+  type RevalidateFailReason,
+  type InvalidateReason,
+} from "@/lib/revalidate-telemetry";
+
 /** One entry in a directory listing. `type` is explicit (not inferred from a git
  * mode) so the tree renders dir-vs-file without parsing octal modes. `size` is
  * bytes for files (absent/0 for dirs). `path` is workspace-root-relative and is
@@ -195,7 +207,17 @@ export async function listProjectFiles(
     return { kind: "preparing", attempt: 1 };
   }
   if (res.ok) {
-    return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
+    const data = normalizeListing(path, (await res.json()) as WireFileListing);
+    // ISI-5500 serve seam: a listing rendered straight from the network (cold,
+    // never fromCache). Best-effort beacon — never throws into render.
+    emitServe({
+      projectId,
+      path,
+      fromCache: false,
+      revisit: markServed(projectId, path),
+      generation: data.generation,
+    });
+    return { kind: "ready", data };
   }
   // ADR-0025 D2: 503 retryable-degraded is signalled to the caller so the component
   // can show "retrying…" and schedule the next attempt — the fetcher itself does NOT
@@ -229,7 +251,17 @@ export async function listProjectFilesAttempt(
     return { kind: "preparing", attempt: attempt + 1 };
   }
   if (res.ok) {
-    return { kind: "ready", data: normalizeListing(path, (await res.json()) as WireFileListing) };
+    const data = normalizeListing(path, (await res.json()) as WireFileListing);
+    // ISI-5500 serve seam: a listing rendered straight from the network (cold,
+    // never fromCache). Best-effort beacon — never throws into render.
+    emitServe({
+      projectId,
+      path,
+      fromCache: false,
+      revisit: markServed(projectId, path),
+      generation: data.generation,
+    });
+    return { kind: "ready", data };
   }
   if (await isRetryableDegraded(res)) {
     if (attempt >= RETRY_MAX_ATTEMPTS) {
@@ -319,6 +351,30 @@ const listingCache = new Map<string, ListingCacheEntry>();
 // server dedup only collapses sub-300 ms bursts; this collapses the rest.
 const inflightRevalidate = new Map<string, Promise<FileListing | null>>();
 
+// ISI-5500: session-scoped set of projectId|path keys that have ALREADY been
+// served this session — drives the `revisit` field on the serve beacon (a cache
+// hit is a revisit by construction; a cold serve of a key seen earlier is too).
+// Not the cache (which generation-invalidation can drop); this is a monotonic
+// "has this path ever rendered" marker. Returns the revisit verdict BEFORE
+// marking, so the first serve of a key reports revisit:false.
+const servedKeys = new Set<string>();
+function markServed(projectId: string, path: string): boolean {
+  const key = cacheKey(projectId, path);
+  const revisit = servedKeys.has(key);
+  servedKeys.add(key);
+  return revisit;
+}
+
+// ISI-5500: the shipped `revalidateListing`/`applyRevalidation` are called as a
+// pair for the same (projectId, path), but only the former sees the fetch
+// latency and the typed failure reason, while only the latter knows the
+// generation verdict (success/replaced/stale). Rather than widen either public
+// signature (both are covered by the PR#787 cache tests), the fetcher stashes
+// its latency + classified reason here and the verdict reads+clears it, so the
+// single revalidate beacon carries all of the §3 fields.
+type RevalidateMeta = { latencyMs: number; failReason: RevalidateFailReason | null };
+const revalidateMeta = new Map<string, RevalidateMeta>();
+
 function cacheKey(projectId: string, path: string): string {
   return `${projectId} ${path}`;
 }
@@ -340,6 +396,12 @@ export function getCachedListing(projectId: string, path: string): FileListing |
   // Mark MRU: delete + re-insert moves it to the tail of the iteration order.
   listingCache.delete(key);
   listingCache.set(key, hit);
+  // ISI-5500 serve seam: a synchronous cache hit IS a stale-serve on a revisit
+  // by construction — the entry only exists because an earlier serve cached it,
+  // so revisit is unconditionally true (markServed still records the key for any
+  // later cold serve). Best-effort beacon — never throws into render.
+  markServed(projectId, path);
+  emitServe({ projectId, path, fromCache: true, revisit: true, generation: hit.generation });
   return { ...hit.listing, fromCache: true, cachedAt: hit.cachedAt };
 }
 
@@ -364,11 +426,21 @@ export function cacheListing(projectId: string, path: string, listing: FileListi
 /** HARD-INVALIDATE every cached path for a project (C3: a generation change —
  * busy↔idle flip or a new succeeded run — means every cached path under the old
  * generation is now stale and must not survive). */
-export function invalidateProjectListings(projectId: string): void {
+export function invalidateProjectListings(
+  projectId: string,
+  reason: InvalidateReason = "generation_changed",
+): void {
   const prefix = `${projectId} `;
+  let pathsEvicted = 0;
   for (const key of [...listingCache.keys()]) {
-    if (key.startsWith(prefix)) listingCache.delete(key);
+    if (key.startsWith(prefix)) {
+      listingCache.delete(key);
+      pathsEvicted++;
+    }
   }
+  // ISI-5500 invalidate seam: the coherence guard fired — surface the project-
+  // coarse blast radius. Always sent (never sampled). Never throws into render.
+  emitInvalidate({ projectId, reason, pathsEvicted });
 }
 
 /** Revalidate-only fetcher (M4): network stays `no-store` and reuses the abort
@@ -378,6 +450,25 @@ export function invalidateProjectListings(projectId: string): void {
  * listing ONLY on a 200 that is itself cacheable (`!degraded && generation`);
  * a 200-degraded (project went busy) also resolves `null` (keep cache, stale).
  * M5: collapses to a single in-flight request per projectId path. */
+// ISI-5500: map a non-2xx revalidate response to the §3 reason enum, reusing the
+// S1 taxonomy verbatim (FILE_ERR_* / FILE_REASON_*). Pure classification, never
+// throws — a body it can't parse degrades to "retryable_degraded"/"network".
+async function classifyRevalidateFailReason(res: Response): Promise<RevalidateFailReason> {
+  if (res.status === 202) return "preparing";
+  if (res.status === 404) return "not_found";
+  if (res.status === 503) {
+    try {
+      const body: FileErrorBody = await res.clone().json();
+      if (body.code === FILE_ERR_SNAPSHOT_UNAVAILABLE) return "snapshot_unavailable";
+      if (body.code === FILE_ERR_PREPARING) return "preparing";
+      return "retryable_degraded";
+    } catch {
+      return "retryable_degraded";
+    }
+  }
+  return "network";
+}
+
 export function revalidateListing(
   projectId: string,
   path: string,
@@ -387,19 +478,34 @@ export function revalidateListing(
   const existing = inflightRevalidate.get(key);
   if (existing) return existing;
   const qs = path ? `?path=${encodeURIComponent(path)}` : "";
+  // ISI-5500: measure the revalidate round (cache-render -> reconcile/drop/fail)
+  // and classify the typed failure reason, stashed for applyRevalidation's beacon.
+  const startedAt = Date.now();
+  let failReason: RevalidateFailReason | null = null;
   const run = (async (): Promise<FileListing | null> => {
     try {
       const res = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}/files${qs}`,
         { cache: "no-store", signal },
       );
-      if (!res.ok) return null; // 202 preparing / 503 / 4xx / 5xx → keep cache, stale.
+      if (!res.ok) {
+        failReason = await classifyRevalidateFailReason(res);
+        return null; // 202 preparing / 503 / 4xx / 5xx -> keep cache, stale.
+      }
       const fresh = normalizeListing(path, (await res.json()) as WireFileListing);
-      return isCacheableListing(fresh) ? fresh : null; // 200-degraded → keep cache, stale.
+      if (!isCacheableListing(fresh)) {
+        // 200-degraded (project went busy) -> keep cache, stale.
+        failReason = (fresh.reason as RevalidateFailReason) ?? "workspace_busy";
+        return null;
+      }
+      return fresh; // success -> failReason stays null.
     } catch {
-      return null; // abort / network error → keep cache, stale.
+      failReason = signal?.aborted ? "aborted" : "network"; // abort / network -> stale.
+      return null;
     } finally {
       inflightRevalidate.delete(key);
+      // ISI-5500: hand latency + classified reason to applyRevalidation's beacon.
+      revalidateMeta.set(key, { latencyMs: Date.now() - startedAt, failReason });
     }
   })();
   inflightRevalidate.set(key, run);
@@ -454,19 +560,52 @@ export function applyRevalidation(
   rendered: FileListing,
   fresh: FileListing | null,
 ): RevalidationOutcome {
+  // ISI-5500: read+clear the latency + classified reason the fetcher stashed, so
+  // the single revalidate beacon below carries all of §3's fields.
+  const metaKey = cacheKey(projectId, path);
+  const meta = revalidateMeta.get(metaKey);
+  revalidateMeta.delete(metaKey);
+  const latencyMs = meta?.latencyMs ?? 0;
   // No fresh bytes (failed / degraded / aborted) → cache already untouched (AC3).
-  if (!fresh) return { kind: "stale" };
+  if (!fresh) {
+    emitRevalidate({
+      projectId,
+      path,
+      outcome: "failed",
+      reason: meta?.failReason ?? "network",
+      latencyMs,
+      generationChanged: false,
+      generation: rendered.generation,
+    });
+    return { kind: "stale" };
+  }
   const renderedGen = rendered.generation;
   // C3: generation changed → the rendered epoch is gone. Hard-invalidate the
   // whole project's cache, cache the new entry, and REPLACE wholesale (never a
   // per-row reconcile across epochs — that would leave stale G1 rows alive).
   if (renderedGen && fresh.generation !== renderedGen) {
-    invalidateProjectListings(projectId);
+    invalidateProjectListings(projectId); // emits the invalidate beacon
     cacheListing(projectId, path, fresh);
+    emitRevalidate({
+      projectId,
+      path,
+      outcome: "success",
+      latencyMs,
+      generationChanged: true,
+      generation: fresh.generation,
+    });
     return { kind: "replaced", listing: fresh };
   }
   // Same generation → refresh the cache and reconcile the rows in place (L1).
   cacheListing(projectId, path, fresh);
+  emitRevalidate({
+    projectId,
+    path,
+    outcome: "success",
+    latencyMs,
+    generationChanged: false,
+    generation: fresh.generation,
+  });
   return { kind: "updated", listing: fresh, reconcile: reconcileListing(rendered.entries ?? [], fresh.entries ?? []) };
 }
 
@@ -474,6 +613,8 @@ export function applyRevalidation(
 export function __resetListingCache(): void {
   listingCache.clear();
   inflightRevalidate.clear();
+  revalidateMeta.clear();
+  servedKeys.clear();
 }
 
 /** Read a file's content through the BFF choke point. Read-only — there is no
