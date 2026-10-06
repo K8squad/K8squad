@@ -147,6 +147,11 @@ func (h *Handler) Register(r *mux.Router) {
 	// ISI-4930 (plan §4.7 story 6 read side): the thread's proposal cards + lifecycle phase.
 	// The message read stays phase-less; this join is the durable card state after a reload.
 	r.HandleFunc("/threads/{threadId}/proposals", h.listProposals).Methods(http.MethodGet)
+	// ISI-5536 (ADR-0026 §4): the inert decision_request card. Any authenticated principal (agent or
+	// human) may ask; the human-only answer/reject shells (apiserver) are what gate the decision. The
+	// GET is the FE-4 read side — the thread's decision cards + lifecycle phase/answer after a reload.
+	r.HandleFunc("/threads/{threadId}/decision-requests", h.postDecisionRequest).Methods(http.MethodPost)
+	r.HandleFunc("/threads/{threadId}/decision-requests", h.listDecisionRequests).Methods(http.MethodGet)
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
@@ -221,15 +226,17 @@ func requireAuth(w http.ResponseWriter, r *http.Request) (AuthorContext, bool) {
 func writeStoreErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound),
-		errors.Is(err, ErrProposalNotFound):
+		errors.Is(err, ErrProposalNotFound), errors.Is(err, ErrDecisionRequestNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle),
 		errors.Is(err, ErrInvalidAudience), errors.Is(err, ErrInvalidKind),
-		errors.Is(err, ErrInvalidProposalPayload):
+		errors.Is(err, ErrInvalidProposalPayload), errors.Is(err, ErrInvalidDecisionPayload),
+		errors.Is(err, ErrRejectReasonRequired):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, ErrNotAuthor):
 		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrAlreadyRetracted), errors.Is(err, ErrProposalNotProposed):
+	case errors.Is(err, ErrAlreadyRetracted), errors.Is(err, ErrProposalNotProposed),
+		errors.Is(err, ErrDecisionRequestNotOpen):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -497,6 +504,97 @@ func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, proposals)
+}
+
+// ============================================================================
+// Decision-request create + read (ISI-5536, ADR-0026 §4)
+// ============================================================================
+
+// postDecisionRequestReq — no author_* fields (AC3, same as every write here). The structured payload
+// is the ADR-0026 §4.1 contract; workItemId binds the card to the ticket it decides (continuation +
+// Inbox join); idempotencyKey makes the create idempotent (a retry returns the existing card). An
+// agent OR a human may ask — asking is conversation; the answer is the human-only decision.
+type postDecisionRequestReq struct {
+	Body           string                 `json:"body"`
+	Payload        DecisionRequestPayload `json:"payload"`
+	Target         *DecisionTarget        `json:"target,omitempty"`
+	WorkItemID     string                 `json:"workItemId,omitempty"`
+	IdempotencyKey string                 `json:"idempotencyKey"`
+	ParentID       *string                `json:"parentId,omitempty"`
+}
+
+// postDecisionRequest appends an inert kind='decision_request' message (phase='open'). It writes no
+// coord row and moves no custody — the continuation fan-out happens only in the human-gated answer
+// shell. A duplicate idempotencyKey returns the EXISTING card (201 with the same message), never a
+// second row.
+func (h *Handler) postDecisionRequest(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	var req postDecisionRequestReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	var parentID *uuid.UUID
+	if req.ParentID != nil && *req.ParentID != "" {
+		pid, err := uuid.Parse(*req.ParentID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid parentId")
+			return
+		}
+		parentID = &pid
+	}
+	msg, err := h.store.PostDecisionRequest(r.Context(), projectID, teamID, threadID, auth,
+		req.Body, req.Payload, req.Target, req.WorkItemID, req.IdempotencyKey, parentID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	// ISI-5208: echo the committed card onto the live SSE bus so an open Room appends it without a
+	// reload. Best-effort (the row is already durable). A re-posted idempotency_key returns the
+	// existing card; re-publishing it is harmless (the client de-dupes on message id).
+	if h.roomStream != nil {
+		h.roomStream.PublishMessageCreated(projectID, msg)
+	}
+	writeJSON(w, http.StatusCreated, msg)
+}
+
+// listDecisionRequests answers GET /threads/{threadId}/decision-requests: every decision card in the
+// thread with its lifecycle phase + answer (FE-4 read side, mirror of listProposals). A foreign
+// thread id yields 404 via the store's scope probe.
+func (h *Handler) listDecisionRequests(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	cards, err := h.store.ListDecisionRequests(r.Context(), projectID, teamID, threadID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cards)
 }
 
 // ============================================================================

@@ -28,16 +28,19 @@ BEGIN
     ASSERT k = 'decision_request', format('expected decision_request kind, found %s', coalesce(k,'<absent>'));
 END $$;
 
--- (2) A lifecycle row inserts with the honest defaults (phase=open, continuation set).
+-- (2) A lifecycle row inserts with the honest defaults (phase=open, continuation set) and round-trips
+--     the work_item_id binding the card to its ticket (BE-6 continuation / BE-7 Inbox join).
 DO $$
-DECLARE p text; c text;
+DECLARE p text; c text; w uuid;
 BEGIN
-    INSERT INTO discussion.decision_request (message_id, idempotency_key, bound_revision_id)
-    VALUES ('00000000-0000-0000-0000-0000000d0002', 'decision:t1:http-client:r1', 'rev-1');
-    SELECT phase, continuation INTO p, c
+    INSERT INTO discussion.decision_request (message_id, idempotency_key, work_item_id, bound_revision_id)
+    VALUES ('00000000-0000-0000-0000-0000000d0002', 'decision:t1:http-client:r1',
+            '00000000-0000-0000-0000-0000000d00f1', 'rev-1');
+    SELECT phase, continuation, work_item_id INTO p, c, w
       FROM discussion.decision_request WHERE message_id = '00000000-0000-0000-0000-0000000d0002';
     ASSERT p = 'open', format('expected default phase open, found %s', p);
     ASSERT c = 'resume_agent_on_answer', format('expected default continuation, found %s', c);
+    ASSERT w = '00000000-0000-0000-0000-0000000d00f1', format('work_item_id did not round-trip, found %s', coalesce(w::text,'<null>'));
 END $$;
 
 -- (3) The phase CHECK rejects a value outside the state machine.

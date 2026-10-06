@@ -41,11 +41,18 @@ ALTER TABLE discussion.message
 --    its own column so the supersede CAS ("auto-expire when the bound revision moves") is a cheap
 --    indexed predicate, not a jsonb extraction. The full target{type,ref,revisionId} is kept in
 --    `target` jsonb for the card renderer.
+--    work_item_id (ADR-0026 §3.3/§5): the coord work item the card decides on, carried so (a) the
+--    Inbox union keys each decision by its ticket to run-join for ordering (BE-7) and (b) the answer
+--    shell re-dispatches that ticket to resume the raising agent (BE-6). It is a PLAIN uuid with NO
+--    cross-schema FK into coord.work_item on purpose: the fence (0004/ADR-0019) keeps the discussion
+--    schema from referencing — and thus coupling custody to — the coordination tables. NULL is legal
+--    (a project-wide ask bound to no ticket): such a card simply has no continuation target.
 CREATE TABLE discussion.decision_request (
     message_id        uuid        PRIMARY KEY REFERENCES discussion.message(id),
     phase             text        NOT NULL DEFAULT 'open'
         CHECK (phase IN ('open', 'answered', 'rejected', 'expired', 'superseded')),
     idempotency_key   text        NOT NULL,
+    work_item_id      uuid            NULL,   -- coord ticket the card decides on (NO FK — fence, ADR-0019)
     target            jsonb           NULL,   -- {type,ref,revisionId} the card binds to (ADR §4.1)
     bound_revision_id text            NULL,   -- target.revisionId lifted out for the supersede CAS
     continuation      text        NOT NULL DEFAULT 'resume_agent_on_answer',

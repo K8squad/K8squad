@@ -105,6 +105,7 @@ type DecisionRequest struct {
 	TeamID         uuid.UUID
 	Payload        DecisionRequestPayload
 	Target         *DecisionTarget `json:"target,omitempty"`
+	WorkItemID     string          `json:"workItemId,omitempty"` // coord ticket the card decides on (BE-6/BE-7); "" ⇒ project-wide
 	IdempotencyKey string          `json:"idempotencyKey"`
 	Continuation   string          `json:"continuation"`
 	Phase          string          `json:"phase"`
@@ -167,7 +168,7 @@ var (
 // row in one transaction. Agents and humans alike may ask — asking is conversation, not execution
 // (same invariant as proposals). The idempotencyKey makes create idempotent: a retry re-posting the
 // same key returns the EXISTING card (no second row, no second question), per ADR-0026 §4.2.
-func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload DecisionRequestPayload, target *DecisionTarget, idempotencyKey string, parentID *uuid.UUID) (*Message, error) {
+func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamID, threadID uuid.UUID, auth AuthorContext, body string, payload DecisionRequestPayload, target *DecisionTarget, workItemID, idempotencyKey string, parentID *uuid.UUID) (*Message, error) {
 	if body == "" {
 		return nil, ErrEmptyBody
 	}
@@ -198,6 +199,18 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 		if target.RevisionID != "" {
 			boundRev = sql.NullString{String: target.RevisionID, Valid: true}
 		}
+	}
+
+	// work_item_id is a plain uuid column (no coord FK — the fence); validate the caller's id so a
+	// malformed ref is a 400 at post time, not a cast error mid-insert. "" ⇒ a project-wide ask with
+	// no continuation target (SQL NULL).
+	var workItem uuid.NullUUID
+	if workItemID != "" {
+		wid, perr := uuid.Parse(workItemID)
+		if perr != nil {
+			return nil, fmt.Errorf("%w: workItemId %q is not a uuid", ErrInvalidDecisionPayload, workItemID)
+		}
+		workItem = uuid.NullUUID{UUID: wid, Valid: true}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -232,10 +245,10 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 	// tx back (discarding the just-inserted message) and return the existing card.
 	tag, err := tx.ExecContext(ctx, `
 		INSERT INTO discussion.decision_request
-		    (message_id, phase, idempotency_key, target, bound_revision_id, continuation)
-		VALUES ($1, 'open', $2, $3, $4, $5)
+		    (message_id, phase, idempotency_key, work_item_id, target, bound_revision_id, continuation)
+		VALUES ($1, 'open', $2, $3, $4, $5, $6)
 		ON CONFLICT (idempotency_key) DO NOTHING`,
-		m.ID, idempotencyKey, nullJSON(targetJSON), boundRev, DefaultContinuation)
+		m.ID, idempotencyKey, workItem, nullJSON(targetJSON), boundRev, DefaultContinuation)
 	if err != nil {
 		return nil, fmt.Errorf("post decision_request lifecycle: %w", err)
 	}
@@ -258,7 +271,7 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 const decisionSelect = `
 	SELECT m.id, m.thread_id, m.parent_id, m.author_principal, m.author_agent_id, m.author_run_id,
 	       m.body, m.audience, m.kind, m.payload, m.created_at, m.invalidated_at,
-	       t.team_id, d.phase, d.idempotency_key, d.target, d.continuation,
+	       t.team_id, d.phase, d.idempotency_key, d.work_item_id, d.target, d.continuation,
 	       d.answer, d.reject_reason, d.answered_by, d.answered_at
 	FROM discussion.decision_request d
 	JOIN discussion.message m ON m.id = d.message_id
@@ -268,17 +281,20 @@ const decisionSelect = `
 func scanDecisionRequest(sc interface{ Scan(...any) error }) (*DecisionRequest, error) {
 	var d DecisionRequest
 	var payload, targetJSON, answerJSON []byte
-	var parentID uuid.NullUUID
+	var parentID, workItem uuid.NullUUID
 	var agentID, runID, answeredBy, rejectReason sql.NullString
 	var answeredAt sql.NullTime
 	if err := sc.Scan(
 		&d.Message.ID, &d.Message.ThreadID, &parentID, &d.Message.AuthorPrincipal,
 		&agentID, &runID, &d.Message.Body, &d.Message.Audience, &d.Message.Kind,
 		&payload, &d.Message.CreatedAt, &d.Message.InvalidatedAt,
-		&d.TeamID, &d.Phase, &d.IdempotencyKey, &targetJSON, &d.Continuation,
+		&d.TeamID, &d.Phase, &d.IdempotencyKey, &workItem, &targetJSON, &d.Continuation,
 		&answerJSON, &rejectReason, &answeredBy, &answeredAt,
 	); err != nil {
 		return nil, err
+	}
+	if workItem.Valid {
+		d.WorkItemID = workItem.UUID.String()
 	}
 	if parentID.Valid {
 		pid := parentID.UUID
@@ -362,6 +378,30 @@ func (s *Store) ListOpenDecisionRequestsForTeam(ctx context.Context, teamID uuid
 	q += ` ORDER BY m.created_at DESC LIMIT $1`
 
 	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DecisionRequest{}
+	for rows.Next() {
+		d, err := scanDecisionRequest(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+// ListDecisionRequests returns EVERY decision_request card in a thread with its lifecycle phase and
+// answer, tenancy-scoped through thread, oldest first (transcript order) — the FE-4 read side, the
+// mirror of ListProposals. The message read stays custody-free and phase-less; the ticket-detail
+// card renderer joins this list onto the messages by id to show durable card state (open/answered/
+// rejected/expired/superseded) after a reload.
+func (s *Store) ListDecisionRequests(ctx context.Context, projectID string, teamID, threadID uuid.UUID) ([]DecisionRequest, error) {
+	rows, err := s.db.QueryContext(ctx, decisionSelect+`
+		WHERE m.thread_id = $1 AND t.project_id = $2 AND t.team_id = $3 AND m.invalidated_at IS NULL
+		ORDER BY m.created_at ASC`, threadID, projectID, teamID)
 	if err != nil {
 		return nil, err
 	}

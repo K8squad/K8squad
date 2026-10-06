@@ -734,6 +734,7 @@ func main() {
 		Authenticator:       authn,
 		Discussion:          discussionHandler,
 		DiscussionProposals: discussionStore,
+		DiscussionDecisions: discussionStore,
 		Ready:               dbReady{db},
 		Overview:            overview,
 		ProjectOverview:     projectOverview,

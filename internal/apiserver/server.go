@@ -188,6 +188,12 @@ type Options struct {
 	// authoring seams above (WorkItemWrites + WorkItemDispatch). Set together with those
 	// two; nil (or a missing seam) ⇒ the proposal routes keep the documented 501.
 	DiscussionProposals ProposalLifecycle
+	// DiscussionDecisions is the ISI-5536 decision_request answer/reject seam (ADR-0026 §4.4/§5):
+	// the discussion Store's decision-lifecycle ops (open → answered|rejected) driven by
+	// decisionAnswerHandler/decisionRejectHandler, whose continuation reuses WorkItemDispatch to
+	// resume the raising agent. Set together with WorkItemDispatch; nil (or a missing seam) ⇒ the
+	// decision-request answer/reject routes keep the documented 501.
+	DiscussionDecisions DecisionLifecycle
 	// WorkItemReads is the M1.5 board read surface (coord.WorkItemReadStore,
 	// ISI-4131): GET /api/projects/{projectId}/work-items (card list) and GET
 	// /api/work-items/{id} (ticket thread — comments, status history, change
@@ -1306,6 +1312,43 @@ func (s *Server) routes(opts Options) {
 				prop.Use(authz)
 				prop.HandleFunc("", notImplemented("proposal "+segment+" seam",
 					"ISI-4928: wire the discussion Store + coord.WorkItemWriteStore + WorkItemDispatchStore to enable")).
+					Methods(http.MethodPost)
+			}
+		}
+
+		// ISI-5536 decision_request answer/reject shells (ADR-0026 §4.4/§5): the human decision verbs
+		// on a decision card. Create is thread-scoped on the Discussion handler (any principal may
+		// ask); these two gate the human-only decision and reuse the EXISTING dispatch seam for the
+		// agent-resume continuation. Human-only + requireProjectRole(Contributor), sameOrigin-guarded —
+		// the same wall as the proposal confirm/dismiss verbs they mirror. Needs the decision lifecycle
+		// store AND the dispatch seam; otherwise the documented 501.
+		if opts.DiscussionDecisions != nil && opts.WorkItemDispatch != nil {
+			fanout := decisionFanout{
+				lifecycle: opts.DiscussionDecisions,
+				dispatch:  opts.WorkItemDispatch,
+			}
+			for _, verb := range []struct {
+				segment string
+				handler http.HandlerFunc
+			}{
+				{"answer", decisionAnswerHandler(fanout)},
+				{"reject", decisionRejectHandler(fanout)},
+			} {
+				dec := s.router.Path("/api/projects/{projectId:.+}/discussion/decision-requests/{messageId}/" + verb.segment).Subrouter()
+				dec.Use(authz)
+				dec.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+				dec.Use(maxBytesBody(4 << 10))
+				if opts.ProjectRoles != nil {
+					dec.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleContributor))
+				}
+				dec.HandleFunc("", verb.handler).Methods(http.MethodPost)
+			}
+		} else {
+			for _, segment := range []string{"answer", "reject"} {
+				dec := s.router.Path("/api/projects/{projectId:.+}/discussion/decision-requests/{messageId}/" + segment).Subrouter()
+				dec.Use(authz)
+				dec.HandleFunc("", notImplemented("decision_request "+segment+" seam",
+					"ISI-5536: wire the discussion Store + coord.WorkItemDispatchStore to enable")).
 					Methods(http.MethodPost)
 			}
 		}
