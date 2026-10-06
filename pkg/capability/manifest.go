@@ -41,6 +41,7 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills [
 			Version:         res.Version,
 			Image:           res.Image,
 			SourceNamespace: res.SourceNamespace,
+			Provides:        res.Provides,
 		})
 	}
 	for _, ep := range endpoints {
@@ -115,10 +116,12 @@ func EndpointsFromManifest(m *api.CapabilityManifest) []Endpoint {
 // catalog — the manifest already pinned name→image at assembly time, so the
 // boot stages exactly what admission recorded (ISI-5221: the init packs were
 // resolved and recorded but never attached on the live sandbox path). Returns
-// nil for a nil/empty manifest so the bare posture stages nothing. RBAC/Provides
-// are intentionally not reconstructed — the boot path needs only Name (init
-// container name) and Image (the staged layer); the effective RBAC envelope is
-// the RBAC renderer's concern, sourced from the same manifest elsewhere.
+// nil for a nil/empty manifest so the bare posture stages nothing. Provides is
+// reconstructed because the staging contract resolves and copies exactly those
+// binaries from the image's own PATH onto /tools/bin (ISI-5495: without it the
+// cold-boot seam renders empty staging loops and /tools/bin stays empty). RBAC
+// is intentionally NOT reconstructed — the effective RBAC envelope is the RBAC
+// renderer's concern, sourced from the same manifest elsewhere.
 func ToolchainsFromManifest(m *api.CapabilityManifest) []toolchain.Resolved {
 	if m == nil || len(m.Toolchains) == 0 {
 		return nil
@@ -130,6 +133,7 @@ func ToolchainsFromManifest(m *api.CapabilityManifest) []toolchain.Resolved {
 			Version:         tc.Version,
 			Image:           tc.Image,
 			SourceNamespace: tc.SourceNamespace,
+			Provides:        tc.Provides,
 		})
 	}
 	return out
