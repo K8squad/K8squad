@@ -176,7 +176,9 @@ func TestOpenCodeBYOEndpointRendersProviderBlock(t *testing.T) {
 	limit := entry["limit"].(map[string]any)
 	assert.EqualValues(t, 65536, limit["context"])
 	assert.EqualValues(t, 8192, limit["output"])
-	assert.Contains(t, entry, "temperature")
+	// ISI-5503: no model-level temperature — opencode v1.18.27 types it as a
+	// boolean capability flag, so a numeric value rejects the config at load.
+	assert.NotContains(t, entry, "temperature")
 
 	// MCP section merges into the same document.
 	mcp, ok := doc["mcp"].(map[string]any)

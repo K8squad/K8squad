@@ -113,8 +113,10 @@ func TestRenderOpenCodeNativeToolScope(t *testing.T) {
 // carries options.apiKey as an env reference (so a key-validating endpoint
 // authenticates — @ai-sdk/openai-compatible under a custom provider id does not
 // fall back to OPENAI_API_KEY) and the model entry advertises tool_call + limit
-// + temperature so the build agent runs the tool-call loop. The literal token
-// still never lands in the file.
+// so the build agent runs the tool-call loop. No model-level temperature is
+// rendered (ISI-5503): opencode v1.18.27 types it as a boolean capability flag,
+// so a numeric value rejects the config at load. The literal token still never
+// lands in the file.
 func TestRenderOpenCodeConfigBYOModelEntry(t *testing.T) {
 	raw, err := RenderOpenCodeConfig(nil, "https://api.deepseek.com/v1", "deepseek-chat")
 	require.NoError(t, err)
@@ -133,7 +135,6 @@ func TestRenderOpenCodeConfigBYOModelEntry(t *testing.T) {
 					Context int `json:"context"`
 					Output  int `json:"output"`
 				} `json:"limit"`
-				Temperature *float64 `json:"temperature"`
 			} `json:"models"`
 		} `json:"provider"`
 	}
@@ -151,7 +152,19 @@ func TestRenderOpenCodeConfigBYOModelEntry(t *testing.T) {
 	require.NotNil(t, entry.Limit, "limit emitted")
 	assert.Equal(t, 65536, entry.Limit.Context)
 	assert.Equal(t, 8192, entry.Limit.Output)
-	require.NotNil(t, entry.Temperature, "temperature emitted")
+
+	// ISI-5503: the model-level temperature key must be ABSENT entirely (not
+	// null, not 0.3). opencode v1.18.27 types it as a boolean capability flag,
+	// so any numeric value rejects the config at load → exit status 1. Decode
+	// the model entry as a free map to prove the key never renders.
+	var rawDoc struct {
+		Provider map[string]struct {
+			Models map[string]map[string]any `json:"models"`
+		} `json:"provider"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &rawDoc))
+	rawEntry := rawDoc.Provider[OpenCodeBYOProviderID].Models["deepseek-chat"]
+	assert.NotContains(t, rawEntry, "temperature", "model-level temperature must not render (ISI-5503)")
 
 	// The env reference is not a literal credential.
 	assert.NotContains(t, string(raw), "sk-", "no literal token in config")
