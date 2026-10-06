@@ -50,7 +50,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -193,15 +192,6 @@ type Reconciler struct {
 	// rate-limit gauges. Nil is safe — every method is a no-op on a nil
 	// receiver — so unit tests and stripped binaries need not wire it.
 	Metrics *scmmetrics.Metrics
-
-	// Jitter spreads the poll (and post-rate-limit) requeue across a window so
-	// N Projects sharing ONE PAT do not re-poll in lockstep and burst GitHub's
-	// secondary limiter together (ISI-5475: sympozium + bmad-squad mirror under
-	// the same PAT owner). It is add-only — the returned delay is never shorter
-	// than base — so jitter can widen the cadence but never tighten it past the
-	// pollInterval clamp or re-poll before a Retry-After elapses. Nil defaults to
-	// wait.Jitter (math/rand); tests inject a deterministic function.
-	Jitter func(base time.Duration, maxFactor float64) time.Duration
 }
 
 // +kubebuilder:rbac:groups=ksquad.io,resources=projects,verbs=get;list;watch;patch
@@ -332,12 +322,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			r.patchStatus(ctx, project, statusPatch{
 				condition: syncReadyFalse(reasonProviderFail, rateLimitMessage(sync.Provider, delay)),
 			})
-			// Honour the FULL Retry-After, then add a small spread on top so N
-			// Projects whose shared PAT tripped the SAME secondary limit do not
-			// all retry at the identical instant and re-trip it together
-			// (ISI-5475 thundering herd). Jitter is add-only, so the retry still
-			// never fires before Retry-After elapses.
-			return ctrl.Result{RequeueAfter: r.jitter(delay, rateLimitJitterFraction)}, nil
+			// Honour the FULL Retry-After. The per-PAT token-bucket governor
+			// (ISI-5498) now paces every outbound call from ONE shared budget, so
+			// N Projects whose shared PAT tripped the SAME secondary limit no
+			// longer need a per-requeue spread to avoid re-tripping it together —
+			// the governor serializes their retries past the limit regardless.
+			return ctrl.Result{RequeueAfter: delay}, nil
 		}
 		r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonProviderFail, err.Error())})
 		return ctrl.Result{}, err
@@ -451,12 +441,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	r.recordSyncHistory(ctx, project, sync.Provider, trigger, applied)
 
 	// Poll fallback (AC3): the interval comes from the spec values — two
-	// Projects with distinct intervals schedule distinctly. Jitter (ISI-5475)
-	// adds up to pollJitterFraction on top so Projects sharing one PAT drift out
-	// of lockstep instead of bursting GitHub together every interval; the webhook
-	// trigger is a separate, unjittered path, so freshness is unaffected.
-	base := time.Duration(r.pollInterval(sync)) * time.Second
-	return ctrl.Result{RequeueAfter: r.jitter(base, pollJitterFraction)}, nil
+	// Projects with distinct intervals schedule distinctly. Projects sharing one
+	// PAT may still re-poll in lockstep, but the per-PAT token-bucket governor
+	// (ISI-5498) now caps the aggregate outbound rate from ONE shared budget, so
+	// a lockstep poll no longer bursts GitHub's secondary limiter — the former
+	// per-requeue jitter (ISI-5475) is redundant and has been removed.
+	return ctrl.Result{RequeueAfter: time.Duration(r.pollInterval(sync)) * time.Second}, nil
 }
 
 // classifyTrigger labels a reconcile pass as webhook- or poll-driven for the
@@ -644,28 +634,6 @@ func (r *Reconciler) pollInterval(sync *ksquadapi.RepoSyncSpec) int32 {
 		return minPollIntervalSeconds
 	}
 	return sync.PollIntervalSeconds
-}
-
-// pollJitterFraction spreads the scheduled poll requeue: the requeue becomes
-// base + rand[0, pollJitterFraction*base], so a 300s poll lands in 300–360s.
-// It de-synchronizes Projects sharing one PAT without materially loosening the
-// mirror freshness the poll guarantees (ISI-5475).
-const pollJitterFraction = 0.2
-
-// rateLimitJitterFraction spreads the post-rate-limit retry. It is smaller than
-// the poll fraction because the Retry-After is already the dominant wait; this
-// just keeps co-limited Projects from retrying in the same instant.
-const rateLimitJitterFraction = 0.1
-
-// jitter returns base widened by a random fraction in [0, maxFactor], never
-// shorter than base. r.Jitter is injectable for deterministic tests; nil uses
-// the shared wait.Jitter (math/rand). wait.Jitter already guarantees the result
-// is >= base, so jitter can only DELAY a requeue — never fire it early.
-func (r *Reconciler) jitter(base time.Duration, maxFactor float64) time.Duration {
-	if r.Jitter != nil {
-		return r.Jitter(base, maxFactor)
-	}
-	return wait.Jitter(base, maxFactor)
 }
 
 func (r *Reconciler) botActor() string {

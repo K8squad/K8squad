@@ -185,11 +185,6 @@ func newHarness(t *testing.T, project *ksquadapi.Project, provider scm.SourceCon
 		WithStatusSubresource(&ksquadapi.Project{}).
 		Build()
 	r := &Reconciler{Client: c, Scheme: c.Scheme(), Providers: registry, Store: store}
-	// Default the harness to an IDENTITY jitter so requeue assertions stay exact
-	// (ISI-5475 adds add-only jitter to the poll + rate-limit requeue; tests that
-	// exercise jitter itself override this). wait.Jitter's math/rand spread would
-	// otherwise make every RequeueAfter assertion flaky.
-	r.Jitter = func(base time.Duration, _ float64) time.Duration { return base }
 	return r, store
 }
 
@@ -842,9 +837,6 @@ func newCountingHarness(t *testing.T, provider scm.SourceControlProvider) (*Reco
 		statusPatches: &patches,
 	}
 	r := &Reconciler{Client: c, Scheme: c.Scheme(), Providers: registry, Store: scm.NewInMemoryMirrorStore()}
-	// Identity jitter: these counting-harness tests assert the EXACT requeue the
-	// Retry-After mandates (ISI-5475 adds add-only jitter on top otherwise).
-	r.Jitter = func(base time.Duration, _ float64) time.Duration { return base }
 	return r, &patches
 }
 
@@ -954,55 +946,41 @@ func TestRateLimitShortWindowClamped(t *testing.T) {
 	}
 }
 
-// ISI-5475: the scheduled poll requeue carries ADD-ONLY jitter so N Projects
-// sharing one PAT drift out of lockstep instead of bursting GitHub's secondary
-// limiter in unison every interval. The jitter widens the base; it never fires
-// a poll earlier than the configured interval.
-func TestPollRequeueIsJittered(t *testing.T) {
+// ISI-5498: the scheduled poll requeue is EXACTLY the configured interval — no
+// per-requeue jitter. The former ISI-5475 poll jitter that spread co-PAT
+// Projects out of lockstep is now redundant: the per-PAT token-bucket governor
+// (pkg/scm) caps the aggregate outbound rate from one shared budget, so a
+// lockstep poll no longer bursts GitHub's secondary limiter. This pins that the
+// reconciler no longer widens the base and no longer depends on math/rand.
+func TestPollRequeueIsExactInterval(t *testing.T) {
 	provider := &fakeProvider{name: "github", snapshot: sampleRecords()}
 	r, _ := newHarness(t, syncProject(300), provider)
-	// Override the harness identity jitter with the real add-only contract: base
-	// widened by the full maxFactor. 300s + 0.2*300s = 360s.
-	r.Jitter = func(base time.Duration, maxFactor float64) time.Duration {
-		return base + time.Duration(float64(base)*maxFactor)
-	}
 
 	res, err := r.Reconcile(context.Background(), request())
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := 300 * time.Second
-	if res.RequeueAfter < base {
-		t.Fatalf("jitter must be add-only: requeue %v < base %v", res.RequeueAfter, base)
-	}
-	if want := base + time.Duration(float64(base)*pollJitterFraction); res.RequeueAfter != want {
-		t.Fatalf("poll requeue = %v, want %v (base + %g jitter)", res.RequeueAfter, want, pollJitterFraction)
+	if want := 300 * time.Second; res.RequeueAfter != want {
+		t.Fatalf("poll requeue = %v, want exactly %v (governor replaces jitter)", res.RequeueAfter, want)
 	}
 }
 
-// ISI-5475: the post-rate-limit retry honours the FULL Retry-After and then adds
-// a small spread, so co-limited Projects do not retry in the same instant and
-// re-trip the shared secondary limit. Jitter is add-only — never before the
-// Retry-After elapses.
-func TestRateLimitRequeueIsJittered(t *testing.T) {
+// ISI-5498: the post-rate-limit retry honours EXACTLY the Retry-After, with no
+// jitter on top. The governor serializes co-limited Projects' retries past the
+// shared secondary limit, so the former ISI-5475 retry spread is redundant.
+func TestRateLimitRequeueIsExactRetryAfter(t *testing.T) {
 	window := 25 * time.Minute
 	rl := &sequenceProvider{name: "github", errors: []error{
 		&scm.RateLimitedError{RetryAfter: window},
 	}}
 	r, _ := newCountingHarness(t, rl)
-	r.Jitter = func(base time.Duration, maxFactor float64) time.Duration {
-		return base + time.Duration(float64(base)*maxFactor)
-	}
 
 	res, err := r.Reconcile(context.Background(), request())
 	if err != nil {
 		t.Fatalf("rate-limited pass must not error: %v", err)
 	}
-	if res.RequeueAfter < window {
-		t.Fatalf("retry must never fire before Retry-After: requeue %v < window %v", res.RequeueAfter, window)
-	}
-	if want := window + time.Duration(float64(window)*rateLimitJitterFraction); res.RequeueAfter != want {
-		t.Fatalf("rate-limit requeue = %v, want %v (Retry-After + %g jitter)", res.RequeueAfter, want, rateLimitJitterFraction)
+	if res.RequeueAfter != window {
+		t.Fatalf("rate-limit requeue = %v, want exactly %v (full Retry-After, no jitter)", res.RequeueAfter, window)
 	}
 }
 

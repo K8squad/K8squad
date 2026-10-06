@@ -286,11 +286,21 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 	p := &GitHubProvider{creds: creds}
 	p.lastRate.Store(-1) // -1 = no response observed yet (LastRateRemaining ok=false)
 
-	transport := http.DefaultTransport
+	// Innermost real transport: the per-PAT token-bucket governor (ISI-5498). It
+	// sits BELOW oauth2 so it paces the already-signed request immediately before
+	// the network call, and its state is resolved from the process-global
+	// registry keyed by a PAT fingerprint — the reconciler builds a fresh
+	// provider per pass, so per-instance state would reset every reconcile and
+	// share nothing across the projects on one PAT.
+	base := http.RoundTripper(&patGovernorTransport{
+		base:  http.DefaultTransport,
+		state: sharedPATRegistry.stateFor(creds.Token),
+	})
+	transport := base
 	if creds.Token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
 		transport = &oauth2.Transport{
-			Base:   http.DefaultTransport,
+			Base:   base,
 			Source: ts,
 		}
 	}
