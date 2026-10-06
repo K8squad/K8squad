@@ -180,3 +180,90 @@ export interface ProposalConfirmResponse {
 export interface ProposalDismissResponse {
   status: "dismissed";
 }
+
+// ---------------------------------------------------------------------------
+// Decision requests (ISI-5536 / ISI-5531 E2, ADR-0026 §4). The net-new "an agent
+// suggests structured options a human answers" surface. Field names match the Go
+// JSON tags on `internal/discussion/decision.go`; like `Proposal`, the Go struct
+// embeds `Message` under the literal key `Message` (not flattened) and carries
+// `TeamID`/`Payload` beside it — the console consumes that exact wire shape.
+// ---------------------------------------------------------------------------
+
+/** The four answer modes a decision card can take (ADR-0026 §4.1). */
+export type DecisionMode = "approve" | "choose_one" | "choose_many" | "free_form";
+
+/** The decision lifecycle of a card (open → answered|rejected|expired|superseded). */
+export type DecisionPhase =
+  | "open"
+  | "answered"
+  | "rejected"
+  | "expired"
+  | "superseded";
+
+/** One structured choice offered to the human (`DecisionOption`). */
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+/** The structured payload of a kind='decision_request' message (`DecisionRequestPayload`). */
+export interface DecisionRequestPayload {
+  version: number;
+  mode: DecisionMode;
+  title: string;
+  detailsMarkdown?: string;
+  options?: DecisionOption[];
+  allowFreeText?: boolean;
+  freeTextLabel?: string;
+  minSelected?: number;
+  maxSelected?: number;
+  defaultSelectedOptionIds?: string[];
+  allowReject?: boolean;
+  rejectRequiresReason?: boolean;
+}
+
+/** What a card binds to (`DecisionTarget`); a moving `revisionId` auto-supersedes it. */
+export interface DecisionTarget {
+  type?: string;
+  ref?: string;
+  revisionId?: string;
+}
+
+/** The typed answer the human submits, returned to the agent via the thread (ADR-0026 §4.3). */
+export interface DecisionAnswer {
+  mode?: DecisionMode;
+  selectedOptionIds?: string[];
+  freeText?: string | null;
+  rejected: boolean;
+  rejectReason?: string | null;
+  answeredBy?: string;
+  answeredAt?: string;
+}
+
+/**
+ * One decision-request card joined with its lifecycle row. Mirrors the Go
+ * `DecisionRequest` wire shape (`Message`/`TeamID`/`Payload` capitalized).
+ */
+export interface DecisionRequest {
+  Message: Message;
+  TeamID: string;
+  Payload: DecisionRequestPayload;
+  target?: DecisionTarget;
+  workItemId?: string;
+  idempotencyKey: string;
+  continuation: string;
+  phase: DecisionPhase;
+  answer?: DecisionAnswer;
+  rejectReason?: string;
+  answeredBy?: string;
+  answeredAt?: string;
+}
+
+/** The answer/reject shells' 200 response body (the post-back message lands in the thread). */
+export interface DecisionAnswerResponse {
+  status: "answered" | "rejected";
+  decisionId: string;
+  postBack?: Message;
+}
