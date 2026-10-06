@@ -75,6 +75,17 @@ const EXPANDED_STORAGE_KEY = "ksq.tickets.expanded";
 
 export function TicketsScreen({ projectId }: { projectId: string }) {
   const [role, setRole] = useState<string>("viewer"); // fail-closed until proven otherwise
+  // The FULL Project card set the board read returns — roots AND sub-tickets.
+  // The read model answers every `source='board'` item in the Project (roots and
+  // children alike, each carrying its `parentId` up-edge), capped at the server's
+  // page size. ISI-5547: the screen used to discard children here with
+  // `.filter(isRoot)`, so the tree never learned a parent HAD children — no
+  // child-count was known, so the disclosure caret (TicketTreeToggle only renders
+  // when count > 0) never appeared and sub-tickets were unreachable in both views.
+  // We now keep the whole set and derive the parent→children index client-side
+  // (childrenByParent below), which is exactly what BoardItem.parentId is carried
+  // for (coord.workitemread BoardItem doc). The `?parentId=` lazy-load stays as a
+  // fallback for the rare parent whose children fell outside the first page.
   const [items, setItems] = useState<WorkItem[]>([]);
   const [childrenCache, setChildrenCache] = useState<Record<string, WorkItem[]>>({});
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -88,6 +99,24 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   const [creating, setCreating] = useState(false);
   const filtersRef = useRef(filters);
   filtersRef.current = filters;
+
+  // The tree's two client-side projections of the full `items` set (ISI-5547):
+  //   • roots            — the top-level cards both views lay out (parent_id IS NULL).
+  //   • childrenByParent — direct children keyed by parent id, so the tree knows a
+  //     parent HAS children (→ the disclosure caret) and can render them on expand
+  //     WITHOUT a round-trip. Built from the parentId up-edge the read model already
+  //     carries on every card. Children stay in document (updated-desc) order.
+  const roots = useMemo(() => items.filter(isRoot), [items]);
+  const childrenByParent = useMemo(() => {
+    const map = new Map<string, WorkItem[]>();
+    for (const it of items) {
+      if (it.parentId == null) continue;
+      const siblings = map.get(it.parentId);
+      if (siblings) siblings.push(it);
+      else map.set(it.parentId, [it]);
+    }
+    return map;
+  }, [items]);
 
   // Initial view: ?view= param first, then localStorage (8.14d AC3). Restore the
   // tree's client-only expansion state the same way (8.17 AC2).
@@ -112,7 +141,9 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       // keeps the read current without refetching per keystroke.
       const qs = filtersToParams(filtersRef.current, { sort: "updated_desc" });
       const loaded = await listWorkItems(projectId, { query: qs });
-      setItems(loaded.filter(isRoot));
+      // Keep the full set (roots + sub-tickets); roots and the child index are
+      // derived below so both views can surface the hierarchy (ISI-5547).
+      setItems(loaded);
     } catch {
       setUnavailable(true); // documented not-yet-hosted read model — honest empty state
       setItems([]);
@@ -150,24 +181,38 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
         const next = new Set(prev);
         if (next.has(parentId)) next.delete(parentId);
         else {
-          if (childrenCache[parentId] == null) void loadChildren(parentId);
+          // Only reach for the ?parentId= lazy-load when we DON'T already know this
+          // parent's children — i.e. neither a prior fetch nor the derived index
+          // (childrenByParent, from the full board read) has them. For the common
+          // case the children are already in hand, so expanding is instant and
+          // issues no network request (ISI-5547).
+          if (childrenCache[parentId] == null && !childrenByParent.has(parentId)) {
+            void loadChildren(parentId);
+          }
           next.add(parentId);
         }
         persistExpanded(next);
         return next;
       });
     },
-    [childrenCache, loadChildren, persistExpanded],
+    [childrenCache, childrenByParent, loadChildren, persistExpanded],
   );
 
   const tree: TreeController = useMemo(
     () => ({
-      childrenOf: (parentId) => childrenCache[parentId],
-      childCountOf: (item) => item.childCount ?? childrenCache[item.id]?.length ?? 0,
+      // A freshly re-fetched cache wins over the derived index (it reflects the
+      // latest server truth after a create/expand); otherwise fall back to the
+      // children derived from the full board read (ISI-5547).
+      childrenOf: (parentId) => childrenCache[parentId] ?? childrenByParent.get(parentId),
+      childCountOf: (item) =>
+        item.childCount ??
+        childrenCache[item.id]?.length ??
+        childrenByParent.get(item.id)?.length ??
+        0,
       isExpanded: (parentId) => expanded.has(parentId),
       toggle,
     }),
-    [childrenCache, expanded, toggle],
+    [childrenCache, childrenByParent, expanded, toggle],
   );
 
   const treeKeyDown = useTreeKeyboardNav();
@@ -240,10 +285,13 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
   // feed projected to the live-issue-id set, shared by both views so they never disagree.
   const liveIssueIds = useLiveIssueIds(projectId);
 
-  const visible = useMemo(() => applyFilters(items, filters), [items, filters]);
-  const priorities = useMemo(() => distinctValues(items, "priority"), [items]);
-  const assignees = useMemo(() => distinctValues(items, "assignee"), [items]);
-  const labels = useMemo(() => distinctLabels(items), [items]);
+  // Both views lay out ROOTS; the shared filters narrow that top-level set, and the
+  // tree surfaces each root's children underneath (ISI-5547). Filter options are the
+  // distinct values present on the roots, as before.
+  const visible = useMemo(() => applyFilters(roots, filters), [roots, filters]);
+  const priorities = useMemo(() => distinctValues(roots, "priority"), [roots]);
+  const assignees = useMemo(() => distinctValues(roots, "assignee"), [roots]);
+  const labels = useMemo(() => distinctLabels(roots), [roots]);
   const allowCreate = canCreate(role);
 
   return (
@@ -384,13 +432,13 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       ) : visible.length === 0 ? (
         <div className="ksq-empty-state" data-testid="tickets-empty">
           <p className="ksq-empty-state__icon" aria-hidden="true">
-            {items.length === 0 ? "🗂️" : "🔍"}
+            {roots.length === 0 ? "🗂️" : "🔍"}
           </p>
           <p className="ksq-empty-state__title">
-            {items.length === 0 ? "No tickets in this Project." : "No tickets match."}
+            {roots.length === 0 ? "No tickets in this Project." : "No tickets match."}
           </p>
           <p className="muted">
-            {items.length === 0
+            {roots.length === 0
               ? "Work items scoped to this Project will appear here."
               : "Adjust the search or filters to widen the set."}
           </p>
@@ -420,7 +468,7 @@ export function TicketsScreen({ projectId }: { projectId: string }) {
       {creating && (
         <CreateTicketSheet
           projectId={projectId}
-          parents={items}
+          parents={roots}
           onCreated={onCreated}
           onClose={() => setCreating(false)}
         />
