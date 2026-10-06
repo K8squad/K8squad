@@ -126,9 +126,16 @@ type opencodeToolScope struct {
 // an explicit tool_call opencode cannot assume the model will honor tool
 // definitions — the build agent would run text-only. Limit carries the model's
 // context/output token ceilings so opencode manages truncation instead of
-// guessing, and Temperature pins sampling (DeepSeek's wire default is 1.0,
-// higher than wanted for agentic coding). These mirror the model entry in
-// Henrik's working opencode.json (approved on ISI-5310).
+// guessing. These mirror the model entry in Henrik's working opencode.json
+// (approved on ISI-5310).
+//
+// NOTE (ISI-5503): opencode v1.18.27 types model-level fields like tool_call
+// and temperature as BOOLEAN capability flags, not values — rendering a numeric
+// sampling temperature (e.g. 0.3) here makes opencode reject the config at load
+// ("Expected boolean | undefined, got 0.3") and the Run dies with exit status 1
+// before any model contact. The sampling value is NOT a model-entry key; the
+// model's own default is used (qwen3.8 default is acceptable). Do not add a
+// numeric temperature field here.
 type opencodeModelEntry struct {
 	Name string `json:"name"`
 	// ToolCall marks the model tool-capable; omitted (false) for the empty
@@ -136,9 +143,6 @@ type opencodeModelEntry struct {
 	ToolCall bool `json:"tool_call,omitempty"`
 	// Limit is the model's context/output token budget; nil omits the key.
 	Limit *opencodeModelLimit `json:"limit,omitempty"`
-	// Temperature pins sampling; nil omits the key (so the provider default
-	// stands). A pointer distinguishes "unset" from a deliberate 0.0.
-	Temperature *float64 `json:"temperature,omitempty"`
 }
 
 // opencodeModelLimit is the context/output token budget opencode reads to
@@ -156,11 +160,6 @@ const (
 	opencodeBYOContextLimit = 65536
 	opencodeBYOOutputLimit  = 8192
 )
-
-// opencodeBYOTemperature is the sampling temperature pinned on the BYO model
-// entry — a balanced default for agentic coding, below DeepSeek's wire default
-// of 1.0.
-var opencodeBYOTemperature = 0.3
 
 // opencodeBYOProvider is one custom provider entry in opencode.json's
 // "provider" section — the BYO OpenAI-compatible endpoint (story 5.7, ISI-4188
@@ -230,11 +229,13 @@ func RenderOpenCode(endpoints []Endpoint) ([]byte, error) {
 // safe superset of the env — whichever the pinned CLI honors, the Run reaches
 // the operator's endpoint.
 //
-// The model entry carries tool_call + limit + temperature so the build agent is
-// treated as tool-capable with explicit ceilings (ISI-5471), and options.apiKey
-// rides as a "{env:OPENAI_API_KEY}" reference so a key-validating endpoint
-// authenticates. The literal token never renders here (ADR-045 D5) — only the
-// env reference does.
+// The model entry carries tool_call + limit so the build agent is treated as
+// tool-capable with explicit ceilings (ISI-5471), and options.apiKey rides as a
+// "{env:OPENAI_API_KEY}" reference so a key-validating endpoint authenticates.
+// The literal token never renders here (ADR-045 D5) — only the env reference
+// does. No model-level temperature is rendered (ISI-5503): opencode v1.18.27
+// types it as a boolean capability flag, so a numeric value rejects the config
+// at load; the model's own sampling default stands.
 func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) ([]byte, error) {
 	doc := opencodeConfigDoc{
 		MCP:        map[string]opencodeMCPEntry{},
@@ -244,7 +245,6 @@ func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) (
 		if modelID == "" {
 			return nil, fmt.Errorf("opencode renderer: BYO endpoint %q needs a non-empty model id", modelEndpoint)
 		}
-		temperature := opencodeBYOTemperature
 		doc.Provider = map[string]opencodeBYOProvider{
 			OpenCodeBYOProviderID: {
 				NPM:     "@ai-sdk/openai-compatible",
@@ -256,7 +256,6 @@ func RenderOpenCodeConfig(endpoints []Endpoint, modelEndpoint, modelID string) (
 						Context: opencodeBYOContextLimit,
 						Output:  opencodeBYOOutputLimit,
 					},
-					Temperature: &temperature,
 				}},
 			},
 		}
