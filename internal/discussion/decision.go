@@ -363,32 +363,68 @@ func (s *Store) getDecisionRequestByIdempotencyKey(ctx context.Context, projectI
 // LIMIT 500. A truncated read is logged by the handler (no silent cap).
 const inboxArmLimit = 500
 
-// ListOpenDecisionRequestsForTeam returns every OPEN decision_request for a team (fleet when teamID
-// is the zero UUID — the admin→fleet widening, ADR-0026 §3.2), newest-message-first, capped. This is
-// the third union arm of GET /api/squad/inbox (BE-7); it is independent of E1's handler and safe to
-// land with the store. Retracted messages are excluded.
-func (s *Store) ListOpenDecisionRequestsForTeam(ctx context.Context, teamID uuid.UUID) ([]DecisionRequest, error) {
-	q := decisionSelect + `
-		WHERE d.phase = 'open' AND m.invalidated_at IS NULL`
-	args := []any{inboxArmLimit}
-	if teamID != uuid.Nil {
-		q += ` AND t.team_id = $2`
-		args = append(args, teamID)
-	}
-	q += ` ORDER BY m.created_at DESC LIMIT $1`
+// OpenDecisionSummary is one open (phase='open') decision_request for the Inbox aggregate
+// (ISI-5536 BE-7, ADR-0026 §3.2) — the sibling of OpenProposalSummary. ProjectUID is the Project CR
+// id from discussion.thread.project_id (the inbox handler resolves it to "namespace/name"); TicketID
+// is the coord.work_item the card decides on (work_item_id), used for the run-join ordering. Mode is
+// the decision mode, surfaced as the row's decisionType chip (approve/choose_one/choose_many/free_form).
+type OpenDecisionSummary struct {
+	MessageID   string    `json:"messageId"`
+	ProjectUID  string    `json:"-"` // internal: resolved to ns/name by the inbox handler
+	AuthorAgent string    `json:"-"` // agent name that raised the card; "" ⇒ unknown
+	Title       string    `json:"title"`
+	Mode        string    `json:"mode"`
+	TicketID    string    `json:"ticketId,omitempty"` // work_item_id the card binds to; "" ⇒ project-wide
+	CreatedAt   time.Time `json:"createdAt"`
+}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+// ListOpenDecisionRequestsForTeam returns all open (phase='open', not invalidated) decision_requests
+// for the given team (fleet when teamID="" — the admin→fleet widening), newest-first, capped. The
+// third union arm of GET /api/squad/inbox (ISI-5536 BE-7, ADR-0026 §3.2); it mirrors
+// ListOpenProposalsForTeam's tenancy scoping and flat-summary shape so the inbox handler treats all
+// three arms identically. Limited to inboxArmLimit rows.
+func (s *Store) ListOpenDecisionRequestsForTeam(ctx context.Context, teamID string) ([]OpenDecisionSummary, error) {
+	var teamParam any
+	if teamID != "" {
+		teamParam = teamID
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id::text, t.project_id::text, m.author_agent_id, m.payload,
+		       d.work_item_id, m.created_at
+		  FROM discussion.decision_request d
+		  JOIN discussion.message m ON m.id = d.message_id
+		  JOIN discussion.thread t  ON t.id = m.thread_id
+		 WHERE d.phase = 'open'
+		   AND m.invalidated_at IS NULL
+		   AND ($1::uuid IS NULL OR t.team_id = $1::uuid)
+		 ORDER BY m.created_at DESC
+		 LIMIT `+fmt.Sprint(inboxArmLimit), teamParam)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("discussion.ListOpenDecisionRequestsForTeam: query: %w", err)
 	}
 	defer rows.Close()
-	out := []DecisionRequest{}
+	var out []OpenDecisionSummary
 	for rows.Next() {
-		d, err := scanDecisionRequest(rows)
-		if err != nil {
-			return nil, err
+		var ds OpenDecisionSummary
+		var agentID, workItemID sql.NullString
+		var payload []byte
+		if err := rows.Scan(&ds.MessageID, &ds.ProjectUID, &agentID, &payload, &workItemID, &ds.CreatedAt); err != nil {
+			return nil, fmt.Errorf("discussion.ListOpenDecisionRequestsForTeam: scan: %w", err)
 		}
-		out = append(out, *d)
+		if agentID.Valid {
+			ds.AuthorAgent = agentID.String
+		}
+		if workItemID.Valid {
+			ds.TicketID = workItemID.String
+		}
+		var pp DecisionRequestPayload
+		if len(payload) > 0 {
+			if jsonErr := json.Unmarshal(payload, &pp); jsonErr == nil {
+				ds.Title = pp.Title
+				ds.Mode = pp.Mode
+			}
+		}
+		out = append(out, ds)
 	}
 	return out, rows.Err()
 }

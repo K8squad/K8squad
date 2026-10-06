@@ -217,6 +217,9 @@ type Options struct {
 	// and the GET degrades to all-unread — exactly like the other read models on a DB-less dev run.
 	InboxReviews   ReviewItemReader
 	InboxProposals OpenProposalReader
+	// InboxDecisions is the ISI-5536 (E2) decision_request arm of GET /api/squad/inbox. Nil ⇒ the
+	// union degrades to reviews+proposals only (an E1-only deployment); the response shape is unchanged.
+	InboxDecisions OpenDecisionReader
 	InboxMarkers   ReadMarkerStore
 	// Search is the 8.18 global-search read model (coord.work_item full-text index, migration
 	// 0012, ISI-2912). Nil ⇒ GET /api/search keeps its documented 501 (a DB-less dev run),
@@ -539,7 +542,7 @@ func (s *Server) routes(opts Options) {
 		inbox := s.router.Path("/api/squad/inbox").Subrouter()
 		inbox.Use(authz)
 		if opts.InboxReviews != nil && opts.InboxProposals != nil {
-			inbox.HandleFunc("", s.squadInbox(opts.InboxReviews, opts.InboxProposals, opts.InboxMarkers, opts.Overview, opts.ProjectRefs)).Methods(http.MethodGet)
+			inbox.HandleFunc("", s.squadInbox(opts.InboxReviews, opts.InboxProposals, opts.InboxDecisions, opts.InboxMarkers, opts.Overview, opts.ProjectRefs)).Methods(http.MethodGet)
 		} else {
 			inbox.HandleFunc("", notImplemented("inbox read model", "ISI-5535: wire the coord review + discussion proposal arms to enable")).
 				Methods(http.MethodGet)

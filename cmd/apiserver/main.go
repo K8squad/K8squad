@@ -769,6 +769,7 @@ func main() {
 		// feed) + ProjectRefs above. A DB-less dev run leaves these nil → documented 501 (server.go).
 		InboxReviews:   workItemReads,
 		InboxProposals: discussionStore,
+		InboxDecisions: discussionStore,
 		InboxMarkers:   apiserver.NewPostgresReadMarkerStore(db),
 		Search:              searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership

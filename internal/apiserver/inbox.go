@@ -38,6 +38,11 @@ type OpenProposalReader interface {
 	ListOpenProposalsForTeam(ctx context.Context, teamID string) ([]discussion.OpenProposalSummary, error)
 }
 
+// OpenDecisionReader is the discussion.Store seam for the inbox decision_request arm (ISI-5536 BE-7).
+type OpenDecisionReader interface {
+	ListOpenDecisionRequestsForTeam(ctx context.Context, teamID string) ([]discussion.OpenDecisionSummary, error)
+}
+
 // ============================================================================
 // Response shapes (ADR-0026 §3.4, stable across E1→E2)
 // ============================================================================
@@ -50,7 +55,7 @@ type InboxItem struct {
 	TicketID      string     `json:"ticketId,omitempty"` // work_item UUID; empty for create/party_run proposals
 	ProjectID     string     `json:"projectId"`          // "namespace/name"; empty when unresolvable
 	Title         string     `json:"title"`
-	DecisionType  string     `json:"decisionType"` // review | proposal (E2 adds more)
+	DecisionType  string     `json:"decisionType"` // review | proposal | approve | choose_one | choose_many | free_form
 	RaisedByAgent string     `json:"raisedByAgent,omitempty"`
 	LastRunAt     *time.Time `json:"lastRunAt,omitempty"` // nil ⇒ no run yet; row orders by updatedAt
 	Unread        bool       `json:"unread"`
@@ -74,6 +79,7 @@ type InboxResponse struct {
 func (s *Server) squadInbox(
 	reviews ReviewItemReader,
 	proposals OpenProposalReader,
+	decisions OpenDecisionReader, // may be nil ⇒ decision arm contributes zero rows (E1 degrade)
 	markers ReadMarkerStore, // may be nil ⇒ all-unread
 	overview SquadOverviewReader,
 	_ ProjectRefResolver, // reserved for future cross-project project-path resolution
@@ -136,15 +142,28 @@ func (s *Server) squadInbox(
 			proposalItems = nil
 		}
 
+		// Decision_request arm (ISI-5536 BE-7). Nil reader (E1-only deployment) ⇒ zero rows.
+		var decisionItems []discussion.OpenDecisionSummary
+		if decisions != nil {
+			decisionItems, err = decisions.ListOpenDecisionRequestsForTeam(r.Context(), teamID)
+			if err != nil {
+				log.Printf("apiserver: inbox: ListOpenDecisionRequestsForTeam: %v", err)
+				decisionItems = nil
+			}
+		}
+
 		// --- Read-marker arm (best-effort: nil store or error ⇒ all unread) ---
 		var seenKeys map[string]time.Time
 		if markers != nil {
-			keys := make([]string, 0, len(reviewItems)+len(proposalItems))
+			keys := make([]string, 0, len(reviewItems)+len(proposalItems)+len(decisionItems))
 			for _, it := range reviewItems {
 				keys = append(keys, "inReview:"+it.ID)
 			}
 			for _, ps := range proposalItems {
 				keys = append(keys, "proposal:"+ps.MessageID)
+			}
+			for _, ds := range decisionItems {
+				keys = append(keys, "decision:"+ds.MessageID)
 			}
 			var mErr error
 			seenKeys, mErr = markers.Seen(r.Context(), auth.Principal, keys)
@@ -219,6 +238,47 @@ func (s *Server) squadInbox(
 					Title:         title,
 					DecisionType:  "proposal",
 					RaisedByAgent: ps.AuthorAgent,
+					LastRunAt:     lastRunAt,
+					Unread:        unread,
+					Live:          live,
+				},
+				orderKey: orderKey,
+			})
+		}
+
+		// Decision_request arm (ISI-5536 BE-7, ADR-0026 §3.3/§3.4). decisionType = the card's mode
+		// (approve→green, choose_one/choose_many→blue, free_form→amber); the card binds to its
+		// work_item (ds.TicketID) which carries the run-join ordering + live marker, same as proposals.
+		for _, ds := range decisionItems {
+			key := "decision:" + ds.MessageID
+			orderKey := ds.CreatedAt
+			var lastRunAt *time.Time
+			live := false
+			if ds.TicketID != "" {
+				if t := runClaimedAt[ds.TicketID]; t != nil {
+					orderKey = *t
+					lastRunAt = t
+				}
+				live = liveByItem[ds.TicketID]
+			}
+			decisionType := ds.Mode
+			if decisionType == "" {
+				decisionType = "decision"
+			}
+			unread := true
+			if seenKeys != nil {
+				if seenAt, seen := seenKeys[key]; seen && !orderKey.After(seenAt) {
+					unread = false
+				}
+			}
+			rows = append(rows, row{
+				item: InboxItem{
+					Key:           key,
+					TicketID:      ds.TicketID,
+					ProjectID:     ds.ProjectUID, // thread.project_id is already "ns/name" text
+					Title:         ds.Title,
+					DecisionType:  decisionType,
+					RaisedByAgent: ds.AuthorAgent,
 					LastRunAt:     lastRunAt,
 					Unread:        unread,
 					Live:          live,
