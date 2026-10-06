@@ -1432,6 +1432,71 @@
     animation: none;
   }
 }
+
+/* ---- Live-run markers (ISI-5528, parent ISI-5520) ---------------------------------------
+   The task-list live idiom, projected onto the list rows + kanban: an 8px pulsing dot + a
+   "Live"/"N live" pill. Presence cue, NOT the phase hue — so it rides --accent (the console's
+   shipped blue, #3d7dff), distinct from the green "running" status tone. Zero new colour/motion
+   tokens: the /10 pill fill + /45 card ring are color-mix over --accent (same pattern as
+   runs.css), and the pulse mirrors ksq-run-pulse. */
+.ksq-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  white-space: nowrap;
+}
+.ksq-live-pill__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  animation: ksq-live-pulse 1.6s ease-out infinite;
+}
+@keyframes ksq-live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+/* A live kanban card carries a subtle blue ring (design: border-blue-500/45). box-shadow ring
+   (not border-color) so it composes with the rose --blocked border instead of clobbering it. */
+.ksq-kanban-card--live {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+/* Per-column "N live" header chip — same pill grammar, a touch smaller. */
+.ksq-kanban-column__live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ksq-live-pill__dot {
+    animation: none;
+  }
+}
+
 .ksq-runcomment__status-label {
   font-size: 0.72rem;
   text-transform: uppercase;

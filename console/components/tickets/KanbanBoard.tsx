@@ -59,9 +59,21 @@ export interface KanbanBoardProps {
   projectId: string;
   /** Perform the human status-transition; resolves on 200, throws on 409/error (screen resyncs). */
   onTransition: (item: WorkItem, to: PhaseStatus) => Promise<void>;
+  /** Work-item ids with a live agent run right now (ISI-5528) — drives the card badge,
+   *  the blue live-card ring, and each column's "N live" header chip. */
+  liveIssueIds?: ReadonlySet<string>;
 }
 
-export function KanbanBoard({ items, tree, role, onTransition, projectId }: KanbanBoardProps) {
+const NO_LIVE: ReadonlySet<string> = new Set<string>();
+
+export function KanbanBoard({
+  items,
+  tree,
+  role,
+  onTransition,
+  projectId,
+  liveIssueIds = NO_LIVE,
+}: KanbanBoardProps) {
   const draggable = canDrag(role);
   const detailHref = (id: string) =>
     `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(id)}`;
@@ -119,12 +131,14 @@ export function KanbanBoard({ items, tree, role, onTransition, projectId }: Kanb
 
   function renderCard(item: WorkItem, toggle: React.ReactNode) {
     const targets = draggable ? allowedTargets(item.state) : [];
+    const live = liveIssueIds.has(item.id);
     return (
       <article
         key={item.id}
         className={[
           "ksq-kanban-card",
           isBlocked(item) ? "ksq-kanban-card--blocked" : "",
+          live ? "ksq-kanban-card--live" : "",
           draggingId === item.id ? "ksq-kanban-card--dragging" : "",
         ]
           .filter(Boolean)
@@ -154,11 +168,24 @@ export function KanbanBoard({ items, tree, role, onTransition, projectId }: Kanb
           <span className="ksq-ticket-id" title={item.id}>
             {item.id.slice(0, 8)}
           </span>
+          {live && (
+            // Decorative scan cue (a11y: the pill is aria-hidden; the card title below
+            // carries the visually-hidden "Live" so a screen reader hears it once).
+            <span
+              className="ksq-live-pill"
+              data-testid={`card-live-${item.id}`}
+              aria-hidden="true"
+            >
+              <span className="ksq-live-pill__dot" />
+              Live
+            </span>
+          )}
           {toggle}
         </div>
         <div className="ksq-kanban-card__title">
           <a href={detailHref(item.id)} data-testid={`card-title-${item.id}`}>
             {item.title}
+            {live && <span className="ksq-sr-only"> (live run)</span>}
           </a>
         </div>
         <div className="ksq-kanban-card__meta">
@@ -203,6 +230,9 @@ export function KanbanBoard({ items, tree, role, onTransition, projectId }: Kanb
     const meta = STATUS_META[phase];
     const laneItems = byPhase.get(phase) ?? [];
     const quiet = laneItems.length === 0;
+    // Per-column live chip (ISI-5528, OQ3): count live ISSUES in this lane — matches the
+    // card-marker semantics (a ticket may hold >1 run, but it is one live card).
+    const liveInColumn = laneItems.reduce((n, it) => n + (liveIssueIds.has(it.id) ? 1 : 0), 0);
     const isOver = dropTarget?.phase === phase;
     const overAllowed = isOver && dropTarget.allowed;
     const overBlocked = isOver && !dropTarget.allowed;
@@ -257,6 +287,18 @@ export function KanbanBoard({ items, tree, role, onTransition, projectId }: Kanb
           >
             {laneItems.length}
           </span>
+          {liveInColumn > 0 && (
+            // Decorative at-a-glance aggregate; per-card "Live" (sr-only on each title)
+            // already carries the signal to assistive tech, so this chip is aria-hidden.
+            <span
+              className="ksq-kanban-column__live"
+              data-testid={`column-live-${phase}`}
+              aria-hidden="true"
+            >
+              <span className="ksq-live-pill__dot" />
+              {liveInColumn} live
+            </span>
+          )}
           {overAllowed && (
             <span className="ksq-kanban-column__cue" data-testid={`drop-cue-${phase}`}>
               → {meta.label}

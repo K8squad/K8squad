@@ -42,15 +42,27 @@ export interface ListViewProps {
   onSortChange: (sort: SortSpec) => void;
   /** Project id for the per-row ticket-detail deep-link (ISI-4399 S3). */
   projectId: string;
+  /** Work-item ids with a live agent run right now (ISI-5528) — drives the row 'Live' pill. */
+  liveIssueIds?: ReadonlySet<string>;
 }
 
-export function ListView({ items, tree, sort, onSortChange, projectId }: ListViewProps) {
+const NO_LIVE: ReadonlySet<string> = new Set<string>();
+
+export function ListView({
+  items,
+  tree,
+  sort,
+  onSortChange,
+  projectId,
+  liveIssueIds = NO_LIVE,
+}: ListViewProps) {
   const detailHref = (id: string) =>
     `/projects/${encodeURIComponent(projectId)}/issues/${encodeURIComponent(id)}`;
   const sorted = sortWorkItems(items, sort);
 
   function renderRow(item: WorkItem, depth: number) {
     const meta = statusMeta(item.state);
+    const live = liveIssueIds.has(item.id);
     const beyondCap = depth > INDENT_CAP;
     const indentDepth = Math.min(depth, INDENT_CAP);
     // `cancelled` is an ISI-4455 phase status not yet in the read-model enum;
@@ -112,7 +124,20 @@ export function ListView({ items, tree, sort, onSortChange, projectId }: ListVie
             data-testid={`row-title-${item.id}`}
           >
             {item.title}
+            {live && <span className="ksq-sr-only"> (live run)</span>}
           </a>
+          {live && (
+            // The 'Live' pill — same grammar as the kanban card badge. Decorative
+            // (aria-hidden): the sr-only "(live run)" on the title above carries it to AT.
+            <span
+              className="ksq-live-pill"
+              data-testid={`row-live-${item.id}`}
+              aria-hidden="true"
+            >
+              <span className="ksq-live-pill__dot" />
+              Live
+            </span>
+          )}
           {item.provenance && (
             <span
               className="ksq-chip ksq-chip--prov"
