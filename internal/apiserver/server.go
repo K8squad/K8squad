@@ -47,6 +47,11 @@ type Server struct {
 	router     *mux.Router
 	hub        *Hub
 	projectHub *ProjectHub
+	// listingCache is the D5b tier-1 in-process directory-listing cache (ISI-5499, ADR-0025
+	// §D5b): it collapses the O(users) PVC walk for N concurrent viewers of the same project
+	// at the same generation into ONE walk. Allocated by NewServer; nil-safe in cachedListDir
+	// (a &Server{} test literal without it simply caches nothing).
+	listingCache *listingCache
 }
 
 // Options wires the host's collaborators. Authenticator and Discussion are required for the
@@ -327,7 +332,7 @@ func NewServer(opts Options) *Server {
 	// overview, dashboard, files, settings, github, issue-links).
 	router.UseEncodedPath()
 	router.SkipClean(true)
-	s := &Server{router: router, hub: hub, projectHub: projectHub}
+	s := &Server{router: router, hub: hub, projectHub: projectHub, listingCache: newListingCache()}
 	s.routes(opts)
 	return s
 }
