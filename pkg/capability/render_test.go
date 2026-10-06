@@ -32,8 +32,8 @@ import (
 
 func resolvedToolchains() []toolchain.Resolved {
 	return []toolchain.Resolved{
-		{Name: "kubectl", Version: "1.31", Image: "ghcr.io/k8squad/toolchains/kubectl:1.31", SourceNamespace: "ksquad-system"},
-		{Name: "git", Version: "2.62", Image: "ghcr.io/k8squad/toolchains/git:2.62", SourceNamespace: "ksquad-system"},
+		{Name: "kubectl", Version: "1.31", Image: "ghcr.io/k8squad/toolchains/kubectl:1.31", Provides: []string{"kubectl"}, SourceNamespace: "ksquad-system"},
+		{Name: "git", Version: "2.62", Image: "ghcr.io/k8squad/toolchains/git:2.62", Provides: []string{"git"}, SourceNamespace: "ksquad-system"},
 	}
 }
 
@@ -69,15 +69,58 @@ func TestRenderInitContainersOrderAndContract(t *testing.T) {
 	assert.Equal(t, "ghcr.io/k8squad/toolchains/git:2.62", inits[0].Image)
 	assert.Equal(t, "stage-kubectl", inits[1].Name)
 
+	// ISI-5495: staging resolves declared provides[] from the image's own
+	// PATH (no /toolchain/bin dir exists on the catalog images) and the
+	// binary names ride as positional args after the fixed script body.
+	assert.Equal(t, []string{"sh", "-c", stagingScript, "sh", "git"}, inits[0].Command)
+	assert.Equal(t, []string{"sh", "-c", stagingScript, "sh", "kubectl"}, inits[1].Command)
+
 	for _, c := range inits {
-		assert.Equal(t, []string{"cp", "-a", "/toolchain/bin/.", "/tools/bin/"}, c.Command)
+		require.GreaterOrEqual(t, len(c.Command), 4)
+		assert.Equal(t, []string{"sh", "-c"}, c.Command[:2])
+		assert.Equal(t, stagingScript, c.Command[2])
 		require.Len(t, c.VolumeMounts, 1)
 		assert.Equal(t, ToolVolumeName, c.VolumeMounts[0].Name)
 		assert.Equal(t, ToolMountPath, c.VolumeMounts[0].MountPath)
 		require.NotNil(t, c.SecurityContext)
 		assert.False(t, *c.SecurityContext.AllowPrivilegeEscalation)
 		assert.True(t, *c.SecurityContext.ReadOnlyRootFilesystem)
+		// ISI-5493: restricted PSA requires runAsNonRoot + seccompProfile on
+		// every container; the staging inits also pin a non-root UID so the
+		// root-default toolchain images can actually start under runAsNonRoot.
+		require.NotNil(t, c.SecurityContext.RunAsNonRoot)
+		assert.True(t, *c.SecurityContext.RunAsNonRoot)
+		require.NotNil(t, c.SecurityContext.SeccompProfile)
+		assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, c.SecurityContext.SeccompProfile.Type)
+		require.NotNil(t, c.SecurityContext.RunAsUser)
+		assert.Equal(t, StagingRunAsUser, *c.SecurityContext.RunAsUser)
+		assert.NotZero(t, *c.SecurityContext.RunAsUser)
+		require.NotNil(t, c.SecurityContext.Capabilities)
+		assert.Equal(t, []corev1.Capability{"ALL"}, c.SecurityContext.Capabilities.Drop)
 	}
+}
+
+// ISI-5495: a toolchain declaring several binaries stages each one; the names
+// ride as positional args ($1..$N) consumed by the script's `for ... "$@"`.
+func TestRenderInitContainersMultipleProvides(t *testing.T) {
+	inits := RenderInitContainers([]toolchain.Resolved{
+		{Name: "coreutils", Version: "9", Image: "reg.example/coreutils:9", Provides: []string{"cat", "ls", "cp"}},
+	})
+	require.Len(t, inits, 1)
+	assert.Equal(t,
+		[]string{"sh", "-c", stagingScript, "sh", "cat", "ls", "cp"},
+		inits[0].Command)
+}
+
+// A toolchain with no declared binary surface (e.g. an RBAC-only entry) stages
+// nothing: the script runs with no positional args and the `for` loop is a
+// no-op, so the init container exits 0 rather than crashlooping.
+func TestRenderInitContainersEmptyProvides(t *testing.T) {
+	inits := RenderInitContainers([]toolchain.Resolved{
+		{Name: "rbac-only", Version: "1", Image: "reg.example/rbac-only:1"},
+	})
+	require.Len(t, inits, 1)
+	assert.Equal(t, []string{"sh", "-c", stagingScript, "sh"}, inits[0].Command)
 }
 
 func TestAssemblePodKubectlOnPathAndROTools(t *testing.T) {
@@ -123,6 +166,12 @@ func TestAssemblePodMCPSidecarAndCredentials(t *testing.T) {
 	assert.Equal(t, corev1.ContainerRestartPolicyAlways, *sidecar.RestartPolicy)
 	require.NotNil(t, sidecar.SecurityContext)
 	assert.False(t, *sidecar.SecurityContext.AllowPrivilegeEscalation)
+	// ISI-5493: sidecars are added containers too — they must carry the
+	// restricted-PSA fields or the pod is rejected at admission.
+	require.NotNil(t, sidecar.SecurityContext.RunAsNonRoot)
+	assert.True(t, *sidecar.SecurityContext.RunAsNonRoot)
+	require.NotNil(t, sidecar.SecurityContext.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, sidecar.SecurityContext.SeccompProfile.Type)
 
 	// stdio-with-image credential rides the SIDECAR as a SecretKeyRef.
 	cred := envValueFrom(t, sidecar.Env, "KSQUAD_MCP_GH_STDIO_TOKEN")

@@ -298,9 +298,18 @@ func (k *KubeProvisioner) Boot(ctx context.Context, key PoolKey, sandboxID, runI
 		},
 		Spec: corev1.PodSpec{
 			TerminationGracePeriodSeconds: ptrTo[int64](30),
+			// ISI-5493: the pod-level posture must carry runAsNonRoot +
+			// seccompProfile too, not just a non-root UID. Squad namespaces
+			// enforce `restricted:latest`; staging init containers
+			// (attachToolchainInitPacks) now set these per-container, but
+			// stamping them at the pod level keeps the whole pod uniformly
+			// restricted and admits even a future added container that forgets
+			// to (matches pkg/sandbox hygiene's cold-boot posture).
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsUser:  ptrTo[int64](1000),
-				RunAsGroup: ptrTo[int64](1000),
+				RunAsUser:      ptrTo[int64](1000),
+				RunAsGroup:     ptrTo[int64](1000),
+				RunAsNonRoot:   ptrTo(true),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
 			Containers: []corev1.Container{
 				{
