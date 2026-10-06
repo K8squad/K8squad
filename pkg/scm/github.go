@@ -286,11 +286,26 @@ func NewGitHubProvider(baseURL string, creds ProviderCredentials) (*GitHubProvid
 	p := &GitHubProvider{creds: creds}
 	p.lastRate.Store(-1) // -1 = no response observed yet (LastRateRemaining ok=false)
 
-	transport := http.DefaultTransport
+	// Innermost real transport. The ETag / conditional-request cache (ISI-5497)
+	// wraps it so it sits BELOW the oauth2 auth transport: it adds
+	// If-None-Match / If-Modified-Since to the already-signed request and makes
+	// the real network call, serving a stored 200 when GitHub answers 304 (a
+	// 304 does not count against the primary rate limit — the secondary-limit
+	// pressure cut this provider exists to deliver). The cache is process-global
+	// keyed by a non-reversible PAT fingerprint, so the N projects that share one
+	// PAT share one cache across the reconciler's per-pass provider churn; an
+	// empty token gets no cache (cacheFor returns nil → the transport is a pure
+	// pass-through).
+	netTransport := http.RoundTripper(&etagTransport{
+		base:  http.DefaultTransport,
+		cache: sharedETagCacheRegistry.cacheFor(creds.Token),
+	})
+
+	transport := netTransport
 	if creds.Token != "" {
 		ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: creds.Token})
 		transport = &oauth2.Transport{
-			Base:   http.DefaultTransport,
+			Base:   netTransport,
 			Source: ts,
 		}
 	}
