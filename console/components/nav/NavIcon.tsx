@@ -3,6 +3,7 @@
 export type NavIconId =
   | "dashboard"
   | "overview"
+  | "inbox"
   | "compose"
   | "teams"
   | "agents-team"
@@ -31,6 +32,10 @@ export type NavIconId =
 const P: Record<NavIconId, string> = {
   dashboard: "M3 12h7V3H3v9zm0 9h7v-7H3v7zm11 0h7V10h-7v11zm0-18v6h7V3h-7z",
   overview: "M4 4h7v7H4V4zm9 0h7v7h-7V4zM4 13h7v7H4v-7zm9 0h7v7h-7v-7z",
+  // Inbox (ISI-5535): tray-in glyph — a flat tray with a downward arrow, distinct from
+  // the mail-envelope and checklist marks already in the set. Reads as "things arriving
+  // that need attention" at 18px rail size.
+  inbox: "M4 4h16v11H4V4zm0 11l4 5h8l4-5M12 4v8m-3-3l3 3 3-3",
   compose:
     "M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z",
   teams:

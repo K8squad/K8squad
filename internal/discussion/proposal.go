@@ -272,6 +272,71 @@ func (s *Store) ListProposals(ctx context.Context, projectID string, teamID, thr
 	return out, rows.Err()
 }
 
+// OpenProposalSummary is one open (phase='proposed') proposal for the Inbox aggregate
+// (ISI-5535, ADR-0026 §3.2). ProjectUID is the K8s Project CR UID from discussion.thread.project_id;
+// the inbox handler resolves it to a console-addressable "namespace/name" path. TicketID (when
+// non-empty) is the coord.work_item id the proposal targets (assign_agent action only).
+type OpenProposalSummary struct {
+	MessageID   string    `json:"messageId"`
+	ProjectUID  string    `json:"-"` // internal: resolved to ns/name by the inbox handler
+	AuthorAgent string    `json:"-"` // agent name that posted the proposal; "" ⇒ unknown
+	Body        string    `json:"body"`
+	Title       string    `json:"title,omitempty"`  // payload.title when present (create_ticket/party_run)
+	TicketID    string    `json:"ticketId,omitempty"` // payload.ticketId when action=assign_agent
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// ListOpenProposalsForTeam returns all open (phase='proposed', not invalidated) proposals for the
+// given team (fleet when teamID=""), newest-first. Mirrors ListProposals' tenancy scoping but
+// drops the thread_id predicate (cross-project, team-scoped). Part of the ISI-5535 E1 Inbox
+// aggregate read (ADR-0026 §3.2). Limited to 500 rows.
+func (s *Store) ListOpenProposalsForTeam(ctx context.Context, teamID string) ([]OpenProposalSummary, error) {
+	var teamParam any
+	if teamID == "" {
+		teamParam = nil
+	} else {
+		teamParam = teamID
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT m.id::text, t.project_id::text, m.author_agent_id, m.body, m.payload, m.created_at
+		  FROM discussion.proposal p
+		  JOIN discussion.message m ON m.id = p.message_id
+		  JOIN discussion.thread t  ON t.id = m.thread_id
+		 WHERE p.phase = 'proposed'
+		   AND m.invalidated_at IS NULL
+		   AND ($1::uuid IS NULL OR t.team_id = $1::uuid)
+		 ORDER BY m.created_at DESC
+		 LIMIT 500`, teamParam)
+	if err != nil {
+		return nil, fmt.Errorf("discussion.ListOpenProposalsForTeam: query: %w", err)
+	}
+	defer rows.Close()
+	var out []OpenProposalSummary
+	for rows.Next() {
+		var ps OpenProposalSummary
+		var agentID sql.NullString
+		var payload []byte
+		if err := rows.Scan(&ps.MessageID, &ps.ProjectUID, &agentID, &ps.Body, &payload, &ps.CreatedAt); err != nil {
+			return nil, fmt.Errorf("discussion.ListOpenProposalsForTeam: scan: %w", err)
+		}
+		if agentID.Valid {
+			ps.AuthorAgent = agentID.String
+		}
+		// Best-effort payload parse: extract title and ticketId if present.
+		var pp ProposalPayload
+		if len(payload) > 0 {
+			if jsonErr := json.Unmarshal(payload, &pp); jsonErr == nil {
+				ps.Title = pp.Title
+				if pp.Action == ProposalActionAssignAgent {
+					ps.TicketID = pp.TicketID
+				}
+			}
+		}
+		out = append(out, ps)
+	}
+	return out, rows.Err()
+}
+
 // ConfirmProposal CAS-advances proposed→confirmed, stamping the deciding human. It is the
 // single-winner lock for the fan-out: the loser of a concurrent confirm gets ErrProposalNotProposed.
 // Returns the full proposal (payload included) so the shell can fan out without a re-read.
