@@ -736,9 +736,17 @@ func (d *operatorDispatch) assembleSystemContext(ctx context.Context, run *api.R
 	// On resume the window comes from the pinned snapshot, not the live Agent:
 	// a spec.model / contextBudgetOverride change after the snapshot was
 	// stored must not silently re-budget the resumed envelope (the assembler
-	// pins the budget off Existing too). Fresh dispatch resolves from the
-	// live model.
+	// pins the budget off Existing too). Fresh dispatch resolves from the live
+	// effective endpoint (ISI-5540): a BYO endpoint that DECLARES its context
+	// window (modelendpoint contextWindow Secret key) is authoritative — the
+	// hosted deepseek endpoint serves 128K, not the catalog's conservative 64K
+	// floor. No declaration → the family-catalog default (under-budget safe).
+	// Best-effort: an endpoint resolution glitch falls back to the agent-model
+	// family default rather than aborting assembly (AC6 no-regression).
 	window := contextsource.WindowForModel(agent.Spec.Model)
+	if ep, _, err := d.resolveEffectiveEndpoint(ctx, run); err == nil {
+		window = contextsource.WindowFor(ep.Model, ep.ContextWindow)
+	}
 	if snap := run.Status.ContextSnapshot; snap != nil && snap.ContextWindow != nil {
 		window = *snap.ContextWindow
 	}
