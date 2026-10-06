@@ -390,6 +390,16 @@ type ResolvedToolchainRef struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	SourceNamespace string `json:"sourceNamespace"`
+
+	// Provides is the winning entry's declared binary surface (the
+	// toolchain version's provides[], e.g. ["gh"]). It is recorded so the
+	// warm-pool cold-boot seam can rebuild the staging init containers from
+	// the manifest WITHOUT re-resolving the catalog: the staging contract
+	// copies each of these binaries from the image's own PATH onto
+	// /tools/bin (see pkg/capability/staging.go). Omitted for a toolchain
+	// that declares no binaries.
+	// +optional
+	Provides []string `json:"provides,omitempty"`
 }
 
 // CapabilityManifest is the resolved capability envelope of a Run (ADR-044

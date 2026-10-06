@@ -53,6 +53,37 @@ func TestBuildManifestRecordsEnvelopeWithoutSecretMaterial(t *testing.T) {
 	assert.Len(t, m.CapabilityHash, 64) // sha256 hex
 }
 
+// TestToolchainsFromManifestRoundTripsProvides locks the ISI-5495 contract:
+// the declared binary surface (provides[]) must survive the manifest
+// round-trip, because the warm-pool cold-boot seam rebuilds the staging init
+// containers from the recorded manifest — not from a fresh catalog resolve —
+// and the staging script copies exactly those binaries onto /tools/bin. If
+// provides is dropped, cold-boot pods render empty staging loops and
+// /tools/bin stays empty (gh/git never reach PATH) even though the pod admits.
+func TestToolchainsFromManifestRoundTripsProvides(t *testing.T) {
+	m := BuildManifest(resolvedToolchains(), nil, nil)
+	require.Len(t, m.Toolchains, 2)
+	assert.Equal(t, []string{"kubectl"}, m.Toolchains[0].Provides)
+	assert.Equal(t, []string{"git"}, m.Toolchains[1].Provides)
+
+	rebuilt := ToolchainsFromManifest(m)
+	require.Len(t, rebuilt, 2)
+	assert.Equal(t, []string{"kubectl"}, rebuilt[0].Provides)
+	assert.Equal(t, []string{"git"}, rebuilt[1].Provides)
+
+	// The cold-boot seam renders from the rebuilt set: each staging init
+	// container must carry its provides as positional args after the "sh"
+	// $0, or the copy loop iterates over nothing.
+	inits := RenderInitContainers(rebuilt)
+	require.Len(t, inits, 2)
+	cmdByContainer := map[string][]string{}
+	for _, c := range inits {
+		cmdByContainer[c.Name] = c.Command
+	}
+	assert.Equal(t, []string{"sh", "-c", stagingScript, "sh", "kubectl"}, cmdByContainer["stage-kubectl"])
+	assert.Equal(t, []string{"sh", "-c", stagingScript, "sh", "git"}, cmdByContainer["stage-git"])
+}
+
 func TestManifestHashDeterministicAndSensitive(t *testing.T) {
 	a := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})
 	b := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})
