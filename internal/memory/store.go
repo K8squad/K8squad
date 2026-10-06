@@ -52,14 +52,17 @@ func Open(ctx context.Context, cfg Config) (*PgVectorStore, error) {
 // shared memory.memory_records scope columns. Ready asserts the live column types still match. When a
 // migration retypes one of these columns, update its cast sites in this file AND this map in the same
 // change — the map is the single source of truth for what schema this binary's code was written against.
-// project_id is text (0004_project_id_text.sql, ISI-4919) and agent_id is text (0005_agent_id_text.sql,
-// ISI-5210 — the agent identity is a NAME, not a uuid); squad_id/run_id stay uuid; kind is text.
+// project_id is text (0004_project_id_text.sql, ISI-4919); agent_id is text (0005_agent_id_text.sql,
+// ISI-5210 — the agent identity is a NAME, not a uuid); principal_id is text (0006_principal_id_text.sql,
+// ISI-5557 — the author principal may be a sentinel NAME like "ksquad-intake", not a uuid); squad_id/
+// run_id stay uuid; kind is text.
 var expectedColumnTypes = map[string]string{
-	"squad_id":   "uuid",
-	"project_id": "text",
-	"run_id":     "uuid",
-	"agent_id":   "text",
-	"kind":       "text",
+	"squad_id":     "uuid",
+	"project_id":   "text",
+	"principal_id": "text",
+	"run_id":       "uuid",
+	"agent_id":     "text",
+	"kind":         "text",
 }
 
 // assertColumnTypes fails closed if any pinned shared column's live type diverges from what this
