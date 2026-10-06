@@ -390,6 +390,16 @@ type ResolvedToolchainRef struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	SourceNamespace string `json:"sourceNamespace"`
+
+	// Provides is the winning entry's declared binary surface — the names
+	// the toolchain image puts on PATH (e.g. ["gh"], ["git"]). The sandbox
+	// boot path (warmpool.ManifestForRun -> ToolchainsFromManifest ->
+	// RenderInitContainers) stages exactly these binaries onto /tools/bin via
+	// `command -v`; an empty Provides stages nothing, so this MUST survive the
+	// manifest round-trip or cold-boot pods come up with an empty /tools/bin
+	// (ISI-5495).
+	// +optional
+	Provides []string `json:"provides,omitempty"`
 }
 
 // CapabilityManifest is the resolved capability envelope of a Run (ADR-044

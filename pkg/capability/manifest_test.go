@@ -53,6 +53,42 @@ func TestBuildManifestRecordsEnvelopeWithoutSecretMaterial(t *testing.T) {
 	assert.Len(t, m.CapabilityHash, 64) // sha256 hex
 }
 
+// TestManifestRoundTripPreservesProvides is the ISI-5495 regression: the
+// sandbox boot path is BuildManifest -> (recorded on Run.status) ->
+// ToolchainsFromManifest -> RenderInitContainers. If Provides is dropped
+// anywhere on that round-trip the staging init container runs its copy loop
+// over zero args and /tools/bin comes up empty while still exiting 0 — the
+// exact silent cold-boot failure this issue was filed for. Assert provides
+// survives record+rebuild and lands as the trailing args of the stage command.
+func TestManifestRoundTripPreservesProvides(t *testing.T) {
+	m := BuildManifest(resolvedToolchains(), nil, nil)
+
+	// Recorded on status: every toolchain carries its declared binary surface.
+	require.Len(t, m.Toolchains, 2)
+	assert.Equal(t, []string{"kubectl"}, m.Toolchains[0].Provides)
+	assert.Equal(t, []string{"git"}, m.Toolchains[1].Provides)
+
+	// Rebuilt from the recorded manifest (the warmpool.ManifestForRun path).
+	rebuilt := ToolchainsFromManifest(m)
+	require.Len(t, rebuilt, 2)
+	assert.Equal(t, []string{"kubectl"}, rebuilt[0].Provides)
+	assert.Equal(t, []string{"git"}, rebuilt[1].Provides)
+
+	// And the staged init container actually receives those binaries as the
+	// trailing positional args after the "$0" placeholder, so the copy loop
+	// runs over them instead of an empty "$@". RenderInitContainers sorts by
+	// name, so key the assertion on the container name rather than order.
+	inits := RenderInitContainers(rebuilt)
+	require.Len(t, inits, 2)
+	provArgs := map[string][]string{}
+	for _, c := range inits {
+		require.GreaterOrEqual(t, len(c.Command), 5, "stage cmd must carry provides after $0")
+		provArgs[c.Name] = c.Command[4:]
+	}
+	assert.Equal(t, []string{"kubectl"}, provArgs["stage-kubectl"])
+	assert.Equal(t, []string{"git"}, provArgs["stage-git"])
+}
+
 func TestManifestHashDeterministicAndSensitive(t *testing.T) {
 	a := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})
 	b := BuildManifest(resolvedToolchains(), scopedEndpoints(), []GrantedSkill{})

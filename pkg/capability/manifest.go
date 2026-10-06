@@ -41,6 +41,7 @@ func BuildManifest(resolved []toolchain.Resolved, endpoints []Endpoint, skills [
 			Version:         res.Version,
 			Image:           res.Image,
 			SourceNamespace: res.SourceNamespace,
+			Provides:        res.Provides,
 		})
 	}
 	for _, ep := range endpoints {
@@ -130,6 +131,7 @@ func ToolchainsFromManifest(m *api.CapabilityManifest) []toolchain.Resolved {
 			Version:         tc.Version,
 			Image:           tc.Image,
 			SourceNamespace: tc.SourceNamespace,
+			Provides:        tc.Provides,
 		})
 	}
 	return out

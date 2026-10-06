@@ -540,6 +540,18 @@ spec:
                           description: Name is the catalog name ("kubectl").
                           minLength: 1
                           type: string
+                        provides:
+                          description: |-
+                            Provides is the winning entry's declared binary surface — the names
+                            the toolchain image puts on PATH (e.g. ["gh"], ["git"]). The sandbox
+                            boot path (warmpool.ManifestForRun -> ToolchainsFromManifest ->
+                            RenderInitContainers) stages exactly these binaries onto /tools/bin via
+                            `command -v`; an empty Provides stages nothing, so this MUST survive the
+                            manifest round-trip or cold-boot pods come up with an empty /tools/bin
+                            (ISI-5495).
+                          items:
+                            type: string
+                          type: array
                         sourceNamespace:
                           description: |-
                             SourceNamespace is the namespace of the winning catalog entry (the
@@ -846,6 +858,18 @@ spec:
                           description: Name is the catalog name ("kubectl").
                           minLength: 1
                           type: string
+                        provides:
+                          description: |-
+                            Provides is the winning entry's declared binary surface — the names
+                            the toolchain image puts on PATH (e.g. ["gh"], ["git"]). The sandbox
+                            boot path (warmpool.ManifestForRun -> ToolchainsFromManifest ->
+                            RenderInitContainers) stages exactly these binaries onto /tools/bin via
+                            `command -v`; an empty Provides stages nothing, so this MUST survive the
+                            manifest round-trip or cold-boot pods come up with an empty /tools/bin
+                            (ISI-5495).
+                          items:
+                            type: string
+                          type: array
                         sourceNamespace:
                           description: |-
                             SourceNamespace is the namespace of the winning catalog entry (the
