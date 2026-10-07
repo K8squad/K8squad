@@ -138,6 +138,20 @@ func TestAssemblePodKubectlOnPathAndROTools(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "agent PATH env present")
+
+	// ISI-5562: LD_LIBRARY_PATH=/tools/lib rides alongside PATH so the loader
+	// finds each tool's staged shared-library closure (musl git NEEDs
+	// libpcre2-8.so.0 + libz.so.1, which the base runtime image lacks).
+	libFound := false
+	for _, e := range asm.AgentEnv {
+		if e.Name == "LD_LIBRARY_PATH" {
+			libFound = true
+			assert.Equal(t, ToolLibPathValue, e.Value)
+			assert.Equal(t, "/tools/lib", e.Value)
+		}
+	}
+	assert.True(t, libFound, "agent LD_LIBRARY_PATH env present")
+
 	require.Len(t, asm.AgentMounts, 1)
 	assert.True(t, asm.AgentMounts[0].ReadOnly)
 	assert.Equal(t, ToolVolumeName, asm.AgentMounts[0].Name)
@@ -148,6 +162,23 @@ func TestAssemblePodKubectlOnPathAndROTools(t *testing.T) {
 	agent := podContainer(t, pod, "agent")
 	pathVal := envValue(t, agent.Env, "PATH")
 	assert.True(t, strings.HasPrefix(pathVal, "/tools/bin:"))
+	assert.Equal(t, "/tools/lib", envValue(t, agent.Env, "LD_LIBRARY_PATH"))
+}
+
+// ISI-5562: the staging script must create /tools/lib and copy each binary's
+// shared-library closure there (via ldd), tolerating static binaries. Without
+// this a dynamically linked tool (musl git NEEDs libpcre2-8.so.0 + libz.so.1)
+// stages its binary but not its libs and fails the dynamic link in the sandbox.
+func TestStagingScriptStagesLibraryClosure(t *testing.T) {
+	assert.Contains(t, stagingScript, "mkdir -p /tools/bin /tools/lib")
+	// ldd closure, dereferenced soname links, one cp per lib after sort -u.
+	assert.Contains(t, stagingScript, "ldd ")
+	assert.Contains(t, stagingScript, "sort -u")
+	assert.Contains(t, stagingScript, `cp -aL "$lib" "/tools/lib/$(basename "$lib")"`)
+	// Static binaries (Go/static-musl) make ldd exit non-zero with no libs —
+	// must not abort the `set -e` script.
+	assert.Contains(t, stagingScript, "2>/dev/null")
+	assert.Contains(t, stagingScript, "|| true")
 }
 
 func TestAssemblePodMCPSidecarAndCredentials(t *testing.T) {

@@ -64,10 +64,26 @@ const (
 	// ToolBinSubdir is the bin directory inside the tool volume.
 	ToolBinSubdir = "bin"
 
+	// ToolLibSubdir is the lib directory inside the tool volume: a staged
+	// binary's shared-library closure (ISI-5562) lands here so a dynamically
+	// linked tool actually executes in the runtime container.
+	ToolLibSubdir = "lib"
+
 	// ToolPathValue is the PATH the agent container runs with: staged
 	// tools first, then the standard locations. Deterministic (env var
 	// expansion of an existing PATH is not expressible in a pod spec).
 	ToolPathValue = "/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+	// ToolLibPathValue is the LD_LIBRARY_PATH the agent container runs with so
+	// the dynamic loader finds staged shared libraries (ISI-5562). The runtime
+	// image (gcr.io/distroless/static-debian12 + the shim's staged musl loader
+	// pair) carries the musl loader and libc but not a staged tool's EXTRA
+	// NEEDs — e.g. musl git NEEDs libpcre2-8.so.0 + libz.so.1, which are present
+	// in the alpine toolchain image but were never copied onto /tools. Staging
+	// now copies each binary's ldd closure into /tools/lib and this names that
+	// dir for the loader. The runtime mounts /tools read-only; the base image
+	// sets no LD_LIBRARY_PATH, so there is nothing to clobber.
+	ToolLibPathValue = "/tools/lib"
 )
 
 // MCP config projection constants (ADR-044 step 6): the IR is delivered
@@ -208,10 +224,22 @@ func RenderInitContainers(resolved []toolchain.Resolved) []corev1.Container {
 // arguments (`"$@"`), never interpolated into the script body, so no catalog
 // value can break out of the loop.
 const stagingScript = `set -e
-mkdir -p /tools/bin
+mkdir -p /tools/bin /tools/lib
 for b in "$@"; do
   src="$(command -v "$b")" || { echo "tool-staging: '$b' not found on image PATH" >&2; exit 1; }
   cp -L "$src" /tools/bin/
+  # Stage the binary's shared-library closure into /tools/lib so a dynamically
+  # linked tool runs in the runtime container (ISI-5562): musl git NEEDs
+  # libpcre2-8.so.0 + libz.so.1, present in the alpine toolchain image but never
+  # copied before, so /tools/bin/git failed the dynamic link. The agent runs with
+  # LD_LIBRARY_PATH=/tools/lib. Static binaries (Go: kubectl/jq/yq, static-musl
+  # codex) make ldd exit non-zero with no libs listed — tolerated via '|| true'
+  # and '2>/dev/null'. One cp per lib after 'sort -u': musl ldd lists the loader
+  # path twice and busybox cp rejects a duplicate source in one invocation (the
+  # shim Dockerfile hit this); cp -aL dereferences soname->realfile symlinks so
+  # the staged copy is not a dangling link.
+  ldd "$src" 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' | sort -u \
+    | while read -r lib; do cp -aL "$lib" "/tools/lib/$(basename "$lib")"; done || true
 done`
 
 // stagingCommand builds the init-container command that stages the given
@@ -233,6 +261,12 @@ func ToolVolumeMounts() []corev1.VolumeMount {
 // runtime container's PATH.
 func ToolPathEnv() corev1.EnvVar {
 	return corev1.EnvVar{Name: "PATH", Value: ToolPathValue}
+}
+
+// ToolLibPathEnv returns the LD_LIBRARY_PATH env var so the dynamic loader
+// finds the shared-library closure staged alongside each tool (ISI-5562).
+func ToolLibPathEnv() corev1.EnvVar {
+	return corev1.EnvVar{Name: "LD_LIBRARY_PATH", Value: ToolLibPathValue}
 }
 
 // StagingRunAsUser is the non-root UID the tool-staging init containers run
