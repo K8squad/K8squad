@@ -14,5 +14,11 @@ export const runtime = "nodejs";
 export const fetchCache = "force-no-store";
 
 export async function GET(req: NextRequest): Promise<Response> {
-  return proxyJson(req, "/api/squad/inbox");
+  // Forward the ISI-5537 E3 "Mine" scope narrowing (?scope=mine). Only this one allow-listed value
+  // is relayed — never the raw query string — so the BFF can't be used to smuggle arbitrary upstream
+  // params. Absent/any-other value proxies the default (team-fenced; admin → fleet).
+  const scope = req.nextUrl.searchParams.get("scope");
+  const upstream =
+    scope === "mine" ? "/api/squad/inbox?scope=mine" : "/api/squad/inbox";
+  return proxyJson(req, upstream);
 }

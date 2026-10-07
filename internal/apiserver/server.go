@@ -555,6 +555,16 @@ func (s *Server) routes(opts Options) {
 			inboxSeen.HandleFunc("", notImplemented("inbox read-marker store", "ISI-5535: wire the read-marker store (coord.decision_read_marker) to enable")).
 				Methods(http.MethodPost)
 		}
+		// POST /api/squad/inbox/unseen drops read markers so items re-surface as unread (ISI-5537 E3,
+		// the "mark unread" half of the read/unread toggle). Same store + 501 posture as .../seen.
+		inboxUnseen := s.router.Path("/api/squad/inbox/unseen").Subrouter()
+		inboxUnseen.Use(authz)
+		if opts.InboxMarkers != nil {
+			inboxUnseen.HandleFunc("", s.squadInboxUnseen(opts.InboxMarkers)).Methods(http.MethodPost)
+		} else {
+			inboxUnseen.HandleFunc("", notImplemented("inbox read-marker store", "ISI-5537: wire the read-marker store (coord.decision_read_marker) to enable")).
+				Methods(http.MethodPost)
+		}
 
 		// Teams LIST read model (ISI-3953, gap G4 of ISI-3949): GET /api/teams
 		// enumerates the Teams the caller may see (admin ⇒ fleet-wide, tenant ⇒
