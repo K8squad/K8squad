@@ -89,6 +89,43 @@ func TestPgVector_WriteSearchRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPgVector_AcceptsNameShapedPrincipal is the ISI-5557 regression against real PG: the author
+// principal may be a sentinel NAME, not a uuid. Intake-created Runs stamp PrincipalID = "ksquad-intake"
+// (rundrive.IntakePrincipal), which before 0006 hit a uuid principal_id column → `22P02 invalid input
+// syntax for type uuid: "ksquad-intake"` on every diary_append/memory_write. After the retype to text
+// the write must succeed and read back the stored principal verbatim.
+func TestPgVector_AcceptsNameShapedPrincipal(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	squad := uuid.NewString()
+	const intakePrincipal = "ksquad-intake" // == rundrive.IntakePrincipal (a name, not a uuid)
+
+	rec, err := store.Write(ctx, WriteRequest{
+		SquadID: squad, PrincipalID: intakePrincipal, Kind: KindDiary,
+		Content: "intake diary entry", Embedding: oneHot(42),
+	})
+	if err != nil {
+		t.Fatalf("write with name-shaped principal must succeed after 0006 (ISI-5557), got: %v", err)
+	}
+
+	hits, err := store.Search(ctx, SearchQuery{SquadID: squad, Embedding: oneHot(42), Limit: 5})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	var found bool
+	for _, h := range hits {
+		if h.ID == rec.ID {
+			found = true
+			if h.PrincipalID != intakePrincipal {
+				t.Fatalf("principal_id round-trip = %q, want %q", h.PrincipalID, intakePrincipal)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("name-principal record %s did not surface on read", rec.ID)
+	}
+}
+
 func TestPgVector_ScopedBySquad(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

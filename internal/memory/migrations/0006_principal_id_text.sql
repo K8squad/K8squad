@@ -1,0 +1,33 @@
+-- 0006_principal_id_text.sql — ISI-5557 (from ISI-5556): the memory author_principal is NOT always a
+-- uuid. It is a NAME for system-authored records.
+--
+-- WHY: memory_records.principal_id was uuid (0001), and 0004/0005 both explicitly re-asserted
+-- "principal_id stays uuid — the author principal IS a uuid (run.GetOwnedBy())". That assumption is
+-- wrong for intake-created Runs. rundrive stamps `Run.Spec.OwnedBy = IntakePrincipal = "ksquad-intake"`
+-- (pkg/controller/rundrive/intake.go) — a human-readable sentinel attributing the operator's intake
+-- decision, by design NOT a uuid. The run token's Principal claim is minted from run.GetOwnedBy()
+-- (pkg/controller/run/assembly.go), the memory edge lifts it into AuthorScope.Principal, and the write
+-- path stamps it as principal_id. So for every intake run:
+--   - diary_append / memory_write stamp principal_id = "ksquad-intake" into a uuid column → `22P02
+--     invalid input syntax for type uuid: "ksquad-intake"` on the INSERT (internal/memory/store.go),
+--     surfaced as a failed diary_append tool chip (run intake-20fd5e53-…). This is the EXACT same bug
+--     class 0005 fixed for agent_id (a name in a uuid column), one column over.
+--
+-- Retype to text to match the platform's canonical principal identifier, which may be either a uuid
+-- (a console/human principal) or a sentinel name (the intake owner). No read filters on principal_id
+-- cast it to ::uuid — the R2 party-visibility predicate compares the reader principal against the
+-- provenance JSONB as $7::text (store.go Search), and every read scans principal_id into a Go string
+-- (backend.go PrincipalID string). So this is a WIDENING retype with no co-consumer cast to break:
+-- a uuid-shaped principal keeps its value as the uuid's text form, and a name-shaped one now stores
+-- cleanly instead of erroring.
+--
+-- squad_id / run_id stay uuid — those ARE uuids (tenancy root = Team CR uid, run UID). Only the author
+-- principal and agent identity are names. The scope indexes are rebuilt automatically by the type change.
+--
+-- FORWARD-ONLY, additive-in-spirit (a widening retype); applied once by the memory migration runner
+-- (internal/memory/migrate.go) in lexical order, each in its own transaction. The companion binary
+-- change pins expectedColumnTypes["principal_id"]="text" (internal/memory/store.go) in the SAME release
+-- so the ISI-5112 deploy-skew guard stays honest.
+
+ALTER TABLE memory.memory_records
+    ALTER COLUMN principal_id TYPE text USING principal_id::text;

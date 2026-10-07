@@ -33,6 +33,25 @@ func TestAssertColumnTypes_SkewFailsClosed(t *testing.T) {
 	}
 }
 
+// The ISI-5557 regression: principal_id must be pinned to text, because the author principal may be a
+// sentinel NAME (intake stamps "ksquad-intake", not a uuid). A binary that still expected uuid here would
+// skew against the 0006 retype; and a non-uuid principal in a uuid column is exactly the 22P02 the retype
+// clears. Guarding the pin keeps the deploy-skew check honest after the retype.
+func TestAssertColumnTypes_PrincipalIDPinnedText(t *testing.T) {
+	if got := expectedColumnTypes["principal_id"]; got != "text" {
+		t.Fatalf("principal_id must be pinned to text after 0006 (ISI-5557), got %q", got)
+	}
+	live := good()
+	live["principal_id"] = "uuid" // the pre-0006 schema a name-shaped principal (ksquad-intake) fails against
+	err := assertColumnTypes(live)
+	if err == nil {
+		t.Fatal("principal_id type skew must fail closed (ISI-5557), got nil")
+	}
+	if !strings.Contains(err.Error(), "principal_id") {
+		t.Fatalf("error must name the offending column, got: %v", err)
+	}
+}
+
 func TestAssertColumnTypes_MissingColumnFailsClosed(t *testing.T) {
 	live := good()
 	delete(live, "squad_id")
