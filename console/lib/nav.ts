@@ -429,3 +429,16 @@ export function withOnboardingLock(tree: NavNode[], teamExists: boolean): NavNod
     });
   return lock(tree, false);
 }
+
+/**
+ * ISI-5560: the Inbox nav badge count. The badge is a mailbox-style "you're needed" signal, so it
+ * counts EVERY actionable row in GET /api/squad/inbox — every row there is by definition an open
+ * item awaiting this human's action (open proposals `proposed` + work-items `in_review` + open
+ * decision_requests, already user/team-scoped by the endpoint). This is the total row count, NOT the
+ * `unread` subset (E1/ISI-5535 shipped the badge counting unread only; Henrik refined it to a count
+ * of actionable tickets). The per-row `unread` dot stays a separate secondary cue. Fail-open callers
+ * pass whatever the endpoint returned; a missing/empty list yields 0 (badge hidden at zero).
+ */
+export function inboxActionableCount(items: unknown): number {
+  return Array.isArray(items) ? items.length : 0;
+}

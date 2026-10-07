@@ -8,6 +8,7 @@
 import { describe, it, expect } from "vitest";
 import {
   breadcrumbFor,
+  inboxActionableCount,
   mobileNav,
   navTree,
   visibleNav,
@@ -79,6 +80,36 @@ describe("navTree — item-set + order match the ISI-3641 mock (ISI-3725), conso
     expect(llm?.href).toBe("/settings/llm"); // dedicated LLM surface (ISI-5004)
     const otel = settings?.children?.find((c) => c.id === "otel");
     expect(otel?.href).toBe("/settings/configuration"); // OTLP surface (ISI-3717 Track 2 target)
+  });
+});
+
+describe("inboxActionableCount — mailbox-style badge counts ALL actionable rows, not unread (ISI-5560)", () => {
+  it("counts every inbox row regardless of the per-row unread flag", () => {
+    // Every row in /api/squad/inbox is an open item awaiting action; the badge is the TOTAL,
+    // not the unread subset (E1/ISI-5535 shipped unread-only; ISI-5560 refines it to row count).
+    const items = [
+      { unread: true },
+      { unread: false },
+      { unread: false },
+    ];
+    expect(inboxActionableCount(items)).toBe(3);
+  });
+
+  it("does NOT fall back to the unread subset (3 rows, 1 unread → 3, not 1)", () => {
+    const items = [{ unread: true }, { unread: false }, { unread: false }];
+    const unreadOnly = items.filter((i) => i.unread).length;
+    expect(inboxActionableCount(items)).toBe(3);
+    expect(inboxActionableCount(items)).not.toBe(unreadOnly);
+  });
+
+  it("is 0 for an empty list (badge hidden at zero)", () => {
+    expect(inboxActionableCount([])).toBe(0);
+  });
+
+  it("fails open to 0 for a missing/non-array payload", () => {
+    expect(inboxActionableCount(undefined)).toBe(0);
+    expect(inboxActionableCount(null)).toBe(0);
+    expect(inboxActionableCount({ items: 1 })).toBe(0);
   });
 });
 
