@@ -662,6 +662,20 @@ func TestKubeProvisionerStagesToolchainInitPacks(t *testing.T) {
 	if !foundPath {
 		t.Errorf("agent container missing PATH env (%+v)", agent.Env)
 	}
+	// ISI-5562: the agent also carries LD_LIBRARY_PATH=/tools/lib so a staged
+	// dynamically linked tool (musl git) finds its shared-library closure.
+	foundLibPath := false
+	for _, e := range agent.Env {
+		if e.Name == "LD_LIBRARY_PATH" {
+			foundLibPath = true
+			if e.Value != capability.ToolLibPathValue {
+				t.Errorf("LD_LIBRARY_PATH = %q, want %q", e.Value, capability.ToolLibPathValue)
+			}
+		}
+	}
+	if !foundLibPath {
+		t.Errorf("agent container missing LD_LIBRARY_PATH env (%+v)", agent.Env)
+	}
 }
 
 // TestKubeProvisionerBareWhenNoToolchains (ISI-5221): a warm boot (no Run) and a

@@ -86,6 +86,9 @@ func AssemblePod(run *api.Run, resolved []toolchain.Resolved, endpoints []Endpoi
 		asm.Volumes = append(asm.Volumes, ToolVolume())
 		asm.AgentMounts = append(asm.AgentMounts, ToolVolumeMounts()...)
 		asm.AgentEnv = append(asm.AgentEnv, ToolPathEnv())
+		// LD_LIBRARY_PATH=/tools/lib so the loader finds each tool's staged
+		// shared-library closure (ISI-5562).
+		asm.AgentEnv = append(asm.AgentEnv, ToolLibPathEnv())
 	}
 
 	if len(endpoints) > 0 {

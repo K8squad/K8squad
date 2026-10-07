@@ -572,6 +572,10 @@ func (k *KubeProvisioner) attachToolchainInitPacks(ctx context.Context, pod *cor
 	// locations after /tools/bin, so this override loses nothing the base
 	// image relied on. The base env sets no PATH, so there is no duplicate.
 	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, capability.ToolPathEnv())
+	// LD_LIBRARY_PATH points the dynamic loader at /tools/lib, where staging
+	// copies each tool's shared-library closure (ISI-5562) — without it a
+	// dynamically linked tool (e.g. musl git) fails its link in the sandbox.
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, capability.ToolLibPathEnv())
 	return nil
 }
 
