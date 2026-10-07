@@ -98,6 +98,7 @@ import { DispatchPendingCard } from "./DispatchPendingCard";
 import { TicketWorkingIndicator } from "./TicketWorkingIndicator";
 import { ticketWorkingView } from "@/lib/tickets/working";
 import { TicketProposals, type StructuringManager } from "./TicketProposals";
+import { TicketDecisions } from "./TicketDecisions";
 import {
   TicketNode,
   useTreeKeyboardNav,
@@ -1853,6 +1854,16 @@ function TicketBody({
           manager={structuringManager}
           onExecuted={onProposalExecuted}
           issuesHref={issuesHref}
+        />
+
+        {/* ISI-5536 (E2) — decision_request cards on the ticket surface. Same thread
+            seam as the proposals above; renders the DecisionCard the Inbox row uses.
+            Silent until an agent actually asks (anti-nag); answering re-dispatches the
+            raising agent, so re-sync the children on a decision. */}
+        <TicketDecisions
+          projectId={projectId}
+          threadId={proposalThreadId}
+          onDecided={onProposalExecuted}
         />
 
         {/* S2 — the ticket's sub-tickets, rendered through the shared SubTicketTree

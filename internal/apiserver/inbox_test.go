@@ -40,6 +40,15 @@ func (f fakeProposals) ListOpenProposalsForTeam(context.Context, string) ([]disc
 	return f.items, f.err
 }
 
+type fakeDecisions struct {
+	items []discussion.OpenDecisionSummary
+	err   error
+}
+
+func (f fakeDecisions) ListOpenDecisionRequestsForTeam(context.Context, string) ([]discussion.OpenDecisionSummary, error) {
+	return f.items, f.err
+}
+
 type fakeMarkers struct {
 	seen map[string]time.Time
 }
@@ -76,9 +85,14 @@ func inboxReq(principal string, teamID uuid.UUID) *http.Request {
 
 func callInbox(t *testing.T, reviews fakeReviews, proposals fakeProposals, markers fakeMarkers, ov fakeOverview, req *http.Request) InboxResponse {
 	t.Helper()
+	return callInboxWithDecisions(t, reviews, proposals, fakeDecisions{}, markers, ov, req)
+}
+
+func callInboxWithDecisions(t *testing.T, reviews fakeReviews, proposals fakeProposals, decisions fakeDecisions, markers fakeMarkers, ov fakeOverview, req *http.Request) InboxResponse {
+	t.Helper()
 	srv := &Server{}
 	rec := httptest.NewRecorder()
-	srv.squadInbox(reviews, proposals, markers, ov, nil).ServeHTTP(rec, req)
+	srv.squadInbox(reviews, proposals, decisions, markers, ov, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("squadInbox: got %d, want 200 (body %s)", rec.Code, rec.Body.String())
 	}
@@ -152,6 +166,45 @@ func TestSquadInboxJoinSortUnread(t *testing.T) {
 	}
 }
 
+// TestSquadInboxDecisionArm — ISI-5536 BE-7: an open decision_request surfaces as its own row, keyed
+// decision:{messageId}, with decisionType=the card's mode, and run-joined (lastRunAt/live) through the
+// bound work item exactly like the proposal arm (ADR-0026 §3.3/§3.4).
+func TestSquadInboxDecisionArm(t *testing.T) {
+	teamID := uuid.MustParse("66666666-6666-6666-6666-666666666666")
+	run := time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC)
+
+	ov := fakeOverview{ov: SquadOverview{
+		Projects: []ProjectOverview{{
+			Name: "web", Namespace: "squad-a", UID: "uid-web",
+			Runs: []RunStatus{{Name: "run-d", WorkItem: "wi-7", Phase: "Running", ClaimedAt: &run}},
+		}},
+	}}
+	decisions := fakeDecisions{items: []discussion.OpenDecisionSummary{
+		{MessageID: "dm-1", ProjectUID: "squad-a/web", AuthorAgent: "winston",
+			Title: "Which HTTP client?", Mode: "choose_one", TicketID: "wi-7",
+			CreatedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)},
+	}}
+
+	resp := callInboxWithDecisions(t, fakeReviews{}, fakeProposals{}, decisions, fakeMarkers{}, ov, inboxReq("user:alice", teamID))
+
+	if len(resp.Items) != 1 {
+		t.Fatalf("items: got %d, want 1 (%+v)", len(resp.Items), resp.Items)
+	}
+	d := resp.Items[0]
+	if d.Key != "decision:dm-1" || d.DecisionType != "choose_one" {
+		t.Fatalf("decision row key/type wrong: %+v", d)
+	}
+	if d.TicketID != "wi-7" || d.ProjectID != "squad-a/web" || d.RaisedByAgent != "winston" || d.Title != "Which HTTP client?" {
+		t.Fatalf("decision row fields wrong: %+v", d)
+	}
+	if !d.Live || d.LastRunAt == nil || !d.LastRunAt.Equal(run) {
+		t.Fatalf("decision row should run-join its bound ticket (live + lastRunAt=%v): %+v", run, d)
+	}
+	if !d.Unread {
+		t.Fatalf("unmarked decision must be unread: %+v", d)
+	}
+}
+
 // TestSquadInboxUnreadResurfacesOnNewRun — a marker older than the item's latest run re-surfaces the
 // item as unread ("needs me again", ADR-0026 §6). Also asserts an arm error degrades to zero rows
 // from that arm rather than failing the whole response.
@@ -188,7 +241,7 @@ func TestSquadInboxUnauthenticated(t *testing.T) {
 	srv := &Server{}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/squad/inbox", nil)
-	srv.squadInbox(fakeReviews{}, fakeProposals{}, fakeMarkers{}, fakeOverview{}, nil).ServeHTTP(rec, req)
+	srv.squadInbox(fakeReviews{}, fakeProposals{}, fakeDecisions{}, fakeMarkers{}, fakeOverview{}, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated inbox: got %d, want 401", rec.Code)
 	}

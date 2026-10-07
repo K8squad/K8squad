@@ -2191,6 +2191,209 @@
   cursor: not-allowed;
 }
 
+/* ---------------------------------------------------------------------------
+ * ISI-5536 (ISI-5531 E2, ADR-0026 §4/§7) — decision_request cards on the TICKET
+ * surface (mock ux/isi-5531-inbox/03-decision-card). Same route-scoped reasoning
+ * as the proposal mirror above: the ticket route does NOT load discussion.css, so
+ * the DecisionCard's .ksq-decision* classes are styled here. Token-driven — the
+ * mode hue (ADR §3.4: approve→green, choose_*→blue, free_form→amber) rides
+ * [data-hue] so dark ⇄ light re-tints from the same status roles, and a DECIDED
+ * card reads back as a quiet read-only summary (anti-nag, §4.2).
+ * ------------------------------------------------------------------------- */
+.ksq-ticket-decisions__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* An answer/reject failure note under its card (never a silent stuck card). */
+.ksq-decision__error {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  font-size: 0.85em;
+  color: var(--status-failed, #d64);
+  border: 1px solid color-mix(in srgb, var(--status-failed, #d64) 45%, transparent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--status-failed, #d64) 8%, var(--surface));
+}
+
+/* The card body: a solid accent-tinted frame (vs. the proposal's dashed border),
+ * re-hued by mode via [data-hue]. */
+.ksq-decision {
+  --decision-hue: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--decision-hue) 55%, transparent);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--decision-hue) 5%, var(--surface));
+}
+.ksq-decision[data-hue="green"] {
+  --decision-hue: var(--status-running);
+}
+.ksq-decision[data-hue="blue"] {
+  --decision-hue: var(--accent);
+}
+.ksq-decision[data-hue="amber"] {
+  --decision-hue: var(--status-paused);
+}
+
+.ksq-decision__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.ksq-decision__mode {
+  border-color: color-mix(in srgb, var(--decision-hue) 55%, transparent);
+  color: color-mix(in srgb, var(--decision-hue) 80%, var(--text-1));
+  background: color-mix(in srgb, var(--decision-hue) 12%, transparent);
+}
+.ksq-decision__title {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.ksq-decision__details {
+  margin: 0 0 8px;
+  color: var(--text-1);
+  white-space: pre-wrap;
+}
+
+/* choose_one / choose_many option group. */
+.ksq-decision__options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  outline: none;
+}
+.ksq-decision__options:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+.ksq-decision__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.ksq-decision__option[data-checked="true"] {
+  border-color: var(--decision-hue);
+  background: color-mix(in srgb, var(--decision-hue) 8%, transparent);
+}
+.ksq-decision__option-label {
+  color: var(--text-1);
+}
+.ksq-decision__option-desc {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.ksq-decision__option-key {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+  opacity: 0.7;
+}
+.ksq-decision__recommended {
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+  color: color-mix(in srgb, var(--status-running) 80%, var(--text-1));
+  background: color-mix(in srgb, var(--status-running) 12%, transparent);
+}
+
+.ksq-decision__freetext,
+.ksq-decision__reject-input {
+  width: 100%;
+  min-height: 60px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  resize: vertical;
+}
+
+/* Action rows: choose_* / free_form (reject-link + submit) and approve (buttons). */
+.ksq-decision__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ksq-decision__approve {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ksq-decision__form {
+  display: flex;
+  flex-direction: column;
+}
+
+.ksq-btn--approve {
+  background: var(--status-running);
+  border-color: var(--status-running);
+  color: #06281c;
+  font-weight: 600;
+}
+.ksq-btn--reject {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-2);
+}
+
+.ksq-decision__reject {
+  margin-top: 8px;
+}
+.ksq-decision__reject-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.ksq-decision__reject-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Decided (read-only) summary — a quiet phase chip + who/why, no inputs. */
+.ksq-decision__decided {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ksq-decision__phase {
+  --chip-base: var(--status-idle);
+  text-transform: capitalize;
+}
+.ksq-decision__phase[data-phase="answered"] {
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+  color: color-mix(in srgb, var(--status-running) 80%, var(--text-1));
+}
+.ksq-decision__phase[data-phase="rejected"] {
+  border-color: color-mix(in srgb, var(--status-paused) 55%, transparent);
+  color: color-mix(in srgb, var(--status-paused) 85%, var(--text-1));
+}
+.ksq-decision__reason {
+  margin: 4px 0 0;
+  color: var(--text-1);
+  white-space: pre-wrap;
+  flex-basis: 100%;
+}
+
 /* The D3 "assign individually" link in the honest no-coordinator fallback. */
 .ksq-link {
   color: var(--accent);
