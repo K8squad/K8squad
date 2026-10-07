@@ -425,7 +425,7 @@ func (s *Store) ListOpenDecisionRequestsForTeam(ctx context.Context, teamID stri
 		   AND m.invalidated_at IS NULL
 		   AND ($1::uuid IS NULL OR t.team_id = $1::uuid)
 		 ORDER BY m.created_at DESC
-		 LIMIT `+fmt.Sprint(inboxArmLimit), teamParam)
+		 LIMIT $2`, teamParam, inboxArmLimit)
 	if err != nil {
 		return nil, fmt.Errorf("discussion.ListOpenDecisionRequestsForTeam: query: %w", err)
 	}
