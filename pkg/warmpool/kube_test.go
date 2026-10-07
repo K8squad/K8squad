@@ -424,6 +424,59 @@ func TestKubeProvisionerBootRightSizesRequests(t *testing.T) {
 	}
 }
 
+// TestKubeProvisionerBootEphemeralStorage (ISI-5558): every sandbox pod boots
+// with an ephemeral-storage request AND limit so the scheduler stops
+// over-packing disk-hungry sandboxes onto a small worker partition (the
+// node-wide DiskPressure trigger) and the kubelet evicts a runaway rather than
+// a bystander. The guard defaults on (bare caller) and is operator-tunable.
+func TestKubeProvisionerBootEphemeralStorage(t *testing.T) {
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	ctx := context.Background()
+	img := PoolKey{RuntimeClass: "runc", Image: "reg.example/ksquad-shim-opencode:m1"}
+
+	// Default (no WithEphemeralStorage): built-in 1Gi request / 2Gi limit.
+	dflt := NewKubeProvisioner(c, "", "")
+	if err := dflt.Boot(ctx, img, "sbx-es-default", "", BootWarm); err != nil {
+		t.Fatalf("boot default: %v", err)
+	}
+	pod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-es-default"), pod); err != nil {
+		t.Fatalf("get default pod: %v", err)
+	}
+	dres := pod.Spec.Containers[0].Resources
+	if got := dres.Requests[corev1.ResourceEphemeralStorage]; got.Cmp(resource.MustParse("1Gi")) != 0 {
+		t.Errorf("default ephemeral-storage request = %v, want 1Gi", got)
+	}
+	if got := dres.Limits[corev1.ResourceEphemeralStorage]; got.Cmp(resource.MustParse("2Gi")) != 0 {
+		t.Errorf("default ephemeral-storage limit = %v, want 2Gi", got)
+	}
+
+	// Operator-tuned: WithEphemeralStorage overrides both halves.
+	tuned := NewKubeProvisioner(c, "", "").WithEphemeralStorage("4Gi", "8Gi")
+	if err := tuned.Boot(ctx, img, "sbx-es-tuned", "", BootWarm); err != nil {
+		t.Fatalf("boot tuned: %v", err)
+	}
+	tpod := &corev1.Pod{}
+	if err := c.Get(ctx, clientObjectKey(t, "default", "sbx-es-tuned"), tpod); err != nil {
+		t.Fatalf("get tuned pod: %v", err)
+	}
+	tres := tpod.Spec.Containers[0].Resources
+	if got := tres.Requests[corev1.ResourceEphemeralStorage]; got.Cmp(resource.MustParse("4Gi")) != 0 {
+		t.Errorf("tuned ephemeral-storage request = %v, want 4Gi", got)
+	}
+	if got := tres.Limits[corev1.ResourceEphemeralStorage]; got.Cmp(resource.MustParse("8Gi")) != 0 {
+		t.Errorf("tuned ephemeral-storage limit = %v, want 8Gi", got)
+	}
+	// CPU/memory Guaranteed QoS posture is untouched by the disk guard.
+	if tres.Requests.Cpu().Cmp(*tres.Limits.Cpu()) != 0 {
+		t.Errorf("cpu request %v should still equal limit %v", tres.Requests.Cpu(), tres.Limits.Cpu())
+	}
+}
+
 // ISI-4315: purpose-keyed scheduling priority. Idle warm boots stamp the
 // WARM class, Run cold boots stamp the RUN class (warm < run so the
 // scheduler never hands a freed CPU slot to an older queued warm pod while

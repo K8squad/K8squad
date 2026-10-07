@@ -597,8 +597,19 @@ func main() {
 		if sandboxMemoryRequest == "" {
 			sandboxMemoryRequest = "512Mi"
 		}
+		// ISI-5558: bound sandbox node-local disk. A DiskPressure eviction on
+		// k8squad-test traced back to sandbox pods carrying 0 ephemeral-storage
+		// request/limit — the scheduler over-packed disk-hungry sandboxes onto a
+		// small worker partition until the kubelet evicted a bystander. The
+		// request makes scheduling disk-aware; the limit caps a runaway. Empty
+		// env leaves the kube-provisioner's built-in defaults (1Gi/2Gi) — tune
+		// up per cluster from observed usage so the limit never evicts a healthy
+		// build.
+		sandboxEphemeralRequest := os.Getenv("KSQUAD_SANDBOX_EPHEMERAL_STORAGE_REQUEST")
+		sandboxEphemeralLimit := os.Getenv("KSQUAD_SANDBOX_EPHEMERAL_STORAGE_LIMIT")
 		kubeProvisioner := kubepool.NewKubeProvisioner(mgr.GetClient(), "1", "512Mi").
 			WithRequests(sandboxCPURequest, sandboxMemoryRequest).
+			WithEphemeralStorage(sandboxEphemeralRequest, sandboxEphemeralLimit).
 			// ISI-5221: attach the Run's resolved toolchain init packs on the
 			// cold boot. Without this the sandbox booted bare — no git/curl,
 			// git/dtctl skills unusable — because the capability seam that
