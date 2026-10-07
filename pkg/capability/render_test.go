@@ -174,7 +174,7 @@ func TestStagingScriptStagesLibraryClosure(t *testing.T) {
 	// ldd closure, dereferenced soname links, one cp per lib after sort -u.
 	assert.Contains(t, stagingScript, "ldd ")
 	assert.Contains(t, stagingScript, "sort -u")
-	assert.Contains(t, stagingScript, `cp -aL "$lib" "/tools/lib/$(basename "$lib")"`)
+	assert.Contains(t, stagingScript, `cp -L "$lib" "/tools/lib/$(basename "$lib")"`)
 	// Static binaries (Go/static-musl) make ldd exit non-zero with no libs —
 	// must not abort the `set -e` script.
 	assert.Contains(t, stagingScript, "2>/dev/null")

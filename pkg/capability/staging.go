@@ -236,10 +236,14 @@ for b in "$@"; do
   # codex) make ldd exit non-zero with no libs listed — tolerated via '|| true'
   # and '2>/dev/null'. One cp per lib after 'sort -u': musl ldd lists the loader
   # path twice and busybox cp rejects a duplicate source in one invocation (the
-  # shim Dockerfile hit this); cp -aL dereferences soname->realfile symlinks so
-  # the staged copy is not a dangling link.
+  # shim Dockerfile hit this). 'cp -L' (not -aL) dereferences the soname->realfile
+  # symlink while NOT preserving ownership: staging runs as non-root UID 1000
+  # (StagingRunAsUser), and '-a' would make busybox cp emit a noisy
+  # "can't preserve ownership" warning and return non-zero on every real staging
+  # init (content+mode still copy fine, but the log noise and masked failure are
+  # worse than the dereference-only copy a shared lib actually needs).
   ldd "$src" 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^\//) print $i}' | sort -u \
-    | while read -r lib; do cp -aL "$lib" "/tools/lib/$(basename "$lib")"; done || true
+    | while read -r lib; do cp -L "$lib" "/tools/lib/$(basename "$lib")"; done || true
 done`
 
 // stagingCommand builds the init-container command that stages the given
