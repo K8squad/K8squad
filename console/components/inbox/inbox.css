@@ -1,0 +1,265 @@
+/* components/inbox/inbox.css — ISI-5531 Inbox ("Needs Human Decision"). E1 (ISI-5535) styled the
+ * list; E3 (ISI-5537) adds the triage layer (mock ux/isi-5531-inbox/04-inbox-triage). Route-scoped
+ * (imported by InboxList, like tickets.css) — the /inbox route doesn't load discussion.css. Every
+ * colour/radius is a verbatim :root token; the four decision hues reuse existing status roles
+ * (violet=--ksq-run, green=--status-running, blue=--accent, amber=--status-paused) — zero new tokens.
+ * The live marker is reused verbatim from ISI-5528 (.rail__livebadge). */
+
+.inbox__heading {
+  margin: 0 0 2px;
+  font-size: 20px;
+  font-weight: 650;
+  color: var(--text-hi, var(--text-1));
+}
+.inbox__subhead {
+  margin: 0 0 14px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.inbox__loading,
+.inbox__error {
+  color: var(--text-2);
+  font-size: 13px;
+}
+.inbox__error {
+  color: var(--status-blocked);
+}
+
+/* --- filter bar (E3) --- */
+.inbox__filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.inbox__filter-chip {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.inbox__filter-chip--on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.inbox__filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.inbox__filter-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-3, var(--text-2));
+}
+.inbox__filter-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+}
+
+/* --- list --- */
+.inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.inbox__empty {
+  color: var(--text-2);
+  font-size: 13px;
+  padding: 24px 0;
+}
+
+/* --- row --- */
+.inbox__row {
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent; /* accent bar slot; filled when unread */
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  padding: 10px 12px;
+  outline: none;
+}
+.inbox__row--unread {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 4%, var(--surface));
+}
+.inbox__row--focused {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.inbox__row-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.inbox__row-open {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.inbox__row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-1);
+  font-size: 14px;
+}
+.inbox__row--unread .inbox__row-title {
+  font-weight: 650;
+}
+.inbox__unread-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+.inbox__live-badge {
+  margin-left: 2px;
+}
+.inbox__row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--text-2);
+  font-size: 12px;
+}
+.inbox__raised-by {
+  color: var(--text-2);
+}
+.inbox__time {
+  color: var(--text-3, var(--text-2));
+}
+
+/* keyboard hint badges */
+.inbox__kbd-hint,
+.inbox__inline-hint {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: auto;
+  flex: none;
+}
+.inbox__kbd-hint kbd,
+.inbox__inline-hint kbd {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text-2);
+}
+
+/* --- decision chip --- */
+.inbox__chip {
+  --chip-hue: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid color-mix(in srgb, var(--chip-hue) 50%, transparent);
+  color: color-mix(in srgb, var(--chip-hue) 80%, var(--text-1));
+  background: color-mix(in srgb, var(--chip-hue) 12%, transparent);
+}
+.inbox__chip--violet { --chip-hue: var(--ksq-run); }
+.inbox__chip--green  { --chip-hue: var(--status-running); }
+.inbox__chip--blue   { --chip-hue: var(--accent); }
+.inbox__chip--amber  { --chip-hue: var(--status-paused); }
+
+/* --- inline answer (E3) --- */
+.inbox__inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.inbox__btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--text-1);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.inbox__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.inbox__btn--approve {
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+  color: color-mix(in srgb, var(--status-running) 85%, var(--text-1));
+  background: color-mix(in srgb, var(--status-running) 12%, transparent);
+}
+.inbox__btn--reject {
+  border-color: var(--border);
+  color: var(--text-1);
+}
+.inbox__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.inbox__opt--recommended {
+  border-color: color-mix(in srgb, var(--status-running) 55%, transparent);
+}
+.inbox__opt--else {
+  border-style: dashed;
+  color: var(--text-2);
+}
+.inbox__opt-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.inbox__open-link {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.inbox__row-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--status-blocked);
+}
+.inbox__scope-note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
