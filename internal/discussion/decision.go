@@ -403,6 +403,14 @@ type OpenDecisionSummary struct {
 	Mode        string    `json:"mode"`
 	TicketID    string    `json:"ticketId,omitempty"` // work_item_id the card binds to; "" ⇒ project-wide
 	CreatedAt   time.Time `json:"createdAt"`
+
+	// Inline-answer fields (ISI-5537 E3): the minimum of the card payload the Inbox triage row needs
+	// to answer approve/choose_one WITHOUT opening the detail. choose_many/free_form open the detail,
+	// so their Options are still carried (harmless) but the row routes them to the full card.
+	Options              []DecisionOption `json:"-"` // choose_* options (id+label+recommended)
+	AllowFreeText        bool             `json:"-"` // the "Something else" escape is offered
+	AllowReject          bool             `json:"-"` // resolved tristate (approve always allows)
+	RejectRequiresReason bool             `json:"-"` // a reason is mandatory to reject ⇒ row opens detail
 }
 
 // ListOpenDecisionRequestsForTeam returns all open (phase='open', not invalidated) decision_requests
@@ -449,6 +457,10 @@ func (s *Store) ListOpenDecisionRequestsForTeam(ctx context.Context, teamID stri
 			if jsonErr := json.Unmarshal(payload, &pp); jsonErr == nil {
 				ds.Title = pp.Title
 				ds.Mode = pp.Mode
+				ds.Options = pp.Options
+				ds.AllowFreeText = pp.AllowFreeText
+				ds.AllowReject = pp.RejectAllowed()
+				ds.RejectRequiresReason = pp.RejectRequiresReason
 			}
 		}
 		out = append(out, ds)

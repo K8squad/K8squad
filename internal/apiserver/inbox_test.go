@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +63,8 @@ func (f fakeMarkers) Seen(_ context.Context, _ string, keys []string) (map[strin
 	}
 	return out, nil
 }
-func (f fakeMarkers) MarkSeen(context.Context, string, []string) error { return nil }
+func (f fakeMarkers) MarkSeen(context.Context, string, []string) error   { return nil }
+func (f fakeMarkers) MarkUnread(context.Context, string, []string) error { return nil }
 
 type fakeOverview struct{ ov SquadOverview }
 
@@ -182,7 +184,12 @@ func TestSquadInboxDecisionArm(t *testing.T) {
 	decisions := fakeDecisions{items: []discussion.OpenDecisionSummary{
 		{MessageID: "dm-1", ProjectUID: "squad-a/web", AuthorAgent: "winston",
 			Title: "Which HTTP client?", Mode: "choose_one", TicketID: "wi-7",
-			CreatedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)},
+			CreatedAt: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC),
+			Options: []discussion.DecisionOption{
+				{ID: "reqwest", Label: "reqwest", Recommended: true},
+				{ID: "hyper", Label: "hyper"},
+			},
+			AllowFreeText: true, AllowReject: true, RejectRequiresReason: false},
 	}}
 
 	resp := callInboxWithDecisions(t, fakeReviews{}, fakeProposals{}, decisions, fakeMarkers{}, ov, inboxReq("user:alice", teamID))
@@ -202,6 +209,16 @@ func TestSquadInboxDecisionArm(t *testing.T) {
 	}
 	if !d.Unread {
 		t.Fatalf("unmarked decision must be unread: %+v", d)
+	}
+	// ISI-5537 E3: the inline-answer affordance is carried for decision rows.
+	if d.Decision == nil {
+		t.Fatalf("decision row must carry the inline-answer Decision block: %+v", d)
+	}
+	if d.Decision.MessageID != "dm-1" || !d.Decision.AllowFreeText || !d.Decision.AllowReject {
+		t.Fatalf("inline decision fields wrong: %+v", d.Decision)
+	}
+	if len(d.Decision.Options) != 2 || d.Decision.Options[0].ID != "reqwest" || !d.Decision.Options[0].Recommended {
+		t.Fatalf("inline options wrong: %+v", d.Decision.Options)
 	}
 }
 
@@ -244,5 +261,111 @@ func TestSquadInboxUnauthenticated(t *testing.T) {
 	srv.squadInbox(fakeReviews{}, fakeProposals{}, fakeDecisions{}, fakeMarkers{}, fakeOverview{}, nil).ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated inbox: got %d, want 401", rec.Code)
+	}
+}
+
+// recordingReviews captures the teamID the inbox handler scopes the review arm to, so we can prove
+// ?scope=mine narrows an admin's fleet read back to their own team (ISI-5537 E3, OQ5).
+type recordingReviews struct{ gotTeam string }
+
+func (f *recordingReviews) ListReviewItems(_ context.Context, teamID string) ([]coord.ReviewItem, error) {
+	f.gotTeam = teamID
+	return nil, nil
+}
+
+// adminInboxReq builds an admin-scoped GET with the given query string so scope=mine can be exercised.
+func adminInboxReq(principal string, teamID uuid.UUID, query string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/api/squad/inbox"+query, nil)
+	return r.WithContext(discussion.WithAuth(r.Context(), discussion.AuthorContext{
+		Principal: principal,
+		TeamID:    teamID,
+		IsAdmin:   true,
+	}))
+}
+
+// TestSquadInboxScopeMineNarrowsAdmin — an admin's default read is fleet-wide (team scope ""), but
+// ?scope=mine narrows it back to the admin's own team and flips the Fleet flag off.
+func TestSquadInboxScopeMineNarrowsAdmin(t *testing.T) {
+	teamID := uuid.MustParse("77777777-7777-7777-7777-777777777777")
+	srv := &Server{}
+
+	// Default (fleet): the review arm is scoped to "" and the response is a fleet view.
+	rev := &recordingReviews{}
+	rec := httptest.NewRecorder()
+	srv.squadInbox(rev, fakeProposals{}, fakeDecisions{}, fakeMarkers{}, fakeOverview{}, nil).
+		ServeHTTP(rec, adminInboxReq("user:admin", teamID, ""))
+	if rev.gotTeam != "" {
+		t.Fatalf("admin default must read fleet (team \"\"), got %q", rev.gotTeam)
+	}
+	var fleetResp InboxResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &fleetResp); err != nil {
+		t.Fatalf("decode fleet resp: %v", err)
+	}
+	if !fleetResp.Fleet {
+		t.Fatalf("admin default response must be Fleet=true")
+	}
+
+	// scope=mine: the review arm is scoped to the admin's team and Fleet flips off.
+	revMine := &recordingReviews{}
+	recMine := httptest.NewRecorder()
+	srv.squadInbox(revMine, fakeProposals{}, fakeDecisions{}, fakeMarkers{}, fakeOverview{}, nil).
+		ServeHTTP(recMine, adminInboxReq("user:admin", teamID, "?scope=mine"))
+	if revMine.gotTeam != teamID.String() {
+		t.Fatalf("scope=mine must narrow to admin team %s, got %q", teamID, revMine.gotTeam)
+	}
+	var mineResp InboxResponse
+	if err := json.Unmarshal(recMine.Body.Bytes(), &mineResp); err != nil {
+		t.Fatalf("decode mine resp: %v", err)
+	}
+	if mineResp.Fleet {
+		t.Fatalf("scope=mine response must be Fleet=false")
+	}
+}
+
+// recordingMarker captures the last MarkUnread call so the unseen handler can be asserted end to end.
+type recordingMarker struct {
+	fakeMarkers
+	unreadKeys []string
+}
+
+func (m *recordingMarker) MarkUnread(_ context.Context, _ string, keys []string) error {
+	m.unreadKeys = keys
+	return nil
+}
+
+// TestSquadInboxUnseen — POST /api/squad/inbox/unseen drops the given keys' markers (the "mark
+// unread" half of the toggle); empty body is 400, missing auth is 401.
+func TestSquadInboxUnseen(t *testing.T) {
+	srv := &Server{}
+	mk := &recordingMarker{}
+
+	// Happy path: keys forwarded to MarkUnread, 200.
+	body := strings.NewReader(`{"keys":["decision:dm-1","inReview:wi-2"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/squad/inbox/unseen", body)
+	req = req.WithContext(discussion.WithAuth(req.Context(), discussion.AuthorContext{Principal: "user:alice"}))
+	rec := httptest.NewRecorder()
+	srv.squadInboxUnseen(mk).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unseen: got %d, want 200", rec.Code)
+	}
+	if len(mk.unreadKeys) != 2 || mk.unreadKeys[0] != "decision:dm-1" {
+		t.Fatalf("unseen must forward keys to MarkUnread, got %+v", mk.unreadKeys)
+	}
+
+	// Empty keys ⇒ 400.
+	recBad := httptest.NewRecorder()
+	reqBad := httptest.NewRequest(http.MethodPost, "/api/squad/inbox/unseen", strings.NewReader(`{"keys":[]}`))
+	reqBad = reqBad.WithContext(discussion.WithAuth(reqBad.Context(), discussion.AuthorContext{Principal: "user:alice"}))
+	srv.squadInboxUnseen(mk).ServeHTTP(recBad, reqBad)
+	if recBad.Code != http.StatusBadRequest {
+		t.Fatalf("unseen empty keys: got %d, want 400", recBad.Code)
+	}
+
+	// Missing auth ⇒ 401.
+	recNoAuth := httptest.NewRecorder()
+	reqNoAuth := httptest.NewRequest(http.MethodPost, "/api/squad/inbox/unseen", strings.NewReader(`{"keys":["x"]}`))
+	srv.squadInboxUnseen(mk).ServeHTTP(recNoAuth, reqNoAuth)
+	if recNoAuth.Code != http.StatusUnauthorized {
+		t.Fatalf("unseen no auth: got %d, want 401", recNoAuth.Code)
 	}
 }

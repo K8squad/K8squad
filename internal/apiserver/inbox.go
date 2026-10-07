@@ -60,6 +60,29 @@ type InboxItem struct {
 	LastRunAt     *time.Time `json:"lastRunAt,omitempty"` // nil ⇒ no run yet; row orders by updatedAt
 	Unread        bool       `json:"unread"`
 	Live          bool       `json:"live,omitempty"` // ISI-5528 live-run marker
+
+	// Decision is set only on decision_request rows (ISI-5537 E3): the minimum the triage row needs
+	// to answer approve/choose_one inline without opening the detail. nil on review/proposal rows.
+	Decision *InboxDecision `json:"decision,omitempty"`
+}
+
+// InboxDecisionOption is one selectable option on a choose_* decision row (ISI-5537 E3 inline answer).
+type InboxDecisionOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Recommended bool   `json:"recommended,omitempty"`
+}
+
+// InboxDecision carries the inline-answer affordance for a decision_request row (ISI-5537 E3). The
+// triage row POSTs the answer/reject to the existing project-scoped decision endpoints keyed by
+// MessageID (ADR-0026 §4.4). approve/choose_one answer inline; choose_many/free_form and any
+// reject-requires-reason reject route to the ticket-detail card instead.
+type InboxDecision struct {
+	MessageID            string                `json:"messageId"`
+	Options              []InboxDecisionOption `json:"options,omitempty"`
+	AllowFreeText        bool                  `json:"allowFreeText,omitempty"`
+	AllowReject          bool                  `json:"allowReject"`
+	RejectRequiresReason bool                  `json:"rejectRequiresReason,omitempty"`
 }
 
 // InboxResponse is the top-level GET /api/squad/inbox envelope (ADR-0026 §3.4).
@@ -92,8 +115,19 @@ func (s *Server) squadInbox(
 		}
 		teamID := authTeamScope(r)
 
+		// "Mine" filter (ISI-5537 E3, OQ5): ?scope=mine narrows an admin's fleet view back to their own
+		// team. A no-op for non-admins (already team-fenced) and for admins with no team. The frontend
+		// shows the toggle only on fleet responses; the fleet footer note communicates the default.
+		admin := auth.IsAdmin
+		if r.URL.Query().Get("scope") == "mine" {
+			if t := auth.TeamID.String(); t != "" && t != "00000000-0000-0000-0000-000000000000" {
+				teamID = t
+				admin = false
+			}
+		}
+
 		// --- Cache arm: run claimedAt for ordering + UID→project path index ---
-		sq, err := overview.Overview(r.Context(), auth.TeamID.String(), auth.IsAdmin)
+		sq, err := overview.Overview(r.Context(), auth.TeamID.String(), admin)
 		if err != nil && !errors.Is(err, ErrTeamNotFound) {
 			writeJSONError(w, http.StatusBadGateway, "inbox cache read unavailable")
 			return
@@ -271,6 +305,12 @@ func (s *Server) squadInbox(
 					unread = false
 				}
 			}
+			// Inline-answer affordance (ISI-5537 E3). Options carried for choose_* so the row can
+			// answer choose_one inline; approve needs only the message id + reject flags.
+			opts := make([]InboxDecisionOption, 0, len(ds.Options))
+			for _, o := range ds.Options {
+				opts = append(opts, InboxDecisionOption{ID: o.ID, Label: o.Label, Recommended: o.Recommended})
+			}
 			rows = append(rows, row{
 				item: InboxItem{
 					Key:           key,
@@ -282,6 +322,13 @@ func (s *Server) squadInbox(
 					LastRunAt:     lastRunAt,
 					Unread:        unread,
 					Live:          live,
+					Decision: &InboxDecision{
+						MessageID:            ds.MessageID,
+						Options:              opts,
+						AllowFreeText:        ds.AllowFreeText,
+						AllowReject:          ds.AllowReject,
+						RejectRequiresReason: ds.RejectRequiresReason,
+					},
 				},
 				orderKey: orderKey,
 			})
@@ -301,7 +348,9 @@ func (s *Server) squadInbox(
 		}
 
 		writeJSON(w, http.StatusOK, InboxResponse{
-			Fleet: sq.Fleet || auth.IsAdmin,
+			// Reflect the EFFECTIVE scope: ?scope=mine narrows an admin back to their team, so the
+			// response is no longer a fleet view and the frontend hides the "all teams" footer.
+			Fleet: sq.Fleet || admin,
 			Items: items,
 		})
 	}
@@ -325,6 +374,31 @@ func (s *Server) squadInboxSeen(markers ReadMarkerStore) http.HandlerFunc {
 		}
 		if err := markers.MarkSeen(r.Context(), auth.Principal, body.Keys); err != nil {
 			writeJSONError(w, http.StatusBadGateway, "mark-seen failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// squadInboxUnseen handles POST /api/squad/inbox/unseen — drops read-markers for the supplied keys so
+// the items re-surface as unread (ISI-5537 E3, the "mark unread" half of the toggle). Mirrors
+// squadInboxSeen: same body {"keys":[…]}, idempotent, 200 on success, 400 on bad body.
+func (s *Server) squadInboxUnseen(markers ReadMarkerStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		auth, ok := discussion.AuthFromContext(r.Context())
+		if !ok || auth.Principal == "" {
+			writeJSONError(w, http.StatusUnauthorized, "unauthenticated")
+			return
+		}
+		var body struct {
+			Keys []string `json:"keys"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Keys) == 0 {
+			writeJSONError(w, http.StatusBadRequest, "keys required")
+			return
+		}
+		if err := markers.MarkUnread(r.Context(), auth.Principal, body.Keys); err != nil {
+			writeJSONError(w, http.StatusBadGateway, "mark-unread failed")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

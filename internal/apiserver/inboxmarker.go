@@ -25,6 +25,9 @@ import (
 type ReadMarkerStore interface {
 	Seen(ctx context.Context, userPrincipal string, keys []string) (map[string]time.Time, error)
 	MarkSeen(ctx context.Context, userPrincipal string, keys []string) error
+	// MarkUnread drops the user's read-markers for the given keys so the items re-derive as unread
+	// (ISI-5537 E3, the U / "mark unread" half of the read/unread toggle). Idempotent.
+	MarkUnread(ctx context.Context, userPrincipal string, keys []string) error
 }
 
 // PostgresReadMarkerStore is the production ReadMarkerStore over coord.decision_read_marker. It holds
@@ -81,6 +84,22 @@ func (s *PostgresReadMarkerStore) MarkSeen(ctx context.Context, userPrincipal st
 		ON CONFLICT (user_principal, item_key) DO UPDATE SET seen_at = now()`, userPrincipal, pq.Array(keys))
 	if err != nil {
 		return fmt.Errorf("apiserver.ReadMarker.MarkSeen: %w", err)
+	}
+	return nil
+}
+
+// MarkUnread deletes the user's read-markers for the given keys. With no marker, the handler derives
+// the item as unread again (ADR-0026 §6 — unread is derived, never stored). Idempotent: deleting a
+// key with no marker is a no-op. An empty keys slice is a no-op.
+func (s *PostgresReadMarkerStore) MarkUnread(ctx context.Context, userPrincipal string, keys []string) error {
+	if userPrincipal == "" || len(keys) == 0 {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `
+		DELETE FROM coord.decision_read_marker
+		 WHERE user_principal = $1 AND item_key = ANY($2)`, userPrincipal, pq.Array(keys))
+	if err != nil {
+		return fmt.Errorf("apiserver.ReadMarker.MarkUnread: %w", err)
 	}
 	return nil
 }
