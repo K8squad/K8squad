@@ -60,10 +60,18 @@ export interface DispatchRosterAgent {
 // work from an agent the server would skip.
 const NON_DISPATCHABLE: ReadonlySet<string> = new Set(["paused", "blocked"]);
 
-// The backend caps a single post's fan-out at maxMentionDispatchPerMessage=5
-// (dispatch.go rate/cost guardrail). We cap the optimistic affordance identically
-// so it never shows more working rows than the server would actually dispatch.
+// The backend caps an EXPLICIT @-mention post's fan-out at
+// maxMentionDispatchPerMessage=5 (dispatch.go rate/cost guardrail). We cap the
+// optimistic affordance identically so it never shows more working rows than the
+// server would actually dispatch for a mention post.
 const MAX_DISPATCH_PER_MESSAGE = 5;
+
+// A whole-room broadcast — a HUMAN party post with NO @-mention (ISI-5265) —
+// rides the larger squad-sized cap maxBroadcastDispatchPerMessage=25
+// (dispatch.go). We mirror that so a human "ask the room" post shows a working
+// row per dispatchable agent (bounded at 25), not zero rows as the stale
+// pre-ISI-5265 model did.
+const MAX_BROADCAST_PER_MESSAGE = 25;
 
 function isDispatchable(agent: DispatchRosterAgent): boolean {
   const s = (agent.status ?? "").toLowerCase();
@@ -75,18 +83,64 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** Options for {@link dispatchTargets} — the one bit the backend routes on that
+ * the body+audience+roster don't carry: who authored the triggering post. */
+export interface DispatchOptions {
+  /**
+   * True ⇒ the triggering post was authored by an agent (provenance
+   * `authorAgentId` present). Governs the bare-party path ONLY: a human
+   * bare-party post broadcasts to the room (ISI-5265), an agent bare-party post
+   * dispatches nobody (loop-safety). Defaults to false — the seed path only ever
+   * fires on the human's own composer post.
+   */
+  authoredByAgent?: boolean;
+}
+
+/** Dispatchable roster agents the body @-mentions, roster order, de-duped.
+ * No cap applied here — the caller caps per routing mode. */
+function mentionedTargets(
+  body: string,
+  roster: readonly DispatchRosterAgent[],
+): string[] {
+  const out: string[] = [];
+  for (const agent of roster) {
+    if (!isDispatchable(agent)) continue;
+    const re = new RegExp(
+      `(^|[^A-Za-z0-9_-])@${escapeRegExp(agent.name)}(?![A-Za-z0-9_-])`,
+      "i",
+    );
+    if (re.test(body)) out.push(agent.name);
+  }
+  return out;
+}
+
 /**
  * Resolve the set of agent NAMES a post dispatches, the same way the backend
- * does (dispatch.go): a `direct:{agentId}` post dispatches ONLY that target; a
- * `party` post dispatches each @-mentioned roster agent; a bare post with no
- * @-mention dispatches nobody. Paused/blocked agents are skipped and the fan-out
- * is capped, mirroring the server guardrails. Matching is case-insensitive and
- * de-duped, order preserved (roster order).
+ * does (dispatch.go). Four routing modes, mirrored exactly:
+ *   - `direct:{agentId}` — ONLY that target, body @-mentions ignored;
+ *   - party WITH @-mentions — each @-mentioned dispatchable agent, capped at
+ *     maxMentionDispatchPerMessage=5;
+ *   - party, NO @-mention, HUMAN author — a whole-room BROADCAST to every
+ *     dispatchable roster agent, capped at maxBroadcastDispatchPerMessage=25
+ *     (ISI-5265: "party" = talk to the whole room; a human at hop 0 is the one
+ *     turn allowed to wake the squad);
+ *   - party, NO @-mention, AGENT author — nobody (loop-safety: broadcast is a
+ *     hop-0 human privilege; an agent bare-party post would N²-loop the squad).
+ * Paused/blocked agents are skipped and each fan-out is capped, mirroring the
+ * server guardrails. Matching is case-insensitive and de-duped, order preserved.
+ *
+ * NOTE: the ISI-5283 multi-mention→coordinator routing (a party post resolving
+ * 2+ @-mentions dispatches the Team coordinator ONCE, not each agent) is NOT
+ * modeled here — the console roster DTO (RosterAgentDTO) carries no coordinator
+ * flag, so the FE cannot name the coordinator the server would pick. The working
+ * affordance therefore over-shows for that specific case; a wrong name is worse
+ * than an extra row, so we keep the mentioned-agent rows rather than guess.
  */
 export function dispatchTargets(
   body: string,
   audience: string | undefined,
   roster: readonly DispatchRosterAgent[],
+  opts?: DispatchOptions,
 ): string[] {
   // Direct audience (`direct:{agentId}` — the roster id, which mirrors name):
   // exactly that agent, and only if dispatchable. The body's @-mentions are
@@ -101,19 +155,24 @@ export function dispatchTargets(
     return target ? [target.name] : [];
   }
 
-  // Party post: every dispatchable roster agent the body @-mentions. We test
-  // each roster name against the body rather than parsing free tokens, so a
-  // name carrying allowed punctuation still matches and a non-roster @token is
-  // ignored (the server only dispatches resolved roster agents).
+  // Party post WITH @-mentions: every dispatchable roster agent the body
+  // @-mentions, capped at the per-message mention cap. We test each roster name
+  // against the body rather than parsing free tokens, so a name carrying allowed
+  // punctuation still matches and a non-roster @token is ignored.
+  const mentioned = mentionedTargets(body, roster);
+  if (mentioned.length > 0) {
+    return mentioned.slice(0, MAX_DISPATCH_PER_MESSAGE);
+  }
+
+  // Party post with NO @-mention. ISI-5265: a HUMAN bare-party post broadcasts
+  // to the whole dispatchable roster (bounded at the broadcast cap); an AGENT
+  // bare-party post dispatches nobody (loop-safety). This is the exact bug the
+  // stale pre-ISI-5265 model got wrong — it returned [] for both.
+  if (opts?.authoredByAgent) return [];
   const out: string[] = [];
   for (const agent of roster) {
-    if (out.length >= MAX_DISPATCH_PER_MESSAGE) break;
-    if (!isDispatchable(agent)) continue;
-    const re = new RegExp(
-      `(^|[^A-Za-z0-9_-])@${escapeRegExp(agent.name)}(?![A-Za-z0-9_-])`,
-      "i",
-    );
-    if (re.test(body)) out.push(agent.name);
+    if (out.length >= MAX_BROADCAST_PER_MESSAGE) break;
+    if (isDispatchable(agent)) out.push(agent.name);
   }
   return out;
 }

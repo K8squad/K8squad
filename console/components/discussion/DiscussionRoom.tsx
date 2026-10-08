@@ -208,13 +208,16 @@ export function DiscussionRoom({
         applyRoomEvent(cur, { type: "message.created", message: created }),
       );
       // ISI-5174: seed the "an agent is working…" affordance for each agent this
-      // post @-mentions — resolved server-side the same way (dispatch.go). The
-      // wire audience token (party vs direct:{id}) decides the fan-out, matching
-      // the backend; a post that dispatches nobody seeds nothing.
+      // post dispatches — resolved server-side the same way (dispatch.go). The
+      // wire audience token (party vs direct:{id}) and authorship decide the
+      // fan-out, matching the backend: a human bare-party post broadcasts to the
+      // whole room (ISI-5265), a direct/@-mention post targets its agents, and a
+      // post that dispatches nobody seeds nothing.
       const agentNames = dispatchTargets(
         body.body,
         audienceWire(body.audience),
         rosterRef.current,
+        { authoredByAgent: Boolean(created.authorAgentId) },
       );
       if (agentNames.length > 0) {
         setWorking((cur) =>

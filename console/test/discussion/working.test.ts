@@ -45,10 +45,21 @@ describe("dispatchTargets", () => {
     ).toEqual(["john", "bmad-pm"]);
   });
 
-  it("dispatches nobody for a bare post with no @-mention", () => {
+  it("broadcasts a HUMAN bare-party post to the whole dispatchable roster (ISI-5265)", () => {
+    // No @-mention + party + human author ⇒ the backend broadcasts to every
+    // dispatchable roster agent (paused/blocked skipped), so the affordance must
+    // show a working row for each. Default author is human.
     expect(dispatchTargets("just a note to the room", undefined, ROSTER)).toEqual(
-      [],
+      ["john", "bmad-pm"],
     );
+  });
+
+  it("an AGENT bare-party post dispatches nobody (loop-safety)", () => {
+    expect(
+      dispatchTargets("just a note to the room", undefined, ROSTER, {
+        authoredByAgent: true,
+      }),
+    ).toEqual([]);
   });
 
   it("skips paused and blocked agents (opt-out guardrail)", () => {
@@ -62,14 +73,23 @@ describe("dispatchTargets", () => {
   });
 
   it("does not match an @-token that is a prefix/substring of a name", () => {
-    // "@joh" must not match "john"; "@johnny" must not either.
-    expect(dispatchTargets("@joh @johnny", undefined, ROSTER)).toEqual([]);
+    // "@joh" must not match "john"; "@johnny" must not either. Agent-authored so
+    // the bare-party broadcast path is suppressed, isolating the mention parser.
+    expect(
+      dispatchTargets("@joh @johnny", undefined, ROSTER, {
+        authoredByAgent: true,
+      }),
+    ).toEqual([]);
   });
 
   it("does not fire on an email-like a@b", () => {
-    expect(dispatchTargets("mail john@bmad-pm.dev", undefined, ROSTER)).toEqual(
-      [],
-    );
+    // `john@bmad-pm.dev` must not parse as @-mentioning anyone. Agent-authored so
+    // the broadcast path does not mask the parse result.
+    expect(
+      dispatchTargets("mail john@bmad-pm.dev", undefined, ROSTER, {
+        authoredByAgent: true,
+      }),
+    ).toEqual([]);
   });
 
   it("a direct post dispatches ONLY the target, ignoring body mentions", () => {
@@ -82,7 +102,7 @@ describe("dispatchTargets", () => {
     expect(dispatchTargets("hi", "direct:napping", ROSTER)).toEqual([]);
   });
 
-  it("caps party fan-out at 5", () => {
+  it("caps an explicit @-mention party fan-out at 5", () => {
     const big: DispatchRosterAgent[] = Array.from({ length: 8 }, (_, i) => ({
       id: `a${i}`,
       name: `a${i}`,
@@ -90,6 +110,32 @@ describe("dispatchTargets", () => {
     }));
     const body = big.map((a) => `@${a.name}`).join(" ");
     expect(dispatchTargets(body, undefined, big)).toHaveLength(5);
+  });
+
+  it("caps a human bare-party broadcast at 25", () => {
+    const big: DispatchRosterAgent[] = Array.from({ length: 30 }, (_, i) => ({
+      id: `a${i}`,
+      name: `a${i}`,
+      status: "idle",
+    }));
+    // No @-mention ⇒ broadcast; the whole 30-agent roster is dispatchable but
+    // the broadcast cap bounds the affordance at 25.
+    expect(dispatchTargets("what does everyone think?", undefined, big)).toHaveLength(
+      25,
+    );
+  });
+
+  it("broadcast skips paused/blocked agents (opt-out holds on the broadcast path)", () => {
+    expect(dispatchTargets("room, thoughts?", undefined, ROSTER)).toEqual([
+      "john",
+      "bmad-pm",
+    ]);
+  });
+
+  it("an explicit @-mention still targets only mentioned agents, not a broadcast", () => {
+    // A party post that DOES @-mention stays on the mention path (cap 5), never
+    // falling through to the whole-room broadcast.
+    expect(dispatchTargets("@john only you", undefined, ROSTER)).toEqual(["john"]);
   });
 });
 
