@@ -152,6 +152,10 @@ func (h *Handler) Register(r *mux.Router) {
 	// GET is the FE-4 read side — the thread's decision cards + lifecycle phase/answer after a reload.
 	r.HandleFunc("/threads/{threadId}/decision-requests", h.postDecisionRequest).Methods(http.MethodPost)
 	r.HandleFunc("/threads/{threadId}/decision-requests", h.listDecisionRequests).Methods(http.MethodGet)
+
+	// Party mode (ISI-5585, WS-B, ADR-0027): the opt-in session start + the active-session read.
+	r.HandleFunc("/threads/{threadId}/party-sessions", h.startPartySession).Methods(http.MethodPost)
+	r.HandleFunc("/threads/{threadId}/party-sessions/active", h.getActivePartySession).Methods(http.MethodGet)
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
@@ -228,15 +232,17 @@ func writeStoreErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrMessageNotFound),
 		errors.Is(err, ErrProposalNotFound), errors.Is(err, ErrDecisionRequestNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrNoActivePartySession):
+		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrEmptyBody), errors.Is(err, ErrEmptyTitle),
 		errors.Is(err, ErrInvalidAudience), errors.Is(err, ErrInvalidKind),
 		errors.Is(err, ErrInvalidProposalPayload), errors.Is(err, ErrInvalidDecisionPayload),
-		errors.Is(err, ErrRejectReasonRequired):
+		errors.Is(err, ErrRejectReasonRequired), errors.Is(err, ErrInvalidPartyBudget):
 		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrNotAuthor):
+	case errors.Is(err, ErrNotAuthor), errors.Is(err, ErrPartyStartForbidden):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, ErrAlreadyRetracted), errors.Is(err, ErrProposalNotProposed),
-		errors.Is(err, ErrDecisionRequestNotOpen):
+		errors.Is(err, ErrDecisionRequestNotOpen), errors.Is(err, ErrPartySessionNotActive):
 		writeError(w, http.StatusConflict, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -595,6 +601,93 @@ func (h *Handler) listDecisionRequests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, cards)
+}
+
+// ============================================================================
+// Party mode (ISI-5585, WS-B, ADR-0027) — the opt-in start + active-session read
+// ============================================================================
+
+// startPartySessionReq — no author_* fields (AC3, server-stamped provenance). Budget is an OPTIONAL
+// override; omitted ⇒ the config default (DefaultPartyBudget). A party SESSION is the explicit opt-in
+// (ADR-0027 §5.2): this endpoint is the distinct "discuss this with the team" act, NOT a bare-party
+// broadcast — a plain kind='text' post keeps its ISI-5265 one-shot behaviour.
+type startPartySessionReq struct {
+	Body   string       `json:"body"`
+	Budget *PartyBudget `json:"budget,omitempty"`
+}
+
+// startPartySession opens a bounded party-mode debate on the thread (ADR-0027 §5.2). Human-only
+// (ErrPartyStartForbidden ⇒ 403): an agent cannot start a paid debate. Idempotent on the active-session
+// invariant — a second start while a debate is live returns the EXISTING session (200), never a second
+// paid debate; a fresh start returns 201 with the opened session.
+func (h *Handler) startPartySession(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	auth, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	var req startPartySessionReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	sess, msg, err := h.store.StartPartySession(r.Context(), projectID, teamID, threadID, auth, req.Body, req.Budget)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	// A fresh open returns the start message; an idempotent re-open returns the existing session with a
+	// nil message (no new row committed). Echo the start message onto the live SSE bus so an open Room
+	// renders it without a reload (best-effort — the row is already durable).
+	if msg != nil && h.roomStream != nil {
+		h.roomStream.PublishMessageCreated(projectID, msg)
+	}
+	if msg == nil {
+		writeJSON(w, http.StatusOK, sess) // idempotent: debate already live
+		return
+	}
+	writeJSON(w, http.StatusCreated, sess)
+}
+
+// getActivePartySession answers GET /threads/{threadId}/party-sessions/active with the thread's live
+// session, or 404 (ErrNoActivePartySession) when no debate is active. The console round UX (WS-E) and
+// the facilitator advancer (WS-D) both read this.
+func (h *Handler) getActivePartySession(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	// Tenancy probe first (404-not-403 on a foreign thread), mirroring the store's scope discipline,
+	// before exposing whether a session exists.
+	if err := h.store.assertThreadInScope(r.Context(), projectID, teamID, threadID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	sess, err := h.store.ActivePartySession(r.Context(), threadID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
 }
 
 // ============================================================================
