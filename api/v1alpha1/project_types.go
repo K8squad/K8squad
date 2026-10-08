@@ -147,6 +147,18 @@ type RepoAutomationSpec struct {
 	// exactly (issue→ticket is MANUAL only via the console Issues board bridge).
 	// +optional
 	IssueTriage *IssueTriageSpec `json:"issueTriage,omitempty"`
+
+	// CiFailure configures human-enabled, system-executed CI-failure triage for
+	// this Project (ISI-5595 WS-C, board-approved D3/D4). A human enabling this
+	// policy is the authorizing act: when a mirrored CI check run finishes with a
+	// configured conclusion (default: failure) on an in-scope ref, the operator
+	// mints a triage ticket and dispatches it to the configured agent under a
+	// SYSTEM identity (system:ci-failure) — NOT agent-initiated, so it introduces
+	// no agent-authored work item and does not cross the ISI-4711 custody wall. It
+	// reuses the EXISTING check-run mirror (Conclusion); no workflow_run mirroring
+	// is added (D3). Nil (the default) means CI-failure triage is off.
+	// +optional
+	CiFailure *CiFailureSpec `json:"ciFailure,omitempty"`
 }
 
 // IssueTriageSpec is the GitHub-issue auto-triage policy (ISI-5595 WS-B). It is
@@ -203,6 +215,58 @@ type IssueTriageSpec struct {
 	EnabledAt *metav1.Time `json:"enabledAt,omitempty"`
 }
 
+// CiFailureSpec is the Actions CI-failure triage policy (ISI-5595 WS-C, plan r1,
+// board-approved D3/D4). D3: the trigger consumes the EXISTING check-run mirror
+// (RecordTypeCheckRun, Conclusion) — no workflow_run mirroring is added. D4: the
+// trigger is forward-only from EnabledAt, so enabling it never retroactively
+// triages the backlog of failures already in the mirror.
+type CiFailureSpec struct {
+	// Enabled turns the standing policy on. When false (or the whole struct is
+	// nil) no CI-failure triage is ever triggered. Enabling is the human
+	// authorizing act for the system-dispatch path.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// AgentID is the team agent the triage ticket is dispatched to. It MUST be an
+	// agent in the owning Team's composition. Required whenever Enabled is true.
+	// +optional
+	AgentID string `json:"agentId,omitempty"`
+
+	// BranchFilter narrows which refs a failing check run triages, matched against
+	// the check suite's head branch (glob-free exact match, lower-cased). Empty
+	// (the default) accepts every mirrored check-run ref, which is already scoped
+	// by the mirror to the default branch plus open-PR heads — i.e. the current
+	// check-run scope (D3). A failing run whose head branch is unknown is accepted
+	// only when BranchFilter is empty; a non-empty filter requires a known,
+	// matching branch (fail-closed narrowing).
+	// +optional
+	BranchFilter []string `json:"branchFilter,omitempty"`
+
+	// Conclusions selects which check-run conclusions qualify as a failure.
+	// Empty (the default) means ["failure"]; "timed_out" and "cancelled" may be
+	// added to also triage those terminal non-success conclusions (D3).
+	// +optional
+	// +kubebuilder:validation:items:Enum=failure;timed_out;cancelled
+	Conclusions []string `json:"conclusions,omitempty"`
+
+	// EnabledBy is the SERVER-STAMPED principal that last set Enabled=true — the
+	// authorizing-act provenance threaded into the system dispatch as the
+	// Principal. It is written by the apiserver from the authenticated caller on
+	// any write that sets Enabled=true, and CLEARED when Enabled is set false. It
+	// is NEVER trusted from the request body. Required whenever Enabled is true.
+	// +optional
+	EnabledBy string `json:"enabledBy,omitempty"`
+
+	// EnabledAt is the SERVER-STAMPED time Enabled was last set true — the
+	// forward-only watermark (D4): only check runs that COMPLETED at/after this
+	// instant are triaged, so enabling never retroactively triages historical
+	// failures already sitting in the mirror. Written alongside EnabledBy and
+	// CLEARED when Enabled is set false; NEVER trusted from the request body.
+	// Required whenever Enabled is true.
+	// +optional
+	EnabledAt *metav1.Time `json:"enabledAt,omitempty"`
+}
+
 // EffectiveOnlyUnassigned resolves the OnlyUnassigned toggle, applying the
 // default (true) when unset (nil). Callers get the default from one place rather
 // than re-deciding nil-handling.
@@ -211,6 +275,28 @@ func (s *IssueTriageSpec) EffectiveOnlyUnassigned() bool {
 		return true
 	}
 	return *s.OnlyUnassigned
+}
+
+// CI-failure conclusion vocabulary (ISI-5595 WS-C, D3). Kept as Go constants so
+// the operator trigger defaults and matches against the SAME values the CRD enum
+// markers pin.
+const (
+	// CiFailureConclusionFailure is the default qualifying conclusion.
+	CiFailureConclusionFailure = "failure"
+	// CiFailureConclusionTimedOut optionally also triages timed-out check runs.
+	CiFailureConclusionTimedOut = "timed_out"
+	// CiFailureConclusionCancelled optionally also triages cancelled check runs.
+	CiFailureConclusionCancelled = "cancelled"
+)
+
+// EffectiveConclusions resolves the qualifying check-run conclusions, applying
+// the ["failure"] default when unset (D3: configured per Project, never hardcoded
+// in the trigger).
+func (s *CiFailureSpec) EffectiveConclusions() []string {
+	if s == nil || len(s.Conclusions) == 0 {
+		return []string{CiFailureConclusionFailure}
+	}
+	return s.Conclusions
 }
 
 // ReviewAutomationSpec is the PR-review-automation policy (ISI-4750 D6, E0 §2).

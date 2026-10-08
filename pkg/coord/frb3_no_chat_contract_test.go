@@ -383,9 +383,12 @@ var allowedSurface = map[string]string{
 	// identity, per D1 / ISI-4711), reusing the same §6.1/§6.5 insert+audit shape
 	// as CreateWorkItem. NOT an agent-to-agent channel — a system-executed standing
 	// policy materialising one review work item; the dedup label is the only mark.
-	"EnsureReviewWorkItemInput":               "ISI-4750 E4 idempotent review-item create input (project/team/title/body + required SYSTEM principal + dedup label)",
-	"EnsureReviewWorkItemResult":              "ISI-4750 E4 create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
-	"WorkItemWriteStore.EnsureReviewWorkItem": "ISI-4750 E4/§6.1/§6.5 create-if-absent PR-review item under SYSTEM principal, atomic on (project,dedupLabel) via pg_advisory_xact_lock — closes the level-triggered reconcile double-create race; no-fence, Team-scoped",
+	"EnsureReviewWorkItemInput":                  "ISI-4750 E4 idempotent review-item create input (project/team/title/body + required SYSTEM principal + dedup label)",
+	"EnsureReviewWorkItemResult":                 "ISI-4750 E4 create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
+	"WorkItemWriteStore.EnsureReviewWorkItem":    "ISI-4750 E4/§6.1/§6.5 create-if-absent PR-review item under SYSTEM principal, atomic on (project,dedupLabel) via pg_advisory_xact_lock — closes the level-triggered reconcile double-create race; no-fence, Team-scoped",
+	"EnsureCIFailureWorkItemInput":               "ISI-5595 WS-C idempotent CI-failure triage-item create input (project/team/title/body + required SYSTEM principal + dedup label); sibling of EnsureReviewWorkItemInput",
+	"EnsureCIFailureWorkItemResult":              "ISI-5595 WS-C create-if-absent outcome (item record + Created inserted-vs-found discriminator; State enables self-heal of a stuck-backlog orphan)",
+	"WorkItemWriteStore.EnsureCIFailureWorkItem": "ISI-5595 WS-C/§6.1/§6.5 create-if-absent CI-failure triage item under SYSTEM principal, atomic on (project,dedupLabel) via pg_advisory_xact_lock — closes the level-triggered reconcile double-create race; no-fence, Team-scoped; audit source:ci-failure",
 
 	// ADR-0022 board dispatch (ISI-4411): the human "assign agent → start Run"
 	// custody op. Records the human's pre-run agent choice as durable INTENT on
