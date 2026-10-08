@@ -45,6 +45,8 @@ import (
 	"github.com/K8squad/K8squad/pkg/sandbox"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -124,6 +126,46 @@ func (l *LiveRuns) HasLiveSandbox(ctx context.Context, runID string) (bool, erro
 	return false, nil
 }
 
+// endpointWaitChecker answers "is this Run currently queued behind a busy BYO
+// model endpoint slot?" for the ISI-5591 reaper exemption. A run waiting on a
+// single-slot BYO endpoint (the discussion/party-mode case: N agents serialized
+// through one deepseek-endpoint slot) intentionally has NO sandbox pod — the
+// driver queues it OUTSIDE the endpoint via waitEndpointSlot and dispatches
+// nothing until the slot frees, because booting before it holds a slot would
+// kill it on the shim's first-token watchdog. So "pod-less past the stall grace"
+// is the EXPECTED steady state of a legitimate endpoint-waiter, and the ISI-5438
+// pod-liveness zombie gate would otherwise reap it the moment it waits >grace.
+// Nil disables the exemption (pre-ISI-5591 behavior).
+type endpointWaitChecker interface {
+	IsWaitingForEndpointSlot(ctx context.Context, runID string) (bool, error)
+}
+
+// IsWaitingForEndpointSlot reports whether the Run with the given UID currently
+// carries a True WaitingForEndpointSlot condition (ISI-5591) — the legible-wait
+// marker the driver stamps (ConditionEndpointSlotWait / Reason=EndpointBusy)
+// while the run is queued on a full BYO endpoint. Such a run is making forward
+// progress by holding its FIFO position, not wedged: it must NOT be reaped as a
+// pod-less zombie, force-failed, and re-minted (r→r+1) every ~10 min. A list
+// error is returned so the reaper fails SAFE toward the waiter (never reap on a
+// maybe). Fails CLOSED (false,nil) on an empty runID or a Run whose UID is gone.
+func (l *LiveRuns) IsWaitingForEndpointSlot(ctx context.Context, runID string) (bool, error) {
+	if l == nil || l.Reader == nil || runID == "" {
+		return false, nil
+	}
+	runs := &ksquadv1alpha1.RunList{}
+	if err := l.Reader.List(ctx, runs); err != nil {
+		return false, fmt.Errorf("rundrive.heartbeat: list runs: %w", err)
+	}
+	for i := range runs.Items {
+		if string(runs.Items[i].UID) != runID {
+			continue
+		}
+		c := meta.FindStatusCondition(runs.Items[i].Status.Conditions, ConditionEndpointSlotWait)
+		return c != nil && c.Status == metav1.ConditionTrue, nil
+	}
+	return false, nil
+}
+
 // TerminalOrGone reports whether the Run owning a sandbox pod has reached a
 // terminal phase (Succeeded/Failed/Cancelled) or no longer exists (ISI-5438).
 // A sandbox whose Run is terminal is LEAKED — the a2a-settlement reaper
@@ -191,6 +233,11 @@ type HeartbeatSweeper struct {
 	// Live verifies the backing Run still has a live sandbox pod before renewal
 	// (ISI-5438). Nil keeps the pre-ISI-5438 behavior (renew any live Run CR).
 	Live runLivenessChecker
+	// EndpointWait exempts a pod-less in-flight claim from the ISI-5438 zombie
+	// reap when its Run is legitimately queued behind a busy single-slot BYO
+	// endpoint (ISI-5591 / WaitingForEndpointSlot). Nil disables the exemption
+	// (pre-ISI-5591 behavior; tests opt in explicitly).
+	EndpointWait endpointWaitChecker
 	// ZombieStallGrace overrides DefaultZombieStallGrace when > 0 (tests shrink
 	// it). A pod-less in-flight claim older than this is released as a zombie.
 	ZombieStallGrace time.Duration
@@ -295,7 +342,9 @@ func (s *HeartbeatSweeper) sweep(ctx context.Context) {
 					// through to renew and retry next level-triggered tick.
 					s.logf("rundrive.heartbeat: sandbox liveness for %s run %s: %v — renewing, zombie check deferred",
 						hc.workItemID, hc.holderRun, err)
-				} else if !live {
+				} else if !live && !s.endpointSlotWaiter(ctx, hc) {
+					// Pod-less past the grace AND not a legitimate endpoint-slot
+					// waiter (ISI-5591): a genuine zombie. Release it as failed.
 					if err := s.releaseZombie(ctx, hc); err != nil {
 						s.logf("rundrive.heartbeat: zombie-release %s: %v", hc.workItemID, err)
 					} else {
@@ -532,6 +581,37 @@ func (s *HeartbeatSweeper) releaseDead(ctx context.Context, hc heldClaim, reason
 // wait is deliberate, so the ISI-5438 zombie gate must never reap it.
 func isPausedStep(s reconcile.Step) bool {
 	return reconcile.PhaseOf(s) == reconcile.PhasePaused
+}
+
+// endpointSlotWaiter reports whether a pod-less in-flight claim must be EXEMPTED
+// from the ISI-5438 zombie reap because its Run is legitimately queued behind a
+// busy single-slot BYO endpoint (ISI-5591). The discussion/party-mode case fans
+// N agents onto one endpoint whose slot concurrency is 1; agents routinely wait
+// >10 min for the slot, and a waiter correctly boots NO sandbox pod until it
+// holds one — so it trips the exact "pod-less past the stall grace" predicate.
+// Reaping it (DEFECT A) force-fails a transient queued state into a TERMINAL
+// Ready=Failed, which the intake driver then re-mints as a fresh generation
+// (DEFECT B), resetting the queue position and churning r→r+1 every ~10 min.
+// Exempting the waiter keeps its lease renewed and its FIFO position intact
+// until the slot frees. Returns true (exempt) when the wait is confirmed AND,
+// fail-safe, when the check errors — a possible waiter is never reaped on a
+// maybe. Nil checker ⇒ false (pre-ISI-5591 behavior preserved for legacy wiring
+// and tests).
+func (s *HeartbeatSweeper) endpointSlotWaiter(ctx context.Context, hc heldClaim) bool {
+	if s.EndpointWait == nil || hc.holderRun == "" {
+		return false
+	}
+	waiting, err := s.EndpointWait.IsWaitingForEndpointSlot(ctx, hc.holderRun)
+	if err != nil {
+		s.logf("rundrive.heartbeat: endpoint-wait check for %s run %s: %v — exempting from zombie reap (fail-safe), renewing",
+			hc.workItemID, hc.holderRun, err)
+		return true
+	}
+	if waiting {
+		s.logf("rundrive.heartbeat: run %s (item %s) queued on busy BYO endpoint slot, held %s — exempt from zombie reap, renewing lease to hold queue position",
+			hc.holderRun, hc.workItemID, s.clock().Sub(hc.acquiredAt).Round(time.Second))
+	}
+	return waiting
 }
 
 // clock is the sweep's time source (Now override, else time.Now).
