@@ -267,3 +267,59 @@ export interface DecisionAnswerResponse {
   decisionId: string;
   postBack?: Message;
 }
+
+// ---------------------------------------------------------------------------
+// Party sessions (ISI-5585 WS-B, ruling ADR-0027). A party session is a
+// facilitated, bounded, multi-round team debate opened ONLY by a human on a
+// server-stamped kind='party_start' message. Field names match the Go JSON tags
+// on `internal/discussion/party.go` (PartySession / PartyBudget). The live
+// session (round counter + budget tally + phase) is fetched from
+// `GET /api/projects/{projectId}/discussion/threads/{threadId}/party-sessions/active`
+// — WS-B puts NO session id or round number on the per-message wire, so the
+// console reads session state from that endpoint, not off the transcript.
+// ---------------------------------------------------------------------------
+
+/**
+ * The server-stamped opener kind that mints a party session (ISI-5585). Only a
+ * `party_start` message opens a session; a bare `kind='text', audience='party'`
+ * post keeps its ISI-5265 one-shot broadcast behaviour (no session, no rounds).
+ * There is no new *audience* — party sessions still ride `audience: "party"`.
+ */
+export const KIND_PARTY_START = "party_start";
+
+/** Hard cost budgets for a party session (`PartyBudget`); nested under `budget`. */
+export interface PartyBudget {
+  /** Hard cap on facilitator rounds (default 3). */
+  maxRounds: number;
+  /** Per-round voice fan-out cap, clamped 2–4 (default 3). */
+  maxVoicesPerRound: number;
+  /** Absolute paid-run ceiling for the whole session (default maxRounds*maxVoices+maxRounds). */
+  paidRunBudget: number;
+}
+
+/**
+ * Party-session lifecycle (`phase`, named off the ADR-0019 fence token list).
+ * Only `active` is non-terminal; the three terminal values stamp `closedAt`.
+ */
+export type PartyPhase = "active" | "closed" | "converged" | "budget_exhausted";
+
+/** A party-mode facilitation session row (`PartySession`). */
+export interface PartySession {
+  id: string;
+  threadId: string;
+  /** Owning project slug (`namespace/name`). */
+  projectId: string;
+  teamId: string;
+  /** Server-stamped opener principal. */
+  startedBy: string;
+  /** The `party_start` message that opened the session. */
+  topicMessageId: string;
+  /** Current round; starts 0, advanced on run-settle. */
+  round: number;
+  budget: PartyBudget;
+  /** Running paid-run tally (facilitator + voices). */
+  paidRunsUsed: number;
+  phase: PartyPhase;
+  openedAt: string;
+  closedAt?: string | null;
+}
