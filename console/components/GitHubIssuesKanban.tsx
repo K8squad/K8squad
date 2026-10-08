@@ -33,6 +33,7 @@ import { ageLabel } from "@/lib/github-status";
 import {
   assignAndDispatch,
   listSquadAgents,
+  agentOptionLabel,
   type AgentOption,
   type GithubAssignErrorCode,
   type GithubAssignResult,
@@ -645,7 +646,7 @@ function AssignAndDispatch({
             <option value="">Select an agent…</option>
             {roster.agents.map((a) => (
               <option key={a.id} value={a.name}>
-                {a.name}
+                {agentOptionLabel(a)}
               </option>
             ))}
           </>
