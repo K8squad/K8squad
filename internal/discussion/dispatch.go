@@ -78,6 +78,13 @@ type MentionDispatch struct {
 	// RequestBody is the verbatim triggering comment body — the "the request is: «…»" half of the
 	// coordinator directive. Set only when Orchestrate is true.
 	RequestBody string
+
+	// Party, when non-nil, carries the cross-talk context + persona prompt for a party-mode voice
+	// dispatch (ISI-5586 WS-C, ADR-0027 §3.2). The facilitator (WS-D) assembles it per voice per round
+	// — persona blurb + "What Others Said This Round" + rolling <400-word summary + disagree/pass
+	// guidelines — and the run-minting half renders it into the dispatched work-item body. It is nil for
+	// every ordinary single-agent reply and every orchestration dispatch, so those bodies are untouched.
+	Party *PartyContext
 }
 
 // MentionDispatcher is the seam the §13 apiserver supplies: it turns a resolved MentionDispatch into a

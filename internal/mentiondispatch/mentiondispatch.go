@@ -286,12 +286,34 @@ func orchestrationRunBody(d discussion.MentionDispatch) string {
 	return b.String()
 }
 
+// partyRunBody is a party-mode VOICE dispatch body (ISI-5586 WS-C, ADR-0027 §3.2). It front-loads the
+// cross-talk context the facilitator assembled — persona self-framing, the rolling <400-word summary,
+// "What Others Said This Round", and the disagree/pass guidelines (discussion.PartyContext.RenderVoiceContext)
+// — then appends the same read-thread / reply-in-room / hop footer every thread-run carries. The point of
+// WS-C: the voice is PUSHED the right context instead of having to pull the whole transcript, and it is
+// framed as a named persona with a mandate to actually disagree rather than a lone replier.
+func partyRunBody(d discussion.MentionDispatch) string {
+	var b strings.Builder
+	b.WriteString(d.Party.RenderVoiceContext())
+	fmt.Fprintf(&b, "\n## Your deliverable\n")
+	fmt.Fprintf(&b, "1. Read the thread (thread id %s) — the triggering message is %s — with the\n", d.ThreadID, d.MessageID)
+	fmt.Fprintf(&b, "   discussion_search tool (or GET the thread) if you need more than the context above.\n")
+	fmt.Fprintf(&b, "2. Post ONE reply IN THE ROOM in your own voice by POSTing to the thread's messages endpoint\n")
+	fmt.Fprintf(&b, "   (POST /api/projects/%s/discussion/threads/%s/messages). Do NOT open a board ticket.\n", d.ProjectID, d.ThreadID)
+	fmt.Fprintf(&b, "\nThis is a conversation, not custody: your only deliverable is the reply message.\n")
+	fmt.Fprintf(&b, "\n[dispatch] party round=%d hopDepth=%d principal=%s\n", d.Party.Round, d.HopDepth, d.TriggeredByPrincipal)
+	return b.String()
+}
+
 // mentionRunBody is the run's instruction + thread context. The Run receives only WorkItemRef; the
 // driver fetches this body by id at dispatch time (rundrive/dispatch.go), so the agent's context is the
 // instruction to read the thread and reply in the room, plus the loop-guard hop it must run at.
 func mentionRunBody(d discussion.MentionDispatch) string {
 	if d.Orchestrate {
 		return orchestrationRunBody(d)
+	}
+	if d.Party != nil {
+		return partyRunBody(d)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You were @-mentioned in the discussion room for project %q.\n\n", d.ProjectID)
