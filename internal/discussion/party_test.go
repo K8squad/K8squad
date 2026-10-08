@@ -78,23 +78,23 @@ func TestPartySession_CanStartRound(t *testing.T) {
 	budget := PartyBudget{MaxRounds: 3, MaxVoicesPerRound: 3, PaidRunBudget: 12}
 	cases := []struct {
 		name       string
-		status     string
+		phase      string
 		round      int
 		used       int
 		wantOK     bool
 		wantReason string
 	}{
-		{name: "fresh active session can start round 1", status: PartyStatusActive, round: 0, used: 0, wantOK: true},
-		{name: "mid-session with headroom can advance", status: PartyStatusActive, round: 1, used: 4, wantOK: true},
-		{name: "round cap reached closes", status: PartyStatusActive, round: 3, used: 6, wantOK: false, wantReason: PartyStatusClosed},
-		{name: "paid-run ceiling reached exhausts (precedes round check)", status: PartyStatusActive, round: 1, used: 12, wantOK: false, wantReason: PartyStatusBudgetExhausted},
-		{name: "no headroom for even the facilitator mint", status: PartyStatusActive, round: 0, used: 12, wantOK: false, wantReason: PartyStatusBudgetExhausted},
-		{name: "already closed never starts", status: PartyStatusClosed, round: 1, used: 2, wantOK: false, wantReason: PartyStatusClosed},
-		{name: "already budget_exhausted never starts", status: PartyStatusBudgetExhausted, round: 1, used: 12, wantOK: false, wantReason: PartyStatusBudgetExhausted},
+		{name: "fresh active session can start round 1", phase: PartyPhaseActive, round: 0, used: 0, wantOK: true},
+		{name: "mid-session with headroom can advance", phase: PartyPhaseActive, round: 1, used: 4, wantOK: true},
+		{name: "round cap reached closes", phase: PartyPhaseActive, round: 3, used: 6, wantOK: false, wantReason: PartyPhaseClosed},
+		{name: "paid-run ceiling reached exhausts (precedes round check)", phase: PartyPhaseActive, round: 1, used: 12, wantOK: false, wantReason: PartyPhaseBudgetExhausted},
+		{name: "no headroom for even the facilitator mint", phase: PartyPhaseActive, round: 0, used: 12, wantOK: false, wantReason: PartyPhaseBudgetExhausted},
+		{name: "already closed never starts", phase: PartyPhaseClosed, round: 1, used: 2, wantOK: false, wantReason: PartyPhaseClosed},
+		{name: "already budget_exhausted never starts", phase: PartyPhaseBudgetExhausted, round: 1, used: 12, wantOK: false, wantReason: PartyPhaseBudgetExhausted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := PartySession{Status: tc.status, Round: tc.round, PaidRunsUsed: tc.used, Budget: budget}
+			s := PartySession{Phase: tc.phase, Round: tc.round, PaidRunsUsed: tc.used, Budget: budget}
 			ok, reason := s.CanStartRound()
 			if ok != tc.wantOK {
 				t.Fatalf("CanStartRound ok = %v, want %v (reason %q)", ok, tc.wantOK, reason)
@@ -128,7 +128,7 @@ func TestPartySession_VoicesAllowedThisRound(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := PartySession{Status: PartyStatusActive, PaidRunsUsed: tc.used, Budget: budget}
+			s := PartySession{Phase: PartyPhaseActive, PaidRunsUsed: tc.used, Budget: budget}
 			allowed, capped := s.VoicesAllowedThisRound(tc.requested)
 			if allowed != tc.wantAllowed || capped != tc.wantCapped {
 				t.Fatalf("VoicesAllowedThisRound(%d) with used=%d = (allowed %d, capped %d), want (%d, %d)",

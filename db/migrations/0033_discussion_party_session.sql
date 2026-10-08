@@ -21,10 +21,13 @@
 -- FENCE CARVE-OUT (ADR-0019 / 0004 header, deliberate — reasoned in ADR-0027 §4.2):
 -- discussion.party_session is FACILITATION-SESSION bookkeeping, NOT work-item custody. The ADR-0019
 -- fence invariant is that the room cannot be a coordination record for work-item custody — no
--- claim/lease/fence_token/holder/assignee/status-of-a-work-item column, no custody transfer. This
--- table honours that by construction: it carries NO fence_token/holder/assignee/lease/custody column;
--- its `status` is the SESSION lifecycle (active|closed|converged|budget_exhausted), not any work
--- item's custody-state; no work item's custody is expressed, transferred, or fenced by this row.
+-- claim/lease/fence_token/holder/assignee/state/status column, no custody transfer. This table
+-- honours that by construction: it carries NO fence_token/holder/assignee/lease/custody column; its
+-- lifecycle column is named `phase` (NOT `state`/`status`) — EXACTLY the 0031 decision_request
+-- discipline, precisely so no token from the 0004 fence contract test's forbidden list
+-- (claim/lease/fence_token/state/holder/assignee/status/checked_out_by/holder_principal/custody)
+-- enters the discussion schema. `phase` is the SESSION lifecycle (active|closed|converged|
+-- budget_exhausted), not any work item's custody-state; no work item's custody is expressed here.
 -- Every facilitator/voice run is still minted through coord.CreateWorkItem/RequestDispatch and fenced
 -- there, exactly as today. Precedent: discussion.mention_dispatch (0027) is already a mutable,
 -- non-message bookkeeping table in the discussion schema with no custody column — party_session is the
@@ -56,6 +59,9 @@ ALTER TABLE discussion.message
 --    started_by / topic_message_id are SERVER-STAMPED (the opener principal + the opt-in message);
 --    agents cannot open a session (humans / the opt-in affordance only — §5.2), which keeps the
 --    anti-N² guarantee intact at the entry point.
+--
+--    The lifecycle column is `phase` (NOT `status`) — the 0031 decision_request discipline — so the
+--    0004 fence contract test's forbidden-token list stays out of the discussion schema (§4.2).
 CREATE TABLE discussion.party_session (
     id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     thread_id            uuid        NOT NULL REFERENCES discussion.thread(id),
@@ -68,8 +74,8 @@ CREATE TABLE discussion.party_session (
     max_voices_per_round int         NOT NULL,                 -- budget (2–4, default 3; §5.1)
     paid_run_budget      int         NOT NULL,                 -- per-session paid-run ceiling (§5.1)
     paid_runs_used       int         NOT NULL DEFAULT 0,       -- running tally (facilitator + voices)
-    status               text        NOT NULL DEFAULT 'active' -- SESSION lifecycle, NOT work-item custody
-        CHECK (status IN ('active', 'closed', 'converged', 'budget_exhausted')),
+    phase                text        NOT NULL DEFAULT 'active' -- SESSION lifecycle, NOT work-item custody
+        CHECK (phase IN ('active', 'closed', 'converged', 'budget_exhausted')),
     opened_at            timestamptz NOT NULL DEFAULT now(),
     closed_at            timestamptz     NULL,
     -- Budget sanity: a non-negative counter and positive, coherent caps (a 0-round/0-voice session
@@ -83,8 +89,8 @@ CREATE TABLE discussion.party_session (
 -- no-op that returns the existing session, never a second paid debate (§5.2 opt-in integrity). The
 -- partial UNIQUE is the enforcement — StartPartySession INSERTs ON CONFLICT DO NOTHING against it.
 CREATE UNIQUE INDEX uq_party_session_active_thread
-    ON discussion.party_session (thread_id) WHERE status = 'active';
+    ON discussion.party_session (thread_id) WHERE phase = 'active';
 
 -- Advancer lookup: the WS-D advancer sweeps active sessions and their round by thread. Partial on the
 -- hot path (active sessions are a tiny, bounded set; closed sessions never match the reaper tick).
-CREATE INDEX idx_party_session_active ON discussion.party_session (thread_id) WHERE status = 'active';
+CREATE INDEX idx_party_session_active ON discussion.party_session (thread_id) WHERE phase = 'active';

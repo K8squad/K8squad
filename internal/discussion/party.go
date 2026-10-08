@@ -21,7 +21,7 @@
 // is StartPartySession (same discipline as PostDecisionRequest).
 //
 // Fence (ADR-0019, reasoned in ADR-0027 §4.2): party_session is facilitation-session bookkeeping, not
-// work-item custody. Its `status` is the SESSION lifecycle, never a custody-state; no custody is
+// work-item custody. Its `phase` is the SESSION lifecycle, never a custody-state; no custody is
 // expressed or transferred here. Every facilitator/voice run is still minted + fenced in coord.
 package discussion
 
@@ -36,7 +36,7 @@ import (
 )
 
 // ============================================================================
-// Kind, statuses, default budgets
+// Kind, phasees, default budgets
 // ============================================================================
 
 const (
@@ -45,10 +45,10 @@ const (
 
 	// Party-session lifecycle (the session state machine). These are SESSION states, never a work
 	// item's custody-state (ADR-0027 §4.2 fence carve-out).
-	PartyStatusActive          = "active"           // the debate is live; the advancer may mint rounds
-	PartyStatusClosed          = "closed"           // ended normally (max rounds reached / takeaways done)
-	PartyStatusConverged       = "converged"        // the facilitator stopped early (no new disagreement)
-	PartyStatusBudgetExhausted = "budget_exhausted" // the hard paid-run ceiling was reached (§5.1)
+	PartyPhaseActive          = "active"           // the debate is live; the advancer may mint rounds
+	PartyPhaseClosed          = "closed"           // ended normally (max rounds reached / takeaways done)
+	PartyPhaseConverged       = "converged"        // the facilitator stopped early (no new disagreement)
+	PartyPhaseBudgetExhausted = "budget_exhausted" // the hard paid-run ceiling was reached (§5.1)
 )
 
 const (
@@ -155,13 +155,13 @@ type PartySession struct {
 	Round          int         `json:"round"`
 	Budget         PartyBudget `json:"budget"`
 	PaidRunsUsed   int         `json:"paidRunsUsed"`
-	Status         string      `json:"status"`
+	Phase          string      `json:"phase"`
 	OpenedAt       time.Time   `json:"openedAt"`
 	ClosedAt       *time.Time  `json:"closedAt,omitempty"`
 }
 
 // IsActive reports whether the session is live (the advancer may mint).
-func (s PartySession) IsActive() bool { return s.Status == PartyStatusActive }
+func (s PartySession) IsActive() bool { return s.Phase == PartyPhaseActive }
 
 // RemainingPaidRuns is the paid-run headroom left under the hard ceiling (never negative).
 func (s PartySession) RemainingPaidRuns() int {
@@ -178,13 +178,13 @@ func (s PartySession) RemainingPaidRuns() int {
 // advancer never mints past the ceiling and the stop is logged non-silently.
 func (s PartySession) CanStartRound() (ok bool, reason string) {
 	if !s.IsActive() {
-		return false, s.Status
+		return false, s.Phase
 	}
 	if s.RemainingPaidRuns() < 1 {
-		return false, PartyStatusBudgetExhausted
+		return false, PartyPhaseBudgetExhausted
 	}
 	if s.Round >= s.Budget.MaxRounds {
-		return false, PartyStatusClosed
+		return false, PartyPhaseClosed
 	}
 	return true, ""
 }
@@ -237,7 +237,7 @@ func PartyStartAllowed(auth AuthorContext) error {
 const partySessionSelect = `
 	SELECT id, thread_id, project_id, team_id, started_by, topic_message_id,
 	       round, max_rounds, max_voices_per_round, paid_run_budget, paid_runs_used,
-	       status, opened_at, closed_at
+	       phase, opened_at, closed_at
 	FROM discussion.party_session`
 
 // scanPartySession hydrates one PartySession from a partySessionSelect row.
@@ -247,7 +247,7 @@ func scanPartySession(sc interface{ Scan(...any) error }) (*PartySession, error)
 	if err := sc.Scan(
 		&s.ID, &s.ThreadID, &s.ProjectID, &s.TeamID, &s.StartedBy, &s.TopicMessageID,
 		&s.Round, &s.Budget.MaxRounds, &s.Budget.MaxVoicesPerRound, &s.Budget.PaidRunBudget,
-		&s.PaidRunsUsed, &s.Status, &s.OpenedAt, &closedAt,
+		&s.PaidRunsUsed, &s.Phase, &s.OpenedAt, &closedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -315,14 +315,14 @@ func (s *Store) StartPartySession(ctx context.Context, projectID string, teamID,
 
 	var sess *PartySession
 	// ON CONFLICT on a PARTIAL unique index is inferred by the index predicate (thread_id WHERE
-	// status='active'), which Postgres matches by the index-inference clause below — not a named
+	// phase='active'), which Postgres matches by the index-inference clause below — not a named
 	// constraint. A live debate on the thread loses this conflict and inserts nothing (n=0).
 	tag, err := tx.ExecContext(ctx, `
 		INSERT INTO discussion.party_session
 		    (thread_id, project_id, team_id, started_by, topic_message_id,
 		     max_rounds, max_voices_per_round, paid_run_budget)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (thread_id) WHERE status = 'active' DO NOTHING`,
+		ON CONFLICT (thread_id) WHERE phase = 'active' DO NOTHING`,
 		threadID, projectID, teamID, auth.Principal, m.ID,
 		b.MaxRounds, b.MaxVoicesPerRound, b.PaidRunBudget)
 	if err != nil {
@@ -353,7 +353,7 @@ func (s *Store) StartPartySession(ctx context.Context, projectID string, teamID,
 // facilitator may dispatch; no active session → the ordinary dispatch rules apply verbatim.
 func (s *Store) ActivePartySession(ctx context.Context, threadID uuid.UUID) (*PartySession, error) {
 	sess, err := scanPartySession(s.db.QueryRowContext(ctx,
-		partySessionSelect+` WHERE thread_id = $1 AND status = 'active'`, threadID))
+		partySessionSelect+` WHERE thread_id = $1 AND phase = 'active'`, threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoActivePartySession
 	}
@@ -364,14 +364,14 @@ func (s *Store) ActivePartySession(ctx context.Context, threadID uuid.UUID) (*Pa
 // just opened (so the create and the read see the same snapshot).
 func (s *Store) activePartySessionTx(ctx context.Context, tx *sql.Tx, threadID uuid.UUID) (*PartySession, error) {
 	sess, err := scanPartySession(tx.QueryRowContext(ctx,
-		partySessionSelect+` WHERE thread_id = $1 AND status = 'active'`, threadID))
+		partySessionSelect+` WHERE thread_id = $1 AND phase = 'active'`, threadID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoActivePartySession
 	}
 	return sess, err
 }
 
-// GetPartySession reads a session by id (any status) — the WS-D advancer's re-read after a mutation.
+// GetPartySession reads a session by id (any phase) — the WS-D advancer's re-read after a mutation.
 func (s *Store) GetPartySession(ctx context.Context, id uuid.UUID) (*PartySession, error) {
 	sess, err := scanPartySession(s.db.QueryRowContext(ctx, partySessionSelect+` WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -381,14 +381,14 @@ func (s *Store) GetPartySession(ctx context.Context, id uuid.UUID) (*PartySessio
 }
 
 // AdvanceRound bumps the round counter by one on a still-active session (ADR-0027 §3.2: the advancer
-// increments the round as each round settles). It is a CAS on status='active' AND the observed round,
+// increments the round as each round settles). It is a CAS on phase='active' AND the observed round,
 // so two concurrent settle events cannot double-advance. Returns ErrPartySessionNotActive if the
 // session closed or another advance already moved the round.
 func (s *Store) AdvanceRound(ctx context.Context, id uuid.UUID, fromRound int) (*PartySession, error) {
 	tag, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.party_session
 		   SET round = round + 1
-		 WHERE id = $1 AND status = 'active' AND round = $2`, id, fromRound)
+		 WHERE id = $1 AND phase = 'active' AND round = $2`, id, fromRound)
 	if err != nil {
 		return nil, err
 	}
@@ -400,7 +400,7 @@ func (s *Store) AdvanceRound(ctx context.Context, id uuid.UUID, fromRound int) (
 
 // RecordPaidRuns adds n to the running paid-run tally and, if the hard ceiling is now reached, flips
 // the session to budget_exhausted in the SAME statement (ADR-0027 §5.1: the ceiling is a hard stop,
-// not advisory). n must be ≥ 0. It CAS-guards on status='active' so a closed session is never
+// not advisory). n must be ≥ 0. It CAS-guards on phase='active' so a closed session is never
 // re-counted. Returns the updated session; the caller logs the budget_exhausted transition non-silently.
 func (s *Store) RecordPaidRuns(ctx context.Context, id uuid.UUID, n int) (*PartySession, error) {
 	if n < 0 {
@@ -409,11 +409,11 @@ func (s *Store) RecordPaidRuns(ctx context.Context, id uuid.UUID, n int) (*Party
 	tag, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.party_session
 		   SET paid_runs_used = paid_runs_used + $2,
-		       status = CASE WHEN paid_runs_used + $2 >= paid_run_budget
-		                     THEN 'budget_exhausted' ELSE status END,
+		       phase = CASE WHEN paid_runs_used + $2 >= paid_run_budget
+		                     THEN 'budget_exhausted' ELSE phase END,
 		       closed_at = CASE WHEN paid_runs_used + $2 >= paid_run_budget
 		                        THEN now() ELSE closed_at END
-		 WHERE id = $1 AND status = 'active'`, id, n)
+		 WHERE id = $1 AND phase = 'active'`, id, n)
 	if err != nil {
 		return nil, err
 	}
@@ -423,19 +423,19 @@ func (s *Store) RecordPaidRuns(ctx context.Context, id uuid.UUID, n int) (*Party
 	return s.GetPartySession(ctx, id)
 }
 
-// CloseSession ends a live session with a terminal status (closed | converged | budget_exhausted) and
-// stamps closed_at (ADR-0027 §3.2 end-of-session / §5.1 budget stop). CAS on status='active' so a
-// double-close is a no-op (ErrPartySessionNotActive). An unknown status is rejected before the write.
-func (s *Store) CloseSession(ctx context.Context, id uuid.UUID, status string) (*PartySession, error) {
-	switch status {
-	case PartyStatusClosed, PartyStatusConverged, PartyStatusBudgetExhausted:
+// CloseSession ends a live session with a terminal phase (closed | converged | budget_exhausted) and
+// stamps closed_at (ADR-0027 §3.2 end-of-session / §5.1 budget stop). CAS on phase='active' so a
+// double-close is a no-op (ErrPartySessionNotActive). An unknown phase is rejected before the write.
+func (s *Store) CloseSession(ctx context.Context, id uuid.UUID, phase string) (*PartySession, error) {
+	switch phase {
+	case PartyPhaseClosed, PartyPhaseConverged, PartyPhaseBudgetExhausted:
 	default:
-		return nil, fmt.Errorf("discussion: invalid terminal party status %q", status)
+		return nil, fmt.Errorf("discussion: invalid terminal party phase %q", phase)
 	}
 	tag, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.party_session
-		   SET status = $2, closed_at = now()
-		 WHERE id = $1 AND status = 'active'`, id, status)
+		   SET phase = $2, closed_at = now()
+		 WHERE id = $1 AND phase = 'active'`, id, phase)
 	if err != nil {
 		return nil, err
 	}

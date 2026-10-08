@@ -30,7 +30,7 @@ BEGIN
     ASSERT k = 'party_start', format('expected party_start kind, found %s', coalesce(k, '<absent>'));
 END $$;
 
--- (2) A session row inserts with honest defaults (round=0, paid_runs_used=0, status='active') and
+-- (2) A session row inserts with honest defaults (round=0, paid_runs_used=0, phase='active') and
 --     round-trips the budgets + server-stamped opener/topic.
 DO $$
 DECLARE r int; u int; st text; sb text;
@@ -41,11 +41,11 @@ BEGIN
     VALUES ('00000000-0000-0000-0000-0000000e00f1', '00000000-0000-0000-0000-0000000e0001',
             'team-a/proj-x', '00000000-0000-0000-0000-0000000e00aa', 'henrik',
             '00000000-0000-0000-0000-0000000e0002', 3, 3, 12);
-    SELECT round, paid_runs_used, status, started_by INTO r, u, st, sb
+    SELECT round, paid_runs_used, phase, started_by INTO r, u, st, sb
       FROM discussion.party_session WHERE id = '00000000-0000-0000-0000-0000000e00f1';
     ASSERT r = 0,            format('expected round=0, found %s', r);
     ASSERT u = 0,            format('expected paid_runs_used=0, found %s', u);
-    ASSERT st = 'active',    format('expected status=active, found %s', st);
+    ASSERT st = 'active',    format('expected phase=active, found %s', st);
     ASSERT sb = 'henrik',    format('expected started_by=henrik, found %s', sb);
 END $$;
 
@@ -72,7 +72,7 @@ DO $$
 DECLARE cnt int;
 BEGIN
     UPDATE discussion.party_session
-       SET status = 'closed', closed_at = now()
+       SET phase = 'closed', closed_at = now()
      WHERE id = '00000000-0000-0000-0000-0000000e00f1';
     INSERT INTO discussion.party_session
         (thread_id, project_id, team_id, started_by, topic_message_id,
@@ -81,7 +81,7 @@ BEGIN
             '00000000-0000-0000-0000-0000000e00aa', 'henrik',
             '00000000-0000-0000-0000-0000000e0002', 3, 3, 12);
     SELECT count(*) INTO cnt FROM discussion.party_session
-     WHERE thread_id = '00000000-0000-0000-0000-0000000e0001' AND status = 'active';
+     WHERE thread_id = '00000000-0000-0000-0000-0000000e0001' AND phase = 'active';
     ASSERT cnt = 1, format('expected exactly 1 active session after reopen, found %s', cnt);
 END $$;
 
@@ -102,19 +102,19 @@ BEGIN
     ASSERT failed, 'expected max_rounds=0 to violate party_session_budgets_positive';
 END $$;
 
--- (6) The status CHECK rejects an unknown lifecycle value (and, by exclusion, any smuggled custody
---     token — the fence carve-out is that status is session-lifecycle only).
+-- (6) The phase CHECK rejects an unknown lifecycle value (and, by exclusion, any smuggled custody
+--     token — the fence carve-out is that phase is session-lifecycle only.
 DO $$
 DECLARE failed boolean := false;
 BEGIN
     BEGIN
         UPDATE discussion.party_session
-           SET status = 'claimed'
+           SET phase = 'claimed'
          WHERE id = '00000000-0000-0000-0000-0000000e00f1';
     EXCEPTION WHEN check_violation THEN
         failed := true;
     END;
-    ASSERT failed, 'expected status=claimed to violate the party_session status CHECK (session lifecycle only)';
+    ASSERT failed, 'expected phase=claimed to violate the party_session phase CHECK (session lifecycle only)';
 END $$;
 
 ROLLBACK;
