@@ -81,6 +81,7 @@ const (
 	reasonMirrorFail    = "MirrorWriteError"
 	reasonIssueSync     = "IssueSyncError"
 	reasonReviewFail    = "ReviewTriggerError"
+	reasonTriageFail    = "IssueTriageTriggerError"
 	reasonWriteBackFail = "RunWriteBackError"
 )
 
@@ -127,6 +128,26 @@ type ReviewTrigger interface {
 	ReviewChanges(ctx context.Context, projectNamespace, projectName string, provider scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error
 }
 
+// IssueTriageTrigger is the OPTIONAL issue-triage-automation dispatch seam
+// (ISI-5595 WS-B). It is the issue-side sibling of ReviewTrigger and rides the
+// SAME reconcile pass on the SAME just-applied rows: for each new open issue the
+// mirror captured, the trigger decides whether triage is due under the Project's
+// standing IssueTriage policy and, if so, mints a ticket + dispatches the
+// configured triage agent under a SYSTEM identity. A nil trigger disables issue
+// triage entirely, exactly like a nil ReviewTrigger disables review. The body
+// (qualify → dedup on the shared ksquad.github.issue= label → create-if-absent →
+// dispatch) lives in pkg/controller/issuetrigger, behind this seam, so the
+// reconciler never touches the ISI-4711 human-only custody wall.
+type IssueTriageTrigger interface {
+	// TriageChanges inspects one Project's just-applied mirror rows and dispatches
+	// triage for new qualifying issues. It MUST be level-triggered and idempotent:
+	// re-running it on an unchanged snapshot is a no-op, because dedup is keyed on
+	// the per-issue join label — there is no stored diff state. A failure fails the
+	// reconcile so the next level-triggered pass retries against the re-applied
+	// mirror.
+	TriageChanges(ctx context.Context, projectNamespace, projectName string, provider scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error
+}
+
 // Reconciler is the repo-sync reconciler (story 11.1). It talks ONLY to
 // the scm.SourceControlProvider seam and the scm.MirrorStore seam; the
 // provider name → constructor mapping lives in the scm.ProviderRegistry
@@ -162,6 +183,12 @@ type Reconciler struct {
 	// review automation; when wired, the same reconcile pass hands the
 	// just-applied PR rows to it after the link pass. See ReviewTrigger.
 	ReviewTrigger ReviewTrigger
+
+	// IssueTriageTrigger is the OPTIONAL issue-triage-automation dispatch seam
+	// (ISI-5595 WS-B), the issue-side sibling of ReviewTrigger. Nil disables issue
+	// triage; when wired, the same reconcile pass hands the just-applied issue
+	// rows to it alongside the review trigger. See IssueTriageTrigger.
+	IssueTriageTrigger IssueTriageTrigger
 
 	// RunWriteBack is the OPTIONAL run-outcome → GitHub-issue write-back engine
 	// (ISI-4797, follow-up of ISI-4793/PR#572). Nil disables it, exactly like a
@@ -398,6 +425,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Error(err, "repo-sync: review trigger failed", "project", req.NamespacedName)
 			reason = reasonReviewFail
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonReviewFail, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
+	// ── the ISI-5595 issue-triage trigger: mirror issue rows → triage dispatch ──
+	// The issue-side sibling of the review trigger: runs on the SAME just-applied
+	// rows, same level-triggered discipline, same nil-guard. WS-B owns only this
+	// invocation; the body (qualify → dedup on the shared ksquad.github.issue=
+	// label → create-if-absent → dispatch under system:issue-triage) lives behind
+	// the seam in pkg/controller/issuetrigger, so this reconciler stays clear of
+	// the human-only custody wall (ISI-4711). A failure fails the reconcile — the
+	// mirror already applied, so the next pass re-applies it and retries the
+	// trigger idempotently (the per-issue label dedups).
+	if r.IssueTriageTrigger != nil {
+		if err := r.IssueTriageTrigger.TriageChanges(ctx, project.Namespace, project.Name,
+			provider, project.Spec.Repo.URL, rows); err != nil {
+			logger.Error(err, "repo-sync: issue-triage trigger failed", "project", req.NamespacedName)
+			reason = reasonTriageFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonTriageFail, err.Error())})
 			return ctrl.Result{}, err
 		}
 	}
