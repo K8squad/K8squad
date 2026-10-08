@@ -54,6 +54,18 @@ func (c *CoordStore) PostComment(ctx context.Context, workItemID, principal, bod
 	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
 }
 
+// PostInitialFindings appends the run's single early initial-findings note via the
+// sanctioned append-only path AND emits the 'initial_findings_authored' audit signal
+// atomically (ADR-0029 Option B, ISI-5603). Attribution/provenance are the token's
+// principal/run — never client-supplied.
+func (c *CoordStore) PostInitialFindings(ctx context.Context, workItemID, principal, runID, body string) (Comment, error) {
+	tc, err := coord.AppendInitialFindings(ctx, c.db, workItemID, principal, runID, body)
+	if err != nil {
+		return Comment{}, mapCoordErr(err)
+	}
+	return Comment{Author: tc.Author, Body: tc.Body, CreatedAt: tc.CreatedAt}, nil
+}
+
 // PostChange appends one agent-reported change ref via the sanctioned
 // append-only path (M1.5/ISI-4131). Attribution/provenance are the token's
 // principal/run — never client-supplied.
