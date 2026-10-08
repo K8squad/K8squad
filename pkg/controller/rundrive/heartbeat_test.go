@@ -24,6 +24,11 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	api "github.com/K8squad/K8squad/api/v1alpha1"
 )
 
 // fakeRenewer fakes the §6.2 renew seam.
@@ -616,5 +621,169 @@ func TestHeartbeatSweepNilLiveNoZombieGate(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// ---- ISI-5591: endpoint-slot-waiter exemption from the zombie reap ----
+
+// fakeEndpointWait fakes the endpointWaitChecker seam.
+type fakeEndpointWait struct {
+	waiting map[string]bool
+	err     error
+}
+
+func (f *fakeEndpointWait) IsWaitingForEndpointSlot(_ context.Context, runID string) (bool, error) {
+	if f.err != nil {
+		return false, f.err
+	}
+	return f.waiting[runID], nil
+}
+
+// A pod-less run held past the stall grace but legitimately QUEUED behind a busy
+// single-slot BYO endpoint (WaitingForEndpointSlot) is EXEMPT from the zombie
+// reap (ISI-5591): it is renewed, never force-failed, so no release transaction
+// fires and its claim (generation + FIFO position) is preserved. This is the
+// 9-agent deepseek discussion case where every waiter tripped the pod-less
+// predicate and churned Claiming↔Failed every ~10 min.
+func TestHeartbeatSweepExemptsEndpointSlotWaiter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute) // well past the 10m grace
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+	// NOTE: no ExpectBegin/release SQL — an exempt waiter must NOT be reaped.
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}}) // no pod (queued outside endpoint)
+	s.EndpointWait = &fakeEndpointWait{waiting: map[string]bool{zRun: true}}
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("an endpoint-slot waiter must be renewed, never reaped; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations (a release txn means the waiter was wrongly reaped): %v", err)
+	}
+}
+
+// A genuinely wedged pod-less run that is NOT waiting on an endpoint slot is
+// still reaped as a zombie even with the exemption wired (ISI-5591 must not
+// over-exempt): the release transaction fires and the lease is never renewed.
+func TestHeartbeatSweepReapsZombieNotEndpointWaiting(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(9), "running", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE coord.claim`).
+		WithArgs(zItem, zRun).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.audit_log`).
+		WithArgs(zItem, zRun, OperatorPrincipal, int64(9), "zombie_no_sandbox").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO coord.outbox`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE coord.work_item`).
+		WithArgs(zItem, "todo").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})          // no pod
+	s.EndpointWait = &fakeEndpointWait{waiting: map[string]bool{}} // not waiting on a slot
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 0 {
+		t.Fatalf("a non-waiting zombie must still be reaped, never renewed; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// An endpoint-wait check error fails SAFE toward the waiter (ISI-5591): never
+// reap a possible waiter on a maybe — renew and retry next tick.
+func TestHeartbeatSweepEndpointWaitErrorExempts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	acquired := zNow.Add(-30 * time.Minute)
+	rows := sqlmock.NewRows(hbCols).
+		AddRow(zItem, zRun, OperatorPrincipal, int64(7), "claiming", acquired)
+	mock.ExpectQuery(regexp.QuoteMeta(hbDueQuery)).WillReturnRows(rows)
+
+	rn := &fakeRenewer{ret: true}
+	s := zSweeper(rn, &fakeLive{live: map[string]bool{}})
+	s.EndpointWait = &fakeEndpointWait{err: fmt.Errorf("apiserver unavailable")}
+	s.DB = db
+	s.sweep(context.Background())
+
+	if len(rn.calls) != 1 {
+		t.Fatalf("an endpoint-wait error must fail safe to renew; calls = %v", rn.calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// IsWaitingForEndpointSlot reports True only for a Run whose UID carries a True
+// WaitingForEndpointSlot condition; a Run without it, or an unknown UID, is not
+// waiting (ISI-5591).
+func TestLiveRunsIsWaitingForEndpointSlot(t *testing.T) {
+	waiter := &api.Run{}
+	waiter.Name = "waiter"
+	waiter.Namespace = "ns"
+	waiter.UID = "uid-waiting"
+	meta.SetStatusCondition(&waiter.Status.Conditions, metav1.Condition{
+		Type:   ConditionEndpointSlotWait,
+		Status: metav1.ConditionTrue,
+		Reason: "EndpointBusy",
+	})
+
+	running := &api.Run{}
+	running.Name = "running"
+	running.Namespace = "ns"
+	running.UID = "uid-running"
+
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(waiter, running).Build()
+	lr := &LiveRuns{Reader: cl}
+
+	cases := []struct {
+		name string
+		uid  string
+		want bool
+	}{
+		{"waiting run", "uid-waiting", true},
+		{"running run without the condition", "uid-running", false},
+		{"unknown uid", "uid-missing", false},
+		{"empty uid", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := lr.IsWaitingForEndpointSlot(context.Background(), tc.uid)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("IsWaitingForEndpointSlot(%q) = %v, want %v", tc.uid, got, tc.want)
+			}
+		})
 	}
 }

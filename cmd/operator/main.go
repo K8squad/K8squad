@@ -1256,7 +1256,13 @@ func main() {
 			// grace (the 34 pod-less Claiming/Running zombies). Same LiveRuns
 			// reader; the gate is pod-liveness, not just Run-CR existence.
 			Live: liveRuns,
-			Log:  func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
+			// ISI-5591: exempt a pod-less run that is legitimately QUEUED behind
+			// a busy single-slot BYO endpoint (WaitingForEndpointSlot) from the
+			// ISI-5438 reap — a slot-waiter correctly boots no pod until it holds
+			// a slot, so it tripped the zombie predicate and was force-failed +
+			// re-minted every ~10 min (the 9-agent deepseek discussion churn).
+			EndpointWait: liveRuns,
+			Log:          func(f string, a ...any) { ctrl.Log.Info(fmt.Sprintf(f, a...)) },
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register claim hygiene sweep")
 			os.Exit(1)
