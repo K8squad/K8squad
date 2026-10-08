@@ -119,6 +119,9 @@ const (
 	// reasonNoBrowseTarget labels the honest empty state for a project with no
 	// completed Run yet — NOT a snapshot, so the UI must not show the busy banner.
 	reasonNoBrowseTarget = "no_browse_target"
+	// reasonWorkspaceNotProvisioned labels the diagnosable state where the
+	// project's workspace PVC has not been provisioned yet (ISI-5574).
+	reasonWorkspaceNotProvisioned = "workspace_not_provisioned"
 )
 
 // FileContent is the response body for ReadFile.
@@ -420,6 +423,12 @@ func (s *Server) projectFiles(reader WorkspaceReader, busy BusySnapshotReader) h
 				// without the busy banner (ISI-5140).
 				listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
 				listing.Generation = resolveGeneration(r.Context(), reader, projectID)
+			case errors.Is(err, ErrWorkspaceNotProvisioned):
+				// ISI-5574: workspace PVC not yet provisioned — diagnosable empty
+				// state distinct from "no run yet". The project-pvc-controller
+				// WorkspaceReady condition shows the cause.
+				listing = &DirListing{Entries: []DirEntry{}, Reason: reasonWorkspaceNotProvisioned}
+				listing.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
 				writeRetryableDegraded(w)
@@ -498,6 +507,9 @@ func (s *Server) projectFilesContent(reader WorkspaceReader, busy BusySnapshotRe
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				fc = &FileContent{Data: []byte{}, ContentType: "text", Reason: reasonNoBrowseTarget}
+				fc.Generation = resolveGeneration(r.Context(), reader, projectID)
+			case errors.Is(err, ErrWorkspaceNotProvisioned):
+				fc = &FileContent{Data: []byte{}, ContentType: "text", Reason: reasonWorkspaceNotProvisioned}
 				fc.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
@@ -590,6 +602,9 @@ func (s *Server) projectFilesStat(reader WorkspaceReader, busy BusySnapshotReade
 			case errors.Is(err, ErrNoBrowseTarget):
 				// Honest no-completed-run empty state — no snapshot, no banner.
 				st = &FileStat{Name: path.Base(cleanPath), Type: "file", Reason: reasonNoBrowseTarget}
+				st.Generation = resolveGeneration(r.Context(), reader, projectID)
+			case errors.Is(err, ErrWorkspaceNotProvisioned):
+				st = &FileStat{Name: path.Base(cleanPath), Type: "file", Reason: reasonWorkspaceNotProvisioned}
 				st.Generation = resolveGeneration(r.Context(), reader, projectID)
 			case isTimeout(err):
 				// ADR-0025 D2: reader cold-start or slow pod → retryable-degraded 503.
@@ -764,6 +779,9 @@ func (s *Server) projectFilesStream(reader WorkspaceReader, busy BusySnapshotRea
 				case errors.Is(listErr, ErrNoBrowseTarget):
 					listing = &DirListing{Entries: []DirEntry{}, Reason: reasonNoBrowseTarget}
 					degradedReason = reasonNoBrowseTarget
+				case errors.Is(listErr, ErrWorkspaceNotProvisioned):
+					listing = &DirListing{Entries: []DirEntry{}, Reason: reasonWorkspaceNotProvisioned}
+					degradedReason = reasonWorkspaceNotProvisioned
 				case isTimeout(listErr):
 					if firstPage {
 						writeRetryableDegraded(w)

@@ -46,6 +46,8 @@ import (
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
@@ -147,6 +149,19 @@ func (r *CoordReaderSpecResolver) ResolveReaderSpec(ctx context.Context, project
 	sandboxNS, err := r.teamSandboxNamespace(ctx, target.teamID)
 	if err != nil {
 		return readerpod.Spec{}, err
+	}
+
+	// Guard: verify the workspace PVC exists before launching the reader pod (ISI-5574). Without
+	// this check a missing PVC causes the reader pod to wedge Pending forever with FailedScheduling
+	// "persistentvolumeclaim not found", and the route eternally returns 202 "warming up" with no
+	// diagnosable error. The r.pods client already has corev1 PVC list access from its ClusterRole.
+	pvcName := workspace.ProjectPVCName(name)
+	var existingPVC corev1.PersistentVolumeClaim
+	if err := r.pods.Get(ctx, types.NamespacedName{Namespace: sandboxNS, Name: pvcName}, &existingPVC); err != nil {
+		if k8serrors.IsNotFound(err) {
+			return readerpod.Spec{}, ErrWorkspaceNotProvisioned
+		}
+		return readerpod.Spec{}, fmt.Errorf("readerspec: check workspace PVC %s/%s: %w", sandboxNS, pvcName, err)
 	}
 
 	spec := readerpod.Spec{

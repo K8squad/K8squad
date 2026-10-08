@@ -47,6 +47,11 @@ type listCacheEntry struct {
 // rather than an error.
 var ErrNoBrowseTarget = errors.New("apiserver: project has no browsable workspace yet")
 
+// ErrWorkspaceNotProvisioned is returned when the project's workspace PVC does not yet exist in the
+// team's sandbox namespace. This surfaces as a diagnosable degraded state (ISI-5574) rather than
+// launching a reader pod that would wedge Pending forever with FailedScheduling.
+var ErrWorkspaceNotProvisioned = errors.New("apiserver: project workspace PVC not yet provisioned; check project-pvc-controller WorkspaceReady condition")
+
 // ReaderSpecResolver derives the SERVER-SIDE reader-pod Spec for a project's browse target. Every
 // field (PVC, commit, reader SA) comes from the coord record — never a request body — which is the
 // AC2/AC3 containment boundary: the file-explorer routes pass only projectID, so the client can never

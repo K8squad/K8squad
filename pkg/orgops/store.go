@@ -7,11 +7,13 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ksquadv1 "github.com/K8squad/K8squad/api/v1alpha1"
 	"github.com/K8squad/K8squad/pkg/taskio"
+	"github.com/K8squad/K8squad/pkg/workspace"
 )
 
 // AnnotationArchived marks a Project as archived (ISI-3626). The Project CRD has
@@ -197,11 +199,19 @@ func (s *CRDStore) CreateProject(ctx context.Context, tok taskio.RunToken, req P
 	if err != nil {
 		return Result{}, err
 	}
+	// Default workspace PVC so every project gets a claim provisioned in the
+	// team's sandbox namespace (ISI-5574). Class is left empty: the
+	// project-pvc-controller resolves it from KSQUAD_WORKSPACE_STORAGE_CLASS,
+	// which is the single source of truth for the operator's storage contract.
+	defaultPVC := &ksquadv1.PVCSpec{
+		Size: resource.MustParse(workspace.WorkspacePVCSize),
+	}
 	return s.create(ctx, tok, ns, "Project", &ksquadv1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec: ksquadv1.ProjectSpec{
-			Repo:  ksquadv1.RepoSpec{URL: req.Repo.URL, Ref: req.Repo.Ref},
-			Goals: req.Goals,
+			Repo:         ksquadv1.RepoSpec{URL: req.Repo.URL, Ref: req.Repo.Ref},
+			Goals:        req.Goals,
+			WorkspacePVC: defaultPVC,
 		},
 	})
 }

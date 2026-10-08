@@ -35,6 +35,10 @@ const (
 // schemes (ksquad CRDs for the reader field, corev1 for the pod-scan field) and is handed in for
 // both arguments — production wires two different clients (cache + direct), but both projections
 // are Reader-interface pure, so a single fake is faithful.
+//
+// When teamStatusNS is non-empty the fixture also includes the project workspace PVC in that
+// namespace (ISI-5574): ResolveReaderSpec now checks PVC existence before launching a reader pod,
+// so every test that reaches that gate needs the claim to be present.
 func readerspecReader(t *testing.T, teamStatusNS string) *fake.ClientBuilder {
 	t.Helper()
 	scheme := runtime.NewScheme()
@@ -51,7 +55,24 @@ func readerspecReader(t *testing.T, teamStatusNS string) *fake.ClientBuilder {
 	proj := &ksquadv1.Project{
 		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "squad", UID: rsProjUID},
 	}
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(team, proj)
+	objs := []client.Object{team, proj}
+	if teamStatusNS != "" {
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      workspace.ProjectPVCName("demo"),
+				Namespace: teamStatusNS,
+				Labels: map[string]string{
+					workspace.LabelWorkspace: "true",
+					workspace.LabelProject:   "demo",
+				},
+				Annotations: map[string]string{
+					"k8squad.io/created-by": "project-pvc-controller",
+				},
+			},
+		}
+		objs = append(objs, pvc)
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...)
 }
 
 func readerspecAuth() discussion.AuthorContext {
@@ -507,6 +528,53 @@ func TestCoordReaderSpecResolver_QueryGuardsPinned(t *testing.T) {
 				t.Errorf("query missing required guard %q: %v", frag, err)
 			}
 		})
+	}
+}
+
+// TestCoordReaderSpecResolver_WorkspaceNotProvisioned verifies ISI-5574: when the project's
+// workspace PVC does not exist in the team's sandbox namespace, ResolveReaderSpec returns
+// ErrWorkspaceNotProvisioned rather than launching a reader pod that would wedge Pending forever.
+func TestCoordReaderSpecResolver_WorkspaceNotProvisioned(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	mock.ExpectQuery("FROM coord.claim").
+		WithArgs(rsProjUID).
+		WillReturnRows(claimTeamRows())
+	mock.ExpectQuery("FROM coord.audit_log").
+		WithArgs(rsProjUID).
+		WillReturnRows(sqlmock.NewRows([]string{"run_id", "commit", "team_id"}).AddRow(rsRunID, rsCommitSHA, rsTeamUID))
+
+	// Manually build a reader with team+project and a real sandbox namespace but NO workspace PVC.
+	scheme := runtime.NewScheme()
+	if err := ksquadv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	team := &ksquadv1.Team{
+		ObjectMeta: metav1.ObjectMeta{Name: "squad", Namespace: "squad", UID: rsTeamUID},
+	}
+	team.Status.Namespace = "squad-sandbox"
+	proj := &ksquadv1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "squad", UID: rsProjUID},
+	}
+	// No PVC object — the whole point of this test.
+	noPVCReader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(team, proj).Build()
+	r, err := NewCoordReaderSpecResolver(db, noPVCReader, noPVCReader)
+	if err != nil {
+		t.Fatalf("construct: %v", err)
+	}
+	_, err = r.ResolveReaderSpec(discussion.WithAuth(context.Background(), readerspecAuth()), "demo")
+	if !errors.Is(err, ErrWorkspaceNotProvisioned) {
+		t.Fatalf("err = %v, want ErrWorkspaceNotProvisioned", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("sql: %v", err)
 	}
 }
 
