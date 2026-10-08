@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/K8squad/K8squad/pkg/scm"
@@ -60,6 +61,33 @@ const WriteBackPrincipal = "scm-run-writeback"
 // agrees on (ISI-4757): `ksquad.github.issue=owner/repo#N`. This engine reads
 // the SAME label the mint handler stamped — no new join.
 const githubIssueLabelPrefix = "ksquad.github.issue="
+
+// The two dedup marker event types (ADR-0029 §4). Each write-back leg records
+// its own marker so terminal and initial dedup independently and each fires
+// exactly once per run.
+const (
+	markerTerminal = "github_writeback"
+	markerInitial  = "github_writeback_initial"
+)
+
+// WriteBackKind selects which leg a Pending belongs to. The zero value ("") is
+// treated as terminal, so existing terminal rows need no change.
+type WriteBackKind string
+
+const (
+	KindTerminal WriteBackKind = "terminal"
+	KindInitial  WriteBackKind = "initial"
+)
+
+// initialBodyCap bounds the agent-authored initial-findings body posted to a
+// potentially-public GitHub issue (ADR-0029 §5): keep the note a summary, well
+// under GitHub's 65536 comment limit.
+const initialBodyCap = 4000
+
+// initialBodyFloor is the substance floor (ADR-0029 §5): a body shorter than this
+// after sanitization is treated as no-signal and skipped — the terminal leg still
+// covers the issue. Failure mode is "no early note," never "meaningless note."
+const initialBodyFloor = 40
 
 // CommentPoster is the narrow slice of scm.SourceProvider this engine needs.
 // scm.SourceProvider satisfies it, so the reconcile hands the same provider it
@@ -80,20 +108,29 @@ type Store interface {
 	// pending write-back to post. Older terminals are excluded (latest-only).
 	PendingWriteBacks(ctx context.Context, projectID string) ([]Pending, error)
 
-	// RecordWriteBack appends the idempotency marker for one terminal transition
-	// (append-only audit row, event_type='github_writeback'). note is a short
-	// provenance string ("posted:<commentID>", "skipped: <reason>").
-	RecordWriteBack(ctx context.Context, workItemID, runID, note string) error
+	// PendingInitialWriteBacks returns, for each labelled work item in projectID
+	// whose latest run authored an initial-findings note (`initial_findings_authored`
+	// audit row) with no `github_writeback_initial` marker yet, the one pending
+	// initial write-back to post (Kind=initial, Body carrying the authored note).
+	PendingInitialWriteBacks(ctx context.Context, projectID string) ([]Pending, error)
+
+	// RecordWriteBack appends the idempotency marker for one write-back transition
+	// under eventType (markerTerminal or markerInitial). note is a short provenance
+	// string ("posted:<commentID>", "skipped: <reason>").
+	RecordWriteBack(ctx context.Context, workItemID, runID, eventType, note string) error
 }
 
-// Pending is one terminal transition owed a GitHub write-back.
+// Pending is one transition owed a GitHub write-back — a terminal outcome
+// (Kind=terminal/"") or an initial-findings note (Kind=initial).
 type Pending struct {
 	WorkItemID   string
 	RunID        string
-	IssueRef     string // owner/repo#N (from the ksquad.github.issue= label)
-	TerminalStep string // succeeded | failed | cancelled
-	AgentName    string // "" when the checkout assignee is unresolvable
-	Title        string // work-item title, for the comment body
+	IssueRef     string        // owner/repo#N (from the ksquad.github.issue= label)
+	Kind         WriteBackKind // terminal ("" == terminal) | initial
+	TerminalStep string        // succeeded | failed | cancelled (terminal leg only)
+	Body         string        // agent-authored initial-findings note (initial leg only)
+	AgentName    string        // "" when the checkout assignee is unresolvable
+	Title        string        // work-item title, for the comment body
 	// CreatedItems is the set of sub-tickets this run authored via the
 	// work_item_create MCP tool (ADR-0024a S6, ISI-4872) — sourced from the
 	// run-scoped `work_item_created` audit rows, NOT a workspace file scan. It
@@ -108,6 +145,33 @@ type Pending struct {
 type CreatedItem struct {
 	ID    string
 	Title string
+}
+
+// markerEvent is the dedup audit event_type this leg records. Terminal ("") and
+// initial dedup independently.
+func (p Pending) markerEvent() string {
+	if p.Kind == KindInitial {
+		return markerInitial
+	}
+	return markerTerminal
+}
+
+// render builds the comment body for this leg, or "" when nothing should be
+// posted (a non-reportable terminal step, or an empty/thin initial note).
+func (p Pending) render() string {
+	if p.Kind == KindInitial {
+		return renderInitialComment(p)
+	}
+	return renderComment(p)
+}
+
+// emptySkipReason is the marker note for a leg that rendered "" (stayed quiet but
+// must still be marked so the pending query does not re-consider it).
+func (p Pending) emptySkipReason() string {
+	if p.Kind == KindInitial {
+		return "initial findings body empty or below substance floor"
+	}
+	return "terminal step not reported: " + p.TerminalStep
 }
 
 // Stats reports one pass's outcome (observation, not control input).
@@ -134,15 +198,41 @@ func NewEngine(store Store) *Engine { return &Engine{Store: store} }
 // next level-triggered pass retries; a permanent one (issue gone / forbidden) is
 // marked written-back so it stops retrying forever.
 func (e *Engine) WriteBackProject(ctx context.Context, projectID, repoURL string, provider CommentPoster) (Stats, error) {
-	var stats Stats
 	if e == nil || e.Store == nil || provider == nil || projectID == "" {
-		return stats, nil
+		return Stats{}, nil
 	}
-
 	pending, err := e.Store.PendingWriteBacks(ctx, projectID)
 	if err != nil {
-		return stats, fmt.Errorf("scmwriteback: list pending for %s: %w", projectID, err)
+		return Stats{}, fmt.Errorf("scmwriteback: list pending for %s: %w", projectID, err)
 	}
+	return e.post(ctx, repoURL, provider, pending)
+}
+
+// WriteBackInitialProject reflects every pending INITIAL-findings note for
+// projectID onto its linked GitHub issues (ADR-0029, ISI-5602). It is the
+// initial-leg sibling of WriteBackProject: same cross-repo guard, same
+// post→record→skip-on-permanent-error discipline, same at-least-once ordering —
+// only the pending source (PendingInitialWriteBacks), the render
+// (renderInitialComment, with §5 sanitization), and the dedup marker
+// (`github_writeback_initial`) differ. The initial note fires before the terminal
+// one (earlier signal) and both dedup independently, so each is posted exactly
+// once per run. Intended to run in the SAME reconcile pass as the terminal leg.
+func (e *Engine) WriteBackInitialProject(ctx context.Context, projectID, repoURL string, provider CommentPoster) (Stats, error) {
+	if e == nil || e.Store == nil || provider == nil || projectID == "" {
+		return Stats{}, nil
+	}
+	pending, err := e.Store.PendingInitialWriteBacks(ctx, projectID)
+	if err != nil {
+		return Stats{}, fmt.Errorf("scmwriteback: list initial pending for %s: %w", projectID, err)
+	}
+	return e.post(ctx, repoURL, provider, pending)
+}
+
+// post is the shared write-back loop for both legs: cross-repo guard, render,
+// post, record-marker (keyed on the leg's event_type), transient-vs-permanent
+// error handling. The kind is carried on each Pending, so one loop serves both.
+func (e *Engine) post(ctx context.Context, repoURL string, provider CommentPoster, pending []Pending) (Stats, error) {
+	var stats Stats
 	stats.Pending = len(pending)
 
 	wantRepo := repoSlug(repoURL)
@@ -166,11 +256,12 @@ func (e *Engine) WriteBackProject(ctx context.Context, projectID, repoURL string
 			continue
 		}
 
-		body := renderComment(p)
+		body := p.render()
 		if body == "" {
-			// Non-reportable terminal (a human-initiated cancel): stay quiet, but
-			// mark it so the latest-terminal query does not re-consider it.
-			e.markSkip(ctx, p, "terminal step not reported: "+p.TerminalStep)
+			// Nothing to post (a non-reportable terminal step, or an empty/thin
+			// initial note): stay quiet, but mark it so the pending query does not
+			// re-consider it.
+			e.markSkip(ctx, p, p.emptySkipReason())
 			stats.Skipped++
 			continue
 		}
@@ -192,7 +283,7 @@ func (e *Engine) WriteBackProject(ctx context.Context, projectID, repoURL string
 		// Post-then-record (at-least-once, same order issuesync.ApplyOutbound
 		// uses): the comment is already out, so a failed marker write risks a
 		// rare duplicate on the next pass — preferred over losing the record.
-		if rerr := e.Store.RecordWriteBack(ctx, p.WorkItemID, p.RunID, "posted:"+commentID); rerr != nil {
+		if rerr := e.Store.RecordWriteBack(ctx, p.WorkItemID, p.RunID, p.markerEvent(), "posted:"+commentID); rerr != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("scmwriteback: record %s: %w", p.IssueRef, rerr)
 			}
@@ -209,7 +300,7 @@ func (e *Engine) WriteBackProject(ctx context.Context, projectID, repoURL string
 // so it never re-surfaces. A failed marker write is swallowed: the worst case is
 // re-evaluating (and re-skipping) it next pass — never a wrong post.
 func (e *Engine) markSkip(ctx context.Context, p Pending, reason string) {
-	_ = e.Store.RecordWriteBack(ctx, p.WorkItemID, p.RunID, "skipped: "+reason)
+	_ = e.Store.RecordWriteBack(ctx, p.WorkItemID, p.RunID, p.markerEvent(), "skipped: "+reason)
 }
 
 // renderComment builds the honest, informational write-back body (ADR-0013). It
@@ -240,6 +331,81 @@ func renderComment(p Pending) string {
 	b.WriteString(renderCreatedItems(p.TerminalStep, p.CreatedItems))
 	b.WriteString("_Informational only — the GitHub assignee was not changed (ADR-0013)._")
 	return b.String()
+}
+
+// renderInitialComment builds the informational initial-findings body (ADR-0029
+// §4.3), carrying the agent's authored note after §5 sanitization. It returns ""
+// when the sanitized body is empty or below the substance floor — the caller then
+// stays quiet and marks it skipped (the terminal leg still covers the issue).
+// Voice matches terminal's informational register (ADR-0013): no assignee change.
+func renderInitialComment(p Pending) string {
+	body := sanitizeInitialBody(p.Body)
+	if body == "" {
+		return ""
+	}
+	who := p.AgentName
+	if who == "" {
+		who = "an agent"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "### 🔍 Initial findings from %s", who)
+	if p.Title != "" {
+		fmt.Fprintf(&b, " (K8squad ticket: %s)", p.Title)
+	}
+	b.WriteString("\n\n")
+	b.WriteString(body)
+	b.WriteString("\n\n")
+	b.WriteString("_Automated initial note from the K8squad agent working this issue; a completion summary will follow. Informational only — the GitHub assignee was not changed (ADR-0013)._")
+	return b.String()
+}
+
+// secretPatterns is the best-effort credential-shape denylist (ADR-0029 §5). This
+// is a conservative scrub, NOT full DLP — a guard against the obvious shapes an
+// agent might paste into a note destined for a public issue. Ceiling = this list;
+// upgrade path = extract a shared secretscrub helper if a second caller needs it.
+var secretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`ghp_[A-Za-z0-9]{20,}`),                                                      // GitHub personal access token (classic)
+	regexp.MustCompile(`github_pat_[A-Za-z0-9_]{20,}`),                                              // GitHub fine-grained PAT
+	regexp.MustCompile(`gho_[A-Za-z0-9]{20,}`),                                                      // GitHub OAuth token
+	regexp.MustCompile(`xox[baprs]-[A-Za-z0-9-]{10,}`),                                              // Slack token
+	regexp.MustCompile(`AKIA[0-9A-Z]{16}`),                                                          // AWS access key id
+	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{8,}`),                                          // bearer-token header value
+	regexp.MustCompile(`(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----`), // PEM private key block
+}
+
+// sanitizeInitialBody applies the ADR-0029 §5 defense-in-depth before the note is
+// posted to a potentially-public GitHub issue: strip non-printable control chars
+// (keep \n/\t), redact obvious credential shapes, trim, enforce the substance
+// floor (return "" when too thin), then length-cap with a truncation marker.
+// Order matters: scrub/strip first so the floor and cap measure the cleaned text.
+func sanitizeInitialBody(raw string) string {
+	// 1. Control-char strip (keep \n and \t; drop other C0 controls + DEL).
+	var sb strings.Builder
+	sb.Grow(len(raw))
+	for _, r := range raw {
+		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f) {
+			sb.WriteRune(r)
+		}
+	}
+	s := sb.String()
+
+	// 2. Best-effort secret redaction.
+	for _, re := range secretPatterns {
+		s = re.ReplaceAllString(s, "«redacted»")
+	}
+
+	// 3. Trim and apply the substance floor.
+	s = strings.TrimSpace(s)
+	if len(s) < initialBodyFloor {
+		return ""
+	}
+
+	// 4. Length cap (measured in runes so a multi-byte char is never cut mid-
+	// sequence) with an explicit truncation marker.
+	if r := []rune(s); len(r) > initialBodyCap {
+		s = strings.TrimSpace(string(r[:initialBodyCap])) + "\n\n_…(truncated)_"
+	}
+	return s
 }
 
 // renderCreatedItems is the honest sub-ticket accounting for the completion

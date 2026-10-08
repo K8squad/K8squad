@@ -85,6 +85,58 @@ SELECT latest.wid::text,
            AND wb.event_type = 'github_writeback'
        )`
 
+// pendingInitialQuery is the initial-findings sibling of pendingQuery (ISI-5602,
+// ADR-0029 §3). It is structurally symmetric — DISTINCT ON (work_item_id) latest
+// run, same `ksquad.github.issue=%` label guard, same NOT EXISTS dedup shape —
+// but keyed on the `initial_findings_authored` audit signal the authoring hook
+// writes (ISI-5603, event_type co-written with the agent's `/post-comment
+// kind=initial_findings` call), deduped against the DISTINCT `github_writeback_initial`
+// marker, and it carries the authored note itself (payload->>'body') through so
+// the write-back has the text without re-reading coord.comment. The two legs
+// dedup independently (distinct marker event types), so each fires exactly once
+// per run and the initial leg naturally precedes the terminal one (earlier signal).
+//
+// ponytail: no partial index covers `initial_findings_authored` the way migration
+// 0023's idx_audit_log_run_terminal covers terminals; this falls back to
+// idx_audit_log_work_item. The per-project pending set is small (github-labelled
+// items only), so the scan is bounded; upgrade path if a hot project ever needs
+// it = a partial index on (work_item_id, created_at) WHERE
+// event_type='initial_findings_authored', mirroring 0023.
+const pendingInitialQuery = `
+WITH latest AS (
+    SELECT DISTINCT ON (t.work_item_id)
+           t.work_item_id        AS wid,
+           t.run_id,
+           t.payload->>'body'    AS body,
+           t.id                  AS audit_id
+      FROM coord.audit_log t
+      JOIN coord.work_item wi ON wi.id = t.work_item_id
+     WHERE wi.project_id = $1::uuid
+       AND t.event_type = 'initial_findings_authored'
+       AND t.run_id IS NOT NULL
+       AND EXISTS (
+           SELECT 1 FROM unnest(wi.labels) l
+            WHERE l LIKE 'ksquad.github.issue=%'
+       )
+     ORDER BY t.work_item_id, t.created_at DESC, t.id DESC
+)
+SELECT latest.wid::text,
+       latest.run_id::text,
+       COALESCE(latest.body, ''),
+       COALESCE(c.assignee_agent, ''),
+       wi.title,
+       (SELECT l FROM unnest(wi.labels) l
+         WHERE l LIKE 'ksquad.github.issue=%' LIMIT 1)
+  FROM latest
+  JOIN coord.work_item wi ON wi.id = latest.wid
+  LEFT JOIN coord.claim  c ON c.work_item_id = latest.wid
+ WHERE NOT EXISTS (
+        SELECT 1 FROM coord.audit_log wb
+         WHERE wb.work_item_id = latest.wid
+           AND wb.run_id = latest.run_id
+           AND wb.event_type = 'github_writeback_initial'
+       )`
+
 // createdItemsQuery lists the sub-tickets a run authored via work_item_create,
 // in creation order. It reads the SAME run-scoped signal the per-run authoring
 // budget counter uses (pkg/coord AgentCreateWorkItem stamps run_id on every
@@ -147,6 +199,41 @@ func (s *SQLStore) PendingWriteBacks(ctx context.Context, projectID string) ([]P
 	return out, nil
 }
 
+// PendingInitialWriteBacks runs pendingInitialQuery and strips the label prefix
+// down to the bare `owner/repo#N` ref, exactly as PendingWriteBacks does, tagging
+// each row Kind=initial and carrying the authored note through Body. Unlike the
+// terminal leg it does NOT attach created sub-tickets: the initial note is a
+// plain agent-authored summary, not a decomposition report (ADR-0029 §3).
+func (s *SQLStore) PendingInitialWriteBacks(ctx context.Context, projectID string) ([]Pending, error) {
+	rows, err := s.db.QueryContext(ctx, pendingInitialQuery, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("scmwriteback: query pending initial: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Pending
+	for rows.Next() {
+		var p Pending
+		var body, label sql.NullString
+		if err := rows.Scan(&p.WorkItemID, &p.RunID, &body, &p.AgentName, &p.Title, &label); err != nil {
+			return nil, fmt.Errorf("scmwriteback: scan pending initial: %w", err)
+		}
+		if !label.Valid || len(label.String) <= len(githubIssueLabelPrefix) {
+			// Matched the LIKE but not the exact prefix strip — malformed; skip
+			// rather than post to a bogus ref (same guard as the terminal leg).
+			continue
+		}
+		p.IssueRef = label.String[len(githubIssueLabelPrefix):]
+		p.Kind = KindInitial
+		p.Body = body.String
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scmwriteback: iterate pending initial: %w", err)
+	}
+	return out, nil
+}
+
 // createdItems reads the sub-tickets one run authored (createdItemsQuery).
 func (s *SQLStore) createdItems(ctx context.Context, runID string) ([]CreatedItem, error) {
 	rows, err := s.db.QueryContext(ctx, createdItemsQuery, runID)
@@ -169,16 +256,23 @@ func (s *SQLStore) createdItems(ctx context.Context, runID string) ([]CreatedIte
 	return out, nil
 }
 
-// RecordWriteBack appends the append-only idempotency marker for one terminal
-// transition. The (work_item_id, run_id, 'github_writeback') triple is the dedup
-// key the pending query's NOT EXISTS reads back.
+// RecordWriteBack appends the append-only idempotency marker for one write-back
+// transition under eventType — `github_writeback` (terminal leg) or
+// `github_writeback_initial` (initial-findings leg, ISI-5602). The
+// (work_item_id, run_id, eventType) triple is the dedup key the matching pending
+// query's NOT EXISTS reads back; the two legs use distinct event types so they
+// dedup independently and each fires exactly once per run. An empty eventType
+// defaults to the terminal marker for back-compat.
 //
-// ponytail: no unique index enforces one marker per (work_item, run) — dedup
-// relies on the operator being a single leader-elected writer (controller-runtime
-// leader election), so two passes never race the same project. Upgrade path if
-// that ever changes: a partial unique index on (work_item_id, run_id) WHERE
-// event_type='github_writeback' + ON CONFLICT DO NOTHING.
-func (s *SQLStore) RecordWriteBack(ctx context.Context, workItemID, runID, note string) error {
+// ponytail: no unique index enforces one marker per (work_item, run, event_type)
+// — dedup relies on the operator being a single leader-elected writer
+// (controller-runtime leader election), so two passes never race the same
+// project. Upgrade path if that ever changes: a partial unique index on
+// (work_item_id, run_id, event_type) + ON CONFLICT DO NOTHING.
+func (s *SQLStore) RecordWriteBack(ctx context.Context, workItemID, runID, eventType, note string) error {
+	if eventType == "" {
+		eventType = markerTerminal
+	}
 	payload, err := json.Marshal(map[string]string{"result": note})
 	if err != nil {
 		return fmt.Errorf("scmwriteback: marshal marker: %w", err)
@@ -186,8 +280,8 @@ func (s *SQLStore) RecordWriteBack(ctx context.Context, workItemID, runID, note 
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO coord.audit_log
 		       (work_item_id, run_id, event_type, principal, payload)
-		VALUES ($1::uuid, NULLIF($2,'')::uuid, 'github_writeback', $3, $4::jsonb)`,
-		workItemID, runID, WriteBackPrincipal, string(payload)); err != nil {
+		VALUES ($1::uuid, NULLIF($2,'')::uuid, $3, $4, $5::jsonb)`,
+		workItemID, runID, eventType, WriteBackPrincipal, string(payload)); err != nil {
 		return fmt.Errorf("scmwriteback: insert marker: %w", err)
 	}
 	return nil
