@@ -134,7 +134,7 @@ func TestPartySession_MintRoundCAS(t *testing.T) {
 	projectID := "test-ns/test-project"
 	teamID := uuid.New()
 	auth := AuthorContext{Principal: "human-1", TeamID: teamID}
-	thread, err := store.OpenThread(ctx, projectID, auth, "mint round test", "")
+	thread, err := store.OpenThread(ctx, projectID, auth, "mint round test", "topic body")
 	if err != nil {
 		t.Fatalf("OpenThread: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPartySession_SetRoundFacilitatorMessage(t *testing.T) {
 	projectID := "test-ns/test-project"
 	teamID := uuid.New()
 	auth := AuthorContext{Principal: "human-1", TeamID: teamID}
-	thread, err := store.OpenThread(ctx, projectID, auth, "facilitator msg test", "")
+	thread, err := store.OpenThread(ctx, projectID, auth, "facilitator msg test", "topic body")
 	if err != nil {
 		t.Fatalf("OpenThread: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestPartySession_CloseAndVoicesAllowed(t *testing.T) {
 	projectID := "test-ns/test-project"
 	teamID := uuid.New()
 	auth := AuthorContext{Principal: "human-1", TeamID: teamID}
-	thread, err := store.OpenThread(ctx, projectID, auth, "close test", "")
+	thread, err := store.OpenThread(ctx, projectID, auth, "close test", "topic body")
 	if err != nil {
 		t.Fatalf("OpenThread: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestPartySession_RecordPaidRuns(t *testing.T) {
 	projectID := "test-ns/test-project"
 	teamID := uuid.New()
 	auth := AuthorContext{Principal: "human-1", TeamID: teamID}
-	thread, err := store.OpenThread(ctx, projectID, auth, "paid-run test", "")
+	thread, err := store.OpenThread(ctx, projectID, auth, "paid-run test", "topic body")
 	if err != nil {
 		t.Fatalf("OpenThread: %v", err)
 	}
