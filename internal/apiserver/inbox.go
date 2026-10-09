@@ -126,12 +126,24 @@ func (s *Server) squadInbox(
 			}
 		}
 
+		// --- Observability (ISI-5621, WS-G G-1/G-4): domain span `inbox.read` wrapping the
+		// two-plane join, so each arm's independent-and-silent degrade (ADR-0026 §3.2) and
+		// LIMIT-cap truncation (§9) become first-class signals, not just log.Printf lines. ---
+		obs := inboxInst()
+		ctx, span, readStart := inboxReadStart(r.Context())
+		defer span.End()
+
 		// --- Cache arm: run claimedAt for ordering + UID→project path index ---
-		sq, err := overview.Overview(r.Context(), auth.TeamID.String(), admin)
+		sq, err := overview.Overview(ctx, auth.TeamID.String(), admin)
 		if err != nil && !errors.Is(err, ErrTeamNotFound) {
+			obs.fatalArm(ctx, span, inboxArmCache, "inbox cache read unavailable", err)
 			writeJSONError(w, http.StatusBadGateway, "inbox cache read unavailable")
 			return
 		}
+		// Effective fleet scope is known once the overview resolves; ?scope=mine already
+		// narrowed `admin`. Used as the bounded `fleet` metric label from here on.
+		fleet := sq.Fleet || admin
+		obs.recordArm(ctx, span, inboxArmCache, fleet, len(sq.Projects), true, false, nil)
 
 		// Build UID→"namespace/name" index and workItem→latestClaimedAt + live maps.
 		uidToPath := make(map[string]string, len(sq.Projects))
@@ -164,25 +176,35 @@ func (s *Server) squadInbox(
 
 		// --- Postgres arms (best-effort: one arm failure logs + contributes zero rows, so the
 		// other arm's rows still render — the same degrade-don't-fail posture squad-overview uses) ---
-		reviewItems, err := reviews.ListReviewItems(r.Context(), teamID)
+		reviewItems, err := reviews.ListReviewItems(ctx, teamID)
 		if err != nil {
 			log.Printf("apiserver: inbox: ListReviewItems: %v", err)
 			reviewItems = nil
+			obs.recordArm(ctx, span, inboxArmReview, fleet, 0, false, true, err)
+		} else {
+			obs.recordArm(ctx, span, inboxArmReview, fleet, len(reviewItems), true, true, nil)
 		}
 
-		proposalItems, err := proposals.ListOpenProposalsForTeam(r.Context(), teamID)
+		proposalItems, err := proposals.ListOpenProposalsForTeam(ctx, teamID)
 		if err != nil {
 			log.Printf("apiserver: inbox: ListOpenProposalsForTeam: %v", err)
 			proposalItems = nil
+			obs.recordArm(ctx, span, inboxArmProposal, fleet, 0, false, true, err)
+		} else {
+			obs.recordArm(ctx, span, inboxArmProposal, fleet, len(proposalItems), true, true, nil)
 		}
 
-		// Decision_request arm (ISI-5536 BE-7). Nil reader (E1-only deployment) ⇒ zero rows.
+		// Decision_request arm (ISI-5536 BE-7). Nil reader (E1-only deployment) ⇒ zero rows
+		// and no arm record (the arm is absent, not degraded).
 		var decisionItems []discussion.OpenDecisionSummary
 		if decisions != nil {
-			decisionItems, err = decisions.ListOpenDecisionRequestsForTeam(r.Context(), teamID)
+			decisionItems, err = decisions.ListOpenDecisionRequestsForTeam(ctx, teamID)
 			if err != nil {
 				log.Printf("apiserver: inbox: ListOpenDecisionRequestsForTeam: %v", err)
 				decisionItems = nil
+				obs.recordArm(ctx, span, inboxArmDecision, fleet, 0, false, true, err)
+			} else {
+				obs.recordArm(ctx, span, inboxArmDecision, fleet, len(decisionItems), true, true, nil)
 			}
 		}
 
@@ -200,9 +222,12 @@ func (s *Server) squadInbox(
 				keys = append(keys, "decision:"+ds.MessageID)
 			}
 			var mErr error
-			seenKeys, mErr = markers.Seen(r.Context(), auth.Principal, keys)
+			seenKeys, mErr = markers.Seen(ctx, auth.Principal, keys)
 			if mErr != nil {
 				log.Printf("apiserver: inbox: read-marker Seen: %v", mErr) // degrade to all-unread
+				obs.recordArm(ctx, span, inboxArmMarker, fleet, 0, false, false, mErr)
+			} else {
+				obs.recordArm(ctx, span, inboxArmMarker, fleet, len(seenKeys), true, false, nil)
 			}
 		}
 
@@ -347,10 +372,12 @@ func (s *Server) squadInbox(
 			items[i] = row.item
 		}
 
+		obs.finish(ctx, span, readStart, fleet, teamID, len(items))
+
 		writeJSON(w, http.StatusOK, InboxResponse{
 			// Reflect the EFFECTIVE scope: ?scope=mine narrows an admin back to their team, so the
 			// response is no longer a fleet view and the frontend hides the "all teams" footer.
-			Fleet: sq.Fleet || admin,
+			Fleet: fleet,
 			Items: items,
 		})
 	}
