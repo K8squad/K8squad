@@ -162,6 +162,21 @@ func TestDecisionObsEventsAreShapeOnly(t *testing.T) {
 func TestDecisionObsFunnelAndLatencyMetrics(t *testing.T) {
 	ctx, _, collect := decisionObsHarness(t)
 
+	// ksquad.decision_requests / .resolution are process-wide CUMULATIVE instruments:
+	// decisionInst()'s sync.Once binds them to the single TestMain MeterProvider shared
+	// by every test in this package — including the real-DB decision_integration_test.go,
+	// which also emits approve-mode creates and sorts before this file, so it runs first
+	// and primes the counter. Assert DELTAS around this test's own calls, never absolute
+	// totals, or the suite's run order contaminates the reading.
+	createdLbl := map[string]string{"mode": DecisionModeApprove, "phase": "created"}
+	answeredLbl := map[string]string{"mode": DecisionModeApprove, "phase": DecisionPhaseAnswered}
+	histLbl := map[string]string{"mode": DecisionModeApprove, "terminal_phase": DecisionPhaseAnswered}
+
+	base := collect()
+	baseCreated := funnelSum(base, createdLbl)
+	baseAnswered := funnelSum(base, answeredLbl)
+	baseHistCount, baseHistSum := resolutionDP(base, histLbl)
+
 	start := time.Now().Add(-5 * time.Second)
 	// One real create, one idempotent replay (must NOT add a created funnel row).
 	auth := AuthorContext{Principal: "user:alice"}
@@ -170,25 +185,23 @@ func TestDecisionObsFunnelAndLatencyMetrics(t *testing.T) {
 	recordDecisionResolved(ctx, DecisionModeApprove, DecisionPhaseAnswered, start)
 
 	rm := collect()
-	counter := findSum(t, rm, "ksquad.decision_requests")
-	// phase=created must total 1 (the real create only; the idempotent replay adds none).
-	if got := sumFor(counter, map[string]string{"mode": DecisionModeApprove, "phase": "created"}); got != 1 {
-		t.Errorf("decision_requests{created} = %d, want 1 (idempotent replay must not count)", got)
+	// Real create adds exactly one created funnel row; the idempotent replay adds none.
+	if got := funnelSum(rm, createdLbl) - baseCreated; got != 1 {
+		t.Errorf("Δdecision_requests{created} = %d, want 1 (idempotent replay must not count)", got)
 	}
-	if got := sumFor(counter, map[string]string{"mode": DecisionModeApprove, "phase": DecisionPhaseAnswered}); got != 1 {
-		t.Errorf("decision_requests{answered} = %d, want 1", got)
+	if got := funnelSum(rm, answeredLbl) - baseAnswered; got != 1 {
+		t.Errorf("Δdecision_requests{answered} = %d, want 1", got)
 	}
 
-	hist := findHistogram(t, rm, "ksquad.decision_request.resolution")
-	dp := histDPFor(hist, map[string]string{"mode": DecisionModeApprove, "terminal_phase": DecisionPhaseAnswered})
-	if dp == nil {
+	gotCount, gotSum := resolutionDP(rm, histLbl)
+	if gotCount == 0 {
 		t.Fatalf("resolution histogram missing {mode=approve,terminal_phase=answered} point")
 	}
-	if dp.Count != 1 {
-		t.Errorf("resolution histogram count = %d, want 1", dp.Count)
+	if d := gotCount - baseHistCount; d != 1 {
+		t.Errorf("Δresolution histogram count = %d, want 1", d)
 	}
-	if dp.Sum < 4 { // ~5s elapsed; guard against a bogus near-zero latency
-		t.Errorf("resolution histogram sum = %fs, want ≳5s (created→answered span)", dp.Sum)
+	if d := gotSum - baseHistSum; d < 4 { // ~5s elapsed; guard against a bogus near-zero latency
+		t.Errorf("Δresolution histogram sum = %fs, want ≳5s (created→answered span)", d)
 	}
 }
 
@@ -209,38 +222,40 @@ func TestDecisionAuthorKindAndModeFromPayload(t *testing.T) {
 
 // ---- metric read helpers ----
 
-func findSum(t *testing.T, rm metricdata.ResourceMetrics, name string) metricdata.Sum[int64] {
-	t.Helper()
+// funnelSum returns the summed value of the ksquad.decision_requests counter for the
+// given label set, or 0 if the counter is not registered yet (tolerant baseline read —
+// the instrument is lazily created on first emission, and the counter is cumulative and
+// process-wide, so callers compare deltas rather than absolute totals).
+func funnelSum(rm metricdata.ResourceMetrics, want map[string]string) int64 {
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name == name {
-				s, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("metric %q is not Sum[int64] (%T)", name, m.Data)
-				}
-				return s
+			if m.Name != "ksquad.decision_requests" {
+				continue
+			}
+			if s, ok := m.Data.(metricdata.Sum[int64]); ok {
+				return sumFor(s, want)
 			}
 		}
 	}
-	t.Fatalf("counter %q not found", name)
-	return metricdata.Sum[int64]{}
+	return 0
 }
 
-func findHistogram(t *testing.T, rm metricdata.ResourceMetrics, name string) metricdata.Histogram[float64] {
-	t.Helper()
+// resolutionDP returns the (count, sum) of the ksquad.decision_request.resolution
+// histogram data point for the given label set, or (0, 0) if absent (tolerant read).
+func resolutionDP(rm metricdata.ResourceMetrics, want map[string]string) (uint64, float64) {
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name == name {
-				h, ok := m.Data.(metricdata.Histogram[float64])
-				if !ok {
-					t.Fatalf("metric %q is not Histogram[float64] (%T)", name, m.Data)
+			if m.Name != "ksquad.decision_request.resolution" {
+				continue
+			}
+			if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
+				if dp := histDPFor(h, want); dp != nil {
+					return dp.Count, dp.Sum
 				}
-				return h
 			}
 		}
 	}
-	t.Fatalf("histogram %q not found", name)
-	return metricdata.Histogram[float64]{}
+	return 0, 0
 }
 
 func attrsMatch(set attribute.Set, want map[string]string) bool {
