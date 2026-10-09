@@ -442,6 +442,71 @@ func TestReconcileTerminalDoesNotRequeue(t *testing.T) {
 	}
 }
 
+// TestReconcileTerminalIsAbsorbing_NoResurrection is the ISI-5542 regression:
+// the status projection keys on the SHARED per-work-item coord.claim (one row,
+// work_item_id PK, rewritten in place), so a Run that already settled is re-read
+// as non-terminal the moment a LATER generation re-arms and re-runs the SAME work
+// item. Without the absorbing guard the projector would resurrect the settled CR
+// back to Running — the ISI-5541 zombie (24 CRs stuck Running for weeks, pinning
+// their work item against re-mint). A terminal phase must be immutable: the shared
+// step reads Running, but a Succeeded CR stays Succeeded, and the pass is a no-op
+// (no patch, no requeue — terminal is absorbing).
+func TestReconcileTerminalIsAbsorbing_NoResurrection(t *testing.T) {
+	for _, terminal := range []api.RunPhase{
+		api.RunPhaseSucceeded, api.RunPhaseFailed, api.RunPhaseCancelled,
+	} {
+		t.Run(string(terminal), func(t *testing.T) {
+			run := newRun()
+			run.Status.Phase = terminal
+			c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+				WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+			before := getRun(t, c)
+
+			// A later generation now owns the shared claim: try both a flip back to
+			// non-terminal (Running) and a flip to a DIFFERENT terminal (a later
+			// generation that failed). Both must be absorbed — the settled phase
+			// stays put and the pass is a no-op.
+			for _, shared := range []reconcile.Step{reconcile.StepRunning, reconcile.StepFailed, reconcile.StepSucceeded} {
+				if PhaseOf(shared) == terminal {
+					continue // a matching terminal step is a normal no-op, not a resurrection
+				}
+				res, err := reconcileOnce(t, c, fakeSource{step: shared, found: true})
+				if err != nil {
+					t.Fatalf("shared step %q: reconcile: %v", shared, err)
+				}
+				if res.RequeueAfter != 0 {
+					t.Errorf("shared step %q: absorbing terminal RequeueAfter = %v, want 0", shared, res.RequeueAfter)
+				}
+				got := getRun(t, c)
+				if got.Status.Phase != terminal {
+					t.Errorf("shared step %q: Phase = %q, want frozen at %q", shared, got.Status.Phase, terminal)
+				}
+				if got.ResourceVersion != before.ResourceVersion {
+					t.Errorf("shared step %q: status rewritten on absorbed terminal: rv %s -> %s", shared, before.ResourceVersion, got.ResourceVersion)
+				}
+			}
+		})
+	}
+}
+
+// TestReconcileNonTerminalStillProjectsForward guards the inverse: the absorbing
+// guard must NOT freeze a Run that has not yet settled. A Running CR whose shared
+// claim reads Succeeded (its own generation completing) still advances to
+// Succeeded — only an already-terminal CR is frozen.
+func TestReconcileNonTerminalStillProjectsForward(t *testing.T) {
+	run := newRun()
+	run.Status.Phase = api.RunPhaseRunning
+	c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(run).WithStatusSubresource(&api.Run{}).Build()
+
+	if _, err := reconcileOnce(t, c, fakeSource{step: reconcile.StepSucceeded, found: true}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := getRun(t, c); got.Status.Phase != api.RunPhaseSucceeded {
+		t.Errorf("Phase = %q, want Succeeded (non-terminal must still project forward)", got.Status.Phase)
+	}
+}
+
 // TestReconcileNoOpStillRequeuesWhileNonTerminal is the direct ISI-4195
 // regression: the SECOND pass over an unchanged non-terminal step (the exact
 // shape of a stuck Claiming projection) must STILL requeue. A bare nil on the

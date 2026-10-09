@@ -220,6 +220,41 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	desired := ProjectStatus(runObj.Status, step, runObj.Generation, now)
 
+	// ISI-5542: a terminal Run phase is ABSORBING — the projector must never move
+	// a Run CR off Succeeded/Failed/Cancelled. The projection is keyed on the
+	// SHARED per-work-item coord.claim (one row, work_item_id PRIMARY KEY, rewritten
+	// in place on every re-claim), so a Run that long ago settled is RE-READ as
+	// non-terminal the moment a LATER generation re-arms and re-runs the SAME work
+	// item: StepForWorkItem returns the new generation's live step and the stale
+	// projection resurrects the settled CR back to Running. That is the ISI-5541
+	// zombie — 24 Run CRs sat status.phase=Running for 530–603h while their claims
+	// had settled succeeded weeks earlier, silently pinning their work item against
+	// re-mint (intake's liveRun suppression keys on CR phase, intake.go) and
+	// inflating the Running count. Terminal is immutable per the §8 state machine,
+	// so freezing it here is semantically correct, not merely defensive. The guard
+	// precedes the side-channels on purpose: re-rendering RBAC/MCP for a resurrected
+	// (already-released) terminal Run would re-grant a dead run's capability plane.
+	//
+	// It fires on ANY change away from the settled phase — not only a flip back to
+	// non-terminal, but also a flip to a DIFFERENT terminal (a later generation that
+	// FAILED would otherwise re-label this generation's Succeeded CR as Failed via
+	// the shared claim). A no-op (desired.Phase == current terminal) does NOT fire,
+	// so the terminal-state side-channel sweeps (RBAC/MCP release drift) still flow.
+	if isTerminalPhase(runObj.Status.Phase) && desired.Phase != runObj.Status.Phase {
+		// A resurrection attempt means a later generation now owns this work item's
+		// shared claim; record + log it so the zombie-prevention is observable
+		// (ISI-5542 ask 3: telemetry for a settled Run that would otherwise read
+		// non-terminal again).
+		r.Health.ObserveRunPhaseResurrectionSuppressed(ctx, runObj.Spec.TeamRef.Name)
+		ctrl.LoggerFrom(ctx).Info("run phase resurrection suppressed; terminal is absorbing",
+			"run", req.String(),
+			"workItemRef", runObj.Spec.WorkItemRef,
+			"terminalPhase", runObj.Status.Phase,
+			"sharedClaimStep", step)
+		// Terminal is absorbing: no patch, no requeue.
+		return ctrl.Result{}, nil
+	}
+
 	// Toolchain RBAC side-channel (Epic B): converge while live, release on
 	// terminal. Fail-closed — a resolution or render error requeues rather
 	// than letting a Run proceed with partial (or stale) grants.

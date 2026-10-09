@@ -39,6 +39,12 @@ const (
 	dependencyUpName      = "ksquad.dependency.up"
 	reconcileDurationName = "ksquad.controller.reconcile.duration"
 	reconcileErrorsName   = "ksquad.controller.reconcile.errors"
+	// runsResurrectionName counts settled Run CRs the status projector refused to
+	// move back off a terminal phase (ISI-5542). A non-zero rate means a work
+	// item's shared coord.claim was re-armed/re-run under a later generation while
+	// a prior generation's Run CR still existed — the ISI-5541 zombie class. Steady
+	// state is zero; sustained increments are the alertable signal.
+	runsResurrectionName = "ksquad.runs.phase_resurrection_suppressed"
 )
 
 // Bounded attribute keys.
@@ -98,6 +104,7 @@ type Options struct {
 type Metrics struct {
 	reconcileDuration metric.Float64Histogram
 	reconcileErrors   metric.Int64Counter
+	runsResurrection  metric.Int64Counter
 
 	deps          []Dependency
 	probeInterval time.Duration
@@ -139,6 +146,12 @@ func Register(meter metric.Meter, opts Options) (*Metrics, error) {
 	if m.reconcileErrors, err = meter.Int64Counter(
 		reconcileErrorsName,
 		metric.WithDescription("Per-controller reconcile errors (WS-E/D5)."),
+	); err != nil {
+		return nil, err
+	}
+	if m.runsResurrection, err = meter.Int64Counter(
+		runsResurrectionName,
+		metric.WithDescription("Settled Run CRs the status projector refused to move off a terminal phase (ISI-5542 zombie prevention)."),
 	); err != nil {
 		return nil, err
 	}
@@ -196,6 +209,18 @@ func (m *Metrics) ObserveReconcile(ctx context.Context, controller string, d tim
 	if err != nil {
 		m.reconcileErrors.Add(ctx, 1, attrs)
 	}
+}
+
+// ObserveRunPhaseResurrectionSuppressed records one instance of the status
+// projector refusing to resurrect a settled Run CR back to a non-terminal phase
+// (ISI-5542). team is the owning Team name (bounded tenant label; never a run id
+// / work-item / ticket, per the NFR-OBS3 cardinality firewall). Nil-safe so the
+// reconciler calls it unconditionally.
+func (m *Metrics) ObserveRunPhaseResurrectionSuppressed(ctx context.Context, team string) {
+	if m == nil {
+		return
+	}
+	m.runsResurrection.Add(ctx, 1, metric.WithAttributes(attribute.String(attrTeam, team)))
 }
 
 // Start runs the dependency probe loop until ctx is cancelled: it probes once

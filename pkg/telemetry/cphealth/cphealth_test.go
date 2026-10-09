@@ -71,6 +71,36 @@ func TestRegisterCreatesInstruments(t *testing.T) {
 	}
 }
 
+// TestObserveRunPhaseResurrectionSuppressed is the ISI-5542 telemetry contract:
+// each suppressed resurrection increments the counter under the owning-team label
+// (bounded; never a run id / work item), and the nil receiver is a safe no-op so
+// an unwired reconciler calls it unconditionally.
+func TestObserveRunPhaseResurrectionSuppressed(t *testing.T) {
+	meter, reader := newTestMeter(t)
+	m, err := Register(meter, Options{})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var nilM *Metrics
+	nilM.ObserveRunPhaseResurrectionSuppressed(context.Background(), "alpha") // must not panic
+
+	m.ObserveRunPhaseResurrectionSuppressed(context.Background(), "alpha")
+	m.ObserveRunPhaseResurrectionSuppressed(context.Background(), "alpha")
+	m.ObserveRunPhaseResurrectionSuppressed(context.Background(), "beta")
+
+	sum, ok := collect(t, reader)[runsResurrectionName].Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("resurrection metric is not an int64 sum: %T", collect(t, reader)[runsResurrectionName].Data)
+	}
+	byTeam := map[string]int64{}
+	for _, dp := range sum.DataPoints {
+		byTeam[attrVal(dp.Attributes, attrTeam)] = dp.Value
+	}
+	if byTeam["alpha"] != 2 || byTeam["beta"] != 1 {
+		t.Errorf("resurrection counts = %v, want alpha=2 beta=1", byTeam)
+	}
+}
+
 func TestRunsActiveGaugeLabels(t *testing.T) {
 	meter, reader := newTestMeter(t)
 	_, err := Register(meter, Options{
