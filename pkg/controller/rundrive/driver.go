@@ -71,6 +71,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 	"github.com/K8squad/K8squad/pkg/telemetry"
@@ -160,6 +161,12 @@ type Claims interface {
 	// FailEnter is the terminal variant: same fence-first discipline, step →
 	// failed, checkout released.
 	FailEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
+	// FailClosedPark is the ISI-5543 circuit-breaker terminal: FailEnter PLUS a
+	// durable block (work item blocked_reason = reason) so intake stops
+	// re-dispatching a run whose failure is DETERMINISTIC and non-retryable
+	// (context-overflow — contextasm.IsFailClosed). ok=false when the fromFence
+	// no longer holds (someone else settled first).
+	FailClosedPark(ctx context.Context, workItemID, runID string, fromFence int64, reason string) (ok bool, err error)
 	// CancelEnter is the kill-side entry (apiserver, §3.3): fence-first move
 	// running-ish → cancelling; the driver then owes the teardown + finish.
 	CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (ok bool, err error)
@@ -520,6 +527,10 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
 		}
+		if contextasm.IsFailClosed(err) {
+			finalStep = reconcile.StepFailed
+			return r.failClosedPark(ctx, &run, runID, store.Fence(), err)
+		}
 		return ctrl.Result{}, fmt.Errorf("rundrive: drive %s: %w", req.NamespacedName, err)
 	}
 	if err := errors.Join(store.Err(), effects.Err()); err != nil {
@@ -534,6 +545,17 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 			// stamped idempotently, no durable step moves — a poll tick.
 			noopTick = true
 			return r.waitEndpointSlot(ctx, &run, runID, err), nil
+		}
+		if contextasm.IsFailClosed(err) {
+			// ISI-5543: the dispatch effect's context assembly failed closed
+			// (must-include > window). This is DETERMINISTIC — the item/comment
+			// history will not shrink and the model window is fixed — so the
+			// generic requeue below would loop every ~11 min (no sandbox pod →
+			// zombie reap → failed→todo settle → intake re-mint) forever, churning
+			// a scarce per-endpoint gate slot. Terminalize the run and PARK the
+			// item instead, so the breaker stops it here at this generation.
+			finalStep = reconcile.StepFailed
+			return r.failClosedPark(ctx, &run, runID, store.Fence(), err)
 		}
 		// An infrastructure error mid-effect must not read as "applied": requeue.
 		return ctrl.Result{}, fmt.Errorf("rundrive: effects for %s: %w", req.NamespacedName, err)
@@ -576,6 +598,34 @@ func (r *Driver) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result
 // unaffected (a different condition type survives its SetStatusCondition
 // merge), so both signals read side by side on the CR.
 const ConditionInvalidWorkItemRef = "InvalidWorkItemRef"
+
+// failClosedPark is the ISI-5543 circuit-breaker terminal for a DETERMINISTIC
+// fail-closed dispatch error (context assembly must-include > window —
+// contextasm.IsFailClosed). It terminalizes the run (step → failed) AND parks
+// the work item (blocked_reason) in one coord transaction via FailClosedPark,
+// so the settle's failed→todo lane move no longer feeds intake's re-mint loop:
+// the item is blocked, surfaced on the board with the cause, and a human must
+// resolve the sizing (shrink the item, split the work, or raise the model
+// window per ISI-5540) and clear the block to re-dispatch. Fence-guarded: an
+// ok=false means someone else settled the generation first, which is a clean
+// absorb (no error, no requeue) — the terminal step the other path committed
+// stops the drive exactly the same way.
+func (r *Driver) failClosedPark(ctx context.Context, run *api.Run, runID string, fence int64, cause error) (ctrl.Result, error) {
+	const reason = "context_window_exceeded"
+	ok, err := r.Claims.FailClosedPark(ctx, run.Spec.WorkItemRef, runID, fence, reason)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("rundrive: park fail-closed run %s: %w", runID, err)
+	}
+	if !ok {
+		// Fence moved / already terminal: another path settled this generation.
+		// Absorb — the committed terminal step stops the drive on the next pass.
+		return ctrl.Result{}, nil
+	}
+	slog.WarnContext(ctx, "rundrive: run failed closed (non-retryable); parked work item — not re-dispatching",
+		"run.id", runID, "run.work_item_ref", run.Spec.WorkItemRef,
+		"blocked_reason", reason, "cause", cause.Error())
+	return ctrl.Result{}, nil
+}
 
 // abandonInvalidRef is the ISI-4354 terminal path for an unparseable
 // spec.workItemRef: stamp the abandonment condition on the status (once —

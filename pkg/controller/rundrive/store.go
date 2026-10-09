@@ -187,7 +187,7 @@ func (c *ProdClaims) LapsUsed(ctx context.Context, runID string) (int, error) {
 // longer held (someone else reclaimed) or the Run went terminal — commit
 // nothing. stepClause is empty (move only via set below) or a SQL fragment
 // `, reconcile_step = '...'`.
-func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string, fromFence int64, stepClause, toState string) (int64, bool, error) {
+func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string, fromFence int64, stepClause, toState, parkReason string) (int64, bool, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: begin: %w", event, err)
@@ -271,6 +271,45 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: settle: %w", event, err)
 	}
 
+	// ISI-5543 retry circuit-breaker: a deterministic fail-closed terminal
+	// (context-overflow, must-include > window) parks the item so intake stops
+	// re-dispatching the settle's failed→todo lane forever. `blocked` is a
+	// CONDITION (blocked_reason), not a lane (§8.6), so the item keeps the lane
+	// the settle wrote and the block is the dispatch gate. Idempotent: only the
+	// FIRST park stamps the reason (blocked_reason IS NULL), so a re-drive never
+	// clobbers a human's own block (e.g. needs_approval) nor re-audits. The audit
+	// row + board-visible comment are written ONLY when this call actually parked.
+	if parkReason != "" {
+		res, perr := tx.ExecContext(ctx, `
+			UPDATE coord.work_item
+			   SET blocked_reason = $2, updated_at = now()
+			 WHERE id = $1::uuid AND blocked_reason IS NULL`,
+			workItemID, parkReason)
+		if perr != nil {
+			return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: park: %w", event, perr)
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO coord.audit_log
+				       (work_item_id, run_id, event_type, principal, fence_token, to_state, payload)
+				VALUES ($1::uuid, NULLIF($2,'')::uuid, 'work_item_parked', $3, $4, 'failed',
+				        jsonb_build_object('blocked_reason', $5::text))`,
+				workItemID, runID, c.principal, fenceAfter, parkReason); err != nil {
+				return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: park audit: %w", event, err)
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO coord.comment (work_item_id, author_principal, body)
+				VALUES ($1::uuid, $2, $3)`,
+				workItemID, c.principal,
+				"Retry circuit-breaker: this run failed with a deterministic, non-retryable error ("+parkReason+
+					"). The item is parked (blocked) rather than re-dispatched — re-running cannot succeed until the "+
+					"underlying cause is resolved (e.g. shrink the item/comment history, split the work, or raise the "+
+					"model context window). Clear the block to re-enable dispatch."); err != nil {
+				return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: park comment: %w", event, err)
+			}
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return 0, false, fmt.Errorf("rundrive.ProdClaims.%s: commit: %w", event, err)
 	}
@@ -282,13 +321,33 @@ func (c *ProdClaims) enter(ctx context.Context, workItemID, runID, event string,
 // the audit + outbox rows.
 func (c *ProdClaims) RetryEnter(ctx context.Context, workItemID, runID string, fromFence int64) (int64, bool, error) {
 	return c.enter(ctx, workItemID, runID, "retry_lap_entered", fromFence,
-		`, reconcile_step = 'claiming_sandbox'`, "claiming_sandbox")
+		`, reconcile_step = 'claiming_sandbox'`, "claiming_sandbox", "")
 }
 
 // FailEnter implements Claims.FailEnter: same custody fix, step → failed.
 func (c *ProdClaims) FailEnter(ctx context.Context, workItemID, runID string, fromFence int64) (bool, error) {
 	_, ok, err := c.enter(ctx, workItemID, runID, "run_failed_entered", fromFence,
-		`, reconcile_step = 'failed'`, "failed")
+		`, reconcile_step = 'failed'`, "failed", "")
+	return ok, err
+}
+
+// FailClosedPark implements Claims.FailClosedPark: the ISI-5543 retry
+// circuit-breaker terminal. It is FailEnter (fence-first custody release, step →
+// failed, the ISI-4237 terminal settle that returns the lane to todo) PLUS a
+// durable block: the work item's blocked_reason is stamped so intake refuses to
+// re-mint it. A deterministic fail-closed run (context-overflow, must-include >
+// window — contextasm.IsFailClosed) can NEVER succeed on re-dispatch, so without
+// the block the settle's failed→todo lane move feeds the runaway mint loop
+// (ISI-5541: 1032 generations). `blocked` is a CONDITION (blocked_reason), not a
+// lane (§8.6): the item stays on todo but the blocked_reason guard in intake's
+// DueWorkItems/RearmSettled removes it from dispatch until a human clears the
+// block. reason is the board-surfaced cause; empty defaults to a generic marker.
+func (c *ProdClaims) FailClosedPark(ctx context.Context, workItemID, runID string, fromFence int64, reason string) (bool, error) {
+	if reason == "" {
+		reason = "non_retryable_failure"
+	}
+	_, ok, err := c.enter(ctx, workItemID, runID, "run_failed_entered", fromFence,
+		`, reconcile_step = 'failed'`, "failed", reason)
 	return ok, err
 }
 
@@ -345,7 +404,7 @@ func (c *ProdClaims) ClearSandboxBind(ctx context.Context, runID string) error {
 // fail path, step → cancelled. Terminal, so the checkout is released.
 func (c *ProdClaims) CancelEnter(ctx context.Context, workItemID, runID string, fromFence int64) (bool, error) {
 	_, ok, err := c.enter(ctx, workItemID, runID, "run_cancelled_entered", fromFence,
-		`, reconcile_step = 'cancelled'`, "cancelled")
+		`, reconcile_step = 'cancelled'`, "cancelled", "")
 	return ok, err
 }
 

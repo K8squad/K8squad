@@ -54,6 +54,12 @@ type fakeIntakeSource struct {
 	// rearmErr, when set, makes RearmSettled fail (the fail-closed path must
 	// skip the mint entirely, leaving the item on todo for the next tick).
 	rearmErr error
+	// parked records the work-item ids ParkWorkItem was called for, in order
+	// (ISI-5543 circuit-breaker), mapped to the reason passed.
+	parked map[string]string
+	// parkErr, when set, makes ParkWorkItem fail (honest-degraded: logged, item
+	// left for the next tick).
+	parkErr error
 }
 
 func (f *fakeIntakeSource) DueWorkItems(_ context.Context, limit int) ([]IntakeItem, error) {
@@ -67,6 +73,17 @@ func (f *fakeIntakeSource) DueWorkItems(_ context.Context, limit int) ([]IntakeI
 func (f *fakeIntakeSource) RearmSettled(_ context.Context, workItemID string) error {
 	f.rearmed = append(f.rearmed, workItemID)
 	return f.rearmErr
+}
+
+func (f *fakeIntakeSource) ParkWorkItem(_ context.Context, workItemID, reason string) error {
+	if f.parkErr != nil {
+		return f.parkErr
+	}
+	if f.parked == nil {
+		f.parked = map[string]string{}
+	}
+	f.parked[workItemID] = reason
+	return nil
 }
 
 // squadGraph builds the minimal resolvable world: a Team (uid teamUID, squad
@@ -141,6 +158,7 @@ func TestSQLIntakeSourceDueWorkItems(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta(`SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
+		   AND wi.blocked_reason IS NULL
 		   AND NOT (wi.source = 'discussion'
 		            AND EXISTS (SELECT 1 FROM coord.claim c
 		                         WHERE c.work_item_id = wi.id
@@ -1071,6 +1089,7 @@ func TestSQLIntakeSourceRearmSettled(t *testing.T) {
 		         SELECT 1 FROM coord.work_item wi
 		          WHERE wi.id = coord.claim.work_item_id
 		            AND wi.state = 'todo'
+		            AND wi.blocked_reason IS NULL
 		            AND wi.source IS DISTINCT FROM 'discussion')
 		 RETURNING fence_token`)
 	auditQ := regexp.QuoteMeta(`INSERT INTO coord.audit_log
@@ -1108,6 +1127,151 @@ func TestSQLIntakeSourceRearmSettled(t *testing.T) {
 	mock.ExpectCommit()
 	if err := src.RearmSettled(context.Background(), itemID); err != nil {
 		t.Fatalf("RearmSettled (no-op): %v", err)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ISI-5543 retry circuit-breaker (generation-cap backstop)
+// ---------------------------------------------------------------------------
+
+// TestIntakeSweepCircuitBreakerParksAtMaxGenerations is the core incident
+// guard: a ticket that has already minted MaxGenerations terminal-failed
+// generations and bounced back to 'todo' is PARKED (blocked_reason) rather than
+// re-minted — closing the ISI-5541 loop that reached 1032 generations. The item
+// must NOT be re-armed and NO new Run may be minted.
+func TestIntakeSweepCircuitBreakerParksAtMaxGenerations(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	// A terminal (Failed) generation-3 Run: terminal so it does not suppress
+	// intake as a live run, but its -r3 suffix makes highestGen == 3.
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-r3", Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseFailed},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}
+	in, cl, logs := newIntake(t, src, objs...)
+	in.MaxGenerations = 3 // cap: highestGen(3) >= 3 trips the breaker
+
+	in.sweep(context.Background())
+
+	// Parked with the generation-cap reason, NOT re-armed.
+	if got, ok := src.parked[itemID]; !ok || got != "retry_circuit_breaker_max_generations_3" {
+		t.Fatalf("item must be parked with the cap reason; parked=%v", src.parked)
+	}
+	if len(src.rearmed) != 0 {
+		t.Fatalf("a parked item must NOT be re-armed; rearmed=%v", src.rearmed)
+	}
+	// No new generation minted: only the seeded terminal Run remains.
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	if len(runs.Items) != 1 || runs.Items[0].Name != "intake-"+itemID+"-r3" {
+		t.Fatalf("circuit-breaker must mint NO new Run; got %d: %+v", len(runs.Items), runs.Items)
+	}
+	// The decision is logged (operator visibility).
+	joined := strings.Join(*logs, "\n")
+	if !strings.Contains(joined, "parked by circuit-breaker") {
+		t.Fatalf("park must be logged; logs=%v", *logs)
+	}
+}
+
+// TestIntakeSweepBelowCapStillDispatches guards the breaker against firing
+// early: a ticket with fewer than MaxGenerations generations re-dispatches
+// exactly as before (re-arm + mint the next generation), never parked.
+func TestIntakeSweepBelowCapStillDispatches(t *testing.T) {
+	const (
+		itemID  = "11111111-1111-1111-1111-111111111111"
+		teamUID = "22222222-2222-2222-2222-222222222222"
+	)
+	objs := squadGraph(teamUID, "squad-alpha", "alpha", "coder", "proj")
+	objs = append(objs, &api.Run{
+		ObjectMeta: metav1.ObjectMeta{Name: "intake-" + itemID + "-coder-r3", Namespace: "squad-alpha"},
+		Spec:       api.RunSpec{WorkItemRef: itemID},
+		Status:     api.RunStatus{Phase: api.RunPhaseFailed},
+	})
+	src := &fakeIntakeSource{items: []IntakeItem{
+		{ID: itemID, TeamID: teamUID, ProjectID: "proj"},
+	}}
+	in, cl, _ := newIntake(t, src, objs...)
+	in.MaxGenerations = 5 // cap: highestGen(3) < 5 → still dispatchable
+
+	in.sweep(context.Background())
+
+	if len(src.parked) != 0 {
+		t.Fatalf("below the cap the item must NOT be parked; parked=%v", src.parked)
+	}
+	if len(src.rearmed) != 1 || src.rearmed[0] != itemID {
+		t.Fatalf("below the cap the item must be re-armed before mint; rearmed=%v", src.rearmed)
+	}
+	var runs api.RunList
+	if err := cl.List(context.Background(), &runs); err != nil {
+		t.Fatalf("list runs: %v", err)
+	}
+	// The seeded r3 + a freshly minted r4.
+	want := "intake-" + itemID + "-coder-r4"
+	found := false
+	for _, r := range runs.Items {
+		if r.Name == want {
+			found = true
+		}
+	}
+	if !found || len(runs.Items) != 2 {
+		t.Fatalf("below the cap must mint the next generation %q; got %d: %+v", want, len(runs.Items), runs.Items)
+	}
+}
+
+// TestSQLIntakeSourceParkWorkItem pins the shipped park transaction: a guarded
+// blocked_reason UPDATE, and — only when it parked a row — the audit, comment
+// and outbox co-committed. A re-park of an already-blocked item (0 rows) is an
+// audited no-op: no further writes, just a commit.
+func TestSQLIntakeSourceParkWorkItem(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	src, err := NewSQLIntakeSource(db)
+	if err != nil {
+		t.Fatalf("NewSQLIntakeSource: %v", err)
+	}
+	const itemID = "11111111-1111-1111-1111-111111111111"
+	const reason = "retry_circuit_breaker_max_generations_10"
+
+	parkQ := regexp.QuoteMeta(`UPDATE coord.work_item
+		   SET blocked_reason = $2, updated_at = now()
+		 WHERE id = $1::uuid AND blocked_reason IS NULL`)
+	auditQ := regexp.QuoteMeta(`INSERT INTO coord.audit_log`)
+	commentQ := regexp.QuoteMeta(`INSERT INTO coord.comment`)
+	outboxQ := regexp.QuoteMeta(`INSERT INTO coord.outbox`)
+
+	// Happy park: one row updated ⇒ audit + comment + outbox.
+	mock.ExpectBegin()
+	mock.ExpectExec(parkQ).WithArgs(itemID, reason).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(auditQ).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(commentQ).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(outboxQ).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	if err := src.ParkWorkItem(context.Background(), itemID, reason); err != nil {
+		t.Fatalf("ParkWorkItem (park): %v", err)
+	}
+
+	// Re-park: already blocked (0 rows) ⇒ committed no-op, no audit/comment/outbox.
+	mock.ExpectBegin()
+	mock.ExpectExec(parkQ).WithArgs(itemID, reason).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+	if err := src.ParkWorkItem(context.Background(), itemID, reason); err != nil {
+		t.Fatalf("ParkWorkItem (no-op): %v", err)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

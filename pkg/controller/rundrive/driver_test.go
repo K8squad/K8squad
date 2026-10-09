@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	api "github.com/K8squad/K8squad/api/v1alpha1"
+	"github.com/K8squad/K8squad/pkg/contextasm"
 	"github.com/K8squad/K8squad/pkg/coord"
 	"github.com/K8squad/K8squad/pkg/reconcile"
 )
@@ -68,6 +69,11 @@ type fakeClaims struct {
 	failErr  error
 	failCall bool
 
+	failParkOK     bool
+	failParkErr    error
+	failParkReason string
+	failParkCall   bool
+
 	cancelFinishOK   bool
 	cancelFinishErr  error
 	cancelFinishCall bool
@@ -99,6 +105,11 @@ func (f *fakeClaims) RetryEnter(_ context.Context, workItemID, runID string, fen
 func (f *fakeClaims) FailEnter(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
 	f.failCall = true
 	return f.failOK, f.failErr
+}
+func (f *fakeClaims) FailClosedPark(_ context.Context, workItemID, runID string, fence int64, reason string) (bool, error) {
+	f.failParkCall = true
+	f.failParkReason = reason
+	return f.failParkOK, f.failParkErr
 }
 func (f *fakeClaims) CancelEnter(_ context.Context, workItemID, runID string, fence int64) (bool, error) {
 	return true, nil
@@ -401,6 +412,56 @@ func TestDriveEffectsErrorRequeues(t *testing.T) {
 
 	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err == nil {
 		t.Fatal("effects error must surface as a reconcile error")
+	}
+}
+
+// TestDriveFailClosedParks (ISI-5543): a DETERMINISTIC fail-closed dispatch
+// error (context assembly must-include > window) must NOT requeue into the
+// runaway retry loop — the driver terminalizes the run and parks the work item
+// (FailClosedPark) so intake stops re-minting it. No reconcile error surfaces
+// (the breaker handled it); the park carries the context-window reason.
+func TestDriveFailClosedParks(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1, failParkOK: true}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
+	// The exact wrap the live path produces: the dispatch effect's submit wraps
+	// the assembler's story-5.9 sentinel back up to the effects seam.
+	eff := &fakeMachineEffects{err: fmt.Errorf("coord.ProdEffects.Dispatch: submit: %w",
+		fmt.Errorf("must-include 65597 tokens > window 65467: %w", contextasm.ErrMustIncludeExceedsWindow))}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("fail-closed must be absorbed by the breaker, not surfaced: %v", err)
+	}
+	if !claims.failParkCall {
+		t.Fatal("a fail-closed dispatch must call FailClosedPark (park the item)")
+	}
+	if claims.failParkReason != "context_window_exceeded" {
+		t.Fatalf("park reason = %q, want context_window_exceeded", claims.failParkReason)
+	}
+	if claims.failCall {
+		t.Fatal("fail-closed must use FailClosedPark, not the plain FailEnter")
+	}
+}
+
+// TestDriveFailClosedParkRaceAbsorbs: FailClosedPark ok=false (another path
+// settled this generation first) is a clean absorb — no error, no requeue.
+func TestDriveFailClosedParkRaceAbsorbs(t *testing.T) {
+	run := newTestRun("11111111-1111-1111-1111-111111111111", "10000000-0000-0000-0000-000000000001")
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(run).Build()
+	claims := &fakeClaims{found: true, state: ClaimState{Step: reconcile.StepPending, Fence: 1, ItemState: "todo"},
+		acquireOK: true, acquireFence: 1, failParkOK: false}
+	store := &fakeMachineStore{step: reconcile.StepPending, fence: 1, advanceOK: true}
+	eff := &fakeMachineEffects{err: fmt.Errorf("submit: %w", contextasm.ErrMustIncludeExceedsWindow)}
+	d := newDriver(cl, claims, &fakePauses{}, &fakeRunner{store: store, effects: eff})
+
+	if _, err := runOnce(t, d, types.NamespacedName{Namespace: "default", Name: "run-1"}); err != nil {
+		t.Fatalf("a lost park race must absorb, not surface an error: %v", err)
+	}
+	if !claims.failParkCall {
+		t.Fatal("FailClosedPark must still be attempted")
 	}
 }
 

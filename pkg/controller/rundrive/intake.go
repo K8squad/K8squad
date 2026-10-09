@@ -90,6 +90,17 @@ const DefaultIntakeMaxPerPass = 32
 // the operator's intake decision rather than defaulting it away.
 const IntakePrincipal = "ksquad-intake"
 
+// DefaultMaxGenerations caps how many Run generations intake mints for ONE work
+// item before the ISI-5543 retry circuit-breaker parks it (generation-cap
+// backstop). The ISI-5541 incident item minted 1032 generations against a
+// deterministic fail-closed error, re-minting every ~11 min indefinitely; a
+// legitimate board item needs only a handful of re-dispatches (a human reopen, a
+// transient death-retry lap). Past this cap the item is parked (blocked_reason)
+// rather than re-dispatched — a reason-AGNOSTIC safety valve BENEATH the
+// driver's fail-closed classifier (failClosedPark), catching any deterministic
+// failure class the driver does not explicitly classify. Generous on purpose:
+// the backstop exists to bound runaway churn, not to second-guess normal reopens.
+const DefaultMaxGenerations = 10
 
 // IntakeItem is one due board ticket: identifiers only (the FR-B3 rule above).
 type IntakeItem struct {
@@ -124,6 +135,13 @@ type IntakeSource interface {
 	// are mid-flight match the guard zero times: a pure no-op, never a clobber
 	// of a live Run's step.
 	RearmSettled(ctx context.Context, workItemID string) error
+	// ParkWorkItem is the ISI-5543 retry circuit-breaker (generation-cap
+	// backstop): it stamps the work item's blocked_reason so DueWorkItems and
+	// RearmSettled stop re-dispatching it. Idempotent — only a currently-
+	// unblocked item (blocked_reason IS NULL) is parked, with its §6.5 audit, a
+	// board-visible comment and §6.6 outbox co-committed; a re-park of an
+	// already-blocked item is an audited no-op (never clobbers a human's block).
+	ParkWorkItem(ctx context.Context, workItemID, reason string) error
 }
 
 // sqlIntakeSource binds IntakeSource to the coord schema. Only rows that can
@@ -153,10 +171,18 @@ func (s sqlIntakeSource) DueWorkItems(ctx context.Context, limit int) ([]IntakeI
 	// FRESH discussion item (no terminal claim yet — DueWorkItems is the sole
 	// Run-mint path) is still selected for its first dispatch. A source='board'
 	// item is untouched: the NOT-clause is false, so ISI-4556 re-arm stands.
+	// ISI-5543 retry circuit-breaker: a parked item (blocked_reason IS NOT NULL)
+	// is NEVER re-dispatched — the breaker (driver fail-closed classify, or the
+	// generation-cap backstop) stamps blocked_reason precisely to stop the
+	// re-mint loop, and `blocked` is a CONDITION not a lane (§8.6), so the item
+	// stays on 'todo' but is removed from the dispatch set until a human clears
+	// the block. This is the dispatch-side gate; RearmSettled carries the same
+	// guard (defense in depth at both intake seams).
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
 		SELECT wi.id::text, wi.team_id::text, wi.project_id::text, wi.requested_agent, wi.source
 		  FROM coord.work_item wi
 		 WHERE wi.state = 'todo' AND wi.team_id IS NOT NULL
+		   AND wi.blocked_reason IS NULL
 		   AND NOT (wi.source = 'discussion'
 		            AND EXISTS (SELECT 1 FROM coord.claim c
 		                         WHERE c.work_item_id = wi.id
@@ -239,6 +265,7 @@ func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) er
 		         SELECT 1 FROM coord.work_item wi
 		          WHERE wi.id = coord.claim.work_item_id
 		            AND wi.state = 'todo'
+		            AND wi.blocked_reason IS NULL
 		            AND wi.source IS DISTINCT FROM 'discussion')
 		 RETURNING fence_token`, terminalSet)
 	switch err := tx.QueryRowContext(ctx, q, workItemID).Scan(&fenceAfter); {
@@ -281,6 +308,76 @@ func (s sqlIntakeSource) RearmSettled(ctx context.Context, workItemID string) er
 	return nil
 }
 
+// ParkWorkItem implements IntakeSource.ParkWorkItem: the ISI-5543 retry
+// circuit-breaker park. ONE transaction stamps the work item's blocked_reason
+// (so DueWorkItems/RearmSettled stop re-dispatching it) and — only when it
+// actually parked — co-commits the §6.5 audit row, a board-visible change
+// comment and the §6.6 outbox event. Idempotent and non-clobbering: the UPDATE
+// is guarded on `blocked_reason IS NULL`, so a re-park of an already-blocked
+// item (ours OR a human's needs_approval block) matches zero rows and the whole
+// transaction is an audited no-op. `blocked` is a CONDITION, not a lane (§8.6):
+// the item keeps its lane and the block is purely the dispatch gate.
+func (s sqlIntakeSource) ParkWorkItem(ctx context.Context, workItemID, reason string) error {
+	if reason == "" {
+		reason = "retry_circuit_breaker"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	res, err := tx.ExecContext(ctx, `
+		UPDATE coord.work_item
+		   SET blocked_reason = $2, updated_at = now()
+		 WHERE id = $1::uuid AND blocked_reason IS NULL`,
+		workItemID, reason)
+	if err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: park: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Already blocked (ours or a human's) or absent: nothing to park. Commit
+		// the empty transaction so success and audited no-op answer identically.
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("rundrive.intake.ParkWorkItem: commit (no-op): %w", err)
+		}
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log
+		       (work_item_id, run_id, event_type, principal, to_state, payload)
+		VALUES ($1::uuid, NULL, 'work_item_parked', $2, 'todo',
+		        jsonb_build_object('blocked_reason', $3::text))`,
+		workItemID, OperatorPrincipal, reason); err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: audit: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.comment (work_item_id, author_principal, body)
+		VALUES ($1::uuid, $2, $3)`,
+		workItemID, OperatorPrincipal,
+		"Retry circuit-breaker: this item reached the maximum re-dispatch generations ("+reason+
+			") and is parked (blocked) rather than re-minted. Repeated re-dispatch kept failing — inspect the latest "+
+			"run failures, resolve the cause, and clear the block to re-enable dispatch."); err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: comment: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.outbox
+		       (entity, project_id, squad, event_type, work_item_id, run_id, payload)
+		SELECT 'run', wi.project_id, wi.team_id::text, 'work_item_parked',
+		       wi.id, NULL,
+		       jsonb_build_object('blocked_reason', $2::text)
+		  FROM coord.work_item wi WHERE wi.id = $1::uuid`,
+		workItemID, reason); err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: outbox: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rundrive.intake.ParkWorkItem: commit: %w", err)
+	}
+	return nil
+}
+
 // Intake is a manager Runnable: every tick, dispatch due board tickets to the
 // Run plane by creating their Run CRs.
 type Intake struct {
@@ -293,8 +390,20 @@ type Intake struct {
 	Tick time.Duration
 	// MaxPerPass bounds Run creates per tick (<= 0 → DefaultIntakeMaxPerPass).
 	MaxPerPass int
+	// MaxGenerations caps re-dispatch generations per work item before the
+	// ISI-5543 circuit-breaker parks it (<= 0 → DefaultMaxGenerations).
+	MaxGenerations int
 	// Log receives diagnostics (nil discards).
 	Log func(format string, args ...any)
+}
+
+// maxGenerations is the ISI-5543 generation cap in effect (MaxGenerations when
+// set, else DefaultMaxGenerations).
+func (i *Intake) maxGenerations() int {
+	if i.MaxGenerations > 0 {
+		return i.MaxGenerations
+	}
+	return DefaultMaxGenerations
 }
 
 // Start runs the sweep until ctx is done. Errors are logged and retried next
@@ -404,6 +513,27 @@ func (i *Intake) sweep(ctx context.Context) {
 
 		// A non-terminal Run owns the ticket: suppress intake entirely.
 		if liveRun[item.ID] {
+			continue
+		}
+
+		// ISI-5543 retry circuit-breaker (generation-cap backstop): a ticket that
+		// has already minted MaxGenerations Run generations and bounced back to
+		// 'todo' each time is wedged on a deterministic failure (the ISI-5541
+		// 1032-generation incident). Park it (blocked_reason) instead of minting
+		// generation N+1 — a reason-agnostic safety valve beneath the driver's
+		// fail-closed classifier, for any deterministic class the driver does not
+		// classify. highestGen is the max surviving generation (ISI-4829), so the
+		// NEXT mint would be highestGen+1; the cap trips at highestGen >= cap. A
+		// park error is honest-degraded: log and leave the item for the next tick.
+		if highestGen[item.ID] >= i.maxGenerations() {
+			reason := fmt.Sprintf("retry_circuit_breaker_max_generations_%d", i.maxGenerations())
+			if err := i.Source.ParkWorkItem(ctx, item.ID, reason); err != nil {
+				i.logf("rundrive.intake: work item %s not parked after %d generations: %v",
+					item.ID, highestGen[item.ID], err)
+			} else {
+				i.logf("rundrive.intake: work item %s parked by circuit-breaker (%d generations minted, cap %d); not re-dispatching",
+					item.ID, highestGen[item.ID], i.maxGenerations())
+			}
 			continue
 		}
 

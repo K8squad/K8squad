@@ -70,6 +70,21 @@ var ErrBudgetAboveWindow = errors.New("context budget tier exceeds the resolved 
 // with a clear condition; the task itself is NEVER silently truncated.
 var ErrMustIncludeExceedsWindow = errors.New("must-include context (work item + acceptance criteria + goals) exceeds the model contextWindow — Run fails closed, never silent truncation (story 5.9)")
 
+// IsFailClosed reports whether err is a DETERMINISTIC, non-retryable context
+// assembly/budget failure: the must-include content alone exceeds the model
+// window (ErrMustIncludeExceedsWindow, story 5.9), or a configured budget tier
+// is set above the window (ErrBudgetAboveWindow, §8.5). Both are structural
+// facts of the (work item, model) pair — the comment/AC history does not shrink
+// on a re-drive and the model window is fixed — so re-dispatching can NEVER
+// succeed and is pure waste (ISI-5543). It is the single classifier the retry
+// circuit-breaker keys on to PARK an item rather than re-mint it forever; every
+// other failure (a transient read, a sandbox race, a dead agent) is retryable
+// and must NOT match. errors.Is walks the wrap chain, so the sentinel survives
+// the assembler → buildTask → a2a submit → effects wrapping back to the driver.
+func IsFailClosed(err error) bool {
+	return errors.Is(err, ErrMustIncludeExceedsWindow) || errors.Is(err, ErrBudgetAboveWindow)
+}
+
 // ResolveBudget implements the §8.5 three-layer resolution:
 //
 //	Project default → Agent override → (Run dynamic trim happens at Apply)
