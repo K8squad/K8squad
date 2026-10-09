@@ -552,6 +552,20 @@ func main() {
 		log.Printf("ksquad-apiserver: review-automation config surface ready (GET/PUT/PATCH /api/projects/{id}/repo/review-automation)")
 	}
 
+	// ISI-5595 WS-E issue auto-triage + CI-failure config surfaces: GET (member+)
+	// / PUT-PATCH (contributor+) /api/projects/{id}/repo/{issue-triage,ci-automation}
+	// read + persist spec.repo.automation.{issueTriage,ciFailure}. Same informer-
+	// cache read + direct-client write discipline as review-automation above; a
+	// cluster-less dev run (nil cache) leaves them nil ⇒ the routes keep the
+	// documented 501.
+	var issueTriage *apiserver.IssueTriageService
+	var ciFailure *apiserver.CiFailureService
+	if dashboardReader != nil {
+		issueTriage = apiserver.NewIssueTriageService(dashboardReader, crdApplier, memberships)
+		ciFailure = apiserver.NewCiFailureService(dashboardReader, crdApplier, memberships)
+		log.Printf("ksquad-apiserver: issue-triage + ci-failure config surfaces ready (GET/PUT/PATCH /api/projects/{id}/repo/{issue-triage,ci-automation})")
+	}
+
 	// ISI-3954 OTelConfig write surface (ISI-3949 gap G5): PUT/POST /api/otelconfig
 	// upserts the cluster-scoped CR "default" through the SAME direct write client
 	// the compose surface uses (one write path into the cluster, never two),
@@ -771,13 +785,15 @@ func main() {
 		InboxProposals: discussionStore,
 		InboxDecisions: discussionStore,
 		InboxMarkers:   apiserver.NewPostgresReadMarkerStore(db),
-		Search:              searcher,
+		Search:         searcher,
 		// 15.4 per-Project RBAC (ISI-2921): the membership store over auth.project_membership
 		// (db/migrations/0010) gates project-scoped routes. Wired unconditionally against the
 		// same *sql.DB the auth stores use; a cluster/db-less dev run never reaches NewServer.
 		ProjectRoles:     memberships,
 		ProjectSettings:  projectSettings,
 		ReviewAutomation: reviewAutomation,
+		IssueTriage:      issueTriage,
+		CiFailure:        ciFailure,
 		ComposeCRD:       composeCRD,
 		IssueLinks:       issueLinks,
 		GithubStatus:     githubStatus,

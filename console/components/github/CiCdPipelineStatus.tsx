@@ -16,9 +16,13 @@
 // Every check run and artifact deep-links back to GitHub (the mirror url when
 // present, else the canonical `actions/runs/{id}` reconstruction).
 
+"use client";
+
+import { useState } from "react";
 import type { GithubArtifact, GithubCheck, GithubStatus } from "@/lib/github-status";
 import { ageLabel } from "@/lib/github-status";
 import { GITHUB_REPO_LABEL, GITHUB_REPO_URL, githubRunHref } from "@/lib/github-links";
+import { CiFailureDialog } from "./CiFailureDialog";
 import "./github-screens.css";
 import "./cicd.css";
 
@@ -125,15 +129,22 @@ function ExtGlyph() {
 
 export function CiCdPipelineStatus({
   data,
+  projectId,
   ghost = false,
 }: {
   data: GithubStatus;
+  /** The project whose CI-failure triage config the settings dialog reads/writes
+   * (ISI-5595 WS-E). Absent (e.g. a stale caller) hides the settings button
+   * rather than opening a dialog with no target. */
+  projectId?: string;
   /** Stale/errored mirror: keep last-good data visible but ghosted (degrade,
    * don't blank — DESIGN-SPEC §3). */
   ghost?: boolean;
 }) {
   const checks = data.checkRuns;
   const artifacts = data.artifacts;
+  // ISI-5595 WS-E: the "CI-failure triage" settings dialog on the panel header.
+  const [ciFailureOpen, setCiFailureOpen] = useState(false);
 
   // Nothing CI/CD-shaped in the mirror: render nothing (the tab's own empty
   // state owns that case), matching the panel contract this screen replaces.
@@ -160,16 +171,36 @@ export function CiCdPipelineStatus({
             <span data-testid="gh-cicd-freshness">{freshness}</span>
           </p>
         </div>
-        <a
-          className="gh-btn"
-          href={`${GITHUB_REPO_URL}/actions`}
-          target="_blank"
-          rel="noreferrer noopener"
-          data-testid="gh-cicd-open-github"
-        >
-          Open Actions on GitHub <ExtGlyph />
-        </a>
+        <div className="gh-screen__head-actions">
+          {/* ISI-5595 WS-E: a real in-console write path — opens the CI-failure
+              triage config. Hidden without a projectId (the config is
+              project-scoped). */}
+          {projectId && (
+            <button
+              type="button"
+              className="gh-btn"
+              data-testid="gh-ci-failure-btn"
+              onClick={() => setCiFailureOpen(true)}
+              aria-haspopup="dialog"
+            >
+              ⚙ Failure triage
+            </button>
+          )}
+          <a
+            className="gh-btn"
+            href={`${GITHUB_REPO_URL}/actions`}
+            target="_blank"
+            rel="noreferrer noopener"
+            data-testid="gh-cicd-open-github"
+          >
+            Open Actions on GitHub <ExtGlyph />
+          </a>
+        </div>
       </header>
+
+      {ciFailureOpen && projectId && (
+        <CiFailureDialog projectId={projectId} onClose={() => setCiFailureOpen(false)} />
+      )}
 
       <div className="gh-stats" data-testid="gh-cicd-summary">
         <Stat value={summary.passed} label="Passed" sub="completed green" tone="green" testId="gh-cicd-stat-passed" />
