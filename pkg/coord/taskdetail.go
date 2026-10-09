@@ -240,3 +240,65 @@ func AppendComment(ctx context.Context, db *sql.DB, workItemID, author, body str
 	}
 	return TaskComment{Author: author, Body: body, CreatedAt: created}, nil
 }
+
+// AppendInitialFindings appends the run's ONE early initial-findings note
+// (ADR-0029 Option B) AND records an 'initial_findings_authored' §6.5 audit row
+// in the SAME transaction. The comment lands in the thread exactly like
+// AppendComment; the audit row is the durable signal ISI-5602's pending-writeback
+// query selects on (event_type='initial_findings_authored'). The note body travels
+// in the audit payload so the mirror-to-GitHub step reads it straight off the row
+// — the trio work_item_id / run_id / principal are first-class audit columns.
+// Author is server-supplied (the run token's principal), never client text; runID
+// is the reporting Run (provenance, may be empty). Fence NULL (ADR-037: authoring
+// is not a custody op), initiator "agent" — mirrors AppendChangeRef. A dangling
+// work item trips the FK (ErrWorkItemNotFound surfaced by the caller's mapper).
+func AppendInitialFindings(ctx context.Context, db *sql.DB, workItemID, author, runID, body string) (TaskComment, error) {
+	if db == nil {
+		return TaskComment{}, errors.New("coord.AppendInitialFindings: nil db")
+	}
+	if workItemID == "" || author == "" || body == "" {
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: workItemID, author and body are required")
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	var created time.Time
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO coord.comment (work_item_id, author_principal, body)
+		VALUES ($1::uuid, $2, $3)
+		RETURNING created_at`, workItemID, author, body).Scan(&created); err != nil {
+		// A dangling work item trips the FK (ON DELETE RESTRICT / missing parent).
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: insert comment for %s: %w", workItemID, err)
+	}
+
+	runParam := sql.NullString{}
+	if runID != "" {
+		runParam = sql.NullString{String: runID, Valid: true}
+	}
+
+	// §6.5 provenance, same txn: the note body is mirrored into payload so 5602's
+	// pending-writeback query reads it without re-walking the comment thread. Fence
+	// NULL (ADR-037), initiator "agent" — this is the run authoring its own note.
+	payload, err := json.Marshal(map[string]any{
+		"initiator": "agent",
+		"body":      body,
+	})
+	if err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: audit payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO coord.audit_log (work_item_id, run_id, event_type, principal, payload)
+		VALUES ($1::uuid, $2::uuid, 'initial_findings_authored', $3, $4::jsonb)`,
+		workItemID, runParam, author, string(payload)); err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: audit: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return TaskComment{}, fmt.Errorf("coord.AppendInitialFindings: commit: %w", err)
+	}
+	return TaskComment{Author: author, Body: body, CreatedAt: created}, nil
+}

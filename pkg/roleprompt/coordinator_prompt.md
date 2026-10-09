@@ -18,6 +18,13 @@ reaches the board.
 1. **Triage.** Read the item's description, acceptance criteria, and comments.
    Decide whether it is already atomic — one agent can finish it in a single run
    — or a larger piece of work that must be split.
+
+   **Post your initial findings first.** Immediately after reading the item and
+   before any deep implementation or decomposition, use the post-comment verb
+   ONCE with `kind: "initial_findings"` to leave a short note on what you
+   understood and how you intend to proceed. Post it exactly once — not per step.
+   Write it for an external reader and include NO secrets: for GitHub-sourced
+   tickets this note is mirrored back to the source issue.
 2. **Decompose.** If it is larger than one unit of work, break it into the
    smallest sub-tickets that each deliver an independently reviewable change.
 3. **Create** each sub-ticket by calling the `work_item_create` tool with the

@@ -27,6 +27,12 @@ type Store interface {
 	GetTask(ctx context.Context, workItemID string) (TaskDetail, error)
 	// PostComment appends a comment attributed to principal and returns it.
 	PostComment(ctx context.Context, workItemID, principal, body string) (Comment, error)
+	// PostInitialFindings appends the run's single early initial-findings note and
+	// emits the 'initial_findings_authored' audit signal atomically (ADR-0029
+	// Option B, ISI-5603). It is the same append as PostComment plus the durable
+	// signal ISI-5602's github-writeback query consumes. Attribution/provenance are
+	// the token's principal/run — never client-supplied.
+	PostInitialFindings(ctx context.Context, workItemID, principal, runID, body string) (Comment, error)
 	// PostChange appends one agent-reported change ref (M1.5/ISI-4131) attributed
 	// to principal/runID and returns it. ErrInvalidChangeRef for a bad kind/ref.
 	PostChange(ctx context.Context, workItemID, principal, runID, kind, ref, summary string) (ChangeRef, error)
@@ -86,10 +92,19 @@ type TaskDetail struct {
 	RunID              string      `json:"runId,omitempty"`
 }
 
-// postCommentRequest is the post-comment body: {"body": "..."}.
+// postCommentRequest is the post-comment body: {"body": "...", "kind": "..."}.
+// kind is optional (ADR-0029 Option B, ISI-5603): the empty default is a plain
+// thread comment (behaviour unchanged); CommentKindInitialFindings additionally
+// emits the 'initial_findings_authored' audit signal ISI-5602's github-writeback
+// query consumes. Any other value is rejected (closed enum, §postChange discipline).
 type postCommentRequest struct {
 	Body string `json:"body"`
+	Kind string `json:"kind,omitempty"`
 }
+
+// CommentKindInitialFindings marks a post-comment as the run's single early
+// initial-findings/plan note (ADR-0029 Option B). The empty kind is a plain comment.
+const CommentKindInitialFindings = "initial_findings"
 
 // postChangeRequest is the post-change body (M1.5): {"kind":"commit",
 // "ref":"<sha or PR url>", "summary":"what changed"}.
@@ -280,8 +295,22 @@ func (h *Handler) postComment(w http.ResponseWriter, r *http.Request, tok RunTok
 		writeError(w, http.StatusBadRequest, "comment body required")
 		return
 	}
-	// Attribution is the token's principal — never a client-supplied author.
-	c, err := h.store.PostComment(r.Context(), tok.WorkItemID, tok.Principal, req.Body)
+	// Attribution + provenance are the token's principal/run — never client text.
+	// kind is a closed enum: empty → plain comment (unchanged); initial_findings →
+	// same append plus the ADR-0029 audit signal; anything else is a 400.
+	var (
+		c   Comment
+		err error
+	)
+	switch req.Kind {
+	case "":
+		c, err = h.store.PostComment(r.Context(), tok.WorkItemID, tok.Principal, req.Body)
+	case CommentKindInitialFindings:
+		c, err = h.store.PostInitialFindings(r.Context(), tok.WorkItemID, tok.Principal, tok.RunID, req.Body)
+	default:
+		writeError(w, http.StatusBadRequest, "kind must be empty or initial_findings")
+		return
+	}
 	if err != nil {
 		writeStoreError(w, err)
 		return
