@@ -60,6 +60,10 @@ var MetricLabelAllowlist = []string{
 	"event_type", "resource_type", "action", "user_role",
 	// ISI-4490 (E7 / NFR-5) — phase-timing initiator enum (human/agent/coordinator/unknown).
 	"initiator",
+	// ISI-5621 (WS-G G-1/G-4) — Inbox aggregate-read dims. `arm` is the closed
+	// 5-value enum (review/proposal/decision/cache/marker); `fleet` is a bool
+	// (admin fleet view vs team-scoped). Team UID rides the span only, never here.
+	"arm", "fleet",
 }
 
 // MetricLabelForbidden is the hard denylist: unbounded identifiers that must ride
