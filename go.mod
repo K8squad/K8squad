@@ -2,7 +2,7 @@ module github.com/K8squad/K8squad
 
 go 1.26.0
 
-toolchain go1.26.7
+toolchain go1.26.9
 
 // K8s library versions are pinned here (OQ12, story 1.1). Bump these together —
 // api/apimachinery/client-go share a release train; controller-runtime v0.19.x
@@ -108,7 +108,7 @@ require (
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
