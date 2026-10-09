@@ -278,3 +278,51 @@ func TestMentionDispatchOrchestrationDirective(t *testing.T) {
 		}
 	}
 }
+
+// ISI-5586 WS-C: a party-mode voice dispatch renders the cross-talk context + persona prompt into the
+// work-item body (persona self-framing, rolling summary, "What Others Said This Round", disagree/pass
+// guidelines) AND keeps the read-thread / reply-in-room / hop footer.
+func TestMentionDispatchPartyVoiceBody(t *testing.T) {
+	fc := &fakeCreate{rec: coord.WorkItemRecord{ID: "77777777-7777-7777-7777-777777777777", State: "backlog"}}
+	fd := &fakeDispatch{}
+	fl := newFakeLedger()
+	var marks []string
+	md := newTestDispatcher(fc, fd, fl, &marks)
+
+	d := sampleDispatch()
+	d.AgentName = "ada"
+	d.Party = &discussion.PartyContext{
+		Round:          2,
+		Topic:          "which storage engine",
+		Persona:        discussion.PersonaBlurb{Name: "Ada", Role: "Engineer", Icon: "⚙"},
+		RollingSummary: "Round 1: Winston argued Postgres.",
+		PeersThisRound: []discussion.PartyPeerTurn{
+			{Persona: discussion.PersonaBlurb{Name: "Winston", Role: "Architect"}, Body: "Commit to Postgres."},
+		},
+	}
+	if err := md.DispatchMention(context.Background(), d); err != nil {
+		t.Fatalf("DispatchMention: %v", err)
+	}
+	if len(fc.calls) != 1 || len(fd.calls) != 1 {
+		t.Fatalf("party voice must mint exactly one Run: creates=%d dispatches=%d", len(fc.calls), len(fd.calls))
+	}
+	body := fc.calls[0].Body
+	for _, want := range []string{
+		"Ada (Engineer)",                                      // persona self-framing
+		"What Others Said This Round",                         // cross-talk header
+		"Winston (Architect): Commit to Postgres.",            // peer turn verbatim
+		"Round 1: Winston argued Postgres.",                   // rolling summary
+		discussion.DisagreeMandate,                            // persona mandate
+		discussion.PassPermission,                             // permission to pass
+		"POST /api/projects/squad-a/proj/discussion/threads/", // reply-in-room footer
+		"party round=2",                                       // provenance footer
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("party voice body missing %q\n--- body ---\n%s", want, body)
+		}
+	}
+	// a party voice must NOT fall through to the generic single-agent instruction.
+	if strings.Contains(body, "You were @-mentioned in the discussion room") {
+		t.Fatal("party voice body should not use the generic single-agent instruction")
+	}
+}
