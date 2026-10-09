@@ -53,7 +53,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 	// Apply base discussion schema (0004+0024+0026 from integration_test.go).
 	applyMigration(t, db)
 	// Apply mention_dispatch (0027), decision_request (0031), decision_read_marker (0032),
-	// party_session (0033), party_round_facilitator (0034).
+	// party_session (0033), party_round_facilitator (0034), party_round_voices (0035).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, name := range []string{
@@ -62,6 +62,7 @@ func openPartyTestDB(t *testing.T) (*Store, func()) {
 		"0032_decision_read_marker.sql",
 		"0033_discussion_party_session.sql",
 		"0034_discussion_party_round_facilitator.sql",
+		"0035_discussion_party_round_voices.sql",
 	} {
 		applyOneMigration(t, ctx, db, name)
 	}

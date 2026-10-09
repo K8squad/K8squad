@@ -26,12 +26,13 @@ import (
 func TestTerminalPartySessionReads(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	// Layer 0033 (party_session) + 0034 (round-facilitator columns) onto the freshly-applied base
-	// schema. 0034 is required because partySessionSelect (the read path this suite exercises) now
-	// reads current_round_message_id / round_started_at (ISI-5615 WS-D.1).
+	// Layer 0033 (party_session) + 0034 (round-facilitator columns) + 0035 (round_voices) onto the
+	// freshly-applied base schema. 0034/0035 are required because partySessionSelect (the read path this
+	// suite exercises) now reads current_round_message_id / round_started_at (ISI-5615 WS-D.1) and
+	// round_voices (ISI-5638, ADR-0031 Ruling A).
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	for _, name := range []string{"0033_discussion_party_session.sql", "0034_discussion_party_round_facilitator.sql"} {
+	for _, name := range []string{"0033_discussion_party_session.sql", "0034_discussion_party_round_facilitator.sql", "0035_discussion_party_round_voices.sql"} {
 		candidates := []string{
 			filepath.Join("..", "..", "db", "migrations", name),
 			filepath.Join("db", "migrations", name),
