@@ -38,6 +38,12 @@ func TestHandlerBadPathVars(t *testing.T) {
 		{"retractMessage/badThread", h.retractMessage, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
 		{"retractMessage/badMessage", h.retractMessage, map[string]string{"projectId": good, "threadId": good, "messageId": bad}, "invalid messageId"},
 		{"memoryIndex/badProject", h.memoryIndex, map[string]string{"projectId": ""}, "invalid projectId"},
+		// ISI-5617 terminal party-session reads: path-var guards before any store call.
+		{"listPartySessions/badProject", h.listPartySessions, map[string]string{"projectId": ""}, "invalid projectId"},
+		{"listPartySessions/badThread", h.listPartySessions, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
+		{"getPartySession/badProject", h.getPartySession, map[string]string{"projectId": ""}, "invalid projectId"},
+		{"getPartySession/badThread", h.getPartySession, map[string]string{"projectId": good, "threadId": bad}, "invalid threadId"},
+		{"getPartySession/badSession", h.getPartySession, map[string]string{"projectId": good, "threadId": good, "sessionId": bad}, "invalid sessionId"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -71,6 +77,8 @@ func TestHandlerUnauthenticated(t *testing.T) {
 		{"postMessage", h.postMessage, map[string]string{"projectId": good, "threadId": good}},
 		{"retractMessage", h.retractMessage, map[string]string{"projectId": good, "threadId": good, "messageId": good}},
 		{"memoryIndex", h.memoryIndex, map[string]string{"projectId": good}},
+		{"listPartySessions", h.listPartySessions, map[string]string{"projectId": good, "threadId": good}},
+		{"getPartySession", h.getPartySession, map[string]string{"projectId": good, "threadId": good, "sessionId": good}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
