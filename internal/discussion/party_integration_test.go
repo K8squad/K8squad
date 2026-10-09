@@ -270,6 +270,75 @@ func TestPartySession_CloseAndVoicesAllowed(t *testing.T) {
 	}
 }
 
+// TestPartySession_RecordPaidRuns covers the paid-run ceiling the advancer enforces at the mint seam
+// (ISI-5615). advanceSession charges each settled round's voice runs via RecordPaidRuns before the advance
+// decision; this asserts the Store behaviour that charge depends on: the tally accumulates, the hard
+// ceiling flips the session to budget_exhausted in the same statement, and a charge against an
+// already-terminal session is a no-op (so a stuck round can never re-charge past the stop).
+func TestPartySession_RecordPaidRuns(t *testing.T) {
+	store, cleanup := openPartyTestDB(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	projectID := "test-ns/test-project"
+	teamID := uuid.New()
+	auth := AuthorContext{Principal: "human-1", TeamID: teamID}
+	thread, err := store.OpenThread(ctx, projectID, auth, "paid-run test", "")
+	if err != nil {
+		t.Fatalf("OpenThread: %v", err)
+	}
+	// Small budget: 2 rounds × 2 voices + 2 facilitator mints = PaidRunBudget 6.
+	budget := PartyBudget{MaxRounds: 2, MaxVoicesPerRound: 2}
+	sess, _, err := store.StartPartySession(ctx, projectID, teamID, thread.ID, auth, "party!", &budget)
+	if err != nil {
+		t.Fatalf("StartPartySession: %v", err)
+	}
+	if sess.Budget.PaidRunBudget != 6 {
+		t.Fatalf("derived PaidRunBudget = %d, want 6", sess.Budget.PaidRunBudget)
+	}
+
+	// Negative delta is rejected (defends the CAS from an under-count bug).
+	if _, err := store.RecordPaidRuns(ctx, sess.ID, -1); err == nil {
+		t.Error("RecordPaidRuns(-1): expected error, got nil")
+	}
+
+	// Charge a round's voices below the ceiling — session stays active, tally accumulates.
+	charged, err := store.RecordPaidRuns(ctx, sess.ID, 2)
+	if err != nil {
+		t.Fatalf("RecordPaidRuns(2): %v", err)
+	}
+	if charged.PaidRunsUsed != 2 {
+		t.Errorf("after RecordPaidRuns(2): paidRunsUsed = %d, want 2", charged.PaidRunsUsed)
+	}
+	if !charged.IsActive() {
+		t.Errorf("after RecordPaidRuns(2): phase = %q, want active (below ceiling)", charged.Phase)
+	}
+
+	// Charge enough to reach the ceiling — the SAME statement flips to budget_exhausted + stamps closed_at.
+	exhausted, err := store.RecordPaidRuns(ctx, sess.ID, 4)
+	if err != nil {
+		t.Fatalf("RecordPaidRuns(4): %v", err)
+	}
+	if exhausted.PaidRunsUsed != 6 {
+		t.Errorf("after RecordPaidRuns(4): paidRunsUsed = %d, want 6", exhausted.PaidRunsUsed)
+	}
+	if exhausted.Phase != PartyPhaseBudgetExhausted {
+		t.Errorf("at ceiling: phase = %q, want %q", exhausted.Phase, PartyPhaseBudgetExhausted)
+	}
+	if exhausted.ClosedAt == nil {
+		t.Error("at ceiling: ClosedAt should be stamped")
+	}
+	if exhausted.IsActive() {
+		t.Error("at ceiling: session should no longer be active")
+	}
+
+	// A further charge against the now-terminal session is the CAS loser sentinel — the advancer treats
+	// this as "closed out from under us" and stops, so a wedged round can never re-charge past the stop.
+	if _, err := store.RecordPaidRuns(ctx, sess.ID, 2); !isPartySessionNotActive(err) {
+		t.Errorf("RecordPaidRuns on exhausted session: want ErrPartySessionNotActive, got %v", err)
+	}
+}
+
 // isPartySessionNotActive checks for the ErrPartySessionNotActive sentinel.
 func isPartySessionNotActive(err error) bool {
 	return err != nil && err.Error() == ErrPartySessionNotActive.Error()

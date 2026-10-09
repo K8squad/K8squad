@@ -14,6 +14,7 @@ package discussion
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -75,9 +76,9 @@ type PartyAdvancer struct {
 	Roster     AdvancerRosterReader
 	Principal  string // e.g. rundrive.OperatorPrincipal ("ksquad-operator")
 
-	Tick        time.Duration // default DefaultPartyAdvancerTick
-	SettleTO    time.Duration // default DefaultPartyVoiceSettleTimeout
-	PostTO      time.Duration // default DefaultPartyFacilitatorPostTimeout
+	Tick     time.Duration // default DefaultPartyAdvancerTick
+	SettleTO time.Duration // default DefaultPartyVoiceSettleTimeout
+	PostTO   time.Duration // default DefaultPartyFacilitatorPostTimeout
 }
 
 // Start implements manager.Runnable. It runs until ctx is done.
@@ -127,6 +128,36 @@ func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, 
 			return
 		}
 		settle = s
+
+		// ISI-5615 — charge the just-settled round's voice runs against the paid-run ceiling BEFORE the
+		// advance decision (ADR-0027 §3.2 "AdvanceRound + RecordPaidRuns + DecideAdvance", §5.1 hard stop).
+		// DecideAdvance (inside PlanPartyTick) is documented to run on the session AS IT WILL BE after the
+		// round is recorded, so without this charge the ceiling only ever sees the +1/round facilitator mint
+		// and the voice runs go uncounted — the budget never actually stops a runaway debate. RecordPaidRuns
+		// may itself flip the session to budget_exhausted (hard ceiling hit mid-round); we re-read the
+		// returned row so the decision sees the real budget. The charge is applied once per round: the
+		// settled round's current_round_message_id is cleared when the round advances (MintRound) or the
+		// session goes terminal (CloseSession / the budget_exhausted flip here), so the next tick no longer
+		// re-reads this round's settlement.
+		if settle.Complete() && settle.Dispatched > 0 {
+			charged, err := a.Store.RecordPaidRuns(ctx, sess.ID, settle.Dispatched)
+			if err != nil {
+				if errors.Is(err, ErrPartySessionNotActive) {
+					// Closed out from under us (a concurrent close, or RecordPaidRuns already charged and
+					// exhausted the budget on a prior tick) — nothing left to advance.
+					return
+				}
+				slog.WarnContext(ctx, "party advancer: RecordPaidRuns failed",
+					"sessionID", sess.ID, "round", sess.Round, "voices", settle.Dispatched, "err", err)
+				return
+			}
+			if charged.IsActive() != sess.IsActive() || charged.Phase != sess.Phase {
+				slog.InfoContext(ctx, "party advancer: paid-run ceiling reached mid-round",
+					"sessionID", sess.ID, "round", sess.Round, "phase", charged.Phase,
+					"paidRunsUsed", charged.PaidRunsUsed, "paidRunBudget", charged.Budget.PaidRunBudget)
+			}
+			sess = charged
+		}
 	}
 
 	plan := PlanPartyTick(*sess, settle, time.Now(), postTO)
