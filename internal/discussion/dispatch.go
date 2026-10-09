@@ -590,6 +590,13 @@ func (h *Handler) dispatchMentions(ctx context.Context, projectID string, auth A
 	if err != nil {
 		return // the roster is a projection, not a fence — a read failure degrades to no dispatch
 	}
+	// ISI-5615 (P2 mint-gate): try the party-facilitator path first. If this message is a
+	// coordinator's @-mention dispatch in an active party session, it handles voice dispatch
+	// (bypassing D4, applying VoicesAllowedThisRound, assembling PartyContext) and returns true.
+	// On false the message is not a party facilitator post — fall through to the normal path.
+	if h.dispatchPartyMentions(ctx, projectID, auth, msg, roster) {
+		return
+	}
 	DispatchMentionsFrom(ctx, h.dispatcher, roster, projectID, auth, msg)
 }
 

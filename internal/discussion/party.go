@@ -158,6 +158,16 @@ type PartySession struct {
 	Phase          string      `json:"phase"`
 	OpenedAt       time.Time   `json:"openedAt"`
 	ClosedAt       *time.Time  `json:"closedAt,omitempty"`
+
+	// CurrentRoundMessageID is the facilitator @-mention message that dispatched the current (in-flight)
+	// round's voices (ADR-0027 §3.3/§4.3 — the round's voices are the mention_dispatch rows keyed under it).
+	// nil between the advancer minting a round's facilitator and that facilitator posting its dispatch; the
+	// advancer waits on nil (0034). It is the key RoundVoiceSettlement reads round completeness from.
+	CurrentRoundMessageID *uuid.UUID `json:"currentRoundMessageId,omitempty"`
+	// RoundStartedAt is when the current round's facilitator was minted (0034). The advancer bounds the one
+	// residual liveness gap — a facilitator run that dies before posting its dispatch — with a timeout off
+	// this, the same shape as the §3.3 settle_timeout stuck-voice guard. nil before the first round is minted.
+	RoundStartedAt *time.Time `json:"roundStartedAt,omitempty"`
 }
 
 // IsActive reports whether the session is live (the advancer may mint).
@@ -237,23 +247,32 @@ func PartyStartAllowed(auth AuthorContext) error {
 const partySessionSelect = `
 	SELECT id, thread_id, project_id, team_id, started_by, topic_message_id,
 	       round, max_rounds, max_voices_per_round, paid_run_budget, paid_runs_used,
-	       phase, opened_at, closed_at
+	       phase, opened_at, closed_at, current_round_message_id, round_started_at
 	FROM discussion.party_session`
 
 // scanPartySession hydrates one PartySession from a partySessionSelect row.
 func scanPartySession(sc interface{ Scan(...any) error }) (*PartySession, error) {
 	var s PartySession
-	var closedAt sql.NullTime
+	var closedAt, roundStartedAt sql.NullTime
+	var curRoundMsg uuid.NullUUID
 	if err := sc.Scan(
 		&s.ID, &s.ThreadID, &s.ProjectID, &s.TeamID, &s.StartedBy, &s.TopicMessageID,
 		&s.Round, &s.Budget.MaxRounds, &s.Budget.MaxVoicesPerRound, &s.Budget.PaidRunBudget,
-		&s.PaidRunsUsed, &s.Phase, &s.OpenedAt, &closedAt,
+		&s.PaidRunsUsed, &s.Phase, &s.OpenedAt, &closedAt, &curRoundMsg, &roundStartedAt,
 	); err != nil {
 		return nil, err
 	}
 	if closedAt.Valid {
 		t := closedAt.Time
 		s.ClosedAt = &t
+	}
+	if curRoundMsg.Valid {
+		id := curRoundMsg.UUID
+		s.CurrentRoundMessageID = &id
+	}
+	if roundStartedAt.Valid {
+		t := roundStartedAt.Time
+		s.RoundStartedAt = &t
 	}
 	return &s, nil
 }
@@ -475,4 +494,78 @@ func (s *Store) CloseSession(ctx context.Context, id uuid.UUID, phase string) (*
 		return nil, ErrPartySessionNotActive
 	}
 	return s.GetPartySession(ctx, id)
+}
+
+// ActivePartySessions returns every live session (ADR-0027 §3.2 advancer sweep). Active sessions are a
+// tiny, bounded, index-backed set (idx_party_session_active), so the level-triggered advancer reads them
+// all each tick and re-derives the loop from the durable row + settle markers — holding no in-memory round
+// state (§3.1 restart-safe, the ADR-0020 reaper shape). Ordered by opened_at for a stable sweep.
+func (s *Store) ActivePartySessions(ctx context.Context) ([]*PartySession, error) {
+	rows, err := s.db.QueryContext(ctx, partySessionSelect+` WHERE phase = 'active' ORDER BY opened_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []*PartySession
+	for rows.Next() {
+		sess, err := scanPartySession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
+
+// MintRound atomically advances the session to its next facilitator round (ADR-0027 §3.2): it bumps the
+// round counter, stamps round_started_at, clears current_round_message_id (the new round has no facilitator
+// message yet — the advancer then waits on NULL until the facilitator posts its dispatch), and charges the
+// one paid run the facilitator mint costs, all in a single CAS on phase='active' AND round=fromRound so two
+// concurrent advancer ticks (or a tick racing a restart) cannot double-mint a round. The caller mints the
+// facilitator run only after this succeeds. It does NOT flip budget_exhausted: the advancer only calls it
+// when CanStartRound (which already requires paid-run headroom ≥ 1) is satisfied, and the derived ceiling
+// always covers the facilitator mints — the ceiling is enforced on the VOICE dispatch (RecordPaidRuns) and
+// in DecideAdvance, never by half-minting a round. Returns ErrPartySessionNotActive if the CAS loses.
+func (s *Store) MintRound(ctx context.Context, id uuid.UUID, fromRound int) (*PartySession, error) {
+	tag, err := s.db.ExecContext(ctx, `
+		UPDATE discussion.party_session
+		   SET round = round + 1,
+		       round_started_at = now(),
+		       current_round_message_id = NULL,
+		       paid_runs_used = paid_runs_used + 1
+		 WHERE id = $1 AND phase = 'active' AND round = $2`, id, fromRound)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := tag.RowsAffected(); n == 0 {
+		return nil, ErrPartySessionNotActive
+	}
+	return s.GetPartySession(ctx, id)
+}
+
+// SetRoundFacilitatorMessage records, first-writer-wins, the facilitator @-mention message that dispatched
+// the round's voices (ADR-0027 §3.3/§4.3 — the message RoundVoiceSettlement keys the round's completeness
+// on). The mint-gate dispatch hook calls it when the facilitator's round post commits. The CAS is on
+// phase='active' AND round=forRound AND current_round_message_id IS NULL, so only the FIRST facilitator post
+// for a round wins: a second coordinator party post in the same round (or a post after the round advanced /
+// the session closed) loses the CAS and is reported won=false (nil err) — an idempotent no-op the hook skips
+// without charging voices. A real DB failure is returned as err. On a win the updated session is returned so
+// the hook can size the voice fan-out against the fresh paid-run headroom.
+func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID) (sess *PartySession, won bool, err error) {
+	tag, err := s.db.ExecContext(ctx, `
+		UPDATE discussion.party_session
+		   SET current_round_message_id = $3
+		 WHERE id = $1 AND phase = 'active' AND round = $2 AND current_round_message_id IS NULL`,
+		id, forRound, messageID)
+	if err != nil {
+		return nil, false, err
+	}
+	if n, _ := tag.RowsAffected(); n == 0 {
+		return nil, false, nil
+	}
+	updated, err := s.GetPartySession(ctx, id)
+	if err != nil {
+		return nil, false, err
+	}
+	return updated, true, nil
 }

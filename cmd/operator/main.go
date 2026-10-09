@@ -68,6 +68,7 @@ import (
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
 	"github.com/K8squad/K8squad/internal/cifailuredispatch"
+	"github.com/K8squad/K8squad/internal/discussion"
 	"github.com/K8squad/K8squad/internal/issuedispatch"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/internal/reviewdispatch"
@@ -1446,6 +1447,34 @@ func main() {
 		}); err != nil {
 			ctrl.Log.Error(err, "unable to register cancel sweep")
 			os.Exit(1)
+		}
+
+		// ISI-5615 (ISI-5569 WS-D.1, ADR-0027 §3.2) — party-mode advancer: level-triggered ticker
+		// that drives active party sessions forward (mint facilitator rounds / close on budget). It
+		// runs leader-elected (mgr.Add default) so only one operator drives each session. A construction
+		// failure disables party advancement but does not block other operator functions; sessions opened
+		// before a fix are resumable from the durable party_session row on restart.
+		partyWriteStore, pwErr := coord.NewWorkItemWriteStore(db)
+		partyTeamResolver := memory.NewClientTeamAgentResolver(mgr.GetClient())
+		partyDispatchStore, pdErr := coord.NewWorkItemDispatchStore(db, partyTeamResolver)
+		switch {
+		case pwErr != nil:
+			ctrl.Log.Error(pwErr, "party advancer disabled (work-item write store)")
+		case pdErr != nil:
+			ctrl.Log.Error(pdErr, "party advancer disabled (work-item dispatch store)")
+		default:
+			partyAdvancer := &discussion.PartyAdvancer{
+				Store:      discussion.NewStore(db),
+				Writer:     coordAdvancerWriter{store: partyWriteStore},
+				Dispatcher: coordAdvancerDispatcher{store: partyDispatchStore},
+				Roster:     teamCoordinatorRoster{resolver: partyTeamResolver},
+				Principal:  rundrive.OperatorPrincipal,
+			}
+			if err := mgr.Add(partyAdvancer); err != nil {
+				ctrl.Log.Error(err, "unable to register party advancer")
+				os.Exit(1)
+			}
+			ctrl.Log.Info("party advancer registered (ISI-5615 WS-D.1)")
 		}
 	}
 
