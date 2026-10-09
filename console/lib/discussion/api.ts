@@ -15,6 +15,7 @@ import type {
   DecisionRequest,
   MentionSuggestion,
   Message,
+  PartySession,
   Proposal,
   ProposalConfirmResponse,
   ProposalDismissResponse,
@@ -175,6 +176,17 @@ export interface DiscussionClient {
     messageId: string,
     reason?: string,
   ): Promise<DecisionAnswerResponse>;
+  /**
+   * The thread's LIVE party session (ISI-5585 WS-B), or null when no debate is
+   * active. The server endpoint filters `phase='active'`, so a closed session
+   * resolves to null here — the room's end-of-session takeaways then falls back
+   * to the transcript (ISI-5589 WS-E). A deny collapses to null too (the room
+   * simply shows no party framing), never a thrown 403.
+   */
+  getActivePartySession(
+    projectId: string,
+    threadId: string,
+  ): Promise<PartySession | null>;
 }
 
 /** The BFF base path for a Project's discussion room (the §7.5 prefix). */
@@ -379,6 +391,25 @@ export function createDiscussionClient(
         body: JSON.stringify(reason ? { reason } : {}),
       });
       return readJson<DecisionAnswerResponse>(res);
+    },
+
+    async getActivePartySession(projectId, threadId) {
+      // ISI-5585: GET …/party-sessions/active → the live session, or 404 when no
+      // debate is active. A 404 (and any deny, collapsed to not-found) means "no
+      // party framing to show" — resolve null rather than throw.
+      const url = `${threadsBase(projectId)}/${encodeURIComponent(
+        threadId,
+      )}/party-sessions/active`;
+      const res = await fetchImpl(url, { method: "GET" });
+      if (res.status === 404) return null;
+      try {
+        return await readJson<PartySession>(res);
+      } catch (err) {
+        if (err instanceof DiscussionApiError && err.outcome === "not-found") {
+          return null;
+        }
+        throw err;
+      }
     },
   };
 }

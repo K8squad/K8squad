@@ -13,8 +13,14 @@
 // SERVER decision (Store reads); the room only renders what it is given.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MentionSuggestion, Message, Proposal } from "@/lib/discussion/types";
+import type {
+  MentionSuggestion,
+  Message,
+  PartySession,
+  Proposal,
+} from "@/lib/discussion/types";
 import { nestMessages } from "@/lib/discussion/thread";
+import { isPartyStart } from "@/lib/discussion/party";
 import {
   applyRoomEvent,
   type RoomStreamEvent,
@@ -34,6 +40,7 @@ import {
 import type { DiscussionClient } from "@/lib/discussion/api";
 import { DiscussionApiError } from "@/lib/discussion/api";
 import { MessageItem } from "./MessageItem";
+import { PartySessionCard } from "./PartySessionCard";
 import { Composer } from "./Composer";
 import { Roster, type RosterAgent } from "./Roster";
 import type { AgentRunPresence } from "@/lib/overview/liveRuns";
@@ -47,6 +54,11 @@ const WORKING_TIMEOUT_MS = 5 * 60_000;
 // Cadence at which the room re-checks working watches against the clock. The
 // reducer (expireStale) is pure in `now`; this timer just supplies the tick.
 const WORKING_SWEEP_MS = 15_000;
+// Cadence at which the room re-polls the live party session (ISI-5589 WS-E).
+// WS-B pushes NO session-state mutation over SSE (round advance / close), so the
+// round + budget meter is refreshed by re-GETting `/party-sessions/active` while
+// a party_start opener is in the thread. Only runs when a debate is present.
+const PARTY_POLL_MS = 20_000;
 
 export interface DiscussionRoomProps {
   projectId: string;
@@ -108,6 +120,10 @@ export function DiscussionRoom({
   const [liveThinking, setLiveThinking] = useState<
     Record<string, ThinkingRow[]>
   >({});
+  // The thread's live party session (ISI-5585 WS-B), fetched from
+  // `/party-sessions/active`. null ⇒ no active debate (a closed session is
+  // unreachable there — the takeaways card then falls back to the transcript).
+  const [partySession, setPartySession] = useState<PartySession | null>(null);
   // The roster the post callback reads to resolve dispatch targets, held in a
   // ref so `post` is not re-created on every roster refresh (and never dispatches
   // against a stale closure).
@@ -146,6 +162,17 @@ export function DiscussionRoom({
         }
       } catch {
         setRosterAgents([]);
+      }
+      // Live party session (ISI-5589 WS-E): the round + budget meter source.
+      // Optional on the client (older stubs omit it) and best-effort — a failure
+      // degrades to no party framing, the thread already rendered.
+      try {
+        if (typeof client.getActivePartySession === "function") {
+          const ps = await client.getActivePartySession(projectId, threadId);
+          setPartySession(ps);
+        }
+      } catch {
+        setPartySession(null);
       }
     } catch (err) {
       if (err instanceof DiscussionApiError && err.outcome === "not-found") {
@@ -199,6 +226,36 @@ export function DiscussionRoom({
 
   const threads = useMemo(() => nestMessages(messages), [messages]);
   const workingByMessageId = useMemo(() => groupByMessage(working), [working]);
+  // The party_start opener in the transcript, if any (ISI-5589 WS-E). Its
+  // presence means this thread hosts a party debate — the framing/poll anchor,
+  // and the fallback source for the takeaways card once the session has closed.
+  const partyOpener = useMemo(
+    () => messages.find((m) => isPartyStart(m)) ?? null,
+    [messages],
+  );
+
+  // Re-poll the live party session while a debate is present (ISI-5589 WS-E).
+  // WS-B emits no session-state SSE, so the meter is refreshed by re-GET. The
+  // poll stops when the thread has no party_start opener (no debate to track).
+  useEffect(() => {
+    if (!partyOpener) return;
+    if (typeof client.getActivePartySession !== "function") return;
+    let cancelled = false;
+    const t = setInterval(() => {
+      void client
+        .getActivePartySession(projectId, threadId)
+        .then((ps) => {
+          if (!cancelled) setPartySession(ps);
+        })
+        .catch(() => {
+          /* keep the last-seen session on a transient poll failure */
+        });
+    }, PARTY_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [partyOpener, client, projectId, threadId]);
 
   const post = useCallback(
     async (body: { body: string; parentId?: string; audience?: string }) => {
@@ -298,6 +355,13 @@ export function DiscussionRoom({
   return (
     <section className="ksq-room" data-testid="discussion-room">
       <div className="ksq-room__main">
+        {partySession || partyOpener ? (
+          <PartySessionCard
+            session={partySession}
+            opener={partyOpener}
+            messages={messages}
+          />
+        ) : null}
         <ul className="ksq-thread ksq-thread--roots" data-testid="threads">
           {threads.map((t) => (
             <MessageItem
