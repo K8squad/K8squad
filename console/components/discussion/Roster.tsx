@@ -21,6 +21,7 @@
 //
 // Display-only legibility surface — no custody verb rides this panel.
 
+import { useState } from "react";
 import {
   presenceFromStatus,
   presenceSublabel,
@@ -55,6 +56,13 @@ function runSublabel(run: AgentRunPresence): string {
 }
 
 export function Roster({ agents, liveRuns }: RosterProps) {
+  // ISI-5623 (ISI-5597 P3): on narrow viewports the roster collapses to a sticky
+  // mini-bar ("N agents · M running") that expands on tap; on desktop (≥900px)
+  // it is always the full sticky rail (discussion.css drives both by breakpoint).
+  // Default collapsed so the narrow room opens with the mini-bar, not the full
+  // list over the transcript.
+  const [expanded, setExpanded] = useState(false);
+
   // The agents the screen reader should hear about as the set changes (ISI-5174
   // aria-live mechanism): name + honest state, in roster order. Recomputed each
   // render so a start/stop transition updates the polite region.
@@ -67,15 +75,24 @@ export function Roster({ agents, liveRuns }: RosterProps) {
     .filter(Boolean)
     .join(". ");
 
+  // Mini-bar summary counts: total roster size + how many are actively running a
+  // run right now (ISI-5527 live-run fold). Queued agents are not counted here —
+  // "M running" means visibly working, matching the roster row's running chip.
+  const runningCount = agents.filter(
+    (a) => liveRuns?.[a.id]?.state === "running",
+  ).length;
+
   return (
     <aside
       className="ksq-roster"
       data-testid="roster"
       aria-label="Team roster"
+      data-expanded={expanded ? "true" : "false"}
     >
-      <h2 className="ksq-roster__title">Roster</h2>
       {/* Polite live region: announces idle⇄running/queued transitions without
-          stealing focus (same mechanism as WorkingIndicator, ISI-5174). */}
+          stealing focus (same mechanism as WorkingIndicator, ISI-5174). Kept
+          OUTSIDE the collapsible body so announcements still fire while the
+          narrow mini-bar is collapsed. */}
       <p
         className="sr-only"
         role="status"
@@ -84,65 +101,91 @@ export function Roster({ agents, liveRuns }: RosterProps) {
       >
         {announce}
       </p>
-      {agents.length === 0 ? (
-        <p className="ksq-roster__empty" data-testid="roster-empty">
-          No agents on this team yet.
-        </p>
-      ) : (
-        <ul className="ksq-roster__list">
-          {agents.map((a) => {
-            const run = liveRuns?.[a.id];
-            const runState: "idle" | "queued" | "running" =
-              run?.state ?? "idle";
-            const presence: Presence = presenceFromStatus(a.status);
-            return (
-              <li
-                key={a.id}
-                className={`ksq-roster__agent${
-                  run ? ` ksq-roster__agent--${run.state}` : ""
-                }`}
-                data-testid="roster-agent"
-                data-agent-id={a.id}
-                data-presence={presence}
-                data-run-state={runState}
-              >
-                {run ? (
-                  <>
-                    {/* Blue dot: pulses while running, static while queued —
+      {/* Narrow-only sticky mini-bar (hidden ≥900px by discussion.css): a real
+          toggle for the collapsible body below. */}
+      <button
+        type="button"
+        className="ksq-roster__minibar"
+        data-testid="roster-minibar"
+        aria-expanded={expanded}
+        aria-controls="ksq-roster-body"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="ksq-roster__minibar-count">
+          {agents.length} {agents.length === 1 ? "agent" : "agents"} ·{" "}
+          {runningCount} running
+        </span>
+        <span className="ksq-roster__minibar-caret" aria-hidden="true">
+          {expanded ? "▾" : "▸"}
+        </span>
+      </button>
+      <div className="ksq-roster__body" id="ksq-roster-body">
+        <h2 className="ksq-roster__title">Roster</h2>
+        {agents.length === 0 ? (
+          <p className="ksq-roster__empty" data-testid="roster-empty">
+            No agents on this team yet.
+          </p>
+        ) : (
+          <ul className="ksq-roster__list">
+            {agents.map((a) => {
+              const run = liveRuns?.[a.id];
+              const runState: "idle" | "queued" | "running" =
+                run?.state ?? "idle";
+              const presence: Presence = presenceFromStatus(a.status);
+              return (
+                <li
+                  key={a.id}
+                  className={`ksq-roster__agent${
+                    run ? ` ksq-roster__agent--${run.state}` : ""
+                  }`}
+                  data-testid="roster-agent"
+                  data-agent-id={a.id}
+                  data-presence={presence}
+                  data-run-state={runState}
+                >
+                  {run ? (
+                    <>
+                      {/* Blue dot: pulses while running, static while queued —
                         reuses the shipped pulse motion (no new token). */}
-                    <span
-                      className={`ksq-roster__livedot ksq-roster__livedot--${run.state}`}
-                      aria-hidden="true"
-                    />
-                    <span className="ksq-roster__name">{a.name}</span>
-                    <span
-                      className={`ksq-roster__chip ksq-roster__chip--${run.state}`}
-                      data-testid="roster-run-chip"
-                    >
-                      {run.state}
-                    </span>
-                    <span className="ksq-roster__status" data-testid="roster-run-sublabel">
-                      {runSublabel(run)}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span
-                      className={`ksq-roster__dot ksq-roster__dot--${presence}`}
-                      aria-hidden="true"
-                    />
-                    <span className="ksq-roster__name">{a.name}</span>
-                    <span className="ksq-roster__status">
-                      {presenceSublabel(a.status)}
-                    </span>
-                  </>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <p className="ksq-roster__hint">Presence degrades to status-only (v1).</p>
+                      <span
+                        className={`ksq-roster__livedot ksq-roster__livedot--${run.state}`}
+                        aria-hidden="true"
+                      />
+                      <span className="ksq-roster__name">{a.name}</span>
+                      <span
+                        className={`ksq-roster__chip ksq-roster__chip--${run.state}`}
+                        data-testid="roster-run-chip"
+                      >
+                        {run.state}
+                      </span>
+                      <span
+                        className="ksq-roster__status"
+                        data-testid="roster-run-sublabel"
+                      >
+                        {runSublabel(run)}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span
+                        className={`ksq-roster__dot ksq-roster__dot--${presence}`}
+                        aria-hidden="true"
+                      />
+                      <span className="ksq-roster__name">{a.name}</span>
+                      <span className="ksq-roster__status">
+                        {presenceSublabel(a.status)}
+                      </span>
+                    </>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <p className="ksq-roster__hint">
+          Presence degrades to status-only (v1).
+        </p>
+      </div>
     </aside>
   );
 }

@@ -335,6 +335,66 @@ export function DiscussionRoom({
     [client, projectId],
   );
 
+  // ISI-5623 (impl of ISI-5597) — scroll ergonomics for a long transcript,
+  // ported verbatim from ticket-detail (ISI-5157). The PAGE (document) is the
+  // scroll owner on this route (design LOCKED, mirror of ticket-detail — avoids
+  // the inner-transcript-scroll retarget caveat), so the docked composer and the
+  // jump-to-bottom FAB are pinned relative to the viewport (discussion.css). Two
+  // small effects: (1) keep the dock's live height in `--ksq-dock-h` so the FAB
+  // rides just above it (the composer grows on error / when the @-mention popover
+  // opens), and (2) drive the FAB's visibility from how much content is still
+  // below the fold.
+  const dockRef = useRef<HTMLElement | null>(null);
+  const [showJump, setShowJump] = useState(false);
+
+  useEffect(() => {
+    const el = dockRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const apply = () =>
+      document.documentElement.style.setProperty(
+        "--ksq-dock-h",
+        `${el.offsetHeight}px`,
+      );
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      document.documentElement.style.removeProperty("--ksq-dock-h");
+    };
+  }, [state]);
+
+  // Show the FAB only while there is meaningful content below the fold; it fades
+  // out within ~48px of the end, so it is never a dead control at the bottom. New
+  // messages arriving (SSE) retrigger the recompute via the messages.length dep.
+  useEffect(() => {
+    if (state !== "ready") return;
+    const THRESHOLD = 48;
+    const update = () => {
+      const doc = document.documentElement;
+      const distance = doc.scrollHeight - window.scrollY - window.innerHeight;
+      setShowJump(distance > THRESHOLD);
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [state, messages.length]);
+
+  // Smooth-scroll the page to the newest message (instant under reduced-motion).
+  function jumpToBottom() {
+    const reduce =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({
+      top: document.documentElement.scrollHeight,
+      behavior: reduce ? "auto" : "smooth",
+    });
+  }
+
   if (state === "loading") {
     return <div data-testid="room-loading">Loading discussion…</div>;
   }
@@ -377,13 +437,62 @@ export function DiscussionRoom({
             />
           ))}
         </ul>
-        <Composer
-          onPost={post}
-          directTargets={rosterAgents.map((a) => ({ id: a.id, name: a.name }))}
-          searchMentions={searchMentions}
-        />
+        {/* ISI-5623 (ISI-5597 P2) — the composer docked to the bottom of the
+            room, always visible on a long transcript. `position: sticky;
+            bottom: 0` (discussion.css) keeps it pinned to the viewport bottom
+            while the thread scrolls beneath, and it settles below the newest
+            message at the end. Same <Composer> — its @-mention + audience
+            contract is untouched; only its position (and the UPWARD popover)
+            changed. */}
+        <footer
+          ref={dockRef}
+          className="ksq-room__dock"
+          data-testid="room-composer-dock"
+        >
+          <Composer
+            onPost={post}
+            directTargets={rosterAgents.map((a) => ({
+              id: a.id,
+              name: a.name,
+            }))}
+            searchMentions={searchMentions}
+          />
+        </footer>
       </div>
       <Roster agents={rosterAgents} liveRuns={liveRuns} />
+
+      {/* ISI-5623 (ISI-5597 P1) — jump-to-bottom FAB, fixed bottom-right, riding
+          just above the docked composer (`--ksq-dock-h`). Shown only while
+          content sits below the fold; smooth-scrolls the page to the newest
+          message (instant under prefers-reduced-motion). A real focusable
+          button, pulled from the tab order and hidden from AT while off-screen. */}
+      <button
+        type="button"
+        className="ksq-jump-fab"
+        data-testid="room-jump-bottom"
+        data-visible={showJump}
+        aria-label="Scroll to latest"
+        aria-hidden={!showJump}
+        tabIndex={showJump ? 0 : -1}
+        onClick={jumpToBottom}
+      >
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 20 20"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M10 3.5v11m0 0l4.5-4.5M10 14.5L5.5 10"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
     </section>
   );
 }
