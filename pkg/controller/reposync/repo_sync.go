@@ -82,6 +82,7 @@ const (
 	reasonIssueSync     = "IssueSyncError"
 	reasonReviewFail    = "ReviewTriggerError"
 	reasonTriageFail    = "IssueTriageTriggerError"
+	reasonCIFailureFail = "CIFailureTriggerError"
 	reasonWriteBackFail = "RunWriteBackError"
 	reasonInitialFail   = "RunInitialWriteBackError"
 )
@@ -149,6 +150,27 @@ type IssueTriageTrigger interface {
 	TriageChanges(ctx context.Context, projectNamespace, projectName string, provider scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error
 }
 
+// CIFailureTrigger is the OPTIONAL Actions CI-failure triage dispatch seam
+// (ISI-5595 WS-C). It is a sibling of ReviewTrigger: a nil trigger disables
+// CI-failure triage entirely, exactly like a nil ReviewTrigger disables review
+// automation. When wired, the SAME reconcile pass that upserts the mirror and
+// ran the issue-link + review passes hands the JUST-APPLIED snapshot rows to the
+// trigger — same triggers (webhook + poll), same level-triggered discipline. The
+// trigger BODY (which check-run rows qualify by conclusion/watermark/branch, the
+// work-item label dedup on (check, head SHA), the create-if-absent and the
+// dispatch) lives entirely in pkg/controller/cifailure, so this reconciler never
+// touches the ISI-4711 human-only custody wall.
+type CIFailureTrigger interface {
+	// HandleCIFailures inspects one Project's just-applied check-run mirror rows
+	// and dispatches triage for new failing runs. It MUST be level-triggered and
+	// idempotent: re-running it on an unchanged snapshot (a redelivered webhook, a
+	// poll tick) is a no-op, because dedup is keyed on the (check name, head SHA,
+	// conclusion) carried on the check-run rows' payload — there is no stored diff
+	// state. A failure fails the reconcile so the next level-triggered pass
+	// retries against the re-applied mirror.
+	HandleCIFailures(ctx context.Context, projectNamespace, projectName string, provider scm.SourceProvider, repoURL string, rows []scm.MirrorRow) error
+}
+
 // Reconciler is the repo-sync reconciler (story 11.1). It talks ONLY to
 // the scm.SourceControlProvider seam and the scm.MirrorStore seam; the
 // provider name → constructor mapping lives in the scm.ProviderRegistry
@@ -190,6 +212,12 @@ type Reconciler struct {
 	// triage; when wired, the same reconcile pass hands the just-applied issue
 	// rows to it alongside the review trigger. See IssueTriageTrigger.
 	IssueTriageTrigger IssueTriageTrigger
+
+	// CIFailureTrigger is the OPTIONAL Actions CI-failure triage dispatch seam
+	// (ISI-5595 WS-C). Nil disables CI-failure triage, exactly like a nil
+	// ReviewTrigger; when wired, the same reconcile pass hands the just-applied
+	// check-run rows to it after the review trigger. See CIFailureTrigger.
+	CIFailureTrigger CIFailureTrigger
 
 	// RunWriteBack is the OPTIONAL run-outcome → GitHub-issue write-back engine
 	// (ISI-4797, follow-up of ISI-4793/PR#572). Nil disables it, exactly like a
@@ -445,6 +473,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 			logger.Error(err, "repo-sync: issue-triage trigger failed", "project", req.NamespacedName)
 			reason = reasonTriageFail
 			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonTriageFail, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
+	// ── the ISI-5595 WS-C CI-failure triage trigger: failing check runs → triage dispatch ──
+	// Runs AFTER the review trigger on the SAME just-applied rows and the SAME
+	// level-triggered discipline. The trigger body (qualify failing check runs →
+	// dedup by (check, head SHA, conclusion) label → create-if-absent → dispatch)
+	// lives in pkg/controller/cifailure, behind the seam so this reconciler stays
+	// clear of the human-only custody wall (ISI-4711). A failure fails the
+	// reconcile — the mirror already applied, so the next level-triggered pass
+	// re-applies it and retries the trigger idempotently (the dedup label dedups).
+	if r.CIFailureTrigger != nil {
+		if err := r.CIFailureTrigger.HandleCIFailures(ctx, project.Namespace, project.Name,
+			provider, project.Spec.Repo.URL, rows); err != nil {
+			logger.Error(err, "repo-sync: CI-failure trigger failed", "project", req.NamespacedName)
+			reason = reasonCIFailureFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonCIFailureFail, err.Error())})
 			return ctrl.Result{}, err
 		}
 	}

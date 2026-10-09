@@ -382,6 +382,45 @@ func TestFetchCheckRunsScopedToLiveRefs(t *testing.T) {
 	}
 }
 
+// fetchCheckRuns carries the commit SHA (CheckRun.head_sha) and the check
+// suite's head branch (CheckRun.check_suite.head_branch) onto the normalized
+// record (ISI-5595 WS-C), so the CI-failure trigger can key its dedup label on
+// the SHA and narrow by branch. They ride the existing JSONB payload fields.
+func TestFetchCheckRunsCarriesHeadSHAAndBranch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/acme/app", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"default_branch":"main"}`)
+	})
+	mux.HandleFunc("/repos/acme/app/pulls", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	})
+	mux.HandleFunc("/repos/acme/app/commits/main/check-runs", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":202,"name":"e2e","status":"completed","conclusion":"failure","head_sha":"cafebabecafebabecafebabecafebabecafebabe","check_suite":{"head_branch":"main"}}]}`)
+	})
+
+	p, _ := newTestGitHubProvider(t, mux)
+	records, err := p.fetchCheckRuns(context.Background(), "acme", "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one check-run record, got %+v", records)
+	}
+	got := records[0]
+	if got.Conclusion != "failure" {
+		t.Fatalf("Conclusion = %q, want failure", got.Conclusion)
+	}
+	if got.HeadSHA != "cafebabecafebabecafebabecafebabecafebabe" {
+		t.Fatalf("HeadSHA = %q, want the check-run head commit SHA", got.HeadSHA)
+	}
+	if got.HeadRef != "main" {
+		t.Fatalf("HeadRef = %q, want the check suite head branch", got.HeadRef)
+	}
+}
+
 // Snapshot maps a parsed URL onto the right owner/repo paths end to end.
 func TestSnapshotTargetsParsedOwnerRepo(t *testing.T) {
 	mux := http.NewServeMux()

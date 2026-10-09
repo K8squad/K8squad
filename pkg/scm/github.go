@@ -967,6 +967,16 @@ func (p *GitHubProvider) fetchCheckRuns(ctx context.Context, owner, repo string)
 					CreatedAt:  checkRun.GetStartedAt().Time,
 					UpdatedAt:  checkRun.GetCompletedAt().Time,
 					Conclusion: checkRun.GetConclusion(),
+					// HeadSHA / HeadRef (ISI-5595 WS-C): the commit a check run
+					// ran against and its branch. The run itself carries the SHA;
+					// the owning check suite carries the branch (populated on
+					// ListCheckRunsForRef responses, empty otherwise). They ride
+					// the existing JSONB payload fields — no indexed column, no
+					// migration — so the CI-failure trigger can key its dedup label
+					// on the SHA and narrow by branch. Left empty for every other
+					// record kind, exactly as before.
+					HeadSHA: checkRun.GetHeadSHA(),
+					HeadRef: checkRun.GetCheckSuite().GetHeadBranch(),
 				}
 				records = append(records, record)
 			}
