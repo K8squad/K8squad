@@ -67,11 +67,13 @@ import (
 
 	ksquadv1alpha1 "github.com/K8squad/K8squad/api/v1alpha1"
 	clienta2a "github.com/K8squad/K8squad/internal/a2a"
+	"github.com/K8squad/K8squad/internal/issuedispatch"
 	"github.com/K8squad/K8squad/internal/memory"
 	"github.com/K8squad/K8squad/internal/reviewdispatch"
 	wire "github.com/K8squad/K8squad/pkg/a2a"
 	"github.com/K8squad/K8squad/pkg/controller/contextsource"
 	credentialctrl "github.com/K8squad/K8squad/pkg/controller/credential"
+	issuetrigger "github.com/K8squad/K8squad/pkg/controller/issuetrigger"
 	mcpserverctrl "github.com/K8squad/K8squad/pkg/controller/mcpserver"
 	otelgate "github.com/K8squad/K8squad/pkg/controller/otelgate"
 	projectpvc "github.com/K8squad/K8squad/pkg/controller/projectpvc"
@@ -1348,6 +1350,31 @@ func main() {
 			}
 		}
 
+		// ISI-5595 WS-B: the system issue-triage dispatch trigger — the issue-side
+		// sibling of the review trigger, riding the SAME repo-sync reconcile. Its
+		// pure decision core (pkg/controller/issuetrigger) is bound here to the
+		// standing IssueTriage policy off the Project CR and the custody-wall-
+		// sensitive create+dispatch executed under the SYSTEM identity (never an
+		// agent — ISI-4711). It reuses the SAME coord write + dispatch stores as the
+		// review trigger (both are generic coord ops). A construction failure
+		// disables ONLY issue triage (nil ⇒ off, the pre-WS-B default); the mirror,
+		// link and review passes still run.
+		var issueTriageDispatcher reposync.IssueTriageTrigger
+		switch {
+		case rwErr != nil, rdErr != nil:
+			// Already logged above (shared stores); issue triage shares their fate.
+		default:
+			triageStore, tsErr := issuedispatch.NewSystemTriageItemStore(reviewWriteStore, reviewDispatchStore)
+			if tsErr != nil {
+				ctrl.Log.Error(tsErr, "issue-triage automation disabled (system triage item store)")
+			} else {
+				issueTriageDispatcher = &issuetrigger.Dispatcher{
+					Policy: issuedispatch.NewProjectPolicyReader(mgr.GetClient()),
+					Store:  triageStore,
+				}
+			}
+		}
+
 		// ISI-4797: the run-outcome → GitHub-issue write-back engine rides the
 		// SAME repo-sync pass (a sibling of the issue-link engine). It reflects a
 		// terminal agent run back to the GitHub issue the bridge (ISI-4783) minted
@@ -1361,12 +1388,13 @@ func main() {
 		}
 
 		if err := (&reposync.Reconciler{
-			Client:        mgr.GetClient(),
-			Store:         scm.NewSQLMirrorStore(db),
-			Providers:     scm.NewProviderRegistry(),
-			IssueSync:     issuesync.NewSyncer(issueLinkStore),
-			ReviewTrigger: reviewDispatcher,
-			RunWriteBack:  runWriteBack,
+			Client:             mgr.GetClient(),
+			Store:              scm.NewSQLMirrorStore(db),
+			Providers:          scm.NewProviderRegistry(),
+			IssueSync:          issuesync.NewSyncer(issueLinkStore),
+			ReviewTrigger:      reviewDispatcher,
+			IssueTriageTrigger: issueTriageDispatcher,
+			RunWriteBack:       runWriteBack,
 			// ISI-5309: durable sync-history — every completed mirror pass appends
 			// one append-only scm.github_sync_history row (when/kind/count/principal)
 			// the console GitHub status surfaces as "last-sync history".

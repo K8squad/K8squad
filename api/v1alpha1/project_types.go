@@ -123,6 +123,94 @@ type RepoSpec struct {
 	// only and triggers nothing yet.
 	// +optional
 	ReviewAutomation *ReviewAutomationSpec `json:"reviewAutomation,omitempty"`
+
+	// Automation groups the newer, human-enabled / system-executed per-section
+	// automation policies for this Project (ISI-5595). Each sub-policy is opt-in,
+	// independently gated, and executed under its own SYSTEM identity — never
+	// agent-initiated, exactly like ReviewAutomation (ISI-4711 custody wall).
+	// reviewAutomation stays on spec.repo directly for backward-compat (ISI-4750);
+	// the new sections (issueTriage, and later ciFailure) live here so all three
+	// read/write uniformly (ISI-5595 D2). Nil (the default) means no new-section
+	// automation is configured.
+	// +optional
+	Automation *RepoAutomationSpec `json:"automation,omitempty"`
+}
+
+// RepoAutomationSpec groups the ISI-5595 per-section automation policies that are
+// NOT the legacy PR-review one (that stays at spec.repo.reviewAutomation for
+// backward-compat, D2). Each field is an independently-gated, opt-in standing
+// policy executed under a SYSTEM identity. Nil sub-policies are off.
+type RepoAutomationSpec struct {
+	// IssueTriage configures auto-triage of newly-opened GitHub issues (ISI-5595
+	// WS-B): mint an internal ticket and dispatch a configured triage agent for
+	// each new open issue the mirror captures. Nil / disabled = today's behaviour
+	// exactly (issue→ticket is MANUAL only via the console Issues board bridge).
+	// +optional
+	IssueTriage *IssueTriageSpec `json:"issueTriage,omitempty"`
+}
+
+// IssueTriageSpec is the GitHub-issue auto-triage policy (ISI-5595 WS-B). It is
+// the generalization of ReviewAutomationSpec to the Issues section: a human
+// enabling it (Enabled=true) is the D1 authorizing act, provenanced by the
+// server-stamped EnabledBy; the triage Run is later dispatched under the SYSTEM
+// identity system:issue-triage, NOT agent-initiated, so it crosses no custody
+// wall (ISI-4711). The auto path reuses the EXACT mechanics of the manual
+// issue→ticket bridge (internal/apiserver/githubissuedispatch.go): find-or-create
+// a work item keyed on the shared join label ksquad.github.issue=owner/repo#N,
+// then dispatch — so an auto-triaged and a manually-assigned issue converge on
+// ONE ticket and are never double-handled.
+type IssueTriageSpec struct {
+	// Enabled turns the standing policy on. When false (or the whole struct is
+	// nil) no issue is ever auto-triaged. Enabling is the human authorizing act
+	// for the D1 system-dispatch path.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// TriageAgentID is the team agent that triages new issues. It MUST be an agent
+	// in the owning Team's composition (the coord dispatch enforces the
+	// agent-∈-Team check on write). Required whenever Enabled is true.
+	// +optional
+	TriageAgentID string `json:"triageAgentId,omitempty"`
+
+	// LabelFilter optionally restricts triage to issues carrying AT LEAST ONE of
+	// these GitHub labels (case-insensitive match against the mirrored issue
+	// labels). Empty (the default) triages every qualifying open issue regardless
+	// of labels.
+	// +optional
+	LabelFilter []string `json:"labelFilter,omitempty"`
+
+	// OnlyUnassigned, when true (the default), triages only issues that have NO
+	// GitHub assignee — so an issue a human has already picked up upstream is left
+	// alone. Set false to triage every qualifying open issue. A nil value means
+	// the default (true); use EffectiveOnlyUnassigned to resolve it.
+	// +optional
+	OnlyUnassigned *bool `json:"onlyUnassigned,omitempty"`
+
+	// EnabledBy is the SERVER-STAMPED principal that last set Enabled=true — the
+	// D1 authorizing-act provenance threaded into the system dispatch. Written by
+	// the apiserver from the authenticated caller on any write that sets
+	// Enabled=true, and CLEARED when Enabled is set false. NEVER trusted from the
+	// request body. Read-only from the caller's perspective.
+	// +optional
+	EnabledBy string `json:"enabledBy,omitempty"`
+
+	// EnabledAt is the SERVER-STAMPED timestamp Enabled was last set true — the D4
+	// forward-only watermark. The trigger auto-triages ONLY issues created or
+	// updated at/after this instant, so enabling on a repo with a large open-issue
+	// backlog does NOT flood the squad with the entire history. Written/cleared by
+	// the apiserver alongside EnabledBy; NEVER trusted from the request body.
+	// +optional
+	EnabledAt *metav1.Time `json:"enabledAt,omitempty"`
+}
+
+// EffectiveOnlyUnassigned resolves the OnlyUnassigned toggle, applying the
+// default (true) when unset (nil). Callers get the default from one place rather
+// than re-deciding nil-handling.
+func (s *IssueTriageSpec) EffectiveOnlyUnassigned() bool {
+	if s == nil || s.OnlyUnassigned == nil {
+		return true
+	}
+	return *s.OnlyUnassigned
 }
 
 // ReviewAutomationSpec is the PR-review-automation policy (ISI-4750 D6, E0 §2).

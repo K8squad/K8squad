@@ -167,6 +167,71 @@ spec:
                     required:
                     - credentialSecretRef
                     type: object
+                  automation:
+                    description: |-
+                      Automation groups the newer, human-enabled / system-executed per-section
+                      automation policies for this Project (ISI-5595). Each sub-policy is opt-in,
+                      independently gated, and executed under its own SYSTEM identity — never
+                      agent-initiated, exactly like ReviewAutomation (ISI-4711 custody wall).
+                      reviewAutomation stays on spec.repo directly for backward-compat (ISI-4750);
+                      the new sections (issueTriage, and later ciFailure) live here so all three
+                      read/write uniformly (ISI-5595 D2). Nil (the default) means no new-section
+                      automation is configured.
+                    properties:
+                      issueTriage:
+                        description: |-
+                          IssueTriage configures auto-triage of newly-opened GitHub issues (ISI-5595
+                          WS-B): mint an internal ticket and dispatch a configured triage agent for
+                          each new open issue the mirror captures. Nil / disabled = today's behaviour
+                          exactly (issue→ticket is MANUAL only via the console Issues board bridge).
+                        properties:
+                          enabled:
+                            description: |-
+                              Enabled turns the standing policy on. When false (or the whole struct is
+                              nil) no issue is ever auto-triaged. Enabling is the human authorizing act
+                              for the D1 system-dispatch path.
+                            type: boolean
+                          enabledAt:
+                            description: |-
+                              EnabledAt is the SERVER-STAMPED timestamp Enabled was last set true — the D4
+                              forward-only watermark. The trigger auto-triages ONLY issues created or
+                              updated at/after this instant, so enabling on a repo with a large open-issue
+                              backlog does NOT flood the squad with the entire history. Written/cleared by
+                              the apiserver alongside EnabledBy; NEVER trusted from the request body.
+                            format: date-time
+                            type: string
+                          enabledBy:
+                            description: |-
+                              EnabledBy is the SERVER-STAMPED principal that last set Enabled=true — the
+                              D1 authorizing-act provenance threaded into the system dispatch. Written by
+                              the apiserver from the authenticated caller on any write that sets
+                              Enabled=true, and CLEARED when Enabled is set false. NEVER trusted from the
+                              request body. Read-only from the caller's perspective.
+                            type: string
+                          labelFilter:
+                            description: |-
+                              LabelFilter optionally restricts triage to issues carrying AT LEAST ONE of
+                              these GitHub labels (case-insensitive match against the mirrored issue
+                              labels). Empty (the default) triages every qualifying open issue regardless
+                              of labels.
+                            items:
+                              type: string
+                            type: array
+                          onlyUnassigned:
+                            description: |-
+                              OnlyUnassigned, when true (the default), triages only issues that have NO
+                              GitHub assignee — so an issue a human has already picked up upstream is left
+                              alone. Set false to triage every qualifying open issue. A nil value means
+                              the default (true); use EffectiveOnlyUnassigned to resolve it.
+                            type: boolean
+                          triageAgentId:
+                            description: |-
+                              TriageAgentID is the team agent that triages new issues. It MUST be an agent
+                              in the owning Team's composition (the coord dispatch enforces the
+                              agent-∈-Team check on write). Required whenever Enabled is true.
+                            type: string
+                        type: object
+                    type: object
                   ref:
                     description: |-
                       Ref is the default ref to track (branch or tag); empty means the
