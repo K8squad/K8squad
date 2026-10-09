@@ -371,13 +371,45 @@ func (s *Store) activePartySessionTx(ctx context.Context, tx *sql.Tx, threadID u
 	return sess, err
 }
 
-// GetPartySession reads a session by id (any phase) — the WS-D advancer's re-read after a mutation.
+// GetPartySession reads a session by id (any phase) — the WS-D advancer's re-read after a mutation and
+// the ISI-5617 get-by-id read path. Unlike ActivePartySession it does NOT filter on phase, so a closed /
+// converged / budget_exhausted session is still reachable after a debate ends (the terminal takeaways the
+// console renders — ISI-5613 Gap 2). Returns ErrNoActivePartySession (→ 404) when no row has that id.
 func (s *Store) GetPartySession(ctx context.Context, id uuid.UUID) (*PartySession, error) {
 	sess, err := scanPartySession(s.db.QueryRowContext(ctx, partySessionSelect+` WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNoActivePartySession
 	}
 	return sess, err
+}
+
+// ListPartySessionsByThread returns a thread's party sessions newest-first (ISI-5617, ISI-5613 Gap 2).
+// With includeClosed=false it mirrors ActivePartySession's filter (only the live session, at most one by
+// the partial-unique invariant), so it is a safe superset of the existing active read. With
+// includeClosed=true it returns every session the thread has ever hosted — including the TERMINAL row the
+// console needs for post-close takeaways (phase reason, final round count, paid-run tally) once
+// …/active 404s. Ordered opened_at DESC so the most recent debate is first. An empty result is a nil
+// slice (the handler renders it as []), never an error — a thread with no debate is not a miss.
+func (s *Store) ListPartySessionsByThread(ctx context.Context, threadID uuid.UUID, includeClosed bool) ([]PartySession, error) {
+	q := partySessionSelect + ` WHERE thread_id = $1`
+	if !includeClosed {
+		q += ` AND phase = 'active'`
+	}
+	q += ` ORDER BY opened_at DESC`
+	rows, err := s.db.QueryContext(ctx, q, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("list party sessions by thread: %w", err)
+	}
+	defer rows.Close()
+	var out []PartySession
+	for rows.Next() {
+		sess, err := scanPartySession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *sess)
+	}
+	return out, rows.Err()
 }
 
 // AdvanceRound bumps the round counter by one on a still-active session (ADR-0027 §3.2: the advancer

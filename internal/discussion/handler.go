@@ -156,6 +156,13 @@ func (h *Handler) Register(r *mux.Router) {
 	// Party mode (ISI-5585, WS-B, ADR-0027): the opt-in session start + the active-session read.
 	r.HandleFunc("/threads/{threadId}/party-sessions", h.startPartySession).Methods(http.MethodPost)
 	r.HandleFunc("/threads/{threadId}/party-sessions/active", h.getActivePartySession).Methods(http.MethodGet)
+	// ISI-5617 (ISI-5613 Gap 2): expose the TERMINAL (closed) session the live …/active read can no
+	// longer see. The list (collection GET; ?includeClosed=true returns closed rows too) and the
+	// get-by-id read both return any-phase sessions, so the console retrieves the post-close takeaways
+	// (phase reason, round count, paid-run tally). The literal /active above is registered FIRST so it
+	// is never captured by the {sessionId} var below (gorilla matches in registration order).
+	r.HandleFunc("/threads/{threadId}/party-sessions", h.listPartySessions).Methods(http.MethodGet)
+	r.HandleFunc("/threads/{threadId}/party-sessions/{sessionId}", h.getPartySession).Methods(http.MethodGet)
 	// The memory service's incremental-index bridge (10.2 consumer). Same tenancy scope as the reads.
 	r.HandleFunc("/memory-index", h.memoryIndex).Methods(http.MethodGet)
 	// Mention search endpoint (ISI-4926): agent + ticket suggestions for the @-mention composer.
@@ -685,6 +692,89 @@ func (h *Handler) getActivePartySession(w http.ResponseWriter, r *http.Request) 
 	sess, err := h.store.ActivePartySession(r.Context(), threadID)
 	if err != nil {
 		writeStoreErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sess)
+}
+
+// listPartySessions answers GET /threads/{threadId}/party-sessions with the thread's party sessions
+// newest-first (ISI-5617, ISI-5613 Gap 2). Default (no query / includeClosed!=true) returns only the
+// live session — the same set …/active exposes, as an array — so the existing live behaviour is
+// unchanged. ?includeClosed=true additionally returns terminal rows, so after a debate closes the
+// console can read the terminal PartySession (phase reason, round count, paid-run tally). Returns [] (not
+// 404) for a thread with no debate — absence of a debate is not a miss.
+func (h *Handler) listPartySessions(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	// Tenancy probe first (404-not-403 on a foreign thread) before exposing whether sessions exist.
+	if err := h.store.assertThreadInScope(r.Context(), projectID, teamID, threadID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	includeClosed := r.URL.Query().Get("includeClosed") == "true"
+	sessions, err := h.store.ListPartySessionsByThread(r.Context(), threadID, includeClosed)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	// Normalize a nil slice to [] so the console always decodes a JSON array, never null.
+	if sessions == nil {
+		sessions = []PartySession{}
+	}
+	writeJSON(w, http.StatusOK, sessions)
+}
+
+// getPartySession answers GET /threads/{threadId}/party-sessions/{sessionId} with the session by id in
+// ANY phase (ISI-5617, ISI-5613 Gap 2) — unlike …/active it returns a closed/converged/budget_exhausted
+// row, so the console retrieves the terminal takeaways after a debate ends. 404 when no such session, or
+// when the session belongs to a different thread than the path (a cross-thread id is a miss, never a
+// peek into another thread's debate).
+func (h *Handler) getPartySession(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid projectId")
+		return
+	}
+	threadID, ok := pathUUID(r, "threadId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid threadId")
+		return
+	}
+	sessionID, ok := pathUUID(r, "sessionId")
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid sessionId")
+		return
+	}
+	_, teamID, ok := h.scopedAuth(w, r, projectID)
+	if !ok {
+		return
+	}
+	// Tenancy probe first (404-not-403 on a foreign thread), mirroring getActivePartySession.
+	if err := h.store.assertThreadInScope(r.Context(), projectID, teamID, threadID); err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	sess, err := h.store.GetPartySession(r.Context(), sessionID)
+	if err != nil {
+		writeStoreErr(w, err)
+		return
+	}
+	// A session id that resolves to a DIFFERENT thread is a 404, not a cross-thread read. The thread was
+	// already proven in scope above, so this only ever hides another thread's session behind a miss.
+	if sess.ThreadID != threadID {
+		writeError(w, http.StatusNotFound, ErrNoActivePartySession.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, sess)
