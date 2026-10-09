@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // ============================================================================
@@ -168,6 +169,15 @@ type PartySession struct {
 	// residual liveness gap — a facilitator run that dies before posting its dispatch — with a timeout off
 	// this, the same shape as the §3.3 settle_timeout stuck-voice guard. nil before the first round is minted.
 	RoundStartedAt *time.Time `json:"roundStartedAt,omitempty"`
+
+	// RoundVoices is the current round's ORDERED, already-resolved + budget-capped voice roster (ADR-0031
+	// Ruling A §3.1, S-direct; 0035). The apiserver party-facilitator dispatch hook stamps it atomically
+	// with CurrentRoundMessageID; the coordinator-SEQUENCED advancer walks it one turn at a time, dispatching
+	// RoundVoices[k] only after turn k-1 has settled so voice k reacts to voice k-1's freshly-landed reply.
+	// The cursor is DERIVED — how many of these voices already have a mention_dispatch row under the
+	// facilitator message (RoundVoiceSettlement.Dispatched) — so the roster + the ledger ARE the cursor, no
+	// second counter. Empty between rounds (MintRound clears it) and for a session opened before 0035.
+	RoundVoices []string `json:"roundVoices,omitempty"`
 }
 
 // IsActive reports whether the session is live (the advancer may mint).
@@ -247,7 +257,7 @@ func PartyStartAllowed(auth AuthorContext) error {
 const partySessionSelect = `
 	SELECT id, thread_id, project_id, team_id, started_by, topic_message_id,
 	       round, max_rounds, max_voices_per_round, paid_run_budget, paid_runs_used,
-	       phase, opened_at, closed_at, current_round_message_id, round_started_at
+	       phase, opened_at, closed_at, current_round_message_id, round_started_at, round_voices
 	FROM discussion.party_session`
 
 // scanPartySession hydrates one PartySession from a partySessionSelect row.
@@ -259,6 +269,7 @@ func scanPartySession(sc interface{ Scan(...any) error }) (*PartySession, error)
 		&s.ID, &s.ThreadID, &s.ProjectID, &s.TeamID, &s.StartedBy, &s.TopicMessageID,
 		&s.Round, &s.Budget.MaxRounds, &s.Budget.MaxVoicesPerRound, &s.Budget.PaidRunBudget,
 		&s.PaidRunsUsed, &s.Phase, &s.OpenedAt, &closedAt, &curRoundMsg, &roundStartedAt,
+		pq.Array(&s.RoundVoices),
 	); err != nil {
 		return nil, err
 	}
@@ -519,7 +530,9 @@ func (s *Store) ActivePartySessions(ctx context.Context) ([]*PartySession, error
 
 // MintRound atomically advances the session to its next facilitator round (ADR-0027 §3.2): it bumps the
 // round counter, stamps round_started_at, clears current_round_message_id (the new round has no facilitator
-// message yet — the advancer then waits on NULL until the facilitator posts its dispatch), and charges the
+// message yet — the advancer then waits on NULL until the facilitator posts its dispatch), clears
+// round_voices (the next round's roster is not planned until the facilitator posts — ADR-0031 §3.1, 0035),
+// and charges the
 // one paid run the facilitator mint costs, all in a single CAS on phase='active' AND round=fromRound so two
 // concurrent advancer ticks (or a tick racing a restart) cannot double-mint a round. The caller mints the
 // facilitator run only after this succeeds. It does NOT flip budget_exhausted: the advancer only calls it
@@ -532,6 +545,7 @@ func (s *Store) MintRound(ctx context.Context, id uuid.UUID, fromRound int) (*Pa
 		   SET round = round + 1,
 		       round_started_at = now(),
 		       current_round_message_id = NULL,
+		       round_voices = '{}',
 		       paid_runs_used = paid_runs_used + 1
 		 WHERE id = $1 AND phase = 'active' AND round = $2`, id, fromRound)
 	if err != nil {
@@ -545,18 +559,21 @@ func (s *Store) MintRound(ctx context.Context, id uuid.UUID, fromRound int) (*Pa
 
 // SetRoundFacilitatorMessage records, first-writer-wins, the facilitator @-mention message that dispatched
 // the round's voices (ADR-0027 §3.3/§4.3 — the message RoundVoiceSettlement keys the round's completeness
-// on). The mint-gate dispatch hook calls it when the facilitator's round post commits. The CAS is on
-// phase='active' AND round=forRound AND current_round_message_id IS NULL, so only the FIRST facilitator post
-// for a round wins: a second coordinator party post in the same round (or a post after the round advanced /
-// the session closed) loses the CAS and is reported won=false (nil err) — an idempotent no-op the hook skips
-// without charging voices. A real DB failure is returned as err. On a win the updated session is returned so
-// the hook can size the voice fan-out against the fresh paid-run headroom.
-func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID) (sess *PartySession, won bool, err error) {
+// on) AND stamps the round's ordered, already-resolved + budget-capped voice roster (ADR-0031 Ruling A
+// §3.1, 0035 — the coordinator-sequenced advancer walks `voices` one turn at a time). The mint-gate dispatch
+// hook calls it when the facilitator's round post commits. The CAS is on phase='active' AND round=forRound
+// AND current_round_message_id IS NULL, so only the FIRST facilitator post for a round wins: a second
+// coordinator party post in the same round (or a post after the round advanced / the session closed) loses
+// the CAS and is reported won=false (nil err) — an idempotent no-op the hook skips without charging voices.
+// A real DB failure is returned as err. On a win the updated session is returned (with RoundVoices set) so
+// the advancer sees the roster to walk and can size the voice fan-out against the fresh paid-run headroom.
+func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID, voices []string) (sess *PartySession, won bool, err error) {
 	tag, err := s.db.ExecContext(ctx, `
 		UPDATE discussion.party_session
-		   SET current_round_message_id = $3
+		   SET current_round_message_id = $3,
+		       round_voices = $4
 		 WHERE id = $1 AND phase = 'active' AND round = $2 AND current_round_message_id IS NULL`,
-		id, forRound, messageID)
+		id, forRound, messageID, pq.Array(voices))
 	if err != nil {
 		return nil, false, err
 	}

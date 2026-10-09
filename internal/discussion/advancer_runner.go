@@ -76,6 +76,16 @@ type PartyAdvancer struct {
 	Roster     AdvancerRosterReader
 	Principal  string // e.g. rundrive.OperatorPrincipal ("ksquad-operator")
 
+	// VoiceDispatcher dispatches a single party voice run (ADR-0031 Ruling A §3.1, S-direct). The advancer
+	// walks the round's RoundVoices roster one turn at a time, dispatching each through this seam so a voice
+	// reacts to the prior voice's freshly-landed reply. It is the SAME discussion.MentionDispatcher the
+	// apiserver wires for @-mention run-minting (internal/mentiondispatch), reused verbatim — the operator
+	// constructs it over the same coord create/dispatch stores the facilitator mint already rides, so a voice
+	// run is minted, board-hidden, ledger-bound (so RoundVoiceSettlement counts it), and body-rendered
+	// (PartyContext.RenderVoiceContext) exactly like a human-triggered @-mention. nil disables sequential
+	// voice dispatch (the round would never progress past its first turn) — the operator always wires it.
+	VoiceDispatcher MentionDispatcher
+
 	Tick     time.Duration // default DefaultPartyAdvancerTick
 	SettleTO time.Duration // default DefaultPartyVoiceSettleTimeout
 	PostTO   time.Duration // default DefaultPartyFacilitatorPostTimeout
@@ -139,7 +149,16 @@ func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, 
 		// settled round's current_round_message_id is cleared when the round advances (MintRound) or the
 		// session goes terminal (CloseSession / the budget_exhausted flip here), so the next tick no longer
 		// re-reads this round's settlement.
-		if settle.Complete() && settle.Dispatched > 0 {
+		//
+		// ISI-5638 (ADR-0031 §3.1): under sequential dispatch the round is NOT complete until EVERY roster
+		// voice has been dispatched. An in-flight round where only turn k of N has landed also satisfies
+		// settle.Complete() (all DISPATCHED-so-far reached terminal), but the next turn still has to be
+		// dispatched — so the charge+advance must hold until Dispatched reaches the roster size. Charging
+		// once per round (all N voices together, here) keeps the paid-run budget identical to ADR-0027's
+		// parallel fan-out (sequencing adds latency, not runs). A session with no roster (pre-0035) has
+		// len(RoundVoices)=0, so Dispatched ≥ 0 always holds and this charges exactly as it shipped.
+		roundFullyDispatched := settle.Dispatched >= len(sess.RoundVoices)
+		if settle.Complete() && settle.Dispatched > 0 && roundFullyDispatched {
 			charged, err := a.Store.RecordPaidRuns(ctx, sess.ID, settle.Dispatched)
 			if err != nil {
 				if errors.Is(err, ErrPartySessionNotActive) {
@@ -167,6 +186,8 @@ func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, 
 	switch plan.Action {
 	case PartyTickWait:
 		// nothing to do
+	case PartyTickDispatchVoice:
+		a.dispatchVoice(ctx, sess, plan)
 	case PartyTickMintRound:
 		a.mintRound(ctx, sess, plan)
 	case PartyTickTakeaways:
@@ -177,6 +198,69 @@ func (a *PartyAdvancer) advanceSession(ctx context.Context, sess *PartySession, 
 				"sessionID", sess.ID, "reason", plan.Reason, "err", err)
 		}
 	}
+}
+
+// dispatchVoice dispatches the ONE next voice of the current round (ADR-0031 Ruling A §3.1, S-direct). The
+// round's facilitator has posted its roster (sess.RoundVoices) and every earlier turn has settled, so the
+// advancer mints a run for RoundVoices[plan.VoiceIndex], pushing it the cross-talk context of every turn
+// taken SO FAR — including earlier IN-round turns — via PartyContext. The next tick sees this voice's
+// mention_dispatch row (cursor++), waits for it to settle, then dispatches the one after. This is the
+// one-voice-in-flight, react-to-prior turn-taking; all guardrails (ADR-0031 §3.4) hold a fortiori since a
+// sequential debate is strictly less concurrent than ADR-0027's.
+//
+// It reuses the shipped @-mention run-minting path verbatim (VoiceDispatcher == internal/mentiondispatch):
+// claim-idempotency on (facilitatorMessageID, voice) makes a repeated tick a no-op, the item is board-hidden
+// and ledger-bound, and the body is PartyContext.RenderVoiceContext + the standard read-thread/reply footer.
+// Best-effort: the facilitator message is already durable; a dispatch error logs and the next tick retries
+// the same cursor (the released claim leaves no mention_dispatch row, so Dispatched does not advance).
+func (a *PartyAdvancer) dispatchVoice(ctx context.Context, sess *PartySession, plan PartyTickPlan) {
+	if a.VoiceDispatcher == nil {
+		slog.WarnContext(ctx, "party advancer: no voice dispatcher wired — cannot sequence voices",
+			"sessionID", sess.ID, "round", sess.Round)
+		return
+	}
+	if sess.CurrentRoundMessageID == nil {
+		return // defensive: PlanPartyTick only emits DispatchVoice once the facilitator posted
+	}
+	if plan.VoiceIndex < 0 || plan.VoiceIndex >= len(sess.RoundVoices) {
+		return // defensive: cursor out of range (roster changed under us)
+	}
+	voice := sess.RoundVoices[plan.VoiceIndex]
+	facilitatorMsg := *sess.CurrentRoundMessageID
+
+	// Assemble "What Others Said This Round" from the thread as it stands NOW — so this voice reacts to
+	// every prior turn, including the earlier in-round turns the previous ticks dispatched (§3.1). A read
+	// failure degrades to empty peers (the voice still gets its persona frame + can pull the thread itself).
+	var roundMsgs []Message
+	if thread, terr := a.Store.GetThread(ctx, sess.ProjectID, sess.TeamID, sess.ThreadID); terr == nil && thread != nil {
+		roundMsgs = flattenMessages(thread.Messages)
+	} else if terr != nil {
+		slog.WarnContext(ctx, "party advancer: GetThread for voice context failed (best-effort)",
+			"sessionID", sess.ID, "round", sess.Round, "voice", voice, "err", terr)
+	}
+
+	d := MentionDispatch{
+		ProjectID:            sess.ProjectID,
+		ThreadID:             sess.ThreadID,
+		MessageID:            facilitatorMsg, // the round's facilitator message — the settlement key
+		TeamID:               sess.TeamID,
+		AgentName:            voice,
+		HopDepth:             1, // the facilitator posts at hop 0; its dispatched voices run at hop 1
+		TriggeredByPrincipal: a.advancerPrincipal(),
+		Party: &PartyContext{
+			Round:          sess.Round,
+			Persona:        PersonaBlurb{Name: voice},
+			PeersThisRound: AssemblePeerTurns(roundMsgs, voice, nil),
+		},
+	}
+	if err := a.VoiceDispatcher.DispatchMention(ctx, d); err != nil {
+		slog.WarnContext(ctx, "party advancer: voice dispatch failed (best-effort, will retry)",
+			"sessionID", sess.ID, "round", sess.Round, "voice", voice, "cursor", plan.VoiceIndex, "err", err)
+		return
+	}
+	slog.InfoContext(ctx, "party advancer: voice dispatched (sequential)",
+		"sessionID", sess.ID, "round", sess.Round, "voice", voice,
+		"turn", plan.VoiceIndex+1, "ofTurns", len(sess.RoundVoices))
 }
 
 // mintRound mints the facilitator run for round plan.FromRound+1 (ADR-0027 §3.2).

@@ -200,8 +200,8 @@ func TestPartySession_SetRoundFacilitatorMessage(t *testing.T) {
 		t.Fatalf("PostMessage (facilitator): %v", postErr)
 	}
 
-	// SetRoundFacilitatorMessage — first writer wins.
-	afterSet, won, err := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, fMsg.ID)
+	// SetRoundFacilitatorMessage — first writer wins, and it stamps the ordered voice roster (ISI-5638).
+	afterSet, won, err := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, fMsg.ID, []string{"voice1", "voice2"})
 	if err != nil {
 		t.Fatalf("SetRoundFacilitatorMessage: %v", err)
 	}
@@ -211,10 +211,13 @@ func TestPartySession_SetRoundFacilitatorMessage(t *testing.T) {
 	if afterSet.CurrentRoundMessageID == nil || *afterSet.CurrentRoundMessageID != fMsg.ID {
 		t.Errorf("CurrentRoundMessageID = %v, want %v", afterSet.CurrentRoundMessageID, fMsg.ID)
 	}
+	if got := afterSet.RoundVoices; len(got) != 2 || got[0] != "voice1" || got[1] != "voice2" {
+		t.Errorf("RoundVoices = %v, want [voice1 voice2] in order", got)
+	}
 
-	// Second write for the same round — should lose (first-writer-wins CAS).
+	// Second write for the same round — should lose (first-writer-wins CAS), leaving the roster unchanged.
 	otherMsgID := uuid.New()
-	_, won2, err2 := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, otherMsgID)
+	_, won2, err2 := store.SetRoundFacilitatorMessage(ctx, sess.ID, updated.Round, otherMsgID, []string{"voice3"})
 	if err2 != nil {
 		t.Fatalf("SetRoundFacilitatorMessage (second): %v", err2)
 	}
