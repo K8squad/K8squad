@@ -46,6 +46,10 @@ func applyOneMigration(t *testing.T, ctx context.Context, db *sql.DB, name strin
 func openPartyTestDB(t *testing.T) (*Store, func()) {
 	t.Helper()
 	db := openTestDB(t)
+	// 0027 ALTERs coord.work_item, so the coord schema must exist first. applyCoordMigration
+	// (fence_integration_test.go) applies the shipped 0001 coord migration into a clean schema,
+	// mirroring the coord-then-discussion ordering the fence tests already use.
+	applyCoordMigration(t, db)
 	// Apply base discussion schema (0004+0024+0026 from integration_test.go).
 	applyMigration(t, db)
 	// Apply mention_dispatch (0027), decision_request (0031), decision_read_marker (0032),
