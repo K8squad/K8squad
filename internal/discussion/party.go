@@ -567,8 +567,23 @@ func (s *Store) MintRound(ctx context.Context, id uuid.UUID, fromRound int) (*Pa
 // the CAS and is reported won=false (nil err) — an idempotent no-op the hook skips without charging voices.
 // A real DB failure is returned as err. On a win the updated session is returned (with RoundVoices set) so
 // the advancer sees the roster to walk and can size the voice fan-out against the fresh paid-run headroom.
+//
+// ISI-5616: on a win it ALSO appends the durable discussion.party_round ledger row (session, round →
+// facilitator message) in the SAME transaction, so GetThread can later surface a stable round number + id on
+// each party message (current_round_message_id is overwritten each round and keeps no history — see the
+// 0035_discussion_party_round header). The ledger INSERT is ON CONFLICT DO NOTHING (the session CAS already
+// makes this the only writer for the round; the PK (session_id, round) is the belt-and-suspenders guard) and
+// shares the stamp's transaction — recording the round linkage is a correctness requirement of the read wire,
+// so a ledger failure rolls back the whole stamp (the hook retries on the round's next facilitator post,
+// current_round_message_id still NULL).
 func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, forRound int, messageID uuid.UUID, voices []string) (sess *PartySession, won bool, err error) {
-	tag, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	tag, err := tx.ExecContext(ctx, `
 		UPDATE discussion.party_session
 		   SET current_round_message_id = $3,
 		       round_voices = $4
@@ -579,6 +594,16 @@ func (s *Store) SetRoundFacilitatorMessage(ctx context.Context, id uuid.UUID, fo
 	}
 	if n, _ := tag.RowsAffected(); n == 0 {
 		return nil, false, nil
+	}
+	if _, err = tx.ExecContext(ctx, `
+		INSERT INTO discussion.party_round (session_id, round, facilitator_message_id, kind)
+		VALUES ($1, $2, $3, 'round')
+		ON CONFLICT (session_id, round) DO NOTHING`,
+		id, forRound, messageID); err != nil {
+		return nil, false, fmt.Errorf("record party round ledger: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, false, err
 	}
 	updated, err := s.GetPartySession(ctx, id)
 	if err != nil {
