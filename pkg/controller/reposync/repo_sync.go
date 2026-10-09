@@ -83,6 +83,7 @@ const (
 	reasonReviewFail    = "ReviewTriggerError"
 	reasonTriageFail    = "IssueTriageTriggerError"
 	reasonWriteBackFail = "RunWriteBackError"
+	reasonInitialFail   = "RunInitialWriteBackError"
 )
 
 // SyncHistoryPrincipal is the honest, server-supplied actor stamped on every
@@ -457,6 +458,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ct
 	// transient provider error fails the reconcile so the next level-triggered
 	// pass retries idempotently (the marker dedups); a permanent one (issue gone /
 	// forbidden) is absorbed by the engine so it never wedges the loop.
+	// ── the ISI-5592-D initial-findings write-back: early run signal → GitHub issue comment ──
+	// The initial-leg sibling of the terminal pass below (ADR-0029, ISI-5602). Runs
+	// on the SAME resolved provider + repo + Project UID already in scope here, in
+	// this same reconcile pass. For every labelled work item whose latest run
+	// authored an `initial_findings_authored` note (ISI-5603 hook) with no
+	// `github_writeback_initial` marker yet, it posts ONE informational findings
+	// comment back to the GitHub issue and marks it. The initial note fires before
+	// the terminal one and both dedup on their DISTINCT markers, so each posts
+	// exactly once per run (two separate comments). Same at-least-once discipline:
+	// a transient provider error fails the reconcile so the next level-triggered
+	// pass retries idempotently (the marker dedups); a permanent one is absorbed.
+	if r.RunWriteBack != nil {
+		if _, err := r.RunWriteBack.WriteBackInitialProject(ctx, string(project.UID), project.Spec.Repo.URL, provider); err != nil {
+			logger.Error(err, "repo-sync: initial write-back pass failed", "project", req.NamespacedName)
+			reason = reasonInitialFail
+			r.patchStatus(ctx, project, statusPatch{condition: syncReadyFalse(reasonInitialFail, err.Error())})
+			return ctrl.Result{}, err
+		}
+	}
+
 	if r.RunWriteBack != nil {
 		if _, err := r.RunWriteBack.WriteBackProject(ctx, string(project.UID), project.Spec.Repo.URL, provider); err != nil {
 			logger.Error(err, "repo-sync: run write-back pass failed", "project", req.NamespacedName)
