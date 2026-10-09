@@ -30,6 +30,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { GithubIssue } from "@/lib/github-status";
 import { ageLabel } from "@/lib/github-status";
+import { IssueTriageDialog } from "@/components/github/IssueTriageDialog";
 import {
   assignAndDispatch,
   listSquadAgents,
@@ -187,6 +188,8 @@ export function GitHubIssuesKanban({
 }) {
   // The card the operator clicked, if any — drives the per-issue popup (ISI-4758).
   const [selected, setSelected] = useState<GithubIssue | null>(null);
+  // ISI-5595 WS-E: the "Issue auto-triage" settings dialog on the panel header.
+  const [triageOpen, setTriageOpen] = useState(false);
 
   if (issues.length === 0) return null;
 
@@ -214,6 +217,20 @@ export function GitHubIssuesKanban({
         <span className="muted" data-testid="gh-issues-summary">
           {repoSlug(issues)} · {open} open · {blocked} blocked
         </span>
+        {/* ISI-5595 WS-E: unlike the read-only deep-link, this is a real in-console
+            write path — it opens the issue auto-triage config. Hidden without a
+            projectId (the config is project-scoped). */}
+        {projectId && (
+          <button
+            type="button"
+            className="gh-btn"
+            data-testid="gh-issue-triage-btn"
+            onClick={() => setTriageOpen(true)}
+            aria-haspopup="dialog"
+          >
+            ⚙ Auto-triage
+          </button>
+        )}
         <a
           className="gh-issues__repo"
           href={repoBase(issues)}
@@ -224,6 +241,10 @@ export function GitHubIssuesKanban({
           Open on GitHub <span aria-hidden="true">↗</span>
         </a>
       </header>
+
+      {triageOpen && projectId && (
+        <IssueTriageDialog projectId={projectId} onClose={() => setTriageOpen(false)} />
+      )}
 
       <ul className="gh-issues__stats" data-testid="gh-issues-stats">
         <li>

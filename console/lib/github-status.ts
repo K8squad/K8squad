@@ -478,6 +478,249 @@ export async function saveReviewAutomation(
   }
 }
 
+// ============================================================================
+// Issue auto-triage config (ISI-5595 WS-E) — the client contract for the
+// spec.repo.automation.issueTriage BFF route
+// (app/api/projects/[id]/repo/issue-triage).
+//
+// Types mirror the apiserver IssueTriageView (internal/apiserver/issuetriage.go)
+// EXACTLY; the Go struct is the contract owner. `enabledBy` (provenance) and
+// `canEdit` (contributor write-tier) are server-computed and READ-ONLY — the
+// dialog gates the form on `canEdit` without a speculative PUT, exactly like the
+// review-automation dialog. Shaped as a near-clone of ReviewAutomation* so the
+// three automation dialogs read/write uniformly.
+// ============================================================================
+
+/** The GET read model + the 200 write-response body (issuetriage.go
+ * IssueTriageView). `labelFilter` is always an array; `onlyUnassigned` carries its
+ * resolved default (true). */
+export type IssueTriageView = {
+  enabled: boolean;
+  triageAgentId: string;
+  labelFilter: string[];
+  onlyUnassigned: boolean;
+  /** Server-stamped provenance (who last enabled it) — read-only. */
+  enabledBy: string;
+  /** Server-computed contributor write-tier — gates the form. */
+  canEdit: boolean;
+};
+
+/** The write input the apiserver accepts — a strict subset of the view. It
+ * structurally OMITS `enabledBy`/`enabledAt` (server-stamped) and `canEdit`. */
+export type IssueTriageInput = {
+  enabled: boolean;
+  triageAgentId: string;
+  labelFilter: string[];
+  onlyUnassigned: boolean;
+};
+
+export type IssueTriageState =
+  | { kind: "loading" }
+  | { kind: "ready"; view: IssueTriageView }
+  | { kind: "unauthenticated" }
+  | { kind: "not-found" }
+  | { kind: "not-wired" }
+  | { kind: "error"; status: number };
+
+/** Fetch the issue-triage config through the BFF choke point. Relays the apiserver
+ * status verbatim (501 ⇒ not wired, 404 ⇒ existence-hiding), never fabricated. */
+export async function fetchIssueTriage(
+  projectId: string,
+): Promise<IssueTriageState> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/issue-triage`,
+    { cache: "no-store" },
+  );
+  if (res.ok) {
+    return { kind: "ready", view: (await res.json()) as IssueTriageView };
+  }
+  switch (res.status) {
+    case 401:
+      return { kind: "unauthenticated" };
+    case 404:
+      return { kind: "not-found" };
+    case 501:
+      return { kind: "not-wired" };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
+export type IssueTriageSaveResult =
+  | { kind: "saved"; view: IssueTriageView }
+  | { kind: "invalid"; message: string; fields: string[] }
+  | { kind: "denied" }
+  | { kind: "unavailable"; status: number }
+  | { kind: "error"; status: number };
+
+/** PUT the issue-triage config through the BFF. The apiserver owns the
+ * authoritative validation (deny-by-default authZ, enabled⇒triageAgentId), so this
+ * never pre-validates — it classifies the relayed status so the dialog can surface
+ * a 422 inline against the offending fields. */
+export async function saveIssueTriage(
+  projectId: string,
+  input: IssueTriageInput,
+): Promise<IssueTriageSaveResult> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/issue-triage`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      cache: "no-store",
+    },
+  );
+  if (res.ok) {
+    return { kind: "saved", view: (await res.json()) as IssueTriageView };
+  }
+  switch (res.status) {
+    case 400:
+    case 422: {
+      const { message, fields } = await readRejection(res);
+      return {
+        kind: "invalid",
+        message:
+          message ||
+          "The apiserver rejected this configuration — check the triage agent and options.",
+        fields,
+      };
+    }
+    case 403:
+      return { kind: "denied" };
+    case 501:
+    case 502:
+      return { kind: "unavailable", status: res.status };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
+// ============================================================================
+// CI-failure triage config (ISI-5595 WS-E) — the client contract for the
+// spec.repo.automation.ciFailure BFF route
+// (app/api/projects/[id]/repo/ci-automation).
+//
+// Types mirror the apiserver CiFailureView (internal/apiserver/cifailure.go)
+// EXACTLY; the Go struct is the contract owner. Same read-only provenance/canEdit
+// discipline as the other two automation dialogs.
+// ============================================================================
+
+/** Which terminal check-run conclusions qualify as a failure. */
+export type CiFailureConclusion = "failure" | "timed_out" | "cancelled";
+
+/** The ordered conclusion vocabulary + human labels for the selector. */
+export const CI_FAILURE_CONCLUSIONS: CiFailureConclusion[] = [
+  "failure",
+  "timed_out",
+  "cancelled",
+];
+export const CI_FAILURE_CONCLUSION_LABEL: Record<CiFailureConclusion, string> = {
+  failure: "Failed",
+  timed_out: "Timed out",
+  cancelled: "Cancelled",
+};
+
+/** The GET read model + the 200 write-response body (cifailure.go CiFailureView).
+ * `branchFilter` is always an array; `conclusions` carries its resolved default
+ * (["failure"]). */
+export type CiFailureView = {
+  enabled: boolean;
+  agentId: string;
+  branchFilter: string[];
+  conclusions: CiFailureConclusion[];
+  /** Server-stamped provenance — read-only. */
+  enabledBy: string;
+  /** Server-computed contributor write-tier — gates the form. */
+  canEdit: boolean;
+};
+
+/** The write input — OMITS `enabledBy`/`enabledAt` (server-stamped) + `canEdit`. */
+export type CiFailureInput = {
+  enabled: boolean;
+  agentId: string;
+  branchFilter: string[];
+  conclusions: CiFailureConclusion[];
+};
+
+export type CiFailureState =
+  | { kind: "loading" }
+  | { kind: "ready"; view: CiFailureView }
+  | { kind: "unauthenticated" }
+  | { kind: "not-found" }
+  | { kind: "not-wired" }
+  | { kind: "error"; status: number };
+
+/** Fetch the CI-failure config through the BFF choke point (status relayed
+ * verbatim). */
+export async function fetchCiFailure(
+  projectId: string,
+): Promise<CiFailureState> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/ci-automation`,
+    { cache: "no-store" },
+  );
+  if (res.ok) {
+    return { kind: "ready", view: (await res.json()) as CiFailureView };
+  }
+  switch (res.status) {
+    case 401:
+      return { kind: "unauthenticated" };
+    case 404:
+      return { kind: "not-found" };
+    case 501:
+      return { kind: "not-wired" };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
+export type CiFailureSaveResult =
+  | { kind: "saved"; view: CiFailureView }
+  | { kind: "invalid"; message: string; fields: string[] }
+  | { kind: "denied" }
+  | { kind: "unavailable"; status: number }
+  | { kind: "error"; status: number };
+
+/** PUT the CI-failure config through the BFF. The apiserver owns validation
+ * (conclusions enum, enabled⇒agentId); this just classifies the relayed status. */
+export async function saveCiFailure(
+  projectId: string,
+  input: CiFailureInput,
+): Promise<CiFailureSaveResult> {
+  const res = await fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/repo/ci-automation`,
+    {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+      cache: "no-store",
+    },
+  );
+  if (res.ok) {
+    return { kind: "saved", view: (await res.json()) as CiFailureView };
+  }
+  switch (res.status) {
+    case 400:
+    case 422: {
+      const { message, fields } = await readRejection(res);
+      return {
+        kind: "invalid",
+        message:
+          message ||
+          "The apiserver rejected this configuration — check the triage agent and options.",
+        fields,
+      };
+    }
+    case 403:
+      return { kind: "denied" };
+    case 501:
+    case 502:
+      return { kind: "unavailable", status: res.status };
+    default:
+      return { kind: "error", status: res.status };
+  }
+}
+
 /** The mirror is "stale" when its last mirror time is older than `thresholdMs`
  * (default 10 min) — the tab shows a subdued "may be stale" hint (never blocks). */
 export function isStale(

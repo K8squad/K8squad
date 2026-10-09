@@ -307,7 +307,7 @@ export function GitHubStatusTab({ projectId }: { projectId: string }) {
             >
               <PullRequestManagement data={data} projectId={projectId} ghost={stale} />
               <GitHubIssuesKanban issues={data.issues} projectId={projectId} />
-              <CiCdPipelineStatus data={data} />
+              <CiCdPipelineStatus data={data} projectId={projectId} ghost={stale} />
               <ReleasePanel releases={data.releases} />
               <BranchPanel branches={data.branches} />
             </div>

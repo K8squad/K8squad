@@ -133,6 +133,18 @@ type Options struct {
 	// the handler. When nil the route keeps the documented 501 (cluster-less dev),
 	// exactly like the other write models.
 	ReviewAutomation *ReviewAutomationService
+	// IssueTriage is the ISI-5595 WS-E issue auto-triage config service: GET
+	// (member+) / PUT-PATCH (contributor+) /api/projects/{projectId}/repo/issue-triage
+	// reads and persists spec.repo.automation.issueTriage behind the SAME §12.3
+	// choke point + requireProjectRole(viewer) gate as review-automation; the
+	// contributor write-tier is enforced in the handler. Nil ⇒ the route keeps the
+	// documented 501 (cluster-less dev).
+	IssueTriage *IssueTriageService
+	// CiFailure is the ISI-5595 WS-E Actions CI-failure triage config service: GET
+	// (member+) / PUT-PATCH (contributor+) /api/projects/{projectId}/repo/ci-automation
+	// reads and persists spec.repo.automation.ciFailure. Same gate/discipline as
+	// IssueTriage; nil ⇒ 501.
+	CiFailure *CiFailureService
 	// Artifacts is the 8.3 artifact-browser read-model (coordination-record blobs + handoff
 	// outputs, ISI-2900). When nil the artifact routes keep answering the documented 501
 	// (dev run without the coord store wired).
@@ -953,6 +965,43 @@ func (s *Server) routes(opts Options) {
 		} else {
 			eligibleAgents.HandleFunc("", notImplemented("review-automation eligible-agents API", "ISI-4779: wire a ReviewAutomationService to enable")).
 				Methods(http.MethodGet)
+		}
+
+		// ISI-5595 WS-E issue auto-triage config: the dedicated
+		// spec.repo.automation.issueTriage sub-resource. Behind the SAME §12.3 choke
+		// point + requireProjectRole(viewer) gate as review-automation — read =
+		// member+; the contributor write-tier for PUT/PATCH is enforced inside the
+		// handler (canWriteProject). Writes are same-origin guarded. Nil service
+		// (cluster-less dev) ⇒ 501 until an IssueTriageService is wired.
+		issueTriage := s.router.Path("/api/projects/{projectId}/repo/issue-triage").Subrouter()
+		issueTriage.Use(authz)
+		issueTriage.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		if opts.ProjectRoles != nil {
+			issueTriage.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.IssueTriage != nil {
+			issueTriage.HandleFunc("", s.issueTriageRead(opts.IssueTriage)).Methods(http.MethodGet)
+			issueTriage.HandleFunc("", s.issueTriageWrite(opts.IssueTriage)).Methods(http.MethodPut, http.MethodPatch)
+		} else {
+			issueTriage.HandleFunc("", notImplemented("issue-triage config API", "ISI-5595 WS-E: wire an IssueTriageService (informer cache + write client) to enable")).
+				Methods(http.MethodGet, http.MethodPut, http.MethodPatch)
+		}
+
+		// ISI-5595 WS-E Actions CI-failure triage config: the dedicated
+		// spec.repo.automation.ciFailure sub-resource. Same gate/discipline as the
+		// issue-triage surface above. Nil service ⇒ 501.
+		ciFailure := s.router.Path("/api/projects/{projectId}/repo/ci-automation").Subrouter()
+		ciFailure.Use(authz)
+		ciFailure.Use(sameOriginGuard(opts.Auth.AllowedOrigins))
+		if opts.ProjectRoles != nil {
+			ciFailure.Use(requireProjectRole(opts.ProjectRoles, auth.ProjectRoleViewer))
+		}
+		if opts.CiFailure != nil {
+			ciFailure.HandleFunc("", s.ciFailureRead(opts.CiFailure)).Methods(http.MethodGet)
+			ciFailure.HandleFunc("", s.ciFailureWrite(opts.CiFailure)).Methods(http.MethodPut, http.MethodPatch)
+		} else {
+			ciFailure.HandleFunc("", notImplemented("ci-failure config API", "ISI-5595 WS-E: wire a CiFailureService (informer cache + write client) to enable")).
+				Methods(http.MethodGet, http.MethodPut, http.MethodPatch)
 		}
 
 		// S4b — Project File Explorer (ISI-3991, ADR-0012 §D2): read-only workspace browse
