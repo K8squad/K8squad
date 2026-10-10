@@ -514,3 +514,148 @@ func TestResolveBroadcastNotRoutedToCoordinator(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// ISI-5639 (ISI-5624 C2, ADR-0031 Ruling B): classifyPartyRoute — route the DEFAULT human bare-party
+// post to the sequenced facilitator; keep everything else on the legacy dispatch path.
+// ============================================================================
+
+// humanParty builds a human-authored (no agentID) kind='text', audience='party' message — the shape the
+// routing decision keys on. Payload is optional (the explicit-broadcast flag case).
+func humanParty(body string, payload *json.RawMessage) *Message {
+	m := agentMsg(body, "party", "", payload)
+	m.Kind = "text"
+	return m
+}
+
+// The target case: a human bare-party post in a room with a dispatchable coordinator and ≥2 eligible
+// agents routes to the facilitator (open/feed a session), NOT the legacy simultaneous broadcast.
+func TestClassifyPartyRouteFacilitator(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "idle"},
+	}
+	if got := classifyPartyRoute(humanParty("what should we build next?", nil), roster); got != partyRouteFacilitator {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteFacilitator (≥2 eligible + coordinator)", got)
+	}
+}
+
+// A 1-eligible-agent room stays a single direct dispatch (§3.2): fewer than two eligible agents is not a
+// debate, so it falls through to the normal path (which dispatches that one agent).
+func TestClassifyPartyRouteSingleEligibleIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true}, // coordinator present…
+		{Name: "john", Status: "paused"},                      // …but the only other agent is opted out
+	}
+	// Eligible = {coord} only (john paused) → 1 < 2 → normal.
+	if got := classifyPartyRoute(humanParty("anyone around?", nil), roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (1 eligible agent → direct)", got)
+	}
+}
+
+// A single explicit @-mention is a targeted reply, never a whole-room debate — normal path.
+func TestClassifyPartyRouteMentionIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	if got := classifyPartyRoute(humanParty("@john can you take this?", nil), roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (single @-mention → direct)", got)
+	}
+}
+
+// The explicit demoted broadcast affordance (payload._party.broadcast=true) stays reachable: it opts back
+// into the legacy one-shot parallel fan-out instead of the facilitator — normal path.
+func TestClassifyPartyRouteExplicitBroadcastIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	payload := json.RawMessage(`{"_party":{"broadcast":true}}`)
+	if got := classifyPartyRoute(humanParty("ask everyone in parallel", &payload), roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (explicit demoted broadcast)", got)
+	}
+}
+
+// No dispatchable coordinator ⇒ the facilitator cannot sequence a round, so the post falls back to the
+// legacy broadcast rather than opening an inert session (demote, not delete).
+func TestClassifyPartyRouteNoCoordinatorIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	if got := classifyPartyRoute(humanParty("team, thoughts?", nil), roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (no coordinator → broadcast fallback)", got)
+	}
+}
+
+// An AGENT-authored bare-party post never routes to the facilitator (human-only opt-in, anti-N²).
+func TestClassifyPartyRouteAgentAuthoredIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("let me loop the squad", "party", "coord", nil)
+	msg.Kind = "text"
+	if got := classifyPartyRoute(msg, roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (agent-authored)", got)
+	}
+}
+
+// A direct:<agent> post is a one-to-one reply, not a party debate — normal path even with a full roster.
+func TestClassifyPartyRouteDirectAudienceIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("just you", "direct:john", "", nil)
+	msg.Kind = "text"
+	if got := classifyPartyRoute(msg, roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (direct: audience)", got)
+	}
+}
+
+// A non-text kind (e.g. structured) keeps its legacy behaviour — Ruling B §3.2 targets kind='text'.
+func TestClassifyPartyRouteNonTextKindIsNormal(t *testing.T) {
+	roster := []TeamAgent{
+		{Name: "coord", Status: "working", Coordinator: true},
+		{Name: "john", Status: "working"},
+		{Name: "jane", Status: "working"},
+	}
+	msg := agentMsg("payload-ish", "party", "", nil)
+	msg.Kind = "structured"
+	if got := classifyPartyRoute(msg, roster); got != partyRouteNormal {
+		t.Fatalf("classifyPartyRoute = %v, want partyRouteNormal (non-text kind)", got)
+	}
+}
+
+// partyBroadcastRequested reads the opt-in flag defensively: absent/empty/malformed/false ⇒ false.
+func TestPartyBroadcastRequested(t *testing.T) {
+	yes := json.RawMessage(`{"_party":{"broadcast":true}}`)
+	no := json.RawMessage(`{"_party":{"broadcast":false}}`)
+	other := json.RawMessage(`{"_dispatch":{"hopDepth":1}}`)
+	malformed := json.RawMessage(`not json`)
+	cases := []struct {
+		name    string
+		payload *json.RawMessage
+		want    bool
+	}{
+		{"flag true", &yes, true},
+		{"flag false", &no, false},
+		{"unrelated payload", &other, false},
+		{"malformed", &malformed, false},
+		{"nil", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := partyBroadcastRequested(c.payload); got != c.want {
+				t.Fatalf("partyBroadcastRequested = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

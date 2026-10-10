@@ -378,6 +378,67 @@ func (s *Store) StartPartySession(ctx context.Context, projectID string, teamID,
 	return sess, &m, nil
 }
 
+// OpenPartySessionForMessage opens a facilitator session on an ALREADY-committed message (ADR-0031 Ruling
+// B, ISI-5639 C2) — the routing target for a DEFAULT human bare-party post. Unlike StartPartySession it
+// posts NO party_start message: the triggering post IS the topic (topic_message_id), so re-routing a plain
+// party post to the sequenced facilitator adds no duplicate artifact. The project/team scope is pulled from
+// the triggering message's OWN thread row (the INSERT ... SELECT below), so the session is always scoped
+// exactly as the message was committed — never the caller's session Team, which may differ for an admin
+// (ISI-5198) — and a mismatched thread/message/project matches no rows rather than opening a mis-scoped row.
+//
+// Idempotent on the active-session invariant: if a debate is already live on the thread the INSERT loses the
+// uq_party_session_active_thread partial-unique conflict (opened=false) and the EXISTING active session is
+// returned — the "feed" case: the new post is already in the thread for the next round's cross-talk, so no
+// second paid debate opens (§5.2). opened=true ⇒ a fresh session was created; the WS-D advancer kicks round
+// 1 on its next tick (PlanPartyTick round==0 → MintRound). Only a human may open a session
+// (PartyStartAllowed) — the anti-N² guarantee at the entry point. Budgets default from config unless a
+// coherent override is supplied (same discipline as StartPartySession).
+func (s *Store) OpenPartySessionForMessage(ctx context.Context, projectID string, threadID, topicMessageID uuid.UUID, auth AuthorContext, budget *PartyBudget) (*PartySession, bool, error) {
+	if err := PartyStartAllowed(auth); err != nil {
+		return nil, false, err
+	}
+	b := DefaultPartyBudget()
+	if budget != nil {
+		nb, err := budget.normalize()
+		if err != nil {
+			return nil, false, err
+		}
+		b = nb
+	}
+	// INSERT ... SELECT pulls project_id + team_id from the triggering message's OWN thread row and
+	// validates (the JOIN) that the topic message really belongs to that thread + room, so a mismatched
+	// thread/message/project matches no rows (n=0) and never opens a mis-scoped session. ON CONFLICT on the
+	// partial-unique active index makes a live debate an idempotent no-op (the feed case). A single
+	// statement auto-commits — no tx needed (unlike StartPartySession, which must atomically pair a message
+	// insert with the session open); the read-back below then sees the committed row.
+	tag, err := s.db.ExecContext(ctx, `
+		INSERT INTO discussion.party_session
+		    (thread_id, project_id, team_id, started_by, topic_message_id,
+		     max_rounds, max_voices_per_round, paid_run_budget)
+		SELECT t.id, t.project_id, t.team_id, $3, m.id, $4, $5, $6
+		  FROM discussion.thread t
+		  JOIN discussion.message m ON m.thread_id = t.id AND m.id = $2
+		 WHERE t.id = $1 AND t.project_id = $7
+		ON CONFLICT (thread_id) WHERE phase = 'active' DO NOTHING`,
+		threadID, topicMessageID, auth.Principal, b.MaxRounds, b.MaxVoicesPerRound, b.PaidRunBudget, projectID)
+	if err != nil {
+		return nil, false, fmt.Errorf("open party session for message: %w", err)
+	}
+	opened := false
+	if n, _ := tag.RowsAffected(); n > 0 {
+		opened = true
+	}
+	// Read back the live session. On an open this is the row we just inserted; on a conflict (feed) it is
+	// the pre-existing active debate. If n==0 AND no active session exists, the SELECT matched nothing (a
+	// mis-scoped thread/message/project) — ErrNoActivePartySession surfaces that so the caller falls back
+	// to the normal dispatch path rather than silently swallowing the post.
+	sess, err := s.ActivePartySession(ctx, threadID)
+	if err != nil {
+		return nil, false, err
+	}
+	return sess, opened, nil
+}
+
 // ActivePartySession returns the thread's live session, or ErrNoActivePartySession if none. This is
 // the advancer's / dispatch gate's single indexed read (ADR-0027 §4.4): active + within budget → the
 // facilitator may dispatch; no active session → the ordinary dispatch rules apply verbatim.
