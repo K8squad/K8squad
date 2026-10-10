@@ -28,7 +28,6 @@ import (
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
-	logglobal "go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -70,7 +69,7 @@ func telemetryCapture(t *testing.T) (spans func() string, logs func() string) {
 		t.Fatalf("stdoutlog: %v", err)
 	}
 	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(logExp)))
-	logglobal.SetLoggerProvider(lp)
+	otel.SetLoggerProvider(lp)
 	prevLogger := slog.Default()
 	slog.SetDefault(otelslog.NewLogger("test", otelslog.WithLoggerProvider(lp)))
 
