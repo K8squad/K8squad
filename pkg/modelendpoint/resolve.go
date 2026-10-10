@@ -74,6 +74,19 @@ const (
 	// larger budget; this is never a blanket per-family guess.
 	KeyContextWindow = "contextWindow"
 
+	// KeyMaxConcurrent optionally declares how many Runs may stream against
+	// THIS endpoint at once (ISI-5594). The per-BYO-endpoint serialization gate
+	// (pkg/controller/rundrive/endpoint_gate.go) defaults every endpoint to 1
+	// concurrent stream — the Ollama mitigation (ISI-5037) — which drains an
+	// N-agent discussion room slowly through a single slot. An endpoint that can
+	// actually serve K>1 concurrent streams (a hosted API, a multi-replica
+	// vLLM) declares K here and the gate admits K. Optional and advisory: a
+	// missing, non-integer, or non-positive value is IGNORED (never a resolution
+	// error), so the gate falls back to the operator default
+	// (KSQUAD_BYO_ENDPOINT_MAX_CONCURRENT, itself defaulting to 1) — today's
+	// strict-serialize behavior is preserved exactly when the key is absent.
+	KeyMaxConcurrent = "maxConcurrent"
+
 	aliasURL   = "url"
 	aliasToken = "token"
 )
@@ -145,6 +158,14 @@ type Endpoint struct {
 	// back to the conservative family-catalog default, so under-budget stays
 	// safe. A provider-default endpoint (no Secret) always reports 0.
 	ContextWindow int64
+
+	// MaxConcurrent is the endpoint's DECLARED concurrent-stream capacity
+	// (ISI-5594), resolved from the Secret's maxConcurrent key. 0 means the
+	// endpoint declared none — the per-endpoint serialization gate
+	// (pkg/controller/rundrive/endpoint_gate.go) then uses the operator
+	// default (strict serialization unless KSQUAD_BYO_ENDPOINT_MAX_CONCURRENT
+	// raises it). A provider-default endpoint (no Secret) always reports 0.
+	MaxConcurrent int
 }
 
 // RuntimeConfig is the validated, runtime-facing injection payload: the
@@ -483,6 +504,7 @@ func (r *Resolver) ResolveRef(ctx context.Context, namespace string, ref *api.Se
 		Token:         secretKey(&secret, KeyAPIToken, aliasToken),
 		SecretName:    ref.Name,
 		ContextWindow: parseContextWindow(secretKey(&secret, KeyContextWindow, "")),
+		MaxConcurrent: parseMaxConcurrent(secretKey(&secret, KeyMaxConcurrent, "")),
 	}, nil
 }
 
@@ -542,6 +564,23 @@ func parseContextWindow(raw string) int64 {
 		return 0
 	}
 	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// parseMaxConcurrent turns the endpoint Secret's maxConcurrent value into a
+// per-endpoint slot count, or 0 when it is absent, non-integer, or
+// non-positive. Like parseContextWindow it is deliberately NON-fatal
+// (ISI-5594): a malformed concurrency declaration must never fail-close a
+// BYO-endpoint Run — the gate just falls back to the operator default (strict
+// serialization), exactly as if the endpoint had declared nothing.
+func parseMaxConcurrent(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
 	if err != nil || n <= 0 {
 		return 0
 	}
