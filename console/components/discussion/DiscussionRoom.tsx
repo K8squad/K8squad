@@ -20,7 +20,7 @@ import type {
   Proposal,
 } from "@/lib/discussion/types";
 import { nestMessages } from "@/lib/discussion/thread";
-import { isPartyStart } from "@/lib/discussion/party";
+import { isPartyStart, newestTerminalSession } from "@/lib/discussion/party";
 import {
   applyRoomEvent,
   type RoomStreamEvent,
@@ -121,9 +121,15 @@ export function DiscussionRoom({
     Record<string, ThinkingRow[]>
   >({});
   // The thread's live party session (ISI-5585 WS-B), fetched from
-  // `/party-sessions/active`. null ⇒ no active debate (a closed session is
-  // unreachable there — the takeaways card then falls back to the transcript).
+  // `/party-sessions/active`. null ⇒ no active debate.
   const [partySession, setPartySession] = useState<PartySession | null>(null);
+  // The thread's TERMINAL party session (ISI-5617, ISI-5613 Gap 2), fetched from
+  // the `?includeClosed=true` list once the live session is gone. It lets the
+  // post-close takeaways carry the real phase/round/paid-run numbers instead of
+  // the transcript-only degrade; null until a closed debate is read (or on a
+  // pre-ISI-5617 apiserver, where the card falls back to the transcript).
+  const [terminalSession, setTerminalSession] =
+    useState<PartySession | null>(null);
   // The roster the post callback reads to resolve dispatch targets, held in a
   // ref so `post` is not re-created on every roster refresh (and never dispatches
   // against a stale closure).
@@ -166,13 +172,34 @@ export function DiscussionRoom({
       // Live party session (ISI-5589 WS-E): the round + budget meter source.
       // Optional on the client (older stubs omit it) and best-effort — a failure
       // degrades to no party framing, the thread already rendered.
+      let activeParty: PartySession | null = null;
       try {
         if (typeof client.getActivePartySession === "function") {
-          const ps = await client.getActivePartySession(projectId, threadId);
-          setPartySession(ps);
+          activeParty = await client.getActivePartySession(projectId, threadId);
+          setPartySession(activeParty);
         }
       } catch {
         setPartySession(null);
+      }
+      // Post-close takeaways (ISI-5617, ISI-5613 Gap 2): with no LIVE session but
+      // a party_start opener in the transcript, the debate has closed — read the
+      // terminal session from the include-closed list so the takeaways carry the
+      // real phase/round/paid-run numbers. Best-effort: a pre-ISI-5617 apiserver
+      // (no list method, or it throws) leaves terminalSession null and the card
+      // falls back to the transcript-only takeaways.
+      try {
+        if (
+          !activeParty &&
+          flat.some((m) => isPartyStart(m)) &&
+          typeof client.listPartySessions === "function"
+        ) {
+          const list = await client.listPartySessions(projectId, threadId, true);
+          setTerminalSession(newestTerminalSession(list));
+        } else {
+          setTerminalSession(null);
+        }
+      } catch {
+        setTerminalSession(null);
       }
     } catch (err) {
       if (err instanceof DiscussionApiError && err.outcome === "not-found") {
@@ -236,16 +263,32 @@ export function DiscussionRoom({
 
   // Re-poll the live party session while a debate is present (ISI-5589 WS-E).
   // WS-B emits no session-state SSE, so the meter is refreshed by re-GET. The
-  // poll stops when the thread has no party_start opener (no debate to track).
+  // poll stops when the thread has no party_start opener (no debate to track) or
+  // once a terminal session has been read (ISI-5613 Gap 2) — a closed debate has
+  // no more live state to track, so polling would just re-null `partySession`.
   useEffect(() => {
     if (!partyOpener) return;
+    if (terminalSession) return;
     if (typeof client.getActivePartySession !== "function") return;
     let cancelled = false;
     const t = setInterval(() => {
       void client
         .getActivePartySession(projectId, threadId)
         .then((ps) => {
-          if (!cancelled) setPartySession(ps);
+          if (cancelled) return;
+          setPartySession(ps);
+          // The debate just closed: fetch its terminal session so the takeaways
+          // keep the real phase/round/paid-run numbers (ISI-5617, Gap 2).
+          if (!ps && typeof client.listPartySessions === "function") {
+            void client
+              .listPartySessions(projectId, threadId, true)
+              .then((list) => {
+                if (!cancelled) setTerminalSession(newestTerminalSession(list));
+              })
+              .catch(() => {
+                /* leave terminalSession null → transcript-only fallback */
+              });
+          }
         })
         .catch(() => {
           /* keep the last-seen session on a transient poll failure */
@@ -255,7 +298,7 @@ export function DiscussionRoom({
       cancelled = true;
       clearInterval(t);
     };
-  }, [partyOpener, client, projectId, threadId]);
+  }, [partyOpener, terminalSession, client, projectId, threadId]);
 
   const post = useCallback(
     async (body: { body: string; parentId?: string; audience?: string }) => {
@@ -415,9 +458,9 @@ export function DiscussionRoom({
   return (
     <section className="ksq-room" data-testid="discussion-room">
       <div className="ksq-room__main">
-        {partySession || partyOpener ? (
+        {partySession || terminalSession || partyOpener ? (
           <PartySessionCard
-            session={partySession}
+            session={partySession ?? terminalSession}
             opener={partyOpener}
             messages={messages}
           />

@@ -4,25 +4,28 @@
 // PAID-RUN budget meter (from GET …/party-sessions/active), and an
 // END-OF-SESSION takeaways summary.
 //
-// Two data paths, by what the WS-B wire exposes:
-//   - LIVE session object present → full framing: round `n/N`, paid-run meter,
-//     voices/round, phase banner (and, if the fetched session is already
-//     terminal, the full takeaways).
-//   - No live session but a `party_start` opener is in the transcript → the
-//     debate ended and its session object is no longer reachable (`/active`
-//     filters phase='active'; no get-by-id/list, no session-state SSE in WS-B).
-//     We render a DEGRADED takeaways derived from the transcript alone: the agent
-//     voices that contributed, without the round/budget tallies the wire drops.
+// Two data paths, by what the wire exposes (ISI-5613 closed both WS-E gaps):
+//   - A session object present — the LIVE session (`/active`) or the TERMINAL one
+//     (`?includeClosed=true`, ISI-5617 Gap 2) → full framing: round `n/N`,
+//     paid-run meter, phase banner, and the full takeaways once terminal (real
+//     phase reason + round count + paid-run tally).
+//   - No session object but a `party_start` opener is in the transcript → a
+//     pre-ISI-5617 apiserver that cannot serve the terminal session: we render a
+//     DEGRADED takeaways derived from the transcript alone (agent voices, no
+//     round/budget tallies).
 //
-// Per-ROUND grouping of individual voice messages is intentionally NOT rendered:
-// WS-B carries no message→round linkage (that is WS-C/WS-D, not landed). See the
-// party.ts module header + the ISI-5589 follow-up.
+// Per-ROUND grouping (ISI-5613 Gap 1) IS now rendered: ISI-5616 stamps
+// `partySessionId` / `partyRound` / `partyRoundKind` on the message DTO, so
+// `partyRounds` groups the thread's party messages into the numbered rounds the
+// card lists.
 
 import type { Message, PartySession } from "@/lib/discussion/types";
 import {
   deriveTakeaways,
   endedTakeaways,
+  partyRounds,
   partySessionView,
+  type PartyRoundGroup,
   type PartyTakeaways,
 } from "@/lib/discussion/party";
 
@@ -76,11 +79,62 @@ function Takeaways({ takeaways }: { takeaways: PartyTakeaways }) {
   );
 }
 
+/**
+ * The per-round breakdown (ISI-5613 Gap 1): each numbered facilitator round with
+ * the agent voices (facilitator + dispatched voices) that spoke in it. Grouping
+ * is on the server-stamped `partyRound` linkage — so it renders even on the
+ * degraded post-close path (the tags survive on the transcript). The round-0
+ * opener is omitted; it is the thread's topic message, already shown above.
+ */
+function Rounds({ rounds }: { rounds: PartyRoundGroup[] }) {
+  const numbered = rounds.filter((r) => r.round >= 1);
+  if (numbered.length === 0) return null;
+  return (
+    <div className="ksq-party__rounds" data-testid="party-round-breakdown">
+      <h4 className="ksq-party__rounds-title">Rounds</h4>
+      <ol className="ksq-party__round-list">
+        {numbered.map((r) => (
+          <li
+            key={`${r.sessionId}#${r.round}`}
+            className="ksq-party__round"
+            data-testid="party-round"
+            data-round={r.round}
+          >
+            <span className="ksq-party__round-label">Round {r.round}</span>
+            {r.voices.length > 0 ? (
+              <ul className="ksq-party__round-voices">
+                {r.voices.map((v) => (
+                  <li key={v.agentId} className="ksq-party__round-voice">
+                    <span className="ksq-party__voice-name">{v.principal}</span>
+                    <span
+                      className="ksq-chip ksq-party__voice-count"
+                      title={`${v.contributions} message${
+                        v.contributions === 1 ? "" : "s"
+                      } this round`}
+                    >
+                      {v.contributions}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <span className="ksq-party__round-empty">No voices yet.</span>
+            )}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export function PartySessionCard({
   session,
   opener,
   messages,
 }: PartySessionCardProps) {
+  // Per-round grouping is derived once from the transcript's party-round tags
+  // (ISI-5613 Gap 1); it is independent of whether a session object is reachable.
+  const rounds = partyRounds(messages);
   // Nothing to frame: no active session and no opener in the transcript.
   if (!session && !opener) return null;
 
@@ -100,6 +154,7 @@ export function PartySessionCard({
             Debate ended
           </span>
         </header>
+        <Rounds rounds={rounds} />
         <Takeaways takeaways={endedTakeaways(opener!, messages)} />
       </section>
     );
@@ -157,6 +212,7 @@ export function PartySessionCard({
         </div>
       </div>
 
+      <Rounds rounds={rounds} />
       {takeaways ? <Takeaways takeaways={takeaways} /> : null}
     </section>
   );
