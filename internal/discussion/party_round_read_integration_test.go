@@ -42,7 +42,8 @@ func applyPartyReadMigrations(t *testing.T, db *sql.DB) {
 		"0027_dispatch_on_mention_run_minting.sql",
 		"0033_discussion_party_session.sql",
 		"0034_discussion_party_round_facilitator.sql",
-		"0035_discussion_party_round.sql",
+		"0035_discussion_party_round_voices.sql", // ISI-5638: round_voices column SetRoundFacilitatorMessage stamps
+		"0035_discussion_party_round.sql",        // ISI-5616: the party_round ledger GetThread reads
 	}
 	for _, name := range names {
 		candidates := []string{
@@ -120,7 +121,7 @@ func TestGetThreadStampsPartyRoundLinkage(t *testing.T) {
 
 	// SetRoundFacilitatorMessage is the seam under test: it stamps current_round_message_id AND writes
 	// the durable party_round ledger row GetThread reads back.
-	if _, won, err := store.SetRoundFacilitatorMessage(ctx, sessID, 1, facID); err != nil || !won {
+	if _, won, err := store.SetRoundFacilitatorMessage(ctx, sessID, 1, facID, []string{"sam"}); err != nil || !won {
 		t.Fatalf("SetRoundFacilitatorMessage: won=%v err=%v (want won=true, nil)", won, err)
 	}
 
@@ -183,7 +184,7 @@ func TestGetThreadStampsPartyRoundLinkage(t *testing.T) {
 
 	// The ledger write is durable + idempotent: a replayed stamp for the same round no-ops (won=false),
 	// never a second row / error.
-	if _, won, err := store.SetRoundFacilitatorMessage(ctx, sessID, 1, facID); err != nil || won {
+	if _, won, err := store.SetRoundFacilitatorMessage(ctx, sessID, 1, facID, []string{"sam"}); err != nil || won {
 		t.Fatalf("replayed SetRoundFacilitatorMessage: won=%v err=%v (want won=false, nil)", won, err)
 	}
 	var rows int
