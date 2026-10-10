@@ -274,11 +274,17 @@ func (s *Store) PostDecisionRequest(ctx context.Context, projectID string, teamI
 		if gerr != nil {
 			return nil, gerr
 		}
+		// An idempotent-key replay: the card already existed, no new row. Record the
+		// event (idempotent_hit=true, so a retry storm is visible) but no funnel row.
+		recordDecisionCreated(ctx, payload.Mode, true, auth, workItemID, teamID.String())
 		return &existing.Message, nil
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	// A real create (ISI-5619 WS-G G-2): post-commit so a rolled-back create never
+	// counts, mirroring the file's "after commit" emit-point contract.
+	recordDecisionCreated(ctx, payload.Mode, false, auth, workItemID, teamID.String())
 
 	// Anti-nag supersede (ADR-0026 §4.2 / M3): a fresh ask that binds the SAME target with a NEWER
 	// revision makes any prior open card on that target stale — auto-supersede it so a bypassed
@@ -515,18 +521,26 @@ func (s *Store) AnswerDecisionRequest(ctx context.Context, projectID string, tea
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	tag, err := tx.ExecContext(ctx, `
+	// RETURNING the card's created_at + payload + work_item_id (G-2): one round trip
+	// yields the CAS result AND the shape the span event / resolution-latency SLI need,
+	// so no second read. sql.ErrNoRows ⇒ the CAS matched no open card (the single-winner
+	// loss or a 404/409), handled exactly as the prior RowsAffected==0 path did.
+	var createdAt time.Time
+	var payloadRaw []byte
+	var workItem sql.NullString
+	err = tx.QueryRowContext(ctx, `
 		UPDATE discussion.decision_request d
 		   SET phase = 'answered', answered_by = $4, answered_at = now(), answer = $5, updated_at = now()
 		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE d.message_id = m.id AND t.project_id = $1 AND t.team_id = $2
-		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'`,
-		projectID, teamID, messageID, auth.Principal, answerJSON)
+		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'
+		RETURNING m.created_at, m.payload, d.work_item_id::text`,
+		projectID, teamID, messageID, auth.Principal, answerJSON).Scan(&createdAt, &payloadRaw, &workItem)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, s.decisionCASMiss(ctx, projectID, teamID, messageID)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if n, _ := tag.RowsAffected(); n == 0 {
-		return nil, s.decisionCASMiss(ctx, projectID, teamID, messageID)
 	}
 
 	postBack, err := s.postResultMessage(ctx, tx, projectID, teamID, messageID, auth, answerJSON, body)
@@ -536,6 +550,9 @@ func (s *Store) AnswerDecisionRequest(ctx context.Context, projectID string, tea
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	mode := decisionModeFromPayload(payloadRaw)
+	emitDecisionAnswered(ctx, mode, answer.FreeText != nil && *answer.FreeText != "", len(answer.SelectedOptionIDs), workItem.String)
+	recordDecisionResolved(ctx, mode, DecisionPhaseAnswered, createdAt)
 	return postBack, nil
 }
 
@@ -563,19 +580,24 @@ func (s *Store) RejectDecisionRequest(ctx context.Context, projectID string, tea
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	tag, err := tx.ExecContext(ctx, `
+	var createdAt time.Time
+	var payloadRaw []byte
+	var workItem sql.NullString
+	err = tx.QueryRowContext(ctx, `
 		UPDATE discussion.decision_request d
 		   SET phase = 'rejected', answered_by = $4, answered_at = now(), answer = $5,
 		       reject_reason = $6, updated_at = now()
 		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE d.message_id = m.id AND t.project_id = $1 AND t.team_id = $2
-		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'`,
-		projectID, teamID, messageID, auth.Principal, answerJSON, sql.NullString{String: reason, Valid: reason != ""})
+		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'
+		RETURNING m.created_at, m.payload, d.work_item_id::text`,
+		projectID, teamID, messageID, auth.Principal, answerJSON, sql.NullString{String: reason, Valid: reason != ""}).
+		Scan(&createdAt, &payloadRaw, &workItem)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, s.decisionCASMiss(ctx, projectID, teamID, messageID)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if n, _ := tag.RowsAffected(); n == 0 {
-		return nil, s.decisionCASMiss(ctx, projectID, teamID, messageID)
 	}
 
 	postBack, err := s.postResultMessage(ctx, tx, projectID, teamID, messageID, auth, answerJSON, body)
@@ -585,6 +607,9 @@ func (s *Store) RejectDecisionRequest(ctx context.Context, projectID string, tea
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	mode := decisionModeFromPayload(payloadRaw)
+	emitDecisionRejected(ctx, mode, reason != "", workItem.String)
+	recordDecisionResolved(ctx, mode, DecisionPhaseRejected, createdAt)
 	return postBack, nil
 }
 
@@ -597,19 +622,31 @@ func (s *Store) ExpireDecisionRequest(ctx context.Context, projectID string, tea
 	if to != DecisionPhaseExpired && to != DecisionPhaseSuperseded {
 		return fmt.Errorf("%w: expire target must be expired or superseded, got %q", ErrInvalidDecisionPayload, to)
 	}
-	tag, err := s.db.ExecContext(ctx, `
+	var createdAt time.Time
+	var payloadRaw []byte
+	var workItem sql.NullString
+	err := s.db.QueryRowContext(ctx, `
 		UPDATE discussion.decision_request d
 		   SET phase = $4, updated_at = now()
 		FROM discussion.message m JOIN discussion.thread t ON t.id = m.thread_id
 		WHERE d.message_id = m.id AND t.project_id = $1 AND t.team_id = $2
-		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'`,
-		projectID, teamID, messageID, to)
+		  AND d.message_id = $3 AND m.invalidated_at IS NULL AND d.phase = 'open'
+		RETURNING m.created_at, m.payload, d.work_item_id::text`,
+		projectID, teamID, messageID, to).Scan(&createdAt, &payloadRaw, &workItem)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s.decisionCASMiss(ctx, projectID, teamID, messageID)
+	}
 	if err != nil {
 		return err
 	}
-	if n, _ := tag.RowsAffected(); n == 0 {
-		return s.decisionCASMiss(ctx, projectID, teamID, messageID)
+	// Supersede is the anti-nag revision-moved sweep (the only supersede cause wired
+	// today); a plain expiry carries no cause. terminal_phase = `to` (expired|superseded).
+	cause := ""
+	if to == DecisionPhaseSuperseded {
+		cause = "revision_moved"
 	}
+	emitDecisionExpired(ctx, to, cause, workItem.String)
+	recordDecisionResolved(ctx, decisionModeFromPayload(payloadRaw), to, createdAt)
 	return nil
 }
 

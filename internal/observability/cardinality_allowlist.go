@@ -64,6 +64,13 @@ var MetricLabelAllowlist = []string{
 	// 5-value enum (review/proposal/decision/cache/marker); `fleet` is a bool
 	// (admin fleet view vs team-scoped). Team UID rides the span only, never here.
 	"arm", "fleet",
+	// ISI-5619 (WS-G G-2) — decision_request funnel dims. `mode` is the closed
+	// 4-value enum (approve/choose_one/choose_many/free_form); `terminal_phase` is
+	// the resolution outcome (answered/rejected/expired/superseded). `phase` (the
+	// funnel counter's 5-value enum, incl. "created") is already allowlisted above.
+	// Bounded: 4 modes × 5 phases = 20 series. work_item/team/principal ids ride
+	// the span EVENT attributes only, never a metric label (the Critical Rule).
+	"mode", "terminal_phase",
 }
 
 // MetricLabelForbidden is the hard denylist: unbounded identifiers that must ride
